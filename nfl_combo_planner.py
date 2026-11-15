@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.10"
+VERSION = "2026.11.15.11"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -674,6 +674,16 @@ def account_get(key, key_id, path, params=None):
     return r.json()
 
 
+def all_positions(key, key_id):
+    """Positions including ones you've closed (sold back to zero) but that haven't settled."""
+    for params in ({"count_filter": "position,total_traded"}, None):
+        try:
+            return account_pages(key, key_id, "/portfolio/positions", "market_positions", params)
+        except requests.RequestException:
+            continue
+    return []
+
+
 def account_pages(key, key_id, path, field, params=None):
     out, cursor = [], None
     for _ in range(50):
@@ -769,10 +779,7 @@ def _fetch_account():
         fills = account_pages(key, key_id, "/portfolio/fills", "fills",
                               {"min_ts": int((dt.datetime.now() - dt.timedelta(days=200)).timestamp())})
         settles = account_pages(key, key_id, "/portfolio/settlements", "settlements")
-        try:
-            positions = account_pages(key, key_id, "/portfolio/positions", "market_positions")
-        except requests.RequestException:
-            positions = []
+        positions = all_positions(key, key_id)
         bal = account_get(key, key_id, "/portfolio/balance")
     except (ValueError, PermissionError) as err:
         return None, None, str(err)
@@ -802,6 +809,7 @@ def _fetch_account():
             held[t]["sold_n"] += n
             held[t]["contracts"] -= n
         held[t]["fees"] += dollars(f, "fee_cost")
+    pos_by = {(p.get("ticker") or p.get("market_ticker")): p for p in positions}
     for p in positions:                          # combos the fills list missed
         t = p.get("ticker") or p.get("market_ticker")
         if not is_combo(t) or t in held:
@@ -826,8 +834,18 @@ def _fetch_account():
             continue                             # not an NFL combo
         s = settled.get(t)
         status, back = "pending", h["sold"]
+        pos = pos_by.get(t)
+        now_held = None
+        if pos is not None:
+            now_held = abs(float(pos.get("position_fp") or pos.get("position") or 0))
         if h["sold_n"] and h["contracts"] <= 0.005:
             status = "cashed"                    # sold before it finished
+        elif not s and now_held is not None and now_held <= 0.005 and h["contracts"] > 0.005:
+            # Kalshi says you hold none of it any more, but no payout yet: you cashed out
+            status = "cashed"
+            realized = dollars(pos, "realized_pnl")
+            back = max(0.0, h["cost"] + realized) if (pos.get("realized_pnl_dollars") or pos.get("realized_pnl")) else 0.0
+            h["contracts"] = 0.0
         elif s:
             back += dollars(s, "revenue")
             status = "won" if dollars(s, "revenue") > 0 else "lost"
@@ -2457,12 +2475,23 @@ def diagnose():
             add(None, f"Trades found: {len(fills)}", f"{len(others)} of them are combos.")
             if fills:
                 add(None, "Fields in your latest trade", e(", ".join(sorted(fills[0].keys()))))
-            try:
-                pos = account_pages(key, key_id, "/portfolio/positions", "market_positions")
-                pt = [p.get("ticker") or "?" for p in pos]
-                add(None, f"Open positions: {len(pos)}", e(", ".join(pt[:8])))
-            except requests.RequestException as err:
-                add(False, "Open positions", e(str(err)))
+            pos = all_positions(key, key_id)
+            pt = [p.get("ticker") or "?" for p in pos]
+            add(None, f"Positions: {len(pos)}", e(", ".join(pt[:8])))
+            combo_fills = [f for f in fills if is_combo(f.get("ticker") or f.get("market_ticker"))][:10]
+            if combo_fills:
+                pmap = {(p.get("ticker") or p.get("market_ticker")): p for p in pos}
+
+                def fmt(f):
+                    t = f.get("ticker") or f.get("market_ticker") or "?"
+                    pz = pmap.get(t) or {}
+                    when = str(f.get("created_time") or f.get("ts") or "")[5:16].replace("T", " ")
+                    return (f"{when} …{t[-8:]} · {f.get('action')} {f.get('side')} {count_of(f):g} "
+                            f"@ yes {dollars(f, 'yes_price'):.2f} / no {dollars(f, 'no_price'):.2f} · "
+                            f"now hold {pz.get('position_fp', pz.get('position', '–'))}, "
+                            f"realized {pz.get('realized_pnl_dollars', pz.get('realized_pnl', '–'))}")
+                add(None, "Your latest combo trades (newest first)",
+                    "<br>".join(e(fmt(f)) for f in combo_fills))
             cache = load_json(LEGS_CACHE, {})
             sample = (others + [p for p in locals().get("pt", []) if is_combo(p)])[:6]
             fetch_legs_parallel(sample, cache)
