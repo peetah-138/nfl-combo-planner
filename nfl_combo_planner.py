@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.1"
+VERSION = "2026.11.15.2"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1466,8 +1466,60 @@ def loading(msg):
     web.evaluate_javascript(f"setMsg({json.dumps(msg)})")
 
 
+def nav_bar():
+    """My combos / Results / Settings: on every page, so you never need the X."""
+    items = []
+    if can_trade():
+        items.append(("mine", "My combos"))
+    if os.path.exists(LATEST):
+        items.append(("results", "Results"))
+    items.append(("settings", "⚙︎ Settings"))
+    links = "".join(
+        f"<a class='navb' href='combo://nav/{k}' "
+        f"onclick=\"if(window.SL&&window.go){{{'' if k == 'settings' else 'go(' + repr('mine' if k == 'mine' else 'show') + ');'}return false;}}\">{t}</a>"
+        for k, t in items)
+    return ("<style>.nav{display:flex;gap:6px;padding:10px 16px 0}.navb{flex:1;text-align:center;padding:9px 4px;"
+            "border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--ink);"
+            "font:600 14px -apple-system,sans-serif;text-decoration:none}</style>"
+            f"<nav class='nav'>{links}</nav>")
+
+
+class NavKeeper:
+    """Handles the nav bar on any page, then hands everything else to the page's own handler."""
+    def __init__(self, inner=None):
+        self.inner = inner
+
+    def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://nav/"):
+            try:
+                go_to(url[len("combo://nav/"):].strip("/"))
+            except Exception:
+                pass
+            return False
+        if self.inner is not None:
+            return self.inner.webview_should_start_load(webview, url, nav_type)
+        return not url.startswith("combo://")
+
+
+def go_to(target):
+    """Switch to My combos, Results or Settings in the same window."""
+    import threading
+    MINE["live"] = False
+    waiting = APP.get("settings_wait")
+    if waiting:                                   # on the settings page: just answer it
+        if target != "settings":
+            result, done = waiting
+            result["go"] = "mine" if target == "mine" else "show"
+            done.set()
+        return
+    RUN_OPTS["goto"] = target
+    threading.Thread(target=run, daemon=True).start()
+
+
 def present(page, keeper=None):
     """Show a page in the same window (no sliding away). Browser outside Pythonista."""
+    if "<body>" in page:
+        page = page.replace("<body>", "<body>" + nav_bar(), 1)
     if not in_pythonista():
         import webbrowser
         path = os.path.join(HERE, "combos_view.html")
@@ -1477,7 +1529,7 @@ def present(page, keeper=None):
         webbrowser.open("file://" + path)
         return
     web = _web()
-    web.delegate = keeper
+    web.delegate = NavKeeper(keeper)
     web.load_html(page)
     APP["page"] = "page"
 
@@ -1740,14 +1792,17 @@ def mine_page(live=False):
                            for l, (nm, _, _, r) in zip(a["legs"], inf) if not r])
     exposure = exposure_html(live_picks, "Still riding on one result")
     staked = sum(a["cost"] for a in mine)
-    best = max((a["pays"] for a in mine), default=0)
+    alive = [a for a in mine if snap.get(a["ticker"], {}).get("status") in ("pending", "won")]
+    best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
+    n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
     body = [head, f"<header><h1>My Kalshi combos for {sunday:%b %-d}</h1>"
-                  f"<div class='sub'>{len(mine)} combos placed</div>" + "<div class='quote' style='margin-top:10px'><button class='btn' onclick=\"location.href='combo://settings'\">"
+                  f"<div class='sub'>{len(mine)} combos placed · {n_alive} still alive</div>" + "<div class='quote' style='margin-top:10px'><button class='btn' onclick=\"location.href='combo://settings'\">"
            "⚙︎ Settings & build more</button></div>" + "</header>",
             "<div class='stats'>"
             f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
             f"<div class='stat'><b>{hits_any / 20000:.0%}</b><span class='lbl'>chance one hits</span></div>"
-            f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout</span></div></div>",
+            + (f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout still possible</span></div></div>"
+               if alive else "<div class='stat'><b>—</b><span class='lbl'>no combos still alive</span></div></div>"),
             "<div class='top-notes'>" + "".join(f"<div class='note'>{e(n)}</div>" for n in notes if n) + "</div>",
             "<div class='batch'><div class='row'><span><b>Game-day alerts</b><br><span class='muted' id='livemsg'>"
             + (f"On · checked {MINE['last']} · next check in 2 min" if live and MINE.get("last") else
@@ -2253,11 +2308,6 @@ def settings_page(all_games, days, counts):
     if latest and version_tuple(latest) > version_tuple(VERSION):
         top.append(f"<button class='btn go big' style='background:#b45309;border-color:#b45309' "
                    f"onclick=\"go('update')\">Update to version {latest}</button>")
-    if can_trade():
-        top.append("<button class='btn go big' style='background:#15803d;border-color:#15803d' "
-                   "onclick=\"go('mine')\">Show my Kalshi combos</button>")
-    if os.path.exists(LATEST):
-        top.append("<button class='btn big' onclick=\"go('show')\">Show last results &amp; record</button>")
     if CFG.get("kalshi_key_id") or os.path.exists(KEYFILE):
         top.append("<button class='btn big' onclick=\"go('check')\">Check Kalshi connection</button>")
 
@@ -2358,10 +2408,14 @@ def settings_page(all_games, days, counts):
             done.set()
             return False
 
-    present(page, SettingsKeeper())
-    while not done.wait(0.5):
-        if not window_open():
-            return None            # closed with the X
+    APP["settings_wait"] = (result, done)
+    try:
+        present(page, SettingsKeeper())
+        while not done.wait(0.5):
+            if not window_open():
+                return None            # closed with the X
+    finally:
+        APP["settings_wait"] = None
     return result["go"]
 
 
@@ -2405,6 +2459,13 @@ def main():
     for d in days.values():
         counts["Thursday" if d == "Friday" else d] += 1
 
+    goto = RUN_OPTS.pop("goto", None)
+    if goto == "mine":
+        return show_mine(all_games, days, sunday)
+    if goto == "results":
+        return show_results(all_games, days, sunday)
+    if goto == "settings":
+        RUN_OPTS["force_settings"] = True
     if not RUN_OPTS.pop("force_settings", False):
         already = this_week(sunday)
         if already and RUN_OPTS.get("latest") and version_tuple(RUN_OPTS["latest"]) > version_tuple(VERSION):
