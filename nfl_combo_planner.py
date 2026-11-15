@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.2"
+VERSION = "2026.11.15.3"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1122,6 +1122,9 @@ h2 .tag{font-size:12px}.game{background:var(--card);border-radius:12px;padding:1
 .btn{font:600 14px -apple-system,sans-serif;padding:8px 12px;border-radius:9px;border:1px solid var(--line);
 background:var(--card);color:var(--ink)}.btn.go{background:var(--accent);color:#fff;border-color:var(--accent)}
 .trade{margin-top:8px;font-size:14px}.trade:empty{display:none}
+.lostbox{margin:4px 0 16px}.lostbox summary{background:var(--card);border:1px solid var(--line);border-radius:12px;
+padding:12px 14px;font-weight:700;list-style:none;cursor:pointer}.lostbox summary::-webkit-details-marker{display:none}
+.lostbox[open] summary{margin-bottom:12px}.lostbox[open] summary .muted{display:none}.lostbox .card{opacity:.7}
 .side{display:flex;flex-direction:column;gap:6px}
 .expbar{flex:1;height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:0 8px}
 .expbar span{display:block;height:100%;background:var(--accent)}.expbar span.hot{background:var(--red)}.batch{background:var(--card);border-radius:14px;padding:12px;
@@ -1778,11 +1781,12 @@ def mine_page(live=False):
                     pct = f"<span style='font-size:12px;font-weight:500' class='muted'>live</span> {lp:.0%}" if lp else ""
             rows.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
-        cards.append(f"<div class='card'><div class='top'><div>"
+        group = snap.get(a["ticker"], {}).get("status", "pending")
+        cards.append((group, f"<div class='card'><div class='top'><div>"
                      f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>"
                      f"<div class='pay'>{money(a['pays'])}</div>"
                      f"<div class='meta'>pays if it hits · cost {money(a['cost'])}</div></div>"
-                     f"<div>{status}</div></div>{value}<ol>{''.join(rows)}</ol></div>")
+                     f"<div>{status}</div></div>{value}<ol>{''.join(rows)}</ol></div>"))
 
     live_picks = []
     for a, inf in zip(mine, infos):
@@ -1818,7 +1822,17 @@ def mine_page(live=False):
             "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">My combos</button>"
             "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
             "<section id='combos'>"]
-    body += cards or ["<div class='empty'>No NFL combos found in your Kalshi account for this week.</div>"]
+    # live combos first, then winners; lost ones tucked into a collapsed section at the bottom
+    alive_cards = [c for g, c in cards if g == "pending"] + [c for g, c in cards if g == "won"]
+    lost_cards = [c for g, c in cards if g == "lost"]
+    if not cards:
+        body.append("<div class='empty'>No NFL combos found in your Kalshi account for this week.</div>")
+    elif not alive_cards:
+        body.append("<div class='empty'>No combos still alive this week.</div>")
+    body += alive_cards
+    if lost_cards:
+        body.append(f"<details class='lostbox'><summary>Lost combos ({len(lost_cards)})"
+                    f"<span class='muted'> · tap to show</span></summary>{''.join(lost_cards)}</details>")
     history = load_json(HISTORY, {"builds": []})
     body.append(f"</section><section id='record' class='hidden'>"
                 f"{render_record(bets_from_account(acct, history))}</section>")
