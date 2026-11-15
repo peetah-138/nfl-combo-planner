@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.8"
+VERSION = "2026.11.15.9"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -30,7 +30,8 @@ CFG = {
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
-    "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
+    "auto_cash": True,
+    "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 TIERS = ["safer", "middle", "moonshot"]
@@ -1945,8 +1946,8 @@ def redraw_mine():
 
 
 def auto_cash_checks():
-    """During game-day alerts: get offers for combos worth checking (each at most every 10
-    minutes) and say so when one is worth taking. Never sells on its own."""
+    """During game-day alerts: get offers for combos worth checking (as often as your
+    setting allows) and say so when one is worth taking. Never sells on its own."""
     import time
     if not CFG["auto_cash"] or not can_trade():
         return []
@@ -1955,7 +1956,7 @@ def auto_cash_checks():
                    key=lambda t: -MINE["hold"][t]["hold"])[:3]
     for t in picks:
         h, old = MINE["hold"][t], MINE["cash"].get(t)
-        if old and time.time() - old["at"] < 600:
+        if old and time.time() - old["at"] < CFG["cash_every"] * 60 - 15:
             continue
         o = get_cash_offer(t)
         MINE["cash"][t] = o
@@ -2787,7 +2788,8 @@ def settings_page(all_games, days, counts):
                 "under way are included at Kalshi's live price, except ones that are nearly decided, "
                 "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
         section("Cash out", slider("cash_pct", "Suggest cashing out at", 60, 110, 5, "% of hold value")
-                + switch("auto_cash", "Check cash-out offers during game-day alerts"),
+                + switch("auto_cash", "Check cash-out offers during game-day alerts")
+                + slider("cash_every", "Check offers every", 2, 10, 2, " min"),
                 "On My combos, each live combo shows what holding it is worth on average and can ask "
                 "Kalshi for a cash-out offer. Nothing is sold until you tap Cash out."),
         section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
