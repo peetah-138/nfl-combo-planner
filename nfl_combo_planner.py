@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.6"
+VERSION = "2026.11.15.7"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2701,7 +2701,26 @@ def main():
                        "include games already under way.")
     games = {e: s for e, s in all_games.items() if on[days[e]] and e not in skipped}
     if len(games) < 4:
-        sys.exit(f"Only {len(games)} games switched on. Markets may not be up yet.")
+        off = [e for e in all_games if not on[days[e]]]
+        offdays = sorted({days[e] for e in off})
+        why = [f"Only {len(games)} game{'s' if len(games) != 1 else ''} can be picked right now, "
+               "and a combo plan needs at least 4."]
+        if live_out:
+            why.append(f"{len(live_out)} game(s) in progress were left out as bad bets: nearly decided, "
+                       f"prices jumping too much, or no team with at least a {CFG['live_min']}% live chance.")
+        if off:
+            why.append(f"{len(off)} game(s) are on days you have switched off ({', '.join(offdays)}).")
+        if any(v == "You skipped this game." for v in skipped.values()):
+            why.append("Some games are set to Skip in Settings.")
+        why.append("Games that have already finished aren't listed.")
+        tips = []
+        if off:
+            tips.append(f"switch on {' and '.join(offdays)} in Settings")
+        if live_out:
+            tips.append("lower Live picks: minimum chance in Settings → Mid-day")
+        tips.append("or come back for next week's games, which usually open on Kalshi by Tuesday")
+        why.append("To get more games: " + ", ".join(tips) + ".")
+        raise Stop("Not enough games right now", " ".join(why))
     locks = {e: t for e, t in CFG["picks"].items() if e in games and t != "skip"}
     clean_cfg(len(games))
 
@@ -2817,10 +2836,23 @@ def update_page(ok, msg):
             f"<section><div class='empty'><span class='{color}'>{html.escape(msg)}</span></div></section></body></html>")
 
 
+class Stop(Exception):
+    """A planned stop with a message to show (not a crash)."""
+    def __init__(self, title, msg):
+        super().__init__(msg)
+        self.title = title
+
+
 def run():
     """main(), but any failure shows a readable page instead of a stuck spinner."""
     try:
         main()
+    except Stop as stop:
+        present(error_page(str(stop), stop.title, crash=False))
+    except KeyboardInterrupt as stop:      # Pythonista turns exit() into this
+        msg = str(stop)
+        if msg.startswith("Exit:") and APP["web"] is not None and window_open():
+            present(error_page(msg[5:].strip(), "Stopped", crash=False))
     except SystemExit as stop:
         if APP["web"] is not None and stop.code:
             present(error_page(str(stop.code)))
@@ -2836,12 +2868,14 @@ def run():
         present(error_page(msg))
 
 
-def error_page(msg):
+def error_page(msg, title="Hmm.", crash=True):
+    tail = ("<br><br>Use the buttons above to try again. If it keeps happening, send me a screenshot."
+            if crash else "")
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<style>{CSS}</style></head><body><header><h1>Hmm.</h1></header><section>"
-            f"<div class='empty'>{html.escape(msg)}<br><br>Close this and tap Run to try again. "
-            "If it keeps happening, send me a screenshot.</div></section></body></html>")
+            f"<style>{CSS}</style></head><body><header><h1>{html.escape(title)}</h1></header><section>"
+            f"<div class='empty' style='text-align:left;line-height:1.5'>{html.escape(msg)}{tail}</div>"
+            "</section></body></html>")
 
 
 if __name__ == "__main__":
