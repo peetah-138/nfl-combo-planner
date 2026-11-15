@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.5"
+VERSION = "2026.11.15.6"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1459,16 +1459,57 @@ def _web():
 
     class Window(ui.View):            # a plain view can notice when it's closed;
         def will_close(self):         # Pythonista's web view can't be customised
-            APP["closed"] = True
-            MINE["live"] = False
+            for closer in list(getattr(self, "closers", [])):
+                try:
+                    closer()
+                except Exception:
+                    pass
 
     win = Window(name="NFL combos", background_color="white")
+    win.closers = [_window_closed]
     win.frame = (0, 0, 375, 667)
     web = ui.WebView(frame=win.bounds, flex="WH")
     win.add_subview(web)
     APP.update(web=web, win=win, page=None, closed=False)
     win.present("fullscreen", hide_title_bar=False)
     return web
+
+
+def _window_closed():
+    APP["closed"] = True
+    MINE["live"] = False
+
+
+def adopt_window(old_app, notice):
+    """Called on a freshly updated copy: take over the open window so the update
+    starts without closing anything, then open on Settings."""
+    win = old_app["win"]
+    APP.update(web=old_app["web"], win=win, page=None, closed=False)
+    win.closers = [_window_closed]      # closing now tells this new copy, not the old one
+    RUN_OPTS["goto"] = "settings"
+    RUN_OPTS["notice"] = notice
+
+
+def relaunch():
+    """Start the version just installed in this same window. False if it can't."""
+    import importlib.util, time
+    if not window_open() or APP.get("win") is None:
+        return False
+    try:
+        name = "nfl_combo_planner_%d" % time.time_ns()
+        spec = importlib.util.spec_from_file_location(name, SCRIPT_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not hasattr(mod, "adopt_window"):
+            return False
+        sys.modules[name] = mod
+        MINE["live"] = False
+        mod.adopt_window(APP, f"Updated to version {mod.VERSION}. You're all set.")
+    except Exception:
+        return False
+    APP["closed"] = True              # this old copy stands down
+    mod.run()
+    return True
 
 
 def loading(msg):
@@ -2420,10 +2461,17 @@ def settings_page(all_games, days, counts):
         return f"<h2>{title}</h2><div class='game'>{n}{inner}</div>"
 
     top = []
+    notice = RUN_OPTS.pop("notice", None)
+    if notice:
+        good = notice.startswith("Updated") or notice.startswith("You already")
+        top.append(f"<div class='game' style='border-color:{'#15803d' if good else '#b45309'}'>"
+                   f"<b class='{'pos' if good else ''}'>{html.escape(notice)}</b></div>")
     latest = RUN_OPTS.get("latest")
     if latest and version_tuple(latest) > version_tuple(VERSION):
         top.append(f"<button class='btn go big' style='background:#b45309;border-color:#b45309' "
                    f"onclick=\"go('update')\">Update to version {latest}</button>")
+    else:
+        top.append("<button class='btn big' onclick=\"go('update')\">Check for updates</button>")
     if CFG.get("kalshi_key_id") or os.path.exists(KEYFILE):
         top.append("<button class='btn big' onclick=\"go('check')\">Check Kalshi connection</button>")
 
@@ -2600,8 +2648,16 @@ def main():
     if choice == "check":
         return diagnose()
     if choice == "update":
-        loading("Downloading the update…")
-        return present(update_page(*install_update()))
+        loading("Checking for updates…")
+        ok, msg = install_update()
+        if ok:
+            loading("Starting the new version…")
+            if relaunch():
+                return None
+            return present(update_page(ok, msg))
+        RUN_OPTS["notice"] = msg
+        RUN_OPTS["goto"] = "settings"
+        return main()
     if choice != "build":
         return console_note("Closed without building.")
 
@@ -2750,6 +2806,7 @@ def install_update():
         return False, f"Couldn't save the update ({err}). Your current version is unchanged."
     return True, (f"Updated to version {found.group(1)}. Close this window with the X at the top left, "
                   "then tap Run. (The previous version is saved as nfl_combo_planner_backup.py.)")
+    # (that message only shows if the new version can't start in this window by itself)
 
 
 def update_page(ok, msg):
