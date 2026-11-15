@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.3"
+VERSION = "2026.11.15.4"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -33,7 +33,8 @@ CFG = {
 TIERS = ["safer", "middle", "moonshot"]
 NEWS_GAP = 0.06   # Kalshi vs sportsbooks this far apart = probably breaking news
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_PATH = os.path.abspath(__file__)   # recorded now: Pythonista clears __file__ once the script's main part ends
+HERE = os.path.dirname(SCRIPT_PATH)
 SAVED = os.path.join(HERE, "combo_settings.json")
 LATEST = os.path.join(HERE, "combos_latest.html")
 HISTORY = os.path.join(HERE, "combo_history.json")
@@ -2633,7 +2634,7 @@ def install_update():
         return False, f"The new version has a problem (line {err.lineno}), so nothing was changed."
     if version_tuple(found.group(1)) <= version_tuple(VERSION):
         return False, f"You already have the latest version ({VERSION})."
-    me = os.path.abspath(__file__)
+    me = SCRIPT_PATH
     try:
         with open(me, encoding="utf-8") as fh:
             current = fh.read()
