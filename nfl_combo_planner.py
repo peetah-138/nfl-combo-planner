@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.4"
+VERSION = "2026.11.15.5"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -28,6 +28,7 @@ CFG = {
     "max_share": 50,      # no pick in more than this % of safer/middle/moonshot combos
     "hedge_close": True,  # split coin-flip games between both sides across combos
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
+    "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 TIERS = ["safer", "middle", "moonshot"]
@@ -358,11 +359,18 @@ def weight(s, usage):
     return max(0.01, s["fair"] ** 2 * (1 + 8 * edge)) / (1 + usage[s["ticker"]])
 
 
+def pickable(side):
+    """Teams in games under way need a real chance left (Kalshi's live price reflects
+    the score and the clock). Teams in games not started yet are always pickable."""
+    return not side.get("live") or side["fair"] >= CFG["live_min"] / 100
+
+
 def underdog_sets(games, free, k, want):
     """The `want` most likely sets of k upsets among the unlocked games.
     Only one exact result happens on Sunday, so full-slate combos can never
     both hit: picking the likeliest distinct outcomes maximises the chance
     that one of them does."""
+    free = [e for e in free if pickable(dog(games[e]))]   # no long-shot live underdogs
     k = min(k, len(free))
     ratio = {e: dog(games[e])["fair"] / fav(games[e])["fair"] for e in free}
     score = lambda c: math.prod(ratio[e] for e in c)
@@ -392,7 +400,7 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
     - a pick already at the limit can't be used again (the other side still can)
     - games used less so far are more likely to be chosen
     - close games go to whichever side has been used less (hedging)"""
-    eligible = [e for e in free if any(usage[s["ticker"]] < limit for s in games[e])]
+    eligible = [e for e in free if any(usage[s["ticker"]] < limit and pickable(s) for s in games[e])]
     extra = max(0, min(size - len(locked), len(eligible)))
     if len(locked) + extra < 2:
         return None
@@ -404,7 +412,7 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
         chosen.append(e)
     legs = list(locked)
     for e in chosen:
-        opts = [x for x in games[e] if usage[x["ticker"]] < limit]
+        opts = [x for x in games[e] if usage[x["ticker"]] < limit and pickable(x)]
         if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < CLOSE_GAME \
                 and usage[opts[0]["ticker"]] != usage[opts[1]["ticker"]]:
             legs.append(min(opts, key=lambda x: usage[x["ticker"]]))
@@ -1123,6 +1131,8 @@ h2 .tag{font-size:12px}.game{background:var(--card);border-radius:12px;padding:1
 .btn{font:600 14px -apple-system,sans-serif;padding:8px 12px;border-radius:9px;border:1px solid var(--line);
 background:var(--card);color:var(--ink)}.btn.go{background:var(--accent);color:#fff;border-color:var(--accent)}
 .trade{margin-top:8px;font-size:14px}.trade:empty{display:none}
+.flip{margin-left:8px;font:600 12px -apple-system,sans-serif;padding:5px 8px;border-radius:8px;
+border:1px solid var(--line);background:var(--bg);color:var(--accent)}
 .lostbox{margin:4px 0 16px}.lostbox summary{background:var(--card);border:1px solid var(--line);border-radius:12px;
 padding:12px 14px;font-weight:700;list-style:none;cursor:pointer}.lostbox summary::-webkit-details-marker{display:none}
 .lostbox[open] summary{margin-bottom:12px}.lostbox[open] summary .muted{display:none}.lostbox .card{opacity:.7}
@@ -1168,6 +1178,8 @@ function act(a,i){ var t=document.getElementById('t'+i); if(t) t.innerHTML="<spa
   var extra = a==='buy' ? '/'+stakeOf(i) : '';
   try{ location.href='combo://'+a+'/'+BUILD+'/'+i+extra; }catch(e){} }
 function tradeMsg(i,h){ var t=document.getElementById('t'+i); if(t) t.innerHTML=h; }
+function act2(a,i,x){ var t=document.getElementById('t'+i); if(t) t.innerHTML="<span class='muted'>Working…</span>";
+  try{ location.href='combo://'+a+'/'+BUILD+'/'+i+'/'+encodeURIComponent(x); }catch(e){} }
 function picked(){ return Array.prototype.map.call(document.querySelectorAll('.pick:checked'), function(x){return +x.value;}); }
 function selCount(){ var b=document.getElementById('getall'); if(b) b.textContent='Get offers for selected ('+picked().length+')'; }
 function selAll(){ document.querySelectorAll('.pick').forEach(function(x){ x.checked = state.placed.indexOf(+x.value)<0; }); selCount(); }
@@ -1223,7 +1235,7 @@ HIDE = " style='display:none'"
 
 
 def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
-           notes, locks, skipped, news, focus=None):
+           notes, locks, skipped, news, focus=None, card_notes=None):
     e = html.escape
     order = {ev: i for i, ev in enumerate(all_games)}
     spent = len(combos) * CFG["stake"]
@@ -1268,7 +1280,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             f"<div class='quote'><span>Bet $</span><input class='amt' inputmode='decimal' value='{CFG['stake']}' "
             f"onchange='amt({i},this)'><button class='btn' onclick='act(\"swap\",{i})'>Swap this one</button>"
             + (f"<button class='btn go' onclick='act(\"buy\",{i})'>Buy on Kalshi</button>" if can_trade() else "")
-            + f"</div><div class='trade' id='t{i}'></div><ol>")
+            + f"</div><div class='trade' id='t{i}'></div>"
+            + ((card_notes or {}).get(i) or "") + "<ol>")
         for n, l in enumerate(sorted(c["legs"], key=lambda l: order[l["event"]]), 1):
             other = next(s for s in all_games[l["event"]] if s is not l)
             tags = ""
@@ -1281,7 +1294,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             tags += edge_tag(l)
             out.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(l['pick'])}</b> {tags}"
                        f"<small>to beat {e(other['pick'])} · {days[l['event']][:3]}</small></span>"
-                       f"<span class='pct'>{l['fair']:.0%}</span></li>")
+                       f"<span class='pct'>{l['fair']:.0%}</span>"
+                       f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
         out.append("</ol></div>")
     out.append("</section>")
 
@@ -1303,6 +1317,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                 tag = '<span class="tag lock">Locked</span> ' if locks.get(x) == s["ticker"] else ""
                 if s.get("live"):
                     tag += '<span class="tag bad">Live</span> '
+                    if not pickable(s):
+                        tag += f'<span class="tag red">Too unlikely to pick (under {CFG["live_min"]}%)</span> '
                     nums = f"live {s['fair']:.0%} · Kalshi {s['p'] * 100:.0f}¢"
                 out.append(f"<div class='row'><span><b>{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
                            f"<span class='nums'>{nums}</span></div>")
@@ -1348,7 +1364,7 @@ def show_results(all_games=None, days=None, sunday=None):
             if parts[0] == "settings":
                 reopen_settings(webview)
                 return False
-            if parts[0] in ("swap", "buy", "accept", "decline", "batch"):
+            if parts[0] in ("swap", "buy", "accept", "decline", "batch", "flip"):
                 handle_action(webview, parts)
                 return False
             hist = load_json(HISTORY, {"builds": []})
@@ -1520,10 +1536,18 @@ def go_to(target):
     threading.Thread(target=run, daemon=True).start()
 
 
+def with_nav(page):
+    """Every page gets the nav bar at the top and again at the bottom."""
+    if "<body>" in page and "class='nav'" not in page:
+        bar = nav_bar()
+        page = page.replace("<body>", "<body>" + bar, 1)
+        page = page.replace("</body>", bar.replace("<nav class='nav'>", "<nav class='nav' style='padding:4px 16px 28px'>") + "</body>", 1)
+    return page
+
+
 def present(page, keeper=None):
     """Show a page in the same window (no sliding away). Browser outside Pythonista."""
-    if "<body>" in page:
-        page = page.replace("<body>", "<body>" + nav_bar(), 1)
+    page = with_nav(page)
     if not in_pythonista():
         import webbrowser
         path = os.path.join(HERE, "combos_view.html")
@@ -1613,7 +1637,7 @@ def live_check(webview):
     page, snap = mine_page(live=True)
     alerts = diff_alerts(MINE.get("snap") or {}, snap)
     MINE["snap"] = snap
-    webview.load_html(page)
+    webview.load_html(with_nav(page))
     for msg in alerts[:4]:
         notify(msg)
     return alerts
@@ -2117,6 +2141,7 @@ def swap_combo(i):
            "min": fair_pay * CFG["accept_pct"] / 100, "kalshi": stake / math.prod(l["p"] for l in legs)}
     CTX["combos"][i - 1] = new
     CTX["offers"].pop(i, None)
+    CTX.get("card_notes", {}).pop(i, None)
     hist = load_json(HISTORY, {"builds": []})
     b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
     if b is not None:
@@ -2129,12 +2154,80 @@ def swap_combo(i):
     return True
 
 
+def save_combo(i, new):
+    """Write a changed combo back to the saved history (and clear its Placed/offer)."""
+    hist = load_json(HISTORY, {"builds": []})
+    b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
+    if b is not None:
+        b["combos"][i - 1] = {"kind": new["kind"], "tier": new["tier"], "fair": round(new["fair"], 2),
+                              "min": round(new["min"], 2),
+                              "legs": [{"ticker": l["ticker"], "pick": l["pick"], "dog": l["fair"] < 0.5}
+                                       for l in new["legs"]]}
+        b["placed"] = [x for x in b.get("placed", []) if x != i]
+        b.get("quotes", {}).pop(str(i), None)
+        save_json(HISTORY, hist)
+
+
+def flip_pick(i, ticker):
+    """Switch one pick in combo i to the other team and explain what changed.
+    Returns (ok, html note)."""
+    e = html.escape
+    old = CTX["combos"][i - 1]
+    leg = next((l for l in old["legs"] if l["ticker"] == ticker), None)
+    if leg is None:
+        return False, "That pick isn't in this combo any more. Tap Results to refresh."
+    other = next(x for x in CTX["all_games"][leg["event"]] if x["ticker"] != ticker)
+    if not pickable(other):
+        return False, (f"{e(other['pick'])} is only {other['fair']:.0%} live with the game under way, "
+                       f"below your {CFG['live_min']}% minimum, so it can't be picked.")
+    legs = [other if l is leg else l for l in old["legs"]]
+    key = frozenset(l["ticker"] for l in legs)
+    for k, c in enumerate(CTX["combos"], 1):
+        if k != i and frozenset(l["ticker"] for l in c["legs"]) == key:
+            return False, f"Flipping it would make this the same as combo #{k}."
+    stake = CTX["stake"]
+    fair_pay = stake / math.prod(l["fair"] for l in legs)
+    new = dict(old, legs=legs, fair=fair_pay, min=fair_pay * CFG["accept_pct"] / 100,
+               kalshi=stake / math.prod(l["p"] for l in legs))
+    if old["kind"] == "full":
+        n = sum(l["fair"] < 0.5 for l in legs)
+        new["tier"] = f"Full slate · {n} underdog{'s' * (n != 1)}"
+    _, (p_old, p_new) = simulate([old, new], CTX["games"])
+    v_old, v_new = old["kalshi"] / old["fair"], new["kalshi"] / new["fair"]
+    likely = ("more likely to hit" if p_new > p_old * 1.05 else
+              "less likely to hit" if p_new < p_old * 0.95 else "about as likely to hit")
+    value = ("better value" if v_new >= v_old + 0.01 else
+             "slightly worse value" if v_new <= v_old - 0.01 else "about the same value")
+    good = p_new > p_old * 1.05 and v_new >= v_old - 0.01
+    bad = p_new < p_old * 0.95 and v_new <= v_old + 0.01
+    head = ("<span class='verdict ok'>Good flip</span>" if good else
+            "<span class='verdict no'>Worse bet</span>" if bad else
+            "<span class='verdict ok' style='background:var(--badbg);color:var(--bad)'>Trade-off</span>")
+    extra = []
+    edge = other.get("edge")
+    if edge is not None and edge * 100 >= 1:
+        extra.append(f"Kalshi prices {e(other['pick'])} as a bargain (+{round(edge * 100)}¢).")
+    elif edge is not None and edge * 100 <= -4:
+        extra.append(f"Kalshi charges extra for {e(other['pick'])} ({round(edge * 100)}¢).")
+    if other.get("live"):
+        extra.append("Live pick: its price moves fast, so get an offer soon.")
+    note = (f"<div class='min'>{head} Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
+            f"{likely} ({p_old:.1%} → {p_new:.1%}), fair payout {money(old['fair'])} → {money(new['fair'])}, "
+            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + " ".join(extra) +
+            " Tap Flip again to undo. Buy on Kalshi shows whether the real offer is good.</div>")
+    CTX["combos"][i - 1] = new
+    CTX["offers"].pop(i, None)
+    CTX.setdefault("card_notes", {})[i] = note
+    save_combo(i, new)
+    return True, note
+
+
 def rerender(focus=None):
     """Re-score and redraw the results page after a swap."""
     p_any, p_each = simulate(CTX["combos"], CTX["games"])
     page = render(CTX["build_id"], CTX["combos"], CTX["games"], CTX["all_games"], CTX["days"],
                   CTX["sunday"], p_any, p_each, CTX["notes"], CTX["locks"], CTX["skipped"],
-                  CTX["news"], focus=focus)
+                  CTX["news"], focus=focus, card_notes=CTX.get("card_notes"))
     with open(LATEST, "w", encoding="utf-8") as f:
         f.write(page)
 
@@ -2217,12 +2310,20 @@ def handle_action(webview, parts):
                     got = sum(pool.map(one, wanted))
                 say(f"<span class='muted'>{got} of {len(wanted)} offers in. Accept or decline each "
                     "one on its card. Offers can expire after a minute or two.</span>", 0)
+            elif action == "flip":
+                ok, note = flip_pick(i, unquote(parts[3]) if len(parts) > 3 else "")
+                if ok:
+                    rerender(focus=i)
+                    with open(LATEST, encoding="utf-8") as f:
+                        webview.load_html(with_nav(inject_state(f.read(), quiet=True)))
+                else:
+                    say(f"<span class='verdict no'>{note}</span>")
             elif action == "swap":
                 say("<span class='muted'>Finding a new combo…</span>")
                 if swap_combo(i):
                     rerender(focus=i)
                     with open(LATEST, encoding="utf-8") as f:
-                        webview.load_html(inject_state(f.read(), quiet=True))   # same page, buttons keep working
+                        webview.load_html(with_nav(inject_state(f.read(), quiet=True)))   # same page, nav + buttons keep working
                 else:
                     say("<span class='verdict no'>No other combo of this type fits your settings.</span>")
             elif action == "buy":
@@ -2353,7 +2454,8 @@ def settings_page(all_games, days, counts):
         "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
                         slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
                 for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]),
-        section("Mid-day", switch("include_live", "Include games already in progress"),
+        section("Mid-day", switch("include_live", "Include games already in progress")
+                + slider("live_min", "Live picks: minimum chance", 10, 50, 5, "%"),
                 "Building on a Sunday afternoon uses only games still to play. With this on, games "
                 "under way are included at Kalshi's live price, except ones that are nearly decided, "
                 "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
