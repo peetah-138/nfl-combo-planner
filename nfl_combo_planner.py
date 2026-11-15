@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.9"
+VERSION = "2026.11.15.10"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -31,7 +31,8 @@ CFG = {
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,
-    "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
+    "cash_every": 2,
+    "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured      # minutes between automatic cash-out offer checks for the same combo    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 TIERS = ["safer", "middle", "moonshot"]
@@ -1151,6 +1152,7 @@ background:var(--card);color:var(--ink)}.btn.go{background:var(--accent);color:#
 .trade{margin-top:8px;font-size:14px}.trade:empty{display:none}
 .flip{margin-left:8px;font:600 12px -apple-system,sans-serif;padding:5px 8px;border-radius:8px;
 border:1px solid var(--line);background:var(--bg);color:var(--accent)}
+.now{border:2px solid var(--accent)}.now .quote .btn{width:100%}
 .lostbox{margin:4px 0 16px}.lostbox summary{background:var(--card);border:1px solid var(--line);border-radius:12px;
 padding:12px 14px;font-weight:700;list-style:none;cursor:pointer}.lostbox summary::-webkit-details-marker{display:none}
 .lostbox[open] summary{margin-bottom:12px}.lostbox[open] summary .muted{display:none}.lostbox .card{opacity:.7}
@@ -1748,49 +1750,235 @@ def diff_alerts(old, new):
 OFFER_LIFE = 150      # seconds a cash-out offer is shown before it's treated as expired
 
 
-def cash_block(ticker):
-    """The hold-or-cash-out box on a live combo card."""
+def single_value(p, pays, W):
+    """What a p chance of `pays` is worth to you as a sure amount, given money W
+    (your bankroll plus what's locked in). Bigger amounts get discounted more."""
+    if pays <= 0 or p <= 0:
+        return 0.0
+    return math.exp(p * math.log(W + pays) + (1 - p) * math.log(W)) - W
+
+
+def fresh_offer(t):
+    import time
+    o = MINE["cash"].get(t)
+    if o and o.get("offer") and o.get("rfq") and time.time() - o["at"] <= OFFER_LIFE and t in MINE["hold"]:
+        return o
+    return None
+
+
+def weekend_stats(acts):
+    """Average, guaranteed part and chance of nothing more, for a hold/cash choice per combo."""
+    live, pats = MINE["hold"], MINE.get("patterns") or {}
+    W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
+    sure = sum(f * live[t]["pays"] * acts_price(t) for t, f in acts.items() if f)
+    n = sum(pats.values()) or 1
+    eu = mean = zero = 0.0
+    for pat, c in pats.items():
+        x = sure + sum((1 - acts.get(t, 0)) * live[t]["pays"] for t in pat if t in live)
+        eu += c * math.log(W + x)
+        mean += c * x
+        zero += c if x - sure < 0.005 else 0
+    return {"eu": eu / n, "mean": mean / n, "sure": sure, "nothing": zero / n,
+            "worth": math.exp(eu / n) - W}
+
+
+def acts_price(t):
+    o = fresh_offer(t)
+    return o["offer"] / o["contracts"] if o and o["contracts"] else 0.0
+
+
+def plan_cashout():
+    """Best mix of hold / cash out half / cash out all across your live combos, judged
+    together (combos that need the same team rise and fall together) and weighed for
+    your bankroll. Only combos with a fresh Kalshi offer can be cashed."""
+    offers = [t for t in MINE["hold"] if fresh_offer(t)]
+    if not offers or not MINE.get("patterns"):
+        return None
+    acts = {t: 0.0 for t in offers}
+    best = weekend_stats(acts)["eu"]
+    for _ in range(3):
+        changed = False
+        for t in sorted(offers, key=lambda x: -MINE["hold"][x]["hold"]):
+            for f in (0.0, 0.5, 1.0):
+                if f == acts[t]:
+                    continue
+                trial = dict(acts, **{t: f})
+                v = weekend_stats(trial)["eu"]
+                if v > best + 1e-9:
+                    best, acts, changed = v, trial, True
+        if not changed:
+            break
+    return {"acts": acts, "plan": weekend_stats(acts), "hold": weekend_stats({t: 0.0 for t in offers})}
+
+
+def plan_words(t, f, o, h, W):
+    """One short reason for the verdict on one combo."""
+    p, pays = h["p"], h["pays"]
+    shared = any(sum(1 for x in MINE["hold"].values() if k in dict(x["need"])) > 1 for k, _ in h["need"])
+    if f == 1:
+        return f"A sure {money(o['offer'])} beats a {p:.0%} shot at {money(pays)} for you." + \
+            (" Also spreads risk off a game your other combos need." if shared else "")
+    if f == 0.5:
+        return f"Locks in half and keeps a {p:.0%} shot at {money(pays / 2)}."
+    return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
+
+def action_button(t, f, h):
+    """The button that carries out the plan for one combo (needs an offer of the right size)."""
+    o = fresh_offer(t)
+    te = html.escape(t)
+    if not o or f == 0:
+        return ""
+    if abs(o.get("frac", 1.0) - f) < 0.01:
+        what = "half of " if f < 1 else ""
+        return (f"<button class='btn go cashb' onclick=\"cash('go','{te}')\">Cash out {what}"
+                f"{html.escape(h['label'])} for {money(o['offer'])}</button>")
+    act = "askhalf" if f < 1 else "ask"
+    return (f"<button class='btn go cashb' onclick=\"cash('{act}','{te}')\">Get offer for "
+            f"{'half of ' if f < 1 else 'all of '}{html.escape(h['label'])}</button>")
+
+
+def cash_block(ticker, plan):
+    """The short hold-or-cash-out box on a live combo card."""
     h = MINE["hold"].get(ticker)
     if not h:
         return ""
-    import time
     t = html.escape(ticker)
-    p, pays, hold = h["p"], h["pays"], h["hold"]
-    out = [f"<div class='min cashbox'><b>Hold or cash out?</b><div style='margin-top:4px'>Holding: "
-           f"{p:.0%} chance of {money(pays)}, {1 - p:.0%} chance of $0. Worth about "
-           f"<b>{money(hold)}</b> on average.</div>"]
-    o = MINE["cash"].get(ticker)
-    if o and o.get("error"):
-        out.append(f"<div class='muted' style='margin-top:6px'>{html.escape(o['error'])}</div>")
-        o = None
-    if o and time.time() - o["at"] > OFFER_LIFE:
-        out.append("<div class='muted' style='margin-top:6px'>The last offer has expired.</div>")
-        o = None
+    W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
+    p, pays = h["p"], h["pays"]
+    out = [f"<div class='min cashbox'>If you hold: <b>{p:.0%}</b> chance of <b>{money(pays)}</b>"
+           f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"]
+    raw = MINE["cash"].get(ticker)
+    o = fresh_offer(ticker)
+    if raw and raw.get("error"):
+        out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>{html.escape(raw['error'])}</div>")
     if o:
-        ratio = o["offer"] / hold if hold > 0 else 9.99
-        gain = o["offer"] - h["cost"]
-        if ratio >= CFG["cash_pct"] / 100:
-            cls, word = "ok", "Cash out"
-            why = (f"The offer is {ratio:.0%} of what holding is worth, and it's money in hand "
-                   f"instead of a {1 - p:.0%} chance of $0.")
-        else:
-            cls, word = "no", "Hold"
-            why = (f"The offer is only {ratio:.0%} of what holding is worth. Your setting cashes out "
-                   f"at {CFG['cash_pct']}% or more.")
-        out.append(f"<div style='margin-top:8px'>Kalshi offers <b>{money(o['offer'])}</b> now "
-                   f"(<span class='{'pos' if gain >= 0 else 'neg'}'>{'+' if gain >= 0 else '−'}{money(abs(gain))}</span>"
-                   f" vs your {money(h['cost'])}). <span class='verdict {cls}'>{word}</span></div>"
-                   f"<div class='muted' style='font-size:13px;margin-top:4px'>{why} Kalshi's small trading fee "
-                   f"comes out of the offer.</div>"
-                   f"<div class='quote' style='margin-top:8px'><button class='btn go cashb' "
-                   f"onclick=\"cash('go','{t}')\">Cash out for {money(o['offer'])}</button>"
-                   f"<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>")
+        f = (plan or {}).get("acts", {}).get(ticker, 0.0)
+        word, cls = {1.0: ("Cash out", "ok"), 0.5: ("Cash out half", "ok")}.get(f, ("Hold", "no"))
+        size = " for half" if o.get("frac", 1.0) < 1 else ""
+        main = action_button(ticker, f, h) if f else ""
+        if not main:
+            main = (f"<button class='btn cashb' onclick=\"cash('go','{t}')\">Cash out"
+                    f"{' half' if size else ''} for {money(o['offer'])}</button>")
+        out.append(f"<div style='margin-top:8px'>Kalshi offers <b>{money(o['offer'])}</b>{size} "
+                   f"<span class='verdict {cls}'>{word}</span></div>"
+                   f"<div class='muted' style='font-size:13px;margin-top:4px'>{plan_words(ticker, f, o, h, W)}</div>"
+                   f"<div class='quote'>{main}<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>")
     else:
-        if h["worth"]:
-            out.append(f"<div style='margin-top:6px'><span class='tag good'>Worth checking</span> "
-                       f"{h['left']} game{'s' if h['left'] != 1 else ''} left and it's worth well over what you paid.</div>")
-        out.append(f"<div class='quote' style='margin-top:8px'><button class='btn cashb' "
-                   f"onclick=\"cash('ask','{t}')\">Get cash-out offer</button></div>")
+        tag = "<span class='tag good'>Worth checking</span> " if h["worth"] else ""
+        out.append(f"<div class='quote'>{tag}<button class='btn cashb' onclick=\"cash('ask','{t}')\">"
+                   f"Get cash-out offer</button></div>")
+    out.append("</div>")
+    return "".join(out)
+
+
+# ---------------------------------------------------------------- scores
+SCORES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+SCORES = {"at": 0, "by_team": {}}
+
+
+def fetch_scores(max_age=45):
+    """Live scores by full team name (ESPN's free scoreboard). Empty if it can't be reached."""
+    import time
+    if time.time() - SCORES["at"] < max_age:
+        return SCORES["by_team"]
+    by = {}
+    try:
+        r = requests.get(SCORES_URL, timeout=8)
+        events = r.json().get("events", []) if r.ok else []
+        for ev in events:
+            comp = (ev.get("competitions") or [{}])[0]
+            st = comp.get("status") or ev.get("status") or {}
+            typ = st.get("type") or {}
+            state = typ.get("state", "")
+            if state == "post":
+                detail = "Final" + (" OT" if (st.get("period") or 0) > 4 else "")
+            elif state == "in":
+                per = st.get("period") or 0
+                detail = ("Half" if "HALFTIME" in typ.get("name", "") else
+                          f"{'OT' if per > 4 else 'Q' + str(per)} {st.get('displayClock', '')}".strip())
+            else:
+                detail = typ.get("shortDetail", "")
+            sit = comp.get("situation") or {}
+            teams = comp.get("competitors") or []
+            if len(teams) != 2:
+                continue
+            for me, opp in ((teams[0], teams[1]), (teams[1], teams[0])):
+                name = (me.get("team") or {}).get("displayName")
+                if not name:
+                    continue
+                by[name] = {"me": int(float(me.get("score") or 0)), "opp": int(float(opp.get("score") or 0)),
+                            "abbr": (me.get("team") or {}).get("abbreviation", ""),
+                            "opp_abbr": (opp.get("team") or {}).get("abbreviation", ""),
+                            "opp_name": (opp.get("team") or {}).get("displayName", ""),
+                            "state": state, "detail": detail,
+                            "ball": str(sit.get("possession", "")) == str(me.get("id") or (me.get("team") or {}).get("id")),
+                            "redzone": bool(sit.get("isRedZone"))}
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return SCORES["by_team"]
+    SCORES.update(at=time.time(), by_team=by)
+    return by
+
+
+def leg_score(l):
+    """Score from the point of view of the team this pick needs to win, or None."""
+    abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
+    sc = SCORES["by_team"].get(TEAMS.get(abbr, ""))
+    if not sc:
+        return None
+    if l.get("side", "yes") == "no":           # betting against this team
+        sc = SCORES["by_team"].get(sc["opp_name"]) or sc
+    return sc
+
+
+def score_line(sc):
+    if not sc or sc["state"] == "pre":
+        return ""
+    lead = sc["me"] - sc["opp"]
+    cls = "pos" if lead > 0 else "neg" if lead < 0 else "muted"
+    ball = " 🏈" if sc["ball"] and sc["state"] == "in" else ""
+    return (f"<span class='{cls}'>{sc['abbr']} {sc['me']}–{sc['opp']} {sc['opp_abbr']}</span>"
+            f" <span class='muted'>{html.escape(sc['detail'])}{ball}</span>")
+
+
+def right_now_html(mine, infos, snap, plan):
+    """Top of My combos, kept short: the games that matter, the money, and what to do."""
+    e = html.escape
+    live = MINE["hold"]
+    out = ["<div class='batch now'><b>Right now</b>"]
+    seen, rows = set(), []
+    for a, inf in zip(mine, infos):
+        if a["ticker"] not in live:
+            continue
+        for l, (nm, _, _, r) in zip(a["legs"], inf):
+            sc = leg_score(l)
+            if r or not sc or (sc["abbr"], sc["opp_abbr"]) in seen:
+                continue
+            seen.add((sc["abbr"], sc["opp_abbr"]))
+            n = sum(1 for x in live.values() if any(nm2 == nm for _, nm2 in x["need"]))
+            line = score_line(sc) or f"<span class='muted'>{e(sc['detail'])}</span>"
+            rows.append((sc["state"] != "in", f"<div class='row' style='font-size:14px'><span>Need <b>{e(nm)}</b>"
+                         f" <span class='muted'>· {n} combo{'s' if n != 1 else ''}</span></span><span>{line}</span></div>"))
+    rows.sort(key=lambda x: x[0])                     # games being played first
+    out += [r for _, r in rows[:6]]
+    locked = MINE.get("locked", 0)
+    worth = sum(h["hold"] for h in live.values())
+    out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>Locked in {money(locked)} · "
+               f"{len(live)} live combo{'s' if len(live) != 1 else ''} worth about {money(worth)}</div>")
+    if live and plan:
+        todo = sorted(((t, f) for t, f in plan["acts"].items() if f), key=lambda x: -live[x[0]]["hold"])
+        if todo:
+            out += [f"<div class='quote'>{action_button(t, f, live[t])}</div>" for t, f in todo[:3]]
+            ho = plan["hold"]
+            out.append(f"<div class='muted' style='font-size:13px;margin-top:4px'>Locks in "
+                       f"{money(plan['plan']['sure'])}. Holding everything instead: {ho['nothing']:.0%} chance "
+                       f"of nothing more.</div>")
+        else:
+            out.append("<div style='margin-top:8px'><span class='verdict no'>Hold everything</span> "
+                       "<span class='muted' style='font-size:13px'>Today's offers are worth less to you than holding.</span></div>")
+    missing = [t for t in live if not fresh_offer(t)]
+    if missing and can_trade():
+        out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('askall','all')\">"
+                   f"Get cash-out offers{' for the rest' if len(missing) < len(live) else ''}</button></div>")
     out.append("</div>")
     return "".join(out)
 
@@ -1842,13 +2030,13 @@ def expire_offers():
             o["rfq"] = None
 
 
-def get_cash_offer(ticker):
-    """Ask Kalshi what it will pay for the contracts you hold. Nothing is sold here."""
+def get_cash_offer(ticker, frac=1.0):
+    """Ask Kalshi what it will pay for the contracts you hold (or half). Nothing is sold here."""
     import time
     h = MINE["hold"].get(ticker)
     if not h:
         return {"error": "That combo isn't live any more.", "at": time.time()}
-    n = math.floor(h["pays"] * 100 + 1e-6) / 100          # never offer more than you hold
+    n = math.floor(h["pays"] * frac * 100 + 1e-6) / 100   # never offer more than you hold
     if n < 0.01:
         return {"error": "Nothing left to cash out on this combo.", "at": time.time()}
     drop_cash(ticker)
@@ -1883,7 +2071,7 @@ def get_cash_offer(ticker):
                 "at": time.time()}
     price, q = best
     return {"rfq": rfq, "quote": q["id"], "price": price, "contracts": n, "offer": round(n * price, 2),
-            "at": time.time()}
+            "frac": frac, "at": time.time()}
 
 
 def accept_cash(ticker):
@@ -1891,6 +2079,8 @@ def accept_cash(ticker):
     import time
     o = MINE["cash"].pop(ticker, None)
     label = (MINE["hold"].get(ticker) or {}).get("label", "That combo")
+    if o and o.get("frac", 1.0) < 1:
+        label = "Half of " + label
     if not o or not o.get("rfq") or time.time() - o["at"] > OFFER_LIFE:
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
     try:
@@ -1923,9 +2113,16 @@ def cash_action(action, ticker):
     """Buttons on a combo card: ask for an offer, cash out, or keep it."""
     MINE["busy"] = True                     # the 2-minute refresh waits until this is done
     try:
-        if action == "ask":
+        if action in ("ask", "askhalf"):
             loading("Asking Kalshi for a cash-out offer…")
-            MINE["cash"][ticker] = get_cash_offer(ticker)
+            MINE["cash"][ticker] = get_cash_offer(ticker, 0.5 if action == "askhalf" else 1.0)
+        elif action == "askall":
+            from concurrent.futures import ThreadPoolExecutor
+            want = [t for t in MINE["hold"] if not fresh_offer(t)]
+            loading(f"Asking Kalshi for offers on {len(want)} combo{'s' if len(want) != 1 else ''}…")
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                for t, o in zip(want, pool.map(get_cash_offer, want)):
+                    MINE["cash"][t] = o
         elif action == "go":
             loading("Cashing out…")
             MINE["flash"] = accept_cash(ticker)
@@ -1946,25 +2143,29 @@ def redraw_mine():
 
 
 def auto_cash_checks():
-    """During game-day alerts: get offers for combos worth checking (as often as your
-    setting allows) and say so when one is worth taking. Never sells on its own."""
+    """During game-day alerts: refresh offers on combos worth checking, then alert when the
+    plan says to cash something out. Never sells on its own."""
     import time
     if not CFG["auto_cash"] or not can_trade():
         return []
-    alerts = []
     picks = sorted((t for t, h in MINE["hold"].items() if h["worth"]),
                    key=lambda t: -MINE["hold"][t]["hold"])[:3]
+    fresh = []
     for t in picks:
-        h, old = MINE["hold"][t], MINE["cash"].get(t)
+        old = MINE["cash"].get(t)
         if old and time.time() - old["at"] < CFG["cash_every"] * 60 - 15:
             continue
-        o = get_cash_offer(t)
-        MINE["cash"][t] = o
-        if o.get("offer") and h["hold"] > 0 and o["offer"] / h["hold"] >= CFG["cash_pct"] / 100:
-            alerts.append(f"💰 {h['label']}: Kalshi offers {money(o['offer'])} to cash out "
-                          f"({o['offer'] / h['hold']:.0%} of what holding is worth). Open the planner to cash out.")
+        MINE["cash"][t] = get_cash_offer(t)
+        fresh.append(t)
+    plan = plan_cashout() if fresh else None
+    alerts = []
+    for t in fresh:
+        f = (plan or {}).get("acts", {}).get(t, 0)
+        o, h = fresh_offer(t), MINE["hold"][t]
+        if f and o:
+            alerts.append(f"💰 Cash out {'half of ' if f < 1 else ''}{h['label']}: Kalshi offers "
+                          f"{money(o['offer'] * f)} now. Open the planner to do it.")
     return alerts
-
 
 def mine_page(live=False):
     """Build the My Kalshi combos page. Returns (page, snapshot for alerts)."""
@@ -2018,9 +2219,12 @@ def mine_page(live=False):
     infos = [[leg_info(l) for l in a["legs"]] for a in mine]
     for a in mine:
         a["_hits"] = 0                          # the account list is cached, so start fresh each time
+    from collections import Counter
+    patterns = Counter()
     for _ in range(20000):                      # play the rest of the weekend out
         won = {ev: (s[0] if rng.random() < s[0]["fair"] else s[1])["ticker"] for ev, s in all_games.items()}
         hit = False
+        hit_now = []
         for a, inf in zip(mine, infos):
             if a["status"] == "cashed":
                 continue
@@ -2041,7 +2245,11 @@ def mine_page(live=False):
                 hit = True
                 a.setdefault("_hits", 0)
                 a["_hits"] += 1
+                hit_now.append(a["ticker"])
+        patterns[frozenset(hit_now)] += 1
         hits_any += hit
+    MINE["patterns"] = patterns
+    fetch_scores()
 
     order = {ev: i for i, ev in enumerate(all_games)}
     snap = {}
@@ -2071,6 +2279,8 @@ def mine_page(live=False):
         if st == "pending":
             MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left,
+                                         "need": [((l.get("side", "yes"), l["ticker"]), nm)
+                                                  for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
                                          "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"]}
         if st == "cashed":
             gain = a["back"] - a["cost"]
@@ -2113,11 +2323,14 @@ def mine_page(live=False):
                         lp = 1 - lp
                     tag = "<span class='tag bad'>In progress</span>"
                     pct = f"<span style='font-size:12px;font-weight:500' class='muted'>live</span> {lp:.0%}" if lp else ""
+            sline = score_line(leg_score(l)) if not res else ""
+            if sline:
+                sub = sline
             rows.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
         group = snap.get(a["ticker"], {}).get("status", "pending")
         if group == "pending":
-            value += cash_block(a["ticker"])
+            value = f"@@CASH:{a['ticker']}@@"
         pay_line = (f"<div class='pay'>{money(a['back'])}</div><div class='meta'>cashed out · cost {money(a['cost'])}</div>"
                     if group == "cashed" else
                     f"<div class='pay'>{money(a['pays'])}</div><div class='meta'>pays if it hits · cost {money(a['cost'])}</div>")
@@ -2131,34 +2344,43 @@ def mine_page(live=False):
             continue
         live_picks.append([(l["ticker"] if l.get("side", "yes") == "yes" else "NO:" + (l["ticker"] or ""), nm)
                            for l, (nm, _, _, r) in zip(a["legs"], inf) if not r])
-    exposure = risk_html(mine, infos, snap) + exposure_html(live_picks, "Still riding on one result")
-    if MINE.get("flash"):
-        notes.insert(0, MINE.pop("flash"))
+    exposure = exposure_html(live_picks, "Still riding on one result")
+    flash = MINE.pop("flash", None)
     staked = sum(a["cost"] for a in mine)
+    MINE["locked"] = round(sum(a["back"] for a in mine if a["status"] in ("cashed", "won"))
+                           + sum(a["pays"] for a in mine if a["status"] == "pending"
+                                 and snap.get(a["ticker"], {}).get("status") == "won"), 2)
+    plan = plan_cashout()
+    MINE["plan"] = plan
+    cards = [(g, re.sub(r"@@CASH:([^@]+)@@", lambda m: cash_block(m.group(1), plan), c)) for g, c in cards]
+    now_box = right_now_html(mine, infos, snap, plan)
     alive = [a for a in mine if snap.get(a["ticker"], {}).get("status") in ("pending", "won")]
     best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
     n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
     n_cashed = sum(1 for a in mine if a["status"] == "cashed")
-    body = [head, f"<header><h1>My Kalshi combos for {sunday:%b %-d}</h1>"
-                  f"<div class='sub'>{len(mine)} combos placed · {n_alive} still alive" + (f" · {n_cashed} cashed out" if n_cashed else "") + "</div>" + "<div class='quote' style='margin-top:10px'><button class='btn' onclick=\"location.href='combo://settings'\">"
-           "⚙︎ Settings & build more</button></div>" + "</header>",
-            "<div class='stats'>"
-            f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
-            f"<div class='stat'><b>{hits_any / 20000:.0%}</b><span class='lbl'>chance one hits</span></div>"
-            + (f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout still possible</span></div></div>"
-               if alive else "<div class='stat'><b>—</b><span class='lbl'>no combos still alive</span></div></div>"),
-            "<div class='top-notes'>" + "".join(f"<div class='note'>{e(n)}</div>" for n in notes if n) + "</div>",
-            "<div class='batch'><div class='row'><span><b>Game-day alerts</b><br><span class='muted' id='livemsg'>"
-            + (f"On · checked {MINE['last']} · next check in 2 min" if live and MINE.get("last") else
-               "Off. Turn on to get a notification when a pick wins or loses.") +
-            "</span></span><button class='btn go' id='livebtn' onclick='toggleLive()'>"
-            + ("Turn off" if live else "Turn on") + "</button></div>"
-            "<div class='muted' style='font-size:12px'>Works while this page is open. Keep Pythonista "
-            "open (the screen stays awake while alerts are on).</div></div>"
-            f"<div style='padding:8px 16px 0'>{exposure}</div>"
-            "<div class='note' style='padding:0 16px'><span class='tag bad'>In progress</span> shows Kalshi's live "
-            "chance for that pick. <span class='tag bad'>Game over · settling</span> means it's finished but "
-            "Kalshi hasn't paid out yet.</div>",
+    alerts_row = ("<div class='batch' style='padding:8px 12px'><div class='row'><span class='muted' id='livemsg' "
+                  "style='font-size:13px'>"
+                  + (f"Alerts on · checked {MINE['last']}" if live and MINE.get("last") else
+                     "Alerts off. Turn on for game-day notifications.") +
+                  "</span><button class='btn go' id='livebtn' onclick='toggleLive()'>"
+                  + ("Turn off" if live else "Turn on") + "</button></div></div>")
+    details = ("<details class='lostbox'><summary>More details<span class='muted'> · tap to show</span></summary>"
+               "<div class='stats'>"
+               f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
+               f"<div class='stat'><b>{hits_any / 20000:.0%}</b><span class='lbl'>chance one hits</span></div>"
+               + (f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout still possible</span></div></div>"
+                  if alive else "<div class='stat'><b>—</b><span class='lbl'>no combos still alive</span></div></div>")
+               + "".join(f"<div class='note'>{e(n)}</div>" for n in notes if n)
+               + f"<div style='padding-top:8px'>{exposure}</div>"
+               "<div class='note'>Alerts work while this page is open and keep the screen awake. "
+               "\"Worth a sure $X to you\" weighs a chance at a big payout against your betting bankroll "
+               "(Settings → Cash out): the bigger the amount next to your bankroll, the more a sure thing is worth.</div>"
+               "</details>")
+    body = [head, f"<header><h1>My combos · {sunday:%b %-d}</h1>"
+                  f"<div class='sub'>{len(mine)} placed · {n_alive} still alive"
+                  + (f" · {n_cashed} cashed out" if n_cashed else "") + "</div></header>",
+            (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
+            f"<div style='padding:0 16px'>{now_box}{alerts_row}</div>",
             "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">My combos</button>"
             "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
             "<section id='combos'>"]
@@ -2177,6 +2399,7 @@ def mine_page(live=False):
     if lost_cards:
         body.append(f"<details class='lostbox'><summary>Lost combos ({len(lost_cards)})"
                     f"<span class='muted'> · tap to show</span></summary>{''.join(lost_cards)}</details>")
+    body.append(details)
     history = load_json(HISTORY, {"builds": []})
     body.append(f"</section><section id='record' class='hidden'>"
                 f"{render_record(bets_from_account(acct, history))}</section>")
@@ -2787,11 +3010,11 @@ def settings_page(all_games, days, counts):
                 "Building on a Sunday afternoon uses only games still to play. With this on, games "
                 "under way are included at Kalshi's live price, except ones that are nearly decided, "
                 "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
-        section("Cash out", slider("cash_pct", "Suggest cashing out at", 60, 110, 5, "% of hold value")
+        section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
                 + switch("auto_cash", "Check cash-out offers during game-day alerts")
                 + slider("cash_every", "Check offers every", 2, 10, 2, " min"),
-                "On My combos, each live combo shows what holding it is worth on average and can ask "
-                "Kalshi for a cash-out offer. Nothing is sold until you tap Cash out."),
+                "Money you keep for betting. The bigger a cash-out offer is next to this, the more the planner "
+                "favours taking the sure money. Nothing is sold until you tap Cash out."),
         section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
                                 for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
                 "Sunday is always in."),
