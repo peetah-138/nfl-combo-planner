@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.22"
+VERSION = "2026.11.16.23"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -498,14 +498,16 @@ def fetch_book_odds(key):
     if not r.ok:
         return {}, f"Sportsbook service error ({r.status_code}). Using Kalshi's prices."
     fair = {}
-    for ev in r.json():
-        if ev.get("home_team") and ev.get("away_team"):
-            BOOK_OPP[ev["home_team"]] = ev["away_team"]
-            BOOK_OPP[ev["away_team"]] = ev["home_team"]
+    BOOK_GAMES.clear()
+    for ev in sorted(r.json(), key=lambda ev: ev.get("commence_time") or "~"):
+        home, away = ev.get("home_team"), ev.get("away_team")
+        if home and away:
+            BOOK_OPP.setdefault(home, away)       # a team's soonest game
+            BOOK_OPP.setdefault(away, home)
         if ev.get("commence_time"):
-            for team in (ev.get("home_team"), ev.get("away_team")):
+            for team in (home, away):
                 if team:
-                    TEAM_KICKOFF[team] = ev["commence_time"]
+                    TEAM_KICKOFF.setdefault(team, ev["commence_time"])
         books, pinnacle = defaultdict(list), {}
         for b in ev.get("bookmakers", []):
             for mk in b.get("markets", []):
@@ -519,8 +521,11 @@ def fetch_book_odds(key):
                     if b.get("key") == "pinnacle":
                         pinnacle[o["name"]] = p
         for team, ps in books.items():
-            fair[team] = (pinnacle[team], "Pinnacle") if team in pinnacle \
-                else (statistics.median(ps), f"{len(ps)} books")
+            f = (pinnacle[team], "Pinnacle") if team in pinnacle else (statistics.median(ps), f"{len(ps)} books")
+            fair.setdefault(team, f)              # the soonest game, for anything that only knows the team
+            BOOK_GAMES.setdefault(team, []).append({   # every game, so a pick can be matched by date
+                "fair": f, "start": ev.get("commence_time") or "",
+                "day": espn_day(ev.get("commence_time")), "opp": away if team == home else home})
     left = r.headers.get("x-requests-remaining")
     note = "Chances and fair payouts use sportsbook lines (Pinnacle when available)."
     if left:
@@ -528,7 +533,17 @@ def fetch_book_odds(key):
     return fair, note
 
 
-BOOK_OPP = {}   # sportsbook team name -> its opponent
+BOOK_OPP = {}   # sportsbook team name -> its opponent (soonest game)
+BOOK_GAMES = {}  # sportsbook team name -> [{fair, start, day, opp}, ...] every game in the feed
+
+
+def book_game(name, day, opp=None):
+    """The sportsbook's game for this team on this date (a team can have tonight's game and
+    Sunday's in the feed at once), or None."""
+    for g in BOOK_GAMES.get(name) or []:
+        if g["day"] == day and (opp is None or g["opp"] == opp):
+            return g
+    return None
 
 
 def norm_team(x):
@@ -564,14 +579,21 @@ def attach_fair(games, book):
             if full not in book:
                 full = match_book(full or s["pick"], book) or match_book(s["pick"], book)
             names.append(full if full in book else None)
-        if not TEAMS and all(names) and BOOK_OPP.get(names[0]) != names[1]:
+        day = game_date({"event_ticker": e})
+        bg = [book_game(n, day, names[1 - i]) if n else None for i, n in enumerate(names)] if all(names) else [None, None]
+        if BOOK_GAMES and not all(bg):
+            bg = [book_game(n, day) if n else None for n in names]
+        if BOOK_GAMES and not all(bg):
+            names = [None, None]                  # the books don't list this date's game: Kalshi's prices
+        elif not BOOK_GAMES and not TEAMS and all(names) and BOOK_OPP.get(names[0]) != names[1]:
             names = [None, None]                  # not the same game: use Kalshi's prices
-        kick = next((TEAM_KICKOFF[n] for n in names if n in TEAM_KICKOFF), None)
+        kick = next((g["start"] for g in bg if g and g.get("start")), None) if BOOK_GAMES else \
+            next((TEAM_KICKOFF[n] for n in names if n in TEAM_KICKOFF), None)
         if kick:
             KICKOFF[e] = kick
         if all(names):
-            raw = [book[n][0] for n in names]
-            src = book[names[0]][1]
+            raw = [g["fair"][0] for g in bg] if BOOK_GAMES and all(bg) else [book[n][0] for n in names]
+            src = (bg[0]["fair"][1] if BOOK_GAMES and all(bg) else book[names[0]][1])
             matched += 1
         else:
             raw, src = kal, None
