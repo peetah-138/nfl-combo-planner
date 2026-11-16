@@ -9,11 +9,11 @@ Everything is remembered. No need to edit anything in this file.
 """
 import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys
 from collections import defaultdict
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.23"
+VERSION = "2026.11.15.24"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -306,7 +306,15 @@ def start_dt(event):
 
 def start_label(event):
     t = start_dt(event)
-    return t.astimezone().strftime("%-I:%M %p") if t else ""
+    if not t:
+        return ""
+    t = t.astimezone()
+    today = dt.datetime.now().astimezone().date()
+    if t.date() == today:
+        return t.strftime("%-I:%M %p")
+    if 0 < (t.date() - today).days < 7:
+        return t.strftime("%a %-I:%M %p")
+    return t.strftime("%b %-d %-I:%M %p")
 
 
 def start_key(event):
@@ -1399,6 +1407,7 @@ background:var(--card);color:var(--ink)}.btn.go{background:var(--accent);color:#
 .trade{margin-top:8px;font-size:14px}.trade:empty{display:none}
 .flip{margin-left:8px;font:600 12px -apple-system,sans-serif;padding:5px 8px;border-radius:8px;
 border:1px solid var(--line);background:var(--bg);color:var(--accent)}
+.klink{font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap}
 .now{border:2px solid var(--accent)}.now .quote .btn{width:100%}
 .lostbox{margin:4px 0 16px}.lostbox summary{background:var(--card);border:1px solid var(--line);border-radius:12px;
 padding:12px 14px;font-weight:700;list-style:none;cursor:pointer}.lostbox summary::-webkit-details-marker{display:none}
@@ -2056,12 +2065,48 @@ def nav_bar():
             f"<nav class='nav'>{links}</nav>")
 
 
+KALSHI_WEB = "https://kalshi.com"
+GAME_SLUG = {"KXNFLGAME": "nfl-game", "KXNBAGAME": "nba-game"}
+
+
+def game_url(leg_ticker):
+    """Kalshi's web page for a pick's game (opens the Kalshi app if it's installed)."""
+    parts = (leg_ticker or "").split("-")
+    if len(parts) < 2:
+        return f"{KALSHI_WEB}/portfolio"
+    series, event = parts[0], "-".join(parts[:2])
+    slug = GAME_SLUG.get(series)
+    if slug:
+        return f"{KALSHI_WEB}/markets/{series.lower()}/{slug}/{event.lower()}"
+    return f"{KALSHI_WEB}/markets/{series.lower()}"
+
+
+def open_outside(url):
+    """Open a link in the Kalshi app (or Safari), never inside the planner's window."""
+    try:
+        from objc_util import UIApplication, nsurl
+        UIApplication.sharedApplication().openURL_(nsurl(url))
+        return
+    except Exception:
+        pass
+    try:
+        import webbrowser
+        webbrowser.open("safari-" + url if in_pythonista() else url)
+    except Exception:
+        pass
+
+
 class NavKeeper:
     """Handles the nav bar on any page, then hands everything else to the page's own handler."""
     def __init__(self, inner=None):
         self.inner = inner
 
     def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://open/"):
+            target = unquote(url[len("combo://open/"):])
+            if target.startswith(KALSHI_WEB):
+                open_outside(target)
+            return False
         if url.startswith("combo://nav/"):
             try:
                 go_to(url[len("combo://nav/"):].strip("/"))
@@ -2340,8 +2385,8 @@ def cash_block(ticker, plan):
     t = html.escape(ticker)
     W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
     p, pays = h["p"], h["pays"]
-    out = [f"<div class='min cashbox'>If you hold: <b>{p:.0%}</b> chance of <b>{money(pays)}</b>"
-           if p >= 0.01 or p == 0 else f"<div class='min cashbox'>If you hold: <b>{p:.1%}</b> chance of <b>{money(pays)}</b>"
+    pct = f"{p:.0%}" if p >= 0.01 or p == 0 else f"{p:.1%}"
+    out = [f"<div class='min cashbox'>If you hold: <b>{pct}</b> chance of <b>{money(pays)}</b>"
            f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"
            + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
@@ -2354,8 +2399,10 @@ def cash_block(ticker, plan):
                    f"<b>{money(price * left)}</b> <button class='btn cashb' style='padding:3px 8px' "
                    f"onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
     elif can_trade():
-        out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
-                   f"Set auto-sell at {CFG['tp_mult']}× ({money(h['cost'] * CFG['tp_mult'])})</button></div>")
+        target, why = tp_target(h["cost"], pays, worth_now(ticker))
+        if target:
+            out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
+                       f"Set auto-sell at {money(target)} {why}</button></div>")
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
     if raw and raw.get("error"):
@@ -2543,16 +2590,38 @@ def resting_sells():
     return dict(out)
 
 
+def tp_target(cost, pays, worth_now=0.0):
+    """The auto-sell amount: your multiple of what you paid, but never near or above what the
+    combo pays (it can't sell for more than that), and always well above what it's worth right
+    now (a lower standing order could sell it cheap). Returns (amount, label) or (None, '')."""
+    floor = max(1.3 * cost, 1.25 * worth_now)
+    want = cost * CFG["tp_mult"]
+    if floor <= want <= 0.9 * pays:
+        return want, f"({CFG['tp_mult']}×)"
+    cap = 0.9 * pays                              # 90% of the payout: most of the win, without waiting
+    if cap >= floor:
+        return cap, "(90% of the payout)"
+    return None, ""
+
+
+def worth_now(ticker):
+    """What a live combo is worth right now: the better of its average value and a fresh offer."""
+    h = MINE["hold"].get(ticker) or {}
+    o = fresh_offer(ticker) if ticker in MINE["hold"] else None
+    return max(h.get("hold", 0.0), (o or {}).get("offer", 0.0) / max((o or {}).get("frac", 1.0), 0.01))
+
+
 def place_take_profit(ticker, contracts, cost):
     """Put a standing sell order on Kalshi at tp_mult x what you paid. Kalshi keeps it
     working with your phone closed; it only fills if a buyer pays that much."""
     n = math.floor(contracts * 100 + 1e-6) / 100
     if n < 1:
         return "Auto-sell needs at least 1 contract."
-    target = cost * CFG["tp_mult"] / n                    # per contract
-    if target >= 0.99:
-        return (f"{CFG['tp_mult']}× what you paid is more than this combo can be worth before it settles, "
-                "so there's no point in an auto-sell order. Lower the multiple in Settings → Cash out.")
+    total, why = tp_target(cost, n, worth_now(ticker))
+    if not total:
+        return ("No auto-sell for this one: it's already worth close to what it pays, or it doesn't pay "
+                "enough above what you paid. Hold it, or cash out when you like the offer.")
+    target = total / n                                    # per contract
     import uuid
     tries = [{"count_fp": f"{n:.2f}", "yes_price_dollars": f"{max(target, 0.0001):.4f}"},
              {"count": int(n), "yes_price_dollars": f"{max(math.ceil(target * 100) / 100, 0.01):.2f}"}]
@@ -2566,7 +2635,7 @@ def place_take_profit(ticker, contracts, cost):
             price = float(extra["yes_price_dollars"])
             cnt = float(extra.get("count_fp") or extra.get("count"))
             return (f"🎯 Auto-sell order placed: Kalshi will sell if a buyer pays {money(price * cnt)} "
-                    f"({CFG['tp_mult']}× what you paid). It stays on Kalshi with your phone closed.")
+                    f"{why}. It stays on Kalshi with your phone closed.")
         except PermissionError:
             return "Kalshi refused. Your API key needs write (trading) access for auto-sell orders."
         except (RuntimeError, requests.RequestException) as err:
@@ -2970,6 +3039,9 @@ def mine_page(live=False):
                 sub = sline
             elif not res and start_label(l.get("event") or "") and pick_state(l, side_of) not in ("live", "over"):
                 sub = (sub + " · " if sub else "") + "starts " + start_label(l["event"])
+            if (l["ticker"] or "").startswith(tuple(GAME_SLUG)):
+                tag += (f" <a class='klink' href='combo://open/{quote(game_url(l['ticker']), safe='')}'>"
+                        f"game ↗</a>")
             rows.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
         group = snap.get(a["ticker"], {}).get("status", "pending")
@@ -2980,7 +3052,9 @@ def mine_page(live=False):
                     f"<div class='pay'>{money(a['pays'])}</div><div class='meta'>pays if it hits · cost {money(a['cost'])}</div>")
         cards.append((group, f"<div class='card' id='c-{e(a['ticker'])}'><div class='top'><div>"
                      f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}</div>"
-                     f"<div>{status}</div></div>{value}<ol>{''.join(rows)}</ol></div>"))
+                     f"<div style='text-align:right'>{status}<br><a class='klink' href='combo://open/"
+                     f"{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a></div></div>"
+                     f"{value}<ol>{''.join(rows)}</ol></div>"))
 
     live_picks = []
     for a, inf in zip(mine, infos):
