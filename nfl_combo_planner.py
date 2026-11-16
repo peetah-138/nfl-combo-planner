@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.18"
+VERSION = "2026.11.15.19"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -42,6 +42,9 @@ NEWS_GAP = 0.06   # Kalshi vs sportsbooks this far apart = probably breaking new
 
 SCRIPT_PATH = os.path.abspath(__file__)   # recorded now: Pythonista clears __file__ once the script's main part ends
 HERE = os.path.dirname(SCRIPT_PATH)
+# Updates are saved here, never over the file you tap (Pythonista can crash on start if the
+# file it has open was replaced). The file you tap runs this one whenever it's newer.
+ENGINE = os.path.join(HERE, "combo_planner_engine.py")
 SAVED = os.path.join(HERE, "combo_settings.json")
 LATEST = os.path.join(HERE, "combos_latest.html")
 HISTORY = os.path.join(HERE, "combo_history.json")
@@ -1910,7 +1913,7 @@ def relaunch():
         return False
     try:
         name = "nfl_combo_planner_%d" % time.time_ns()
-        spec = importlib.util.spec_from_file_location(name, SCRIPT_PATH)
+        spec = importlib.util.spec_from_file_location(name, ENGINE)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         if not hasattr(mod, "adopt_window"):
@@ -3803,9 +3806,9 @@ def install_update():
         return False, f"The new version has a problem (line {err.lineno}), so nothing was changed."
     if version_tuple(found.group(1)) <= version_tuple(VERSION):
         return False, f"You already have the latest version ({VERSION})."
-    me = SCRIPT_PATH
+    me = ENGINE                                   # never the file you tap
     try:
-        with open(me, encoding="utf-8") as fh:
+        with open(SCRIPT_PATH, encoding="utf-8") as fh:
             current = fh.read()
         with open(os.path.join(HERE, "nfl_combo_planner_backup.py"), "w", encoding="utf-8") as fh:
             fh.write(current)
@@ -3870,5 +3873,28 @@ def error_page(msg, title="Hmm.", crash=True):
             "</section></body></html>")
 
 
-if __name__ == "__main__":
+def file_version(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            hit = re.search(r'^VERSION = "([0-9.]+)"', fh.read(4000), re.M)
+        return hit.group(1) if hit else None
+    except OSError:
+        return None
+
+
+def launch():
+    """Run the newest code: the engine file if it's newer than the file you tapped."""
+    if os.path.abspath(SCRIPT_PATH) != os.path.abspath(ENGINE):
+        v = file_version(ENGINE)
+        if v and version_tuple(v) > version_tuple(VERSION):
+            import runpy
+            try:
+                runpy.run_path(ENGINE, run_name="__main__")
+                return
+            except Exception:
+                pass                              # a broken engine: fall back to this version
     run()
+
+
+if __name__ == "__main__":
+    launch()
