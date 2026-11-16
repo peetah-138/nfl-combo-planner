@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.14"
+VERSION = "2026.11.15.15"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -793,7 +793,7 @@ def _fetch_account():
     except (requests.RequestException, OSError):
         return None, None, "Couldn't reach your Kalshi account just now. Showing what's saved."
 
-    held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0})
+    held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0, "bought_n": 0.0})
     for f in fills:
         t = f.get("ticker") or f.get("market_ticker")
         if not is_combo(t):
@@ -809,6 +809,7 @@ def _fetch_account():
         if buying_yes:
             held[t]["cost"] += n * yes_px
             held[t]["contracts"] += n
+            held[t]["bought_n"] += n
         else:
             held[t]["sold"] += n * yes_px
             held[t]["sold_n"] += n
@@ -858,7 +859,8 @@ def _fetch_account():
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
                      "week": max(weeks).isoformat() if weeks else None,
-                     "first_week": min(weeks).isoformat() if weeks else None})
+                     "first_week": min(weeks).isoformat() if weeks else None,
+                     "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2)})
     save_json(LEGS_CACHE, cache)
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
@@ -1052,6 +1054,8 @@ def render_record(bets, note=None):
         for bucket in groups:
             bucket["placed"] += 1
             bucket[bet["status"]] += 1
+            if bet["status"] == "won" or (bet["status"] == "cashed" and bet["back"] > bet["cost"]):
+                bucket["paid"] += 1
             bucket["spent"] += bet["cost"]
             if bet["status"] != "pending":
                 bucket["decided_spent"] += bet["cost"]
@@ -1074,7 +1078,7 @@ def render_record(bets, note=None):
     t = total
     decided = t["placed"] - t["pending"]
     out = [head, "<div class='stats'>",
-           f"<div class='stat'><b>{int(t['won'])}/{int(decided)}</b><span class='lbl'>combos won</span></div>",
+           f"<div class='stat'><b>{int(t['paid'])}/{int(decided)}</b><span class='lbl'>combos paid off</span></div>",
            f"<div class='stat'><b>{money(t['spent'])}</b><span class='lbl'>staked</span></div>",
            f"<div class='stat'><b>{net_cell(t)}</b><span class='lbl'>profit / loss</span></div></div>"]
     if t["pending"]:
@@ -1088,10 +1092,10 @@ def render_record(bets, note=None):
         d = by_type.get(k)
         if d:
             out.append(f"<div class='row'><span><b>{TYPE_NAMES[k]}</b> "
-                       f"<span class='muted'>{int(d['won'])} won of {int(d['placed'])}</span></span>"
+                       f"<span class='muted'>{int(d['paid'])} paid off of {int(d['placed'])}</span></span>"
                        f"<span>{net_cell(d)}</span></div>")
     def table(title, data, order):
-        rows = [f"<div class='row'><span><b>{k}</b> <span class='muted'>{int(data[k]['won'])} won of "
+        rows = [f"<div class='row'><span><b>{k}</b> <span class='muted'>{int(data[k]['paid'])} paid off of "
                 f"{int(data[k]['placed'])}</span></span><span>{net_cell(data[k])}</span></div>"
                 for k in order if k in data]
         return f"</div><h2>{title}</h2><div class='game'>" + "".join(rows) if rows else ""
@@ -1491,17 +1495,26 @@ def results_page(sunday):
     week = sunday.isoformat() if sunday else None
     this = [a for a in acct if in_week(a, week)]
     # games decided but not paid out yet still count as won/lost here
-    pend = [a for a in this if a["status"] == "pending"]
+    pend = [a for a in this if a["status"] in ("pending", "cashed")]
     res = fetch_results({l["ticker"] for a in pend for l in a["legs"] if l["ticker"]}) if pend else {}
+
+    def games_say(a):
+        """'won' / 'lost' if the games have decided this combo, else None."""
+        rs = [res.get(l["ticker"]) if l.get("side", "yes") == "yes" else
+              {"yes": "no", "no": "yes"}.get(res.get(l["ticker"])) for l in a["legs"]]
+        if any(r == "no" for r in rs):
+            return "lost"
+        if rs and all(r == "yes" for r in rs):
+            return "won"
+        return None
 
     def outcome(a):
         if a["status"] != "pending":
             return a["status"], a["back"]
-        rs = [res.get(l["ticker"]) if l.get("side", "yes") == "yes" else
-              {"yes": "no", "no": "yes"}.get(res.get(l["ticker"])) for l in a["legs"]]
-        if any(r == "no" for r in rs):
+        g = games_say(a)
+        if g == "lost":
             return "lost", 0.0
-        if all(r == "yes" for r in rs):
+        if g == "won":
             return "won", a["pays"]
         return "live", 0.0
 
@@ -1519,11 +1532,25 @@ def results_page(sunday):
         tag = {"won": "<span class='tag good'>Won</span>", "cashed": "<span class='tag good'>Cashed out</span>",
                "lost": "<span class='tag red'>Lost</span>", "live": "<span class='tag dog'>Live</span>"}[st]
         net = back - a["cost"]
+        hs = ""
+        if st == "cashed":
+            g = games_say(a)
+            full = a.get("full_pays") or 0
+            if g == "won":
+                tot["hs_won"] += 1
+                tot["hs_pay"] += full
+                hs = f" · would have paid {money(full)}"
+            elif g == "lost":
+                tot["hs_lost"] += 1
+                hs = " · would have lost, good call"
+            else:
+                tot["hs_open"] += 1
+                hs = f" · would pay {money(full)} if it hits" if full else ""
         money_cell = (f"<span class='muted'>{money(a['cost'])} in</span>" if st == "live" else
                       f"<span class='{'pos' if net >= 0 else 'neg'}'>{'+' if net >= 0 else '−'}{money(abs(net))}</span>")
         rows.append(f"<div class='row' style='padding:7px 0;border-top:1px solid var(--line)'>"
                     f"<span>Combo {i} {tag}<br><small class='muted'>{len(a['legs'])} picks · "
-                    f"{money(a['cost'])} → {money(back) if st != 'live' else 'pays ' + money(a['pays'])}</small></span>"
+                    f"{money(a['cost'])} → {money(back) if st != 'live' else 'pays ' + money(a['pays'])}{hs}</small></span>"
                     f"<span>{money_cell}</span></div>")
     net = tot["back"] - tot["decided"]
     body = [head, f"<header><h1>Results</h1><div class='sub'>Week of {sunday:%b %-d}</div></header>"]
@@ -1536,7 +1563,14 @@ def results_page(sunday):
             f"{money(tot['back'])}."
             + (f" Another {money(tot['live_staked'])} is still live." if tot["live"] else "") + "</div>"
             f"<div style='font-size:14px;margin-top:6px'>{int(tot['won'])} won · {int(tot['cashed'])} cashed out · "
-            f"{int(tot['lost'])} lost · {int(tot['live'])} live</div></div></div>"
+            f"{int(tot['lost'])} lost · {int(tot['live'])} live</div>"
+            + (f"<div class='muted' style='font-size:13px;margin-top:4px'>Your cash-outs: "
+               + ", ".join(x for x in [
+                   f"{int(tot['hs_won'])} would have won ({money(tot['hs_pay'])})" if tot["hs_won"] else "",
+                   f"{int(tot['hs_lost'])} would have lost" if tot["hs_lost"] else "",
+                   f"{int(tot['hs_open'])} not decided yet" if tot["hs_open"] else ""] if x) + ".</div>"
+               if tot["cashed"] else "")
+            + "</div></div>"
             f"<section><div class='game'>{''.join(rows)}</div>")
     else:
         body.append("<section><div class='empty'>No combos for this week yet.</div>")
@@ -2505,8 +2539,13 @@ def mine_page(live=False):
             status = f"<span class='tag dog'>{p:.1%} to hit</span>" if p >= 0.001 else "<span class='tag dog'>under 0.1% to hit</span>"
         if st == "cashed":
             gain = a["back"] - a["cost"]
+            full = a.get("full_pays") or 0
+            hs = (f"Would have paid {money(full)} if you'd held." if done else
+                  "Would have lost. Good call." if lost else
+                  f"Would pay {money(full)} if it hits." if full else "")
             value = (f"<div class='min'>Cashed out for <b>{money(a['back'])}</b> · cost {money(a['cost'])} · "
-                     f"<span class='{'pos' if gain >= 0 else 'neg'}'>{'+' if gain >= 0 else '−'}{money(abs(gain))}</span></div>")
+                     f"<span class='{'pos' if gain >= 0 else 'neg'}'>{'+' if gain >= 0 else '−'}{money(abs(gain))}</span>"
+                     + (f"<div class='muted' style='font-size:13px;margin-top:4px'>{hs}</div>" if hs else "") + "</div>")
         elif fair_pay:
             pct = a["pays"] / fair_pay
             cls = "ok" if pct >= CFG["accept_pct"] / 100 else "no"
