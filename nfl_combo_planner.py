@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.16"
+VERSION = "2026.11.15.17"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -329,9 +329,11 @@ def fetch_results(tickers):
         if not m:
             return
         seen.add(m.get("ticker"))
+        sub, title = (m.get("yes_sub_title") or "").strip(), (m.get("title") or "").strip()
         MARKET_INFO[m.get("ticker")] = {"status": (m.get("status") or "").lower(),
                                         "exp": m.get("expected_expiration_time") or "",
-                                        "live": live_price(m)}
+                                        "live": live_price(m),
+                                        "name": sub if len(sub) > 3 and not sub.replace(".", "").isdigit() else (title or sub)}
         if m.get("result") in ("yes", "no"):
             out[m["ticker"]] = m["result"]
 
@@ -864,11 +866,25 @@ def combo_legs(ticker, cache):
     return cache[ticker]
 
 
+def combo_league(legs):
+    """'nfl', 'ncaamb' or 'other' from the picks' market tickers."""
+    ts = [(l["ticker"] or "").upper() for l in legs]
+    if any(t.startswith("KXNCAAMB") for t in ts):
+        return "ncaamb"
+    if any(t.startswith("KXNFL") for t in ts):
+        return "nfl"
+    return "other"
+
+
+def winners_only(legs):
+    return all((l["ticker"] or "").startswith(("KXNFLGAME", "KXNCAAMBGAME")) for l in legs)
+
+
 def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
-    if not (ticker or "").startswith("KXNFLGAME"):
+    if (ticker or "").upper().startswith("KXNCAAMB"):
         return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
@@ -911,7 +927,8 @@ def _fetch_account():
     except (requests.RequestException, OSError):
         return None, None, "Couldn't reach your Kalshi account just now. Showing what's saved."
 
-    held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0, "bought_n": 0.0})
+    held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0,
+                                "bought_n": 0.0, "first": None})
     for f in fills:
         t = f.get("ticker") or f.get("market_ticker")
         if not is_combo(t):
@@ -933,6 +950,9 @@ def _fetch_account():
             held[t]["sold_n"] += n
             held[t]["contracts"] -= n
         held[t]["fees"] += dollars(f, "fee_cost")
+        when = str(f.get("created_time") or "")[:10]
+        if when and (not held[t]["first"] or when < held[t]["first"]):
+            held[t]["first"] = when
     pos_by = {(p.get("ticker") or p.get("market_ticker")): p for p in positions}
     for p in positions:                          # combos the fills list missed
         t = p.get("ticker") or p.get("market_ticker")
@@ -954,8 +974,11 @@ def _fetch_account():
     bets = []
     for t, h in held.items():
         legs = combo_legs(t, cache)
-        if not legs or not any((l["ticker"] or "").startswith(SERIES) for l in legs):
-            continue                             # not this league's combo
+        if not legs:
+            continue
+        lg = combo_league(legs)
+        if lg != LEAGUE["code"] and not (lg == "other" and LEAGUE["code"] == "nfl"):
+            continue                             # another league's combo (shown there)
         s = settled.get(t)
         status, back = "pending", h["sold"]
         pos = pos_by.get(t)
@@ -974,11 +997,17 @@ def _fetch_account():
             back += dollars(s, "revenue")
             status = "won" if dollars(s, "revenue") > 0 else "lost"
         weeks = [w for w in (week_of(l["ticker"] or "") for l in legs) if w]
+        if not weeks and h["first"]:              # no dates in its picks: use when you bought it
+            try:
+                weeks = [week_of("X-" + dt.date.fromisoformat(h["first"]).strftime("%y%b%d").upper())]
+            except ValueError:
+                pass
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
                      "week": max(weeks).isoformat() if weeks else None,
                      "first_week": min(weeks).isoformat() if weeks else None,
-                     "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2)})
+                     "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2),
+                     "winners": winners_only(legs)})
     save_json(LEGS_CACHE, cache)
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
@@ -1919,13 +1948,22 @@ def nav_bar():
     if can_trade() or os.path.exists(LATEST):
         items.append(("results", "Results"))
     items.append(("settings", "⚙︎ Settings"))
+    other = "ncaamb" if LEAGUE["code"] == "nfl" else "nfl"
+    items.append(("league", LEAGUES[other]["icon"]))
+
+    def js(k):                                    # on the Settings page, buttons save settings first
+        if k == "settings":
+            return ""
+        if k == "league":
+            return f"go('lg-{other}');"
+        return "go(" + repr("mine" if k == "mine" else "show") + ");"
     links = "".join(
-        f"<a class='navb' href='combo://nav/{k}' "
-        f"onclick=\"if(window.SL&&window.go){{{'' if k == 'settings' else 'go(' + repr('mine' if k == 'mine' else 'show') + ');'}return false;}}\">{t}</a>"
+        f"<a class='navb{' lg' if k == 'league' else ''}' href='combo://nav/{k}' "
+        f"onclick=\"if(window.SL&&window.go){{{js(k)}return false;}}\">{t}</a>"
         for k, t in items)
     return ("<style>.nav{display:flex;gap:6px;padding:10px 16px 0}.navb{flex:1;text-align:center;padding:9px 4px;"
             "border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--ink);"
-            "font:600 14px -apple-system,sans-serif;text-decoration:none}</style>"
+            "font:600 14px -apple-system,sans-serif;text-decoration:none}.navb.lg{flex:0 0 46px;font-size:18px;padding:6px 0}</style>"
             f"<nav class='nav'>{links}</nav>")
 
 
@@ -1957,6 +1995,10 @@ def go_to(target):
             result["go"] = "mine" if target == "mine" else "show"
             done.set()
         return
+    if target == "league":                        # switch NFL <-> college and stay on the same kind of page
+        other = "ncaamb" if LEAGUE["code"] == "nfl" else "nfl"
+        save_json(LEAGUE_FILE, {"league": other})
+        target = APP.get("where") or ("mine" if can_trade() else "settings")
     RUN_OPTS["goto"] = target
     threading.Thread(target=run, daemon=True).start()
 
@@ -2210,7 +2252,10 @@ def cash_block(ticker, plan):
     W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
     p, pays = h["p"], h["pays"]
     out = [f"<div class='min cashbox'>If you hold: <b>{p:.0%}</b> chance of <b>{money(pays)}</b>"
-           f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"]
+           if p >= 0.01 or p == 0 else f"<div class='min cashbox'>If you hold: <b>{p:.1%}</b> chance of <b>{money(pays)}</b>"
+           f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"
+           + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
+              "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
     if raw and raw.get("error"):
@@ -2316,6 +2361,8 @@ def right_now_html(mine, infos, snap, plan):
     """Top of My combos, kept short: the games that matter, the money, and what to do."""
     e = html.escape
     live = MINE["hold"]
+    if not live and not MINE.get("locked"):
+        return ""
     out = ["<div class='batch now'><b>Right now</b>"]
     seen, rows = set(), []
     for a, inf in zip(mine, infos):
@@ -2565,7 +2612,10 @@ def mine_page(live=False):
         [a for a in acct if a["status"] == "pending"]
     if not live:
         loading("Checking game results…")
-    results = fetch_results({l["ticker"] for a in mine for l in a["legs"] if l["ticker"]})
+    results = fetch_results({l["ticker"] for a in mine for l in a["legs"] if l["ticker"]}
+                            | {a["ticker"] for a in mine if not a.get("winners", True) and a["status"] == "pending"})
+    rough = {a["ticker"]: (MARKET_INFO.get(a["ticker"]) or {}).get("live")
+             for a in mine if not a.get("winners", True)}   # same-game stat combos: Kalshi's price
     if not live:
         loading("Working out your chances…")
 
@@ -2583,7 +2633,14 @@ def mine_page(live=False):
         if s:
             other = next(x for x in all_games[s["event"]] if x is not s)
             return s["pick"], other["pick"], s["fair"], res
-        lp = (MARKET_INFO.get(l["ticker"]) or {}).get("live")
+        info = MARKET_INFO.get(l["ticker"]) or {}
+        lp = info.get("live")
+        if not (l["ticker"] or "").startswith(("KXNFLGAME", "KXNCAAMBGAME")):
+            nm = info.get("name") or l["ticker"]
+            if l.get("side", "yes") == "no":
+                nm = "Not: " + nm
+                lp = 1 - lp if lp is not None else None
+            return nm, "", lp, res
         return TEAMS.get(abbr, abbr), "", lp, res
 
     rng = random.Random(1)
@@ -2601,6 +2658,17 @@ def mine_page(live=False):
             if a["status"] == "cashed":
                 continue
             ok = True
+            if a["ticker"] in rough and not any(r == "no" for *_, r in inf):
+                if all(r == "yes" for *_, r in inf):
+                    ok = True
+                else:                             # picks move together: use the combo's own price
+                    ok = rng.random() < (rough[a["ticker"]] or 0.0)
+                if ok:
+                    hit = True
+                    a.setdefault("_hits", 0)
+                    a["_hits"] += 1
+                    hit_now.append(a["ticker"])
+                continue
             for l, (_, _, ch, res) in zip(a["legs"], inf):
                 if res:
                     ok = res == "yes"
@@ -2650,7 +2718,7 @@ def mine_page(live=False):
         left = sum(1 for *_, r in inf if not r)
         if st == "pending":
             MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
-                                         "hold": p * a["pays"], "left": left,
+                                         "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
                                          "need": [((l.get("side", "yes"), l["ticker"]), nm)
                                                   for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
                                          "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"]}
@@ -3535,6 +3603,7 @@ def main():
         counts["Thursday" if d == "Friday" else d] += 1
 
     goto = RUN_OPTS.pop("goto", None)
+    APP["where"] = goto if goto in ("mine", "results", "settings") else APP.get("where")
     if goto == "mine":
         return show_mine(all_games, days, sunday)
     if goto == "results":
@@ -3560,6 +3629,10 @@ def main():
         set_league(choice[3:])
         RUN_OPTS["goto"] = "settings"
         return main()
+    if choice == "mine":
+        APP["where"] = "mine"
+    if choice == "show":
+        APP["where"] = "results"
     if choice == "check":
         return diagnose()
     if choice == "update":
