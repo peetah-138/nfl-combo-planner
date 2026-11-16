@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.12"
+VERSION = "2026.11.16.13"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -90,6 +90,21 @@ NBA_TEAMS = {
     "UTA": "Utah Jazz", "UTAH": "Utah Jazz", "WAS": "Washington Wizards", "WSH": "Washington Wizards",
 }
 
+NHL_TEAMS = {
+    "ANA": "Anaheim Ducks", "BOS": "Boston Bruins", "BUF": "Buffalo Sabres", "CGY": "Calgary Flames",
+    "CAR": "Carolina Hurricanes", "CHI": "Chicago Blackhawks", "COL": "Colorado Avalanche",
+    "CBJ": "Columbus Blue Jackets", "CLB": "Columbus Blue Jackets", "DAL": "Dallas Stars",
+    "DET": "Detroit Red Wings", "EDM": "Edmonton Oilers", "FLA": "Florida Panthers", "LA": "Los Angeles Kings",
+    "LAK": "Los Angeles Kings", "MIN": "Minnesota Wild", "MTL": "Montreal Canadiens", "MON": "Montreal Canadiens",
+    "NSH": "Nashville Predators", "NJ": "New Jersey Devils", "NJD": "New Jersey Devils",
+    "NYI": "New York Islanders", "NYR": "New York Rangers", "OTT": "Ottawa Senators",
+    "PHI": "Philadelphia Flyers", "PIT": "Pittsburgh Penguins", "SJ": "San Jose Sharks", "SJS": "San Jose Sharks",
+    "SEA": "Seattle Kraken", "STL": "St Louis Blues", "TB": "Tampa Bay Lightning", "TBL": "Tampa Bay Lightning",
+    "TOR": "Toronto Maple Leafs", "UTA": "Utah Mammoth", "VAN": "Vancouver Canucks",
+    "VGK": "Vegas Golden Knights", "WSH": "Washington Capitals", "WAS": "Washington Capitals",
+    "WPG": "Winnipeg Jets",
+}
+
 LEAGUES = {
     "nfl": {"name": "NFL", "short": "NFL", "icon": "🏈", "series": "KXNFLGAME", "odds": "americanfootball_nfl", "full": True, "teams": "nfl",
             "espn": "football/nfl", "espn_q": {}, "slate": "week", "game_hours": 3.5, "periods": 4,
@@ -102,13 +117,22 @@ LEAGUES = {
                          "safer_count": 3, "safer_min": 2, "safer_max": 3,
                          "middle_count": 3, "middle_min": 3, "middle_max": 5,
                          "moonshot_count": 2, "moonshot_min": 5, "moonshot_max": 7}},
+    # Hockey favourites rarely top 70%, so combos run shorter than basketball's.
+    "nhl": {"name": "NHL", "short": "NHL", "icon": "🏒", "series": "KXNHLGAME", "odds": "icehockey_nhl",
+            "espn": "hockey/nhl", "espn_q": {}, "slate": "day", "game_hours": 2.75, "periods": 3,
+            "full": True, "teams": "nhl",
+            "settings": "combo_settings_nhl.json", "latest": "combos_latest_nhl.html",
+            "defaults": {"budget": 50, "full_count": 1, "upsets_min": 1, "upsets_max": 2,
+                         "safer_count": 4, "safer_min": 2, "safer_max": 2,
+                         "middle_count": 3, "middle_min": 3, "middle_max": 4,
+                         "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
 LEAGUE = {"code": "nfl"}
 SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every")
 
 
 def next_league():
-    """The league the bar's switch button goes to (NFL <-> NBA)."""
+    """The next league in the list (NFL -> NBA -> NHL -> NFL)."""
     order = list(LEAGUES)
     return order[(order.index(LEAGUE["code"]) + 1) % len(order)]
 
@@ -154,7 +178,7 @@ def set_league(code):
     SCORES_URL = f"https://site.api.espn.com/apis/site/v2/sports/{lg['espn']}/scoreboard"
     SAVED = os.path.join(HERE, lg["settings"])
     LATEST = os.path.join(HERE, lg["latest"])
-    TEAMS = {"nfl": NFL_TEAMS, "nba": NBA_TEAMS}.get(lg.get("teams"), {})
+    TEAMS = {"nfl": NFL_TEAMS, "nba": NBA_TEAMS, "nhl": NHL_TEAMS}.get(lg.get("teams"), {})
     if changed:
         CFG.clear()
         CFG.update(json.loads(json.dumps(DEFAULTS)))
@@ -966,18 +990,20 @@ def combo_legs(ticker, cache):
 
 
 def combo_league(legs):
-    """'nfl', 'ncaamb' or 'other' from the picks' market tickers."""
+    """'nfl', 'nba', 'nhl' or 'other' from the picks' market tickers."""
     ts = [(l["ticker"] or "").upper() for l in legs]
     if any(t.startswith("KXNCAAMB") for t in ts):
         return "ncaamb" if "ncaamb" in LEAGUES else "other"   # college was dropped: shown with NFL
     if any(t.startswith("KXNBA") for t in ts):
         return "nba"
+    if any(t.startswith("KXNHL") for t in ts):
+        return "nhl"
     if any(t.startswith("KXNFL") for t in ts):
         return "nfl"
     return "other"
 
 
-WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME")
+WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME")
 
 
 def winners_only(legs):
@@ -988,7 +1014,7 @@ def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
-    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA")):
+    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL")):
         return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
@@ -2060,7 +2086,7 @@ def _web():
                 for i, x in enumerate(btns):
                     x.frame = (i * w / max(1, len(btns)), 0, w / max(1, len(btns)), 52)
 
-    win = Window(name="Combos", background_color=bg)
+    win = Window(name="", background_color=bg)   # the league buttons fill the title bar
     win.closers = [_window_closed]
     win.frame = (0, 0, 375, 667)
     web = ui.WebView(frame=(0, 0, 375, 667 - TAB_H), flex="WH")
@@ -2119,6 +2145,7 @@ def bind_controls(win, bar):
     an adopted window's buttons would otherwise still call the old copy, which then opened a
     fresh (white) window of its own on every tap."""
     import ui
+    win.name = ""
     for btn in bar.subviews:
         btn.action = lambda sender: native_nav(sender.name)
     win.left_button_items = [ui.ButtonItem(title=f"{v['icon']} {v['short']}",
@@ -2299,7 +2326,7 @@ def app_frame(page):
 
 
 KALSHI_WEB = "https://kalshi.com"
-GAME_SLUG = {"KXNFLGAME": "nfl-game", "KXNBAGAME": "nba-game"}
+GAME_SLUG = {"KXNFLGAME": "nfl-game", "KXNBAGAME": "nba-game", "KXNHLGAME": "nhl-game"}
 
 
 def game_url(leg_ticker):
@@ -2830,7 +2857,7 @@ def fetch_scores(max_age=45):
                 detail = "Final" + (" OT" if (st.get("period") or 0) > LG()["periods"] else "")
             elif state == "in":
                 per, n_per = st.get("period") or 0, LG()["periods"]
-                label = ("OT" if per > n_per else ("Q" if n_per == 4 else "H") + str(per))
+                label = ("OT" if per > n_per else {4: "Q", 3: "P"}.get(n_per, "H") + str(per))
                 detail = ("Half" if "HALFTIME" in typ.get("name", "") else
                           f"{label} {st.get('displayClock', '')}".strip())
             else:
@@ -4561,8 +4588,8 @@ def main():
         if len(ok) < 2:
             raise Stop("Kalshi doesn't offer combos on these games",
                        f"None of the {len(games)} games here can go into a Kalshi combo right now. "
-                       + ("Kalshi may not offer college basketball combos, or not on these games. "
-                          "Try tomorrow's games, or switch to NFL with the 🏈 button." if by_day() else
+                       + (f"Kalshi may not offer {LG()['name']} combos, or not on these games. "
+                          "Try tomorrow's games, or switch league with the buttons at the top." if by_day() else
                           "Try again later, or check Kalshi's combo builder in the app."))
         left_out = [e for e in games if e not in ok]
         if left_out:
