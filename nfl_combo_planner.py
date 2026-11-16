@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.18"
+VERSION = "2026.11.16.19"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -994,14 +994,20 @@ def combo_legs(ticker, cache):
 
 
 def combo_leagues(legs):
-    """Every league a combo has a pick in (a combo can mix sports): it shows in each."""
-    out = set()
+    """The one league page a combo shows on: the league most of its picks are in (a tie goes to
+    the league of its latest game). Combos with no league picks go with the NFL."""
+    from collections import Counter
+    n, last = Counter(), {}
     for l in legs:
         t = (l["ticker"] or "").upper()
         for code, pre in (("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL")):
             if t.startswith(pre) and code in LEAGUES:
-                out.add(code)
-    return sorted(out) or ["nfl"]
+                n[code] += 1
+                d = game_date({"event_ticker": t})
+                last[code] = max(last.get(code) or dt.date.min, d or dt.date.min)
+    if not n:
+        return ["nfl"]
+    return [max(n, key=lambda c: (n[c], last.get(c) or dt.date.min))]
 
 
 def combo_league(legs):
