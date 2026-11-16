@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.24"
+VERSION = "2026.11.15.25"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2081,6 +2081,16 @@ def game_url(leg_ticker):
     return f"{KALSHI_WEB}/markets/{series.lower()}"
 
 
+def combo_url(ticker):
+    """A combo's own Kalshi page, e.g. kalshi.com/markets/kxmvecrosscategory/combo/<event>?marketTicker=<market>.
+    (The middle part is only a readable name on Kalshi's links.)"""
+    if not is_combo(ticker) or ticker.count("-") < 2:
+        return f"{KALSHI_WEB}/portfolio"
+    event = ticker.rsplit("-", 1)[0]
+    series = event.split("-")[0].lower()
+    return f"{KALSHI_WEB}/markets/{series}/combo/{event}?marketTicker={ticker}"
+
+
 def open_outside(url):
     """Open a link in the Kalshi app (or Safari), never inside the planner's window."""
     try:
@@ -3053,7 +3063,7 @@ def mine_page(live=False):
         cards.append((group, f"<div class='card' id='c-{e(a['ticker'])}'><div class='top'><div>"
                      f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}</div>"
                      f"<div style='text-align:right'>{status}<br><a class='klink' href='combo://open/"
-                     f"{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a></div></div>"
+                     f"{quote(combo_url(a['ticker']), safe='')}'>Open in Kalshi ↗</a></div></div>"
                      f"{value}<ol>{''.join(rows)}</ol></div>"))
 
     live_picks = []
