@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.10"
+VERSION = "2026.11.16.11"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2555,10 +2555,11 @@ def live_check(webview):
         return []
     MINE["last"] = dt.datetime.now().strftime("%-I:%M %p")
     expire_offers()
-    cash_alerts = auto_cash_checks()
+    pre_alerts = auto_cash_checks()
     APP["quiet"] = True
     page, snap = mine_page(live=True)
-    alerts = diff_alerts(MINE.get("snap") or {}, snap) + cash_alerts
+    cash_alerts_now = cash_alerts(MINE.get("plan"))
+    alerts = diff_alerts(MINE.get("snap") or {}, snap) + pre_alerts + cash_alerts_now
     MINE["snap"] = snap
     present(page, MineKeeper())
     for msg in alerts[:4]:
@@ -2656,12 +2657,15 @@ def plan_cashout():
     for _ in range(3):
         changed = False
         for t in sorted(offers, key=lambda x: -MINE["hold"][x]["hold"]):
+            h = MINE["hold"][t]
+            if not h.get("won_some") and acts_price(t) < 1.02 * h["p"]:
+                continue        # nothing won yet and Kalshi pays no more than it's worth: hold
             for f in (0.0, 0.5, 1.0):
                 if f == acts[t]:
                     continue
                 trial = dict(acts, **{t: f})
                 v = weekend_stats(trial)["worth"]
-                if v > best + 0.10:               # ignore changes worth only pennies
+                if v > best + 0.25:               # ignore changes worth only pennies
                     best, acts, changed = v, trial, True
         if not changed:
             break
@@ -3243,19 +3247,27 @@ def auto_cash_checks():
             for t, o in zip(due, pool.map(get_cash_offer, due)):
                 MINE["cash"][t] = o
                 fresh.append(t)
-    plan = plan_cashout() if fresh else None
-    alerts = MINE.pop("pre_alerts", [])
-    if not plan:
-        return alerts
-    # Push only when cashing out clearly pays (worth at least $1, or 5% of what it locks in, more
-    # to you than holding), and only once per recommendation: again only if the offer has
-    # risen 20%+ or the advice grows from half to all, never more than every 10 minutes.
+    return MINE.pop("pre_alerts", [])
+
+
+def cash_alerts(plan):
+    """A push only when cashing out makes real sense, worded like the Right now box (same plan,
+    so the alert and the buttons always agree). It needs all of:
+      - the plan recommends cashing something out, judged after the latest refresh;
+      - each combo in it either has a pick already won, or Kalshi is paying more than it's worth
+        (before anything has happened, cashing out just hands Kalshi its cut);
+      - it's worth at least $2, or 3% of what it locks in, more to you than holding;
+      - it's new: same advice again only if the offer rose 20%+ or half became all, and never
+        within 10 minutes of the last alert for that combo."""
+    import time
+    if not plan or not CFG["auto_cash"]:
+        return []
     gain = plan["plan"]["worth"] - plan["hold"]["worth"]
-    if gain < max(1.0, 0.05 * plan["plan"]["sure"]):
-        return alerts
+    if gain < max(2.0, 0.03 * plan["plan"]["sure"]):
+        return []
     told = MINE.setdefault("alerted", {})
     news = []
-    for t, f in plan["acts"].items():
+    for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
         o, h = fresh_offer(t), MINE["hold"].get(t)
         if not (f and o and h):
             continue
@@ -3264,11 +3276,12 @@ def auto_cash_checks():
         if last and (time.time() - last["at"] < 600 or (amt < last["amt"] * 1.2 and f <= last["f"])):
             continue
         told[t] = {"f": f, "amt": amt, "at": time.time()}
-        news.append(f"{'half of ' if f < 1 else ''}{h['label']} for {money(amt)}")
-    if news:
-        alerts.append(f"💰 Good time to cash out {', '.join(news)}: worth about {money(gain)} more "
-                      "to you than holding. Open the planner to confirm.")
-    return alerts
+        news.append(f"{'half of ' if f < 1 else ''}{h['label']} ({money(amt)})")
+    if not news:
+        return []
+    return [f"💰 Cash out {', '.join(news)}? Locks in {money(plan['plan']['sure'])}. Holding everything: "
+            f"{plan['hold']['nothing']:.0%} chance of nothing more. Open the planner to confirm."]
+
 
 def mine_page(live=False):
     """Build the My Kalshi combos page. Returns (page, snapshot for alerts)."""
