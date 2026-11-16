@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.13"
+VERSION = "2026.11.16.16"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -37,7 +37,9 @@ CFG = {
     "next_day": False,    # college basketball: build tomorrow's games instead of today's
     "dogs_late": True,
     "dark": True,         # dark pages
-    "tp_mult": 3,         # auto-sell (take-profit) orders sell at this many times what you paid
+    "tp_mult": 3,         # (old fixed auto-sell multiple, no longer used)
+    "ride": 2,            # auto-sell "Let it ride" level: 0 Cautious ... 4 Ride it out (see RIDE)
+    "tp_follow": True,    # move auto-sell orders as chances change, while the planner is open
     "tp_auto": False,     # put an auto-sell order on every combo bought from the planner    # underdog picks go in the latest games, favourites in the earliest
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -128,7 +130,7 @@ LEAGUES = {
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto")
 
 
 def next_league():
@@ -381,6 +383,8 @@ def week_games(markets, loose=False):
     else:
         sunday = today + dt.timedelta(days=(6 - today.weekday()) % 7)
         day_of = {sunday + dt.timedelta(days=d): n for d, n in zip(range(-3, 2), DAY_ORDER)}
+        if today.weekday() == 0:                 # Monday: tonight's game still belongs to the
+            day_of.setdefault(today, "Monday")   # week that just ended, so keep it in view
     games, days = defaultdict(list), {}
     for m in markets:
         p = price(m)
@@ -1029,15 +1033,26 @@ def in_week(a, week):
     return (a.get("first_week") or a["week"]) <= week <= a["week"]
 
 
-def fetch_account(max_age=60):
-    """Your NFL combo bets from Kalshi (cached for a minute). Returns (bets, balance, note)."""
+def on_live(a, week):
+    """Shown on Live: this week's combos, plus any still live from an earlier week (an NFL
+    combo waiting on Monday night counts for the week that just ended)."""
+    return in_week(a, week) or (a["status"] == "pending" and bool(a.get("week")) and a["week"] < (week or ""))
+
+
+def fetch_account(max_age=60, every_league=False):
+    """Your combo bets from Kalshi (cached for a minute), for the league on screen unless
+    every_league. Returns (bets, balance, note)."""
     import time
     if ACCT_CACHE["value"] and time.time() - ACCT_CACHE["at"] < max_age:
-        return ACCT_CACHE["value"]
-    value = _fetch_account()
-    if value[0] is not None:
-        ACCT_CACHE.update(at=time.time(), value=value)
-    return value
+        value = ACCT_CACHE["value"]
+    else:
+        value = _fetch_account()
+        if value[0] is not None:
+            ACCT_CACHE.update(at=time.time(), value=value)
+    bets, balance, note = value
+    if bets is None or every_league:
+        return value
+    return [a for a in bets if a.get("lg", "nfl") == LEAGUE["code"]], balance, note
 
 
 def _fetch_account():
@@ -1107,8 +1122,6 @@ def _fetch_account():
         if not legs:
             continue
         lg = combo_league(legs)
-        if lg != LEAGUE["code"] and not (lg == "other" and LEAGUE["code"] == "nfl"):
-            continue                             # another league's combo (shown there)
         s = settled.get(t)
         status, back = "pending", h["sold"]
         pos = pos_by.get(t)
@@ -1137,7 +1150,8 @@ def _fetch_account():
                      "week": max(weeks).isoformat() if weeks else None,
                      "first_week": min(weeks).isoformat() if weeks else None,
                      "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2),
-                     "winners": winners_only(legs)})
+                     "winners": winners_only(legs),
+                     "lg": lg if lg in LEAGUES else "nfl"})   # other combos are shown with the NFL
     save_json(LEGS_CACHE, cache)
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
@@ -1821,6 +1835,10 @@ def results_page(sunday):
     if acct is None:
         return (head + "<header><h1>Results</h1></header><section><div class='empty'>"
                 f"{e(note or 'Connect your Kalshi account in Settings first.')}</div></section></body></html>")
+    if sunday and not by_day() and dt.date.today().weekday() in (0, 1):
+        last = dt.date.today() - dt.timedelta(days=dt.date.today().weekday() + 1)
+        if any(in_week(a, last.isoformat()) for a in acct):
+            sunday = last                        # Mon/Tue: the week just played, if you had combos in it
     week = sunday.isoformat() if sunday else None
     this = [a for a in acct if in_week(a, week)]
     # games decided but not paid out yet still count as won/lost here
@@ -2157,6 +2175,7 @@ def bind_controls(win, bar):
 def adopt_window(old_app, notice):
     """Called on a freshly updated copy: take over the open window so the update
     starts without closing anything, then open on Settings."""
+    old_app["superseded"] = True        # the old copy's background jobs stop
     win = old_app["win"]
     if old_app.get("bar") is None:      # an older window: no title bar / tab bar. Open a fresh one.
         import time
@@ -2619,6 +2638,13 @@ def live_check(webview):
     pre_alerts = auto_cash_checks()
     APP["quiet"] = True
     page, snap = mine_page(live=True)
+    if CFG.get("tp_follow", True) and MINE.get("tp") and can_trade():
+        try:
+            if retarget_take_profits():
+                MINE["tp"] = resting_sells()
+                page, snap = mine_page(live=True)
+        except Exception:
+            pass
     cash_alerts_now = cash_alerts(MINE.get("plan"))
     alerts = diff_alerts(MINE.get("snap") or {}, snap) + pre_alerts + cash_alerts_now
     MINE["snap"] = snap
@@ -2719,8 +2745,8 @@ def plan_cashout():
         changed = False
         for t in sorted(offers, key=lambda x: -MINE["hold"][x]["hold"]):
             h = MINE["hold"][t]
-            if not h.get("won_some") and acts_price(t) < 1.02 * h["p"]:
-                continue        # nothing won yet and Kalshi pays no more than it's worth: hold
+            if not h.get("won_some"):
+                continue        # nothing won yet: you bought it for the upside, so hold it
             for f in (0.0, 0.5, 1.0):
                 if f == acts[t]:
                     continue
@@ -2799,7 +2825,7 @@ def cash_block(ticker, plan):
                    f"<b>{money(price * left)}</b> <button class='btn cashb' style='padding:3px 8px' "
                    f"onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
     elif can_trade():
-        target, why = tp_target(h["cost"], pays, worth_now(ticker))
+        target, why = tp_target(h["cost"], pays, ticker)
         if target:
             out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
                        f"Set auto-sell at {money(target)} {why}</button></div>")
@@ -3028,18 +3054,57 @@ def resting_sells():
     return dict(out)
 
 
-def tp_target(cost, pays, worth_now=0.0):
-    """The auto-sell amount: your multiple of what you paid, but never near or above what the
-    combo pays (it can't sell for more than that), and always well above what it's worth right
-    now (a lower standing order could sell it cheap). Returns (amount, label) or (None, '')."""
-    floor = max(1.3 * cost, 1.25 * worth_now)
-    want = cost * CFG["tp_mult"]
-    if floor <= want <= 0.9 * pays:
-        return want, f"({CFG['tp_mult']}×)"
-    cap = 0.9 * pays                              # 90% of the payout: most of the win, without waiting
-    if cap >= floor:
-        return cap, "(90% of the payout)"
-    return None, ""
+# "Let it ride" levels for auto-sell: how big a bankroll to act as if you had. The bigger,
+# the more risk the planner carries before selling. None = only at the combo's full value.
+RIDE = [("Cautious", 1), ("Steady", 2), ("Balanced", 4), ("Bold", 10), ("Ride it out", None)]
+
+
+def ride_level():
+    return RIDE[min(max(int(CFG.get("ride", 2)), 0), len(RIDE) - 1)]
+
+
+def break_even(ticker, mult):
+    """The sale price (for the whole combo) at which selling it is worth the same to you as
+    holding it, from the live simulation: every remaining game at its own current chance,
+    with your other combos on the same games riding alongside. mult scales your bankroll."""
+    live, pats = MINE["hold"], MINE.get("patterns") or {}
+    h = live[ticker]
+    n = sum(pats.values()) or 1
+    if mult is None:
+        return h["p"] * h["pays"]
+    W = max(CFG["bankroll"], 1) * mult + MINE.get("locked", 0)
+    rows = [(c, sum(live[t]["pays"] for t in pat if t in live and t != ticker), ticker in pat)
+            for pat, c in pats.items()]
+    hold = sum(c * math.log(W + x + (h["pays"] if hit else 0)) for c, x, hit in rows) / n
+    lo, hi = 0.0, h["pays"]
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if sum(c * math.log(W + x + mid) for c, x, _ in rows) / n < hold:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def tp_target(cost, pays, ticker=None, p=None):
+    """Auto-sell amount for a combo: the price at which the planner itself would say "cash out",
+    from its current chance of hitting and your "Let it ride" level. Never below halfway (on a
+    multiplying scale) from what you paid to what it pays, never above 97% of the payout.
+    Returns (amount, label) or (None, '')."""
+    name, mult = ride_level()
+    floor = max(1.3 * cost, math.sqrt(max(cost, 0) * pays))
+    cap = 0.97 * pays
+    if floor > cap or cost <= 0:
+        return None, ""
+    if ticker in (MINE.get("hold") or {}) and MINE.get("patterns"):
+        be = break_even(ticker, mult)
+    elif p:
+        Bm = max(CFG["bankroll"], 1) * (mult or 1)
+        be = pays * p if mult is None else Bm * ((1 + pays / Bm) ** p - 1)
+    else:
+        be = 0.0
+    want = min(max(be, floor), cap)
+    return want, f"({name} · {want / cost:.0f}× what you paid)"
 
 
 def worth_now(ticker):
@@ -3049,13 +3114,15 @@ def worth_now(ticker):
     return max(h.get("hold", 0.0), (o or {}).get("offer", 0.0) / max((o or {}).get("frac", 1.0), 0.01))
 
 
-def place_take_profit(ticker, contracts, cost):
-    """Put a standing sell order on Kalshi at tp_mult x what you paid. Kalshi keeps it
-    working with your phone closed; it only fills if a buyer pays that much."""
+def place_take_profit(ticker, contracts, cost, p=None, total=None):
+    """Put a standing sell order on Kalshi at the "Let it ride" price (or `total`). Kalshi keeps
+    it working with your phone closed; it only fills if a buyer pays that much."""
     n = math.floor(contracts * 100 + 1e-6) / 100
     if n < 1:
         return "Auto-sell needs at least 1 contract."
-    total, why = tp_target(cost, n, worth_now(ticker))
+    why = ""
+    if total is None:
+        total, why = tp_target(cost, n, ticker, p)
     if not total:
         return ("No auto-sell for this one: it's already worth close to what it pays, or it doesn't pay "
                 "enough above what you paid. Hold it, or cash out when you like the offer.")
@@ -3079,6 +3146,111 @@ def place_take_profit(ticker, contracts, cost):
         except (RuntimeError, requests.RequestException) as err:
             last = str(err)[:120]
     return f"Kalshi didn't accept the auto-sell order ({last}). It may not allow resting orders on this combo."
+
+
+def retarget_one(t, orders, cost_full, pays_full, p=None):
+    """Move one combo's auto-sell to its current "Let it ride" price. Returns (old, new) if moved.
+    At most once a minute per combo, and only for a 5%+ change."""
+    import time
+    moved_at = MINE.setdefault("tp_moved", {})
+    if not orders or time.time() - moved_at.get(t, 0) < 60:
+        return None
+    o0 = orders[0]
+    left = count_of({"count_fp": o0.get("remaining_count_fp") or o0.get("remaining_count")}) or pays_full
+    cur = dollars(o0, "yes_price") * left
+    cost = cost_full * left / max(pays_full, 1e-9)
+    new, _ = tp_target(cost, left, t, p)
+    if not new or not cur or abs(new - cur) / cur < 0.05:
+        return None
+    moved_at[t] = time.time()
+    cancel_take_profit(t)
+    place_take_profit(t, left, cost, total=new)
+    return cur, new
+
+
+def retarget_take_profits():
+    """Live page: move this league's auto-sells using the full live simulation."""
+    moved = []
+    for t, orders in (MINE.get("tp") or {}).items():
+        h = MINE["hold"].get(t)
+        if h:
+            r = retarget_one(t, orders, h["cost"], h["pays"])
+            if r:
+                moved.append((h["label"], *r))
+    return moved
+
+
+def combo_chance_now(a):
+    """A combo's chance of hitting right now from each pick's own current Kalshi price
+    (in-game prices for games under way, results for finished ones). 0 if a pick lost."""
+    res = fetch_results({l["ticker"] for l in a["legs"] if l["ticker"]})
+    p = 1.0
+    for l in a["legs"]:
+        r = res.get(l["ticker"])
+        if l.get("side", "yes") == "no":
+            r = {"yes": "no", "no": "yes"}.get(r)
+        if r == "yes":
+            continue
+        if r == "no":
+            return 0.0
+        lp = (MARKET_INFO.get(l["ticker"]) or {}).get("live")
+        if lp is None:
+            return None
+        p *= (1 - lp) if l.get("side", "yes") == "no" else lp
+    return p
+
+
+TP_OFF = os.path.join(HERE, "combo_autosell_off.json")   # combos you cancelled auto-sell on
+
+
+def autosell_pass():
+    """One pass over every league's live combos: put an auto-sell on any without one (if you
+    turned that on) and move existing ones to the current "Let it ride" price. The league on
+    screen uses the Live page's full simulation; the others use each pick's current price."""
+    if not can_trade() or MINE.get("busy") or not (CFG.get("tp_auto") or CFG.get("tp_follow", True)):
+        return []
+    acct, _, _ = fetch_account(every_league=True)
+    resting = resting_sells()
+    done = []
+    for a in acct or []:
+        t = a["ticker"]
+        if a["status"] != "pending" or MINE.get("busy") or t in MINE.get("selling", set()):
+            continue
+        here = t in (MINE.get("hold") or {}) and MINE.get("patterns")
+        p = None if here else combo_chance_now(a)
+        if not here and not p:
+            continue                       # chance unknown, or a pick already lost
+        if resting.get(t):
+            if CFG.get("tp_follow", True) and retarget_one(t, resting[t], a["cost"], a["pays"], p):
+                done.append(t)
+        elif CFG.get("tp_auto") and a["pays"] >= 1 and t not in load_json(TP_OFF, {}):
+            msg = place_take_profit(t, a["pays"], a["cost"], p=p)
+            if msg.startswith("🎯"):
+                done.append(t)
+    return done
+
+
+def start_autosell_keeper():
+    """Runs every minute while the planner is open, whatever league or screen you're on.
+    Stops when you close the planner or an update takes over."""
+    import threading, time
+    if APP.get("keeper"):
+        return
+
+    def loop():
+        while not APP.get("superseded") and not APP.get("closed"):
+            try:
+                autosell_pass()
+            except Exception as err:
+                console_note(f"Auto-sell check skipped: {type(err).__name__}: {err}")
+            for _ in range(60):
+                if APP.get("superseded") or APP.get("closed"):
+                    break
+                time.sleep(1)
+        APP["keeper"] = None
+
+    APP["keeper"] = threading.Thread(target=loop, daemon=True)
+    APP["keeper"].start()
 
 
 def cancel_take_profit(ticker):
@@ -3173,26 +3345,76 @@ def get_cash_offer(ticker, frac=1.0):
             "frac": frac, "at": time.time()}
 
 
+CASH_RETRIES = 3          # if the buyer backs out, try this many fresh offers
+CASH_SLIP = 0.97          # ...accepting one automatically only if it's at least 97% of what you confirmed
+
+
 def accept_cash(ticker):
-    """Sell: hit their YES bid with the contracts you hold. Only runs after you tap Cash out."""
+    """Sell: hit their YES bid with the contracts you hold. Only runs after you tap Cash out.
+    If the buyer backs out, gets a fresh offer and takes it if it's within 3% of the price you
+    confirmed, up to 3 more tries; otherwise shows you the new offer to confirm."""
     import time
     o = MINE["cash"].pop(ticker, None)
-    label = (MINE["hold"].get(ticker) or {}).get("label", "That combo")
-    if o and o.get("frac", 1.0) < 1:
+    h = MINE["hold"].get(ticker) or {}
+    label = h.get("label", "That combo")
+    frac = (o or {}).get("frac", 1.0)
+    if frac < 1:
         label = "Half of " + label
     if not o or not o.get("rfq") or time.time() - o["at"] > offer_life():
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
-    if (MINE.get("tp") or {}).get(ticker):
-        cancel_take_profit(ticker)
+    agreed = o["offer"]
+    MINE.setdefault("selling", set()).add(ticker)   # the auto-sell keeper keeps its hands off
+    try:
+        return _accept_with_retries(ticker, o, h, label, frac, agreed)
+    finally:
+        MINE["selling"].discard(ticker)
+
+
+def _accept_with_retries(ticker, o, h, label, frac, agreed):
+    had_tp = bool((MINE.get("tp") or {}).get(ticker)) or bool(resting_sells().get(ticker))
+    if had_tp:
+        cancel_take_profit(ticker)          # can't sell the same contracts twice
+    why = ""
+    for attempt in range(CASH_RETRIES + 1):
+        if attempt:
+            loading(f"The buyer backed out. Getting a fresh offer (try {attempt} of {CASH_RETRIES})…")
+            o = get_cash_offer(ticker, frac)
+            if not o.get("offer"):
+                why = "no fresh offer came in"
+                break
+            if o["offer"] < CASH_SLIP * agreed:
+                MINE["cash"][ticker] = o
+                why = "new"
+                break
+        status = accept_once(o)
+        if status == "executed":
+            ACCT_CACHE["at"] = 0
+            haptic("success")
+            extra = f" (after {attempt} retr{'y' if attempt == 1 else 'ies'})" if attempt else ""
+            return f"✅ {label} cashed out for about {money(o['offer'])}{extra}."
+        if status not in ("cancelled", "failed"):
+            ACCT_CACHE["at"] = 0
+            return (f"{label}: still waiting on Kalshi. Check this page again in a minute before trying again, "
+                    "so you don't sell twice.")
+        why = why or "backed out"
+    ACCT_CACHE["at"] = 0
+    if had_tp and h:                        # nothing sold: put the auto-sell back
+        place_take_profit(ticker, h.get("pays", 0), h.get("cost", 0))
+    if why == "new":
+        return (f"{label}: the buyer backed out, and the best fresh offer is {money(MINE['cash'][ticker]['offer'])} "
+                f"(below the {money(agreed)} you agreed to), so nothing was sold. Tap Cash out to take it.")
+    return (f"{label}: buyers backed out {CASH_RETRIES + 1} times, so nothing was sold. "
+            "Try again in a minute." + (" Your auto-sell order is back on." if had_tp else ""))
+
+
+def accept_once(o):
+    """Accept one quote. Returns 'executed', 'cancelled', 'failed' or 'waiting'."""
+    import time
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "yes"})
-    except (RuntimeError, PermissionError, requests.RequestException) as err:
-        MINE["cash"][ticker] = get_cash_offer(ticker, o.get("frac", 1.0))
-        new = MINE["cash"][ticker].get("offer")
-        return (f"{label}: that offer had expired, so nothing was sold. "
-                + (f"Fresh offer: {money(new)}. Tap Cash out again to confirm." if new else
-                   f"No fresh offer came in yet. ({str(err)[:60]})"))
+    except (RuntimeError, PermissionError, requests.RequestException):
+        return "failed"
     status, start = "accepted", time.time()
     while time.time() - start < 15 and status not in ("executed", "cancelled"):
         time.sleep(1)
@@ -3205,14 +3427,7 @@ def accept_cash(ticker):
         kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
     except Exception:
         pass
-    ACCT_CACHE["at"] = 0
-    if status == "executed":
-        haptic("success")
-        return f"✅ {label} cashed out for about {money(o['offer'])}."
-    if status == "cancelled":
-        return f"{label}: the buyer backed out before confirming, so nothing was sold. Get a fresh offer."
-    return (f"{label}: still waiting on Kalshi. Check this page again in a minute before trying again, "
-            "so you don't sell twice.")
+    return status if status in ("executed", "cancelled") else "waiting"
 
 
 def cash_action(action, ticker):
@@ -3223,11 +3438,17 @@ def cash_action(action, ticker):
     try:
         if action == "tp":
             loading("Placing your auto-sell order on Kalshi…")
+            off = load_json(TP_OFF, {})
+            if off.pop(ticker, None):
+                save_json(TP_OFF, off)
             h = MINE["hold"].get(ticker) or {}
             MINE["flash"] = place_take_profit(ticker, h.get("pays", 0), h.get("cost", 0))
         elif action == "tpx":
             loading("Cancelling the auto-sell order…")
             n = cancel_take_profit(ticker)
+            off = load_json(TP_OFF, {})
+            off[ticker] = True                  # the auto-sell-everything switch leaves this one alone
+            save_json(TP_OFF, off)
             MINE["flash"] = "Auto-sell order cancelled." if n else "No auto-sell order to cancel."
         elif action in ("ask", "askhalf", "askgo", "askhalfgo"):
             loading("Getting Kalshi's exact offer…" if action.endswith("go") else "Asking Kalshi for a cash-out offer…")
@@ -3315,8 +3536,7 @@ def cash_alerts(plan):
     """A push only when cashing out makes real sense, worded like the Right now box (same plan,
     so the alert and the buttons always agree). It needs all of:
       - the plan recommends cashing something out, judged after the latest refresh;
-      - each combo in it either has a pick already won, or Kalshi is paying more than it's worth
-        (before anything has happened, cashing out just hands Kalshi its cut);
+      - each combo in it has a pick already won (before that, you hold: it was bought for the upside);
       - it's worth at least $2, or 3% of what it locks in, more to you than holding;
       - it's new: same advice again only if the offer rose 20%+ or half became all, and never
         within 10 minutes of the last alert for that combo."""
@@ -3366,7 +3586,9 @@ def mine_page(live=False):
     pregame = load_json(PREGAME, {}) if live else remember_pregame(all_games)
     side_of = {s["ticker"]: s for v in all_games.values() for s in v}
 
-    mine = [a for a in acct if in_week(a, sunday.isoformat())] or \
+    wk = sunday.isoformat()
+    # this week's combos, plus any still live from an earlier week (e.g. waiting on Monday night)
+    mine = [a for a in acct if on_live(a, wk)] or \
         [a for a in acct if a["status"] == "pending"]
     if not live:
         loading("Checking game results…")
@@ -3864,7 +4086,7 @@ def get_offer(i, amount=None, check_cap=True):
     pays = stake / yes_price
     minimum = c["min"] * stake / CTX["stake"]
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
-                        "price": yes_price, "stake": stake}
+                        "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake}
 
 
@@ -3892,7 +4114,7 @@ def accept_offer(i):
         ACCT_CACHE["at"] = 0
         haptic("success")
         if CFG.get("tp_auto"):
-            place_take_profit(o["market"], o["pays"], o["stake"])
+            place_take_profit(o["market"], o["pays"], o["stake"], p=o.get("p"))
         hist = load_json(HISTORY, {"builds": []})
         b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
         if b is not None:
@@ -4189,7 +4411,7 @@ def offer_html(i, o):
 SETTINGS_JS = r"""
 var SL = %s;
 function label(k){ var s=document.getElementById(k), d=SL[k]; if(!s) return;
-  var v=+s.value, txt = d.unit==='$' ? '$'+v : v+(d.unit||'');
+  var v=+s.value, txt = d.names ? d.names[v] : d.unit==='$' ? '$'+v : v+(d.unit||'');
   document.getElementById('v-'+k).textContent = txt; budget(); }
 function val(k){ var el=document.getElementById(k); return el ? +el.value : 0; }
 function budget(){ var n=val('full_count')+val('safer_count')+val('middle_count')+val('moonshot_count');
@@ -4221,8 +4443,8 @@ def settings_page(all_games, days, counts):
     e = html.escape
     sliders = {}
 
-    def slider(key, title, lo, hi, step=1, unit=""):
-        sliders[key] = {"unit": unit}
+    def slider(key, title, lo, hi, step=1, unit="", names=None):
+        sliders[key] = {"unit": unit, "names": names}
         v = min(max(CFG[key], lo), hi)
         return (f"<div class='srow'><div class='row'><span>{title}</span><b id='v-{key}'></b></div>"
                 f"<input type='range' id='{key}' min='{lo}' max='{hi}' step='{step}' value='{v}' "
@@ -4314,12 +4536,18 @@ def settings_page(all_games, days, counts):
                         + switch("auto_cash", "Keep a cash-out offer ready on every live combo")
                         + slider("refresh_secs", "Live updates every", 10, 120, 5, "s")
                 + slider("cash_every", "Fresh cash-out offers every", 1, 10, 1, " min")
-                        + slider("tp_mult", "Auto-sell at", 2, 10, 1, "×")
-                        + switch("tp_auto", "Add an auto-sell order to combos I buy here"),
+                        + slider("ride", "Auto-sell: let it ride", 0, len(RIDE) - 1, 1, "",
+                                 names=[n for n, _ in RIDE])
+                        + switch("tp_follow", "Move auto-sell prices as games are won or lost")
+                        + switch("tp_auto", "Auto-sell all my live combos (every league)"),
                         "Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
                         "taking the sure money. Auto-sell puts a standing sell order on Kalshi; it works with "
-                        "your phone closed but only fills if a buyer pays that much. Nothing sells unless you "
-                        "confirm or set auto-sell."),
+                        "your phone closed but only fills if a buyer pays that much. Its price is where the "
+                        "planner would say cash out, from the combo's current chance (each remaining game "
+                        "on its own odds) and the level you pick: Cautious acts on your real bankroll, Steady "
+                        "2×, Balanced 4×, Bold 10×, Ride it out sells only at full value. Never below halfway "
+                        "(on a multiplying scale) from what you paid to the payout. Prices move only while "
+                        "the planner is open. Nothing sells unless you confirm or set auto-sell."),
         "kalshi": section("Kalshi account",
                           f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
                           f"spellcheck='false' value='{e(CFG['kalshi_key_id'])}'>"
@@ -4428,7 +4656,7 @@ def this_week(sunday):
     if can_trade():
         loading("Checking your Kalshi account…")
         acct, _, _ = fetch_account()
-        if acct and any(in_week(a, sunday.isoformat()) for a in acct):
+        if acct and any(on_live(a, sunday.isoformat()) for a in acct):
             return "account"
     hist = load_json(HISTORY, {"builds": []})
     if os.path.exists(LATEST) and any(b["week"] == sunday.isoformat() and b.get("placed")
@@ -4455,6 +4683,7 @@ def main():
     all_games, days, sunday = week_games(fetch_markets())
     CFG["picks"] = {e: v for e, v in CFG["picks"].items() if e in all_games}  # drop old weeks
     import_key_file()
+    start_autosell_keeper()
     counts = defaultdict(int)
     for d in days.values():
         counts["Thursday" if d == "Friday" else d] += 1
