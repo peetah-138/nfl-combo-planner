@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.2"
+VERSION = "2026.11.16.3"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1965,12 +1965,22 @@ def window_open():
     return APP["web"] is not None and not APP.get("closed")
 
 
+TAB_H = 82          # native tab bar height, including room for the home indicator
+
+
+def _colors():
+    return ("#0f1115", "#1a1d23", "#eceef2", "#9aa1ad", "#5b9dff") if CFG.get("dark") else \
+           ("#f4f5f7", "#ffffff", "#16181d", "#6b7280", "#1f6feb")
+
+
 def _web():
     """The one window everything shows in. Created once, then reused, so pages
-    swap in place and the code never shows between them."""
+    swap in place and the code never shows between them. The title bar and the tab bar
+    are real iPhone controls, so they never move when you scroll."""
     import ui
     if window_open():
         return APP["web"]
+    bg, card, ink, muted, accent = _colors()
 
     class Window(ui.View):            # a plain view can notice when it's closed;
         def will_close(self):         # Pythonista's web view can't be customised
@@ -1980,15 +1990,67 @@ def _web():
                 except Exception:
                     pass
 
-    win = Window(name="Combos", background_color="#0f1115" if CFG.get("dark") else "white")
+        def layout(self):
+            w, h = self.width, self.height
+            APP["web"].frame = (0, 0, w, h - TAB_H)
+            bar = APP.get("bar")
+            if bar is not None:
+                bar.frame = (0, h - TAB_H, w, TAB_H)
+                btns = [x for x in bar.subviews if not x.hidden]
+                for i, x in enumerate(btns):
+                    x.frame = (i * w / max(1, len(btns)), 0, w / max(1, len(btns)), 52)
+
+    win = Window(name="Combos", background_color=bg)
     win.closers = [_window_closed]
     win.frame = (0, 0, 375, 667)
-    web = ui.WebView(frame=win.bounds, flex="WH")
-    web.background_color = "#0f1115" if CFG.get("dark") else "white"
+    web = ui.WebView(frame=(0, 0, 375, 667 - TAB_H), flex="WH")
+    web.background_color = bg
     win.add_subview(web)
-    APP.update(web=web, win=win, page=None, closed=False)
-    win.present("fullscreen", hide_title_bar=True)
+    bar = ui.View(frame=(0, 667 - TAB_H, 375, TAB_H), flex="WT", background_color=card)
+    for key, icon, label in TABS:
+        btn = ui.Button(title=f"{icon}  {label}", name=key)
+        btn.font = ("<system-bold>", 13)
+        btn.action = lambda sender: native_nav(sender.name)
+        bar.add_subview(btn)
+    win.add_subview(bar)
+    win.left_button_items = [ui.ButtonItem(title=f"{v['icon']} {v['short']}",
+                                           action=(lambda code: (lambda sender: native_nav("lg-" + code)))(k))
+                             for k, v in LEAGUES.items()]
+    win.right_button_items = [ui.ButtonItem(title="⟳", action=lambda sender: native_nav("refresh"))]
+    APP.update(web=web, win=win, bar=bar, page=None, closed=False)
+    update_bars()
+    win.present("fullscreen", hide_title_bar=False, title_bar_color=bg, title_color=ink)
     return web
+
+
+def update_bars():
+    """Highlight the current tab and league in the native bars."""
+    bar, win = APP.get("bar"), APP.get("win")
+    if bar is None or win is None:
+        return
+    _, _, ink, muted, accent = _colors()
+    where = APP.get("where") or ("mine" if can_trade() else "build")
+    try:
+        for btn in bar.subviews:
+            btn.hidden = btn.name == "mine" and not can_trade()
+            btn.tint_color = accent if btn.name == where else muted
+        for item, code in zip(win.left_button_items or [], LEAGUES):
+            item.tint_color = accent if code == LEAGUE["code"] else muted
+        win.layout()
+    except Exception:
+        pass
+
+
+def native_nav(target):
+    """A tap on the native tab bar or title bar. On Settings/Build the page saves first."""
+    if APP.get("settings_wait") and target != "refresh":
+        js = {"mine": "mine", "results": "show", "build": "tab-build", "settings": "tab-settings"}.get(target, target)
+        try:
+            APP["web"].evaluate_javascript(f"go({json.dumps(js)})")
+            return
+        except Exception:
+            pass
+    go_to(target)
 
 
 def _window_closed():
@@ -2064,7 +2126,7 @@ APP_CSS = """
 .tabbar a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:44px;justify-content:center;
  color:var(--muted);text-decoration:none;font:600 11px -apple-system,sans-serif}
 .tabbar a b{font-size:20px;line-height:22px;font-weight:600}.tabbar a.on{color:var(--accent)}
-body{padding-bottom:calc(env(safe-area-inset-bottom) + 76px)}
+body{padding-bottom:24px}
 .btn{min-height:44px}.klink{display:inline-block;padding:8px 2px}
 .sheetbg{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.45);display:none}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--card);border-radius:18px 18px 0 0;
@@ -2072,14 +2134,14 @@ body{padding-bottom:calc(env(safe-area-inset-bottom) + 76px)}
 .sheet.up{transform:none}.sheet h3{margin:0 0 6px;font-size:19px}.sheet p{margin:0 0 16px;color:var(--muted)}
 .sheet .btn{width:100%;margin-top:8px;font-size:17px}
 .ptr{height:0;overflow:hidden;text-align:center;color:var(--muted);font-size:13px;transition:height .15s}
-.toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 64px);transform:translateX(-50%);z-index:60;
+.toast{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:60;
  background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:20px;font:600 14px -apple-system,sans-serif;
  box-shadow:0 4px 18px rgba(0,0,0,.3)}
 @keyframes fl{from{background:rgba(91,157,255,.35)}to{background:transparent}}.flash{animation:fl 1.6s ease-out}
 details.card>summary{list-style:none;cursor:pointer}details.card>summary::-webkit-details-marker{display:none}
 details.card:not([open])>summary .chev::after{content:'›'}details.card[open]>summary .chev::after{content:'⌄'}
 .chev{color:var(--muted);font-size:18px;margin-left:6px}
-.strip{position:sticky;top:calc(env(safe-area-inset-top) + 51px);z-index:20;display:flex;gap:10px;align-items:center;
+.strip{display:flex;gap:10px;align-items:center;
  justify-content:space-between;margin:0 -16px;padding:9px 16px;background:var(--bg);border-bottom:1px solid var(--line);
  font-size:14px;text-decoration:none;color:var(--ink)}
 .inote{font-size:13px;color:var(--muted);margin:0 0 8px}.ib{color:var(--accent);font-size:15px;margin-left:6px;cursor:pointer}
@@ -2092,12 +2154,7 @@ input.sw:checked::after{left:22px}
 """
 
 APP_JS = r"""
-function sheet(title, sub, url, label){var bg=document.getElementById('sheetbg'),sh=document.getElementById('sheet');
- document.getElementById('shT').textContent=title;document.getElementById('shS').textContent=sub;
- var b=document.getElementById('shGo');b.textContent=label||'Confirm';b.onclick=function(){closeSheet();location.href=url;};
- bg.style.display='block';setTimeout(function(){sh.classList.add('up')},10);}
-function closeSheet(){document.getElementById('sheet').classList.remove('up');
- setTimeout(function(){document.getElementById('sheetbg').style.display='none'},220);}
+function sheet(title, sub, url, label){location.href='combo://confirm/'+encodeURIComponent(JSON.stringify([title,sub,url,label||'Confirm']));}
 function toast(m){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';
  document.body.appendChild(t);}t.textContent=m;t.style.display=m?'block':'none';}
 window.__swap=function(h){var y=window.scrollY,open={},old={};
@@ -2111,7 +2168,7 @@ window.__swap=function(h){var y=window.scrollY,open={},old={};
  document.querySelectorAll('[data-k]').forEach(function(e){var o=old[e.dataset.k];if(o!==undefined&&o!==e.textContent)e.classList.add('flash');});
  window.scrollTo(0,y);};
 (function(){var y0=null,pull=0;
- document.addEventListener('touchstart',function(e){y0=(window.scrollY<=0&&!document.getElementById('sheet').classList.contains('up'))?e.touches[0].clientY:null;pull=0;},{passive:true});
+ document.addEventListener('touchstart',function(e){y0=(window.scrollY<=0)?e.touches[0].clientY:null;pull=0;},{passive:true});
  document.addEventListener('touchmove',function(e){if(y0===null)return;pull=e.touches[0].clientY-y0;var p=document.getElementById('ptr');
   if(p&&pull>0){p.style.height=Math.min(pull/2,44)+'px';p.textContent=pull>110?'Release to refresh':'Pull to refresh';}},{passive:true});
  document.addEventListener('touchend',function(){var p=document.getElementById('ptr');if(y0!==null&&pull>110&&window.REFRESH){
@@ -2120,34 +2177,15 @@ window.__swap=function(h){var y=window.scrollY,open={},old={};
 
 
 def app_frame(page):
-    """Wrap a page in the app's frame: top bar (close, NFL | NBA, refresh), a tab bar at the
-    bottom, the confirm sheet and pull-to-refresh. Everything lives inside one window."""
-    if "<body>" not in page or "class='tabbar'" in page:
+    """Page extras inside the web view: pull-to-refresh, the in-place swap and confirm dialogs.
+    The title bar and tab bar are native controls (see _web)."""
+    if "<body>" not in page or "id='ptr'" in page:
         return page
-    on_settings = "var SL =" in page                  # buttons there save your settings first
-    where = APP.get("where") or ("mine" if can_trade() else "build")
-
-    def link(key, inner, cls="", go=None):
-        js = f" onclick=\"if(window.SL&&window.go){{go('{go}');return false;}}\"" if (go and on_settings) else ""
-        return f"<a class='{cls}' href='combo://nav/{key}'{js}>{inner}</a>"
-
-    seg = "".join(link(f"lg-{k}", f"{v['icon']} {v['short']}", "on" if k == LEAGUE["code"] else "", f"lg-{k}")
-                  for k, v in LEAGUES.items())
-    refresh = where in ("mine", "results")
-    top = (f"<div class='appbar'>{link('close', '✕', 'abtn')}<div class='segc'>{seg}</div>"
-           + (link('refresh', '⟳', 'abtn') if refresh else "<span class='abtn'></span>") + "</div>"
-           "<div class='ptr' id='ptr'></div>")
-    tabs = [t for t in TABS if can_trade() or t[0] != "mine"]
-    go_for = {"mine": "mine", "results": "show", "build": "tab-build", "settings": "tab-settings"}
-    bar = ("<nav class='tabbar'>" + "".join(
-        link(k, f"<b>{ic}</b>{lab}", "on" if k == where else "", go_for[k]) for k, ic, lab in tabs) + "</nav>")
-    sheet = ("<div class='sheetbg' id='sheetbg' onclick='closeSheet()'></div><div class='sheet' id='sheet'>"
-             "<h3 id='shT'></h3><p id='shS'></p><button class='btn go' id='shGo'>Confirm</button>"
-             "<button class='btn' onclick='closeSheet()'>Cancel</button></div>")
-    page = page.replace("width=device-width,initial-scale=1", "width=device-width,initial-scale=1,viewport-fit=cover")
+    refresh = (APP.get("where") or "") in ("mine", "results")
     page = page.replace("</head>", f"<style>{APP_CSS}</style></head>", 1)
-    page = page.replace("<body>", "<body>" + top, 1)
-    page = page.replace("</body>", bar + sheet + f"<script>{APP_JS}window.REFRESH={'true' if refresh else 'false'};</script></body>", 1)
+    page = page.replace("<body>", "<body><div class='ptr' id='ptr'></div>", 1)
+    page = page.replace("</body>", f"<script>{APP_JS}window.REFRESH={'true' if refresh else 'false'};</script></body>", 1)
+    update_bars()
     return page
 
 
@@ -2207,12 +2245,34 @@ def open_outside(url):
         pass
 
 
+def native_confirm(webview, title, sub, then, label):
+    """The iPhone's own confirm dialog; carries out `then` only if you tap the button."""
+    try:
+        import console
+        console.alert(title, sub, label)          # Cancel raises KeyboardInterrupt
+    except KeyboardInterrupt:
+        return
+    except Exception:
+        pass                                      # no dialog available (not on the phone)
+    d = webview.delegate
+    if d is not None:
+        d.webview_should_start_load(webview, then, 0)
+
+
 class NavKeeper:
     """Handles the nav bar on any page, then hands everything else to the page's own handler."""
     def __init__(self, inner=None):
         self.inner = inner
 
     def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://confirm/"):
+            import threading
+            try:
+                title, sub, then, label = json.loads(unquote(url[len("combo://confirm/"):]))
+            except ValueError:
+                return False
+            threading.Thread(target=native_confirm, args=(webview, title, sub, then, label), daemon=True).start()
+            return False
         if url.startswith("combo://open/"):
             target = unquote(url[len("combo://open/"):])
             if target.startswith(KALSHI_WEB):
