@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.13"
+VERSION = "2026.11.15.14"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -758,6 +758,13 @@ def week_of(ticker):
 ACCT_CACHE = {"at": 0, "value": None}
 
 
+def in_week(a, week):
+    """A combo belongs to every NFL week it has a game in (one can mix this week and next)."""
+    if not week or not a.get("week"):
+        return False
+    return (a.get("first_week") or a["week"]) <= week <= a["week"]
+
+
 def fetch_account(max_age=60):
     """Your NFL combo bets from Kalshi (cached for a minute). Returns (bets, balance, note)."""
     import time
@@ -850,7 +857,8 @@ def _fetch_account():
         weeks = [w for w in (week_of(l["ticker"] or "") for l in legs) if w]
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
-                     "week": max(weeks).isoformat() if weeks else None})
+                     "week": max(weeks).isoformat() if weeks else None,
+                     "first_week": min(weeks).isoformat() if weeks else None})
     save_json(LEGS_CACHE, cache)
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
@@ -1018,7 +1026,7 @@ def bets_from_account(acct, history):
         c, stake = plan.get(leg_key(a["legs"]), (None, None))
         dogs = sum(1 for l in c["legs"] if l.get("dog")) if c and any("dog" in l for l in c["legs"]) else None
         pct = a["pays"] / (c["fair"] / stake * a["cost"]) if c and c.get("fair") and a["cost"] else None
-        out.append({"week": a["week"] or "unknown", "kind": c["kind"] if c else "own",
+        out.append({"week": a.get("first_week") or a["week"] or "unknown", "kind": c["kind"] if c else "own",
                     "cost": a["cost"], "status": a["status"], "back": a["back"], "est": False,
                     "legs": len(a["legs"]), "dogs": dogs, "pct": pct})
     return out
@@ -1397,6 +1405,78 @@ class ResultsKeeper:
         return not url.startswith("combo://")
 
 
+def account_breakdown(hours=24):
+    """Whole-account profit over the last `hours`, from Kalshi's own numbers:
+    settlements (payout minus cost and fees) and positions' realized profit for
+    bets closed or sold but not settled yet. Open bets are listed, not valued."""
+    import time
+    key_id = CFG.get("kalshi_key_id", "").strip()
+    if not key_id or not os.path.exists(KEYFILE):
+        return None
+    with open(KEYFILE, encoding="utf-8") as f:
+        key = load_private_key(f.read())
+    since = int(time.time() - hours * 3600)
+    settles = account_pages(key, key_id, "/portfolio/settlements", "settlements", {"min_ts": since})
+    fills = account_pages(key, key_id, "/portfolio/fills", "fills", {"min_ts": since})
+    positions = all_positions(key, key_id)
+    cache = load_json(LEGS_CACHE, {})
+    touched = {f.get("ticker") or f.get("market_ticker") for f in fills} | {s.get("ticker") for s in settles}
+    fetch_legs_parallel([t for t in touched if is_combo(t)], cache)
+    save_json(LEGS_CACHE, cache)
+
+    def kind(t):
+        if is_combo(t):
+            legs = combo_legs(t, cache) or []
+            return "NFL combos" if legs and all((l["ticker"] or "").startswith(SERIES) for l in legs) \
+                else "Other combos"
+        return "NFL single bets" if (t or "").startswith(SERIES) else "Other single bets"
+
+    out = defaultdict(lambda: {"pnl": 0.0, "n": 0})
+    done = set()
+    for s in settles:
+        t = s.get("ticker")
+        pnl = (dollars(s, "revenue") - dollars(s, "yes_total_cost") - dollars(s, "no_total_cost")
+               - dollars(s, "fee_cost"))
+        out[kind(t)]["pnl"] += pnl
+        out[kind(t)]["n"] += 1
+        done.add(t)
+    open_n, open_cost = 0, 0.0
+    for p in positions:
+        t = p.get("ticker") or p.get("market_ticker")
+        if t in done:
+            continue
+        held = abs(float(p.get("position_fp") or p.get("position") or 0))
+        realized = dollars(p, "realized_pnl")
+        if held > 0.005:
+            open_n += 1
+            open_cost += dollars(p, "market_exposure")
+        if t in touched and realized:
+            out[kind(t)]["pnl"] += realized
+            out[kind(t)]["n"] += 0 if held > 0.005 else 1
+    return {"by": dict(out), "total": sum(v["pnl"] for v in out.values()),
+            "open_n": open_n, "open_cost": open_cost, "hours": hours}
+
+
+def breakdown_html():
+    try:
+        b = account_breakdown()
+    except (PermissionError, ValueError, requests.RequestException, OSError):
+        return ""
+    if not b:
+        return ""
+    sign = lambda x: f"<span class='{'pos' if x >= 0 else 'neg'}'>{'+' if x >= 0 else '−'}{money(abs(x))}</span>"
+    rows = "".join(f"<div class='row' style='padding:5px 0;border-top:1px solid var(--line)'><span>{k}"
+                   f"<br><small class='muted'>{v['n']} settled or sold</small></span>{sign(v['pnl'])}</div>"
+                   for k, v in sorted(b["by"].items(), key=lambda x: -abs(x[1]["pnl"])))
+    return ("<details class='lostbox'><summary>Whole Kalshi account, last 24 hours: "
+            f"{sign(b['total'])}<span class='muted'> · tap for details</span></summary><div class='game'>"
+            f"{rows or '<div class=muted>Nothing settled or sold in the last 24 hours.</div>'}"
+            f"<div class='muted' style='font-size:13px;margin-top:8px'>From Kalshi's own profit figures for bets "
+            f"that settled or that you sold. Still open: {b['open_n']} bet{'s' if b['open_n'] != 1 else ''} "
+            f"({money(b['open_cost'])} in). Kalshi's 24-hour number may also include how much those open bets "
+            f"have gained or lost in value, so it can differ from this.</div></div></details>")
+
+
 def results_page(sunday):
     """This week's money and outcomes, then week by week. Kept short."""
     e = html.escape
@@ -1409,7 +1489,7 @@ def results_page(sunday):
         return (head + "<header><h1>Results</h1></header><section><div class='empty'>"
                 f"{e(note or 'Connect your Kalshi account in Settings first.')}</div></section></body></html>")
     week = sunday.isoformat() if sunday else None
-    this = [a for a in acct if a["week"] == week]
+    this = [a for a in acct if in_week(a, week)]
     # games decided but not paid out yet still count as won/lost here
     pend = [a for a in this if a["status"] == "pending"]
     res = fetch_results({l["ticker"] for a in pend for l in a["legs"] if l["ticker"]}) if pend else {}
@@ -1460,12 +1540,13 @@ def results_page(sunday):
             f"<section><div class='game'>{''.join(rows)}</div>")
     else:
         body.append("<section><div class='empty'>No combos for this week yet.</div>")
+    body.append(breakdown_html())
     # week by week
     weeks = defaultdict(lambda: defaultdict(float))
     for a in acct:
         if a["status"] == "pending" or not a["week"]:
             continue
-        w = weeks[a["week"]]
+        w = weeks[a.get("first_week") or a["week"]]
         w["n"] += 1
         w["in"] += a["cost"]
         w["back"] += a["back"]
@@ -2320,7 +2401,7 @@ def mine_page(live=False):
     pregame = load_json(PREGAME, {}) if live else remember_pregame(all_games)
     side_of = {s["ticker"]: s for v in all_games.values() for s in v}
 
-    mine = [a for a in acct if a["week"] == sunday.isoformat()] or \
+    mine = [a for a in acct if in_week(a, sunday.isoformat())] or \
         [a for a in acct if a["status"] == "pending"]
     if not live:
         loading("Checking game results…")
@@ -2695,7 +2776,7 @@ def week_spend():
     """What you've already spent on this week's NFL combos (from your account)."""
     acct, _, _ = fetch_account()
     week = CTX.get("sunday").isoformat() if CTX.get("sunday") else None
-    return sum(a["cost"] for a in acct or [] if a["week"] == week)
+    return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
 
 
 def get_offer(i, amount=None, check_cap=True):
@@ -3245,7 +3326,7 @@ def this_week(sunday):
     if can_trade():
         loading("Checking your Kalshi account…")
         acct, _, _ = fetch_account()
-        if acct and any(a["week"] == sunday.isoformat() for a in acct):
+        if acct and any(in_week(a, sunday.isoformat()) for a in acct):
             return "account"
     hist = load_json(HISTORY, {"builds": []})
     if os.path.exists(LATEST) and any(b["week"] == sunday.isoformat() and b.get("placed")
