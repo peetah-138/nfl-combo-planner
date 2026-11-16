@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.17"
+VERSION = "2026.11.15.18"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3383,16 +3383,19 @@ function budget(){ var n=val('full_count')+val('safer_count')+val('middle_count'
   var st=val('stake'), cap=val('budget'), b=document.getElementById('budgetline');
   b.textContent = n+' combos x $'+st+' = $'+(n*st)+(n*st>cap ? '  (over your cap!)' : '  (cap $'+cap+')');
   b.className = n*st>cap ? 'neg' : ''; }
+function txtval(k){ var el=document.getElementById(k); return el ? el.value : ''; }
 function collect(){ var out={};
-  Object.keys(SL).forEach(function(k){ out[k]=+document.getElementById(k).value; });
-  ['thursday','saturday','monday','skip_news','hedge_close','include_live'].forEach(function(k){ out[k]=document.getElementById(k).checked; });
-  out.odds_key=document.getElementById('odds_key').value.trim();
-  out.kalshi_key_id=document.getElementById('kalshi_key_id').value.trim();
-  out.pem=document.getElementById('pem').value;
+  Object.keys(SL).forEach(function(k){ var el=document.getElementById(k); if(el) out[k]=+el.value; });
+  document.querySelectorAll('input.sw').forEach(function(el){ out[el.id]=el.checked; });
+  out.odds_key=txtval('odds_key').trim();
+  out.kalshi_key_id=txtval('kalshi_key_id').trim();
+  out.pem=txtval('pem');
   var picks={}; document.querySelectorAll('.seg input:checked').forEach(function(r){ if(r.value) picks[r.name]=r.value; });
   out.picks=picks; return out; }
 function go(choice){ var btns=document.querySelectorAll('button'); btns.forEach(function(b){b.disabled=true;});
-  try{ location.href='combo://settings/'+choice+'/'+encodeURIComponent(JSON.stringify(collect())); }catch(e){} }
+  var data='';
+  try{ data=encodeURIComponent(JSON.stringify(collect())); }catch(e){ data=''; }
+  location.href='combo://settings/'+choice+'/'+data; }
 Object.keys(SL).forEach(label);
 """
 
