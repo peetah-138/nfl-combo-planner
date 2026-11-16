@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.12"
+VERSION = "2026.11.15.13"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1375,7 +1375,122 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
 
 
 def show_results(all_games=None, days=None, sunday=None):
-    """Open the latest results page with your placed/offer notes and season record."""
+    """Results: what actually happened to your combos (from Kalshi). Without a Kalshi
+    connection, falls back to the planner's last build."""
+    if can_trade() and not RUN_OPTS.pop("show_build", False):
+        return present(results_page(sunday), ResultsKeeper())
+    return show_build(all_games, days, sunday)
+
+
+@safe_delegate
+class ResultsKeeper:
+    def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://lastbuild"):
+            import threading
+
+            def go():
+                RUN_OPTS["show_build"] = True
+                RUN_OPTS["goto"] = "results"
+                run()
+            threading.Thread(target=go, daemon=True).start()
+            return False
+        return not url.startswith("combo://")
+
+
+def results_page(sunday):
+    """This week's money and outcomes, then week by week. Kept short."""
+    e = html.escape
+    loading("Getting your results from Kalshi…")
+    acct, balance, note = fetch_account()
+    head = ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>Results</title><style>{CSS}</style></head><body>")
+    if acct is None:
+        return (head + "<header><h1>Results</h1></header><section><div class='empty'>"
+                f"{e(note or 'Connect your Kalshi account in Settings first.')}</div></section></body></html>")
+    week = sunday.isoformat() if sunday else None
+    this = [a for a in acct if a["week"] == week]
+    # games decided but not paid out yet still count as won/lost here
+    pend = [a for a in this if a["status"] == "pending"]
+    res = fetch_results({l["ticker"] for a in pend for l in a["legs"] if l["ticker"]}) if pend else {}
+
+    def outcome(a):
+        if a["status"] != "pending":
+            return a["status"], a["back"]
+        rs = [res.get(l["ticker"]) if l.get("side", "yes") == "yes" else
+              {"yes": "no", "no": "yes"}.get(res.get(l["ticker"])) for l in a["legs"]]
+        if any(r == "no" for r in rs):
+            return "lost", 0.0
+        if all(r == "yes" for r in rs):
+            return "won", a["pays"]
+        return "live", 0.0
+
+    rows, tot = [], defaultdict(float)
+    order = {"won": 0, "cashed": 1, "live": 2, "lost": 3}
+    for i, a in sorted(enumerate(this, 1), key=lambda x: order.get(outcome(x[1])[0], 9)):
+        st, back = outcome(a)
+        tot[st] += 1
+        tot["staked"] += a["cost"]
+        if st != "live":
+            tot["decided"] += a["cost"]
+            tot["back"] += back
+        else:
+            tot["live_staked"] += a["cost"]
+        tag = {"won": "<span class='tag good'>Won</span>", "cashed": "<span class='tag good'>Cashed out</span>",
+               "lost": "<span class='tag red'>Lost</span>", "live": "<span class='tag dog'>Live</span>"}[st]
+        net = back - a["cost"]
+        money_cell = (f"<span class='muted'>{money(a['cost'])} in</span>" if st == "live" else
+                      f"<span class='{'pos' if net >= 0 else 'neg'}'>{'+' if net >= 0 else '−'}{money(abs(net))}</span>")
+        rows.append(f"<div class='row' style='padding:7px 0;border-top:1px solid var(--line)'>"
+                    f"<span>Combo {i} {tag}<br><small class='muted'>{len(a['legs'])} picks · "
+                    f"{money(a['cost'])} → {money(back) if st != 'live' else 'pays ' + money(a['pays'])}</small></span>"
+                    f"<span>{money_cell}</span></div>")
+    net = tot["back"] - tot["decided"]
+    body = [head, f"<header><h1>Results</h1><div class='sub'>Week of {sunday:%b %-d}</div></header>"]
+    if this:
+        body.append(
+            "<div style='padding:0 16px'><div class='batch now'>"
+            f"<div class='row'><b>This week so far</b><b class='{'pos' if net >= 0 else 'neg'}' style='font-size:22px'>"
+            f"{'+' if net >= 0 else '−'}{money(abs(net))}</b></div>"
+            f"<div class='muted' style='font-size:13px'>Put in {money(tot['decided'])} on decided combos, got back "
+            f"{money(tot['back'])}."
+            + (f" Another {money(tot['live_staked'])} is still live." if tot["live"] else "") + "</div>"
+            f"<div style='font-size:14px;margin-top:6px'>{int(tot['won'])} won · {int(tot['cashed'])} cashed out · "
+            f"{int(tot['lost'])} lost · {int(tot['live'])} live</div></div></div>"
+            f"<section><div class='game'>{''.join(rows)}</div>")
+    else:
+        body.append("<section><div class='empty'>No combos for this week yet.</div>")
+    # week by week
+    weeks = defaultdict(lambda: defaultdict(float))
+    for a in acct:
+        if a["status"] == "pending" or not a["week"]:
+            continue
+        w = weeks[a["week"]]
+        w["n"] += 1
+        w["in"] += a["cost"]
+        w["back"] += a["back"]
+        w["won"] += a["status"] in ("won", "cashed") and a["back"] > a["cost"]
+    if weeks:
+        all_in = sum(w["in"] for w in weeks.values())
+        all_net = sum(w["back"] - w["in"] for w in weeks.values())
+        lines = "".join(
+            f"<div class='row' style='padding:6px 0;border-top:1px solid var(--line)'><span>"
+            f"{dt.date.fromisoformat(k):%b %-d}<br><small class='muted'>{int(w['n'])} combos · "
+            f"{int(w['won'])} paid off · {money(w['in'])} in</small></span>"
+            f"<span class='{'pos' if w['back'] >= w['in'] else 'neg'}'>{'+' if w['back'] >= w['in'] else '−'}"
+            f"{money(abs(w['back'] - w['in']))}</span></div>"
+            for k, w in sorted(weeks.items(), reverse=True))
+        body.append(f"<h2>Every week (settled)</h2><div class='game'><div class='row'><b>All time</b>"
+                    f"<b class='{'pos' if all_net >= 0 else 'neg'}'>{'+' if all_net >= 0 else '−'}{money(abs(all_net))}"
+                    f"</b></div><div class='muted' style='font-size:13px'>on {money(all_in)} put in</div>{lines}</div>")
+    body.append("<div class='quote' style='margin:12px 0 24px'><button class='btn' "
+                "onclick=\"location.href='combo://lastbuild'\">See the planner's last suggested combos</button></div>"
+                "</section></body></html>")
+    return "".join(body)
+
+
+def show_build(all_games=None, days=None, sunday=None):
+    """The planner's latest build page with your placed/offer notes and season record."""
     try:
         with open(LATEST, encoding="utf-8") as f:
             page = f.read()
@@ -1568,7 +1683,7 @@ def nav_bar():
     items = []
     if can_trade():
         items.append(("mine", "My combos"))
-    if os.path.exists(LATEST):
+    if can_trade() or os.path.exists(LATEST):
         items.append(("results", "Results"))
     items.append(("settings", "⚙︎ Settings"))
     links = "".join(
@@ -3306,7 +3421,7 @@ def main():
                 "locks": locks, "skipped": skipped, "news": news, "notes": notes, "combos": combos,
                 "build_id": build_id, "stake": CFG["stake"], "offers": {}})
     console_note(f"Built {len(combos)} combos (${len(combos) * CFG['stake']}). Opening results...")
-    show_results()
+    show_build()
 
 
 # ================================================================ updates
