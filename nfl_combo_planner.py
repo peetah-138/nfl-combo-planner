@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.20"
+VERSION = "2026.11.15.21"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2988,6 +2988,36 @@ def can_trade():
     return bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)
 
 
+def combo_rules(events):
+    """Which of these games Kalshi accepts in one combo, and how many picks it allows.
+    Returns (allowed games, most picks, fewest picks), or None if Kalshi can't be asked."""
+    try:
+        colls, cursor = [], None
+        for _ in range(10):
+            params = {"status": "open", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            r = requests.get(f"{KALSHI}/multivariate_event_collections", timeout=20, params=params)
+            r.raise_for_status()
+            data = r.json()
+            colls += data.get("multivariate_contracts", [])
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+    except (requests.RequestException, ValueError):
+        return None
+    if not colls:
+        return None                                   # nothing listed: can't tell, so don't block
+    want, best = set(events), None
+    for c in colls:
+        inside = {a.get("ticker") for a in c.get("associated_events", [])} or \
+            set(c.get("associated_event_tickers") or [])
+        got = want & inside
+        if got and (best is None or len(got) > len(best[0])):
+            best = (got, int(c.get("size_max") or 99), int(c.get("size_min") or 2))
+    return best or (set(), 0, 2)
+
+
 def find_collection(legs):
     """The Kalshi combo collection that accepts all these games."""
     events = {l["event"] for l in legs}
@@ -3715,6 +3745,33 @@ def main():
                     "or come back for next week's games, which usually open on Kalshi by Tuesday")
         why.append("To get more games: " + ", ".join(tips) + ".")
         raise Stop("Not enough games right now", " ".join(why))
+    # Only build combos Kalshi will actually take: its allowed games and number of picks.
+    loading("Checking which games Kalshi takes in combos…")
+    rules = combo_rules(games)
+    if rules is not None:
+        ok, most, fewest = rules
+        if len(ok) < 2:
+            raise Stop("Kalshi doesn't offer combos on these games",
+                       f"None of the {len(games)} games here can go into a Kalshi combo right now. "
+                       + ("Kalshi may not offer college basketball combos, or not on these games. "
+                          "Try tomorrow's games, or switch to NFL with the 🏈 button." if by_day() else
+                          "Try again later, or check Kalshi's combo builder in the app."))
+        left_out = [e for e in games if e not in ok]
+        if left_out:
+            notes.append(f"Kalshi only takes {len(ok)} of these {len(games)} games in combos, "
+                         f"so {len(left_out)} were left out.")
+            games = {e: s for e, s in games.items() if e in ok}
+        if most < 99:
+            for t in TIERS:
+                CFG[f"{t}_max"] = min(CFG[f"{t}_max"], most)
+                CFG[f"{t}_min"] = min(CFG[f"{t}_min"], most)
+            if CFG["full_count"] and len(games) > most:
+                notes.append(f"Kalshi allows at most {most} picks in a combo, so there are no "
+                             f"every-game combos this time.")
+                CFG["full_count"] = 0
+        if len(games) < 2:
+            raise Stop("Not enough games Kalshi takes in combos",
+                       f"Only {len(games)} game here can go into a Kalshi combo right now.")
     locks = {e: t for e, t in CFG["picks"].items() if e in games and t != "skip"}
     clean_cfg(len(games))
 
