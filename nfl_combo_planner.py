@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.8"
+VERSION = "2026.11.16.9"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -55,6 +55,7 @@ LATEST = os.path.join(HERE, "combos_latest.html")
 HISTORY = os.path.join(HERE, "combo_history.json")
 LEAGUE_FILE = os.path.join(HERE, "combo_league.json")
 MAIN_SAVED = SAVED
+KEYS_SAVED = os.path.join(HERE, "combo_keys.json")   # Key ID and sportsbook key, kept apart
 
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 SERIES = "KXNFLGAME"
@@ -166,9 +167,30 @@ def set_league(code):
     if SAVED != MAIN_SAVED:                      # keys and bankroll are shared by every league
         main = load_json(MAIN_SAVED, {})
         CFG.update({k: main[k] for k in SHARED_KEYS if k in main})
+    keys = load_json(KEYS_SAVED, {})             # a saved key is never lost to a blank
+    for k in KEY_FIELDS:
+        if not str(CFG.get(k, "")).strip() and keys.get(k):
+            CFG[k] = keys[k]
+    if any(str(CFG.get(k, "")).strip() and not keys.get(k) for k in KEY_FIELDS):
+        save_json(KEYS_SAVED, dict(keys, **{k: CFG[k].strip() for k in KEY_FIELDS if str(CFG.get(k, "")).strip()}))
 
 
-def save_cfg():
+KEY_FIELDS = ("kalshi_key_id", "odds_key")
+
+
+def save_cfg(cleared=()):
+    """Save settings. Your Kalshi Key ID and sportsbook key are also kept in their own small
+    file, and a blank never overwrites them unless you cleared them yourself in Settings."""
+    keys = load_json(KEYS_SAVED, {})
+    for k in KEY_FIELDS:
+        v = str(CFG.get(k, "")).strip()
+        if v:
+            keys[k] = v
+        elif k in cleared:
+            keys.pop(k, None)
+        elif keys.get(k):
+            CFG[k] = keys[k]
+    save_json(KEYS_SAVED, keys)
     save_json(SAVED, CFG)
     if SAVED != MAIN_SAVED:
         main = load_json(MAIN_SAVED, {})
@@ -1942,7 +1964,7 @@ LOADING_PAGE = """<!doctype html><html><head><meta charset='utf-8'>
 <div class='bar' style='height:26px;width:55%%'></div><div class='bar' style='height:120px'></div>
 <div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div></div>
 <script>function setMsg(m){document.getElementById('msg').textContent=m;}
-window.__load=function(h){var m=h.match(/<head[^>]*>([\s\S]*)<\/head>/i),b=h.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+window.__load=function(h){var m=h.match(/<head[^>]*>([\\s\\S]*)<\\/head>/i),b=h.match(/<body[^>]*>([\\s\\S]*)<\\/body>/i);
  if(m)document.head.innerHTML=m[1];document.body.innerHTML=b?b[1]:h;
  document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
  window.scrollTo(0,0);};</script></body></html>"""
@@ -2014,13 +2036,9 @@ def _web():
     for key, icon, label in TABS:
         btn = ui.Button(title=f"{icon}  {label}", name=key)
         btn.font = ("<system-bold>", 13)
-        btn.action = lambda sender: native_nav(sender.name)
         bar.add_subview(btn)
     win.add_subview(bar)
-    win.left_button_items = [ui.ButtonItem(title=f"{v['icon']} {v['short']}",
-                                           action=(lambda code: (lambda sender: native_nav("lg-" + code)))(k))
-                             for k, v in LEAGUES.items()]
-    win.right_button_items = [ui.ButtonItem(title="⟳", action=lambda sender: native_nav("refresh"))]
+    bind_controls(win, bar)
     APP.update(web=web, win=win, bar=bar, page=None, closed=False)
     update_bars()
     win.present("fullscreen", hide_title_bar=False, title_bar_color=bg, title_color=ink)
@@ -2062,6 +2080,19 @@ def _window_closed():
     MINE["live"] = False
 
 
+def bind_controls(win, bar):
+    """Point the tab bar and title-bar buttons at this copy of the planner. After an update,
+    an adopted window's buttons would otherwise still call the old copy, which then opened a
+    fresh (white) window of its own on every tap."""
+    import ui
+    for btn in bar.subviews:
+        btn.action = lambda sender: native_nav(sender.name)
+    win.left_button_items = [ui.ButtonItem(title=f"{v['icon']} {v['short']}",
+                                           action=(lambda code: (lambda sender: native_nav("lg-" + code)))(k))
+                             for k, v in LEAGUES.items()]
+    win.right_button_items = [ui.ButtonItem(title="⟳", action=lambda sender: native_nav("refresh"))]
+
+
 def adopt_window(old_app, notice):
     """Called on a freshly updated copy: take over the open window so the update
     starts without closing anything, then open on Settings."""
@@ -2080,6 +2111,11 @@ def adopt_window(old_app, notice):
         return
     APP.update(web=old_app["web"], win=win, bar=old_app.get("bar"), page=None, closed=False)
     win.closers = [_window_closed]      # closing now tells this new copy, not the old one
+    try:
+        bind_controls(win, old_app["bar"])
+        update_bars()
+    except Exception:
+        pass
     RUN_OPTS["goto"] = "settings"
     RUN_OPTS["notice"] = notice
 
@@ -2614,7 +2650,7 @@ def plan_cashout():
     if not offers or not MINE.get("patterns"):
         return None
     acts = {t: 0.0 for t in offers}
-    best = weekend_stats(acts)["eu"]
+    best = weekend_stats(acts)["worth"]
     for _ in range(3):
         changed = False
         for t in sorted(offers, key=lambda x: -MINE["hold"][x]["hold"]):
@@ -2622,8 +2658,8 @@ def plan_cashout():
                 if f == acts[t]:
                     continue
                 trial = dict(acts, **{t: f})
-                v = weekend_stats(trial)["eu"]
-                if v > best + 1e-9:
+                v = weekend_stats(trial)["worth"]
+                if v > best + 0.10:               # ignore changes worth only pennies
                     best, acts, changed = v, trial, True
         if not changed:
             break
@@ -2641,13 +2677,18 @@ def plan_words(t, f, o, h, W):
         return f"Locks in half and keeps a {p:.0%} shot at {money(pays / 2)}."
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
-def confirm_cash(t, h, o):
-    """onclick for a Cash out button: a bottom sheet that says exactly what happens."""
+def confirm_parts(t, h, o):
+    """(title, details, url, button) for the confirm sheet: exactly what happens."""
     what = "half of " if o.get("frac", 1.0) < 1 else ""
     title = f"Cash out {what}{h['label']} for {money(o['offer'])}?"
     sub = (f"You paid {money(h['cost'] * o.get('frac', 1.0))}. If you hold instead: "
            f"{h['p']:.0%} chance of {money(h['pays'] * o.get('frac', 1.0))}.")
-    args = ",".join(json.dumps(x) for x in (title, sub, f"combo://cash/go/{t}", f"Cash out for {money(o['offer'])}"))
+    return title, sub, f"combo://cash/go/{t}", f"Cash out for {money(o['offer'])}"
+
+
+def confirm_cash(t, h, o):
+    """onclick for a Cash out button: a bottom sheet that says exactly what happens."""
+    args = ",".join(json.dumps(x) for x in confirm_parts(t, h, o))
     return html.escape(f"sheet({args})")
 
 
@@ -2661,9 +2702,12 @@ def action_button(t, f, h):
         what = "half of " if f < 1 else ""
         return (f"<button class='btn go cashb' onclick=\"{confirm_cash(t, h, o)}\">Cash out {what}"
                 f"{html.escape(h['label'])} for {money(o['offer'])}</button>")
-    act = "askhalf" if f < 1 else "ask"
-    return (f"<button class='btn go cashb' onclick=\"cash('{act}','{te}')\">Get offer for "
-            f"{'half of ' if f < 1 else 'all of '}{html.escape(h['label'])}</button>")
+    # Kalshi quotes one size at a time, so this price is worked out from the offer in hand;
+    # tapping gets the exact offer for this size and asks you to confirm it.
+    est = acts_price(t) * h["pays"] * f
+    act = "askhalfgo" if f < 1 else "askgo"
+    return (f"<button class='btn go cashb' onclick=\"cash('{act}','{te}')\">Cash out "
+            f"{'half of ' if f < 1 else ''}{html.escape(h['label'])} · about {money(est)}</button>")
 
 
 def cash_block(ticker, plan):
@@ -2728,8 +2772,15 @@ def fetch_scores(max_age=45):
         return SCORES["by_team"]
     by = {}
     try:
-        r = requests.get(SCORES_URL, params=LG()["espn_q"], timeout=8)
+        q = dict(LG()["espn_q"])
+        if LG()["slate"] == "day":              # teams play most nights: get yesterday to 3 days out
+            today = dt.date.today()
+            q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}", limit=200)
+        r = requests.get(SCORES_URL, params=q, timeout=8)
         events = r.json().get("events", []) if r.ok else []
+        if not events and "dates" in q:
+            r = requests.get(SCORES_URL, params=LG()["espn_q"], timeout=8)
+            events = r.json().get("events", []) if r.ok else []
         for ev in events:
             comp = (ev.get("competitions") or [{}])[0]
             st = comp.get("status") or ev.get("status") or {}
@@ -2758,29 +2809,60 @@ def fetch_scores(max_age=45):
                             "opp_name": (opp.get("team") or {}).get("displayName", ""),
                             "state": state, "detail": detail,
                             "ball": str(sit.get("possession", "")) == str(me.get("id") or (me.get("team") or {}).get("id")),
-                            "redzone": bool(sit.get("isRedZone"))}
+                            "redzone": bool(sit.get("isRedZone")),
+                            "game": ev.get("id"), "day": espn_day(ev.get("date"))}
                 tm = me.get("team") or {}
-                by[name] = info
-                for alt in (name, tm.get("shortDisplayName"), tm.get("location")):
-                    if alt:
-                        by.setdefault(norm_team(alt), info)
+                for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
+                            norm_team(tm.get("location") or "")} - {""}:
+                    by.setdefault(alt, []).append(info)
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         return SCORES["by_team"]
     SCORES.update(at=time.time(), by_team=by)
     return by
 
 
+def espn_day(iso):
+    """US game date of an ESPN start time (ESPN gives UTC; a 10 PM Eastern tip-off is 3 AM UTC)."""
+    try:
+        t = dt.datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        return (t - dt.timedelta(hours=5)).date()
+    except ValueError:
+        return None
+
+
+def ticker_day(ticker):
+    """Game date written in a Kalshi ticker, e.g. KXNBAGAME-26NOV16PHIIND -> 2026-11-16."""
+    m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})", ticker or "")
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1) + m.group(2).title() + m.group(3), "%y%b%d").date()
+    except ValueError:
+        return None
+
+
+def pick_game(games, day):
+    """The game in the list played on `day` (the pick's own game), never another night's."""
+    if not games:
+        return None
+    if day is None:
+        return games[0] if len({g["game"] for g in games}) == 1 else None
+    return next((g for g in games if g["day"] == day), None)
+
+
 def leg_score(l):
-    """Score from the point of view of the team this pick needs to win, or None."""
+    """Score of the game this pick is on, from the point of view of the team it needs, or None.
+    Only that exact game: a team's result from another night is never shown."""
     abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
     name = TEAMS.get(abbr) or PICK_NAME.get(l["ticker"] or "", "")
     by = SCORES["by_team"]
-    sc = (by.get(name) or by.get(norm_team(name)) or by.get(norm_team(" ".join(name.split()[-2:])))
-          or by.get(norm_team(name.split()[-1]))) if name else None
+    games = (by.get(name) or by.get(norm_team(name)) or by.get(norm_team(" ".join(name.split()[-2:])))
+             or by.get(norm_team(name.split()[-1]))) if name else None
+    sc = pick_game(games, ticker_day(l["ticker"]))
     if not sc:
         return None
     if l.get("side", "yes") == "no":           # betting against this team
-        sc = by.get(sc["opp_name"]) or sc
+        sc = next((g for g in by.get(sc["opp_name"], []) if g["game"] == sc["game"]), sc)
     return sc
 
 
@@ -3070,6 +3152,7 @@ def cash_action(action, ticker):
     """Buttons on a combo card: ask for an offer, cash out, or keep it."""
     MINE["busy"] = True                     # the 2-minute refresh waits until this is done
     APP["quiet"] = True                      # update the page in place, no loading screen
+    confirm_after = None
     try:
         if action == "tp":
             loading("Placing your auto-sell order on Kalshi…")
@@ -3079,9 +3162,11 @@ def cash_action(action, ticker):
             loading("Cancelling the auto-sell order…")
             n = cancel_take_profit(ticker)
             MINE["flash"] = "Auto-sell order cancelled." if n else "No auto-sell order to cancel."
-        elif action in ("ask", "askhalf"):
-            loading("Asking Kalshi for a cash-out offer…")
-            MINE["cash"][ticker] = get_cash_offer(ticker, 0.5 if action == "askhalf" else 1.0)
+        elif action in ("ask", "askhalf", "askgo", "askhalfgo"):
+            loading("Getting Kalshi's exact offer…" if action.endswith("go") else "Asking Kalshi for a cash-out offer…")
+            MINE["cash"][ticker] = get_cash_offer(ticker, 0.5 if "half" in action else 1.0)
+            if action.endswith("go"):
+                confirm_after = ticker
         elif action == "askall":
             from concurrent.futures import ThreadPoolExecutor
             want = [t for t in MINE["hold"] if not fresh_offer(t)]
@@ -3097,8 +3182,12 @@ def cash_action(action, ticker):
         redraw_mine()
     except Exception as err:
         present(error_page(f"Something went wrong: {type(err).__name__}: {err}"))
+        confirm_after = None
     finally:
         MINE["busy"] = False
+    o = fresh_offer(confirm_after) if confirm_after else None
+    if o and APP.get("web") is not None:          # straight to "Cash out for $X?" with the exact price
+        native_confirm(APP["web"], *confirm_parts(confirm_after, MINE["hold"][confirm_after], o))
 
 
 def redraw_mine():
@@ -3154,12 +3243,29 @@ def auto_cash_checks():
                 fresh.append(t)
     plan = plan_cashout() if fresh else None
     alerts = MINE.pop("pre_alerts", [])
-    for t in fresh:
-        f = (plan or {}).get("acts", {}).get(t, 0)
-        o, h = fresh_offer(t), MINE["hold"][t]
-        if f and o:
-            alerts.append(f"💰 Cash out {'half of ' if f < 1 else ''}{h['label']}: Kalshi offers "
-                          f"{money(o['offer'] * f)} now. Open the planner to do it.")
+    if not plan:
+        return alerts
+    # Push only when cashing out clearly pays (worth at least $1, or 5% of what it locks in, more
+    # to you than holding), and only once per recommendation: again only if the offer has
+    # risen 20%+ or the advice grows from half to all, never more than every 10 minutes.
+    gain = plan["plan"]["worth"] - plan["hold"]["worth"]
+    if gain < max(1.0, 0.05 * plan["plan"]["sure"]):
+        return alerts
+    told = MINE.setdefault("alerted", {})
+    news = []
+    for t, f in plan["acts"].items():
+        o, h = fresh_offer(t), MINE["hold"].get(t)
+        if not (f and o and h):
+            continue
+        amt = acts_price(t) * h["pays"] * f
+        last = told.get(t)
+        if last and (time.time() - last["at"] < 600 or (amt < last["amt"] * 1.2 and f <= last["f"])):
+            continue
+        told[t] = {"f": f, "amt": amt, "at": time.time()}
+        news.append(f"{'half of ' if f < 1 else ''}{h['label']} for {money(amt)}")
+    if news:
+        alerts.append(f"💰 Good time to cash out {', '.join(news)}: worth about {money(gain)} more "
+                      "to you than holding. Open the planner to confirm.")
     return alerts
 
 def mine_page(live=False):
@@ -4208,13 +4314,17 @@ def settings_page(all_games, days, counts):
             except ValueError:
                 vals = {}
             pem = vals.pop("pem", "")
-            for k in ("kalshi_key_id", "odds_key"):
-                if k in vals and not str(vals[k]).strip() and CFG.get(k) and "settings" != APP.get("smode"):
-                    vals.pop(k)                    # only the Settings tab can clear a saved key
+            cleared = []
+            for k in KEY_FIELDS:
+                if k in vals and not str(vals[k]).strip() and CFG.get(k):
+                    if "settings" == APP.get("smode") and choice == "save":
+                        cleared.append(k)          # you blanked it and tapped Save on Settings
+                    else:
+                        vals.pop(k)                # anything else never clears a saved key
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
-            save_cfg()
+            save_cfg(cleared)
             if pem.strip():
                 save_private_key(pem)
             result["go"] = choice
