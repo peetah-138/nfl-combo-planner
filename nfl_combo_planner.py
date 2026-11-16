@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.4"
+VERSION = "2026.11.16.5"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3996,9 +3996,9 @@ function txtval(k){ var el=document.getElementById(k); return el ? el.value : ''
 function collect(){ var out={};
   Object.keys(SL).forEach(function(k){ var el=document.getElementById(k); if(el) out[k]=+el.value; });
   document.querySelectorAll('input.sw').forEach(function(el){ out[el.id]=el.checked; });
-  out.odds_key=txtval('odds_key').trim();
-  out.kalshi_key_id=txtval('kalshi_key_id').trim();
-  out.pem=txtval('pem');
+  if(document.getElementById('odds_key')) out.odds_key=txtval('odds_key').trim();
+  if(document.getElementById('kalshi_key_id')) out.kalshi_key_id=txtval('kalshi_key_id').trim();
+  if(document.getElementById('pem')) out.pem=txtval('pem');
   var picks={}; document.querySelectorAll('.seg input:checked').forEach(function(r){ if(r.value) picks[r.name]=r.value; });
   out.picks=picks; return out; }
 function go(choice){ var btns=document.querySelectorAll('button'); btns.forEach(function(b){b.disabled=true;});
@@ -4181,6 +4181,9 @@ def settings_page(all_games, days, counts):
             except ValueError:
                 vals = {}
             pem = vals.pop("pem", "")
+            for k in ("kalshi_key_id", "odds_key"):
+                if k in vals and not str(vals[k]).strip() and CFG.get(k) and "settings" != APP.get("smode"):
+                    vals.pop(k)                    # only the Settings tab can clear a saved key
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
