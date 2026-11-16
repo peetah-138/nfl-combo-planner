@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.21"
+VERSION = "2026.11.16.22"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -41,7 +41,8 @@ CFG = {
     "ride": 2,            # auto-sell "Let it ride" level: 0 Cautious ... 4 Ride it out (see RIDE)
     "tp_follow": True,    # move auto-sell orders as chances change, while the planner is open
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
-    "tp_auto": False,     # put an auto-sell order on every combo bought from the planner    # underdog picks go in the latest games, favourites in the earliest
+    "tp_auto": False,     # put an auto-sell order on every live combo (every league)
+    "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 DEFAULTS = json.loads(json.dumps(CFG))
@@ -131,7 +132,7 @@ LEAGUES = {
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code")
 
 
 def next_league():
@@ -202,7 +203,7 @@ def set_league(code):
         save_json(KEYS_SAVED, dict(keys, **{k: CFG[k].strip() for k in KEY_FIELDS if str(CFG.get(k, "")).strip()}))
 
 
-KEY_FIELDS = ("kalshi_key_id", "odds_key")
+KEY_FIELDS = ("kalshi_key_id", "odds_key", "watcher_code")
 
 
 def save_cfg(cleared=()):
@@ -2377,6 +2378,7 @@ ol{margin:10px 0 0}li{padding:12px 0;border-top:1px solid var(--line);gap:12px}
 .alertrow{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border-radius:16px;
  padding:12px 16px;margin:0 0 12px;box-shadow:var(--shadow)}.alertrow b{font-size:15px;font-weight:650;display:block}
 .alertrow span{font-size:13px;color:var(--muted)}
+.wline{font-size:13px;color:var(--muted);margin:0 4px 10px}.wline.bad{color:var(--bad)}
 input.txt,textarea{border-radius:12px!important;border:1px solid var(--line)!important;background:var(--card2)!important;
  color:var(--ink);font-size:16px}
 input[type=range]{accent-color:var(--accent)}
@@ -2752,7 +2754,8 @@ def live_check(webview):
     pre_alerts = auto_cash_checks()
     APP["quiet"] = True
     page, snap = mine_page(live=True)
-    if CFG.get("tp_follow", True) and MINE.get("tp") and can_trade():
+    pi = in_pythonista() and watcher_alive()
+    if CFG.get("tp_follow", True) and MINE.get("tp") and can_trade() and not pi:
         try:
             if retarget_take_profits():
                 MINE["tp"] = resting_sells()
@@ -2763,7 +2766,7 @@ def live_check(webview):
     alerts = diff_alerts(MINE.get("snap") or {}, snap) + pre_alerts + cash_alerts_now
     MINE["snap"] = snap
     present(page, MineKeeper())
-    for msg in alerts[:4]:
+    for msg in ([] if pi else alerts[:4]):        # the Pi sends these when it's running
         notify(msg)
     return alerts
 
@@ -3536,6 +3539,83 @@ def autosell_pass():
     return done
 
 
+# ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
+NTFY = "https://ntfy.sh"
+WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs")
+WATCH = {"at": 0, "hb": None}
+
+
+def watcher_conf():
+    """{'topic', 'secret'} from the pairing code the Pi's installer printed, or None."""
+    import base64
+    code = (CFG.get("watcher_code") or "").strip()
+    if not code:
+        return None
+    try:
+        c = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)).decode())
+        return c if c.get("topic") and c.get("secret") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def watcher_status(max_age=60):
+    """The Pi's latest heartbeat (it sends one every 4 minutes), or None."""
+    import time
+    c = watcher_conf()
+    if not c:
+        return None
+    if time.time() - WATCH["at"] < max_age:
+        return WATCH["hb"]
+    WATCH["at"] = time.time()
+    try:
+        r = requests.get(f"{NTFY}/{c['topic']}-hb/json", params={"poll": "1", "since": "20m"}, timeout=6)
+        msgs = [json.loads(x) for x in r.text.splitlines() if x.strip()] if r.ok else []
+        WATCH["hb"] = json.loads(msgs[-1]["message"]) if msgs else None
+    except (requests.RequestException, ValueError, KeyError):
+        pass
+    return WATCH["hb"]
+
+
+def watcher_alive():
+    """True while the Pi has checked in within the last 10 minutes: it then moves the auto-sells
+    and sends the alerts, and the phone stays out of its way."""
+    import time
+    hb = watcher_status()
+    return bool(hb and time.time() - hb.get("at", 0) < 600)
+
+
+def send_watcher_settings():
+    """Send your auto-sell settings (and Kalshi's learned discount) to the Pi, signed so only
+    your phone can change them. Never sends keys."""
+    import hmac, hashlib, time
+    c = watcher_conf()
+    if not c:
+        return False
+    body = json.dumps({"at": int(time.time()), "cfg": {k: CFG.get(k) for k in WATCHER_SYNCED},
+                       "discount": load_json(DISCOUNT_FILE, {})}, separators=(",", ":"))
+    sig = hmac.new(c["secret"].encode(), body.encode(), hashlib.sha256).hexdigest()
+    try:
+        requests.post(f"{NTFY}/{c['topic']}-cfg", data=json.dumps({"body": body, "sig": sig}).encode(),
+                      timeout=8, headers={"Cache": "yes"})
+        return True
+    except requests.RequestException:
+        return False
+
+
+def watcher_line():
+    """One line for Live: is the Pi watching?"""
+    import time
+    if not watcher_conf():
+        return ""
+    hb = watcher_status()
+    if hb and time.time() - hb.get("at", 0) < 600:
+        t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
+        return (f"<div class='wline'>🖥 Pi watcher on · checked {t} · {hb.get('orders', 0)} auto-sell order"
+                f"{'' if hb.get('orders', 0) == 1 else 's'}</div>")
+    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 10+ minutes. Your phone is handling "
+            "auto-sell and alerts while it's open.</div>")
+
+
 def start_autosell_keeper():
     """Runs every minute while the planner is open, whatever league or screen you're on.
     Stops when you close the planner or an update takes over."""
@@ -3546,7 +3626,8 @@ def start_autosell_keeper():
     def loop():
         while not APP.get("superseded") and not APP.get("closed"):
             try:
-                autosell_pass()
+                if not (in_pythonista() and watcher_alive()):
+                    autosell_pass()
             except Exception as err:
                 console_note(f"Auto-sell check skipped: {type(err).__name__}: {err}")
             for _ in range(60):
@@ -4168,7 +4249,8 @@ def mine_page(live=False):
     best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
     n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
     n_cashed = sum(1 for a in mine if a["status"] == "cashed")
-    alerts_row = ("<label class='alertrow'><div><b>Live updates &amp; alerts</b><span id='livemsg'>"
+    wl = watcher_line() if in_pythonista() else ""
+    alerts_row = wl + ("<label class='alertrow'><div><b>Live updates &amp; alerts</b><span id='livemsg'>"
                   + (f"Updated {MINE['last']}" if live and MINE.get("last") else
                      "Off · turn on for scores, offers and alerts") +
                   f"</span></div><input type='checkbox' class='sw' id='livebtn' {'checked' if live else ''} "
@@ -4798,6 +4880,7 @@ function collect(){ var out={};
   document.querySelectorAll('input.sw').forEach(function(el){ out[el.id]=el.checked; });
   if(document.getElementById('odds_key')) out.odds_key=txtval('odds_key').trim();
   if(document.getElementById('kalshi_key_id')) out.kalshi_key_id=txtval('kalshi_key_id').trim();
+  if(document.getElementById('watcher_code')) out.watcher_code=txtval('watcher_code').trim();
   if(document.getElementById('pem')) out.pem=txtval('pem');
   var picks={}; document.querySelectorAll('.seg input:checked').forEach(function(r){ if(r.value) picks[r.name]=r.value; });
   out.picks=picks; return out; }
@@ -4943,6 +5026,15 @@ def settings_page(all_games, days, counts):
                         + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                         + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot"),
                         "Free key from the-odds-api.com. Without it, chances use Kalshi's prices only."),
+        "watcher": section("Pi watcher",
+                           f"<input class='txt' id='watcher_code' placeholder='Paste the pairing code from the Pi' "
+                           f"autocapitalize='off' autocorrect='off' spellcheck='false' value='{e(CFG.get('watcher_code', ''))}'>"
+                           + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
+                           + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else ""),
+                           "A Raspberry Pi at home that runs all the time: it moves your auto-sells and sends "
+                           "alerts (through the ntfy app) with your phone locked. When it's running, the phone "
+                           "leaves those to it. Saving here also sends your auto-sell settings to it, signed so "
+                           "only your phone can change them. Cash-outs still need your tap here."),
         "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>"
                         f"<div class='muted' style='font-size:12px;margin-top:8px;word-break:break-all'>Shortcut link: "
                         f"{e(launch_url())}</div>",
@@ -4970,7 +5062,7 @@ def settings_page(all_games, days, counts):
             "<header><h1>Settings</h1></header><section>",
             ("<div class='stack'>" + "".join(urgent) + "</div>") if urgent else "",
             sec["look"], sec["cash"], sec["order"], sec["midday"], sec["overlap"], sec["kalshi"], sec["odds"],
-            sec["home"],
+            sec["watcher"], sec["home"],
             "<button class='btn go big' style='margin:22px 0 4px' onclick=\"go('save')\">Save settings</button>",
             ("<h2>About</h2><div class='stack'>" + "".join(routine) + "</div>") if routine else "",
             vline, "</section>"])
@@ -5095,7 +5187,9 @@ def main():
     if choice == "mine":
         return show_mine(all_games, days, sunday)
     if choice == "save":
-        RUN_OPTS["notice"] = "Saved." + ("" if CFG.get("odds_key") else " (No sportsbook key: chances use Kalshi's prices.)")
+        sent = send_watcher_settings()
+        RUN_OPTS["notice"] = "Saved." + (" Sent to the Pi watcher." if sent else "") + (
+            "" if CFG.get("odds_key") else " (No sportsbook key: chances use Kalshi's prices.)")
         RUN_OPTS["smode"] = "settings"
         RUN_OPTS["goto"] = "settings"
         return main()
