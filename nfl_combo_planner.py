@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.22"
+VERSION = "2026.11.15.23"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -34,7 +34,9 @@ CFG = {
     "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo
     "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured
     "next_day": False,    # college basketball: build tomorrow's games instead of today's
-    "dogs_late": True,    # underdog picks go in the latest games, favourites in the earliest
+    "dogs_late": True,
+    "tp_mult": 3,         # auto-sell (take-profit) orders sell at this many times what you paid
+    "tp_auto": False,     # put an auto-sell order on every combo bought from the planner    # underdog picks go in the latest games, favourites in the earliest
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 DEFAULTS = json.loads(json.dumps(CFG))
@@ -72,21 +74,40 @@ TEAMS = {
 }
 DAY_ORDER = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Today", "Tomorrow"]
 NFL_TEAMS = TEAMS
+NBA_TEAMS = {
+    "ATL": "Atlanta Hawks", "BOS": "Boston Celtics", "BKN": "Brooklyn Nets", "BRK": "Brooklyn Nets",
+    "CHA": "Charlotte Hornets", "CHO": "Charlotte Hornets", "CHI": "Chicago Bulls", "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks", "DEN": "Denver Nuggets", "DET": "Detroit Pistons", "GSW": "Golden State Warriors",
+    "GS": "Golden State Warriors", "HOU": "Houston Rockets", "IND": "Indiana Pacers", "LAC": "Los Angeles Clippers",
+    "LAL": "Los Angeles Lakers", "MEM": "Memphis Grizzlies", "MIA": "Miami Heat", "MIL": "Milwaukee Bucks",
+    "MIN": "Minnesota Timberwolves", "NOP": "New Orleans Pelicans", "NO": "New Orleans Pelicans",
+    "NYK": "New York Knicks", "NY": "New York Knicks", "OKC": "Oklahoma City Thunder", "ORL": "Orlando Magic",
+    "PHI": "Philadelphia 76ers", "PHX": "Phoenix Suns", "PHO": "Phoenix Suns", "POR": "Portland Trail Blazers",
+    "SAC": "Sacramento Kings", "SAS": "San Antonio Spurs", "SA": "San Antonio Spurs", "TOR": "Toronto Raptors",
+    "UTA": "Utah Jazz", "UTAH": "Utah Jazz", "WAS": "Washington Wizards", "WSH": "Washington Wizards",
+}
 
 LEAGUES = {
-    "nfl": {"name": "NFL", "icon": "🏈", "series": "KXNFLGAME", "odds": "americanfootball_nfl",
+    "nfl": {"name": "NFL", "short": "NFL", "icon": "🏈", "series": "KXNFLGAME", "odds": "americanfootball_nfl", "full": True, "teams": "nfl",
             "espn": "football/nfl", "espn_q": {}, "slate": "week", "game_hours": 3.5, "periods": 4,
             "settings": "combo_settings.json", "latest": "combos_latest.html", "defaults": {}},
-    "ncaamb": {"name": "College basketball", "icon": "🏀", "series": "KXNCAAMBGAME", "odds": "basketball_ncaab",
-               "espn": "basketball/mens-college-basketball", "espn_q": {"groups": "50", "limit": "500"},
-               "slate": "day", "game_hours": 2.25, "periods": 2,
-               "settings": "combo_settings_ncaamb.json", "latest": "combos_latest_ncaamb.html",
-               "defaults": {"budget": 50, "full_count": 0, "safer_count": 3, "safer_min": 2, "safer_max": 3,
-                            "middle_count": 4, "middle_min": 4, "middle_max": 5,
-                            "moonshot_count": 3, "moonshot_min": 6, "moonshot_max": 8}},
+    "nba": {"name": "NBA", "short": "NBA", "icon": "🏀", "series": "KXNBAGAME", "odds": "basketball_nba",
+            "espn": "basketball/nba", "espn_q": {}, "slate": "day", "game_hours": 2.5, "periods": 4,
+            "full": True, "teams": "nba",
+            "settings": "combo_settings_nba.json", "latest": "combos_latest_nba.html",
+            "defaults": {"budget": 50, "full_count": 2, "upsets_min": 1, "upsets_max": 2,
+                         "safer_count": 3, "safer_min": 2, "safer_max": 3,
+                         "middle_count": 3, "middle_min": 3, "middle_max": 5,
+                         "moonshot_count": 2, "moonshot_min": 5, "moonshot_max": 7}},
 }
 LEAGUE = {"code": "nfl"}
 SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every")
+
+
+def next_league():
+    """The league the bar's switch button goes to (NFL <-> NBA)."""
+    order = list(LEAGUES)
+    return order[(order.index(LEAGUE["code"]) + 1) % len(order)]
 
 
 def LG():
@@ -130,7 +151,7 @@ def set_league(code):
     SCORES_URL = f"https://site.api.espn.com/apis/site/v2/sports/{lg['espn']}/scoreboard"
     SAVED = os.path.join(HERE, lg["settings"])
     LATEST = os.path.join(HERE, lg["latest"])
-    TEAMS = NFL_TEAMS if code == "nfl" else {}
+    TEAMS = {"nfl": NFL_TEAMS, "nba": NBA_TEAMS}.get(lg.get("teams"), {})
     if changed:
         CFG.clear()
         CFG.update(json.loads(json.dumps(DEFAULTS)))
@@ -477,7 +498,9 @@ def attach_fair(games, book):
         kal = [s["p"] / sum(x["p"] for x in sides) for s in sides]
         names = []
         for s in sides:
-            full = TEAMS.get(s["abbr"]) or match_book(s["pick"], book)
+            full = TEAMS.get(s["abbr"])
+            if full not in book:
+                full = match_book(full or s["pick"], book) or match_book(s["pick"], book)
             names.append(full if full in book else None)
         if not TEAMS and all(names) and BOOK_OPP.get(names[0]) != names[1]:
             names = [None, None]                  # not the same game: use Kalshi's prices
@@ -578,7 +601,7 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
             f = fav(games[e])
             if f in opts:
                 legs.append(f)                    # early games: take the favourite
-                continue
+            continue                              # favourite used up: leave this game out, no early underdog
         if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < CLOSE_GAME \
                 and usage[opts[0]["ticker"]] != usage[opts[1]["ticker"]]:
             legs.append(min(opts, key=lambda x: usage[x["ticker"]]))
@@ -914,21 +937,26 @@ def combo_league(legs):
     """'nfl', 'ncaamb' or 'other' from the picks' market tickers."""
     ts = [(l["ticker"] or "").upper() for l in legs]
     if any(t.startswith("KXNCAAMB") for t in ts):
-        return "ncaamb"
+        return "ncaamb" if "ncaamb" in LEAGUES else "other"   # college was dropped: shown with NFL
+    if any(t.startswith("KXNBA") for t in ts):
+        return "nba"
     if any(t.startswith("KXNFL") for t in ts):
         return "nfl"
     return "other"
 
 
+WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME")
+
+
 def winners_only(legs):
-    return all((l["ticker"] or "").startswith(("KXNFLGAME", "KXNCAAMBGAME")) for l in legs)
+    return all((l["ticker"] or "").startswith(WINNER_SERIES) for l in legs)
 
 
 def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
-    if (ticker or "").upper().startswith("KXNCAAMB"):
+    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA")):
         return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
@@ -2009,7 +2037,7 @@ def nav_bar():
     if can_trade() or os.path.exists(LATEST):
         items.append(("results", "Results"))
     items.append(("settings", "⚙︎ Settings"))
-    other = "ncaamb" if LEAGUE["code"] == "nfl" else "nfl"
+    other = next_league()
     items.append(("league", LEAGUES[other]["icon"]))
 
     def js(k):                                    # on the Settings page, buttons save settings first
@@ -2057,7 +2085,7 @@ def go_to(target):
             done.set()
         return
     if target == "league":                        # switch NFL <-> college and stay on the same kind of page
-        other = "ncaamb" if LEAGUE["code"] == "nfl" else "nfl"
+        other = next_league()
         save_json(LEAGUE_FILE, {"league": other})
         target = APP.get("where") or ("mine" if can_trade() else "settings")
     RUN_OPTS["goto"] = target
@@ -2317,6 +2345,17 @@ def cash_block(ticker, plan):
            f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"
            + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
+    tp = (MINE.get("tp") or {}).get(ticker)
+    if tp:
+        o0 = tp[0]
+        price = dollars(o0, "yes_price")
+        left = count_of({"count_fp": o0.get("remaining_count_fp") or o0.get("remaining_count")}) or pays
+        out.append(f"<div style='margin-top:6px'>🎯 Auto-sell on Kalshi: sells if a buyer pays "
+                   f"<b>{money(price * left)}</b> <button class='btn cashb' style='padding:3px 8px' "
+                   f"onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
+    elif can_trade():
+        out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
+                   f"Set auto-sell at {CFG['tp_mult']}× ({money(h['cost'] * CFG['tp_mult'])})</button></div>")
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
     if raw and raw.get("error"):
@@ -2400,7 +2439,8 @@ def leg_score(l):
     abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
     name = TEAMS.get(abbr) or PICK_NAME.get(l["ticker"] or "", "")
     by = SCORES["by_team"]
-    sc = (by.get(name) or by.get(norm_team(name))) if name else None
+    sc = (by.get(name) or by.get(norm_team(name)) or by.get(norm_team(" ".join(name.split()[-2:])))
+          or by.get(norm_team(name.split()[-1]))) if name else None
     if not sc:
         return None
     if l.get("side", "yes") == "no":           # betting against this team
@@ -2490,6 +2530,61 @@ def risk_html(mine, infos, snap):
             f"right now. This is how much of that goes to $0 if one pick loses.</div>{rows}</div>")
 
 
+def resting_sells():
+    """Your auto-sell orders waiting on Kalshi: {combo ticker: [order, ...]}."""
+    try:
+        data = kalshi_send("GET", "/portfolio/orders", params={"status": "resting", "limit": 200}) or {}
+    except Exception:
+        return {}
+    out = defaultdict(list)
+    for o in data.get("orders", []):
+        if o.get("action") == "sell" and is_combo(o.get("ticker")):
+            out[o["ticker"]].append(o)
+    return dict(out)
+
+
+def place_take_profit(ticker, contracts, cost):
+    """Put a standing sell order on Kalshi at tp_mult x what you paid. Kalshi keeps it
+    working with your phone closed; it only fills if a buyer pays that much."""
+    n = math.floor(contracts * 100 + 1e-6) / 100
+    if n < 1:
+        return "Auto-sell needs at least 1 contract."
+    target = cost * CFG["tp_mult"] / n                    # per contract
+    if target >= 0.99:
+        return (f"{CFG['tp_mult']}× what you paid is more than this combo can be worth before it settles, "
+                "so there's no point in an auto-sell order. Lower the multiple in Settings → Cash out.")
+    import uuid
+    tries = [{"count_fp": f"{n:.2f}", "yes_price_dollars": f"{max(target, 0.0001):.4f}"},
+             {"count": int(n), "yes_price_dollars": f"{max(math.ceil(target * 100) / 100, 0.01):.2f}"}]
+    last = ""
+    for extra in tries:
+        body = dict({"ticker": ticker, "action": "sell", "side": "yes", "type": "limit",
+                     "time_in_force": "good_till_canceled", "reduce_only": True,
+                     "client_order_id": str(uuid.uuid4())}, **extra)
+        try:
+            kalshi_send("POST", "/portfolio/orders", body)
+            price = float(extra["yes_price_dollars"])
+            cnt = float(extra.get("count_fp") or extra.get("count"))
+            return (f"🎯 Auto-sell order placed: Kalshi will sell if a buyer pays {money(price * cnt)} "
+                    f"({CFG['tp_mult']}× what you paid). It stays on Kalshi with your phone closed.")
+        except PermissionError:
+            return "Kalshi refused. Your API key needs write (trading) access for auto-sell orders."
+        except (RuntimeError, requests.RequestException) as err:
+            last = str(err)[:120]
+    return f"Kalshi didn't accept the auto-sell order ({last}). It may not allow resting orders on this combo."
+
+
+def cancel_take_profit(ticker):
+    n = 0
+    for o in resting_sells().get(ticker, []):
+        try:
+            kalshi_send("DELETE", f"/portfolio/orders/{o.get('order_id')}")
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
 def drop_cash(ticker):
     o = MINE["cash"].pop(ticker, None)
     if o and o.get("rfq"):
@@ -2563,6 +2658,8 @@ def accept_cash(ticker):
         label = "Half of " + label
     if not o or not o.get("rfq") or time.time() - o["at"] > OFFER_LIFE:
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
+    if (MINE.get("tp") or {}).get(ticker):
+        cancel_take_profit(ticker)
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "yes"})
@@ -2593,7 +2690,15 @@ def cash_action(action, ticker):
     """Buttons on a combo card: ask for an offer, cash out, or keep it."""
     MINE["busy"] = True                     # the 2-minute refresh waits until this is done
     try:
-        if action in ("ask", "askhalf"):
+        if action == "tp":
+            loading("Placing your auto-sell order on Kalshi…")
+            h = MINE["hold"].get(ticker) or {}
+            MINE["flash"] = place_take_profit(ticker, h.get("pays", 0), h.get("cost", 0))
+        elif action == "tpx":
+            loading("Cancelling the auto-sell order…")
+            n = cancel_take_profit(ticker)
+            MINE["flash"] = "Auto-sell order cancelled." if n else "No auto-sell order to cancel."
+        elif action in ("ask", "askhalf"):
             loading("Asking Kalshi for a cash-out offer…")
             MINE["cash"][ticker] = get_cash_offer(ticker, 0.5 if action == "askhalf" else 1.0)
         elif action == "askall":
@@ -2724,7 +2829,7 @@ def mine_page(live=False):
             return s["pick"], other["pick"], s["fair"], res
         info = MARKET_INFO.get(l["ticker"]) or {}
         lp = info.get("live")
-        if not (l["ticker"] or "").startswith(("KXNFLGAME", "KXNCAAMBGAME")):
+        if not (l["ticker"] or "").startswith(WINNER_SERIES):
             nm = info.get("name") or l["ticker"]
             if l.get("side", "yes") == "no":
                 nm = "Not: " + nm
@@ -2783,6 +2888,7 @@ def mine_page(live=False):
     order = {ev: i for i, ev in enumerate(all_games)}
     snap = {}
     MINE["hold"] = {}
+    MINE["tp"] = resting_sells() if can_trade() and any(a["status"] == "pending" for a in mine) else {}
     for i, (a, inf) in enumerate(zip(mine, infos), 1):
         p = a.get("_hits", 0) / 20000
         st = "cashed" if a["status"] == "cashed" else \
@@ -3203,6 +3309,8 @@ def accept_offer(i):
         pass
     if status == "executed":
         ACCT_CACHE["at"] = 0
+        if CFG.get("tp_auto"):
+            place_take_profit(o["market"], o["pays"], o["stake"])
         hist = load_json(HISTORY, {"builds": []})
         b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
         if b is not None:
@@ -3549,7 +3657,7 @@ def settings_page(all_games, days, counts):
     top = []
     lg_btns = "".join(
         f"<button class='btn {'go' if k == LEAGUE['code'] else ''}' style='flex:1' "
-        f"onclick=\"go('lg-{k}')\">{v['icon']} {'NFL' if k == 'nfl' else 'College hoops'}</button>"
+        f"onclick=\"go('lg-{k}')\">{v['icon']} {v['short']}</button>"
         for k, v in LEAGUES.items())
     top.append(f"<div class='quote' style='margin:0'>{lg_btns}</div>")
     notice = RUN_OPTS.pop("notice", None)
@@ -3588,7 +3696,7 @@ def settings_page(all_games, days, counts):
                 + switch("hedge_close", "Split coin-flip games between both sides"),
                 "Keeps one result from sinking most of your combos. Full-slate combos and locked "
                 "picks are exempt, since they include those games on purpose."),
-        "" if by_day() else
+        "" if not LG().get("full") else
         section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
                 slider("upsets_min", "Fewest underdogs", 0, 8) + slider("upsets_max", "Most underdogs", 0, 8)),
         "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
@@ -3605,9 +3713,13 @@ def settings_page(all_games, days, counts):
                 "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
         section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
                 + switch("auto_cash", "Check cash-out offers during game-day alerts")
-                + slider("cash_every", "Check offers every", 2, 10, 2, " min"),
+                + slider("cash_every", "Check offers every", 2, 10, 2, " min")
+                + slider("tp_mult", "Auto-sell at", 2, 10, 1, "×")
+                + switch("tp_auto", "Add an auto-sell order to combos I buy here"),
                 "Money you keep for betting. The bigger a cash-out offer is next to this, the more the planner "
-                "favours taking the sure money. Nothing is sold until you tap Cash out."),
+                "favours taking the sure money. Nothing is sold until you tap Cash out. "
+                "Auto-sell puts a standing sell order on Kalshi at that multiple of what you paid; it "
+                "works with your phone closed but only fills if a buyer pays that much."),
         section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
                 f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
                 f"{'tomorrow' if CFG.get('next_day') else 'today'}. Change this, then tap Build combos, "
