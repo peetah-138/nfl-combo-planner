@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.5"
+VERSION = "2026.11.16.6"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4043,7 +4043,7 @@ def settings_page(all_games, days, counts):
     pass
     notice = RUN_OPTS.pop("notice", None)
     if notice:
-        good = notice.startswith("Updated") or notice.startswith("You already")
+        good = notice.startswith(("Updated", "You already", "Saved"))
         top.append(f"<div class='game' style='border-color:{'#15803d' if good else '#b45309'}'>"
                    f"<b class='{'pos' if good else ''}'>{html.escape(notice)}</b></div>")
     latest = RUN_OPTS.get("latest")
@@ -4129,6 +4129,7 @@ def settings_page(all_games, days, counts):
         "odds": section("Sportsbook odds",
                         f"<input class='txt' id='odds_key' placeholder='Paste key here' autocapitalize='off' autocorrect='off' "
                         f"spellcheck='false' value='{e(CFG['odds_key'])}'>"
+                        + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                         + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot"),
                         "Free key from the-odds-api.com. Without it, chances use Kalshi's prices only."),
         "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>",
@@ -4152,7 +4153,9 @@ def settings_page(all_games, days, counts):
             "<header><h1>Settings</h1></header><section>",
             "<div class='stack'>" + "".join(x for x in top if "go('lg-" not in x) + "</div>",
             sec["look"], sec["cash"], sec["order"], sec["midday"], sec["overlap"], sec["kalshi"], sec["odds"],
-            sec["home"], vline, "</section>"])
+            sec["home"],
+            "<button class='btn go big' style='margin:18px 0 4px' onclick=\"go('save')\">Save settings</button>",
+            vline, "</section>"])
     css_extra = (".stack{display:flex;flex-direction:column;gap:8px;margin-top:8px}.big{width:100%;padding:13px;font-size:16px}"
                  ".srow{padding:6px 0}.srow input[type=range]{width:100%}.swrow{padding:8px 0;gap:12px}"
                  ".sw{width:22px;height:22px;flex:none}.txt{width:100%;font:15px -apple-system,sans-serif;padding:10px;"
@@ -4268,6 +4271,11 @@ def main():
         return show_results(all_games, days, sunday)
     if choice == "mine":
         return show_mine(all_games, days, sunday)
+    if choice == "save":
+        RUN_OPTS["notice"] = "Saved." + ("" if CFG.get("odds_key") else " (No sportsbook key: chances use Kalshi's prices.)")
+        RUN_OPTS["smode"] = "settings"
+        RUN_OPTS["goto"] = "settings"
+        return main()
     if choice in ("tab-build", "tab-settings"):
         RUN_OPTS["smode"] = choice[4:]
         RUN_OPTS["goto"] = "settings"
