@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.25"
+VERSION = "2026.11.15.26"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -35,6 +35,7 @@ CFG = {
     "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured
     "next_day": False,    # college basketball: build tomorrow's games instead of today's
     "dogs_late": True,
+    "dark": True,         # dark pages
     "tp_mult": 3,         # auto-sell (take-profit) orders sell at this many times what you paid
     "tp_auto": False,     # put an auto-sell order on every combo bought from the planner    # underdog picks go in the latest games, favourites in the earliest
     "picks": {},   # game -> team ticker to lock, or "skip"
@@ -1976,13 +1977,17 @@ def _web():
                 except Exception:
                     pass
 
-    win = Window(name="Combos", background_color="white")
+    win = Window(name="Combos", background_color="#0f1115" if CFG.get("dark") else "white")
     win.closers = [_window_closed]
     win.frame = (0, 0, 375, 667)
     web = ui.WebView(frame=win.bounds, flex="WH")
+    web.background_color = "#0f1115" if CFG.get("dark") else "white"
     win.add_subview(web)
     APP.update(web=web, win=win, page=None, closed=False)
-    win.present("fullscreen", hide_title_bar=False)
+    if CFG.get("dark"):
+        win.present("fullscreen", hide_title_bar=False, title_bar_color="#0f1115", title_color="#eceef2")
+    else:
+        win.present("fullscreen", hide_title_bar=False)
     return web
 
 
@@ -2032,7 +2037,7 @@ def loading(msg):
     web = _web()
     if APP["page"] != "loading":
         web.delegate = None
-        web.load_html(LOADING_PAGE % CSS)
+        web.load_html(themed(LOADING_PAGE % CSS))
         APP["page"] = "loading"
         time.sleep(0.25)          # let the page load before updating its text
     web.evaluate_javascript(f"setMsg({json.dumps(msg)})")
@@ -2147,8 +2152,25 @@ def go_to(target):
     threading.Thread(target=run, daemon=True).start()
 
 
+DARK_CSS = ("<style>:root{color-scheme:dark;--bg:#0f1115;--card:#1a1d23;--ink:#eceef2;--muted:#9aa1ad;"
+            "--line:#2a2e36;--accent:#5b9dff;--good:#4ade80;--goodbg:#14301f;--bad:#fbbf24;--badbg:#3a2c0b;"
+            "--red:#f87171;--redbg:#3b1416;--dogbg:#2a2140;--dog:#c4b5fd;--done:#15241a}"
+            "body{background:var(--bg);color:var(--ink)}</style>")
+LIGHT_CSS = ("<style>:root{color-scheme:light;--bg:#f4f5f7;--card:#fff;--ink:#16181d;--muted:#6b7280;"
+             "--line:#e5e7eb;--accent:#1f6feb;--good:#15803d;--goodbg:#dcfce7;--bad:#b45309;--badbg:#fef3c7;"
+             "--red:#b91c1c;--redbg:#fee2e2;--dogbg:#ede9fe;--dog:#6d28d9;--done:#eef6ee}</style>")
+
+
+def themed(page):
+    """Dark or light pages, per Settings (doesn't depend on the phone's own setting)."""
+    if "</head>" in page and "color-scheme:" not in page.split("</head>")[0][-1200:]:
+        page = page.replace("</head>", (DARK_CSS if CFG.get("dark") else LIGHT_CSS) + "</head>", 1)
+    return page
+
+
 def with_nav(page):
     """Every page gets the nav bar at the top and again at the bottom."""
+    page = themed(page)
     if "<body>" in page and "class='nav'" not in page:
         bar = nav_bar()
         page = page.replace("<body>", "<body>" + bar, 1)
@@ -3063,7 +3085,7 @@ def mine_page(live=False):
         cards.append((group, f"<div class='card' id='c-{e(a['ticker'])}'><div class='top'><div>"
                      f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}</div>"
                      f"<div style='text-align:right'>{status}<br><a class='klink' href='combo://open/"
-                     f"{quote(combo_url(a['ticker']), safe='')}'>Open in Kalshi ↗</a></div></div>"
+                     f"{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a></div></div>"
                      f"{value}<ol>{''.join(rows)}</ol></div>"))
 
     live_picks = []
@@ -3786,6 +3808,7 @@ def settings_page(all_games, days, counts):
         "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
                         slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
                 for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]),
+        section("Look", switch("dark", "Dark mode")),
         section("Game order", switch("dogs_late", "Underdogs late: favourites in the early games"),
                 "Underdog picks go in the latest games. If the early favourites win, your combo is worth "
                 "more before the risky game starts, so you can cash out then. It doesn't change a combo's "
