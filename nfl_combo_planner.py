@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.20"
+VERSION = "2026.11.16.21"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -40,6 +40,7 @@ CFG = {
     "tp_mult": 3,         # (old fixed auto-sell multiple, no longer used)
     "ride": 2,            # auto-sell "Let it ride" level: 0 Cautious ... 4 Ride it out (see RIDE)
     "tp_follow": True,    # move auto-sell orders as chances change, while the planner is open
+    "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every combo bought from the planner    # underdog picks go in the latest games, favourites in the earliest
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -130,7 +131,7 @@ LEAGUES = {
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder")
 
 
 def next_league():
@@ -2851,6 +2852,7 @@ def plan_cashout():
     your bankroll. Only combos with a fresh Kalshi offer can be cashed."""
     offers = [t for t in MINE["hold"] if fresh_offer(t)]
     if not offers or not MINE.get("patterns"):
+        MINE["advised"] = set()
         return None
     acts = {t: 0.0 for t in offers}
     best = weekend_stats(acts)["worth"]
@@ -2860,6 +2862,9 @@ def plan_cashout():
             h = MINE["hold"][t]
             if not h.get("won_some"):
                 continue        # nothing won yet: you bought it for the upside, so hold it
+            bar = wait_threshold(t) * (0.97 if t in MINE.get("advised", set()) else 1.0)
+            if acts_price(t) * h["pays"] < bar:
+                continue        # waiting at least one more game is worth more than this offer
             for f in (0.0, 0.5, 1.0):
                 if f == acts[t]:
                     continue
@@ -2869,6 +2874,7 @@ def plan_cashout():
                     best, acts, changed = v, trial, True
         if not changed:
             break
+    MINE["advised"] = {t for t, f in acts.items() if f}      # sticky: needs a 3% drop to flip back
     return {"acts": acts, "plan": weekend_stats(acts), "hold": weekend_stats({t: 0.0 for t in offers})}
 
 
@@ -2881,6 +2887,12 @@ def plan_words(t, f, o, h, W):
             (" Also spreads risk off a game your other combos need." if shared else "")
     if f == 0.5:
         return f"Locks in half and keeps a {p:.0%} shot at {money(pays / 2)}."
+    thr = wait_threshold(t)
+    if h.get("won_some") and thr > o["offer"] / max(o.get("frac", 1.0), 0.01):
+        nxt = (h.get("legs_left") or [(0, False, 0)])[0]
+        return (f"Waiting is worth more: {'the game under way' if nxt[1] else 'the next game'} "
+                f"({nxt[0]:.0%} to go your way) makes this combo worth more to sell after. "
+                f"Worth cashing out at about {money(thr)}.")
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
 def confirm_parts(t, h, o):
@@ -2931,17 +2943,20 @@ def cash_block(ticker, plan):
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     tp = (MINE.get("tp") or {}).get(ticker)
     if tp:
-        o0 = tp[0]
-        price = dollars(o0, "yes_price")
-        left = count_of({"count_fp": o0.get("remaining_count_fp") or o0.get("remaining_count")}) or pays
-        out.append(f"<div style='margin-top:6px'>🎯 Auto-sell on Kalshi: sells if a buyer pays "
-                   f"<b>{money(price * left)}</b> <button class='btn cashb' style='padding:3px 8px' "
-                   f"onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
+        st = order_steps(tp)
+        left = sum(k for k, _ in st) or pays
+        what = (" / ".join(money(pr * left) for _, pr in st) + " <span class='muted'>(thirds, whole-combo prices)</span>"
+                if len(st) > 1 else money(st[0][1] * left))
+        guard = any(live for _, live, _ in (MINE["hold"].get(ticker) or {}).get("legs_left", []))
+        out.append(f"<div class='quote' style='justify-content:space-between'><span style='font-size:14px'>🎯 Auto-sell at "
+                   f"<b>{what}</b>" + ("<br><span class='muted' style='font-size:12px'>A game is on: priced as if "
+                                        "your pick wins, so no one can buy cheap off a swing.</span>" if guard else "")
+                   + f"</span><button class='btn quiet cashb' onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
     elif can_trade():
         target, why = tp_target(h["cost"], pays, ticker)
         if target:
             out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
-                       f"Auto-sell at {money(target)}</button><span class='muted' style='font-size:13px'>"
+                       f"Auto-sell {'from' if 'thirds' in why else 'at'} {money(target)}</button><span class='muted' style='font-size:13px'>"
                        f"{html.escape(why.strip('()'))}</span></div>")
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
@@ -3108,6 +3123,20 @@ def leg_score(l):
     return sc
 
 
+def legs_left_of(legs, inf, side_of):
+    """Each unfinished pick as (chance now, playing now?, start timestamp), in the order the
+    games are played. Chances are Kalshi's in-game prices for games under way."""
+    out = []
+    for l, (_, _, ch, r) in zip(legs, inf):
+        if r:
+            continue
+        live = pick_state(l, side_of) == "live"
+        t = leg_start(l, side_of)
+        out.append((min(max(ch if ch is not None else 0.5, 0.001), 0.999), live,
+                    0 if live else (t.timestamp() if t else 9e12)))
+    return sorted(out, key=lambda x: x[2])
+
+
 def leg_start(l, side_of):
     """When this pick's game starts (any sport), or None."""
     s = side_of.get(l["ticker"])
@@ -3250,48 +3279,113 @@ def ride_level():
     return RIDE[min(max(int(CFG.get("ride", 2)), 0), len(RIDE) - 1)]
 
 
-def break_even(ticker, mult):
-    """The sale price (for the whole combo) at which selling it is worth the same to you as
-    holding it, from the live simulation: every remaining game at its own current chance,
-    with your other combos on the same games riding alongside. mult scales your bankroll."""
-    live, pats = MINE["hold"], MINE.get("patterns") or {}
-    h = live[ticker]
-    n = sum(pats.values()) or 1
-    if mult is None:
-        return h["p"] * h["pays"]
-    W = max(CFG["bankroll"], 1) * mult + MINE.get("locked", 0)
-    rows = [(c, sum(live[t]["pays"] for t in pat if t in live and t != ticker), ticker in pat)
-            for pat, c in pats.items()]
-    hold = sum(c * math.log(W + x + (h["pays"] if hit else 0)) for c, x, hit in rows) / n
-    lo, hi = 0.0, h["pays"]
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if sum(c * math.log(W + x + mid) for c, x, _ in rows) / n < hold:
-            lo = mid
-        else:
-            hi = mid
-    return hi
+DISCOUNT_FILE = os.path.join(HERE, "combo_discount.json")   # what Kalshi buyers really pay vs fair
 
 
-def tp_target(cost, pays, ticker=None, p=None):
-    """Auto-sell amount for a combo: the price at which the planner itself would say "cash out",
-    from its current chance of hitting and your "Let it ride" level. Never below halfway (on a
-    multiplying scale) from what you paid to what it pays, never above 97% of the payout.
-    Returns (amount, label) or (None, '')."""
+def note_discount(offer, fair, live):
+    """Remember how a real cash-out offer compared with the combo's fair value."""
+    if not fair or fair <= 0 or not offer:
+        return
+    d = load_json(DISCOUNT_FILE, {"pre": [], "live": []})
+    key = "live" if live else "pre"
+    d.setdefault(key, []).append(round(min(max(offer / fair, 0.3), 1.2), 4))
+    d[key] = d[key][-60:]
+    save_json(DISCOUNT_FILE, d)
+
+
+def kalshi_discount(live=False):
+    """Typical offer as a share of fair value, learned from your own quotes (median of the last
+    60). Before there are 5, a cautious guess: 88% between games, 82% during them."""
+    d = load_json(DISCOUNT_FILE, {})
+    xs = sorted(d.get("live" if live else "pre") or [])
+    if len(xs) < 5:
+        return 0.82 if live else 0.88
+    return min(max(xs[len(xs) // 2], 0.5), 1.0)
+
+
+def model_cushion(n_left):
+    """Room for error in the chances: 2% per pick still to play, at most 15%."""
+    return min(0.15, 0.02 * max(n_left, 0))
+
+
+def wait_value(pays, legs, mult, locked=0.0):
+    """What holding on is worth to you right now, if from here on you sell or hold at each step
+    in the best way: after each game (in the order they're played) you can sell at Kalshi's usual
+    discount to fair value, or keep going. Worked backward from the last game. legs: chances of
+    the picks still to play, in game order. mult: your "Let it ride" bankroll multiple (None =
+    full value only). Returns the price above which selling now beats waiting."""
+    if not legs:
+        return pays
+    W = max(CFG["bankroll"], 1) * (mult or 1) + max(locked, 0)
+    d = kalshi_discount(False)
+
+    def ce(p, win):                               # certainty equivalent of "win with p, else 0"
+        if mult is None:
+            return p * win
+        return math.exp(p * math.log(W + win) + (1 - p) * math.log(W)) - W
+
+    v = pays                                      # every pick won: paid in full
+    for j in range(len(legs) - 1, 0, -1):         # after the j-th game: sell or keep going
+        wait = ce(legs[j], v)
+        sell = d * math.prod(legs[j:]) * pays
+        v = max(wait, sell)
+    return ce(legs[0], v)                         # now: the value of waiting at least one game
+
+
+def tp_ladder(cost, pays, ticker=None, p=None, guard=True):
+    """Auto-sell prices for a combo: [(contracts, total price), ...] and a label.
+    - Price: the point where selling beats waiting another game (wait_value), plus room for
+      error in the chances. Never below halfway (on a multiplying scale) from what you paid to
+      the payout; never above 97% of the payout.
+    - Live-game guard: a pick whose game is under way is priced as if it wins, so with your phone
+      closed nobody can buy cheaply off a game swinging your way.
+    - Ladder: in thirds, from that price up toward the payout (one order if too small)."""
     name, mult = ride_level()
     floor = max(1.3 * cost, math.sqrt(max(cost, 0) * pays))
     cap = 0.97 * pays
-    if floor > cap or cost <= 0:
-        return None, ""
-    if ticker in (MINE.get("hold") or {}) and MINE.get("patterns"):
-        be = break_even(ticker, mult)
+    if cost <= 0 or floor > cap:
+        return [], ""
+    h = (MINE.get("hold") or {}).get(ticker) if ticker else None
+    if h and h.get("legs_left") is not None and not h.get("rough"):
+        legs = [(c, live) for c, live, _ in h["legs_left"]]
     elif p:
-        Bm = max(CFG["bankroll"], 1) * (mult or 1)
-        be = pays * p if mult is None else Bm * ((1 + pays / Bm) ** p - 1)
+        legs = [(p, False)]
     else:
-        be = 0.0
-    want = min(max(be, floor), cap)
-    return want, f"({name} · {want / cost:.0f}× what you paid)"
+        legs = []
+    if guard:
+        legs = [(1.0 if live else c, live) for c, live in legs]
+    chances = [c for c, _ in legs if c < 0.9999]
+    base = wait_value(pays, chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
+    t1 = min(max(base, floor), cap)
+    if not CFG.get("tp_ladder", True) or pays < 3 or t1 >= cap * 0.98:
+        return [(pays, t1)], f"({name} · {t1 / cost:.0f}× what you paid)"
+    t3 = min(math.sqrt(t1 * cap), cap)
+    t2 = math.sqrt(t1 * t3)
+    n1 = math.floor(pays / 3 * 100) / 100
+    n2 = n1
+    n3 = round(pays - n1 - n2, 2)
+    steps = [(n1, t1 * n1 / pays), (n2, t2 * n2 / pays), (n3, t3 * n3 / pays)]
+    return steps, f"({name} · from {t1 / cost:.0f}× what you paid, in thirds)"
+
+
+def tp_target(cost, pays, ticker=None, p=None):
+    """The whole-combo price of the first auto-sell step, for showing. (amount, label)."""
+    steps, label = tp_ladder(cost, pays, ticker, p)
+    if not steps:
+        return None, ""
+    n, total = steps[0]
+    return total * pays / n, label
+
+
+def wait_threshold(ticker):
+    """For cash-out advice: the offer (whole combo) that beats waiting another game, using the
+    games as they stand right now (no live-game guard), with room for error."""
+    h = MINE["hold"].get(ticker) or {}
+    if not h.get("legs_left") or h.get("rough"):
+        return 0.0
+    _, mult = ride_level()
+    chances = [c for c, _, _ in h["legs_left"]]
+    return wait_value(h["pays"], chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
 
 
 def worth_now(ticker):
@@ -3301,33 +3395,21 @@ def worth_now(ticker):
     return max(h.get("hold", 0.0), (o or {}).get("offer", 0.0) / max((o or {}).get("frac", 1.0), 0.01))
 
 
-def place_take_profit(ticker, contracts, cost, p=None, total=None):
-    """Put a standing sell order on Kalshi at the "Let it ride" price (or `total`). Kalshi keeps
-    it working with your phone closed; it only fills if a buyer pays that much."""
-    n = math.floor(contracts * 100 + 1e-6) / 100
-    if n < 1:
-        return "Auto-sell needs at least 1 contract."
-    why = ""
-    if total is None:
-        total, why = tp_target(cost, n, ticker, p)
-    if not total:
-        return ("No auto-sell for this one: it's already worth close to what it pays, or it doesn't pay "
-                "enough above what you paid. Hold it, or cash out when you like the offer.")
-    target = total / n                                    # per contract
+def post_sell(ticker, n, per):
+    """One resting sell order: n contracts at `per` dollars each. Returns None or an error."""
     import uuid
-    tries = [{"count_fp": f"{n:.2f}", "yes_price_dollars": f"{max(target, 0.0001):.4f}"},
-             {"count": int(n), "yes_price_dollars": f"{max(math.ceil(target * 100) / 100, 0.01):.2f}"}]
+    tries = [{"count_fp": f"{n:.2f}", "yes_price_dollars": f"{min(max(per, 0.0001), 0.9999):.4f}"},
+             {"count": int(n), "yes_price_dollars": f"{min(max(math.ceil(per * 100) / 100, 0.01), 0.99):.2f}"}]
     last = ""
     for extra in tries:
+        if extra.get("count") == 0:
+            continue
         body = dict({"ticker": ticker, "action": "sell", "side": "yes", "type": "limit",
                      "time_in_force": "good_till_canceled", "reduce_only": True,
                      "client_order_id": str(uuid.uuid4())}, **extra)
         try:
             kalshi_send("POST", "/portfolio/orders", body)
-            price = float(extra["yes_price_dollars"])
-            cnt = float(extra.get("count_fp") or extra.get("count"))
-            return (f"🎯 Auto-sell order placed: Kalshi will sell if a buyer pays {money(price * cnt)} "
-                    f"{why}. It stays on Kalshi with your phone closed.")
+            return None
         except PermissionError:
             return "Kalshi refused. Your API key needs write (trading) access for auto-sell orders."
         except (RuntimeError, requests.RequestException) as err:
@@ -3335,24 +3417,61 @@ def place_take_profit(ticker, contracts, cost, p=None, total=None):
     return f"Kalshi didn't accept the auto-sell order ({last}). It may not allow resting orders on this combo."
 
 
+def place_take_profit(ticker, contracts, cost, p=None, steps=None):
+    """Put standing sell orders on Kalshi (a ladder in thirds, or one) at the wait-one-more-game
+    price. Kalshi keeps them working with your phone closed; each fills only if a buyer pays it."""
+    n = math.floor(contracts * 100 + 1e-6) / 100
+    if n < 1:
+        return "Auto-sell needs at least 1 contract."
+    why = ""
+    if steps is None:
+        steps, why = tp_ladder(cost, n, ticker, p)
+    if not steps:
+        return ("No auto-sell for this one: it's already worth close to what it pays, or it doesn't pay "
+                "enough above what you paid. Hold it, or cash out when you like the offer.")
+    done = []
+    for k, total in steps:
+        if k < 0.01:
+            continue
+        err = post_sell(ticker, k, total / k)
+        if err:
+            return err if not done else f"Placed {len(done)} of {len(steps)} auto-sell orders. {err}"
+        done.append(total * n / k)                 # as a whole-combo price, to compare with offers
+    prices = " / ".join(money(x) for x in done)
+    return (f"🎯 Auto-sell placed: {'a third each at ' if len(done) > 1 else 'sells at '}{prices} "
+            f"(whole-combo prices) {why}. It stays on Kalshi with your phone closed.")
+
+
+def order_steps(orders):
+    """Your resting sell orders on one combo as sorted [(contracts left, price each), ...]."""
+    out = []
+    for o in orders:
+        k = count_of({"count_fp": o.get("remaining_count_fp") or o.get("remaining_count")})
+        out.append((k, dollars(o, "yes_price")))
+    return sorted(out, key=lambda x: x[1])
+
+
 def retarget_one(t, orders, cost_full, pays_full, p=None):
-    """Move one combo's auto-sell to its current "Let it ride" price. Returns (old, new) if moved.
-    At most once a minute per combo, and only for a 5%+ change."""
+    """Move one combo's auto-sell ladder to its current price as games are won, lost or under way.
+    At most once a minute per combo, and only for a 5%+ change. Returns (old, new) if moved."""
     import time
     moved_at = MINE.setdefault("tp_moved", {})
     if not orders or time.time() - moved_at.get(t, 0) < 60:
         return None
-    o0 = orders[0]
-    left = count_of({"count_fp": o0.get("remaining_count_fp") or o0.get("remaining_count")}) or pays_full
-    cur = dollars(o0, "yes_price") * left
+    cur = order_steps(orders)
+    left = round(sum(k for k, _ in cur), 2) or pays_full
     cost = cost_full * left / max(pays_full, 1e-9)
-    new, _ = tp_target(cost, left, t, p)
-    if not new or not cur or abs(new - cur) / cur < 0.05:
+    steps, _ = tp_ladder(cost, left, t, p)
+    if not steps:
+        return None
+    new_first = steps[0][1] / steps[0][0]
+    old_first = cur[0][1] if cur else 0
+    if old_first and abs(new_first - old_first) / old_first < 0.05 and len(cur) == len(steps):
         return None
     moved_at[t] = time.time()
     cancel_take_profit(t)
-    place_take_profit(t, left, cost, total=new)
-    return cur, new
+    place_take_profit(t, left, cost, steps=steps)
+    return old_first * left, new_first * left
 
 
 def retarget_take_profits():
@@ -3528,6 +3647,10 @@ def get_cash_offer(ticker, frac=1.0):
         return {"error": "No cash-out offers came in. Try again in a minute, or check the Kalshi app.",
                 "at": time.time()}
     price, q = best
+    try:
+        note_discount(price, h["p"], any(live for _, live, _ in h.get("legs_left") or []))
+    except Exception:
+        pass
     return {"rfq": rfq, "quote": q["id"], "price": price, "contracts": n, "offer": round(n * price, 2),
             "frac": frac, "at": time.time()}
 
@@ -3747,7 +3870,10 @@ def cash_alerts(plan):
         news.append(f"{'half of ' if f < 1 else ''}{h['label']} ({money(amt)})")
     if not news:
         return []
-    return [f"💰 Cash out {', '.join(news)}? Locks in {money(plan['plan']['sure'])}. Holding everything: "
+    slipping = any(live and c < 0.5 for t2, f2 in plan["acts"].items() if f2
+                   for c, live, _ in (MINE["hold"].get(t2) or {}).get("legs_left", []))
+    head = "📉 A game is turning against you. Cash out" if slipping else "💰 Cash out"
+    return [f"{head} {', '.join(news)}? Locks in {money(plan['plan']['sure'])}. Holding everything: "
             f"{plan['hold']['nothing']:.0%} chance of nothing more. Open the planner to confirm."]
 
 
@@ -3914,7 +4040,8 @@ def mine_page(live=False):
                                          "won_some": any(r == "yes" for *_, r in inf),
                                          "need": [((l.get("side", "yes"), l["ticker"]), nm)
                                                   for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
-                                         "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"]}
+                                         "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"],
+                                         "legs_left": legs_left_of(a["legs"], inf, side_of)}
         if st == "cashed":
             gain = a["back"] - a["cost"]
             status = f"<span class='tag {'good' if gain >= 0 else 'bad'}'>Cashed out</span>"
@@ -4786,15 +4913,20 @@ def settings_page(all_games, days, counts):
                         + slider("ride", "Auto-sell: let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
                         + switch("tp_follow", "Move auto-sell prices as games are won or lost")
+                        + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
                         + switch("tp_auto", "Auto-sell all my live combos (every league)"),
                         "Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
                         "taking the sure money. Auto-sell puts a standing sell order on Kalshi; it works with "
                         "your phone closed but only fills if a buyer pays that much. Its price is where the "
-                        "planner would say cash out, from the combo's current chance (each remaining game "
-                        "on its own odds) and the level you pick: Cautious acts on your real bankroll, Steady "
-                        "2×, Balanced 4×, Bold 10×, Ride it out sells only at full value. Never below halfway "
-                        "(on a multiplying scale) from what you paid to the payout. Prices move only while "
-                        "the planner is open. Nothing sells unless you confirm or set auto-sell."),
+                        "planner would say cash out: it plays out the games still to come in order, and at each "
+                        "step weighs selling then (at the discount Kalshi buyers really pay, learned from your "
+                        "own offers) against waiting another game, using each game's live chances. Your level "
+                        "sets how much risk it carries: Cautious acts on your real bankroll, Steady 2×, Balanced "
+                        "4×, Bold 10×, Ride it out sells only at full value. It adds a cushion for error in the "
+                        "odds (2% per pick left). While a game is on, the order prices your pick as a win, so a "
+                        "swing your way can't be bought cheaply. Never below halfway (on a multiplying scale) "
+                        "from what you paid to the payout. Prices move only while the planner is open. Nothing "
+                        "sells unless you confirm or set auto-sell."),
         "kalshi": section("Kalshi account",
                           f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
                           f"spellcheck='false' value='{e(CFG['kalshi_key_id'])}'>"
