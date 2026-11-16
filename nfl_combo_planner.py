@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.7"
+VERSION = "2026.11.16.8"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1941,7 +1941,11 @@ LOADING_PAGE = """<!doctype html><html><head><meta charset='utf-8'>
 </style></head><body><div id='msg'>Loading…</div><div class='sk'>
 <div class='bar' style='height:26px;width:55%%'></div><div class='bar' style='height:120px'></div>
 <div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div></div>
-<script>function setMsg(m){document.getElementById('msg').textContent=m;}</script></body></html>"""
+<script>function setMsg(m){document.getElementById('msg').textContent=m;}
+window.__load=function(h){var m=h.match(/<head[^>]*>([\s\S]*)<\/head>/i),b=h.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+ if(m)document.head.innerHTML=m[1];document.body.innerHTML=b?b[1]:h;
+ document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
+ window.scrollTo(0,0);};</script></body></html>"""
 
 APP = {"web": None, "page": None}
 
@@ -2117,9 +2121,10 @@ def loading(msg):
             pass
     if APP["page"] != "loading":
         web.delegate = None
-        web.load_html(themed(LOADING_PAGE % CSS))
+        if not (APP.get("page") == "page" and replace_page(web, themed(LOADING_PAGE % CSS))):
+            web.load_html(themed(LOADING_PAGE % CSS))
+            time.sleep(0.25)      # let the page load before updating its text
         APP["page"] = "loading"
-        time.sleep(0.25)          # let the page load before updating its text
     web.evaluate_javascript(f"setMsg({json.dumps(msg)})")
 
 
@@ -2166,6 +2171,10 @@ input.sw:checked::after{left:22px}
 """
 
 APP_JS = r"""
+window.__load=function(h){var m=h.match(/<head[^>]*>([\s\S]*)<\/head>/i),b=h.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+ if(m)document.head.innerHTML=m[1];document.body.innerHTML=b?b[1]:h;
+ document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
+ window.scrollTo(0,0);};
 function sheet(title, sub, url, label){location.href='combo://confirm/'+encodeURIComponent(JSON.stringify([title,sub,url,label||'Confirm']));}
 function toast(m){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';
  document.body.appendChild(t);}t.textContent=m;t.style.display=m?'block':'none';}
@@ -2371,6 +2380,18 @@ def with_nav(page):
     return app_frame(themed(page))
 
 
+def replace_page(web, page):
+    """Put a whole new page into the one already showing (no blank white reload).
+    False if the current page can't do that, so the caller loads it normally."""
+    try:
+        if web.evaluate_javascript("typeof window.__load") == "function":
+            web.evaluate_javascript("window.__load(%s)" % json.dumps(page))
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def swap_page(webview, page):
     """Redraw the page you're on without jumping to the top (falls back to a full reload)."""
     page = with_nav(page)
@@ -2405,7 +2426,8 @@ def present(page, keeper=None):
             return
         except Exception:
             pass
-    web.load_html(page)
+    if not (APP.get("page") in ("page", "loading") and replace_page(web, page)):
+        web.load_html(page)
     APP["page"] = "page"
     APP["screen"] = screen
     APP["quiet"] = False
