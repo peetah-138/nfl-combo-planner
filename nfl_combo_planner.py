@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.27"
+VERSION = "2026.11.16.1"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1634,6 +1634,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
 def show_results(all_games=None, days=None, sunday=None):
     """Results: what actually happened to your combos (from Kalshi). Without a Kalshi
     connection, falls back to the planner's last build."""
+    APP["where"] = "results"
     if can_trade() and not RUN_OPTS.pop("show_build", False):
         return present(results_page(sunday), ResultsKeeper())
     return show_build(all_games, days, sunday)
@@ -1932,12 +1933,13 @@ def inject_state(page, quiet=False):
 
 
 LOADING_PAGE = """<!doctype html><html><head><meta charset='utf-8'>
-<meta name='viewport' content='width=device-width,initial-scale=1'><style>%s
-.load{min-height:80vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center}
-.spin{width:44px;height:44px;border-radius:50%%;border:4px solid var(--line);border-top-color:var(--accent);animation:r .8s linear infinite}
-@keyframes r{to{transform:rotate(360deg)}}#msg{font-size:17px;font-weight:600}#sub{color:var(--muted);font-size:14px}
-</style></head><body><div class='load'><div class='spin'></div><div id='msg'>Loading…</div>
-<div id='sub'>This usually takes a few seconds.</div></div>
+<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'><style>%s
+.sk{padding:calc(env(safe-area-inset-top) + 64px) 16px 16px}.bar{background:var(--card);border-radius:12px;margin:0 0 12px;
+ animation:pl 1.2s ease-in-out infinite alternate}@keyframes pl{from{opacity:.45}to{opacity:1}}
+#msg{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top) + 18px);text-align:center;font-size:15px;font-weight:600;color:var(--muted)}
+</style></head><body><div id='msg'>Loading…</div><div class='sk'>
+<div class='bar' style='height:26px;width:55%%'></div><div class='bar' style='height:120px'></div>
+<div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div></div>
 <script>function setMsg(m){document.getElementById('msg').textContent=m;}</script></body></html>"""
 
 APP = {"web": None, "page": None}
@@ -1984,10 +1986,7 @@ def _web():
     web.background_color = "#0f1115" if CFG.get("dark") else "white"
     win.add_subview(web)
     APP.update(web=web, win=win, page=None, closed=False)
-    if CFG.get("dark"):
-        win.present("fullscreen", hide_title_bar=False, title_bar_color="#0f1115", title_color="#eceef2")
-    else:
-        win.present("fullscreen", hide_title_bar=False)
+    win.present("fullscreen", hide_title_bar=True)
     return web
 
 
@@ -2035,6 +2034,12 @@ def loading(msg):
         return
     import time
     web = _web()
+    if APP.get("quiet") and APP.get("page") == "page":
+        try:
+            web.evaluate_javascript(f"toast({json.dumps(msg)})")
+            return
+        except Exception:
+            pass
     if APP["page"] != "loading":
         web.delegate = None
         web.load_html(themed(LOADING_PAGE % CSS))
@@ -2043,31 +2048,106 @@ def loading(msg):
     web.evaluate_javascript(f"setMsg({json.dumps(msg)})")
 
 
-def nav_bar():
-    """My combos / Results / Settings: on every page, so you never need the X."""
-    items = []
-    if can_trade():
-        items.append(("mine", "My combos"))
-    if can_trade() or os.path.exists(LATEST):
-        items.append(("results", "Results"))
-    items.append(("settings", "⚙︎ Settings"))
-    other = next_league()
-    items.append(("league", LEAGUES[other]["icon"]))
+TABS = [("mine", "●", "Live"), ("build", "＋", "Build"), ("results", "▤", "Results"), ("settings", "⚙︎", "Settings")]
 
-    def js(k):                                    # on the Settings page, buttons save settings first
-        if k == "settings":
-            return ""
-        if k == "league":
-            return f"go('lg-{other}');"
-        return "go(" + repr("mine" if k == "mine" else "show") + ");"
-    links = "".join(
-        f"<a class='navb{' lg' if k == 'league' else ''}' href='combo://nav/{k}' "
-        f"onclick=\"if(window.SL&&window.go){{{js(k)}return false;}}\">{t}</a>"
-        for k, t in items)
-    return ("<style>.nav{display:flex;gap:6px;padding:10px 16px 0}.navb{flex:1;text-align:center;padding:9px 4px;"
-            "border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--ink);"
-            "font:600 14px -apple-system,sans-serif;text-decoration:none}.navb.lg{flex:0 0 46px;font-size:18px;padding:6px 0}</style>"
-            f"<nav class='nav'>{links}</nav>")
+APP_CSS = """
+.appbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:8px;
+ padding:calc(env(safe-area-inset-top) + 6px) 12px 8px;background:var(--bg);border-bottom:1px solid var(--line)}
+.abtn{min-width:44px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:10px;
+ color:var(--ink);text-decoration:none;font:600 17px -apple-system,sans-serif}
+.segc{flex:1;display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:2px;max-width:260px;margin:0 auto}
+.segc a{flex:1;text-align:center;padding:7px 0;border-radius:8px;color:var(--muted);text-decoration:none;font:600 14px -apple-system,sans-serif}
+.segc a.on{background:var(--accent);color:#fff}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;background:var(--card);border-top:1px solid var(--line);
+ padding:6px 4px calc(env(safe-area-inset-bottom) + 6px)}
+.tabbar a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:44px;justify-content:center;
+ color:var(--muted);text-decoration:none;font:600 11px -apple-system,sans-serif}
+.tabbar a b{font-size:20px;line-height:22px;font-weight:600}.tabbar a.on{color:var(--accent)}
+body{padding-bottom:calc(env(safe-area-inset-bottom) + 76px)}
+.btn{min-height:44px}.klink{display:inline-block;padding:8px 2px}
+.sheetbg{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.45);display:none}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--card);border-radius:18px 18px 0 0;
+ padding:18px 18px calc(env(safe-area-inset-bottom) + 18px);transform:translateY(110%);transition:transform .22s ease}
+.sheet.up{transform:none}.sheet h3{margin:0 0 6px;font-size:19px}.sheet p{margin:0 0 16px;color:var(--muted)}
+.sheet .btn{width:100%;margin-top:8px;font-size:17px}
+.ptr{height:0;overflow:hidden;text-align:center;color:var(--muted);font-size:13px;transition:height .15s}
+.toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 64px);transform:translateX(-50%);z-index:60;
+ background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:20px;font:600 14px -apple-system,sans-serif;
+ box-shadow:0 4px 18px rgba(0,0,0,.3)}
+@keyframes fl{from{background:rgba(91,157,255,.35)}to{background:transparent}}.flash{animation:fl 1.6s ease-out}
+details.card>summary{list-style:none;cursor:pointer}details.card>summary::-webkit-details-marker{display:none}
+details.card:not([open])>summary .chev::after{content:'›'}details.card[open]>summary .chev::after{content:'⌄'}
+.chev{color:var(--muted);font-size:18px;margin-left:6px}
+.strip{position:sticky;top:calc(env(safe-area-inset-top) + 51px);z-index:20;display:flex;gap:10px;align-items:center;
+ justify-content:space-between;margin:0 -16px;padding:9px 16px;background:var(--bg);border-bottom:1px solid var(--line);
+ font-size:14px;text-decoration:none;color:var(--ink)}
+.inote{font-size:13px;color:var(--muted);margin:0 0 8px}.ib{color:var(--accent);font-size:15px;margin-left:6px;cursor:pointer}
+input.sw{-webkit-appearance:none;appearance:none;width:51px;height:31px;flex:none;border-radius:16px;background:var(--line);
+ position:relative;transition:background .2s;margin:0;cursor:pointer}
+input.sw:checked{background:#34c759}
+input.sw::after{content:'';position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
+ box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .2s}
+input.sw:checked::after{left:22px}
+"""
+
+APP_JS = r"""
+function sheet(title, sub, url, label){var bg=document.getElementById('sheetbg'),sh=document.getElementById('sheet');
+ document.getElementById('shT').textContent=title;document.getElementById('shS').textContent=sub;
+ var b=document.getElementById('shGo');b.textContent=label||'Confirm';b.onclick=function(){closeSheet();location.href=url;};
+ bg.style.display='block';setTimeout(function(){sh.classList.add('up')},10);}
+function closeSheet(){document.getElementById('sheet').classList.remove('up');
+ setTimeout(function(){document.getElementById('sheetbg').style.display='none'},220);}
+function toast(m){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';
+ document.body.appendChild(t);}t.textContent=m;t.style.display=m?'block':'none';}
+window.__swap=function(h){var y=window.scrollY,open={},old={};
+ document.querySelectorAll('details[id]').forEach(function(d){open[d.id]=d.open;});
+ document.querySelectorAll('[data-k]').forEach(function(e){old[e.dataset.k]=e.textContent;});
+ var vis=document.querySelector('section[id]:not(.hidden)');var tabSel=vis?vis.id:null;
+ document.body.innerHTML=h;
+ document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
+ document.querySelectorAll('details[id]').forEach(function(d){if(d.id in open)d.open=open[d.id];});
+ if(tabSel&&window.tab&&document.getElementById(tabSel)&&tabSel!=='combos')tab(tabSel);
+ document.querySelectorAll('[data-k]').forEach(function(e){var o=old[e.dataset.k];if(o!==undefined&&o!==e.textContent)e.classList.add('flash');});
+ window.scrollTo(0,y);};
+(function(){var y0=null,pull=0;
+ document.addEventListener('touchstart',function(e){y0=(window.scrollY<=0&&!document.getElementById('sheet').classList.contains('up'))?e.touches[0].clientY:null;pull=0;},{passive:true});
+ document.addEventListener('touchmove',function(e){if(y0===null)return;pull=e.touches[0].clientY-y0;var p=document.getElementById('ptr');
+  if(p&&pull>0){p.style.height=Math.min(pull/2,44)+'px';p.textContent=pull>110?'Release to refresh':'Pull to refresh';}},{passive:true});
+ document.addEventListener('touchend',function(){var p=document.getElementById('ptr');if(y0!==null&&pull>110&&window.REFRESH){
+  if(p)p.textContent='Refreshing…';location.href='combo://nav/refresh';}else if(p){p.style.height='0';}y0=null;});})();
+"""
+
+
+def app_frame(page):
+    """Wrap a page in the app's frame: top bar (close, NFL | NBA, refresh), a tab bar at the
+    bottom, the confirm sheet and pull-to-refresh. Everything lives inside one window."""
+    if "<body>" not in page or "class='tabbar'" in page:
+        return page
+    on_settings = "var SL =" in page                  # buttons there save your settings first
+    where = APP.get("where") or ("mine" if can_trade() else "build")
+
+    def link(key, inner, cls="", go=None):
+        js = f" onclick=\"if(window.SL&&window.go){{go('{go}');return false;}}\"" if (go and on_settings) else ""
+        return f"<a class='{cls}' href='combo://nav/{key}'{js}>{inner}</a>"
+
+    seg = "".join(link(f"lg-{k}", f"{v['icon']} {v['short']}", "on" if k == LEAGUE["code"] else "", f"lg-{k}")
+                  for k, v in LEAGUES.items())
+    refresh = where in ("mine", "results")
+    top = (f"<div class='appbar'>{link('close', '✕', 'abtn')}<div class='segc'>{seg}</div>"
+           + (link('refresh', '⟳', 'abtn') if refresh else "<span class='abtn'></span>") + "</div>"
+           "<div class='ptr' id='ptr'></div>")
+    tabs = [t for t in TABS if can_trade() or t[0] != "mine"]
+    go_for = {"mine": "mine", "results": "show", "build": "tab-build", "settings": "tab-settings"}
+    bar = ("<nav class='tabbar'>" + "".join(
+        link(k, f"<b>{ic}</b>{lab}", "on" if k == where else "", go_for[k]) for k, ic, lab in tabs) + "</nav>")
+    sheet = ("<div class='sheetbg' id='sheetbg' onclick='closeSheet()'></div><div class='sheet' id='sheet'>"
+             "<h3 id='shT'></h3><p id='shS'></p><button class='btn go' id='shGo'>Confirm</button>"
+             "<button class='btn' onclick='closeSheet()'>Cancel</button></div>")
+    page = page.replace("width=device-width,initial-scale=1", "width=device-width,initial-scale=1,viewport-fit=cover")
+    page = page.replace("</head>", f"<style>{APP_CSS}</style></head>", 1)
+    page = page.replace("<body>", "<body>" + top, 1)
+    page = page.replace("</body>", bar + sheet + f"<script>{APP_JS}window.REFRESH={'true' if refresh else 'false'};</script></body>", 1)
+    return page
 
 
 KALSHI_WEB = "https://kalshi.com"
@@ -2094,6 +2174,21 @@ def combo_url(ticker):
     event = ticker.rsplit("-", 1)[0]
     series = event.split("-")[0].lower()
     return f"{KALSHI_WEB}/markets/{series}/combo/{event}?marketTicker={ticker}"
+
+
+def haptic(kind="success"):
+    """A tap you can feel: success, warning or error (iPhone only, silently skipped elsewhere)."""
+    try:
+        from objc_util import ObjCClass, on_main_thread
+
+        @on_main_thread
+        def buzz():
+            g = ObjCClass("UINotificationFeedbackGenerator").new()
+            g.prepare()
+            g.notificationOccurred_({"success": 0, "warning": 1, "error": 2}.get(kind, 0))
+        buzz()
+    except Exception:
+        pass
 
 
 def open_outside(url):
@@ -2138,16 +2233,30 @@ def go_to(target):
     import threading
     MINE["live"] = False
     waiting = APP.get("settings_wait")
+    if target == "close":
+        try:
+            APP["win"].close()
+        except Exception:
+            pass
+        return
     if waiting:                                   # on the settings page: just answer it
-        if target != "settings":
-            result, done = waiting
-            result["go"] = "mine" if target == "mine" else "show"
+        result, done = waiting
+        result["go"] = {"mine": "mine", "results": "show", "build": "tab-build",
+                        "settings": "tab-settings"}.get(target, target if target.startswith("lg-") else None)
+        if result["go"]:
             done.set()
         return
-    if target == "league":                        # switch NFL <-> college and stay on the same kind of page
-        other = next_league()
-        save_json(LEAGUE_FILE, {"league": other})
-        target = APP.get("where") or ("mine" if can_trade() else "settings")
+    if target == "league":
+        target = "lg-" + next_league()
+    if target.startswith("lg-"):                  # switch league and stay on the same kind of page
+        save_json(LEAGUE_FILE, {"league": target[3:]})
+        target = APP.get("where") or ("mine" if can_trade() else "build")
+    if target == "refresh":
+        target = APP.get("where") or "mine"
+        APP["quiet"] = True
+    if target in ("build", "settings"):
+        RUN_OPTS["smode"] = target
+        target = "settings"
     RUN_OPTS["goto"] = target
     threading.Thread(target=run, daemon=True).start()
 
@@ -2169,13 +2278,20 @@ def themed(page):
 
 
 def with_nav(page):
-    """Every page gets the nav bar at the top and again at the bottom."""
-    page = themed(page)
-    if "<body>" in page and "class='nav'" not in page:
-        bar = nav_bar()
-        page = page.replace("<body>", "<body>" + bar, 1)
-        page = page.replace("</body>", bar.replace("<nav class='nav'>", "<nav class='nav' style='padding:4px 16px 28px'>") + "</body>", 1)
-    return page
+    """Every page gets the app frame and the chosen colours."""
+    return app_frame(themed(page))
+
+
+def swap_page(webview, page):
+    """Redraw the page you're on without jumping to the top (falls back to a full reload)."""
+    page = with_nav(page)
+    body = page.split("<body>", 1)[1].rsplit("</body>", 1)[0] if "<body>" in page else None
+    try:
+        if body is None:
+            raise ValueError
+        webview.evaluate_javascript("window.__swap(%s)" % json.dumps(body))
+    except Exception:
+        webview.load_html(page)
 
 
 def present(page, keeper=None):
@@ -2191,8 +2307,19 @@ def present(page, keeper=None):
         return
     web = _web()
     web.delegate = NavKeeper(keeper)
+    screen = (APP.get("where"), (re.search(r"<title>([^<]*)</title>", page) or re.search(r"<h1>([^<]*)", page) or [None, ""])[1])
+    body = page.split("<body>", 1)[1].rsplit("</body>", 1)[0] if "<body>" in page else None
+    if APP.get("page") == "page" and APP.get("screen") == screen and body is not None:
+        try:
+            web.evaluate_javascript("window.__swap(%s)" % json.dumps(body))
+            APP["quiet"] = False
+            return
+        except Exception:
+            pass
     web.load_html(page)
     APP["page"] = "page"
+    APP["screen"] = screen
+    APP["quiet"] = False
 
 
 MINE = {"live": False, "thread": None, "hold": {}, "cash": {}}
@@ -2200,6 +2327,7 @@ MINE = {"live": False, "thread": None, "hold": {}, "cash": {}}
 
 def show_mine(all_games, days, sunday):
     """Your combos already placed on Kalshi for this week, with optional live alerts."""
+    APP["where"] = "mine"
     book, notes = {}, []
     if CFG["odds_key"]:
         loading("Getting sportsbook odds…")
@@ -2277,10 +2405,11 @@ def live_check(webview):
     MINE["last"] = dt.datetime.now().strftime("%-I:%M %p")
     expire_offers()
     cash_alerts = auto_cash_checks()
+    APP["quiet"] = True
     page, snap = mine_page(live=True)
     alerts = diff_alerts(MINE.get("snap") or {}, snap) + cash_alerts
     MINE["snap"] = snap
-    webview.load_html(with_nav(page))
+    present(page, MineKeeper())
     for msg in alerts[:4]:
         notify(msg)
     return alerts
@@ -2394,6 +2523,16 @@ def plan_words(t, f, o, h, W):
         return f"Locks in half and keeps a {p:.0%} shot at {money(pays / 2)}."
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
+def confirm_cash(t, h, o):
+    """onclick for a Cash out button: a bottom sheet that says exactly what happens."""
+    what = "half of " if o.get("frac", 1.0) < 1 else ""
+    title = f"Cash out {what}{h['label']} for {money(o['offer'])}?"
+    sub = (f"You paid {money(h['cost'] * o.get('frac', 1.0))}. If you hold instead: "
+           f"{h['p']:.0%} chance of {money(h['pays'] * o.get('frac', 1.0))}.")
+    args = ",".join(json.dumps(x) for x in (title, sub, f"combo://cash/go/{t}", f"Cash out for {money(o['offer'])}"))
+    return html.escape(f"sheet({args})")
+
+
 def action_button(t, f, h):
     """The button that carries out the plan for one combo (needs an offer of the right size)."""
     o = fresh_offer(t)
@@ -2402,7 +2541,7 @@ def action_button(t, f, h):
         return ""
     if abs(o.get("frac", 1.0) - f) < 0.01:
         what = "half of " if f < 1 else ""
-        return (f"<button class='btn go cashb' onclick=\"cash('go','{te}')\">Cash out {what}"
+        return (f"<button class='btn go cashb' onclick=\"{confirm_cash(t, h, o)}\">Cash out {what}"
                 f"{html.escape(h['label'])} for {money(o['offer'])}</button>")
     act = "askhalf" if f < 1 else "ask"
     return (f"<button class='btn go cashb' onclick=\"cash('{act}','{te}')\">Get offer for "
@@ -2445,7 +2584,7 @@ def cash_block(ticker, plan):
         size = " for half" if o.get("frac", 1.0) < 1 else ""
         main = action_button(ticker, f, h) if f else ""
         if not main:
-            main = (f"<button class='btn cashb' onclick=\"cash('go','{t}')\">Cash out"
+            main = (f"<button class='btn cashb' onclick=\"{confirm_cash(ticker, h, o)}\">Cash out"
                     f"{' half' if size else ''} for {money(o['offer'])}</button>")
         out.append(f"<div style='margin-top:8px'>Kalshi offers <b>{money(o['offer'])}</b>{size} "
                    f"<span class='verdict {cls}'>{word}</span></div>"
@@ -2797,6 +2936,7 @@ def accept_cash(ticker):
         pass
     ACCT_CACHE["at"] = 0
     if status == "executed":
+        haptic("success")
         return f"✅ {label} cashed out for about {money(o['offer'])}."
     if status == "cancelled":
         return f"{label}: the buyer backed out before confirming, so nothing was sold. Get a fresh offer."
@@ -2807,6 +2947,7 @@ def accept_cash(ticker):
 def cash_action(action, ticker):
     """Buttons on a combo card: ask for an offer, cash out, or keep it."""
     MINE["busy"] = True                     # the 2-minute refresh waits until this is done
+    APP["quiet"] = True                      # update the page in place, no loading screen
     try:
         if action == "tp":
             loading("Placing your auto-sell order on Kalshi…")
@@ -3099,11 +3240,15 @@ def mine_page(live=False):
         pay_line = (f"<div class='pay'>{money(a['back'])}</div><div class='meta'>cashed out · cost {money(a['cost'])}</div>"
                     if group == "cashed" else
                     f"<div class='pay'>{money(a['pays'])}</div><div class='meta'>pays if it hits · cost {money(a['cost'])}</div>")
-        cards.append((group, f"<div class='card' id='c-{e(a['ticker'])}'><div class='top'><div>"
-                     f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}</div>"
-                     f"<div style='text-align:right'>{status}<br><a class='klink' href='combo://open/"
-                     f"{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a></div></div>"
-                     f"{value}<ol>{''.join(rows)}</ol></div>"))
+        marks = {"yes": "✓", "no": "✗"}
+        preview = " · ".join(f"{nm}{(' ' + marks[r]) if r in marks else ''}"
+                             for _, (nm, _, _, r) in legs_sorted[:3]) + (f" · +{len(legs_sorted) - 3}" if len(legs_sorted) > 3 else "")
+        cards.append((group, f"<details class='card' id='c-{e(a['ticker'])}'@@OPEN:{e(a['ticker'])}@@><summary><div class='top'><div>"
+                     f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}"
+                     f"<div class='muted' style='font-size:13px;margin-top:2px'>{e(preview)}</div></div>"
+                     f"<div style='text-align:right'><span data-k='p-{e(a['ticker'])}'>{status}</span><span class='chev'></span>"
+                     f"<br><a class='klink' href='combo://open/{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a>"
+                     f"</div></div></summary>{value}<ol>{''.join(rows)}</ol></details>"))
 
     live_picks = []
     for a, inf in zip(mine, infos):
@@ -3120,7 +3265,16 @@ def mine_page(live=False):
     plan = plan_cashout()
     MINE["plan"] = plan
     cards = [(g, re.sub(r"@@CASH:([^@]+)@@", lambda m: cash_block(m.group(1), plan), c)) for g, c in cards]
+    act_on = {t for t, f in ((plan or {}).get("acts") or {}).items() if f} | {t for t in MINE["hold"] if fresh_offer(t)}
+    cards = [(g, re.sub(r"@@OPEN:([^@]+)@@", lambda m: " open" if html.unescape(m.group(1)) in act_on else "", c))
+             for g, c in cards]
     now_box = right_now_html(mine, infos, snap, plan)
+    n_act = sum(1 for f in ((plan or {}).get("acts") or {}).values() if f)
+    strip = (f"<a class='strip' href='#now' onclick=\"document.getElementById('now').scrollIntoView({{behavior:'smooth'}});return false;\">"
+             f"<span>Locked <b data-k='lk'>{money(MINE.get('locked', 0))}</b> · Live <b data-k='lv'>"
+             f"{money(sum(h['hold'] for h in MINE['hold'].values()))}</b></span>"
+             + (f"<span class='tag good'>{n_act} to do ›</span>" if n_act else "<span class='muted'>›</span>") + "</a>"
+             if MINE["hold"] or MINE.get("locked") else "")
     alive = [a for a in mine if snap.get(a["ticker"], {}).get("status") in ("pending", "won")]
     best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
     n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
@@ -3147,7 +3301,7 @@ def mine_page(live=False):
                   f"<div class='sub'>{LG()['icon']} {len(mine)} placed · {n_alive} still alive"
                   + (f" · {n_cashed} cashed out" if n_cashed else "") + "</div></header>",
             (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
-            f"<div style='padding:0 16px'>{now_box}{alerts_row}</div>",
+            f"<div style='padding:0 16px'>{strip}<div id='now'>{now_box}</div>{alerts_row}</div>",
             "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">My combos</button>"
             "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
             "<section id='combos'>"]
@@ -3171,9 +3325,6 @@ def mine_page(live=False):
     history = load_json(HISTORY, {"builds": []})
     body.append(f"</section><section id='record' class='hidden'>"
                 f"{render_record(bets_from_account(acct, history))}</section>")
-    body.append("<div class='foot'>Chances use sportsbook lines when your key is set, otherwise "
-                "Kalshi's prices, and assume games are independent. Fair value compares Kalshi's "
-                "payout with a no-house-cut price for the games still to play.</div>")
     body.append("<script>function tab(n){document.querySelectorAll('section').forEach(function(s){"
                 "s.classList.toggle('hidden',s.id!==n);var b=document.getElementById('b-'+s.id);"
                 "if(b)b.classList.toggle('on',s.id===n);});window.scrollTo(0,0);}"
@@ -3433,6 +3584,7 @@ def accept_offer(i):
         pass
     if status == "executed":
         ACCT_CACHE["at"] = 0
+        haptic("success")
         if CFG.get("tp_auto"):
             place_take_profit(o["market"], o["pays"], o["stake"])
         hist = load_json(HISTORY, {"builds": []})
@@ -3671,7 +3823,7 @@ def handle_action(webview, parts):
                 if ok:
                     rerender(focus=i)
                     with open(LATEST, encoding="utf-8") as f:
-                        webview.load_html(with_nav(inject_state(f.read(), quiet=True)))
+                        swap_page(webview, inject_state(f.read(), quiet=True))
                 else:
                     say(f"<span class='verdict no'>{note}</span>")
             elif action == "swap":
@@ -3679,7 +3831,7 @@ def handle_action(webview, parts):
                 if swap_combo(i):
                     rerender(focus=i)
                     with open(LATEST, encoding="utf-8") as f:
-                        webview.load_html(with_nav(inject_state(f.read(), quiet=True)))   # same page, nav + buttons keep working
+                        swap_page(webview, inject_state(f.read(), quiet=True))   # same page, nav + buttons keep working
                 else:
                     say("<span class='verdict no'>No other combo of this type fits your settings.</span>")
             elif action == "buy":
@@ -3730,12 +3882,12 @@ def offer_html(i, o):
 # ================================================================ settings screen (a page in the same window)
 SETTINGS_JS = r"""
 var SL = %s;
-function label(k){ var s=document.getElementById(k), d=SL[k];
+function label(k){ var s=document.getElementById(k), d=SL[k]; if(!s) return;
   var v=+s.value, txt = d.unit==='$' ? '$'+v : v+(d.unit||'');
   document.getElementById('v-'+k).textContent = txt; budget(); }
 function val(k){ var el=document.getElementById(k); return el ? +el.value : 0; }
 function budget(){ var n=val('full_count')+val('safer_count')+val('middle_count')+val('moonshot_count');
-  var st=val('stake'), cap=val('budget'), b=document.getElementById('budgetline');
+  var st=val('stake'), cap=val('budget'), b=document.getElementById('budgetline'); if(!b) return;
   b.textContent = n+' combos x $'+st+' = $'+(n*st)+(n*st>cap ? '  (over your cap!)' : '  (cap $'+cap+')');
   b.className = n*st>cap ? 'neg' : ''; }
 function txtval(k){ var el=document.getElementById(k); return el ? el.value : ''; }
@@ -3775,15 +3927,18 @@ def settings_page(all_games, days, counts):
                 f"<input type='checkbox' class='sw' id='{key}' {'checked' if CFG[key] else ''}></label>")
 
     def section(title, inner, note=""):
-        n = f"<div class='muted' style='font-size:13px;margin-bottom:6px'>{note}</div>" if note else ""
-        return f"<h2>{title}</h2><div class='game'>{n}{inner}</div>"
+        if not note:
+            return f"<h2>{title}</h2><div class='game'>{inner}</div>"
+        return (f"<h2>{title}<span class='ib' onclick=\"var n=this.parentNode.nextElementSibling.querySelector('.inote');"
+                f"n.style.display=n.style.display==='block'?'none':'block'\">ⓘ</span></h2>"
+                f"<div class='game'><div class='inote' style='display:none'>{note}</div>{inner}</div>")
 
     top = []
     lg_btns = "".join(
         f"<button class='btn {'go' if k == LEAGUE['code'] else ''}' style='flex:1' "
         f"onclick=\"go('lg-{k}')\">{v['icon']} {v['short']}</button>"
         for k, v in LEAGUES.items())
-    top.append(f"<div class='quote' style='margin:0'>{lg_btns}</div>")
+    pass
     notice = RUN_OPTS.pop("notice", None)
     if notice:
         good = notice.startswith("Updated") or notice.startswith("You already")
@@ -3810,75 +3965,91 @@ def settings_page(all_games, days, counts):
                      f"<div class='seg'>{radios}</div></div>")
 
     have_key = os.path.exists(KEYFILE)
-    body = "".join([
-        f"<header><h1>{LG()['icon']} {LG()['name']} settings</h1><div class='sub' id='budgetline'></div></header><section>",
-        "<div class='stack'>" + "".join(top) + "</div>" if top else "",
-        section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
-                slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
-                slider("accept_pct", "Minimum offer to accept", 50, 100, 5, "% of fair")),
-        section("Overlap", slider("max_share", "Max share of combos for one pick", 20, 100, 10, "%")
-                + switch("hedge_close", "Split coin-flip games between both sides"),
-                "Keeps one result from sinking most of your combos. Full-slate combos and locked "
-                "picks are exempt, since they include those games on purpose."),
-        "" if not LG().get("full") else
-        section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
-                slider("upsets_min", "Fewest underdogs", 0, 8) + slider("upsets_max", "Most underdogs", 0, 8)),
-        "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
-                        slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
-                for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]),
-        section("Look", switch("dark", "Dark mode")),
-        section("Game order", switch("dogs_late", "Underdogs late: favourites in the early games"),
-                "Underdog picks go in the latest games. If the early favourites win, your combo is worth "
-                "more before the risky game starts, so you can cash out then. It doesn't change a combo's "
-                "chance or average value, only when you find out."),
-        section("Mid-day", switch("include_live", "Include games already in progress")
-                + slider("live_min", "Live picks: minimum chance", 10, 50, 5, "%"),
-                "Building after games have started uses only games still to play. With this on, games "
-                "under way are included at Kalshi's live price, except ones that are nearly decided, "
-                "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
-        section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
-                + switch("auto_cash", "Check cash-out offers during game-day alerts")
-                + slider("cash_every", "Check offers every", 2, 10, 2, " min")
-                + slider("tp_mult", "Auto-sell at", 2, 10, 1, "×")
-                + switch("tp_auto", "Add an auto-sell order to combos I buy here"),
-                "Money you keep for betting. The bigger a cash-out offer is next to this, the more the planner "
-                "favours taking the sure money. Nothing is sold until you tap Cash out. "
-                "Auto-sell puts a standing sell order on Kalshi at that multiple of what you paid; it "
-                "works with your phone closed but only fills if a buyer pays that much."),
-        section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
-                f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
-                f"{'tomorrow' if CFG.get('next_day') else 'today'}. Change this, then tap Build combos, "
-                "or tap the league button above to reload the list.") if by_day() else
-        section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
-                                for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
-                "Sunday is always in."),
-        section("Your picks", ("".join(picks) if len(picks) <= 16 else
-                               f"<details><summary class='muted'>{len(picks)} games · tap to lock or skip</summary>"
-                               f"{''.join(picks)}</details>") or "<div class='muted'>No games listed yet.</div>",
-                "Lock a team to put it in every combo, or skip a game."),
-        section("Kalshi account",
-                f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
-                f"spellcheck='false' value='{e(CFG['kalshi_key_id'])}'>"
-                + ("<div class='pos' style='font-size:13px;margin:8px 0'>Private key saved on this phone. "
-                   "Paste a new one below only to replace it.</div>" if have_key else
-                   "<div class='muted' style='font-size:13px;margin:8px 0'>Paste the whole private key "
-                   "(from -----BEGIN to -----END).</div>")
-                + "<textarea class='txt' id='pem' rows='4' autocapitalize='off' autocorrect='off' spellcheck='false' "
-                  "placeholder='-----BEGIN PRIVATE KEY-----'></textarea>"
-                  "<button class='btn' style='margin-top:8px' onclick=\"go('check')\">Save key &amp; check connection</button>",
-                "Fills in your Record from real bets. With a read + write key, Buy on Kalshi can place "
-                "combos (only when you tap Accept)."),
-        section("Sportsbook odds",
-                f"<input class='txt' id='odds_key' placeholder='Paste key here' autocapitalize='off' autocorrect='off' "
-                f"spellcheck='false' value='{e(CFG['odds_key'])}'>"
-                + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot (likely news)"),
-                "Free key from the-odds-api.com. Leave blank to use Kalshi's prices only."),
-        "<button class='btn go big' style='margin:18px 0 8px' onclick=\"go('build')\">Build combos</button>",
-        f"<div class='muted' style='text-align:center;font-size:13px;margin-bottom:40px'>Version {VERSION} · "
-        + ("up to date" if latest and version_tuple(latest) <= version_tuple(VERSION) else
-           "update available above" if latest else "couldn't check for updates")
-        + " · <a href='combo://settings/update/' onclick=\"go('update');return false;\">check again</a></div>",
-        "</section>"])
+    mode = RUN_OPTS.pop("smode", None) or APP.get("smode") or "build"
+    APP["smode"] = mode
+    APP["where"] = mode
+    sec = {
+        "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
+                         slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
+                         slider("accept_pct", "Minimum offer to accept", 50, 100, 5, "% of fair"),
+                         "Minimum offer: Buy on Kalshi flags offers below this share of the fair payout."),
+        "mix": "<details class='game' id='mix'><summary><b>Combo mix</b> <span class='muted'>· how many of each type</span></summary>"
+               + ("" if not LG().get("full") else
+                  section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
+                          slider("upsets_min", "Fewest underdogs", 0, 8) + slider("upsets_max", "Most underdogs", 0, 8)))
+               + "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
+                                 slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
+                         for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]) + "</details>",
+        "days": section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
+                        f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
+                        f"{'tomorrow' if CFG.get('next_day') else 'today'}.") if by_day() else
+                section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
+                                        for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
+                        "Sunday is always in."),
+        "picks": section("Your picks", ("".join(picks) if len(picks) <= 6 else
+                                        f"<details id='pk'><summary class='muted'>{len(picks)} games · tap to lock or skip</summary>"
+                                        f"{''.join(picks)}</details>") or "<div class='muted'>No games listed yet.</div>",
+                         "Lock a team to put it in every combo, or skip a game."),
+        "look": section("Look", switch("dark", "Dark mode")),
+        "order": section("Game order", switch("dogs_late", "Underdogs late: favourites in the early games"),
+                         "Underdog picks go in the latest games. If the early favourites win, your combo is worth "
+                         "more before the risky game starts, so you can cash out then. It doesn't change a combo's "
+                         "chance or average value, only when you find out."),
+        "overlap": section("Overlap", slider("max_share", "Max share of combos for one pick", 20, 100, 10, "%")
+                           + switch("hedge_close", "Split coin-flip games between both sides"),
+                           "Keeps one result from sinking most of your combos. Every-game combos and locked "
+                           "picks are exempt, since they include those games on purpose."),
+        "midday": section("Mid-day", switch("include_live", "Include games already in progress")
+                          + slider("live_min", "Live picks: minimum chance", 10, 50, 5, "%"),
+                          "Building after games have started uses only games still to play. Games under way are "
+                          "included at Kalshi's live price, except ones nearly decided, jumpy, or where Kalshi "
+                          "and live sportsbook odds disagree."),
+        "cash": section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
+                        + switch("auto_cash", "Check cash-out offers during game-day alerts")
+                        + slider("cash_every", "Check offers every", 2, 10, 2, " min")
+                        + slider("tp_mult", "Auto-sell at", 2, 10, 1, "×")
+                        + switch("tp_auto", "Add an auto-sell order to combos I buy here"),
+                        "Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
+                        "taking the sure money. Auto-sell puts a standing sell order on Kalshi; it works with "
+                        "your phone closed but only fills if a buyer pays that much. Nothing sells unless you "
+                        "confirm or set auto-sell."),
+        "kalshi": section("Kalshi account",
+                          f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
+                          f"spellcheck='false' value='{e(CFG['kalshi_key_id'])}'>"
+                          + ("<div class='pos' style='font-size:13px;margin:8px 0'>Private key saved on this phone.</div>"
+                             if have_key else "<div class='muted' style='font-size:13px;margin:8px 0'>Paste the whole private key.</div>")
+                          + "<textarea class='txt' id='pem' rows='3' autocapitalize='off' autocorrect='off' spellcheck='false' "
+                            "placeholder='-----BEGIN PRIVATE KEY-----'></textarea>"
+                            "<button class='btn' style='margin-top:8px' onclick=\"go('check')\">Save key &amp; check connection</button>",
+                          "From Kalshi → Account → API keys. With a read + write key, the planner can buy and cash "
+                          "out (only when you confirm). Paste a new private key only to replace the saved one."),
+        "odds": section("Sportsbook odds",
+                        f"<input class='txt' id='odds_key' placeholder='Paste key here' autocapitalize='off' autocorrect='off' "
+                        f"spellcheck='false' value='{e(CFG['odds_key'])}'>"
+                        + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot"),
+                        "Free key from the-odds-api.com. Without it, chances use Kalshi's prices only."),
+        "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>",
+                        "Opens the planner with one tap from your Home Screen, without the Pythonista editor."),
+    }
+    vline = (f"<div class='muted' style='text-align:center;font-size:13px;margin:14px 0 30px'>Version {VERSION} · "
+             + ("up to date" if latest and version_tuple(latest) <= version_tuple(VERSION) else
+                "update available" if latest else "couldn't check for updates") + "</div>")
+    if mode == "build":
+        upd = (f"<div class='note'>Update available: see the Settings tab.</div>"
+               if latest and version_tuple(latest) > version_tuple(VERSION) else "")
+        notice_html = [x for x in top if "class='game'" in x]
+        body = "".join([
+            f"<header><h1>Build {LG()['name']} combos</h1><div class='sub' id='budgetline'></div></header><section>",
+            upd, "".join(notice_html),
+            sec["days"], sec["money"], sec["mix"], sec["picks"],
+            "<button class='btn go big' style='margin:18px 0 8px' onclick=\"go('build')\">Build combos</button>",
+            "</section>"])
+    else:
+        body = "".join([
+            "<header><h1>Settings</h1></header><section>",
+            "<div class='stack'>" + "".join(x for x in top if "go('lg-" not in x) + "</div>",
+            sec["look"], sec["cash"], sec["order"], sec["midday"], sec["overlap"], sec["kalshi"], sec["odds"],
+            sec["home"], vline, "</section>"])
     css_extra = (".stack{display:flex;flex-direction:column;gap:8px;margin-top:8px}.big{width:100%;padding:13px;font-size:16px}"
                  ".srow{padding:6px 0}.srow input[type=range]{width:100%}.swrow{padding:8px 0;gap:12px}"
                  ".sw{width:22px;height:22px;flex:none}.txt{width:100%;font:15px -apple-system,sans-serif;padding:10px;"
@@ -3991,6 +4162,15 @@ def main():
         return show_results(all_games, days, sunday)
     if choice == "mine":
         return show_mine(all_games, days, sunday)
+    if choice in ("tab-build", "tab-settings"):
+        RUN_OPTS["smode"] = choice[4:]
+        RUN_OPTS["goto"] = "settings"
+        return main()
+    if choice == "homescreen":
+        RUN_OPTS["notice"] = home_screen_help()
+        RUN_OPTS["smode"] = "settings"
+        RUN_OPTS["goto"] = "settings"
+        return main()
     if choice and choice.startswith("lg-"):
         save_json(LEAGUE_FILE, {"league": choice[3:]})
         set_league(choice[3:])
@@ -4259,6 +4439,23 @@ def error_page(msg, title="Hmm.", crash=True):
             f"<style>{CSS}</style></head><body><header><h1>{html.escape(title)}</h1></header><section>"
             f"<div class='empty' style='text-align:left;line-height:1.5'>{html.escape(msg)}{tail}</div>"
             "</section></body></html>")
+
+
+LAUNCH_URL = "pythonista3://nfl_combo_planner?action=run"
+
+
+def home_screen_help():
+    """Copy the launch link and open the Shortcuts app, with the steps to finish."""
+    try:
+        import clipboard
+        clipboard.set(LAUNCH_URL)
+        copied = True
+    except Exception:
+        copied = False
+    open_outside("shortcuts://create-shortcut")
+    return ("Home Screen icon: in Shortcuts, tap Add Action, search for \"Open URLs\", and paste "
+            + ("the link I copied for you" if copied else LAUNCH_URL)
+            + ". Name it Combos, then tap the share icon → Add to Home Screen.")
 
 
 def file_version(path):
