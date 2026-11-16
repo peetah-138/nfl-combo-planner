@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.17"
+VERSION = "2026.11.16.18"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2202,6 +2202,7 @@ def adopt_window(old_app, notice):
         RUN_OPTS["notice"] = notice
         return
     APP.update(web=old_app["web"], win=win, bar=old_app.get("bar"), page=None, closed=False)
+    old_app["closed"] = True            # the old copy's live updates stop drawing into this window
     win.closers = [_window_closed]      # closing now tells this new copy, not the old one
     try:
         bind_controls(win, old_app["bar"])
