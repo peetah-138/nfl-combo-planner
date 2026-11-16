@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.1"
+VERSION = "2026.11.16.2"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -31,7 +31,8 @@ CFG = {
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
-    "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo
+    "cash_every": 2,      # minutes between fresh cash-out offers for every live combo
+    "refresh_secs": 15,   # seconds between live refreshes of scores, chances and your combos
     "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured
     "next_day": False,    # college basketball: build tomorrow's games instead of today's
     "dogs_late": True,
@@ -2338,6 +2339,8 @@ def show_mine(all_games, days, sunday):
     page, MINE["snap"] = mine_page()
 
     present(page, MineKeeper())
+    if CFG.get("auto_live", True) and MINE.get("hold") and APP.get("web") is not None and in_pythonista():
+        set_live(APP["web"], True)
 
 
 @safe_delegate
@@ -2379,7 +2382,7 @@ def live_loop(webview):
     first = True
     while MINE["live"] and window_open():
         if not first:
-            for _ in range(120):                  # 2 minutes, but stop quickly when switched off
+            for _ in range(max(5, int(CFG.get("refresh_secs", 15)))):   # stop quickly when switched off
                 if not MINE["live"] or not window_open():
                     return
                 time.sleep(1)
@@ -2448,7 +2451,12 @@ def diff_alerts(old, new):
 
 
 # ================================================================ cash out
-OFFER_LIFE = 150      # seconds a cash-out offer is shown before it's treated as expired
+OFFER_LIFE = 150      # minimum seconds a cash-out offer is kept (see offer_life)
+
+
+def offer_life():
+    """Keep each offer until the next fresh one is due, so there's always one to confirm."""
+    return max(OFFER_LIFE, int(CFG.get("cash_every", 2) * 60) + 45)
 
 
 def single_value(p, pays, W):
@@ -2462,7 +2470,7 @@ def single_value(p, pays, W):
 def fresh_offer(t):
     import time
     o = MINE["cash"].get(t)
-    if o and o.get("offer") and o.get("rfq") and time.time() - o["at"] <= OFFER_LIFE and t in MINE["hold"]:
+    if o and o.get("offer") and o.get("rfq") and time.time() - o["at"] <= offer_life() and t in MINE["hold"]:
         return o
     return None
 
@@ -2837,7 +2845,7 @@ def drop_cash(ticker):
 def expire_offers():
     import time
     for t, o in list(MINE["cash"].items()):
-        if o.get("rfq") and time.time() - o["at"] > OFFER_LIFE:
+        if o.get("rfq") and time.time() - o["at"] > offer_life():
             try:
                 kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
             except Exception:
@@ -2913,7 +2921,7 @@ def accept_cash(ticker):
     label = (MINE["hold"].get(ticker) or {}).get("label", "That combo")
     if o and o.get("frac", 1.0) < 1:
         label = "Half of " + label
-    if not o or not o.get("rfq") or time.time() - o["at"] > OFFER_LIFE:
+    if not o or not o.get("rfq") or time.time() - o["at"] > offer_life():
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
     if (MINE.get("tp") or {}).get(ticker):
         cancel_take_profit(ticker)
@@ -2921,7 +2929,11 @@ def accept_cash(ticker):
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "yes"})
     except (RuntimeError, PermissionError, requests.RequestException) as err:
-        return f"{label}: couldn't cash out, the offer probably expired. Get a fresh one. ({str(err)[:80]})"
+        MINE["cash"][ticker] = get_cash_offer(ticker, o.get("frac", 1.0))
+        new = MINE["cash"][ticker].get("offer")
+        return (f"{label}: that offer had expired, so nothing was sold. "
+                + (f"Fresh offer: {money(new)}. Tap Cash out again to confirm." if new else
+                   f"No fresh offer came in yet. ({str(err)[:60]})"))
     status, start = "accepted", time.time()
     while time.time() - start < 15 and status not in ("executed", "cancelled"):
         time.sleep(1)
@@ -3003,8 +3015,9 @@ def before_risky_game():
 
 
 def auto_cash_checks():
-    """During game-day alerts: refresh offers on combos worth checking, then alert when the
-    plan says to cash something out. Never sells on its own."""
+    """While Live is open: keep a fresh cash-out offer on every live combo (every few minutes,
+    per Settings) so Cash out is always one confirm away, and alert when the plan says to
+    cash something out. Never sells on its own."""
     import time
     if not CFG["auto_cash"] or not can_trade():
         return []
@@ -3020,15 +3033,15 @@ def auto_cash_checks():
             MINE.setdefault("pre_alerts", []).append(
                 f"⏱ {h['label']}: {nm} starts at {when.astimezone():%-I:%M %p}. Kalshi offers "
                 f"{money(o['offer'])} to cash out now (holding: {h['p']:.0%} chance of {money(h['pays'])}).")
-    picks = sorted((t for t, h in MINE["hold"].items() if h["worth"]),
-                   key=lambda t: -MINE["hold"][t]["hold"])[:3]
+    due = [t for t, h in MINE["hold"].items() if h.get("left", 1) > 0
+           and not (MINE["cash"].get(t) and time.time() - MINE["cash"][t]["at"] < CFG["cash_every"] * 60 - 10)]
     fresh = []
-    for t in picks:
-        old = MINE["cash"].get(t)
-        if old and time.time() - old["at"] < CFG["cash_every"] * 60 - 15:
-            continue
-        MINE["cash"][t] = get_cash_offer(t)
-        fresh.append(t)
+    if due:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for t, o in zip(due, pool.map(get_cash_offer, due)):
+                MINE["cash"][t] = o
+                fresh.append(t)
     plan = plan_cashout() if fresh else None
     alerts = MINE.pop("pre_alerts", [])
     for t in fresh:
@@ -3103,7 +3116,8 @@ def mine_page(live=False):
         a["_hits"] = 0                          # the account list is cached, so start fresh each time
     from collections import Counter
     patterns = Counter()
-    for _ in range(20000):                      # play the rest of the weekend out
+    trials = 8000 if live else 20000
+    for _ in range(trials):                     # play the rest of the weekend out
         won = {ev: (s[0] if rng.random() < s[0]["fair"] else s[1])["ticker"] for ev, s in all_games.items()}
         hit = False
         hit_now = []
@@ -3149,7 +3163,7 @@ def mine_page(live=False):
     MINE["hold"] = {}
     MINE["tp"] = resting_sells() if can_trade() and any(a["status"] == "pending" for a in mine) else {}
     for i, (a, inf) in enumerate(zip(mine, infos), 1):
-        p = a.get("_hits", 0) / 20000
+        p = a.get("_hits", 0) / trials
         st = "cashed" if a["status"] == "cashed" else \
             "won" if a["status"] == "won" or all(r == "yes" for *_, r in inf) else \
             "lost" if a["status"] == "lost" or any(r == "no" for *_, r in inf) else "pending"
@@ -3288,7 +3302,7 @@ def mine_page(live=False):
     details = ("<details class='lostbox'><summary>More details<span class='muted'> · tap to show</span></summary>"
                "<div class='stats'>"
                f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
-               f"<div class='stat'><b>{hits_any / 20000:.0%}</b><span class='lbl'>chance one hits</span></div>"
+               f"<div class='stat'><b>{hits_any / trials:.0%}</b><span class='lbl'>chance one hits</span></div>"
                + (f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout still possible</span></div></div>"
                   if alive else "<div class='stat'><b>—</b><span class='lbl'>no combos still alive</span></div></div>")
                + "".join(f"<div class='note'>{e(n)}</div>" for n in notes if n)
@@ -4005,8 +4019,9 @@ def settings_page(all_games, days, counts):
                           "included at Kalshi's live price, except ones nearly decided, jumpy, or where Kalshi "
                           "and live sportsbook odds disagree."),
         "cash": section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
-                        + switch("auto_cash", "Check cash-out offers during game-day alerts")
-                        + slider("cash_every", "Check offers every", 2, 10, 2, " min")
+                        + switch("auto_cash", "Keep a cash-out offer ready on every live combo")
+                        + slider("refresh_secs", "Live updates every", 10, 120, 5, "s")
+                + slider("cash_every", "Fresh cash-out offers every", 1, 10, 1, " min")
                         + slider("tp_mult", "Auto-sell at", 2, 10, 1, "×")
                         + switch("tp_auto", "Add an auto-sell order to combos I buy here"),
                         "Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
