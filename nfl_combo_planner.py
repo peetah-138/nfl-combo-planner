@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.9"
+VERSION = "2026.11.16.10"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1741,7 +1741,7 @@ def breakdown_html():
     rows = "".join(f"<div class='row' style='padding:5px 0;border-top:1px solid var(--line)'><span>{k}"
                    f"<br><small class='muted'>{v['n']} settled or sold</small></span>{sign(v['pnl'])}</div>"
                    for k, v in sorted(b["by"].items(), key=lambda x: -abs(x[1]["pnl"])))
-    return ("<details class='lostbox'><summary>Whole Kalshi account, last 24 hours: "
+    return ("<details class='lostbox' id='acct24'><summary>Whole Kalshi account, last 24 hours: "
             f"{sign(b['total'])}<span class='muted'> · tap for details</span></summary><div class='game'>"
             f"{rows or '<div class=muted>Nothing settled or sold in the last 24 hours.</div>'}"
             f"<div class='muted' style='font-size:13px;margin-top:8px'>From Kalshi's own profit figures for bets "
@@ -2214,13 +2214,15 @@ window.__load=function(h){var m=h.match(/<head[^>]*>([\s\S]*)<\/head>/i),b=h.mat
 function sheet(title, sub, url, label){location.href='combo://confirm/'+encodeURIComponent(JSON.stringify([title,sub,url,label||'Confirm']));}
 function toast(m){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';
  document.body.appendChild(t);}t.textContent=m;t.style.display=m?'block':'none';}
-window.__swap=function(h){var y=window.scrollY,open={},old={};
+window.__swap=function(h){var y=window.scrollY,open={},old={},anon=[];
  document.querySelectorAll('details[id]').forEach(function(d){open[d.id]=d.open;});
+ document.querySelectorAll('details:not([id])').forEach(function(d){anon.push(d.open);});
  document.querySelectorAll('[data-k]').forEach(function(e){old[e.dataset.k]=e.textContent;});
  var vis=document.querySelector('section[id]:not(.hidden)');var tabSel=vis?vis.id:null;
  document.body.innerHTML=h;
  document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
  document.querySelectorAll('details[id]').forEach(function(d){if(d.id in open)d.open=open[d.id];});
+ document.querySelectorAll('details:not([id])').forEach(function(d,i){if(anon[i])d.open=true;});
  if(tabSel&&window.tab&&document.getElementById(tabSel)&&tabSel!=='combos')tab(tabSel);
  document.querySelectorAll('[data-k]').forEach(function(e){var o=old[e.dataset.k];if(o!==undefined&&o!==e.textContent)e.classList.add('flash');});
  window.scrollTo(0,y);};
@@ -3515,7 +3517,7 @@ def mine_page(live=False):
                      "Alerts off. Turn on for game-day notifications.") +
                   "</span><button class='btn go' id='livebtn' onclick='toggleLive()'>"
                   + ("Turn off" if live else "Turn on") + "</button></div></div>")
-    details = ("<details class='lostbox'><summary>More details<span class='muted'> · tap to show</span></summary>"
+    details = ("<details class='lostbox' id='moredet'><summary>More details<span class='muted'> · tap to show</span></summary>"
                "<div class='stats'>"
                f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
                f"<div class='stat'><b>{hits_any / trials:.0%}</b><span class='lbl'>chance one hits</span></div>"
@@ -3546,10 +3548,10 @@ def mine_page(live=False):
         body.append("<div class='empty'>No combos still alive this week.</div>")
     body += alive_cards
     if cashed_cards:
-        body.append(f"<details class='lostbox'><summary>Cashed out ({len(cashed_cards)})"
+        body.append(f"<details class='lostbox' id='cashedbox'><summary>Cashed out ({len(cashed_cards)})"
                     f"<span class='muted'> · tap to show</span></summary>{''.join(cashed_cards)}</details>")
     if lost_cards:
-        body.append(f"<details class='lostbox'><summary>Lost combos ({len(lost_cards)})"
+        body.append(f"<details class='lostbox' id='lostbox'><summary>Lost combos ({len(lost_cards)})"
                     f"<span class='muted'> · tap to show</span></summary>{''.join(lost_cards)}</details>")
     body.append(details)
     history = load_json(HISTORY, {"builds": []})
