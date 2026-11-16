@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.16"
+VERSION = "2026.11.16.17"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -993,6 +993,17 @@ def combo_legs(ticker, cache):
     return cache[ticker]
 
 
+def combo_leagues(legs):
+    """Every league a combo has a pick in (a combo can mix sports): it shows in each."""
+    out = set()
+    for l in legs:
+        t = (l["ticker"] or "").upper()
+        for code, pre in (("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL")):
+            if t.startswith(pre) and code in LEAGUES:
+                out.add(code)
+    return sorted(out) or ["nfl"]
+
+
 def combo_league(legs):
     """'nfl', 'nba', 'nhl' or 'other' from the picks' market tickers."""
     ts = [(l["ticker"] or "").upper() for l in legs]
@@ -1052,7 +1063,7 @@ def fetch_account(max_age=60, every_league=False):
     bets, balance, note = value
     if bets is None or every_league:
         return value
-    return [a for a in bets if a.get("lg", "nfl") == LEAGUE["code"]], balance, note
+    return [a for a in bets if LEAGUE["code"] in a.get("lgs", [a.get("lg", "nfl")])], balance, note
 
 
 def _fetch_account():
@@ -1151,7 +1162,8 @@ def _fetch_account():
                      "first_week": min(weeks).isoformat() if weeks else None,
                      "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2),
                      "winners": winners_only(legs),
-                     "lg": lg if lg in LEAGUES else "nfl"})   # other combos are shown with the NFL
+                     "lg": lg if lg in LEAGUES else "nfl",    # other combos are shown with the NFL
+                     "lgs": combo_leagues(legs)})
     save_json(LEGS_CACHE, cache)
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
