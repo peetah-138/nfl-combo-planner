@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.19"
+VERSION = "2026.11.15.20"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3810,8 +3810,8 @@ def install_update():
     try:
         with open(SCRIPT_PATH, encoding="utf-8") as fh:
             current = fh.read()
-        with open(os.path.join(HERE, "nfl_combo_planner_backup.py"), "w", encoding="utf-8") as fh:
-            fh.write(current)
+        with open(os.path.join(HERE, "combo_planner_engine_backup.txt"), "w", encoding="utf-8") as fh:
+            fh.write(current)                     # .txt so the editor never opens a big backup
         tmp = me + ".new"
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(src)
@@ -3819,7 +3819,7 @@ def install_update():
     except OSError as err:
         return False, f"Couldn't save the update ({err}). Your current version is unchanged."
     return True, (f"Updated to version {found.group(1)}. Close this window with the X at the top left, "
-                  "then tap Run. (The previous version is saved as nfl_combo_planner_backup.py.)")
+                  "then tap Run. (The previous version is saved as combo_planner_engine_backup.txt.)")
     # (that message only shows if the new version can't start in this window by itself)
 
 
