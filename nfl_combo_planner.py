@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.3"
+VERSION = "2026.11.16.4"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1962,7 +1962,7 @@ def console_note(msg):
 
 def window_open():
     """True until you close the window with its X."""
-    return APP["web"] is not None and not APP.get("closed")
+    return APP.get("web") is not None and not APP.get("closed")
 
 
 TAB_H = 82          # native tab bar height, including room for the home indicator
@@ -2062,7 +2062,19 @@ def adopt_window(old_app, notice):
     """Called on a freshly updated copy: take over the open window so the update
     starts without closing anything, then open on Settings."""
     win = old_app["win"]
-    APP.update(web=old_app["web"], win=win, page=None, closed=False)
+    if old_app.get("bar") is None:      # an older window: no title bar / tab bar. Open a fresh one.
+        import time
+        try:
+            win.close()
+        except Exception:
+            pass
+        time.sleep(1.2)                 # let the old window finish closing
+        APP.update(web=None, win=None, bar=None, page=None, closed=True)
+        RUN_OPTS["goto"] = "settings"
+        RUN_OPTS["smode"] = "settings"
+        RUN_OPTS["notice"] = notice
+        return
+    APP.update(web=old_app["web"], win=win, bar=old_app.get("bar"), page=None, closed=False)
     win.closers = [_window_closed]      # closing now tells this new copy, not the old one
     RUN_OPTS["goto"] = "settings"
     RUN_OPTS["notice"] = notice
@@ -2176,6 +2188,21 @@ window.__swap=function(h){var y=window.scrollY,open={},old={};
 """
 
 
+def fallback_nav(page):
+    """Plain buttons inside the page, only for a window without the native bars."""
+    on_settings = "var SL =" in page
+    go_for = {"mine": "mine", "results": "show", "build": "tab-build", "settings": "tab-settings", "close": None}
+    items = [(k, lab) for k, _, lab in TABS if can_trade() or k != "mine"] + [("close", "✕ Close")]
+    links = "".join(
+        f"<a class='navb' href='combo://nav/{k}'"
+        + (f" onclick=\"if(window.go){{go('{go_for[k]}');return false;}}\"" if on_settings and go_for[k] else "")
+        + f">{lab}</a>" for k, lab in items)
+    return ("<style>.fnav{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px 0}.navb{flex:1;text-align:center;"
+            "padding:10px 4px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--ink);"
+            "font:600 13px -apple-system,sans-serif;text-decoration:none;min-width:60px}</style>"
+            f"<nav class='fnav'>{links}</nav>")
+
+
 def app_frame(page):
     """Page extras inside the web view: pull-to-refresh, the in-place swap and confirm dialogs.
     The title bar and tab bar are native controls (see _web)."""
@@ -2183,7 +2210,8 @@ def app_frame(page):
         return page
     refresh = (APP.get("where") or "") in ("mine", "results")
     page = page.replace("</head>", f"<style>{APP_CSS}</style></head>", 1)
-    page = page.replace("<body>", "<body><div class='ptr' id='ptr'></div>", 1)
+    page = page.replace("<body>", "<body><div class='ptr' id='ptr'></div>" + ("" if APP.get("bar") is not None
+                        or not in_pythonista() else fallback_nav(page)), 1)
     page = page.replace("</body>", f"<script>{APP_JS}window.REFRESH={'true' if refresh else 'false'};</script></body>", 1)
     update_bars()
     return page
