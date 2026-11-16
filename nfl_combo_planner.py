@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.21"
+VERSION = "2026.11.15.22"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -34,6 +34,7 @@ CFG = {
     "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo
     "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured
     "next_day": False,    # college basketball: build tomorrow's games instead of today's
+    "dogs_late": True,    # underdog picks go in the latest games, favourites in the earliest
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
 DEFAULTS = json.loads(json.dumps(CFG))
@@ -264,6 +265,32 @@ def game_date(m):
 
 
 PICK_NAME = {}   # market ticker -> team name as Kalshi shows it
+GAME_EXP = {}    # game -> when Kalshi expects it to settle
+
+
+def start_dt(event):
+    """When a game starts: the sportsbook's kickoff time, else an estimate from Kalshi's
+    expected settle time. None if unknown."""
+    kick = KICKOFF.get(event)
+    try:
+        if kick:
+            return dt.datetime.fromisoformat(kick.replace("Z", "+00:00"))
+        if GAME_EXP.get(event):
+            return (dt.datetime.fromisoformat(GAME_EXP[event].replace("Z", "+00:00"))
+                    - dt.timedelta(hours=LG()["game_hours"]))
+    except ValueError:
+        pass
+    return None
+
+
+def start_label(event):
+    t = start_dt(event)
+    return t.astimezone().strftime("%-I:%M %p") if t else ""
+
+
+def start_key(event):
+    t = start_dt(event)
+    return t.timestamp() if t else 9e12
 
 
 def week_games(markets, loose=False):
@@ -286,6 +313,8 @@ def week_games(markets, loose=False):
         day = day_of.get(game_date(m))
         if day:
             PICK_NAME[m["ticker"]] = m.get("yes_sub_title") or m["ticker"]
+            if m.get("expected_expiration_time"):
+                GAME_EXP[m["event_ticker"]] = m["expected_expiration_time"]
             days[m["event_ticker"]] = day
             games[m["event_ticker"]].append({
                 "event": m["event_ticker"], "ticker": m["ticker"],
@@ -496,6 +525,9 @@ def underdog_sets(games, free, k, want):
     both hit: picking the likeliest distinct outcomes maximises the chance
     that one of them does."""
     free = [e for e in free if pickable(dog(games[e]))]   # no long-shot live underdogs
+    if CFG.get("dogs_late") and len(free) > 2 * k:
+        # underdogs in the later games: the early ones decide first, so you can cash out before the risky ones
+        free = sorted(free, key=start_key)[-max(2 * k, len(free) // 2):]
     k = min(k, len(free))
     ratio = {e: dog(games[e])["fair"] / fav(games[e])["fair"] for e in free}
     score = lambda c: math.prod(ratio[e] for e in c)
@@ -536,8 +568,17 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
         pool.remove(e)
         chosen.append(e)
     legs = list(locked)
+    late = set()
+    if CFG.get("dogs_late") and chosen:
+        by_time = sorted(chosen, key=start_key)
+        late = set(by_time[-max(1, len(by_time) // 3):])     # the last third may be underdogs
     for e in chosen:
         opts = [x for x in games[e] if usage[x["ticker"]] < limit and pickable(x)]
+        if e not in late and CFG.get("dogs_late") and fav(games[e])["fair"] >= CLOSE_GAME:
+            f = fav(games[e])
+            if f in opts:
+                legs.append(f)                    # early games: take the favourite
+                continue
         if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < CLOSE_GAME \
                 and usage[opts[0]["ticker"]] != usage[opts[1]["ticker"]]:
             legs.append(min(opts, key=lambda x: usage[x["ticker"]]))
@@ -1418,6 +1459,22 @@ def exposure_html(combo_picks, title="How much rides on one result"):
     return (f"<div class='batch'><div><b>{title}</b></div><div>{head}</div>{warn}{rows}</div>")
 
 
+def decision_html(legs):
+    """When to check a cash-out: just before the first game with an underdog pick that
+    starts after some other pick has been decided."""
+    timed = sorted((l for l in legs if start_dt(l["event"])), key=lambda l: start_key(l["event"]))
+    if len(timed) < 2:
+        return ""
+    first = start_dt(timed[0]["event"])
+    risky = [l for l in timed if l.get("fair", 1) < 0.5 and start_dt(l["event"]) > first]
+    if not risky:
+        return ""
+    when = start_label(risky[0]["event"])
+    return (f"<div class='muted' style='font-size:13px;margin:6px 0 0'>⏱ Decision point: {when}, "
+            f"when {html.escape(risky[0].get('pick', 'the underdog'))} plays. If the earlier picks have won, "
+            f"check your cash-out offer before then.</div>")
+
+
 def edge_tag(s):
     if s.get("edge") is None:
         return ""
@@ -1479,8 +1536,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             f"onchange='amt({i},this)'><button class='btn' onclick='act(\"swap\",{i})'>Swap this one</button>"
             + (f"<button class='btn go' onclick='act(\"buy\",{i})'>Buy on Kalshi</button>" if can_trade() else "")
             + f"</div><div class='trade' id='t{i}'></div>"
-            + ((card_notes or {}).get(i) or "") + "<ol>")
-        for n, l in enumerate(sorted(c["legs"], key=lambda l: order[l["event"]]), 1):
+            + ((card_notes or {}).get(i) or "") + decision_html(c["legs"]) + "<ol>")
+        for n, l in enumerate(sorted(c["legs"], key=lambda l: (start_key(l["event"]), order[l["event"]])), 1):
             other = next(s for s in all_games[l["event"]] if s is not l)
             tags = ""
             if l.get("live"):
@@ -1491,7 +1548,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                 tags += '<span class="tag dog">Underdog</span> '
             tags += edge_tag(l)
             out.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(l['pick'])}</b> {tags}"
-                       f"<small>to beat {e(other['pick'])} · {day_tag(days[l['event']])}</small></span>"
+                       f"<small>to beat {e(other['pick'])} · "
+                       f"{' '.join(x for x in (day_tag(days[l['event']]), start_label(l['event'])) if x)}</small></span>"
                        f"<span class='pct'>{l['fair']:.0%}</span>"
                        f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
         out.append("</ol></div>")
@@ -2564,12 +2622,40 @@ def redraw_mine():
     present(page, MineKeeper())
 
 
+def before_risky_game():
+    """Live combos whose next undecided game starts within 20 minutes, after at least one
+    pick has already won: the moment to look at a cash-out. {ticker: (game label, start)}"""
+    out = {}
+    now = dt.datetime.now(dt.timezone.utc)
+    for t, h in MINE["hold"].items():
+        if not h.get("won_some"):
+            continue
+        starts = [(start_dt(ev), nm) for (side, lt), nm in h["need"]
+                  for ev in [(lt or "").rsplit("-", 1)[0]] if start_dt(ev)]
+        future = sorted((s, nm) for s, nm in starts if s > now)
+        if future and future[0][0] - now <= dt.timedelta(minutes=20):
+            out[t] = (future[0][1], future[0][0])
+    return out
+
+
 def auto_cash_checks():
     """During game-day alerts: refresh offers on combos worth checking, then alert when the
     plan says to cash something out. Never sells on its own."""
     import time
     if not CFG["auto_cash"] or not can_trade():
         return []
+    soon = before_risky_game()
+    for t, (nm, when) in soon.items():
+        if MINE.setdefault("warned", {}).get(t):
+            continue
+        MINE["warned"][t] = True
+        o = get_cash_offer(t)
+        MINE["cash"][t] = o
+        h = MINE["hold"][t]
+        if o.get("offer"):
+            MINE.setdefault("pre_alerts", []).append(
+                f"⏱ {h['label']}: {nm} starts at {when.astimezone():%-I:%M %p}. Kalshi offers "
+                f"{money(o['offer'])} to cash out now (holding: {h['p']:.0%} chance of {money(h['pays'])}).")
     picks = sorted((t for t, h in MINE["hold"].items() if h["worth"]),
                    key=lambda t: -MINE["hold"][t]["hold"])[:3]
     fresh = []
@@ -2580,7 +2666,7 @@ def auto_cash_checks():
         MINE["cash"][t] = get_cash_offer(t)
         fresh.append(t)
     plan = plan_cashout() if fresh else None
-    alerts = []
+    alerts = MINE.pop("pre_alerts", [])
     for t in fresh:
         f = (plan or {}).get("acts", {}).get(t, 0)
         o, h = fresh_offer(t), MINE["hold"][t]
@@ -2722,6 +2808,7 @@ def mine_page(live=False):
         if st == "pending":
             MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
+                                         "won_some": any(r == "yes" for *_, r in inf),
                                          "need": [((l.get("side", "yes"), l["ticker"]), nm)
                                                   for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
                                          "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"]}
@@ -2756,7 +2843,8 @@ def mine_page(live=False):
                      f"price saved for {names} (that game had already started when the planner first "
                      f"saw it). From next week, prices are saved before kickoff.</div>")
         rows = []
-        legs_sorted = sorted(zip(a["legs"], inf), key=lambda x: order.get((side_of.get(x[0]["ticker"]) or {}).get("event"), 99))
+        legs_sorted = sorted(zip(a["legs"], inf), key=lambda x: (start_key(x[0].get("event") or ""),
+                                                                 order.get((side_of.get(x[0]["ticker"]) or {}).get("event"), 99)))
         for n, (l, (name, opp, ch, res)) in enumerate(legs_sorted, 1):
             tag = {"yes": "<span class='tag good'>Won</span>", "no": "<span class='tag red'>Lost</span>"}.get(res, "")
             sub = f"to beat {e(opp)}" if opp else ""
@@ -2774,6 +2862,8 @@ def mine_page(live=False):
             sline = score_line(leg_score(l)) if not res else ""
             if sline:
                 sub = sline
+            elif not res and start_label(l.get("event") or "") and pick_state(l, side_of) not in ("live", "over"):
+                sub = (sub + " · " if sub else "") + "starts " + start_label(l["event"])
             rows.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
         group = snap.get(a["ticker"], {}).get("status", "pending")
@@ -3504,6 +3594,10 @@ def settings_page(all_games, days, counts):
         "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
                         slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
                 for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]),
+        section("Game order", switch("dogs_late", "Underdogs late: favourites in the early games"),
+                "Underdog picks go in the latest games. If the early favourites win, your combo is worth "
+                "more before the risky game starts, so you can cash out then. It doesn't change a combo's "
+                "chance or average value, only when you find out."),
         section("Mid-day", switch("include_live", "Include games already in progress")
                 + slider("live_min", "Live picks: minimum chance", 10, 50, 5, "%"),
                 "Building after games have started uses only games still to play. With this on, games "
