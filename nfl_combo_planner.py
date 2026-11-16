@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.11"
+VERSION = "2026.11.15.12"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -793,14 +793,12 @@ def _fetch_account():
             continue                             # single bets (any sport) aren't combos
         side = f.get("side", "yes")
         n = count_of(f)
-        # Everything in YES terms: buying NO on a combo you hold is how a cash-out can show up
-        if side == "no":
-            no_px = dollars(f, "no_price")
-            yes_px = dollars(f, "yes_price") or (1 - no_px if no_px else 0.0)
-            buying_yes = f.get("action") == "sell"
-        else:
-            yes_px = dollars(f, "yes_price") or dollars(f, "price")
-            buying_yes = f.get("action") != "sell"
+        # Combos are only ever bought on the YES side, so only "buy yes" adds to what you hold.
+        # Any sell ("sell yes", or "sell no" as Kalshi reports app cash-outs) or a "buy no"
+        # takes contracts away, at the YES price.
+        no_px = dollars(f, "no_price")
+        yes_px = dollars(f, "yes_price") or (1 - no_px if no_px else 0.0) or dollars(f, "price")
+        buying_yes = f.get("action") != "sell" and side != "no"
         if buying_yes:
             held[t]["cost"] += n * yes_px
             held[t]["contracts"] += n
@@ -2486,7 +2484,8 @@ def diagnose():
                     t = f.get("ticker") or f.get("market_ticker") or "?"
                     pz = pmap.get(t) or {}
                     when = str(f.get("created_time") or f.get("ts") or "")[5:16].replace("T", " ")
-                    return (f"{when} …{t[-8:]} · {f.get('action')} {f.get('side')} {count_of(f):g} "
+                    return (f"{when} …{t[-8:]} · {f.get('action')} {f.get('side')}"
+                            f"{' (' + str(f.get('outcome_side')) + ')' if f.get('outcome_side') else ''} {count_of(f):g} "
                             f"@ yes {dollars(f, 'yes_price'):.2f} / no {dollars(f, 'no_price'):.2f} · "
                             f"now hold {pz.get('position_fp', pz.get('position', '–'))}, "
                             f"realized {pz.get('realized_pnl_dollars', pz.get('realized_pnl', '–'))}")
