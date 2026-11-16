@@ -13,7 +13,7 @@ from urllib.parse import unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.15"
+VERSION = "2026.11.15.16"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -30,11 +30,13 @@ CFG = {
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
-    "auto_cash": True,
-    "cash_every": 2,
-    "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured      # minutes between automatic cash-out offer checks for the same combo    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
+    "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
+    "cash_every": 2,      # minutes between automatic cash-out offer checks for the same combo
+    "bankroll": 500,      # money set aside for betting: bigger sure amounts vs this get favoured
+    "next_day": False,    # college basketball: build tomorrow's games instead of today's
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
+DEFAULTS = json.loads(json.dumps(CFG))
 TIERS = ["safer", "middle", "moonshot"]
 NEWS_GAP = 0.06   # Kalshi vs sportsbooks this far apart = probably breaking news
 
@@ -43,6 +45,8 @@ HERE = os.path.dirname(SCRIPT_PATH)
 SAVED = os.path.join(HERE, "combo_settings.json")
 LATEST = os.path.join(HERE, "combos_latest.html")
 HISTORY = os.path.join(HERE, "combo_history.json")
+LEAGUE_FILE = os.path.join(HERE, "combo_league.json")
+MAIN_SAVED = SAVED
 
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 SERIES = "KXNFLGAME"
@@ -62,7 +66,46 @@ TEAMS = {
     "SEA": "Seattle Seahawks", "TB": "Tampa Bay Buccaneers", "TEN": "Tennessee Titans",
     "WAS": "Washington Commanders", "WSH": "Washington Commanders",
 }
-DAY_ORDER = ["Thursday", "Friday", "Saturday", "Sunday", "Monday"]
+DAY_ORDER = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Today", "Tomorrow"]
+NFL_TEAMS = TEAMS
+
+LEAGUES = {
+    "nfl": {"name": "NFL", "icon": "🏈", "series": "KXNFLGAME", "odds": "americanfootball_nfl",
+            "espn": "football/nfl", "espn_q": {}, "slate": "week", "game_hours": 3.5, "periods": 4,
+            "settings": "combo_settings.json", "latest": "combos_latest.html", "defaults": {}},
+    "ncaamb": {"name": "College basketball", "icon": "🏀", "series": "KXNCAAMBGAME", "odds": "basketball_ncaab",
+               "espn": "basketball/mens-college-basketball", "espn_q": {"groups": "50", "limit": "500"},
+               "slate": "day", "game_hours": 2.25, "periods": 2,
+               "settings": "combo_settings_ncaamb.json", "latest": "combos_latest_ncaamb.html",
+               "defaults": {"budget": 50, "full_count": 0, "safer_count": 3, "safer_min": 2, "safer_max": 3,
+                            "middle_count": 4, "middle_min": 4, "middle_max": 5,
+                            "moonshot_count": 3, "moonshot_min": 6, "moonshot_max": 8}},
+}
+LEAGUE = {"code": "nfl"}
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every")
+
+
+def LG():
+    return LEAGUES[LEAGUE["code"]]
+
+
+def by_day():
+    """True for daily slates (college basketball), False for the NFL's Thursday-Monday week."""
+    return LG()["slate"] == "day"
+
+
+def slate_word():
+    return "day" if by_day() else "weekend"
+
+
+def day_on():
+    """Which day labels are switched on."""
+    return {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
+            "Saturday": CFG["saturday"], "Monday": CFG["monday"], "Today": True, "Tomorrow": True}
+
+
+def day_tag(d):
+    return "" if d in ("Today", "Tomorrow") else d[:3]
 MONTHS = {m: i for i, m in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
 PACIFIC = dt.timezone(dt.timedelta(hours=-8))
@@ -71,6 +114,41 @@ TYPE_NAMES = {"full": "Full slate", "safer": "Safer", "middle": "Middle", "moons
 
 
 # ================================================================ files
+def set_league(code):
+    """Point the planner at a league: its Kalshi games, odds, scores, and its own settings."""
+    global SERIES, ODDS_URL, SCORES_URL, SAVED, LATEST, TEAMS
+    code = code if code in LEAGUES else "nfl"
+    changed = code != LEAGUE["code"]
+    LEAGUE["code"] = code
+    lg = LEAGUES[code]
+    SERIES = lg["series"]
+    ODDS_URL = f"https://api.the-odds-api.com/v4/sports/{lg['odds']}/odds"
+    SCORES_URL = f"https://site.api.espn.com/apis/site/v2/sports/{lg['espn']}/scoreboard"
+    SAVED = os.path.join(HERE, lg["settings"])
+    LATEST = os.path.join(HERE, lg["latest"])
+    TEAMS = NFL_TEAMS if code == "nfl" else {}
+    if changed:
+        CFG.clear()
+        CFG.update(json.loads(json.dumps(DEFAULTS)))
+        CFG.update(lg["defaults"])
+        SCORES["at"] = 0
+        ACCT_CACHE["at"] = 0
+        CTX.clear()
+        MINE["live"] = False
+    CFG.update({k: v for k, v in load_json(SAVED, {}).items() if k in CFG})
+    if SAVED != MAIN_SAVED:                      # keys and bankroll are shared by every league
+        main = load_json(MAIN_SAVED, {})
+        CFG.update({k: main[k] for k in SHARED_KEYS if k in main})
+
+
+def save_cfg():
+    save_json(SAVED, CFG)
+    if SAVED != MAIN_SAVED:
+        main = load_json(MAIN_SAVED, {})
+        main.update({k: CFG[k] for k in SHARED_KEYS})
+        save_json(MAIN_SAVED, main)
+
+
 def load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -182,12 +260,20 @@ def game_date(m):
         return None
 
 
+PICK_NAME = {}   # market ticker -> team name as Kalshi shows it
+
+
 def week_games(markets, loose=False):
-    """This NFL week's games (Thu-Mon around the coming Sunday), keyed by game.
+    """This NFL week's games (Thu-Mon around the coming Sunday), or for daily leagues today's
+    (or tomorrow's) games, keyed by game. Returns (games, day label per game, slate date).
     loose=True keeps near-certain prices (games nearly over) for live updates."""
     today = dt.date.today()
-    sunday = today + dt.timedelta(days=(6 - today.weekday()) % 7)
-    day_of = {sunday + dt.timedelta(days=d): n for d, n in zip(range(-3, 2), DAY_ORDER)}
+    if by_day():
+        sunday = today + dt.timedelta(days=1 if CFG.get("next_day") else 0)
+        day_of = {sunday: "Tomorrow" if CFG.get("next_day") else "Today"}
+    else:
+        sunday = today + dt.timedelta(days=(6 - today.weekday()) % 7)
+        day_of = {sunday + dt.timedelta(days=d): n for d, n in zip(range(-3, 2), DAY_ORDER)}
     games, days = defaultdict(list), {}
     for m in markets:
         p = price(m)
@@ -196,6 +282,7 @@ def week_games(markets, loose=False):
             continue
         day = day_of.get(game_date(m))
         if day:
+            PICK_NAME[m["ticker"]] = m.get("yes_sub_title") or m["ticker"]
             days[m["event_ticker"]] = day
             games[m["event_ticker"]].append({
                 "event": m["event_ticker"], "ticker": m["ticker"],
@@ -203,7 +290,7 @@ def week_games(markets, loose=False):
                 "pick": m.get("yes_sub_title") or m["ticker"], "p": p,
                 "bid": live_bid(m), "exp": m.get("expected_expiration_time") or ""})
     games = {e: s for e, s in games.items() if len(s) == 2}
-    order = sorted(games, key=lambda e: DAY_ORDER.index(days[e]))
+    order = sorted(games, key=lambda e: (DAY_ORDER.index(days[e]), games[e][0]["exp"]))
     return {e: games[e] for e in order}, {e: days[e] for e in order}, sunday
 
 
@@ -295,6 +382,9 @@ def fetch_book_odds(key):
         return {}, f"Sportsbook service error ({r.status_code}). Using Kalshi's prices."
     fair = {}
     for ev in r.json():
+        if ev.get("home_team") and ev.get("away_team"):
+            BOOK_OPP[ev["home_team"]] = ev["away_team"]
+            BOOK_OPP[ev["away_team"]] = ev["home_team"]
         if ev.get("commence_time"):
             for team in (ev.get("home_team"), ev.get("away_team")):
                 if team:
@@ -321,6 +411,31 @@ def fetch_book_odds(key):
     return fair, note
 
 
+BOOK_OPP = {}   # sportsbook team name -> its opponent
+
+
+def norm_team(x):
+    x = (x or "").lower().replace("&", " and ")
+    x = re.sub(r"\bst\b\.?", "state", x)
+    x = re.sub(r"[^a-z0-9 ]", "", x)
+    return " ".join(x.split())
+
+
+def match_book(pick, book):
+    """The sportsbook's full name for a Kalshi team name ('Kansas' -> 'Kansas Jayhawks',
+    not 'Kansas State Wildcats'): same start, shortest nickname."""
+    p = norm_team(pick)
+    best = None
+    for t in book:
+        n = norm_team(t)
+        if n == p:
+            return t
+        if n.startswith(p + " "):
+            cand = (len(n[len(p) + 1:].split()), t)
+            best = min(best, cand) if best else cand
+    return best[1] if best else None
+
+
 def attach_fair(games, book):
     """Give every side a fair win chance, its edge vs Kalshi, and a news gap."""
     matched, news = 0, {}
@@ -328,9 +443,10 @@ def attach_fair(games, book):
         kal = [s["p"] / sum(x["p"] for x in sides) for s in sides]
         names = []
         for s in sides:
-            full = TEAMS.get(s["abbr"]) or next(
-                (t for t in book if s["pick"].lower() in t.lower()), None)
+            full = TEAMS.get(s["abbr"]) or match_book(s["pick"], book)
             names.append(full if full in book else None)
+        if not TEAMS and all(names) and BOOK_OPP.get(names[0]) != names[1]:
+            names = [None, None]                  # not the same game: use Kalshi's prices
         kick = next((TEAM_KICKOFF[n] for n in names if n in TEAM_KICKOFF), None)
         if kick:
             KICKOFF[e] = kick
@@ -752,6 +868,8 @@ def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
+    if not (ticker or "").startswith("KXNFLGAME"):
+        return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
 
@@ -837,7 +955,7 @@ def _fetch_account():
     for t, h in held.items():
         legs = combo_legs(t, cache)
         if not legs or not any((l["ticker"] or "").startswith(SERIES) for l in legs):
-            continue                             # not an NFL combo
+            continue                             # not this league's combo
         s = settled.get(t)
         status, back = "pending", h["sold"]
         pos = pos_by.get(t)
@@ -952,7 +1070,7 @@ def started(side):
         end = dt.datetime.fromisoformat(side["exp"].replace("Z", "+00:00"))
     except (KeyError, ValueError, AttributeError):
         return False
-    return now >= end - dt.timedelta(hours=3.5)
+    return now >= end - dt.timedelta(hours=LG()["game_hours"])
 
 
 def remember_pregame(all_games):
@@ -1290,7 +1408,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
     best = max((c["fair"] for c in combos), default=0)
     out = ["<!doctype html><html><head><meta charset='utf-8'>"
            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-           f"<title>NFL combos</title><style>{CSS}</style></head><body>",
+           f"<title>{LG()['name']} combos</title><style>{CSS}</style></head><body>",
            f"<header><h1>Your combos for {sunday:%b %-d}</h1>"
            f"<div class='sub'>{len(games)} games · {len(combos)} combos at ${CFG['stake']} · "
            f"<span id='placedcount'>0</span> placed</div>" + "<div class='quote' style='margin-top:10px'><button class='btn' onclick=\"location.href='combo://settings'\">"
@@ -1341,14 +1459,13 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                 tags += '<span class="tag dog">Underdog</span> '
             tags += edge_tag(l)
             out.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(l['pick'])}</b> {tags}"
-                       f"<small>to beat {e(other['pick'])} · {days[l['event']][:3]}</small></span>"
+                       f"<small>to beat {e(other['pick'])} · {day_tag(days[l['event']])}</small></span>"
                        f"<span class='pct'>{l['fair']:.0%}</span>"
                        f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
         out.append("</ol></div>")
     out.append("</section>")
 
-    on = {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
-          "Saturday": CFG["saturday"], "Monday": CFG["monday"]}
+    on = day_on()
     out.append("<section id='games' class='hidden'>")
     for day in DAY_ORDER:
         evs = sorted((x for x in all_games if days[x] == day), key=lambda x: -fav(all_games[x])["fair"])
@@ -1553,7 +1670,8 @@ def results_page(sunday):
                     f"{money(a['cost'])} → {money(back) if st != 'live' else 'pays ' + money(a['pays'])}{hs}</small></span>"
                     f"<span>{money_cell}</span></div>")
     net = tot["back"] - tot["decided"]
-    body = [head, f"<header><h1>Results</h1><div class='sub'>Week of {sunday:%b %-d}</div></header>"]
+    sub = f"{sunday:%a %b %-d} games" if by_day() else f"Week of {sunday:%b %-d}"
+    body = [head, f"<header><h1>{LG()['icon']} Results</h1><div class='sub'>{sub}</div></header>"]
     if this:
         body.append(
             "<div style='padding:0 16px'><div class='batch now'>"
@@ -1595,7 +1713,7 @@ def results_page(sunday):
             f"<span class='{'pos' if w['back'] >= w['in'] else 'neg'}'>{'+' if w['back'] >= w['in'] else '−'}"
             f"{money(abs(w['back'] - w['in']))}</span></div>"
             for k, w in sorted(weeks.items(), reverse=True))
-        body.append(f"<h2>Every week (settled)</h2><div class='game'><div class='row'><b>All time</b>"
+        body.append(f"<h2>Every {'day' if by_day() else 'week'} (settled)</h2><div class='game'><div class='row'><b>All time</b>"
                     f"<b class='{'pos' if all_net >= 0 else 'neg'}'>{'+' if all_net >= 0 else '−'}{money(abs(all_net))}"
                     f"</b></div><div class='muted' style='font-size:13px'>on {money(all_in)} put in</div>{lines}</div>")
     body.append("<div class='quote' style='margin:12px 0 24px'><button class='btn' "
@@ -1731,7 +1849,7 @@ def _web():
                 except Exception:
                     pass
 
-    win = Window(name="NFL combos", background_color="white")
+    win = Window(name="Combos", background_color="white")
     win.closers = [_window_closed]
     win.frame = (0, 0, 375, 667)
     web = ui.WebView(frame=win.bounds, flex="WH")
@@ -2129,7 +2247,7 @@ def fetch_scores(max_age=45):
         return SCORES["by_team"]
     by = {}
     try:
-        r = requests.get(SCORES_URL, timeout=8)
+        r = requests.get(SCORES_URL, params=LG()["espn_q"], timeout=8)
         events = r.json().get("events", []) if r.ok else []
         for ev in events:
             comp = (ev.get("competitions") or [{}])[0]
@@ -2137,11 +2255,12 @@ def fetch_scores(max_age=45):
             typ = st.get("type") or {}
             state = typ.get("state", "")
             if state == "post":
-                detail = "Final" + (" OT" if (st.get("period") or 0) > 4 else "")
+                detail = "Final" + (" OT" if (st.get("period") or 0) > LG()["periods"] else "")
             elif state == "in":
-                per = st.get("period") or 0
+                per, n_per = st.get("period") or 0, LG()["periods"]
+                label = ("OT" if per > n_per else ("Q" if n_per == 4 else "H") + str(per))
                 detail = ("Half" if "HALFTIME" in typ.get("name", "") else
-                          f"{'OT' if per > 4 else 'Q' + str(per)} {st.get('displayClock', '')}".strip())
+                          f"{label} {st.get('displayClock', '')}".strip())
             else:
                 detail = typ.get("shortDetail", "")
             sit = comp.get("situation") or {}
@@ -2152,13 +2271,18 @@ def fetch_scores(max_age=45):
                 name = (me.get("team") or {}).get("displayName")
                 if not name:
                     continue
-                by[name] = {"me": int(float(me.get("score") or 0)), "opp": int(float(opp.get("score") or 0)),
+                info = {"me": int(float(me.get("score") or 0)), "opp": int(float(opp.get("score") or 0)),
                             "abbr": (me.get("team") or {}).get("abbreviation", ""),
                             "opp_abbr": (opp.get("team") or {}).get("abbreviation", ""),
                             "opp_name": (opp.get("team") or {}).get("displayName", ""),
                             "state": state, "detail": detail,
                             "ball": str(sit.get("possession", "")) == str(me.get("id") or (me.get("team") or {}).get("id")),
                             "redzone": bool(sit.get("isRedZone"))}
+                tm = me.get("team") or {}
+                by[name] = info
+                for alt in (name, tm.get("shortDisplayName"), tm.get("location")):
+                    if alt:
+                        by.setdefault(norm_team(alt), info)
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         return SCORES["by_team"]
     SCORES.update(at=time.time(), by_team=by)
@@ -2168,11 +2292,13 @@ def fetch_scores(max_age=45):
 def leg_score(l):
     """Score from the point of view of the team this pick needs to win, or None."""
     abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
-    sc = SCORES["by_team"].get(TEAMS.get(abbr, ""))
+    name = TEAMS.get(abbr) or PICK_NAME.get(l["ticker"] or "", "")
+    by = SCORES["by_team"]
+    sc = (by.get(name) or by.get(norm_team(name))) if name else None
     if not sc:
         return None
     if l.get("side", "yes") == "no":           # betting against this team
-        sc = SCORES["by_team"].get(sc["opp_name"]) or sc
+        sc = by.get(sc["opp_name"]) or sc
     return sc
 
 
@@ -2628,7 +2754,7 @@ def mine_page(live=False):
                "(Settings → Cash out): the bigger the amount next to your bankroll, the more a sure thing is worth.</div>"
                "</details>")
     body = [head, f"<header><h1>My combos · {sunday:%b %-d}</h1>"
-                  f"<div class='sub'>{len(mine)} placed · {n_alive} still alive"
+                  f"<div class='sub'>{LG()['icon']} {len(mine)} placed · {n_alive} still alive"
                   + (f" · {n_cashed} cashed out" if n_cashed else "") + "</div></header>",
             (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
             f"<div style='padding:0 16px'>{now_box}{alerts_row}</div>",
@@ -2640,7 +2766,8 @@ def mine_page(live=False):
     lost_cards = [c for g, c in cards if g == "lost"]
     cashed_cards = [c for g, c in cards if g == "cashed"]
     if not cards:
-        body.append("<div class='empty'>No NFL combos found in your Kalshi account for this week.</div>")
+        body.append(f"<div class='empty'>No {LG()['name']} combos found in your Kalshi account for "
+                    f"{'this day' if by_day() else 'this week'}.</div>")
     elif not alive_cards:
         body.append("<div class='empty'>No combos still alive this week.</div>")
     body += alive_cards
@@ -2736,12 +2863,12 @@ def diagnose():
                 else:
                     nfl = [l["ticker"] for l in legs if (l["ticker"] or "").startswith(SERIES)]
                     if nfl:
-                        add(True, f"Combo {t}", f"{len(legs)} picks, {len(nfl)} NFL: " + e(", ".join(nfl[:4])))
+                        add(True, f"Combo {t}", f"{len(legs)} picks, {len(nfl)} {LG()['name']}: " + e(", ".join(nfl[:4])))
                     else:
-                        add(None, f"Combo {t}", "Not an NFL combo, so it's skipped.")
+                        add(None, f"Combo {t}", f"Not a {LG()['name']} combo, so it's skipped here.")
             save_json(LEGS_CACHE, cache)
             bets, _, _ = fetch_account()
-            add(bool(bets), f"NFL combos the planner can show: {len(bets or [])}",
+            add(bool(bets), f"{LG()['name']} combos the planner can show: {len(bets or [])}",
                 e(", ".join(sorted({b['week'] or '?' for b in bets or []}))) + " (weeks)")
         except PermissionError as err:
             add(False, "Kalshi accepted the key", e(str(err)))
@@ -2826,10 +2953,10 @@ def get_offer(i, amount=None, check_cap=True):
     if stake < 1:
         return {"error": "Use at least $1 per combo."}
     if stake > CFG["budget"]:
-        return {"error": f"{money(stake)} is more than your whole {money(CFG['budget'])} weekend cap."}
+        return {"error": f"{money(stake)} is more than your whole {money(CFG['budget'])} {slate_word()} cap."}
     spent = week_spend() if check_cap else 0
     if check_cap and spent + stake > CFG["budget"] + 0.01:
-        return {"error": f"That would take this weekend to {money(spent + stake)}, over your "
+        return {"error": f"That would take this {slate_word()} to {money(spent + stake)}, over your "
                          f"{money(CFG['budget'])} cap. Raise the cap in settings to go ahead."}
     legs = [{"market_ticker": l["ticker"], "event_ticker": l["event"], "side": "yes"} for l in c["legs"]]
     coll = find_collection(c["legs"])
@@ -3042,15 +3169,14 @@ def rerender(focus=None):
 def ctx_from_history(build, all_games, days, sunday):
     """Rebuild the session slate for 'Show last results' so Swap and Buy work there too.
     Combos whose games have started can't be rebuilt and are left as they are."""
-    if not build or build["week"] != sunday.isoformat():
+    if not build or build["week"] != sunday.isoformat() or build.get("league", "nfl") != LEAGUE["code"]:
         return None
     book = {}
     if CFG["odds_key"]:
         book, _ = fetch_book_odds(CFG["odds_key"])
     _, news = attach_fair(all_games, book)
     side_of = {s["ticker"]: s for v in all_games.values() for s in v}
-    on = {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
-          "Saturday": CFG["saturday"], "Monday": CFG["monday"]}
+    on = day_on()
     games = {e: s for e, s in all_games.items() if on[days[e]] and CFG["picks"].get(e) != "skip"}
     combos = []
     for c in build["combos"]:
@@ -3097,7 +3223,7 @@ def handle_action(webview, parts):
                 spent = week_spend()
                 if spent + total > CFG["budget"] + 0.01:
                     say(f"<span class='verdict no'>Those add up to {money(total)}, which would take this "
-                        f"weekend to {money(spent + total)}, over your {money(CFG['budget'])} cap. "
+                        f"{slate_word()} to {money(spent + total)}, over your {money(CFG['budget'])} cap. "
                         "Untick some or lower the amounts.</span>", 0)
                     for k, _ in wanted:
                         say("", k)
@@ -3227,6 +3353,11 @@ def settings_page(all_games, days, counts):
         return f"<h2>{title}</h2><div class='game'>{n}{inner}</div>"
 
     top = []
+    lg_btns = "".join(
+        f"<button class='btn {'go' if k == LEAGUE['code'] else ''}' style='flex:1' "
+        f"onclick=\"go('lg-{k}')\">{v['icon']} {'NFL' if k == 'nfl' else 'College hoops'}</button>"
+        for k, v in LEAGUES.items())
+    top.append(f"<div class='quote' style='margin:0'>{lg_btns}</div>")
     notice = RUN_OPTS.pop("notice", None)
     if notice:
         good = notice.startswith("Updated") or notice.startswith("You already")
@@ -3249,20 +3380,21 @@ def settings_page(all_games, days, counts):
             f"<label><input type='radio' name='{e(ev)}' value='{e(v)}' "
             f"{'checked' if (cur == v if v else cur is None) else ''}><span>{e(t)}</span></label>"
             for v, t in opts)
-        picks.append(f"<div class='pickrow'><div>{e(a['pick'])} vs {e(b['pick'])} · {days[ev][:3]}</div>"
+        picks.append(f"<div class='pickrow'><div>{e(a['pick'])} vs {e(b['pick'])}{' · ' + day_tag(days[ev]) if day_tag(days[ev]) else ''}</div>"
                      f"<div class='seg'>{radios}</div></div>")
 
     have_key = os.path.exists(KEYFILE)
     body = "".join([
-        "<header><h1>Settings</h1><div class='sub' id='budgetline'></div></header><section>",
+        f"<header><h1>{LG()['icon']} {LG()['name']} settings</h1><div class='sub' id='budgetline'></div></header><section>",
         "<div class='stack'>" + "".join(top) + "</div>" if top else "",
         section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
-                slider("budget", "Weekend cap", 10, 200, 10, "$") +
+                slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
                 slider("accept_pct", "Minimum offer to accept", 50, 100, 5, "% of fair")),
         section("Overlap", slider("max_share", "Max share of combos for one pick", 20, 100, 10, "%")
                 + switch("hedge_close", "Split coin-flip games between both sides"),
                 "Keeps one result from sinking most of your combos. Full-slate combos and locked "
                 "picks are exempt, since they include those games on purpose."),
+        "" if by_day() else
         section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
                 slider("upsets_min", "Fewest underdogs", 0, 8) + slider("upsets_max", "Most underdogs", 0, 8)),
         "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
@@ -3270,7 +3402,7 @@ def settings_page(all_games, days, counts):
                 for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]),
         section("Mid-day", switch("include_live", "Include games already in progress")
                 + slider("live_min", "Live picks: minimum chance", 10, 50, 5, "%"),
-                "Building on a Sunday afternoon uses only games still to play. With this on, games "
+                "Building after games have started uses only games still to play. With this on, games "
                 "under way are included at Kalshi's live price, except ones that are nearly decided, "
                 "have a jumpy live price, or where Kalshi and live sportsbook odds disagree."),
         section("Cash out", slider("bankroll", "Your betting bankroll", 100, 5000, 100, "$")
@@ -3278,10 +3410,16 @@ def settings_page(all_games, days, counts):
                 + slider("cash_every", "Check offers every", 2, 10, 2, " min"),
                 "Money you keep for betting. The bigger a cash-out offer is next to this, the more the planner "
                 "favours taking the sure money. Nothing is sold until you tap Cash out."),
+        section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
+                f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
+                f"{'tomorrow' if CFG.get('next_day') else 'today'}. Change this, then tap Build combos, "
+                "or tap the league button above to reload the list.") if by_day() else
         section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
                                 for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
                 "Sunday is always in."),
-        section("Your picks", "".join(picks) or "<div class='muted'>No games listed yet.</div>",
+        section("Your picks", ("".join(picks) if len(picks) <= 16 else
+                               f"<details><summary class='muted'>{len(picks)} games · tap to lock or skip</summary>"
+                               f"{''.join(picks)}</details>") or "<div class='muted'>No games listed yet.</div>",
                 "Lock a team to put it in every combo, or skip a game."),
         section("Kalshi account",
                 f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
@@ -3337,7 +3475,7 @@ def settings_page(all_games, days, counts):
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
-            save_json(SAVED, CFG)
+            save_cfg()
             if pem.strip():
                 save_private_key(pem)
             result["go"] = choice
@@ -3369,6 +3507,7 @@ def this_week(sunday):
             return "account"
     hist = load_json(HISTORY, {"builds": []})
     if os.path.exists(LATEST) and any(b["week"] == sunday.isoformat() and b.get("placed")
+                                      and b.get("league", "nfl") == LEAGUE["code"]
                                       for b in hist["builds"]):
         return "planner"
     return None
@@ -3385,8 +3524,8 @@ def reopen_settings(webview):
 
 
 def main():
-    CFG.update({k: v for k, v in load_json(SAVED, {}).items() if k in CFG})
-    loading("Loading this week's games from Kalshi…")
+    set_league(load_json(LEAGUE_FILE, {}).get("league", LEAGUE["code"]))
+    loading(f"Loading {'the ' + LG()['name'].lower() if by_day() else 'this week'}'s games from Kalshi…")
     RUN_OPTS["latest"] = latest_version()
     all_games, days, sunday = week_games(fetch_markets())
     CFG["picks"] = {e: v for e, v in CFG["picks"].items() if e in all_games}  # drop old weeks
@@ -3416,6 +3555,11 @@ def main():
         return show_results(all_games, days, sunday)
     if choice == "mine":
         return show_mine(all_games, days, sunday)
+    if choice and choice.startswith("lg-"):
+        save_json(LEAGUE_FILE, {"league": choice[3:]})
+        set_league(choice[3:])
+        RUN_OPTS["goto"] = "settings"
+        return main()
     if choice == "check":
         return diagnose()
     if choice == "update":
@@ -3445,8 +3589,7 @@ def main():
     if book and matched < len(all_games):
         notes.append(f"{len(all_games) - matched} game(s) had no sportsbook match and use Kalshi's prices.")
 
-    on = {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
-          "Saturday": CFG["saturday"], "Monday": CFG["monday"]}
+    on = day_on()
     book_fair = {e: [x["fair"] for x in sides] for e, sides in all_games.items() if sides[0].get("src")}
     skipped, live = screen_live(all_games, book_fair)
     for e in all_games:
@@ -3489,7 +3632,8 @@ def main():
             tips.append(f"switch on {' and '.join(offdays)} in Settings")
         if live_out:
             tips.append("lower Live picks: minimum chance in Settings → Mid-day")
-        tips.append("or come back for next week's games, which usually open on Kalshi by Tuesday")
+        tips.append("or switch to tomorrow's games in Settings → Day" if by_day() else
+                    "or come back for next week's games, which usually open on Kalshi by Tuesday")
         why.append("To get more games: " + ", ".join(tips) + ".")
         raise Stop("Not enough games right now", " ".join(why))
     locks = {e: t for e, t in CFG["picks"].items() if e in games and t != "skip"}
@@ -3508,16 +3652,17 @@ def main():
                      + (" and " if short and made < asked else "")
                      + (f"only {made} of {asked} combos fit" if made < asked else "")
                      + ". Raise the limit in Settings → Overlap if you want more.")
-    loading("Playing out 20,000 weekends…")
+    loading(f"Playing out 20,000 {slate_word()}s…")
     p_any, p_each = simulate(combos, games)
 
     build_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
     history = load_json(HISTORY, {"builds": []})
     # An earlier build this week with nothing placed is just replaced.
     history["builds"] = [b for b in history["builds"]
-                         if b.get("placed") or b["week"] != sunday.isoformat()]
+                         if b.get("placed") or b["week"] != sunday.isoformat()
+                         or b.get("league", "nfl") != LEAGUE["code"]]
     history["builds"].append({
-        "id": build_id, "week": sunday.isoformat(), "stake": CFG["stake"],
+        "id": build_id, "week": sunday.isoformat(), "stake": CFG["stake"], "league": LEAGUE["code"],
         "placed": [], "quotes": {}, "results": {},
         "combos": [{"kind": c["kind"], "tier": c["tier"], "fair": round(c["fair"], 2),
                     "min": round(c["min"], 2),
