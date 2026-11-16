@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.6"
+VERSION = "2026.11.16.7"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4132,7 +4132,9 @@ def settings_page(all_games, days, counts):
                         + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                         + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot"),
                         "Free key from the-odds-api.com. Without it, chances use Kalshi's prices only."),
-        "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>",
+        "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>"
+                        f"<div class='muted' style='font-size:12px;margin-top:8px;word-break:break-all'>Shortcut link: "
+                        f"{e(launch_url())}</div>",
                         "Opens the planner with one tap from your Home Screen, without the Pythonista editor."),
     }
     vline = (f"<div class='muted' style='text-align:center;font-size:13px;margin:14px 0 30px'>Version {VERSION} · "
@@ -4558,17 +4560,33 @@ def error_page(msg, title="Hmm.", crash=True):
 LAUNCH_URL = "pythonista3://nfl_combo_planner?action=run"
 
 
+def launch_url():
+    """The pythonista3:// link that runs the file you tap, wherever it lives (this phone's
+    Pythonista folder, a subfolder, or Pythonista's iCloud folder)."""
+    target = os.path.join(HERE, "nfl_combo_planner.py")
+    real = os.path.realpath(target)
+    marker = "iCloud~com~omz-software~Pythonista3/Documents"
+    if marker in real:
+        rel, root = real.split(marker, 1)[1].lstrip("/"), "icloud"
+    else:
+        base = os.path.realpath(os.path.expanduser("~/Documents"))
+        rel = os.path.relpath(real, base) if real.startswith(base) else os.path.basename(real)
+        root = None
+    rel = rel[:-3] if rel.endswith(".py") else rel
+    return f"pythonista3://{quote(rel)}?action=run" + (f"&root={root}" if root else "")
+
+
 def home_screen_help():
     """Copy the launch link and open the Shortcuts app, with the steps to finish."""
     try:
         import clipboard
-        clipboard.set(LAUNCH_URL)
+        clipboard.set(launch_url())
         copied = True
     except Exception:
         copied = False
     open_outside("shortcuts://create-shortcut")
     return ("Home Screen icon: in Shortcuts, tap Add Action, search for \"Open URLs\", and paste "
-            + ("the link I copied for you" if copied else LAUNCH_URL)
+            + ("the link I copied for you (" + launch_url() + ")" if copied else launch_url())
             + ". Name it Combos, then tap the share icon → Add to Home Screen.")
 
 
