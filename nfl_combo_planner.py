@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.15.26"
+VERSION = "2026.11.15.27"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2706,6 +2706,22 @@ def expire_offers():
             o["rfq"] = None
 
 
+def clear_my_rfqs(ticker):
+    """Cancel your own open price requests for one combo (e.g. left over after a restart).
+    Kalshi allows only one at a time per combo."""
+    try:
+        data = kalshi_send("GET", "/communications/rfqs",
+                           params={"market_ticker": ticker, "status": "open", "user_filter": "self"}) or {}
+    except Exception:
+        return
+    for r in data.get("rfqs", []):
+        if r.get("market_ticker") == ticker and r.get("id"):
+            try:
+                kalshi_send("DELETE", f"/communications/rfqs/{r['id']}")
+            except Exception:
+                pass
+
+
 def get_cash_offer(ticker, frac=1.0):
     """Ask Kalshi what it will pay for the contracts you hold (or half). Nothing is sold here."""
     import time
@@ -2716,6 +2732,7 @@ def get_cash_offer(ticker, frac=1.0):
     if n < 0.01:
         return {"error": "Nothing left to cash out on this combo.", "at": time.time()}
     drop_cash(ticker)
+    clear_my_rfqs(ticker)
     try:
         rfq = kalshi_send("POST", "/communications/rfqs",
                           {"market_ticker": ticker, "contracts_fp": f"{n:.2f}",
@@ -3366,6 +3383,7 @@ def get_offer(i, amount=None, check_cap=True):
     made = kalshi_send("POST", f"/multivariate_event_collections/{coll}",
                        {"selected_markets": legs, "with_market_payload": False})
     market = made["market_ticker"]
+    clear_my_rfqs(market)
     rfq = kalshi_send("POST", "/communications/rfqs",
                       {"market_ticker": market, "target_cost_dollars": f"{stake:.2f}",
                        "rest_remainder": False, "replace_existing": False})["id"]
