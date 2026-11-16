@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.11"
+VERSION = "2026.11.16.12"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1678,10 +1678,40 @@ class ResultsKeeper:
         return not url.startswith("combo://")
 
 
+def ticker_cashflows(fills):
+    """Money in and out per market from your fills: {ticker: {"cost", "back", "fees", "net", "last"}}.
+    Kalshi nets YES and NO, so the side you first bought is your bet; buying it adds cost, and any
+    other fill (selling it, Kalshi's "sell no" for app cash-outs, or buying the other side) is
+    money back at your side's price."""
+    out = {}
+    for f in sorted(fills, key=lambda f: str(f.get("created_time") or "")):
+        t = f.get("ticker") or f.get("market_ticker")
+        if not t:
+            continue
+        n = count_of(f)
+        side, act = f.get("side", "yes"), f.get("action", "buy")
+        yes_px = dollars(f, "yes_price")
+        no_px = dollars(f, "no_price") or (1 - yes_px if yes_px else 0.0)
+        yes_px = yes_px or (1 - no_px if no_px else 0.0)
+        c = out.setdefault(t, {"side": side if act != "sell" else ("no" if side == "yes" else "yes"),
+                               "cost": 0.0, "back": 0.0, "fees": 0.0, "net": 0.0, "last": ""})
+        px = yes_px if c["side"] == "yes" else no_px
+        if act != "sell" and side == c["side"]:
+            c["cost"] += n * px
+            c["net"] += n
+        else:
+            c["back"] += n * px
+            c["net"] -= n
+        c["fees"] += dollars(f, "fee_cost")
+        c["last"] = str(f.get("created_time") or c["last"])
+    return out
+
+
 def account_breakdown(hours=24):
-    """Whole-account profit over the last `hours`, from Kalshi's own numbers:
-    settlements (payout minus cost and fees) and positions' realized profit for
-    bets closed or sold but not settled yet. Open bets are listed, not valued."""
+    """Whole-account profit on bets that finished in the last `hours` (settled, or sold off
+    completely): what came back (sales and payouts) minus what they cost, fees included.
+    Worked out from every fill on those markets, so a bet bought days ago counts in full.
+    Open bets are listed, not valued."""
     import time
     key_id = CFG.get("kalshi_key_id", "").strip()
     if not key_id or not os.path.exists(KEYFILE):
@@ -1689,12 +1719,19 @@ def account_breakdown(hours=24):
     with open(KEYFILE, encoding="utf-8") as f:
         key = load_private_key(f.read())
     since = int(time.time() - hours * 3600)
+    since_iso = dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     settles = account_pages(key, key_id, "/portfolio/settlements", "settlements", {"min_ts": since})
-    fills = account_pages(key, key_id, "/portfolio/fills", "fills", {"min_ts": since})
+    fills = account_pages(key, key_id, "/portfolio/fills", "fills",
+                          {"min_ts": int(time.time() - 200 * 86400)})
     positions = all_positions(key, key_id)
+    flows = ticker_cashflows(fills)
+    settled = {s.get("ticker"): s for s in settles}
+    held = {(p.get("ticker") or p.get("market_ticker")): abs(float(p.get("position_fp") or p.get("position") or 0))
+            for p in positions}
+    finished = set(settled) | {t for t, c in flows.items() if c["last"][:19] >= since_iso and c["cost"] > 0
+                               and c["net"] <= 0.005 and held.get(t, 0) <= 0.005}
     cache = load_json(LEGS_CACHE, {})
-    touched = {f.get("ticker") or f.get("market_ticker") for f in fills} | {s.get("ticker") for s in settles}
-    fetch_legs_parallel([t for t in touched if is_combo(t)], cache)
+    fetch_legs_parallel([t for t in finished if is_combo(t)], cache)
     save_json(LEGS_CACHE, cache)
 
     def kind(t):
@@ -1705,27 +1742,22 @@ def account_breakdown(hours=24):
         return "NFL single bets" if (t or "").startswith(SERIES) else "Other single bets"
 
     out = defaultdict(lambda: {"pnl": 0.0, "n": 0})
-    done = set()
-    for s in settles:
-        t = s.get("ticker")
-        pnl = (dollars(s, "revenue") - dollars(s, "yes_total_cost") - dollars(s, "no_total_cost")
-               - dollars(s, "fee_cost"))
+    for t in finished:
+        c, st = flows.get(t), settled.get(t)
+        if c and c["cost"] > 0:
+            pnl = c["back"] + (dollars(st, "revenue") if st else 0.0) - c["cost"] - c["fees"]
+        elif st:                                 # no fills on record: use the settlement's own figures
+            pnl = (dollars(st, "revenue") - dollars(st, "yes_total_cost") - dollars(st, "no_total_cost")
+                   - dollars(st, "fee_cost"))
+        else:
+            continue
         out[kind(t)]["pnl"] += pnl
         out[kind(t)]["n"] += 1
-        done.add(t)
     open_n, open_cost = 0, 0.0
     for p in positions:
-        t = p.get("ticker") or p.get("market_ticker")
-        if t in done:
-            continue
-        held = abs(float(p.get("position_fp") or p.get("position") or 0))
-        realized = dollars(p, "realized_pnl")
-        if held > 0.005:
+        if abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
             open_n += 1
             open_cost += dollars(p, "market_exposure")
-        if t in touched and realized:
-            out[kind(t)]["pnl"] += realized
-            out[kind(t)]["n"] += 0 if held > 0.005 else 1
     return {"by": dict(out), "total": sum(v["pnl"] for v in out.values()),
             "open_n": open_n, "open_cost": open_cost, "hours": hours}
 
@@ -1744,10 +1776,12 @@ def breakdown_html():
     return ("<details class='lostbox' id='acct24'><summary>Whole Kalshi account, last 24 hours: "
             f"{sign(b['total'])}<span class='muted'> · tap for details</span></summary><div class='game'>"
             f"{rows or '<div class=muted>Nothing settled or sold in the last 24 hours.</div>'}"
-            f"<div class='muted' style='font-size:13px;margin-top:8px'>From Kalshi's own profit figures for bets "
-            f"that settled or that you sold. Still open: {b['open_n']} bet{'s' if b['open_n'] != 1 else ''} "
-            f"({money(b['open_cost'])} in). Kalshi's 24-hour number may also include how much those open bets "
-            f"have gained or lost in value, so it can differ from this.</div></div></details>")
+            f"<div class='muted' style='font-size:13px;margin-top:8px'>Bets that finished in the last 24 hours "
+            f"(paid out, lost, or cashed out): everything they paid back minus everything they cost, even if "
+            f"you bought them earlier. Still open: {b['open_n']} bet{'s' if b['open_n'] != 1 else ''} "
+            f"({money(b['open_cost'])} in). Kalshi's own 24h number is the change in your whole portfolio's "
+            f"value instead: it counts open bets at today's prices and leaves out what bets finishing today "
+            f"cost before yesterday, so the two won't match exactly.</div></div></details>")
 
 
 def results_page(sunday):
