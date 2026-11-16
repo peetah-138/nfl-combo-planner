@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.19"
+VERSION = "2026.11.16.20"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2053,11 +2053,13 @@ def inject_state(page, quiet=False):
 
 LOADING_PAGE = """<!doctype html><html><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'><style>%s
-.sk{padding:calc(env(safe-area-inset-top) + 64px) 16px 16px}.bar{background:var(--card);border-radius:12px;margin:0 0 12px;
- animation:pl 1.2s ease-in-out infinite alternate}@keyframes pl{from{opacity:.45}to{opacity:1}}
-#msg{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top) + 18px);text-align:center;font-size:15px;font-weight:600;color:var(--muted)}
+.sk{padding:calc(env(safe-area-inset-top) + 70px) 16px 16px}.bar{border-radius:20px;margin:0 0 12px;
+ background:linear-gradient(100deg,var(--card) 40%%,var(--card2,var(--card)) 50%%,var(--card) 60%%);background-size:200%% 100%%;
+ animation:sh 1.3s linear infinite}@keyframes sh{from{background-position:120%% 0}to{background-position:-80%% 0}}
+#msg{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top) + 22px);text-align:center;
+ font:600 15px -apple-system,system-ui,sans-serif;color:var(--muted)}
 </style></head><body><div id='msg'>Loading…</div><div class='sk'>
-<div class='bar' style='height:26px;width:55%%'></div><div class='bar' style='height:120px'></div>
+<div class='bar' style='height:34px;width:45%%;border-radius:10px'></div><div class='bar' style='height:120px'></div>
 <div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div><div class='bar' style='height:90px'></div></div>
 <script>function setMsg(m){document.getElementById('msg').textContent=m;}
 window.__load=function(h){var m=h.match(/<head[^>]*>([\\s\\S]*)<\\/head>/i),b=h.match(/<body[^>]*>([\\s\\S]*)<\\/body>/i);
@@ -2303,13 +2305,99 @@ input.sw:checked{background:#34c759}
 input.sw::after{content:'';position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
  box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .2s}
 input.sw:checked::after{left:22px}
+""" + r"""
+/* ---------- design system ---------- */
+html{-webkit-tap-highlight-color:transparent}
+body{font:16px/1.45 -apple-system,'SF Pro Text',system-ui,sans-serif;font-feature-settings:"tnum" 1;
+ -webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+header{padding:22px 20px 6px}h1{font-size:32px;line-height:1.1;font-weight:800;letter-spacing:-.025em;margin:0 0 4px}
+.sub{font-size:15px}.muted{color:var(--muted)}
+section{padding:0 16px 48px}
+h2{font-size:13px;font-weight:650;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:26px 4px 8px}
+h2 .ib{font-size:15px}
+.card,.batch,.empty,.game,.stat{border:0!important;border-radius:20px;background:var(--card);box-shadow:var(--shadow)}
+.card{padding:16px 16px 6px;margin:0 0 12px}.batch{padding:16px;gap:10px}.game{padding:6px 16px;border-radius:16px}
+.game>.row,.game>.swrow,.game>.srow,.game>label.row{min-height:50px;border-bottom:1px solid var(--line)}
+.game>:last-child{border-bottom:0!important}.srow{padding:10px 0}.srow .row{padding:0 0 4px}
+.quote.pair .btn{flex:1}.quote.pair .btn.go{flex:2}
+.placed{border:0;background:var(--card2);border-radius:12px}.flip{border:0;background:var(--accentbg);color:var(--accent);
+ border-radius:999px;padding:6px 12px;font-size:13px}
+.tier{font-size:13px;font-weight:600;color:var(--muted);text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:6px}
+.pay{font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.03em;margin-top:2px}
+.meta{font-size:14px;color:var(--muted)}
+.stat{padding:12px 14px;border-radius:16px}.stat b{font-size:22px;font-weight:750;letter-spacing:-.02em}
+.btn{font:600 16px/1.1 -apple-system,system-ui,sans-serif;border:0!important;border-radius:14px;padding:12px 18px;
+ min-height:48px;background:var(--accentbg);color:var(--accent);transition:transform .12s ease,opacity .12s ease;
+ -webkit-user-select:none;user-select:none}
+.btn.go{background:var(--accent);color:#fff}.btn:active{transform:scale(.97);opacity:.82}.btn:disabled{opacity:.4}
+.btn.quiet{background:transparent;color:var(--accent);min-height:40px;padding:8px 4px}
+.quote{gap:10px;margin-top:10px}.now .quote .btn{width:100%}
+.tag,.verdict{font-size:12px;font-weight:650;padding:3px 9px;border-radius:999px;vertical-align:1px;letter-spacing:0}
+.verdict{font-size:13px;padding:4px 10px}
+.min{background:var(--card2);border-radius:16px;padding:14px;font-size:15px;margin-top:12px}
+ol{margin:10px 0 0}li{padding:12px 0;border-top:1px solid var(--line);gap:12px}
+.n{width:18px;text-align:center;font-size:15px;line-height:1;color:var(--muted)}
+.n.w{color:var(--good)}.n.l{color:var(--red)}.n.o::before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;
+ box-shadow:inset 0 0 0 1.6px var(--muted)}.n.live::before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;
+ background:var(--red);animation:pulse 1.4s ease-in-out infinite}
+.who b{font-weight:650}.who small{font-size:13px;margin-top:1px}.pct{font-size:15px;font-weight:650}
+.tabs{margin:14px 16px 12px;padding:3px;gap:0;background:var(--track);border-radius:12px}
+.tabs button{background:transparent!important;color:var(--muted)!important;border-radius:9px;padding:9px 4px;font-size:14px;
+ transition:background .2s,color .2s}.tabs button.on{background:var(--thumb)!important;color:var(--ink)!important;
+ box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.fbar{display:flex;flex-direction:column;gap:10px;margin:0 0 14px}
+.fchips{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}
+.fchips::-webkit-scrollbar{display:none}.fchips:empty{display:none}
+.fchip{flex:none;border:0;border-radius:999px;padding:9px 15px;font:600 14px -apple-system,system-ui,sans-serif;
+ background:var(--card);color:var(--ink);box-shadow:var(--shadow);transition:background .15s,color .15s}
+.fchip.on{background:var(--ink);color:var(--bg)}
+.seg{display:flex;background:var(--track);border-radius:10px;padding:2px}
+.schip{flex:1;border:0;background:transparent;color:var(--muted);font:600 13px -apple-system,system-ui,sans-serif;
+ padding:7px 0;border-radius:8px;transition:background .15s,color .15s}
+.schip.on{background:var(--thumb);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.chips{display:flex;gap:6px;align-items:center;margin:0 0 6px;flex-wrap:wrap}
+.sport{font-size:12px;font-weight:650;color:var(--ink);background:var(--card2);padding:3px 9px;border-radius:999px}
+.when{font-size:12px;font-weight:650;color:var(--muted)}
+.when.on{color:var(--red)}.when.on::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;
+ background:var(--red);margin-right:5px;vertical-align:1px;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+.dots{display:inline-flex;gap:3px}.d{width:7px;height:7px;border-radius:50%;display:inline-block}
+.d.w{background:var(--good)}.d.l{background:var(--red)}.d.o{box-shadow:inset 0 0 0 1.5px var(--muted)}
+.cardfoot{display:flex;justify-content:flex-end;padding:6px 0 4px;border-top:1px solid var(--line);margin-top:4px}
+.now{background:var(--card)!important;box-shadow:inset 0 0 0 1.5px var(--accentbg),var(--shadow)!important}
+.now>b:first-child{font-size:17px}
+.strip{margin:0 -16px 12px;padding:2px 20px 10px;border:0;font-size:15px;color:var(--muted)}
+.strip b{color:var(--ink);font-size:17px;font-weight:750}
+.lostbox{margin:4px 0 12px}.lostbox summary{border:0;border-radius:16px;padding:15px 16px;font-weight:650;box-shadow:var(--shadow)}
+.lostbox .card{opacity:.82}
+.empty{padding:26px 20px;text-align:center;color:var(--muted);font-size:15px}
+.empty b{display:block;color:var(--ink);font-size:17px;margin-bottom:4px}
+.swrow{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.alertrow{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border-radius:16px;
+ padding:12px 16px;margin:0 0 12px;box-shadow:var(--shadow)}.alertrow b{font-size:15px;font-weight:650;display:block}
+.alertrow span{font-size:13px;color:var(--muted)}
+input.txt,textarea{border-radius:12px!important;border:1px solid var(--line)!important;background:var(--card2)!important;
+ color:var(--ink);font-size:16px}
+input[type=range]{accent-color:var(--accent)}
+.klink{font-size:13px}
+.toast{top:auto;bottom:18px;border-radius:14px;padding:12px 18px;font-size:15px;max-width:88%;text-align:center;
+ background:rgba(30,33,41,.92);color:#fff;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+body.enter>*:not(script):not(.toast){animation:enter .24s cubic-bezier(.2,.7,.3,1) both}
+@keyframes enter{from{opacity:0;transform:translateY(8px)}}
+details.card[open]>.min,details.card[open]>ol{animation:reveal .2s ease both}
+@keyframes reveal{from{opacity:0;transform:translateY(-4px)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """
 
 APP_JS = r"""
 window.__load=function(h){var m=h.match(/<head[^>]*>([\s\S]*)<\/head>/i),b=h.match(/<body[^>]*>([\s\S]*)<\/body>/i);
  if(m)document.head.innerHTML=m[1];document.body.innerHTML=b?b[1]:h;
  document.querySelectorAll('body script').forEach(function(s){var n=document.createElement('script');n.text=s.text;s.parentNode.replaceChild(n,s);});
- window.scrollTo(0,0);};
+ window.scrollTo(0,0);window.__enter();};
+window.__enter=function(){document.body.classList.add('enter');clearTimeout(window.__et);
+ window.__et=setTimeout(function(){document.body.classList.remove('enter');},420);};
+if(!window.__entered){window.__entered=1;window.__enter();}
+if(!window.__ta){window.__ta=1;document.addEventListener('touchstart',function(){},{passive:true});}
 function sheet(title, sub, url, label){location.href='combo://confirm/'+encodeURIComponent(JSON.stringify([title,sub,url,label||'Confirm']));}
 function toast(m){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';
  document.body.appendChild(t);}t.textContent=m;t.style.display=m?'block':'none';}
@@ -2323,9 +2411,10 @@ window.__swap=function(h){var y=window.scrollY,open={},old={},anon=[];
  document.querySelectorAll('details[id]').forEach(function(d){if(d.id in open)d.open=open[d.id];});
  document.querySelectorAll('details:not([id])').forEach(function(d,i){if(anon[i])d.open=true;});
  if(tabSel&&window.tab&&document.getElementById(tabSel)&&tabSel!=='combos')tab(tabSel);
+ if(window.__after)try{window.__after();}catch(e){}
  document.querySelectorAll('[data-k]').forEach(function(e){var o=old[e.dataset.k];if(o!==undefined&&o!==e.textContent)e.classList.add('flash');});
  window.scrollTo(0,y);};
-(function(){var y0=null,pull=0;
+if(!window.__ptr)(function(){window.__ptr=1;var y0=null,pull=0;
  document.addEventListener('touchstart',function(e){y0=(window.scrollY<=0)?e.touches[0].clientY:null;pull=0;},{passive:true});
  document.addEventListener('touchmove',function(e){if(y0===null)return;pull=e.touches[0].clientY-y0;var p=document.getElementById('ptr');
   if(p&&pull>0){p.style.height=Math.min(pull/2,44)+'px';p.textContent=pull>110?'Release to refresh':'Pull to refresh';}},{passive:true});
@@ -2496,13 +2585,18 @@ def go_to(target):
     threading.Thread(target=run, daemon=True).start()
 
 
-DARK_CSS = ("<style>:root{color-scheme:dark;--bg:#0f1115;--card:#1a1d23;--ink:#eceef2;--muted:#9aa1ad;"
-            "--line:#2a2e36;--accent:#5b9dff;--good:#4ade80;--goodbg:#14301f;--bad:#fbbf24;--badbg:#3a2c0b;"
-            "--red:#f87171;--redbg:#3b1416;--dogbg:#2a2140;--dog:#c4b5fd;--done:#15241a}"
+DARK_CSS = ("<style>:root{color-scheme:dark;--bg:#0b0c10;--card:#16181e;--card2:#1e2129;--ink:#f3f4f6;"
+            "--muted:#8b93a1;--line:rgba(255,255,255,.07);--accent:#4d8dff;--accentbg:rgba(77,141,255,.15);"
+            "--good:#34d27b;--goodbg:rgba(52,210,123,.14);--bad:#ffc53d;--badbg:rgba(255,197,61,.14);"
+            "--red:#ff5d55;--redbg:rgba(255,93,85,.15);--dogbg:rgba(185,162,255,.15);--dog:#b9a2ff;--done:#13201a;"
+            "--track:#1b1e25;--thumb:#30343e;--shadow:none}"
             "body{background:var(--bg);color:var(--ink)}</style>")
-LIGHT_CSS = ("<style>:root{color-scheme:light;--bg:#f4f5f7;--card:#fff;--ink:#16181d;--muted:#6b7280;"
-             "--line:#e5e7eb;--accent:#1f6feb;--good:#15803d;--goodbg:#dcfce7;--bad:#b45309;--badbg:#fef3c7;"
-             "--red:#b91c1c;--redbg:#fee2e2;--dogbg:#ede9fe;--dog:#6d28d9;--done:#eef6ee}</style>")
+LIGHT_CSS = ("<style>:root{color-scheme:light;--bg:#f2f2f7;--card:#ffffff;--card2:#f4f5f8;--ink:#0d0f14;"
+             "--muted:#6b7280;--line:rgba(0,0,0,.07);--accent:#0a6cff;--accentbg:rgba(10,108,255,.10);"
+             "--good:#16a34a;--goodbg:rgba(22,163,74,.12);--bad:#b7791f;--badbg:rgba(234,179,8,.16);"
+             "--red:#dc2626;--redbg:rgba(220,38,38,.10);--dogbg:rgba(109,40,217,.09);--dog:#6d28d9;--done:#eef7f0;"
+             "--track:#e3e4e9;--thumb:#ffffff;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 20px rgba(15,20,30,.05)}"
+             "body{background:var(--bg);color:var(--ink)}</style>")
 
 
 def themed(page):
@@ -2847,7 +2941,8 @@ def cash_block(ticker, plan):
         target, why = tp_target(h["cost"], pays, ticker)
         if target:
             out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
-                       f"Set auto-sell at {money(target)} {why}</button></div>")
+                       f"Auto-sell at {money(target)}</button><span class='muted' style='font-size:13px'>"
+                       f"{html.escape(why.strip('()'))}</span></div>")
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
     if raw and raw.get("error"):
@@ -2857,13 +2952,15 @@ def cash_block(ticker, plan):
         word, cls = {1.0: ("Cash out", "ok"), 0.5: ("Cash out half", "ok")}.get(f, ("Hold", "no"))
         size = " for half" if o.get("frac", 1.0) < 1 else ""
         main = action_button(ticker, f, h) if f else ""
+        if main:                                  # inside its own card the combo's name is implied
+            main = re.sub(r"(Cash out(?: half)?)(?: of)? " + re.escape(html.escape(h["label"])) + r"\b", r"\1", main)
         if not main:
             main = (f"<button class='btn cashb' onclick=\"{confirm_cash(ticker, h, o)}\">Cash out"
                     f"{' half' if size else ''} for {money(o['offer'])}</button>")
         out.append(f"<div style='margin-top:8px'>Kalshi offers <b>{money(o['offer'])}</b>{size} "
                    f"<span class='verdict {cls}'>{word}</span></div>"
                    f"<div class='muted' style='font-size:13px;margin-top:4px'>{plan_words(ticker, f, o, h, W)}</div>"
-                   f"<div class='quote'>{main}<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>")
+                   f"<div class='quote pair'>{main}<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>")
     else:
         tag = "<span class='tag good'>Worth checking</span> " if h["worth"] else ""
         out.append(f"<div class='quote'>{tag}<button class='btn cashb' onclick=\"cash('ask','{t}')\">"
@@ -2875,33 +2972,60 @@ def cash_block(ticker, plan):
 # ---------------------------------------------------------------- scores
 SCORES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 SCORES = {"at": 0, "by_team": {}}
+SCORES_BY = {}            # league -> {"at": time, "by": {team key: [game info, ...]}}
+
+# Every sport the Live page can show, including leftover college-basketball combos.
+SPORTS = {
+    "nfl": {"icon": "🏈", "name": "NFL", "espn": "football/nfl", "q": {}, "periods": 4, "day": False, "hours": 3.5},
+    "nba": {"icon": "🏀", "name": "NBA", "espn": "basketball/nba", "q": {}, "periods": 4, "day": True, "hours": 2.5},
+    "nhl": {"icon": "🏒", "name": "NHL", "espn": "hockey/nhl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
+    "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
+               "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
+}
+SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL"))
 
 
-def fetch_scores(max_age=45):
-    """Live scores by full team name (ESPN's free scoreboard). Empty if it can't be reached."""
+def ticker_sport(ticker):
+    t = (ticker or "").upper()
+    return next((code for code, pre in SPORT_PREFIX if t.startswith(pre)), None)
+
+
+def sport_teams(code):
+    return {"nfl": NFL_TEAMS, "nba": NBA_TEAMS, "nhl": NHL_TEAMS}.get(code, {})
+
+
+def fetch_scores(max_age=45, code=None):
+    """Live scores for one league (default: the one on screen), by team (ESPN's free scoreboard).
+    Keeps the last good copy if ESPN can't be reached."""
     import time
-    if time.time() - SCORES["at"] < max_age:
-        return SCORES["by_team"]
+    code = code or LEAGUE["code"]
+    sp = SPORTS.get(code)
+    got = SCORES_BY.get(code) or {"at": 0, "by": {}}
+    if not sp or time.time() - got["at"] < max_age:
+        return got["by"]
     by = {}
     try:
-        q = dict(LG()["espn_q"])
-        if LG()["slate"] == "day":              # teams play most nights: get yesterday to 3 days out
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sp['espn']}/scoreboard"
+        q = dict(sp["q"])
+        if sp["day"]:                            # teams play most nights: yesterday to 3 days out
             today = dt.date.today()
-            q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}", limit=200)
-        r = requests.get(SCORES_URL, params=q, timeout=8)
+            q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}",
+                     limit=400)
+        r = requests.get(url, params=q, timeout=8)
         events = r.json().get("events", []) if r.ok else []
         if not events and "dates" in q:
-            r = requests.get(SCORES_URL, params=LG()["espn_q"], timeout=8)
+            r = requests.get(url, params=sp["q"], timeout=8)
             events = r.json().get("events", []) if r.ok else []
         for ev in events:
             comp = (ev.get("competitions") or [{}])[0]
             st = comp.get("status") or ev.get("status") or {}
             typ = st.get("type") or {}
             state = typ.get("state", "")
+            n_per = sp["periods"]
             if state == "post":
-                detail = "Final" + (" OT" if (st.get("period") or 0) > LG()["periods"] else "")
+                detail = "Final" + (" OT" if (st.get("period") or 0) > n_per else "")
             elif state == "in":
-                per, n_per = st.get("period") or 0, LG()["periods"]
+                per = st.get("period") or 0
                 label = ("OT" if per > n_per else {4: "Q", 3: "P"}.get(n_per, "H") + str(per))
                 detail = ("Half" if "HALFTIME" in typ.get("name", "") else
                           f"{label} {st.get('displayClock', '')}".strip())
@@ -2912,24 +3036,27 @@ def fetch_scores(max_age=45):
             if len(teams) != 2:
                 continue
             for me, opp in ((teams[0], teams[1]), (teams[1], teams[0])):
-                name = (me.get("team") or {}).get("displayName")
+                tm = me.get("team") or {}
+                name = tm.get("displayName")
                 if not name:
                     continue
                 info = {"me": int(float(me.get("score") or 0)), "opp": int(float(opp.get("score") or 0)),
-                            "abbr": (me.get("team") or {}).get("abbreviation", ""),
-                            "opp_abbr": (opp.get("team") or {}).get("abbreviation", ""),
-                            "opp_name": (opp.get("team") or {}).get("displayName", ""),
-                            "state": state, "detail": detail,
-                            "ball": str(sit.get("possession", "")) == str(me.get("id") or (me.get("team") or {}).get("id")),
-                            "redzone": bool(sit.get("isRedZone")),
-                            "game": ev.get("id"), "day": espn_day(ev.get("date"))}
-                tm = me.get("team") or {}
+                        "abbr": tm.get("abbreviation", ""),
+                        "opp_abbr": (opp.get("team") or {}).get("abbreviation", ""),
+                        "opp_name": (opp.get("team") or {}).get("displayName", ""),
+                        "state": state, "detail": detail, "start": ev.get("date") or "",
+                        "ball": str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
+                        "redzone": bool(sit.get("isRedZone")), "sport": code,
+                        "game": ev.get("id"), "day": espn_day(ev.get("date"))}
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
-                            norm_team(tm.get("location") or "")} - {""}:
+                            norm_team(tm.get("location") or ""),
+                            "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
                     by.setdefault(alt, []).append(info)
     except (requests.RequestException, ValueError, TypeError, AttributeError):
-        return SCORES["by_team"]
-    SCORES.update(at=time.time(), by_team=by)
+        return got["by"]
+    SCORES_BY[code] = {"at": time.time(), "by": by}
+    if code == LEAGUE["code"]:
+        SCORES.update(at=time.time(), by_team=by)
     return by
 
 
@@ -2964,18 +3091,58 @@ def pick_game(games, day):
 
 def leg_score(l):
     """Score of the game this pick is on, from the point of view of the team it needs, or None.
-    Only that exact game: a team's result from another night is never shown."""
+    Only that exact game: a team's result from another night is never shown. Works for any
+    sport the pick is in."""
     abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
-    name = TEAMS.get(abbr) or PICK_NAME.get(l["ticker"] or "", "")
-    by = SCORES["by_team"]
-    games = (by.get(name) or by.get(norm_team(name)) or by.get(norm_team(" ".join(name.split()[-2:])))
-             or by.get(norm_team(name.split()[-1]))) if name else None
+    code = ticker_sport(l["ticker"]) or LEAGUE["code"]
+    name = (sport_teams(code).get(abbr) or PICK_NAME.get(l["ticker"] or "")
+            or (MARKET_INFO.get(l["ticker"]) or {}).get("name") or "")
+    by = (SCORES_BY.get(code) or {}).get("by") or (SCORES["by_team"] if code == LEAGUE["code"] else {})
+    games = ((by.get(name) or by.get(norm_team(name)) or by.get(norm_team(" ".join(name.split()[-2:])))
+              or by.get(norm_team(name.split()[-1]))) if name else None) or by.get("@" + abbr.upper())
     sc = pick_game(games, ticker_day(l["ticker"]))
     if not sc:
         return None
     if l.get("side", "yes") == "no":           # betting against this team
         sc = next((g for g in by.get(sc["opp_name"], []) if g["game"] == sc["game"]), sc)
     return sc
+
+
+def leg_start(l, side_of):
+    """When this pick's game starts (any sport), or None."""
+    s = side_of.get(l["ticker"])
+    if s:
+        t = start_dt(s["event"])
+        if t:
+            return t
+    sc = leg_score(l)
+    try:
+        if sc and sc.get("start"):
+            return dt.datetime.fromisoformat(sc["start"].replace("Z", "+00:00"))
+        exp = (MARKET_INFO.get(l["ticker"]) or {}).get("exp")
+        if exp:
+            hours = (SPORTS.get(ticker_sport(l["ticker"])) or {}).get("hours", 3)
+            return dt.datetime.fromisoformat(exp.replace("Z", "+00:00")) - dt.timedelta(hours=hours)
+    except ValueError:
+        pass
+    return None
+
+
+def when_label(t):
+    """'Live', 'Tonight 7:10 PM', 'Tue 4:00 PM', 'Nov 29' for a start time."""
+    if not t:
+        return ""
+    t = t.astimezone()
+    now = dt.datetime.now().astimezone()
+    if t <= now:
+        return "Live now"
+    days = (t.date() - now.date()).days
+    clock = t.strftime("%-I:%M %p").replace(":00 ", " ")
+    if days == 0:
+        return ("Tonight " if t.hour >= 17 else "Today ") + clock
+    if days == 1:
+        return "Tomorrow " + clock
+    return t.strftime("%a ") + clock if days < 7 else t.strftime("%b %-d")
 
 
 def score_line(sc):
@@ -3017,7 +3184,8 @@ def right_now_html(mine, infos, snap, plan):
     if live and plan:
         todo = sorted(((t, f) for t, f in plan["acts"].items() if f), key=lambda x: -live[x[0]]["hold"])
         if todo:
-            out += [f"<div class='quote'>{action_button(t, f, live[t])}</div>" for t, f in todo[:3]]
+            out += [f"<div class='quote'>{action_button(t, f, live[t]) if k == 0 else action_button(t, f, live[t]).replace('btn go cashb', 'btn cashb')}</div>"
+                    for k, (t, f) in enumerate(todo[:3])]
             ho = plan["hold"]
             out.append(f"<div class='muted' style='font-size:13px;margin-top:4px'>Locks in "
                        f"{money(plan['plan']['sure'])}. Holding everything instead: {ho['nothing']:.0%} chance "
@@ -3027,7 +3195,7 @@ def right_now_html(mine, infos, snap, plan):
                        "<span class='muted' style='font-size:13px'>Today's offers are worth less to you than holding.</span></div>")
     missing = [t for t in live if not fresh_offer(t)]
     if missing and can_trade():
-        out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('askall','all')\">"
+        out.append(f"<div class='quote'><button class='btn quiet cashb' onclick=\"cash('askall','all')\">"
                    f"Get cash-out offers{' for the rest' if len(missing) < len(live) else ''}</button></div>")
     out.append("</div>")
     return "".join(out)
@@ -3583,13 +3751,30 @@ def cash_alerts(plan):
             f"{plan['hold']['nothing']:.0%} chance of nothing more. Open the planner to confirm."]
 
 
+LIVE_VIEW_JS = r"""
+window.__view=window.__view||(function(){try{return JSON.parse(localStorage.getItem('liveview'))||{};}catch(e){return {};}})();
+function view(k,v){window.__view[k]=v;try{localStorage.setItem('liveview',JSON.stringify(window.__view));}catch(e){}applyView();}
+function applyView(){var lg=window.__view.lg||'all',so=window.__view.sort||'t';
+ if(lg!=='all'&&!document.querySelector('.fchip[data-v="'+lg+'"]'))lg='all';
+ document.querySelectorAll('.fchip').forEach(function(b){b.classList.toggle('on',b.dataset.v===lg);});
+ document.querySelectorAll('.schip').forEach(function(b){b.classList.toggle('on',b.dataset.v===so);});
+ document.querySelectorAll('details.card[data-lg]').forEach(function(c){
+  c.style.display=(lg==='all'||c.dataset.lg.split(' ').indexOf(lg)>=0)?'':'none';});
+ var box=document.getElementById('alive');if(box){var cs=[].slice.call(box.children);
+  cs.sort(function(a,b){if(so==='pay')return b.dataset.pay-a.dataset.pay;if(so==='p')return b.dataset.p-a.dataset.p;
+   return (a.dataset.t-b.dataset.t)||(a.dataset.i-b.dataset.i);});
+  cs.forEach(function(c){box.appendChild(c);});}}
+window.__after=applyView;applyView();
+"""
+
+
 def mine_page(live=False):
     """Build the My Kalshi combos page. Returns (page, snapshot for alerts)."""
     all_games, sunday = MINE["all_games"], MINE["sunday"]
     e = html.escape
     if not live:
         loading("Reading your Kalshi account…")
-    acct, balance, note = fetch_account()
+    acct, balance, note = fetch_account(every_league=True)      # Live shows every sport
     head = ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>My Kalshi combos</title><style>{CSS}</style></head><body>")
@@ -3605,10 +3790,9 @@ def mine_page(live=False):
     pregame = load_json(PREGAME, {}) if live else remember_pregame(all_games)
     side_of = {s["ticker"]: s for v in all_games.values() for s in v}
 
-    wk = sunday.isoformat()
-    # this week's combos, plus any still live from an earlier week (e.g. waiting on Monday night)
-    mine = [a for a in acct if on_live(a, wk)] or \
-        [a for a in acct if a["status"] == "pending"]
+    # every sport: everything still live, plus combos that finished in the last two days
+    recent = (dt.date.today() - dt.timedelta(days=2)).isoformat()
+    mine = [a for a in acct if a["status"] == "pending" or (a.get("week") or "") >= recent]
     if not live:
         loading("Checking game results…")
     results = fetch_results({l["ticker"] for a in mine for l in a["legs"] if l["ticker"]}
@@ -3640,7 +3824,8 @@ def mine_page(live=False):
                 nm = "Not: " + nm
                 lp = 1 - lp if lp is not None else None
             return nm, "", lp, res
-        return TEAMS.get(abbr, abbr), "", lp, res
+        nm = sport_teams(ticker_sport(l["ticker"])).get(abbr) or info.get("name") or abbr
+        return nm, "", lp, res
 
     rng = random.Random(1)
     cards, hits_any = [], 0
@@ -3652,6 +3837,7 @@ def mine_page(live=False):
     trials = 8000 if live else 20000
     for _ in range(trials):                     # play the rest of the weekend out
         won = {ev: (s[0] if rng.random() < s[0]["fair"] else s[1])["ticker"] for ev, s in all_games.items()}
+        drawn = {}                                # other sports' picks: one result per pick per run
         hit = False
         hit_now = []
         for a, inf in zip(mine, infos):
@@ -3674,8 +3860,11 @@ def mine_page(live=False):
                     ok = res == "yes"
                 else:
                     s = side_of.get(l["ticker"])
-                    if not s:
-                        ok = rng.random() < (ch or 0.5)
+                    if not s:                     # same pick in several combos wins or loses for all
+                        yes_p = ch if l.get("side", "yes") == "yes" else 1 - (ch if ch is not None else 0.5)
+                        if l["ticker"] not in drawn:
+                            drawn[l["ticker"]] = rng.random() < (yes_p if ch is not None else 0.5)
+                        ok = drawn[l["ticker"]] if l.get("side", "yes") == "yes" else not drawn[l["ticker"]]
                     else:
                         took = won[s["event"]] == s["ticker"]
                         ok = took if l.get("side", "yes") == "yes" else not took
@@ -3689,7 +3878,9 @@ def mine_page(live=False):
         patterns[frozenset(hit_now)] += 1
         hits_any += hit
     MINE["patterns"] = patterns
-    fetch_scores()
+    for code in {ticker_sport(l["ticker"]) for a in mine for l in a["legs"]} | {LEAGUE["code"]}:
+        if code:
+            fetch_scores(code=code)
 
     order = {ev: i for i, ev in enumerate(all_games)}
     snap = {}
@@ -3751,14 +3942,12 @@ def mine_page(live=False):
                      f"<div class='muted' style='font-size:12px;margin-top:4px'>Based on pre-game chances.</div></div>")
         else:
             names = ", ".join(e(n) for n in missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
-            value = (f"<div class='min muted' style='font-size:13px'>Fair value not available: no pre-game "
-                     f"price saved for {names} (that game had already started when the planner first "
-                     f"saw it). From next week, prices are saved before kickoff.</div>")
+            value = ""
         rows = []
         legs_sorted = sorted(zip(a["legs"], inf), key=lambda x: (start_key(x[0].get("event") or ""),
                                                                  order.get((side_of.get(x[0]["ticker"]) or {}).get("event"), 99)))
         for n, (l, (name, opp, ch, res)) in enumerate(legs_sorted, 1):
-            tag = {"yes": "<span class='tag good'>Won</span>", "no": "<span class='tag red'>Lost</span>"}.get(res, "")
+            tag = ""
             sub = f"to beat {e(opp)}" if opp else ""
             pct = f"{ch:.0%}" if ch and not res else ""
             if not res:
@@ -3779,7 +3968,9 @@ def mine_page(live=False):
             if (l["ticker"] or "").startswith(tuple(GAME_SLUG)):
                 tag += (f" <a class='klink' href='combo://open/{quote(game_url(l['ticker']), safe='')}'>"
                         f"game ↗</a>")
-            rows.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(name)}</b> {tag}"
+            mk = ("<span class='n w'>✓</span>" if res == "yes" else "<span class='n l'>✕</span>" if res == "no" else
+                  "<span class='n live'></span>" if pick_state(l, side_of) == "live" else "<span class='n o'></span>")
+            rows.append(f"<li>{mk}<span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
         group = snap.get(a["ticker"], {}).get("status", "pending")
         if group == "pending":
@@ -3787,15 +3978,39 @@ def mine_page(live=False):
         pay_line = (f"<div class='pay'>{money(a['back'])}</div><div class='meta'>cashed out · cost {money(a['cost'])}</div>"
                     if group == "cashed" else
                     f"<div class='pay'>{money(a['pays'])}</div><div class='meta'>pays if it hits · cost {money(a['cost'])}</div>")
+        sports = sorted({ticker_sport(l["ticker"]) or "other" for l in a["legs"]},
+                        key=lambda c: -sum(1 for l in a["legs"] if (ticker_sport(l["ticker"]) or "other") == c))
+        sp = sports[0]
+        chip = "".join(f"<span class='sport'>{SPORTS[c]['icon']} {SPORTS[c]['name']}</span>"
+                       for c in sports if c in SPORTS) or "<span class='sport'>🎯 Other</span>"
+        upcoming = [x for x in (leg_start(l, side_of) for l, (_, _, _, r) in legs_sorted if not r) if x]
+        nxt = min(upcoming) if upcoming else None
+        any_live = any(pick_state(l, side_of) == "live" for l, (_, _, _, r) in legs_sorted if not r)
+        when = ("Live now" if any_live else when_label(nxt)) if group == "pending" else ""
+        dots = "".join({"yes": "<i class='d w'></i>", "no": "<i class='d l'></i>"}.get(r, "<i class='d o'></i>")
+                       for _, (_, _, _, r) in legs_sorted)
+        sort_t = 0 if any_live else (nxt.timestamp() if nxt else 9e12)
         marks = {"yes": "✓", "no": "✗"}
-        preview = " · ".join(f"{nm}{(' ' + marks[r]) if r in marks else ''}"
-                             for _, (nm, _, _, r) in legs_sorted[:3]) + (f" · +{len(legs_sorted) - 3}" if len(legs_sorted) > 3 else "")
-        cards.append((group, f"<details class='card' id='c-{e(a['ticker'])}'@@OPEN:{e(a['ticker'])}@@><summary><div class='top'><div>"
-                     f"<div class='tier'>Combo {i} · {len(a['legs'])} picks</div>{pay_line}"
+        need_names = [nm for _, (nm, _, _, r) in legs_sorted if not r]
+        lost_names = [nm for _, (nm, _, _, r) in legs_sorted if r == "no"]
+        if lost_names:
+            preview = "Lost on " + ", ".join(lost_names[:2])
+        elif not need_names:
+            preview = "Every pick won"
+        else:
+            preview = ("Needs " if len(need_names) < len(legs_sorted) else "") + " · ".join(need_names[:3]) + (
+                f" · +{len(need_names) - 3}" if len(need_names) > 3 else "")
+        cards.append((group, f"<details class='card' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
+                     f"data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' data-p='{p:.5f}' data-i='{i}'"
+                     f"@@OPEN:{e(a['ticker'])}@@><summary><div class='top'><div>"
+                     f"<div class='chips'>{chip}"
+                     + (f"<span class='when{' on' if any_live else ''}'>{e(when)}</span>" if when else "")
+                     + f"</div><div class='tier'>Combo {i} · {len(a['legs'])} picks <span class='dots'>{dots}</span></div>{pay_line}"
                      f"<div class='muted' style='font-size:13px;margin-top:2px'>{e(preview)}</div></div>"
-                     f"<div style='text-align:right'><span data-k='p-{e(a['ticker'])}'>{status}</span><span class='chev'></span>"
-                     f"<br><a class='klink' href='combo://open/{quote(KALSHI_WEB + '/portfolio', safe='')}'>Open in Kalshi ↗</a>"
-                     f"</div></div></summary>{value}<ol>{''.join(rows)}</ol></details>"))
+                     f"<div style='text-align:right;white-space:nowrap'><span data-k='p-{e(a['ticker'])}'>{status}</span>"
+                     f"<span class='chev'></span></div></div></summary>{value}<ol>{''.join(rows)}</ol>"
+                     f"<div class='cardfoot'><a class='klink' href='combo://open/{quote(KALSHI_WEB + '/portfolio', safe='')}'>"
+                     f"Open in Kalshi ↗</a></div></details>"))
 
     live_picks = []
     for a, inf in zip(mine, infos):
@@ -3826,12 +4041,11 @@ def mine_page(live=False):
     best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
     n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
     n_cashed = sum(1 for a in mine if a["status"] == "cashed")
-    alerts_row = ("<div class='batch' style='padding:8px 12px'><div class='row'><span class='muted' id='livemsg' "
-                  "style='font-size:13px'>"
-                  + (f"Alerts on · checked {MINE['last']}" if live and MINE.get("last") else
-                     "Alerts off. Turn on for game-day notifications.") +
-                  "</span><button class='btn go' id='livebtn' onclick='toggleLive()'>"
-                  + ("Turn off" if live else "Turn on") + "</button></div></div>")
+    alerts_row = ("<label class='alertrow'><div><b>Live updates &amp; alerts</b><span id='livemsg'>"
+                  + (f"Updated {MINE['last']}" if live and MINE.get("last") else
+                     "Off · turn on for scores, offers and alerts") +
+                  f"</span></div><input type='checkbox' class='sw' id='livebtn' {'checked' if live else ''} "
+                  "onchange='toggleLive()'></label>")
     details = ("<details class='lostbox' id='moredet'><summary>More details<span class='muted'> · tap to show</span></summary>"
                "<div class='stats'>"
                f"<div class='stat'><b>{money(staked)}</b><span class='lbl'>staked</span></div>"
@@ -3844,9 +4058,22 @@ def mine_page(live=False):
                "\"Worth a sure $X to you\" weighs a chance at a big payout against your betting bankroll "
                "(Settings → Cash out): the bigger the amount next to your bankroll, the more a sure thing is worth.</div>"
                "</details>")
-    body = [head, f"<header><h1>My combos · {sunday:%b %-d}</h1>"
-                  f"<div class='sub'>{LG()['icon']} {len(mine)} placed · {n_alive} still alive"
-                  + (f" · {n_cashed} cashed out" if n_cashed else "") + "</div></header>",
+    present_sports = [c for c in SPORTS if any(c in (x.split()) for x in
+                      (" ".join(sorted({ticker_sport(l["ticker"]) or "other" for l in a["legs"]})) for a in mine))]
+    fbar = ""
+    if len(mine) > 1:
+        chips = ("".join([f"<button class='fchip' data-v='all' onclick=\"view('lg','all')\">All</button>"]
+                         + [f"<button class='fchip' data-v='{c}' onclick=\"view('lg','{c}')\">{SPORTS[c]['icon']} "
+                            f"{SPORTS[c]['name']}</button>" for c in present_sports])
+                 if len(present_sports) > 1 else "")
+        fbar = (f"<div class='fbar'><div class='fchips'>{chips}</div>"
+                "<div class='seg'><button class='schip' data-v='t' onclick=\"view('sort','t')\">Next game</button>"
+                "<button class='schip' data-v='pay' onclick=\"view('sort','pay')\">Payout</button>"
+                "<button class='schip' data-v='p' onclick=\"view('sort','p')\">Chance</button></div></div>")
+    body = [head, f"<header><h1>Live</h1>"
+                  f"<div class='sub'>{n_alive} still riding"
+                  + (f" · {n_cashed} cashed out" if n_cashed else "")
+                  + (f" · {len(present_sports)} sports" if len(present_sports) > 1 else "") + "</div></header>",
             (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
             f"<div style='padding:0 16px'>{strip}<div id='now'>{now_box}</div>{alerts_row}</div>",
             "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">My combos</button>"
@@ -3857,11 +4084,11 @@ def mine_page(live=False):
     lost_cards = [c for g, c in cards if g == "lost"]
     cashed_cards = [c for g, c in cards if g == "cashed"]
     if not cards:
-        body.append(f"<div class='empty'>No {LG()['name']} combos found in your Kalshi account for "
-                    f"{'this day' if by_day() else 'this week'}.</div>")
+        body.append("<div class='empty'><b>No live combos</b><br>Combos you place on Kalshi, in any sport, "
+                    "show up here with live scores and cash-out offers.</div>")
     elif not alive_cards:
-        body.append("<div class='empty'>No combos still alive this week.</div>")
-    body += alive_cards
+        body.append("<div class='empty'><b>Nothing still riding</b><br>Your finished combos are below.</div>")
+    body.append(fbar + "<div id='alive'>" + "".join(alive_cards) + "</div>")
     if cashed_cards:
         body.append(f"<details class='lostbox' id='cashedbox'><summary>Cashed out ({len(cashed_cards)})"
                     f"<span class='muted'> · tap to show</span></summary>{''.join(cashed_cards)}</details>")
@@ -3876,11 +4103,12 @@ def mine_page(live=False):
                 "s.classList.toggle('hidden',s.id!==n);var b=document.getElementById('b-'+s.id);"
                 "if(b)b.classList.toggle('on',s.id===n);});window.scrollTo(0,0);}"
                 f"var LIVE={'true' if live else 'false'};"
-                "function liveState(on,msg){LIVE=on;document.getElementById('livebtn').textContent=on?'Turn off':'Turn on';"
-                "document.getElementById('livemsg').textContent=msg||(on?'On · checking now…':'Off.');}"
+                "function liveState(on,msg){LIVE=on;var b=document.getElementById('livebtn');if(b)b.checked=on;"
+                "document.getElementById('livemsg').textContent=msg||(on?'On · checking now…':'Off');}"
                 "function toggleLive(){liveState(!LIVE,'');try{location.href='combo://live/'+(LIVE?'on':'off');}catch(e){}}"
                 "function cash(a,t){document.querySelectorAll('.cashb').forEach(function(b){b.disabled=true;});"
                 "location.href='combo://cash/'+a+'/'+t;}"
+                + LIVE_VIEW_JS +
                 "</script></body></html>")
     return "".join(body), snap
 
@@ -4489,12 +4717,12 @@ def settings_page(all_games, days, counts):
     notice = RUN_OPTS.pop("notice", None)
     if notice:
         good = notice.startswith(("Updated", "You already", "Saved"))
-        top.append(f"<div class='game' style='border-color:{'#15803d' if good else '#b45309'}'>"
+        top.append(f"<div class='game' style='padding:14px 16px;box-shadow:inset 0 0 0 1.5px "
+                   f"{'var(--good)' if good else 'var(--bad)'}'>"
                    f"<b class='{'pos' if good else ''}'>{html.escape(notice)}</b></div>")
     latest = RUN_OPTS.get("latest")
     if latest and version_tuple(latest) > version_tuple(VERSION):
-        top.append(f"<button class='btn go big' style='background:#b45309;border-color:#b45309' "
-                   f"onclick=\"go('update')\">Update to version {latest}</button>")
+        top.append(f"<button class='btn go big' onclick=\"go('update')\">Update to version {latest}</button>")
     else:
         top.append("<button class='btn big' onclick=\"go('update')\">Check for updates</button>")
     if CFG.get("kalshi_key_id") or os.path.exists(KEYFILE):
@@ -4602,12 +4830,17 @@ def settings_page(all_games, days, counts):
             "<button class='btn go big' style='margin:18px 0 8px' onclick=\"go('build')\">Build combos</button>",
             "</section>"])
     else:
+        # urgent things (a notice, an update waiting) stay on top; routine checks live at the bottom
+        urgent = [x for x in top if "class='game'" in x or "Update to version" in x]
+        routine = [x.replace("class='btn big'", "class='btn big'") for x in top
+                   if x not in urgent and "go('lg-" not in x]
         body = "".join([
             "<header><h1>Settings</h1></header><section>",
-            "<div class='stack'>" + "".join(x for x in top if "go('lg-" not in x) + "</div>",
+            ("<div class='stack'>" + "".join(urgent) + "</div>") if urgent else "",
             sec["look"], sec["cash"], sec["order"], sec["midday"], sec["overlap"], sec["kalshi"], sec["odds"],
             sec["home"],
-            "<button class='btn go big' style='margin:18px 0 4px' onclick=\"go('save')\">Save settings</button>",
+            "<button class='btn go big' style='margin:22px 0 4px' onclick=\"go('save')\">Save settings</button>",
+            ("<h2>About</h2><div class='stack'>" + "".join(routine) + "</div>") if routine else "",
             vline, "</section>"])
     css_extra = (".stack{display:flex;flex-direction:column;gap:8px;margin-top:8px}.big{width:100%;padding:13px;font-size:16px}"
                  ".srow{padding:6px 0}.srow input[type=range]{width:100%}.swrow{padding:8px 0;gap:12px}"
