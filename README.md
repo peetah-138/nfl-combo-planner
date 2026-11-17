@@ -1,7 +1,7 @@
 # Kalshi combo planner (iPhone)
 
 Builds Kalshi sports combos (NFL, NBA, NHL), tracks them live with scores and
-cash-out offers, and can keep auto-sell orders working. Runs in **Pythonista 3**
+cash-out offers, and tells you when a combo is worth cashing out. Runs in **Pythonista 3**
 on iPhone.
 
 ## Set up (about 10 minutes)

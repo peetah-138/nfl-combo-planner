@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.34"
+VERSION = "2026.11.16.35"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2627,8 +2627,8 @@ TOUR_SLIDES = [
      "Pick your budget and tap <b>Build combos</b>. The planner suggests a mix of safer and long-shot combos, "
      "and you choose which to place. The defaults are a good start."),
     ("🎯", "Let it ride, or lock it in",
-     "Turn on alerts on the Live page to hear about big moments. In Settings, <b>Auto-sell</b> can sell a "
-     "combo for you at a price you'd be happy with. Everything else in Settings can wait."),
+     "Turn on alerts on the Live page to hear when a combo is worth cashing out. In Settings, <b>Let it ride</b> "
+     "sets how long the planner waits before saying so. Everything else in Settings can wait."),
 ]
 
 
@@ -3015,7 +3015,7 @@ def live_check(webview):
     APP["quiet"] = True
     page, snap = mine_page(live=True)
     pi = in_pythonista() and watcher_alive()
-    if CFG.get("tp_follow", True) and MINE.get("tp") and can_trade() and not pi:
+    if AUTOSELL and CFG.get("tp_follow", True) and MINE.get("tp") and can_trade() and not pi:
         try:
             if retarget_take_profits():
                 MINE["tp"] = resting_sells()
@@ -3227,16 +3227,20 @@ def cash_block(ticker, plan):
         what = (" / ".join(money(pr * left) for _, pr in st) + " <span class='muted'>(thirds, whole-combo prices)</span>"
                 if len(st) > 1 else money(st[0][1] * left))
         guard = any(live for _, live, _ in (MINE["hold"].get(ticker) or {}).get("legs_left", []))
-        out.append(f"<div class='quote' style='justify-content:space-between'><span style='font-size:14px'>🎯 Auto-sell at "
+        out.append(f"<div class='quote' style='justify-content:space-between'><span style='font-size:14px'>🎯 <b>Auto-sell is on</b>: Kalshi sells it if a buyer pays "
                    f"<b>{what}</b>" + ("<br><span class='muted' style='font-size:12px'>A game is on: priced as if "
                                         "your pick wins, so no one can buy cheap off a swing.</span>" if guard else "")
                    + f"</span><button class='btn quiet cashb' onclick=\"cash('tpx','{t}')\">Cancel</button></div>")
-    elif can_trade():
+    elif AUTOSELL and can_trade():
         target, why = tp_target(h["cost"], pays, ticker)
         if target:
-            out.append(f"<div class='quote'><button class='btn cashb' onclick=\"cash('tp','{t}')\">"
-                       f"Auto-sell {'from' if 'thirds' in why else 'at'} {money(target)}</button><span class='muted' style='font-size:13px'>"
-                       f"{html.escape(why.strip('()'))}</span></div>")
+            at = ("starting at " if "thirds" in why else "at ") + money(target)
+            out.append(f"<div class='quote' style='display:block'><div style='font-size:14px;margin-bottom:8px'>"
+                       f"<b>Auto-sell is off</b> for this combo. <span class='muted'>Turn it on and Kalshi sells it "
+                       f"for you if a buyer pays {at}, even while you're away.</span></div>"
+                       f"<button class='btn cashb' onclick=\"cash('tp','{t}')\">Turn on auto-sell {at}</button>"
+                       f"<div class='muted' style='font-size:13px;margin-top:6px'>{html.escape(why.strip('()'))}"
+                       f" · cancel any time</div></div>")
     raw = MINE["cash"].get(ticker)
     o = fresh_offer(ticker)
     if raw and raw.get("error"):
@@ -3785,6 +3789,9 @@ def combo_chance_now(a):
     return p
 
 
+# Kalshi doesn't take standing sell orders on combos (they trade only through cash-out offers), so
+# auto-sell stays off. The code is kept in case Kalshi adds them.
+AUTOSELL = False
 TP_OFF = os.path.join(HERE, "combo_autosell_off.json")   # combos you cancelled auto-sell on
 
 
@@ -3792,7 +3799,7 @@ def autosell_pass():
     """One pass over every league's live combos: put an auto-sell on any without one (if you
     turned that on) and move existing ones to the current "Let it ride" price. The league on
     screen uses the Live page's full simulation; the others use each pick's current price."""
-    if not can_trade() or MINE.get("busy") or not (CFG.get("tp_auto") or CFG.get("tp_follow", True)):
+    if not AUTOSELL or not can_trade() or MINE.get("busy") or not (CFG.get("tp_auto") or CFG.get("tp_follow", True)):
         return []
     acct, _, _ = fetch_account(every_league=True)
     resting = resting_sells()
@@ -3886,10 +3893,9 @@ def watcher_line():
     hb = watcher_status()
     if hb and time.time() - hb.get("at", 0) < 600:
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
-        return (f"<div class='wline'>🖥 Pi watcher on · checked {t} · {hb.get('orders', 0)} auto-sell order"
-                f"{'' if hb.get('orders', 0) == 1 else 's'}</div>")
+        return (f"<div class='wline'>🖥 Pi watcher on · checked {t}</div>")
     return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 10+ minutes. Your phone is handling "
-            "auto-sell and alerts while it's open.</div>")
+            "alerts while it's open.</div>")
 
 
 def start_autosell_keeper():
@@ -4103,7 +4109,9 @@ def cash_action(action, ticker):
     APP["quiet"] = True                      # update the page in place, no loading screen
     confirm_after = None
     try:
-        if action == "tp":
+        if action == "tp" and not AUTOSELL:
+            MINE["flash"] = "Auto-sell isn't available: Kalshi only buys combos back through cash-out offers."
+        elif action == "tp":
             loading("Placing your auto-sell order on Kalshi…")
             off = load_json(TP_OFF, {})
             if off.pop(ticker, None):
@@ -4968,7 +4976,7 @@ def accept_offer(i):
     if status == "executed":
         ACCT_CACHE["at"] = 0
         haptic("success")
-        if CFG.get("tp_auto"):
+        if AUTOSELL and CFG.get("tp_auto"):
             place_take_profit(o["market"], o["pays"], o["stake"], p=o.get("p"))
         hist = load_json(HISTORY, {"builds": []})
         b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
@@ -5398,23 +5406,19 @@ def settings_page(all_games, days, counts):
                         + switch("auto_cash", "Keep a cash-out offer ready on every live combo")
                         + slider("refresh_secs", "Live updates every", 10, 120, 5, "s")
                 + slider("cash_every", "Fresh cash-out offers every", 1, 10, 1, " min")
-                        + slider("ride", "Auto-sell: let it ride", 0, len(RIDE) - 1, 1, "",
+                        + slider("ride", "Let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
-                        + switch("tp_follow", "Move auto-sell prices as games are won or lost")
-                        + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
-                        + switch("tp_auto", "Auto-sell all my live combos (every league)"),
-                        "Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
-                        "taking the sure money. Auto-sell puts a standing sell order on Kalshi; it works with "
-                        "your phone closed but only fills if a buyer pays that much. Its price is where the "
-                        "planner would say cash out: it plays out the games still to come in order, and at each "
-                        "step weighs selling then (at the discount Kalshi buyers really pay, learned from your "
-                        "own offers) against waiting another game, using each game's live chances. Your level "
-                        "sets how much risk it carries: Cautious acts on your real bankroll, Steady 2×, Balanced "
-                        "4×, Bold 10×, Ride it out sells only at full value. It adds a cushion for error in the "
-                        "odds (2% per pick left). While a game is on, the order prices your pick as a win, so a "
-                        "swing your way can't be bought cheaply. Never below halfway (on a multiplying scale) "
-                        "from what you paid to the payout. Prices move only while the planner is open. Nothing "
-                        "sells unless you confirm or set auto-sell."),
+                        + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
+                            + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
+                            + switch("tp_auto", "Auto-sell all my live combos (every league)")) if AUTOSELL else ""),
+                        ("Bankroll: the bigger a cash-out offer is next to this, the more the planner favours "
+                         "taking the sure money. Let it ride sets when the planner tells you to cash out: it plays "
+                         "out the games still to come in order and, at each step, weighs cashing out then (at the "
+                         "discount Kalshi buyers really pay, learned from your own offers) against waiting another "
+                         "game. Cautious acts on your real bankroll, Steady 2×, Balanced 4×, Bold 10×, Ride it out "
+                         "only near full value. Nothing sells unless you confirm."
+                         + (" Auto-sell puts a standing sell order on Kalshi that fills only if a buyer pays that "
+                            "much." if AUTOSELL else ""))),
         "kalshi": section("Kalshi account",
                           f"<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' "
                           f"spellcheck='false' value='{e(CFG['kalshi_key_id'])}'>"
@@ -5436,10 +5440,10 @@ def settings_page(all_games, days, counts):
                            f"autocapitalize='off' autocorrect='off' spellcheck='false' value='{e(CFG.get('watcher_code', ''))}'>"
                            + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                            + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else ""),
-                           "A Raspberry Pi at home that runs all the time: it moves your auto-sells and sends "
-                           "alerts (through the ntfy app) with your phone locked. When it's running, the phone "
-                           "leaves those to it. Saving here also sends your auto-sell settings to it, signed so "
-                           "only your phone can change them. Cash-outs still need your tap here."),
+                           "A Raspberry Pi at home that runs all the time: it sends alerts (through the ntfy app) "
+                           "with your phone locked, like when a combo is worth cashing out. Saving here also sends "
+                           "your Let it ride level to it, signed so only your phone can change it. Cash-outs "
+                           "still need your tap here."),
         "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>"
                         f"<div class='muted' style='font-size:12px;margin-top:8px;word-break:break-all'>Shortcut link: "
                         f"{e(launch_url())}</div>",

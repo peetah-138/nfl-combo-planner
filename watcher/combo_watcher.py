@@ -2,8 +2,6 @@
 #
 # Runs the same engine as the phone planner, with no screens. Every refresh (15 s by default):
 #   - reads your live combos in every sport, the scores, and Kalshi's in-game prices,
-#   - moves your auto-sell orders (wait-one-more-game price, live-game guard, ladder),
-#   - adds auto-sells to new combos if you turned that on in the phone's Settings,
 #   - sends push notifications through ntfy (picks won/lost, "worth cashing out", games turning).
 # It never cashes anything out: cash-outs still need your tap on the phone.
 #
