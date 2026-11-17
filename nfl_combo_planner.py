@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.53"
+VERSION = "2026.11.17.54"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -423,6 +423,11 @@ def screen_live(all_games, book_fair):
         mids = [(x["p"] + x["bid"]) / 2 for x in sides]
         tot = sum(mids)
         live_fair = [m / tot for m in mids]
+        if len(sides) == 2:                       # ESPN's live model (football) as a second opinion
+            wps = [(leg_score({"ticker": x["ticker"], "side": "yes"}) or {}).get("wp") for x in sides]
+            if all(w is not None for w in wps):
+                w0 = wps[0] / (wps[0] + wps[1])
+                live_fair = [(live_fair[0] + w0) / 2, (live_fair[1] + 1 - w0) / 2]
         if max(live_fair) >= LIVE_DECIDED:
             lead = sides[live_fair.index(max(live_fair))]["pick"]
             skip[e] = (f"In progress and nearly decided ({lead} {max(live_fair):.0%} live). "
@@ -2712,6 +2717,9 @@ def results_page(sunday):
     else:
         body.append("<section><div class='empty'>No combos for this week yet.</div>")
     body.append(breakdown_html())
+    if hub_up():
+        got = hub_call("shadow", timeout=10)
+        body.append(shadow_html((got or {}).get("summary")))
     pi = pi_report()
     if pi and pi.get("stats"):
         body.append(edge_html(pi["stats"], "From your Pi, which records every kickoff price · updated "
@@ -4309,11 +4317,15 @@ def sport_teams(code):
     return {"nfl": NFL_TEAMS, "nba": NBA_TEAMS, "nhl": NHL_TEAMS}.get(code, {})     # college: Kalshi's names
 
 
-def fetch_scores(max_age=45, code=None):
+SCORES_MAX_AGE = 45     # seconds; the Mac lowers this so live scores are near real time
+
+
+def fetch_scores(max_age=None, code=None):
     """Live scores for one league (default: the one on screen), by team (ESPN's free scoreboard).
     Keeps the last good copy if ESPN can't be reached."""
     import time
     code = code or LEAGUE["code"]
+    max_age = SCORES_MAX_AGE if max_age is None else max_age
     sp = SPORTS.get(code)
     got = SCORES_BY.get(code) or {"at": 0, "by": {}}
     if not sp or not sp.get("espn") or time.time() - got["at"] < max_age:
@@ -4350,6 +4362,7 @@ def fetch_scores(max_age=45, code=None):
             else:
                 detail = typ.get("shortDetail", "")
             sit = comp.get("situation") or {}
+            prob = (sit.get("lastPlay") or {}).get("probability") or {}
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
@@ -4365,7 +4378,8 @@ def fetch_scores(max_age=45, code=None):
                         "state": state, "detail": detail, "start": ev.get("date") or "",
                         "ball": str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
                         "redzone": bool(sit.get("isRedZone")), "sport": code,
-                        "game": ev.get("id"), "day": espn_day(ev.get("date"))}
+                        "game": ev.get("id"), "day": espn_day(ev.get("date")),
+                        "wp": _wp(prob, me.get("homeAway")) if state == "in" else None}
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
                             norm_team(tm.get("location") or ""),
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
@@ -4376,6 +4390,15 @@ def fetch_scores(max_age=45, code=None):
     if code == LEAGUE["code"]:
         SCORES.update(at=time.time(), by_team=by)
     return by
+
+
+def _wp(prob, side):
+    """ESPN's live win chance for one side (football has it on the scoreboard), or None."""
+    try:
+        v = prob.get(f"{side}WinPercentage")
+        return min(0.995, max(0.005, float(v))) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def espn_day(iso):
@@ -7724,6 +7747,172 @@ def launch():
             except Exception:
                 pass                              # a broken engine: fall back to this version
     run()
+
+
+# ================================================================ shadow auto-trading (paper)
+# The Mac runs the full-auto strategy with no money: it asks Kalshi for real combo quotes, "buys"
+# only when the quote pays at least your shadow threshold (default: more than fair, i.e. a profit
+# expected), and settles each paper bet when the games finish. The record shows whether a real
+# full-auto budget would have made money before any is risked.
+SHADOW = os.path.join(HERE, "combo_shadow.json")
+SHADOW_DEF = {"start": 300.0, "min_pct": 100, "per_day": 30.0, "max_open": 15, "quotes_per_day": 12,
+              "per_pass": 2}
+
+
+def shadow_state():
+    st = load_json(SHADOW, {})
+    for k, v in SHADOW_DEF.items():
+        st.setdefault(k, v)
+    st.setdefault("bank", st["start"])
+    st.setdefault("bets", [])
+    st.setdefault("quotes", [])
+    return st
+
+
+def shadow_settle(st):
+    """Settle paper bets whose games are decided. Returns how many changed."""
+    open_bets = [b for b in st["bets"] if b["status"] == "open"]
+    if not open_bets:
+        return 0
+    res = fetch_results({l["ticker"] for b in open_bets for l in b["legs"]})
+    changed = 0
+    for b in open_bets:
+        rs = [res.get(l["ticker"]) for l in b["legs"]]
+        if "no" in rs:
+            b.update(status="lost", payout=0.0, done=time.time())
+        elif all(r == "yes" for r in rs):
+            b.update(status="won", payout=b["pays"], done=time.time())
+            st["bank"] += b["pays"]
+        else:
+            continue
+        changed += 1
+    return changed
+
+
+def shadow_pass(book_snap, log=print):
+    """One round for the league on screen: settle, then quote the best couple of combos and paper-buy
+    any that pay at least the threshold. Returns a list of things that happened."""
+    st = shadow_state()
+    did = [f"settled {n}" for n in [shadow_settle(st)] if n]
+    today = dt.date.today().isoformat()
+    q_today = sum(1 for q in st["quotes"] if q["day"] == today)
+    spent_today = sum(b["stake"] for b in st["bets"] if b["day"] == today)
+    if q_today >= st["quotes_per_day"] or sum(b["status"] == "open" for b in st["bets"]) >= st["max_open"]:
+        save_json(SHADOW, st)
+        return did
+    attach_fair_book = load_book_state(book_snap)
+    games_held = {frozenset(l["ticker"] for l in b["legs"]) for b in st["bets"]}
+    cands = shadow_candidates_with(attach_fair_book)
+    CTX.clear()
+    CTX.update(combos=cands, stake=CFG["stake"], offers={})
+    asked = 0
+    for i, c in enumerate(cands, 1):
+        if asked >= st["per_pass"] or q_today + asked >= st["quotes_per_day"]:
+            break
+        if frozenset(l["ticker"] for l in c["legs"]) in games_held:
+            continue
+        asked += 1
+        try:
+            r = get_offer(i, check_cap=False)
+        except Exception as err:                  # a quote that fails is just skipped
+            log("shadow quote failed:", type(err).__name__, err)
+            continue
+        o = CTX["offers"].pop(i, None)
+        if o:
+            try:
+                kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+            except Exception:
+                pass
+        if r.get("error") or not r.get("pct"):
+            continue
+        pct = r["pct"]
+        st["quotes"].append({"day": today, "pct": round(pct, 4), "legs": len(c["legs"]), "league": LEAGUE["code"]})
+        stake = 10 if pct >= 1.10 else 8 if pct >= 1.05 else 5
+        if pct * 100 < st["min_pct"] or spent_today + stake > st["per_day"] or stake > st["bank"]:
+            did.append(f"quoted {len(c['legs'])}-pick at {pct:.0%} of fair: passed")
+            continue
+        pays = r["pays"] * stake / r["stake"]
+        st["bank"] -= stake
+        spent_today += stake
+        st["bets"].append({"id": f"S{len(st['bets']) + 1}", "day": today, "at": time.time(), "league": LEAGUE["code"],
+                           "legs": [{"ticker": l["ticker"], "pick": l["pick"], "fair": round(l["fair"], 4),
+                                     "p": round(l["p"], 4)} for l in c["legs"]],
+                           "stake": stake, "pays": round(pays, 2), "pct": round(pct, 4), "status": "open"})
+        did.append(f"paper-bought {len(c['legs'])}-pick at {pct:.0%} of fair: {money(stake)} to win {money(pays)}")
+    st["quotes"] = st["quotes"][-500:]
+    save_json(SHADOW, st)
+    return did
+
+
+def shadow_candidates_with(book):
+    games, days, slate = week_games(fetch_markets())
+    attach_fair(games, book)
+    if not games:
+        return []
+    combos, _ = build_combos(games, {}, random.Random(int(time.time() // 3600)))
+    out = []
+    for c in combos:
+        if not c.get("fair") or not c.get("kalshi") or any(started(l) for l in c["legs"]):
+            continue
+        if any(l.get("src") is None for l in c["legs"]):
+            continue                              # only picks with a sportsbook line to judge them by
+        kicks = [_kick_ts(l) for l in c["legs"]]
+        if None in kicks or min(kicks) - time.time() > SHADOW_WINDOW:
+            continue                              # quote close to game time, when combos price best
+        out.append(((est_offer(c)[1] or 0.8 * c["kalshi"] / c["fair"]), c))
+    out.sort(key=lambda x: -x[0])
+    return [c for _, c in out]
+
+
+SHADOW_WINDOW = 8 * 3600
+
+
+def _kick_ts(leg):
+    try:
+        return dt.datetime.fromisoformat(str(KICKOFF.get(leg.get("event") or "")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def shadow_summary(st=None):
+    st = st or shadow_state()
+    done = [b for b in st["bets"] if b["status"] != "open"]
+    staked = sum(b["stake"] for b in done)
+    back = sum(b.get("payout", 0) for b in done)
+    qs = [q["pct"] for q in st["quotes"]]
+    return {"start": st["start"], "bank": round(st["bank"], 2), "open": sum(b["status"] == "open" for b in st["bets"]),
+            "open_staked": sum(b["stake"] for b in st["bets"] if b["status"] == "open"),
+            "n": len(done), "won": sum(b["status"] == "won" for b in done), "staked": staked, "back": round(back, 2),
+            "quotes": len(qs), "best": max(qs) if qs else None,
+            "median": statistics.median(qs) if qs else None, "near": sum(q >= 0.95 for q in qs),
+            "min_pct": st["min_pct"], "recent": st["bets"][-8:]}
+
+
+def shadow_text(sm):
+    if not sm["quotes"]:
+        return "🧪 Shadow auto: no quotes yet."
+    pl = sm["back"] - sm["staked"]
+    return (f"🧪 Shadow auto (no real money): {sm['n']} settled, {signed_money(pl)} on {money(sm['staked'])}"
+            f" · {sm['open']} open · bank {money(sm['bank'] + sm['open_staked'])} of {money(sm['start'])}."
+            f" Kalshi quotes so far: median {sm['median']:.0%} of fair, best {sm['best']:.0%}"
+            f" ({sm['quotes']} asked; it buys at {sm['min_pct']}%+).")
+
+
+def shadow_html(sm):
+    """A card for Results > Record."""
+    e = html.escape
+    if not sm:
+        return ""
+    rows = "".join(
+        f"<div class='row'><span>{e(' + '.join(l['pick'] for l in b['legs']))}</span>"
+        f"<span class='nums'>{money(b['stake'])} → {money(b['pays'])} · "
+        f"{ {'open': 'open', 'won': '✅ won', 'lost': '❌ lost'}[b['status']] }</span></div>"
+        for b in reversed(sm.get("recent") or []))
+    return ("<section><h2><span>🧪 Shadow auto-trading</span></h2><div class='game'>"
+            f"<div class='row'><span>{e(shadow_text(sm))}</span></div>{rows}"
+            "<div class='row'><span class='muted'>Your Mac runs the full-auto strategy with real Kalshi quotes "
+            "but no money. It only paper-buys when a quote pays more than fair. Go live only once this shows a "
+            "profit over 50+ bets.</span></div></div></section>")
 
 
 def _as_auto(fn):

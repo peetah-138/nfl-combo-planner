@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.53"
+WATCHER_VERSION = "2026.11.17.54"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -285,7 +285,7 @@ class HubCache:
     @staticmethod
     def ttl(url):
         if "espn.com" in url:
-            return 20
+            return 8
         if "/multivariate_event_collections" in url or "/series" in url:
             return 120
         return 12
@@ -330,7 +330,7 @@ class HubOdds:
     FREE_TTL, SHARP_TTL, SHARP_NEAR_TTL, NEAR = 180, 6 * 3600, 40 * 60, 4 * 3600
 
     def __init__(self):
-        self.H, self.lock, self.free, self.sharp = None, threading.Lock(), {}, {}
+        self.H, self.lock, self.free, self.sharp = None, threading.RLock(), {}, {}
 
     def engine(self):
         if self.H is None:
@@ -376,12 +376,31 @@ class HubOdds:
             return snap
 
 
-def start_hub(conf, E):
+SHADOW_LEAGUES = ("nfl", "nba", "nhl", "ncaaf", "ncaamb")
+
+
+def shadow_loop(odds, every=1800):
+    """Paper full-auto trading on the Mac (see the planner's shadow section). Real quotes, no money."""
+    time.sleep(120)
+    while True:
+        for code in SHADOW_LEAGUES:
+            try:
+                with odds.lock:
+                    snap = odds.get(code, "")            # free lines + any sharp lines already cached
+                    did = odds.engine().shadow_pass(snap, log=log)
+                if did:
+                    log(f"shadow {code}:", "; ".join(did))
+            except Exception as err:
+                log(f"shadow {code} skipped:", type(err).__name__, err)
+        time.sleep(every)
+
+
+def start_hub(conf, E, odds=None):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     secret, cache, seen = conf["secret"], HubCache(E), {}
-    odds = HubOdds()
+    odds = odds or HubOdds()
     seen_lock = threading.Lock()
     threading.Thread(target=cache.warm, daemon=True, name="hub-warm").start()
 
@@ -396,6 +415,8 @@ def start_hub(conf, E):
             if not url.startswith(E.HUB_GET_HOSTS):
                 return {"status": 403, "text": "not allowed"}
             return cache.get(url, req.get("params") or {})
+        if op == "shadow":
+            return {"summary": E.shadow_summary()}
         if op == "odds":
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
@@ -494,8 +515,12 @@ def main():
     import threading
     lock = threading.Lock()
     listen_for_settings(conf, E, lock)
+    E.SCORES_MAX_AGE = 8                    # live scores every few seconds while games are on
     if conf.get("hub", sys.platform == "darwin"):      # the Mac hub; a Pi only if asked
-        start_hub(conf, E)
+        odds = HubOdds()
+        start_hub(conf, E, odds)
+        if conf.get("shadow", True):
+            threading.Thread(target=shadow_loop, args=(odds,), daemon=True, name="shadow").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
@@ -535,7 +560,12 @@ def main():
                 if st and now.tm_wday == 0 and now.tm_hour >= 9 and conf.get("report_week") != wk:
                     conf["report_week"] = wk               # Monday morning, once a week
                     E.save_json(CONF, conf)
-                    push(conf, E.weekly_text(st), title="Weekly report", priority="low")
+                    text = E.weekly_text(st)
+                    try:
+                        text += "\n" + E.shadow_text(E.shadow_summary())
+                    except Exception:
+                        pass
+                    push(conf, text, title="Weekly report", priority="low")
             if conf.pop("update_now", False) or t0 - last["upd"] > 1800:
                 last["upd"] = t0
                 if update_if_newer(E, conf):
@@ -550,7 +580,9 @@ def main():
                 except Exception:
                     pass
             time.sleep(30)
-        time.sleep(max(5, int(E.CFG.get("refresh_secs", 15)) - (time.time() - t0)))
+        playing = any(lv for h in (E.MINE.get("hold") or {}).values() for _, lv, _ in h.get("legs_left") or [])
+        every = 5 if playing else int(E.CFG.get("refresh_secs", 15))   # quicker while your games are on
+        time.sleep(max(3, every - (time.time() - t0)))
 
 
 if __name__ == "__main__":
