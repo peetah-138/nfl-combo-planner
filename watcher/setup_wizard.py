@@ -345,7 +345,53 @@ start();
 </script></body></html>"""
 
 
+REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"
+
+
+def notify(msg):
+    sh("osascript", "-e", f"display notification {json.dumps(msg)} with title \"Combo Watcher\"")
+
+
+def fetch(url, timeout=10):
+    try:
+        import requests
+        r = requests.get(url, params={"t": int(time.time())}, timeout=timeout)
+        return r.text if r.ok else ""
+    except Exception:
+        return sh("curl", "-fsSL", "--max-time", str(timeout), f"{url}?t={int(time.time())}", timeout=timeout + 5)
+
+
+def hub_up():
+    out = sh("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "3", "http://127.0.0.1:8765/", timeout=6)
+    return out.strip() not in ("", "000")
+
+
+def quick_start():
+    """Already set up: bring it up to date if needed, make sure it's running, open Combo Hub."""
+    latest = fetch(REPO + "/version.txt").strip()
+    try:
+        cur = re.search(r'^VERSION = "([^"]+)"', open(os.path.join(DIR, "engine.py")).read(), re.M).group(1)
+    except (OSError, AttributeError):
+        cur = ""
+    st = state()
+    if (re.fullmatch(r"[\d.]+", latest) and latest != cur) or not st["running"]:
+        notify(f"Updating to {latest}…" if latest and latest != cur else "Starting Combo Watcher…")
+        r = subprocess.run(["bash", INSTALLER, "--auto"], capture_output=True, text=True, timeout=600)
+        print(r.stdout[-2000:], r.stderr[-1000:], flush=True)
+        if r.returncode:
+            return False                                 # show the settings page so you can see what happened
+    for _ in range(90):                                  # wait for the hub to answer (it restarts on updates)
+        if hub_up():
+            break
+        time.sleep(1)
+    subprocess.run(["open", "http://localhost:8765/"])
+    return True
+
+
 def main():
+    admin = os.environ.get("CW_ADMIN") == "1"
+    if not admin and state()["installed"] and quick_start():
+        return 0
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={TOKEN}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()

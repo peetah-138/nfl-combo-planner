@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.66"
+WATCHER_VERSION = "2026.11.17.67"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -745,6 +745,7 @@ function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
 function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
 window.__cwgo=go;
 window.__cw={set href(u){go(u);},get href(){return location.href;}};
+window.__cwadmin=function(b){b.textContent='Opening…';post('/app/admin',{}).then(function(){setTimeout(function(){b.textContent='⚙︎ Mac settings';},3000);});};
 window.__cwtab=function(t){if(t!=='refresh')mark(t);else{var r=document.getElementById('cwref');if(r){r.classList.add('spin');setTimeout(function(){r.classList.remove('spin')},400);}}post('/app/tab',{t:t});};
 function mark(t){if(!t)return;document.querySelectorAll('#cwbar button,#cwside nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
@@ -1029,7 +1030,7 @@ def webapp_main():
     set_league(A.LEAGUE["code"])
     started = {"run": False}
 
-    def page(frag=False):
+    def page(frag=False, local=False):
         h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
                        "<body style='background:#000;color:#8e8e93;font:600 17px -apple-system;display:flex;"
                        "align-items:center;justify-content:center;height:90vh'>Starting the planner…</body></html>")
@@ -1043,7 +1044,9 @@ def webapp_main():
                        f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
         side = (f"<aside id='cwside'><div class='brand'><div class='mark'>{MARK}</div>Combo Hub</div><nav>{side}</nav>"
                 f"<div class='foot'>Running on your Mac · v{A.VERSION}<br>Live data refreshes by itself"
-                "<button onclick=\"__cwtab('refresh')\">↻ Refresh now</button></div></aside>")
+                "<button onclick=\"__cwtab('refresh')\">↻ Refresh now</button>"
+                + ("<button onclick=\"__cwadmin(this)\">⚙︎ Mac settings</button>" if local else "")
+                + "</div></aside>")
         wrap = (f"<div id='cwwrap'>{SHELL_CSS}{side}<div id='cwbar'>{tabs}</div>"
                 "<button id='cwref' aria-label='Refresh' onclick=\"__cwtab('refresh')\"><svg viewBox='0 0 24 24' width='18' height='18'>"
                 "<path d='M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5' fill='none' stroke='currentColor' stroke-width='2.2' "
@@ -1111,7 +1114,7 @@ def webapp_main():
                 B.seen = time.time()
                 start()
                 frag = "frag=1" in self.path
-                return self._send(200, page(frag), "text/html; charset=utf-8",
+                return self._send(200, page(frag, self.headers.get("X-CW-Local") == "1"), "text/html; charset=utf-8",
                                   {"X-CW-Where": A.APP.get("where") or ""})
             self._send(404, "{}")
 
@@ -1165,11 +1168,31 @@ def start_webapp():
     threading.Thread(target=keep, daemon=True, name="webapp").start()
 
 
+def open_admin():
+    """Open the Mac settings page (status, update, pairing code, passcode, Kalshi key, remove)."""
+    import subprocess
+    d = os.path.join(HOME, "setup")
+    os.makedirs(d, exist_ok=True)
+    try:
+        for f in ("setup_wizard.py", "install_mac.sh"):
+            r = requests.get(REPO + "watcher/" + f, params={"t": int(time.time())}, timeout=20)
+            if r.ok:
+                with open(os.path.join(d, f), "wb") as out:
+                    out.write(r.content)
+        subprocess.Popen([sys.executable, os.path.join(d, "setup_wizard.py"), "--installer", os.path.join(d, "install_mac.sh")],
+                         env=dict(os.environ, CW_ADMIN="1"), start_new_session=True)
+        return True
+    except (OSError, requests.RequestException) as err:
+        log("Mac settings didn't open:", err)
+        return False
+
+
 def webapp_proxy(handler, tok, method, path, body=b""):
     """Pass a signed-in request through to the browser copy of the planner on this Mac."""
     import urllib.request, urllib.error
     req = urllib.request.Request(f"http://127.0.0.1:{WEBAPP_PORT}{path}", data=body if method == "POST" else None,
-                                 method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json"})
+                                 method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json",
+                                                         "X-CW-Local": "1" if handler.client_address[0] == "127.0.0.1" else "0"})
     where = ""
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
@@ -1296,6 +1319,12 @@ def start_hub(conf, E, odds=None):
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
+            if web and self.path == "/app/admin":           # Mac settings: only from the Mac itself
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok or self.client_address[0] != "127.0.0.1":
+                    return self._send(403, b"")
+                ok = open_admin()
+                return self._send(200, json.dumps({"ok": ok}).encode())
             if web and self.path.startswith("/app/"):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok or not 0 <= n < 200_000:
