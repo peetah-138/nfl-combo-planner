@@ -18,11 +18,85 @@ LABEL=com.combowatch.watcher
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$DIR/watcher.log"
 PY="$DIR/.venv/bin/python"
+GUI=0
+if [ "${1:-}" = "--gui" ]; then GUI=1; shift; fi
+TITLE="Combo Watcher Setup"
+
+say() {      # a message (GUI dialog or terminal text)
+  if [ "$GUI" = 1 ]; then
+    osascript - "$1" "$TITLE" <<'AS' >/dev/null
+on run argv
+  display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK"
+end run
+AS
+  else echo; echo "$1"; fi
+}
+
+ask() {      # ask for a line of text; Cancel quits setup
+  if [ "$GUI" = 1 ]; then
+    osascript - "$1" "${2:-}" "$TITLE" <<'AS' || { echo "Setup cancelled."; exit 1; }
+on run argv
+  set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title (item 3 of argv) buttons {"Cancel", "Continue"} default button "Continue" cancel button "Cancel"
+  return text returned of r
+end run
+AS
+  else read -r -p "$1 " reply </dev/tty; echo "$reply"; fi
+}
+
+choose() {   # pick one of several buttons (GUI) or type a number; prints the choice
+  local msg="$1"; shift
+  if [ "$GUI" = 1 ]; then
+    osascript - "$msg" "$TITLE" "$@" <<'AS' || { echo "Setup cancelled."; exit 1; }
+on run argv
+  set opts to items 3 thru -1 of argv
+  set r to choose from list opts with prompt (item 1 of argv) with title (item 2 of argv) default items {item 1 of opts}
+  if r is false then error number -128
+  return item 1 of r
+end run
+AS
+  else
+    echo "$msg"; local i=1; for o in "$@"; do echo "  $i) $o"; i=$((i + 1)); done
+    read -r -p "Number: " n </dev/tty; eval "echo \"\${$n}\""
+  fi
+}
+
+tailscale_ip() {
+  ifconfig 2>/dev/null | awk '/inet 100\./{print $2}' | while read -r a; do
+    o2=$(echo "$a" | cut -d. -f2); [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && echo "$a" && break; done
+}
+
+show_code() {   # the pairing code to paste on the phone (GUI: with a Copy button)
+  local code="$1" hub="$2"
+  local msg
+  if [ -n "$hub" ]; then
+    msg="Last step, on your iPhone: open the planner > Settings > Pi watcher, replace the code with this one, and tap Save.
+
+Mac hub: $hub (over Tailscale, works on any network)"
+  else
+    msg="Tailscale isn't signed in on this Mac yet, so the phone can't use it as its hub. This code still turns on alerts and auto cash-out. Run setup again after signing in to Tailscale to get the full code.
+
+On your iPhone: planner > Settings > Pi watcher, paste this code, tap Save."
+  fi
+  if [ "$GUI" = 1 ]; then
+    b=$(osascript - "$msg" "$code" "$TITLE" <<'AS'
+on run argv
+  set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title (item 3 of argv) buttons {"Done", "Copy code"} default button "Copy code"
+  return button returned of r
+end run
+AS
+)
+    if [ "$b" = "Copy code" ]; then
+      printf '%s' "$code" | pbcopy
+      say "Copied. With Handoff on (same Apple ID), you can paste it straight into the planner on your iPhone. Or AirDrop it, or type it in from this window by running setup again and choosing Show phone pairing code."
+    fi
+  else
+    echo; echo "$msg"; echo "     $code"
+  fi
+}
 
 pair_code() {   # the phone's pairing code, with this Mac's Tailscale address as the hub
   local ip
-  ip=$(ifconfig 2>/dev/null | awk '/inet 100\./{print $2}' | while read -r a; do
-         o2=$(echo "$a" | cut -d. -f2); [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && echo "$a" && break; done)
+  ip=$(tailscale_ip)
   "$PY" - "$DIR/watcher.json" "$ip" <<'PYEOF'
 import base64, json, sys
 c = json.load(open(sys.argv[1]))
@@ -34,30 +108,45 @@ print(out.get("hub", ""))
 PYEOF
 }
 
+if [ "$GUI" = 1 ] && [ -f "$DIR/watcher.json" ] && [ -x "$PY" ] && [ -z "${1:-}" ]; then
+  pick=$(choose "Combo Watcher is installed on this Mac. What would you like to do?" \
+    "Update or repair it" "Show phone pairing code" "Check that it's running" "Use a different Kalshi key" "Remove it from this Mac")
+  case "$pick" in
+    "Show phone pairing code") set -- --code ;;
+    "Check that it's running") set -- --status ;;
+    "Use a different Kalshi key") set -- --new-key ;;
+    "Remove it from this Mac") set -- --uninstall ;;
+    *) set -- ;;
+  esac
+fi
+
 case "${1:-}" in
   --code)
-    out=$(pair_code); code=$(echo "$out" | sed -n 1p); hub=$(echo "$out" | sed -n 2p)
-    if [ -z "$hub" ]; then
-      echo "No Tailscale address found. Open the Tailscale app on this Mac, sign in, then run this again."; exit 1
-    fi
-    echo "Mac hub: $hub"
-    echo "In the planner on your phone: Settings > Pi watcher, replace the code with this one, tap Save:"
-    echo "     $code"
+    out=$(pair_code); show_code "$(echo "$out" | sed -n 1p)" "$(echo "$out" | sed -n 2p)"
     exit 0 ;;
   --status)
     if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
       state=$(launchctl print "gui/$(id -u)/$LABEL" | awk -F'= ' '/^\tstate/{print $2; exit}')
-      echo "Watcher is loaded (state: ${state:-unknown})."
+      head="Combo Watcher is ${state:-loaded} on this Mac."
     else
-      echo "Watcher is NOT running. Run: bash install_mac.sh"
+      head="Combo Watcher is NOT running. Run setup again and choose Update or repair it."
     fi
-    echo "--- last 25 log lines ($LOG) ---"
-    tail -n 25 "$LOG" 2>/dev/null || echo "(no log yet)"
+    ip=$(tailscale_ip)
+    head="$head
+Tailscale: ${ip:-not signed in}"
+    if [ "$GUI" = 1 ]; then
+      say "$head
+
+Latest activity:
+$(tail -n 8 "$LOG" 2>/dev/null | cut -c1-140 || echo '(nothing yet)')"
+    else
+      echo "$head"; echo "--- last 25 log lines ($LOG) ---"; tail -n 25 "$LOG" 2>/dev/null || echo "(no log yet)"
+    fi
     exit 0 ;;
   --uninstall)
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
-    echo "Stopped and removed the background job. Your files are still in $DIR (delete it to remove everything)."
+    say "Combo Watcher is stopped and removed from this Mac's startup. Its files are still in your home folder under combowatch (delete that folder to remove everything). Remember to revoke its Kalshi API key."
     exit 0 ;;
   --healthcheck)
     url="${2:-}"
@@ -71,6 +160,35 @@ case "${1:-}" in
 esac
 
 echo "== Combo planner watcher setup (Mac) =="
+if [ "$GUI" = 1 ] && [ ! -f "$DIR/watcher.json" ]; then
+  say "This sets up your MacBook as the combo planner's hub. It takes about 5 minutes:
+
+1. Tailscale (so your iPhone can reach this Mac from anywhere)
+2. A Kalshi API key just for this Mac
+3. Your phone's pairing code
+
+Nothing needs an admin password. You can rerun this file any time to update, check on it, or remove it."
+fi
+if [ "$GUI" = 1 ] && [ -z "$(tailscale_ip)" ]; then
+  while [ -z "$(tailscale_ip)" ]; do
+    if [ -d /Applications/Tailscale.app ]; then
+      open -a Tailscale 2>/dev/null || true
+      t="Tailscale is installed but not signed in. In the Tailscale menu-bar icon, sign in with the same account as your iPhone, then click Check again."
+    else
+      open "https://tailscale.com/download/mac" 2>/dev/null || true
+      t="Step 1: install Tailscale. Its download page just opened in your browser (the Mac App Store version is fine). Install it, open it, and sign in with the same account as your iPhone. Then click Check again."
+    fi
+    b=$(osascript - "$t" "$TITLE" <<'AS'
+on run argv
+  set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons {"Skip for now", "Check again"} default button "Check again"
+  return button returned of r
+end run
+AS
+) || b="Skip for now"
+    [ "$b" = "Skip for now" ] && break
+    sleep 2
+  done
+fi
 mkdir -p "$DIR" && chmod 700 "$DIR"
 umask 077
 
@@ -100,16 +218,37 @@ rm -rf "$tmp"
 if [ -f "$DIR/kalshi_private_key.pem" ] && [ "${1:-}" != "--new-key" ]; then
   echo "Kalshi key already set up (run with --new-key to replace it)."
 else
-  echo
-  echo "Make a NEW Kalshi API key just for this Mac (Kalshi > Account > API keys), so you can revoke it on its own."
-  echo "Give it read + write access if you want Auto cash-out and auto-hedge (read-only is fine for alerts only)."
-  read -r -p "Paste its Key ID and press Enter: " KEYID </dev/tty
-  echo "Now paste its private key (the whole thing, BEGIN to END lines), then press Enter:"
-  pem=""
-  while IFS= read -r line </dev/tty; do
-    pem+="$line"$'\n'
-    [[ "$line" == *"-----END"* ]] && break
-  done
+  if [ "$GUI" = 1 ]; then
+    open "https://kalshi.com/account/profile" 2>/dev/null || true
+    say "Step 2: make a NEW Kalshi API key just for this Mac (so you can revoke it on its own).
+
+Kalshi just opened in your browser. Go to Account > API keys > Create key, with read + write access (needed for cash-outs and trades). Kalshi shows a Key ID and downloads a private key file.
+
+Click OK when you have both."
+    KEYID=$(ask "Paste the Key ID:" "")
+    keyfile=$(osascript - "$TITLE" <<'AS' || true
+on run argv
+  POSIX path of (choose file with prompt "Choose the private key file Kalshi downloaded (usually in Downloads):" default location (path to downloads folder))
+end run
+AS
+)
+    if [ -z "$keyfile" ] || ! grep -q "BEGIN" "$keyfile" 2>/dev/null; then
+      say "That file doesn't look like a private key (it should contain a BEGIN ... PRIVATE KEY line). Run setup again and choose the file Kalshi downloaded."
+      exit 1
+    fi
+    pem=$(cat "$keyfile")$'\n'
+  else
+    echo
+    echo "Make a NEW Kalshi API key just for this Mac (Kalshi > Account > API keys), so you can revoke it on its own."
+    echo "Give it read + write access if you want Auto cash-out and auto-hedge (read-only is fine for alerts only)."
+    read -r -p "Paste its Key ID and press Enter: " KEYID </dev/tty
+    echo "Now paste its private key (the whole thing, BEGIN to END lines), then press Enter:"
+    pem=""
+    while IFS= read -r line </dev/tty; do
+      pem+="$line"$'\n'
+      [[ "$line" == *"-----END"* ]] && break
+    done
+  fi
   printf '%s' "$pem" > "$DIR/kalshi_private_key.pem"
   chmod 600 "$DIR/kalshi_private_key.pem"
   if [ -f "$DIR/combo_settings.json" ]; then
@@ -118,14 +257,30 @@ else
     printf '{"kalshi_key_id": "%s", "auto_cash": false}\n' "$KEYID" > "$DIR/combo_settings.json"
   fi
   chmod 600 "$DIR/combo_settings.json"
+  if [ "$GUI" = 1 ] && [ -n "${keyfile:-}" ]; then
+    b=$(osascript - "$TITLE" <<'AS' || true
+on run argv
+  set r to display dialog "Your key is saved privately for the watcher. Move the downloaded key file to the Trash so there's no loose copy?" with title (item 1 of argv) buttons {"Keep it", "Move to Trash"} default button "Move to Trash"
+  return button returned of r
+end run
+AS
+)
+    [ "$b" = "Move to Trash" ] && osascript -e "tell application \"Finder\" to delete (POSIX file \"$keyfile\" as alias)" >/dev/null 2>&1 || true
+  fi
 fi
 
 new_pairing=0
 if [ ! -f "$DIR/watcher.json" ]; then
-  echo
-  echo "Already paired a Pi with your phone? Paste the pairing code from the phone"
-  echo "(planner Settings > Pi watcher) to keep the same ntfy topic and pairing. Or just press Enter for a new one."
-  read -r -p "Pairing code: " PAIR </dev/tty
+  if [ "$GUI" = 1 ]; then
+    PAIR=$(ask "Step 3: your phone's current pairing code, so your ntfy alerts keep working.
+
+On your iPhone: planner > Settings > Pi watcher, copy the code (with Handoff it pastes right here). Leave this empty to start a new pairing instead." "")
+  else
+    echo
+    echo "Already paired a Pi with your phone? Paste the pairing code from the phone"
+    echo "(planner Settings > Pi watcher) to keep the same ntfy topic and pairing. Or just press Enter for a new one."
+    read -r -p "Pairing code: " PAIR </dev/tty
+  fi
   if [ -n "$PAIR" ]; then
     "$PY" - "$PAIR" "$DIR/watcher.json" <<'PYEOF'
 import base64, json, sys
@@ -185,26 +340,22 @@ tail -n 4 "$LOG" 2>/dev/null || true
 
 out=$(pair_code); code=$(echo "$out" | sed -n 1p); hub=$(echo "$out" | sed -n 2p)
 topic=$("$PY" -c "import json;print(json.load(open('$DIR/watcher.json'))['topic'])")
-echo
-echo "== Done. The watcher and hub are running on this Mac. =="
+if grep -qE "Kalshi check failed|no Kalshi access" <(tail -n +$((start + 1)) "$LOG" 2>/dev/null); then
+  say "The watcher is installed, but Kalshi didn't accept its key yet:
+
+$(tail -n +$((start + 1)) "$LOG" | grep -E 'Kalshi check failed|no Kalshi access' | tail -1 | cut -c21-200)
+
+Check the Key ID and file, then run setup again and choose Use a different Kalshi key."
+fi
 if [ "$new_pairing" = 1 ]; then
-  echo
-  echo "In the ntfy app on your iPhone, tap + and subscribe to this topic (keep it private):"
-  echo "     $topic"
+  say "In the ntfy app on your iPhone, tap + and subscribe to this topic (keep it private):
+
+$topic"
 fi
-echo
-if [ -n "$hub" ]; then
-  echo "Mac hub: $hub (over Tailscale)"
-  echo "In the planner on your phone: Settings > Pi watcher, replace the code with this one, tap Save:"
-else
-  echo "No Tailscale address yet, so the phone can't use this Mac as its hub. Install Tailscale"
-  echo "(tailscale.com/download), sign in with the same account as your iPhone, then run: bash install_mac.sh --code"
-  echo "Meanwhile, this pairing code turns on alerts and auto cash-out (Settings > Pi watcher):"
-fi
-echo "     $code"
-echo
-echo "If macOS asks whether python3.12 may accept incoming connections, click Allow."
-echo
-echo "Keep the Mac plugged in with the lid OPEN (the screen can turn off; a closed lid puts it to sleep)."
-echo "After a restart or power cut, log in once and it starts again by itself."
-echo "Check on it any time:  bash install_mac.sh --status     Live log:  tail -f ~/combowatch/watcher.log"
+show_code "$code" "$hub"
+say "All set. Combo Watcher is running on this Mac.
+
+Keep it plugged in with the lid OPEN (the screen can go dark; a closed lid puts it to sleep). Moving it to another Wi-Fi network is fine: Tailscale keeps the same address.
+
+If macOS asks whether python3.12 may accept incoming connections, click Allow. After a restart, log in once and it starts by itself."
+[ "$GUI" = 1 ] || echo "Check on it any time:  bash install_mac.sh --status     Live log:  tail -f ~/combowatch/watcher.log"
