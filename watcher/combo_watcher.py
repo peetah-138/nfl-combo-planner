@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.58"
+WATCHER_VERSION = "2026.11.17.60"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -796,7 +796,7 @@ def start_hub(conf, E, odds=None):
             if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path):
                 return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}
             if method != "GET":
-                log("phone trade:", method, path)
+                log("phone order:" if "/accept" in path or path.endswith("/orders") else "phone request:", method, path)
             try:
                 return {"json": E.kalshi_send(method, path, req.get("body"), req.get("params") or None)}
             except PermissionError as err:
@@ -935,13 +935,17 @@ def main():
         log("no Kalshi access; waiting 10 minutes")
         time.sleep(600)
         return 1
-    bets, balance, note = E.fetch_account(max_age=0, every_league=True)
-    if bets is None:                                     # a real call, not just "the key file exists"
-        push(conf, f"The watcher couldn't read your Kalshi account: {note or 'no answer'}. Check its key "
-                   "(run its installer with --new-key).", priority="high")
-        log("Kalshi check failed:", note)
-        time.sleep(600)
-        return 1
+    note, tries = None, 0
+    while True:                                          # a real call, not just "the key file exists"
+        bets, balance, note = E.fetch_account(max_age=0, every_league=True)
+        if bets is not None:
+            break
+        tries += 1
+        log(f"Kalshi check failed (try {tries}):", note)
+        if tries == 4:                                   # about 2 minutes: worth telling you
+            push(conf, f"The watcher couldn't read your Kalshi account: {note or 'no answer'}. It keeps "
+                       "trying; if this lasts, check its key (run its installer with --new-key).", priority="high")
+        time.sleep(min(30 * tries, 300))                 # usually just the network settling after a restart
     log(f"Kalshi OK: {sum(1 for b in bets if b['status'] == 'pending')} live combos, balance ${balance or 0:.2f}")
     import threading
     lock = threading.Lock()
