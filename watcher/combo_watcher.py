@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.16.39"
+WATCHER_VERSION = "2026.11.16.40"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap")
@@ -139,10 +139,16 @@ def pause(conf, E):
 
 def heartbeat(conf, E, note=""):
     """A small status message the phone reads to show the watcher is alive."""
-    live = sum(1 for h in (E.MINE.get("hold") or {}).values() if h.get("left", 1) > 0)
+    holds = E.MINE.get("hold") or {}
+    live = sum(1 for h in holds.values() if h.get("left", 1) > 0)
+    playing = sum(1 for h in holds.values() if any(lv for _, lv, _ in h.get("legs_left") or []))
+    upcoming = [ts for h in holds.values() for _, lv, ts in h.get("legs_left") or [] if not lv and time.time() < ts < 9e12]
+    acts = (E.MINE.get("plan") or {}).get("acts") or {}
+    cash = [holds[t]["label"] for t, f in acts.items() if f and t in holds]
     body = json.dumps({"at": int(time.time()), "v": WATCHER_VERSION, "engine": E.VERSION, "live": live,
                        "orders": sum(len(v) for v in (E.MINE.get("tp") or {}).values()), "note": note,
-                       "paused": bool(conf.get("paused")), "waiting": conf.get("waiting") or ""})
+                       "paused": bool(conf.get("paused")), "waiting": conf.get("waiting") or "",
+                       "playing": playing, "next": int(min(upcoming)) if upcoming else None, "cash": cash[:4]})
     try:
         requests.post(f"{NTFY}/{conf['topic']}-hb", data=body.encode(), timeout=10,
                       headers={"Cache": "yes"})

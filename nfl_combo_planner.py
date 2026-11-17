@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.39"
+VERSION = "2026.11.16.40"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -6109,6 +6109,238 @@ def settings_page(all_games, days, counts):
     return result["go"]
 
 
+
+# ================================================================ share-sheet check and widget
+def shared_ticker(text):
+    """The combo's market ticker from a Kalshi share link (its marketTicker), or from any text."""
+    m = re.search(r"marketTicker=(KXMVE[A-Z0-9]*-[A-Z0-9]+-[A-Z0-9]+)", text or "", re.I) or \
+        re.search(r"\b(KXMVE[A-Z0-9]*-[A-Z0-9]+-[A-Z0-9]+)\b", text or "", re.I)
+    return m.group(1).upper() if m else None
+
+
+def check_combo(ticker, stake=None):
+    """Price a combo you built in the Kalshi app before buying: each pick's chance from its own
+    Kalshi market, the fair payout, and Kalshi's real quote for your stake. Nothing is bought."""
+    import time
+    stake = float(stake or CFG["stake"])
+    cache = load_json(LEGS_CACHE, {})
+    legs = combo_legs(ticker, cache)
+    save_json(LEGS_CACHE, cache)
+    if not legs:
+        return {"error": "Kalshi didn't return this combo's picks. Check the link and try again."}
+    picks, chances, asks = [], [], []
+    for l in legs:
+        try:
+            r = requests.get(f"{KALSHI}/markets/{l['ticker']}", timeout=15)
+            m = r.json().get("market", {}) if r.ok else {}
+        except (requests.RequestException, ValueError):
+            m = {}
+        p, ask = live_price(m), price(m)
+        if p is None:
+            return {"error": f"Couldn't get a price for {l['ticker']}."}
+        name = m.get("yes_sub_title") or m.get("title") or l["ticker"]
+        if l.get("side", "yes") == "no":
+            p, ask, name = 1 - p, (1 - live_bid(m)) if live_bid(m) is not None else None, "Not: " + name
+        if m.get("result") in ("yes", "no"):
+            won = (m["result"] == "yes") == (l.get("side", "yes") == "yes")
+            p, ask = (1.0, 1.0) if won else (0.0, 0.0)
+        picks.append((name, p))
+        chances.append(p)
+        asks.append(ask or p)
+    fair = math.prod(chances)
+    if fair <= 0:
+        return {"error": "A pick in this combo has already lost."}
+    out = {"ticker": ticker, "picks": picks, "stake": stake, "fair_pays": stake / fair, "chance": fair}
+    if can_trade():
+        try:
+            clear_my_rfqs(ticker)
+            rfq = kalshi_send("POST", "/communications/rfqs",
+                              {"market_ticker": ticker, "target_cost_dollars": f"{stake:.2f}",
+                               "rest_remainder": False, "replace_existing": False})["id"]
+            best, start = None, time.time()
+            while time.time() - start < 20:
+                time.sleep(1.5)
+                qs = kalshi_send("GET", "/communications/quotes",
+                                 params={"rfq_id": rfq, "rfq_user_filter": "self"}).get("quotes", [])
+                for q in qs:
+                    if q.get("status") == "open" and q.get("no_bid_dollars"):
+                        y = 1 - float(q["no_bid_dollars"])
+                        if 0 < y < 1 and (best is None or y < best):
+                            best = y
+                if best and time.time() - start > 5:
+                    break
+            kalshi_send("DELETE", f"/communications/rfqs/{rfq}")
+            if best:
+                out["pays"] = stake / best
+                note_buy_ratio(len(legs), out["pays"] / (stake / math.prod(asks)))
+        except (RuntimeError, PermissionError, requests.RequestException, KeyError) as err:
+            out["quote_error"] = str(err)[:140]
+    if out.get("pays"):
+        out["pct"] = out["pays"] / out["fair_pays"]
+        out["ev"] = stake * (out["pct"] - 1)
+    return out
+
+
+def check_html(c):
+    """The share-sheet answer, as a small page."""
+    e = html.escape
+    head = (f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' "
+            f"content='width=device-width,initial-scale=1'><style>{CSS}</style></head><body>")
+    if "error" in c:
+        return themed(head + f"<header><h1>Combo check</h1></header><section><div class='empty'>{e(c['error'])}"
+                      "</div></section></body></html>")
+    if c.get("pct"):
+        ok = c["pct"] >= CFG["accept_pct"] / 100
+        verdict = (f"<span class='verdict {'ok' if ok else 'no'}'>{c['pct']:.0%} of fair · "
+                   f"{'at or above' if ok else 'below'} your {CFG['accept_pct']}% cut-off</span>")
+        top = (f"<div class='row'><b>Kalshi pays {money(c['pays'])}</b><b class='{'pos' if c['ev'] >= 0 else 'neg'}'>"
+               f"{signed_money(c['ev'])}</b></div><div class='muted' style='font-size:13px'>expected per "
+               f"{money(c['stake'])} bet · fair payout {money(c['fair_pays'])}</div><div style='margin-top:8px'>{verdict}</div>")
+    else:
+        why = c.get("quote_error") or ("Connect your Kalshi account in the planner's Settings to get Kalshi's quote."
+                                       if not can_trade() else "No quote came in. Try again in a minute.")
+        top = (f"<div class='row'><b>Fair payout {money(c['fair_pays'])}</b></div><div class='muted' "
+               f"style='font-size:13px'>for {money(c['stake'])}. {e(why)}</div>")
+    rows = "".join(f"<div class='row' style='padding:6px 0;border-top:1px solid var(--line)'><span>{e(n)}</span>"
+                   f"<span class='muted'>{p:.0%}</span></div>" for n, p in c["picks"])
+    return themed(head + f"<header><h1>Combo check</h1><div class='sub'>{len(c['picks'])} picks · "
+                  f"{c['chance']:.1%} chance</div></header><section><div class='game'>{top}</div>"
+                  f"<h2>Picks</h2><div class='game'>{rows}</div><div class='muted' style='font-size:12px;"
+                  "margin:10px 4px'>Fair uses each pick's own Kalshi price. Nothing was bought.</div>"
+                  "</section></body></html>")
+
+
+HELPER_CHECK = r"""# Combo check: share a combo from the Kalshi app to this script (Pythonista's share sheet)
+# and it shows Kalshi's quote next to the fair payout. Nothing is bought.
+# Written by the planner; it updates this file itself.
+import os, importlib.util, ui
+try:
+    import appex, clipboard
+except ImportError:
+    appex = clipboard = None
+DOCS = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("combo_engine_check", os.path.join(DOCS, "combo_planner_engine.py"))
+E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.set_league("nfl")
+text = ""
+if appex and appex.is_running_extension():
+    text = appex.get_url() or appex.get_text() or " ".join(appex.get_urls() or [])
+elif clipboard:
+    text = clipboard.get() or ""
+v = ui.WebView(name="Combo check")
+v.load_html(E.themed("<html><body style='font:17px -apple-system;padding:24px'>Asking Kalshi for a quote… (up to 20 seconds)</body></html>"))
+v.present("sheet")
+t = E.shared_ticker(text)
+v.load_html(E.check_html(E.check_combo(t) if t else {"error": "Share a combo from the Kalshi app (Share, then Run Pythonista Script, then Combo check), or copy its link and run this script."}))
+"""
+
+HELPER_WIDGET = r"""# Combo widget: your combos at a glance (Pythonista > Settings > Today Widget > pick this script).
+# Reads what your Pi publishes, so it stays light. Written by the planner; it updates this file itself.
+import os, json, time, base64, hmac, hashlib
+import ui, requests
+try:
+    import appex
+except ImportError:
+    appex = None
+DOCS = os.path.dirname(os.path.abspath(__file__))
+NTFY = "https://ntfy.sh"
+
+
+def load(name):
+    try:
+        with open(os.path.join(DOCS, name), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def unseal(secret, blob):
+    try:
+        data = base64.urlsafe_b64decode(blob.encode())
+        nonce, mac, ct = data[:16], data[16:48], data[48:]
+        if not hmac.compare_digest(mac, hmac.new(secret.encode(), nonce + ct, hashlib.sha256).digest()):
+            return None
+        key = hashlib.sha256((secret + "|seal").encode()).digest()
+        stream = b"".join(hashlib.sha256(key + nonce + i.to_bytes(4, "big")).digest() for i in range(len(ct) // 32 + 1))
+        return json.loads(bytes(a ^ b for a, b in zip(ct, stream)))
+    except (ValueError, TypeError):
+        return None
+
+
+def latest(topic, since):
+    try:
+        r = requests.get(f"{NTFY}/{topic}/json", params={"poll": "1", "since": since}, timeout=8)
+        lines = [json.loads(x) for x in r.text.splitlines() if x.strip()] if r.ok else []
+        return lines[-1]["message"] if lines else None
+    except Exception:
+        return None
+
+
+def money(x):
+    return ("+" if x >= 0 else "-") + "$" + (f"{abs(x):,.2f}" if abs(x) < 100 else f"{abs(x):,.0f}")
+
+
+code = (load("combo_keys.json").get("watcher_code") or load("combo_settings.json").get("watcher_code") or "").strip()
+lines = []
+if not code:
+    lines = ["Pair your Pi watcher in the planner's", "Settings to see your combos here."]
+else:
+    conf = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)).decode())
+    hb = json.loads(latest(conf["topic"] + "-hb", "10m") or "{}")
+    rep = unseal(conf["secret"], latest(conf["topic"] + "-report", "24h") or "") or {}
+    if hb:
+        age = int((time.time() - hb.get("at", 0)) / 60)
+        state = "Pi ✓" if age < 3 else f"Pi quiet {age} min"
+        lines.append(f"{state} · {hb.get('live', 0)} riding · {hb.get('playing', 0)} playing now")
+        if hb.get("cash"):
+            lines.append("💰 Cash out: " + ", ".join(hb["cash"][:3]))
+        elif hb.get("next"):
+            lines.append("Next game " + time.strftime("%a %-I:%M %p", time.localtime(hb["next"])))
+        else:
+            lines.append("Nothing needs you")
+        if hb.get("paused"):
+            lines.append("⏸ Auto cash-out paused")
+    else:
+        lines.append("No word from the Pi in 10+ minutes")
+    st = rep.get("stats") or {}
+    w = st.get("week") or [0, 0, 0]
+    if w[0]:
+        lines.append(f"7 days: {money(w[2] - w[1])} on ${w[1]:,.0f}")
+v = ui.View(frame=(0, 0, 320, 24 + 22 * len(lines)))
+for i, t in enumerate(lines):
+    lab = ui.Label(frame=(12, 10 + 22 * i, 300, 22), text=t, font=("<system-bold>" if i == 0 else "<system>", 15))
+    lab.flex = "W"
+    v.add_subview(lab)
+b = ui.Button(frame=v.bounds, flex="WH")
+b.action = lambda s: __import__("webbrowser").open("pythonista3://nfl_combo_planner?action=run")
+v.add_subview(b)
+if appex and appex.is_running_extension():
+    appex.set_widget_view(v)
+else:
+    v.present("sheet")
+"""
+
+HELPERS = {"combo_check.py": HELPER_CHECK, "combo_widget.py": HELPER_WIDGET}
+
+
+def write_helpers():
+    """Keep the share-sheet and widget scripts next to the planner, current with this version."""
+    for name, src in HELPERS.items():
+        path = os.path.join(HERE, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read() == src:
+                    continue
+        except OSError:
+            pass
+        try:
+            with open(path + ".new", "w", encoding="utf-8") as f:
+                f.write(src)
+            os.replace(path + ".new", path)
+        except OSError:
+            pass
+
+
 # ================================================================ main
 RUN_OPTS = {}
 
@@ -6141,6 +6373,8 @@ def reopen_settings(webview):
 
 def main():
     set_league(load_json(LEAGUE_FILE, {}).get("league", LEAGUE["code"]))
+    if in_pythonista():
+        write_helpers()
     loading(f"Loading {'the ' + LG()['name'].lower() if by_day() else 'this week'}'s games from Kalshi…")
     RUN_OPTS["latest"] = latest_version()
     all_games, days, sunday = week_games(fetch_markets())
