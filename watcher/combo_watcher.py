@@ -1,4 +1,4 @@
-# combo_watcher.py: the Kalshi combo planner's always-on watcher, for a Raspberry Pi.
+# combo_watcher.py: the Kalshi combo planner's always-on watcher, for a Raspberry Pi or a Mac.
 #
 # Runs the same engine as the phone planner, with no screens. Every refresh (15 s by default):
 #   - reads your live combos in every sport, the scores, and Kalshi's in-game prices,
@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.50"
+WATCHER_VERSION = "2026.11.17.51"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -273,15 +273,15 @@ def main():
     if conf.get("paused"):
         E.CFG["auto_sell"] = False
     if not E.can_trade():
-        push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the Pi.",
+        push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the watcher.",
              priority="high")
         log("no Kalshi access; waiting 10 minutes")
         time.sleep(600)
         return 1
     bets, balance, note = E.fetch_account(max_age=0, every_league=True)
     if bets is None:                                     # a real call, not just "the key file exists"
-        push(conf, f"The Pi couldn't read your Kalshi account: {note or 'no answer'}. Check its key "
-                   "(bash install_pi.sh --new-key).", priority="high")
+        push(conf, f"The watcher couldn't read your Kalshi account: {note or 'no answer'}. Check its key "
+                   "(run its installer with --new-key).", priority="high")
         log("Kalshi check failed:", note)
         time.sleep(600)
         return 1

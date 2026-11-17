@@ -48,6 +48,20 @@ Open the link it prints and sign in. Install Tailscale on your Mac and iPhone wi
 Then `ssh <you>@combowatch` works from anywhere, with nothing opened to the internet. In the Tailscale
 admin page, turn off key expiry for the Pi so it stays connected.
 
+## Optional: the watcher on a Mac (instead of a Pi)
+
+A Mac that stays plugged in can run the same watcher. In Terminal:
+
+```
+curl -fsSLO https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/watcher/install_mac.sh
+bash install_mac.sh
+```
+
+It asks for a new Kalshi API key just for the Mac, and for your phone's pairing code (Settings > Pi watcher)
+so the existing ntfy topic keeps working. It runs in the background whenever you're logged in, restarts
+itself, keeps the Mac awake while plugged in (leave the lid open), and only installs updates your phone approved.
+`bash install_mac.sh --status` shows whether it's running. Run only one watcher at a time (Pi or Mac).
+
 ## Files
 
 - `nfl_combo_planner.py`: the planner (installed on the phone as `combo_planner_engine.py`).
