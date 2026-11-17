@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.56"
+VERSION = "2026.11.17.57"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -5150,7 +5150,8 @@ def _watcher_line():
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
         extra = (" · ⏸ auto cash-out paused (save Settings with it on to resume)" if hb.get("paused") else "") + \
                 (f" · waiting for you to update this phone to {hb['waiting']}" if hb.get("waiting") else "")
-        return f"<div class='wline'>🖥 Pi watcher on · checked {t}{extra}</div>"
+        who = hb.get("host") or "Pi"              # older watchers don't say; only the Pi existed then
+        return f"<div class='wline'>{'💻' if who == 'Mac' else '🖥'} {who} watcher on · checked {t}{extra}</div>"
     last = ""
     if hb and hb.get("at"):
         t = dt.datetime.fromtimestamp(hb["at"])

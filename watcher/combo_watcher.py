@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.56"
+WATCHER_VERSION = "2026.11.17.57"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -161,6 +161,7 @@ def heartbeat(conf, E, note="", err=""):
                        "orders": sum(len(v) for v in (E.MINE.get("tp") or {}).values()), "note": note,
                        "paused": bool(conf.get("paused")), "waiting": conf.get("waiting") or "",
                        "playing": playing, "next": int(min(upcoming)) if upcoming else None, "cash": cash[:4],
+                       "host": "Mac" if sys.platform == "darwin" else "Pi",
                        "err": err[:160]})
     try:
         requests.post(f"{NTFY}/{conf['topic']}-hb{'2' if conf.get('role') == 'backup' else ''}", data=body.encode(), timeout=10,
