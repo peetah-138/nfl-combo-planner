@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.67"
+WATCHER_VERSION = "2026.11.17.68"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -751,7 +751,7 @@ function mark(t){if(!t)return;document.querySelectorAll('#cwbar button,#cwside n
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
   var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
 async function newPage(v){              /* swap the page in place: no white flash, no reload */
-  var r=await fetch('/app?frag=1',{credentials:'same-origin',headers:{'X-CW':TOK}});
+  var r=await fetch('/app/classic?frag=1',{credentials:'same-origin',headers:{'X-CW':TOK}});
   var h=await r.text();V=v;
   if(window.__load){window.__load(h);}else{document.open();document.write(h);document.close();}
   if(!wrap.isConnected)document.body.appendChild(wrap);
@@ -861,6 +861,322 @@ PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name=
             "<meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>"
             "<meta name='apple-mobile-web-app-title' content='Combos'><meta name='theme-color' content='#000000'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>")
+
+
+SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combos">
+<meta name="theme-color" content="#0b0d12"><title>Combo Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#6b7488;
+ --yes:#16c784;--yesbg:rgba(22,199,132,.13);--no:#ff5c6c;--nobg:rgba(255,92,108,.13);--acc:#4c8dff;--accbg:rgba(76,141,255,.15);
+ --live:#ff9f1c;--livebg:rgba(255,159,28,.14);--r:14px}
+@media (prefers-color-scheme:light){:root{--bg:#f6f7fa;--panel:#fff;--panel2:#f2f4f8;--hover:#eef1f7;--line:#e4e7ee;--ink:#0e1320;--sub:#4c5568;--mute:#8a93a6;
+ --yesbg:rgba(22,170,110,.12);--yes:#0f9e64;--no:#e5394b;--nobg:rgba(229,57,75,.1);--acc:#2468ff;--accbg:rgba(36,104,255,.1);--live:#d97706;--livebg:rgba(217,119,6,.12)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1,"cv11" 1}
+button{font:inherit;color:inherit;cursor:pointer}a{color:var(--acc);text-decoration:none}
+.top{position:sticky;top:0;z-index:20;height:62px;display:flex;align-items:center;gap:22px;padding:0 24px;padding-top:env(safe-area-inset-top);
+ border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;letter-spacing:-.02em;white-space:nowrap}
+.mk{width:28px;height:28px;border-radius:8px;background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff);display:grid;place-items:center;flex:none}
+.nav{display:flex;gap:2px}.nav button{border:0;background:none;padding:8px 14px;border-radius:9px;color:var(--sub);font-weight:600}
+.nav button.on{color:var(--ink);background:var(--panel2)}.nav button:hover{color:var(--ink)}
+.tr{margin-left:auto;display:flex;align-items:center;gap:20px}
+.ts{text-align:right;line-height:1.2}.ts span{display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.ts b{font-size:15px}
+.status{display:flex;align-items:center;gap:7px;color:var(--sub);font-size:12.5px;font-weight:600;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg)}.dot.off{background:var(--no);box-shadow:0 0 0 4px var(--nobg)}
+.cta{border:0;background:var(--acc);color:#fff;border-radius:10px;padding:9px 14px;font-weight:700;white-space:nowrap}
+.cta:hover{filter:brightness(1.08)}
+.menu{position:relative}.menu>button{border:1px solid var(--line);background:var(--panel);border-radius:10px;width:38px;height:38px;color:var(--sub)}
+.dd{position:absolute;right:0;top:46px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:200px;box-shadow:0 12px 40px rgba(0,0,0,.35);display:none}
+.dd.open{display:block}.dd button,.dd a{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 12px;border-radius:8px;color:var(--ink);font-weight:500}
+.dd button:hover,.dd a:hover{background:var(--hover)}
+main{max-width:1520px;margin:0 auto;padding:22px 24px 60px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:var(--panel);color:var(--sub);border-radius:99px;padding:6px 12px;font-weight:600;font-size:12.5px;white-space:nowrap}
+.chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}.chip:hover:not(.on){color:var(--ink)}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:6px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:15px 17px;min-width:0}
+.kpi span{color:var(--mute);font-size:12px;font-weight:600;white-space:nowrap}.kpi b{display:block;font-size:25px;letter-spacing:-.03em;margin-top:3px;font-weight:700;white-space:nowrap}
+.kpi small{color:var(--sub);font-weight:500;font-size:13px}
+.up{color:var(--yes)}.down{color:var(--no)}.m{color:var(--mute)}.s{color:var(--sub)}
+h2{font-size:12.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.07em;margin:24px 0 10px;font-weight:700;display:flex;align-items:center;gap:8px}
+h2 .n{background:var(--panel2);color:var(--ink);border-radius:6px;padding:1px 7px;font-size:12px;letter-spacing:0}
+h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
+.alert{display:flex;align-items:center;gap:16px;background:linear-gradient(90deg,var(--yesbg),transparent 75%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 40%,transparent);border-radius:var(--r);padding:15px 17px;margin-bottom:10px}
+.alert .ic{width:38px;height:38px;border-radius:10px;background:var(--yesbg);color:var(--yes);display:grid;place-items:center;font-size:18px;flex:none}
+.alert b{font-size:15px}.alert p{margin:2px 0 0;color:var(--sub)}
+.btn{border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
+.btn:hover{background:var(--hover)}.btn.yes{background:var(--yes);color:#04150c;border-color:transparent}.btn.acc{background:var(--acc);color:#fff;border-color:transparent}
+.btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
+.tbl{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.thead,.trow{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(200px,2fr) 82px 82px 110px 130px 92px;align-items:center;gap:12px;padding:0 16px}
+.thead{height:40px;background:var(--panel2);color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
+.trow{min-height:66px;border-bottom:1px solid var(--line);cursor:pointer}.trow:hover{background:var(--hover)}
+.tbl>div:last-child{border-bottom:0}
+.num{text-align:right;font-weight:600}.name b{font-size:14.5px;display:block}.name span{color:var(--sub);font-size:12.5px}
+.legs{display:flex;gap:4px;flex-wrap:wrap}.leg{font-size:11.5px;font-weight:700;padding:3px 7px;border-radius:6px;background:var(--panel2);color:var(--sub);white-space:nowrap}
+.leg.won{background:var(--yesbg);color:var(--yes)}.leg.live{background:var(--livebg);color:var(--live)}.leg.lost{background:var(--nobg);color:var(--no);text-decoration:line-through}
+.bar{height:5px;border-radius:9px;background:var(--panel2);overflow:hidden;width:84px;margin:6px 0 0 auto}.bar i{display:block;height:100%;background:var(--acc)}
+.verdict{font-size:11px;font-weight:800;padding:4px 8px;border-radius:6px;letter-spacing:.03em;justify-self:end}
+.verdict.hold{background:var(--accbg);color:var(--acc)}.verdict.sell,.verdict.won{background:var(--yesbg);color:var(--yes)}.verdict.out,.verdict.lost{background:var(--nobg);color:var(--no)}.verdict.cashed{background:var(--panel2);color:var(--sub)}
+.offer b{display:block}.offer small{color:var(--mute);font-size:11.5px;font-weight:500}
+.exp{background:var(--panel2);border-bottom:1px solid var(--line);padding:6px 16px 14px}
+.lrow{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.lrow:last-of-type{border-bottom:0}.lrow .who b{font-weight:600}.lrow .who span{color:var(--sub);font-size:12.5px}
+.mark{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:800;background:var(--panel);color:var(--mute);border:1px solid var(--line)}
+.mark.won{background:var(--yes);color:#fff;border:0}.mark.lost{background:var(--no);color:#fff;border:0}.mark.live{border:2px solid var(--live);background:var(--livebg)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:12px}.acts .s{font-size:12.5px;margin-right:auto}
+.side .card,.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:15px 17px;margin-bottom:14px}
+.card h3{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between;align-items:center}.card h3 span{color:var(--mute);font-size:12px;font-weight:600}
+.g{display:grid;grid-template-columns:1fr auto;gap:1px 10px;padding:10px 0;border-top:1px solid var(--line)}.g:first-of-type{border-top:0;padding-top:2px}
+.g .t{font-weight:600}.g .x{color:var(--sub);font-size:12.5px}.g .e{grid-row:span 2;align-self:center;text-align:right;font-size:12px;color:var(--sub)}.g .e b{display:block;color:var(--ink);font-size:13.5px}
+.tag{font-size:10px;font-weight:800;padding:2px 6px;border-radius:5px;background:var(--livebg);color:var(--live);margin-left:6px;vertical-align:1px;letter-spacing:.03em}
+.mini{display:flex;justify-content:space-between;padding:6px 0;color:var(--sub)}.mini b{color:var(--ink)}
+.empty{padding:40px 20px;text-align:center;color:var(--sub)}.empty b{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}
+.skel{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:10px}
+@keyframes sk{to{background-position:-200% 0}}
+/* build */
+.board{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.mrow{display:grid;grid-template-columns:96px minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.mrow:last-child{border-bottom:0}.mrow .when{color:var(--sub);font-size:12px;font-weight:600}
+.pickbtn{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:9px 11px;text-align:left;min-width:0}
+.pickbtn:hover{border-color:color-mix(in srgb,var(--acc) 50%,var(--line))}
+.pickbtn.on{border-color:var(--acc);background:var(--accbg)}
+.pickbtn .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pickbtn .short{display:none}.pickbtn .pr{text-align:right;line-height:1.15;flex:none}
+.pickbtn .pr b{display:block;font-size:14px}.pickbtn .pr span{font-size:11px;color:var(--mute)}
+.val{font-size:10px;font-weight:800;color:var(--yes);background:var(--yesbg);padding:1px 5px;border-radius:4px;margin-left:5px}
+.slip{position:sticky;top:84px}
+.slip .pick{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.slip .pick button{border:0;background:none;color:var(--mute);font-size:16px;padding:0 4px}
+.sum{display:flex;justify-content:space-between;padding:6px 0;color:var(--sub)}.sum b{color:var(--ink)}
+.big{font-size:28px;font-weight:800;letter-spacing:-.03em}
+.ccard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
+.ccard .hd{display:flex;justify-content:space-between;align-items:flex-start}.ccard .hd b{font-size:22px;letter-spacing:-.02em}
+.tier{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);border-radius:9px;padding:7px 9px;font:600 14px Inter;text-align:right}
+/* results */
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+.hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
+ padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+.modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.sheet h3{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}.sheet p{color:var(--sub);margin:0 0 18px}.sheet .row{display:flex;gap:10px;justify-content:flex-end}
+.spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.tabbar{display:none}
+/* phone */
+@media (max-width:900px){
+ .top{height:auto;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;gap:10px}
+ .nav,.status,.cta,.ts.wk{display:none}.tr{gap:12px}
+ main{padding:14px 14px calc(96px + env(safe-area-inset-bottom))}
+ .grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr);gap:10px}.kpi:first-child{grid-column:span 2}
+ .kpi b{font-size:22px}.thead{display:none}
+ .trow{grid-template-columns:1fr auto;grid-template-areas:"name ver" "legs legs" "nums nums";gap:8px;padding:14px;min-height:0}
+ .trow .name{grid-area:name}.trow .legs{grid-area:legs}.trow .verdict{grid-area:ver}.trow .numwrap{grid-area:nums;display:grid!important;grid-template-columns:repeat(4,1fr);gap:6px}
+ .trow .numwrap>div{text-align:left!important}.trow .numwrap>div::before{content:attr(data-l);display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+ .bar{margin-left:0}
+ .alert{flex-wrap:wrap}.alert .acts2{width:100%;display:flex;gap:8px}.alert .acts2 .btn{flex:1}
+ .mrow{grid-template-columns:1fr 1fr;grid-template-areas:"when when" "a b"}.mrow .when{grid-area:when}
+ .slip{position:static}
+ .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin-left:-14px;margin-right:-14px;padding:0 14px}.chips::-webkit-scrollbar{display:none}
+ h2{flex-wrap:wrap}h2 .r{margin-left:0;width:100%;order:3}
+ .pickbtn .full{display:none}.pickbtn .short{display:inline}
+ .hrow{grid-template-columns:1fr auto auto;grid-template-areas:"p p p" "w n v"}.hrow .hp{grid-area:p}
+ .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:30;justify-content:space-around;padding:7px 6px calc(6px + env(safe-area-inset-bottom));
+  background:color-mix(in srgb,var(--bg) 80%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px);border-top:1px solid var(--line)}
+ .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
+ .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
+}
+@media (min-width:901px){.numwrap{display:contents}}
+</style></head><body>
+<header class="top">
+ <div class="brand"><div class="mk"><svg width="16" height="16" viewBox="0 0 24 24"><path d="M4 15.5l4.2-4.2 3.3 3.3L20 6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>Combo Hub</div>
+ <nav class="nav" id="nav"></nav>
+ <div class="tr">
+  <div class="ts"><span>Balance</span><b id="bal">—</b></div>
+  <div class="ts wk"><span>Last 7 days</span><b id="wk">—</b></div>
+  <div class="status" id="st"><span class="dot"></span>Mac · live</div>
+  <button class="cta" onclick="go('build')">＋ Build combos</button>
+  <div class="menu"><button onclick="menu()" aria-label="More">⋯</button><div class="dd" id="dd">
+   <a href="/app/classic">Planner settings</a><a href="/app/classic">Classic screens</a>
+   <button id="macset" onclick="admin()" style="display:none">Mac settings</button>
+   <button onclick="location.reload()">Reload</button></div></div>
+ </div>
+</header>
+<main id="main"></main>
+<nav class="tabbar" id="tabbar"></nav>
+<div class="toast" id="toast"></div>
+<div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
+<script>
+const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
+const $=s=>document.querySelector(s);
+const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}return r.json();});
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
+const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
+const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
+const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
+const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
+ build:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+ results:'<svg viewBox="0 0 24 24"><path d="M5 19v-7M12 19V6M19 19v-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+ more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
+const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
+function toast(m,ms){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
+function menu(){$('#dd').classList.toggle('open');}
+document.addEventListener('click',e=>{if(!e.target.closest('.menu'))$('#dd').classList.remove('open');});
+function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'));}
+function modal(h){$('#sheet').innerHTML=h;$('#modal').classList.add('on');}
+function closeModal(){$('#modal').classList.remove('on');}
+$('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
+function chrome(){const tabs=[['live','Live'],['build','Build'],['results','Results']];
+ $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
+ $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('')+`<button onclick="menuSheet()">${SVG.more}More</button>`;
+ if(LOCAL)$('#macset').style.display='';}
+function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
+ <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
+function go(v){S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
+function render(){({live:renderLive,build:renderBuild,results:renderResults}[S.view]||renderLive)();}
+async function load(v,fresh){try{
+ if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
+ if(v==='build'){S.build=await api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':''));}
+ if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
+ if(S.view===v)render();}catch(e){if(e)console.log(e);}}
+function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
+ if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
+function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
+// ---------------- LIVE
+function legCls(l){return l.res==='yes'?'won':l.res==='no'?'lost':l.state==='live'?'live':'';}
+function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';return `<span class="leg ${c}">${c==='won'?'✓ ':c==='live'?'● ':''}${esc(short(l.name))}${sc}</span>`;}
+function short(n){n=String(n||'');const p=n.split(' ');return p.length>1&&n.length>9?p.slice(-1)[0]:n;}
+function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
+ if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
+function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
+ const up=c.legs.find(l=>!l.res&&l.starts);return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
+function renderLive(){const d=S.live;const m=$('#main');
+ if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
+ if(d.error){m.innerHTML=`<div class="card empty"><b>Couldn't load your combos</b>${esc(d.error)}</div>`;return;}
+ const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');
+ const sports=[...new Set(cs.flatMap(c=>c.sports))];
+ const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending':c.group==='pending'&&c.sports.includes(S.filter))
+   .sort((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort);
+ const todo=cs.filter(c=>(d.todo||[]).includes(c.t));
+ m.innerHTML=`<div class="grid"><div>
+ <div class="kpis">
+  <div class="kpi"><span>Riding</span><b>${d.riding} <small>combos</small></b></div>
+  <div class="kpi"><span>Staked</span><b>${money(d.staked)}</b></div>
+  <div class="kpi"><span>Chance one hits</span><b>${pct(d.chance_one)}</b></div>
+  <div class="kpi"><span>Cash-out value now</span><b>${money(d.cash_now)}</b></div>
+  <div class="kpi"><span>Biggest payout</span><b class="up">${money(d.best)}</b></div></div>
+ ${todo.length?`<h2>Needs a look <span class="n">${todo.length}</span></h2>`+todo.map(c=>`<div class="alert"><div class="ic">⚡</div><div style="flex:1;min-width:0"><b>${esc(c.label)} · worth cashing out</b>
+   <p>Kalshi offers ${money(c.offer)} (you paid ${money(c.cost)}). Holding is worth about ${money(c.hold_value)} to you.</p></div>
+   <div class="acts2" style="display:flex;gap:8px"><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out ${money(c.offer)}</button></div></div>`).join(''):''}
+ <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.map(s=>[s,(ICON[s]||'')+' '+s.toUpperCase()]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
+ <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
+ ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
+ </div><aside class="side">${sideLive(d)}</aside></div>`;}
+function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
+ const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
+ return `<div class="trow" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
+  <div class="legs">${c.legs.map(legTag).join('')}</div>
+  <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
+  <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
+  <div class="num offer" data-l="Offer">${offer}</div></div><div class="verdict ${vc}">${vt}</div></div>
+  ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
+   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
+   <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
+   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
+    ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
+    <button class="btn" ${S.busy[c.t]?'disabled':''} onclick="event.stopPropagation();ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
+    ${c.offer_real?`<button class="btn yes" onclick="event.stopPropagation();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
+function tog(t){S.open[t]=!S.open[t];renderLive();}
+function sideLive(d){const gs=d.games||[];const r=d.risk;
+ return `<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
+  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
+  <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
+ ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
+ <div class="card"><h3>Locked in <span>today</span></h3><div class="mini">Won or cashed<b class="up">${money(d.locked)}</b></div><div class="mini">Holding is worth<b>${money(d.hold_value)}</b></div></div>`;}
+async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
+ if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
+function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
+ modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
+ <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" onclick="doSell('${t}')">Cash out</button></div>`);}
+async function doSell(t){$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);load('live',true);}
+async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();api('/app/api/act',{a:'hedgego',t:'${t}'}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
+async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
+// ---------------- BUILD
+function renderBuild(){const d=S.build;const m=$('#main');
+ const lgs=(d&&d.leagues)||[['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
+ const chipRow=`<div class="chips" style="margin-bottom:14px">${lgs.map(([k,n,i])=>`<button class="chip ${S.lg===k?'on':''}" onclick="setLg('${k}')">${i} ${n}</button>`).join('')}</div>`;
+ if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+skel(7)+'</div><div class="skel" style="height:300px"></div></div>';return;}
+ m.innerHTML=chipRow+`<div class="grid"><div>
+  <h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
+  <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
+   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
+  <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
+  <div class="cgrid">${d.combos.map(ccard).join('')}</div>
+ </div><aside>${slip(d)}</aside></div>`;}
+function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
+function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
+ if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
+function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
+function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
+ const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
+ return `<div class="card slip"><h3>Your combo <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
+  ${legs.length?legs.map(l=>`<div class="pick"><span>${esc(l.pick)} <span class="m">${l.fair!=null?pct(l.fair):''}</span></span><button onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):'<div class="m" style="padding:6px 0 10px">Tap teams on the board to build your own combo, or use a suggestion below.</div>'}
+  ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
+   <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
+   ${c&&c.offer?`<div class="sum">Kalshi offers<b class="up">${money(c.offer.pays)}</b></div>`:''}
+   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn yes" style="flex:1" onclick="buy(${c.i},true)">Buy ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
+  <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
+async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
+ if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i});
+ if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct}};renderBuild();
+ toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)} (${pct(q.pct)} of fair). Buy within 20 seconds.`,6000);}
+function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;
+ return `<div class="ccard"><div class="hd"><div><div class="tier">${esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+  <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
+  <div class="s" style="font-size:12.5px">${c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:'Get a price to see what Kalshi pays.'}</div>
+  <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" onclick="buy(${c.i})">Buy ${money(o.stake)} → ${money(o.pays)}${o.ok?'':' (under cut-off)'}</button>`:
+   `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}</div></div>`;}
+async function quote(i){const b=$('#q'+i);if(b)b.innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'quote',i});
+ if(!r.ok){toast(r.error||r.msg||'No price came in.');renderBuild();return;}S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,ok:r.ok,at:Date.now()/1000};renderBuild();
+ toast(`Kalshi pays ${money(r.pays)} for ${money(r.stake)} · ${pct(r.pct)} of fair`,5000);setTimeout(renderBuild,20500);}
+async function buy(i,custom){const r=await api('/app/api/act',{a:'buy',i});toast(r.ok?`Bought. It shows on Live within a minute.`:(r.msg||'Didn\'t go through.'),5000);
+ if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];renderBuild();}
+// ---------------- RESULTS
+function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
+ const w=d.weeks||[];const mx=Math.max(1,...w.map(x=>Math.abs(x.pl)));const sh=d.shadow;
+ m.innerHTML=`<div class="grid"><div><div class="kpis">
+  <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}">${smoney(d.pl)}</b></div>
+  <div class="kpi"><span>Return on stake</span><b>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
+  <div class="kpi"><span>Settled</span><b>${d.settled} <small>combos</small></b></div>
+  <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
+  <div class="kpi"><span>Best result</span><b class="up">${smoney(d.best)}</b></div></div>
+  <h2>By week</h2><div class="chart"><svg viewBox="0 0 ${Math.max(1,w.length)*60} 160" width="100%" height="170" preserveAspectRatio="none">
+   <line x1="0" y1="80" x2="${w.length*60}" y2="80" stroke="var(--line)"/>${w.map((x,i)=>{const h=Math.abs(x.pl)/mx*70;return `<rect x="${i*60+14}" y="${x.pl>=0?80-h:80}" width="32" height="${Math.max(2,h)}" rx="4" fill="${x.pl>=0?'var(--yes)':'var(--no)'}"><title>${x.week}: ${smoney(x.pl)} on ${x.n}</title></rect>`}).join('')}</svg>
+   <div style="display:flex">${w.map(x=>`<div style="width:${100/Math.max(1,w.length)}%;text-align:center;font-size:11px" class="m">${(x.week||'').slice(5)}</div>`).join('')}</div></div>
+  <h2>History <span class="n">${d.history.length}</span></h2><div class="tbl">${d.history.map(h=>`<div class="hrow"><div class="m" style="font-size:12.5px">${esc(h.week||'')}</div>
+   <div class="hp"><div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div></div>
+   <div class="num">${money(h.cost)}</div><div class="num ${h.back-h.cost>=0?'up':'down'}">${smoney(h.back-h.cost)}</div><span class="verdict ${h.status}">${h.status.toUpperCase()}</span></div>`).join('')||'<div class="empty"><b>No settled combos yet</b></div>'}</div>
+ </div><aside class="side">
+  <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
+   <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
+  <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
+ </aside></div>`;}
+// ---------------- refresh loop
+chrome();render();load(S.view);
+setInterval(()=>{if(document.hidden)return;if(S.view==='live'&&!$('#modal').classList.contains('on'))load('live');},12000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view==='live')load('live');});
+</script></body></html>
+"""
 
 
 def webapp_main():
@@ -1030,6 +1346,150 @@ def webapp_main():
     set_league(A.LEAGUE["code"])
     started = {"run": False}
 
+    # ---- Combo Hub's own screens: plain data in, actions out (same engine, same rules as the phone)
+    alock = threading.RLock()
+    LIVE = {"at": 0.0, "data": None}
+    BUILD = {"lg": None}
+
+    def jsonable(x):
+        return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
+
+    def api_live(fresh=False):
+        with alock:
+            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > 8:
+                if not A.MINE.get("all_games"):
+                    games, days, sunday = A.week_games(A.fetch_markets())
+                    A.MINE.update(all_games=games, days=days, sunday=sunday, notes=[], book={}, live=True)
+                    try:
+                        book, _ = A.fetch_book_odds(A.CFG.get("odds_key", ""))
+                        A.MINE["book"] = book
+                    except Exception:
+                        pass
+                A.MINE["live"] = True
+                A.mine_page(live=True)
+                LIVE.update(at=time.time(), data=jsonable(A.MINE.get("view") or {}))
+            return LIVE["data"]
+
+    def side_view(s):
+        return {"ticker": s["ticker"], "pick": s["pick"], "abbr": s.get("abbr", ""), "p": s.get("p"),
+                "bid": s.get("bid"), "fair": s.get("fair"), "edge": s.get("edge"), "src": s.get("src"),
+                "tie": bool(s.get("tie")), "event": s["event"]}
+
+    def combo_view(i, c):
+        est = A.est_offer(c)
+        return {"i": i, "kind": c.get("kind"), "tier": c.get("tier"), "fair": c.get("fair"), "min": c.get("min"),
+                "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1],
+                "chance": 1.0 / (c["fair"] / A.CTX.get("stake", A.CFG["stake"])) if c.get("fair") else None,
+                "legs": [side_view(l) for l in c["legs"]],
+                "offer": {k: v for k, v in (A.CTX.get("offers", {}).get(i) or {}).items() if k in ("pays", "stake", "at")} or None}
+
+    def api_build(lg, rebuild=True):
+        import random
+        with alock:
+            if rebuild or BUILD["lg"] != lg:
+                A.set_league(lg)
+                games, days, slate = A.week_games(A.fetch_markets())
+                try:
+                    book, note = A.fetch_book_odds(A.CFG.get("odds_key", ""))
+                except Exception as err:
+                    book, note = {}, f"No sportsbook lines ({type(err).__name__})."
+                A.attach_fair(games, book)
+                combos, _ = A.build_combos(games, A.CFG.get("picks") or {}, random.Random()) if games else ([], None)
+                A.CTX.clear()
+                A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
+                             build_id=None)
+                BUILD.update(lg=lg, note=note, at=time.time())
+            games = A.CTX.get("all_games") or {}
+            board = []
+            for e, sides in games.items():
+                teams = [x for x in sides if not x.get("tie")]
+                board.append({"event": e, "start": A.KICKOFF.get(e), "label": A.start_label(e),
+                              "started": any(A.started(x) for x in sides),
+                              "sides": [side_view(x) for x in sides], "tie": any(x.get("tie") for x in sides),
+                              "value": max((x.get("edge") or -1) for x in teams) if teams else None})
+            board.sort(key=lambda g: (g["started"], str(g["start"])))
+            return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
+                             "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
+                             "spent": A.week_spend() if A.can_trade() else 0,
+                             "board": board, "combos": [combo_view(i, c) for i, c in enumerate(A.CTX.get("combos") or [], 1)],
+                             "leagues": [[k, A.SPORTS.get(k, {}).get("name", k.upper()), A.SPORTS.get(k, {}).get("icon", "")]
+                                         for k in ("nfl", "nba", "nhl", "ncaaf", "ncaamb", "ncaawb", "soccer", "ufc", "tennis", "euroleague")
+                                         if k in A.SPORTS]})
+
+    def api_results():
+        with alock:
+            bets, balance, note = A.fetch_account(max_age=30, every_league=True)
+            bets = bets or []
+            done = [a for a in bets if a["status"] in ("won", "lost", "cashed")]
+            back = lambda a: a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+            weeks = {}
+            for a in done:
+                wk = a.get("week") or "?"
+                w = weeks.setdefault(wk, {"week": wk, "pl": 0.0, "n": 0, "won": 0})
+                w["pl"] += back(a) - a["cost"]
+                w["n"] += 1
+                w["won"] += a["status"] == "won"
+            hist = []
+            for a in sorted(done, key=lambda a: a.get("week") or "", reverse=True)[:60]:
+                names = []
+                for l in a.get("legs") or []:
+                    t = l.get("ticker") or ""
+                    nm = A.PICK_NAME.get(t) or A.sport_teams(A.ticker_sport(t) or "nfl").get(t.rsplit("-", 1)[-1]) or t.rsplit("-", 1)[-1]
+                    names.append(("not " if l.get("side") == "no" else "") + nm)
+                hist.append({"t": a["ticker"], "status": a["status"], "cost": a["cost"], "back": round(back(a), 2),
+                             "pays": a["pays"], "week": a.get("week"), "picks": names, "sports": a.get("lgs") or []})
+            staked = sum(a["cost"] for a in done)
+            ret = sum(back(a) for a in done)
+            shadow = A.hub_call("shadow", timeout=10) if A.hub_conf() else None
+            try:
+                edge = A.edge_stats(bets)
+            except Exception:
+                edge = None
+            return jsonable({"balance": balance, "settled": len(done), "won": sum(a["status"] == "won" for a in done),
+                             "cashed": sum(a["status"] == "cashed" for a in done), "staked": staked,
+                             "returned": ret, "pl": ret - staked, "roi": (ret - staked) / staked if staked else None,
+                             "best": max((back(a) - a["cost"] for a in done), default=0),
+                             "weeks": sorted(weeks.values(), key=lambda w: w["week"])[-12:], "history": hist,
+                             "shadow": (shadow or {}).get("summary"), "accuracy": (shadow or {}).get("accuracy"),
+                             "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
+                             "edge": edge})
+
+    def api_act(d):
+        a, t = str(d.get("a", "")), str(d.get("t", ""))
+        with alock:
+            if a in ("ask", "askhalf", "go", "keep", "hedgego"):
+                if t not in (A.MINE.get("hold") or {}):
+                    return {"ok": False, "msg": "That combo isn't live any more."}
+                A.cash_action("drop" if a == "keep" else a, t)
+                LIVE["at"] = 0
+                o = A.MINE["cash"].get(t) or {}
+                flash = A.MINE.pop("flash", None)
+                msg = A.re.sub("<[^>]+>", "", flash or "") or (o.get("error") or "")
+                return {"ok": not o.get("error"), "msg": msg, "offer": o.get("offer"), "frac": o.get("frac", 1.0)}
+            if a == "quote":
+                i = int(d.get("i", 0))
+                try:
+                    r = A.get_offer(i, amount=d.get("stake"))
+                except (RuntimeError, PermissionError) as err:
+                    return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
+                return jsonable({"ok": not r.get("error"), **{k: r.get(k) for k in ("pays", "stake", "pct", "ok", "error")}})
+            if a == "buy":
+                i = int(d.get("i", 0))
+                r = A.accept_offer(i)
+                LIVE["at"] = 0
+                return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
+            if a == "custom":
+                k, why = A.add_own_combo([str(x) for x in d.get("tickers") or []])
+                if not k:
+                    return {"ok": False, "msg": why}
+                return {"ok": True, "i": k, "combo": jsonable(combo_view(k, A.CTX["combos"][k - 1]))}
+            if a == "stake":
+                v = max(1, min(100, float(d.get("stake") or A.CFG["stake"])))
+                A.CTX["stake"] = v
+                return {"ok": True}
+        return {"ok": False, "msg": "Unknown action."}
+
+
     def page(frag=False, local=False):
         h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
                        "<body style='background:#000;color:#8e8e93;font:600 17px -apple-system;display:flex;"
@@ -1110,16 +1570,46 @@ def webapp_main():
                         threading.Timer(1.0, A.native_nav, ("refresh",)).start()   # back on Live: fresh numbers
                 started["shown"] = True                     # after that, never move you off the screen you're on
                 return self._send(200, json.dumps(dict(B.poll(v), where=A.APP.get("where") or "")))
-            if self.path.split("?")[0] in ("/app", "/app/"):
+            path, _, query = self.path.partition("?")
+            local = self.headers.get("X-CW-Local") == "1"
+            if path in ("/app", "/app/"):
+                return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false"), "text/html; charset=utf-8")
+            if path.startswith("/app/api/"):
+                from urllib.parse import parse_qs
+                q = {k: v[0] for k, v in parse_qs(query).items()}
+                try:
+                    if path == "/app/api/live":
+                        out = api_live(fresh=q.get("fresh") == "1")
+                    elif path == "/app/api/build":
+                        lg = q.get("lg") or "nba"
+                        out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
+                    elif path == "/app/api/results":
+                        out = api_results()
+                    else:
+                        return self._send(404, "{}")
+                except Exception as err:
+                    import traceback
+                    traceback.print_exc()
+                    out = {"error": f"{type(err).__name__}: {err}"}
+                return self._send(200, json.dumps(out))
+            if path == "/app/classic":
                 B.seen = time.time()
                 start()
                 frag = "frag=1" in self.path
-                return self._send(200, page(frag, self.headers.get("X-CW-Local") == "1"), "text/html; charset=utf-8",
+                return self._send(200, page(frag, local), "text/html; charset=utf-8",
                                   {"X-CW-Where": A.APP.get("where") or ""})
             self._send(404, "{}")
 
         def do_POST(self):
             d = self._json()
+            if self.path == "/app/api/act":
+                try:
+                    out = api_act(d)
+                except Exception as err:
+                    import traceback
+                    traceback.print_exc()
+                    out = {"ok": False, "msg": f"That didn't work: {type(err).__name__}: {err}"}
+                return self._send(200, json.dumps(out, default=str))
             if self.path == "/app/result":
                 B.result(d.get("id"), str(d.get("value", "")))
                 return self._send(200, "{}")
@@ -1150,7 +1640,7 @@ def webapp_main():
     srv = ThreadingHTTPServer(("127.0.0.1", WEBAPP_PORT), H)
     srv.daemon_threads = True
     log(f"planner app for the browser ready (engine {A.VERSION})")
-    start()                                         # warm up now, so the first open is instant
+    threading.Thread(target=lambda: (time.sleep(3), api_live()), daemon=True).start()   # warm up the Live numbers
     srv.serve_forever()
 
 
@@ -1374,6 +1864,11 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
+            if web and u.path == "/app/classic" and "frag=1" not in u.query:
+                tok = web.session(self)
+                if not tok:
+                    return self._html(200, web.login_page())
+                return webapp_proxy(self, tok, "GET", self.path)
             if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok:

@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.67"
+VERSION = "2026.11.17.68"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4023,6 +4023,63 @@ def acts_price(t):
     return o["offer"] / o["contracts"] if o and o["contracts"] else 0.0
 
 
+def live_view(mine, views, plan, chance_one, balance):
+    """Everything Combo Hub's Live screen shows, as plain data."""
+    import time
+    acts = (plan or {}).get("acts") or {}
+    for v in views:
+        t = v["t"]
+        h = MINE["hold"].get(t)
+        if not h:
+            continue
+        o = MINE["cash"].get(t) or {}
+        real = fresh_offer(t) if o.get("rfq") != "estimate" else None
+        v["hold_value"] = round(h["hold"], 2)
+        v["won_some"] = bool(h.get("won_some"))
+        v["offer"] = round(o["offer"] / max(o.get("frac", 1.0), 0.01), 2) if o.get("offer") else None
+        v["offer_real"] = bool(real)
+        v["offer_age"] = round(time.time() - o.get("at", 0)) if o.get("at") else None
+        f = acts.get(t) or 0
+        v["verdict"] = "sell" if f == 1 else "half" if f == 0.5 else "hold"
+        try:
+            v["threshold"] = round(wait_threshold(t), 2) if h.get("won_some") else None
+        except Exception:
+            v["threshold"] = None
+        try:
+            hg = hedge_for(t)
+            v["hedge"] = {k: hg.get(k) for k in ("name", "cost", "locked", "price", "done")} if hg else None
+        except Exception:
+            v["hedge"] = None
+    alive = [v for v in views if v["group"] in ("pending", "won")]
+    need = {}
+    for v in views:
+        if v["group"] != "pending":
+            continue
+        for lg in v["legs"]:
+            if lg["res"]:
+                continue
+            k = (lg["ticker"], lg["side"])
+            x = need.setdefault(k, {"name": lg["name"], "opp": lg["opp"], "sport": lg["sport"], "combos": 0, "pays": 0.0,
+                                    "state": lg["state"], "score": lg["score"], "sc": lg["sc"], "starts": lg["starts"],
+                                    "chance": lg["live"] if lg["live"] is not None else lg["chance"]})
+            x["combos"] += 1
+            x["pays"] += v["pays"]
+    games = sorted(need.values(), key=lambda x: (x["state"] != "live", -x["combos"]))
+    week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
+    settled = [a for a in mine if a["status"] in ("won", "lost", "cashed") and (a.get("week") or "") >= week_ago]
+    week_pl = sum((a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0) - a["cost"]
+                  for a in settled)
+    return {"at": time.time(), "balance": balance, "combos": views,
+            "riding": sum(1 for v in views if v["group"] == "pending"),
+            "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
+            "chance_one": chance_one, "best": max((v["pays"] for v in alive), default=0),
+            "cash_now": round(sum(v.get("offer") or 0 for v in views if v["group"] == "pending"), 2),
+            "hold_value": round(sum(h["hold"] for h in MINE["hold"].values()), 2),
+            "locked": MINE.get("locked", 0), "week_pl": round(week_pl, 2), "games": games[:30],
+            "risk": max(games, key=lambda x: (x["combos"], x["pays"])) if games else None,
+            "todo": [v["t"] for v in views if v.get("verdict") in ("sell", "half") and v.get("offer_real")]}
+
+
 def plan_cashout():
     """Best mix of hold / cash out half / cash out all across your live combos, judged
     together (combos that need the same team rise and fall together) and weighed for
@@ -5694,6 +5751,7 @@ def mine_page(live=False):
 
     rng = random.Random(1)
     cards, hits_any = [], 0
+    views = []                                  # the same numbers as data, for Combo Hub's own screens
     infos = [[leg_info(l) for l in a["legs"]] for a in mine]
     for a in mine:
         a["_hits"] = 0                          # the account list is cached, so start fresh each time
@@ -5807,6 +5865,7 @@ def mine_page(live=False):
             names = ", ".join(e(n) for n in missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
             value = ""
         rows = []
+        vlegs = []
         legs_sorted = sorted(zip(a["legs"], inf), key=lambda x: (start_key(x[0].get("event") or ""),
                                                                  order.get((side_of.get(x[0]["ticker"]) or {}).get("event"), 99)))
         for n, (l, (name, opp, ch, res)) in enumerate(legs_sorted, 1):
@@ -5835,6 +5894,17 @@ def mine_page(live=False):
                   "<span class='n live'></span>" if pick_state(l, side_of) == "live" else "<span class='n o'></span>")
             rows.append(f"<li>{mk}<span class='who'><b>{e(name)}</b> {tag}"
                         f"<small>{sub}</small></span><span class='pct'>{pct}</span></li>")
+            _st = pick_state(l, side_of) if not res else None
+            _lp = (MARKET_INFO.get(l["ticker"]) or {}).get("live") if _st == "live" else None
+            if _lp is not None and l.get("side", "yes") == "no":
+                _lp = 1 - _lp
+            _sc = leg_score(l) if not res else None
+            vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
+                          "state": _st, "score": score_line(_sc) if _sc else "",
+                          "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
+                          "starts": start_label(l.get("event") or "") if not res else "",
+                          "sport": ticker_sport(l["ticker"]) or "other", "side": l.get("side", "yes"),
+                          "url": game_url(l["ticker"]) if (l["ticker"] or "").startswith(tuple(GAME_SLUG)) else ""})
         group = snap.get(a["ticker"], {}).get("status", "pending")
         if group == "pending":
             value = f"@@CASH:{a['ticker']}@@"
@@ -5893,6 +5963,10 @@ def mine_page(live=False):
         games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
                                     for l, (_, _, _, r) in legs_sorted if not r}))
         kind = ("playing" if any_live else "quiet") if group == "pending" else group
+        views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
+                      "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
+                      "full": a.get("full_pays") or 0, "when": when, "live": any_live, "sort": sort_t,
+                      "preview": preview, "legs": vlegs, "week": a.get("week")})
         cards.append((group, f"<details class='crow' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "
                      f"data-p='{p:.5f}' data-i='{i}'><summary>"
@@ -5921,6 +5995,10 @@ def mine_page(live=False):
                                  and snap.get(a["ticker"], {}).get("status") == "won"), 2)
     plan = plan_cashout()
     MINE["plan"] = plan
+    try:
+        MINE["view"] = live_view(mine, views, plan, hits_any / trials, balance)
+    except Exception as err:                      # the data copy must never break the page
+        MINE["view"] = {"error": f"{type(err).__name__}: {err}"}
     cards = [(g, re.sub(r"@@CASH:([^@]+)@@", lambda m: cash_block(m.group(1), plan), c)) for g, c in cards]
     act_on = {t for t, f in ((plan or {}).get("acts") or {}).items() if f} | {t for t in MINE["hold"] if fresh_offer(t)}
     cards = [(g, re.sub(r"@@OPEN:([^@]+)@@", lambda m: " open" if html.unescape(m.group(1)) in act_on else "", c))
