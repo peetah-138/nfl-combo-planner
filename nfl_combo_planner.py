@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.26"
+VERSION = "2026.11.16.27"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2343,7 +2343,9 @@ h2 .ib{font-size:15px}
 .card{padding:16px 16px 6px;margin:0 0 12px}.batch{padding:16px;gap:10px}.game{padding:6px 16px;border-radius:16px}
 .game>.row,.game>.swrow,.game>.srow,.game>label.row{min-height:50px;border-bottom:1px solid var(--line)}
 .game>:last-child{border-bottom:0!important}.srow{padding:10px 0}.srow .row{padding:0 0 4px}
-.quote.pair .btn{flex:1}.quote.pair .btn.go{flex:2}
+.quote.pair{flex-direction:column;align-items:stretch;gap:6px}.quote.pair .btn{width:100%}.quote.pair .btn:not(.go){background:transparent;min-height:40px}
+.btn.two{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:9px 14px}
+.btn.two .bt{font-weight:700;font-size:16px}.btn.two .bs{font-weight:500;font-size:13px;opacity:.85}
 .placed{border:0;background:var(--card2);border-radius:12px}.flip{border:0;background:var(--accentbg);color:var(--accent);
  border-radius:999px;padding:6px 12px;font-size:13px}
 .tier{font-size:13px;font-weight:600;color:var(--muted);text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:6px}
@@ -3015,7 +3017,8 @@ def plan_words(t, f, o, h, W):
 def confirm_parts(t, h, o):
     """(title, details, url, button) for the confirm sheet: exactly what happens."""
     what = "half of " if o.get("frac", 1.0) < 1 else ""
-    title = f"Cash out {what}{h['label']} for {money(o['offer'])}?"
+    title = (f"Cash out {what}{h['label']} for {money(o['offer'])}? "
+             f"({gain_words(o['offer'], h['cost'] * o.get('frac', 1.0))})")
     sub = (f"You paid {money(h['cost'] * o.get('frac', 1.0))}. If you hold instead: "
            f"{h['p']:.0%} chance of {money(h['pays'] * o.get('frac', 1.0))}.")
     return title, sub, f"combo://cash/go/{t}", f"Cash out for {money(o['offer'])}"
@@ -3027,6 +3030,21 @@ def confirm_cash(t, h, o):
     return html.escape(f"sheet({args})")
 
 
+def gain_words(amount, paid):
+    """'+$10 profit' / '$2 loss' / 'break even' for getting `amount` back on `paid`."""
+    d = amount - paid
+    if abs(d) < 0.5:
+        return "break even"
+    return f"+{money(d)} profit" if d > 0 else f"{money(-d)} loss"
+
+
+def cash_label(name, f, amount, paid, about=False):
+    """Two-line cash-out button: what you'd make first, then what you get back and paid."""
+    return (f"<span class='bt'>Cash out {'half of ' if f < 1 else ''}{name} · {'about ' if about else ''}"
+            f"{gain_words(amount, paid)}</span>"
+            f"<span class='bs'>get {money(amount)} · you paid {money(paid)}</span>")
+
+
 def action_button(t, f, h):
     """The button that carries out the plan for one combo (needs an offer of the right size)."""
     o = fresh_offer(t)
@@ -3035,14 +3053,14 @@ def action_button(t, f, h):
         return ""
     if abs(o.get("frac", 1.0) - f) < 0.01:
         what = "half of " if f < 1 else ""
-        return (f"<button class='btn go cashb' onclick=\"{confirm_cash(t, h, o)}\">Cash out {what}"
-                f"{html.escape(h['label'])} for {money(o['offer'])}</button>")
+        return (f"<button class='btn go cashb two' onclick=\"{confirm_cash(t, h, o)}\">"
+                f"{cash_label(html.escape(h['label']), f, o['offer'], h['cost'] * f)}</button>")
     # Kalshi quotes one size at a time, so this price is worked out from the offer in hand;
     # tapping gets the exact offer for this size and asks you to confirm it.
     est = acts_price(t) * h["pays"] * f
     act = "askhalfgo" if f < 1 else "askgo"
-    return (f"<button class='btn go cashb' onclick=\"cash('{act}','{te}')\">Cash out "
-            f"{'half of ' if f < 1 else ''}{html.escape(h['label'])} · about {money(est)}</button>")
+    return (f"<button class='btn go cashb two' onclick=\"cash('{act}','{te}')\">"
+            f"{cash_label(html.escape(h['label']), f, est, h['cost'] * f, about=True)}</button>")
 
 
 def cash_block(ticker, plan):
@@ -3054,8 +3072,8 @@ def cash_block(ticker, plan):
     W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
     p, pays = h["p"], h["pays"]
     pct = f"{p:.0%}" if p >= 0.01 or p == 0 else f"{p:.1%}"
-    out = [f"<div class='min cashbox'>If you hold: <b>{pct}</b> chance of <b>{money(pays)}</b>"
-           f" <span class='muted'>· worth a sure {money(single_value(p, pays, W))} to you</span>"
+    out = [f"<div class='min cashbox'>If you hold: <b>{pct}</b> chance of <b>{gain_words(pays, h['cost'])}</b>"
+           f" <span class='muted'>({money(pays)} back)</span>"
            + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     tp = (MINE.get("tp") or {}).get(ticker)
