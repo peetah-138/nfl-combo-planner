@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.62"
+VERSION = "2026.11.17.63"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1616,8 +1616,10 @@ def _fetch_account():
         bal = account_get(key, key_id, "/portfolio/balance")
     except (ValueError, PermissionError) as err:
         return None, None, str(err)
-    except (requests.RequestException, OSError):
-        return None, None, "Couldn't reach your Kalshi account just now. Showing what's saved."
+    except (requests.RequestException, OSError) as err:
+        code = getattr(getattr(err, "response", None), "status_code", None)
+        why = "Kalshi asked us to slow down" if code == 429 else f"Kalshi said {code}" if code else type(err).__name__
+        return None, None, f"Couldn't reach your Kalshi account just now ({why}). Showing what's saved."
 
     held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0,
                                 "bought_n": 0.0, "first": None})
