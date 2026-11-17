@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.31"
+VERSION = "2026.11.16.32"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -540,9 +540,14 @@ BOOK_GAMES = {}  # sportsbook team name -> [{fair, start, day, opp}, ...] every 
 def book_game(name, day, opp=None):
     """The sportsbook's game for this team on this date (a team can have tonight's game and
     Sunday's in the feed at once), or None."""
-    for g in BOOK_GAMES.get(name) or []:
+    games = BOOK_GAMES.get(name) or []
+    for g in games:
         if g["day"] == day and (opp is None or g["opp"] == opp):
             return g
+    if opp is not None and day:                   # time zones can shift a late game by a day
+        for g in games:
+            if g["opp"] == opp and g["day"] and abs((g["day"] - day).days) <= 1:
+                return g
     return None
 
 
@@ -1641,10 +1646,11 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
     out = ["<!doctype html><html><head><meta charset='utf-8'>"
            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
            f"<title>{LG()['name']} combos</title><style>{CSS}</style></head><body>",
-           f"<header><h1>Your combos for {sunday:%b %-d}</h1>"
-           f"<div class='sub'>{len(games)} games · {len(combos)} combos at ${CFG['stake']} · "
-           f"<span id='placedcount'>0</span> placed</div>" + "<div class='quote' style='margin-top:10px'><button class='btn' onclick=\"location.href='combo://settings'\">"
-           "⚙︎ Settings & build more</button></div>" + "</header>",
+           f"<header><h1>Suggested combos</h1>"
+           f"<div class='sub'>{LG()['icon']} {sunday:%a %b %-d} · {len(games)} games · {len(combos)} combos at "
+           f"${CFG['stake']} · <span id='placedcount'>0</span> placed</div>"
+           "<button class='btn quiet' style='padding:6px 0;min-height:0;margin-top:4px' "
+           "onclick=\"location.href='combo://settings'\">Change settings and rebuild</button></header>",
            "<div class='stats'>"
            f"<div class='stat'><b>{money(spent)}</b><span class='lbl'>total stake</span></div>"
            f"<div class='stat'><b>{p_any:.0%}</b><span class='lbl'>chance one hits</span></div>"
@@ -1657,8 +1663,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
            "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
            "<section id='combos'>"]
     if can_trade():
-        out.append("<div class='batch'><div><button class='btn' onclick='selAll()'>Select all not placed</button></div>"
-                   "<button class='btn go' id='getall' onclick='getAll()'>Get offers for selected (0)</button>"
+        out.append("<div class='batch'><button class='btn go' id='getall' onclick='getAll()'>Get offers for selected (0)</button>"
+                   "<button class='btn quiet' onclick='selAll()'>Select all not placed</button>"
                    "<div class='trade' id='t0'></div></div>")
     for i, (c, p) in enumerate(zip(combos, p_each), 1):
         chance = f"{p:.1%}" if p >= 0.001 else "under 0.1%"
@@ -1668,18 +1674,23 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             f"<div class='tier'>#{i} · {e(c['tier'])}</div>"
             f"<div class='pay'>{money(c['fair'])}</div>"
             f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div></div>"
-            f"<div class='side'><label class='placed'><input type='checkbox' onchange='tog({i})'>Placed</label>"
-            + (f"<label class='placed sel'><input type='checkbox' class='pick' value='{i}' onchange='selCount()'>Select</label>" if can_trade() else "")
-            + "</div></div>"
+            f"<div class='side'>"
+            + (f"<label class='placed sel'><input type='checkbox' class='pick' value='{i}' onchange='selCount()'><span>Select</span></label>" if can_trade() else "")
+            + f"<label class='placed'><input type='checkbox' onchange='tog({i})'><span>Placed</span></label></div></div>"
             f"<div class='min'>Take Kalshi's offer if it's at least <b class='minv'>{money(c['min'])}</b>"
             f"<div class='quote'{HIDE if can_trade() else ''}><span>Kalshi offers $</span>"
             f"<input inputmode='decimal' placeholder='amount' onchange='quote({i},this)'>"
             f"<span class='verdict' style='display:none'></span></div></div>"
             f"<div class='quote'><span>Bet $</span><input class='amt' inputmode='decimal' value='{CFG['stake']}' "
-            f"onchange='amt({i},this)'><button class='btn' onclick='act(\"swap\",{i})'>Swap this one</button>"
+            f"onchange='amt({i},this)'>"
             + (f"<button class='btn go' onclick='act(\"buy\",{i})'>Buy on Kalshi</button>" if can_trade() else "")
+            + f"<button class='btn quiet' onclick='act(\"swap\",{i})'>Swap</button>"
             + f"</div><div class='trade' id='t{i}'></div>"
-            + ((card_notes or {}).get(i) or "") + decision_html(c["legs"]) + "<ol>")
+            + ((card_notes or {}).get(i) or "")
+            + f"<details class='picks'><summary><span>{len(c['legs'])} picks"
+            + (f" · {sum(1 for l in c['legs'] if l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair'])} underdogs"
+               if any(l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair'] for l in c['legs']) else "")
+            + f"<span class='muted' style='font-weight:400'> · see all</span></span></summary>" + decision_html(c["legs"]) + "<ol>")
         for n, l in enumerate(sorted(c["legs"], key=lambda l: (start_key(l["event"]), order[l["event"]])), 1):
             other = next(s for s in all_games[l["event"]] if s is not l)
             tags = ""
@@ -1695,7 +1706,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                        f"{' '.join(x for x in (day_tag(days[l['event']]), start_label(l['event'])) if x)}</small></span>"
                        f"<span class='pct'>{l['fair']:.0%}</span>"
                        f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
-        out.append("</ol></div>")
+        out.append("</ol></details></div>")
     out.append("</section>")
 
     on = day_on()
@@ -1943,7 +1954,7 @@ def results_page(sunday):
                     f"<span>{money_cell}</span></div>")
     net = tot["back"] - tot["decided"]
     sub = f"{sunday:%a %b %-d} games" if by_day() else f"Week of {sunday:%b %-d}"
-    body = [head, f"<header><h1>{LG()['icon']} Results</h1><div class='sub'>{sub}</div></header>"]
+    body = [head, f"<header><h1>Results</h1><div class='sub'>{LG()['icon']} {LG()['name']} · {sub}</div></header>"]
     if this:
         body.append(
             "<div style='padding:0 16px'><div class='batch now'>"
@@ -1989,7 +2000,7 @@ def results_page(sunday):
                     f"<b class='{'pos' if all_net >= 0 else 'neg'}'>{'+' if all_net >= 0 else '−'}{money(abs(all_net))}"
                     f"</b></div><div class='muted' style='font-size:13px'>on {money(all_in)} put in</div>{lines}</div>")
     body.append("<div class='quote' style='margin:12px 0 24px'><button class='btn' "
-                "onclick=\"location.href='combo://lastbuild'\">See the planner's last suggested combos</button></div>"
+                "onclick=\"location.href='combo://lastbuild'\">Last suggested combos</button></div>"
                 "</section></body></html>")
     return "".join(body)
 
@@ -2484,6 +2495,32 @@ details.crow[open]>summary .chev,.quietbox[open]>summary .chev{transform:rotate(
 details.crow>ol,details.crow>.min{margin-right:16px}
 .min{border-radius:12px;background:var(--card2)}
 .tag,.verdict{font-size:12px;font-weight:600}
+/* disclosure rows (Combo mix, picks, a combo's picks) */
+details.disc>summary,details.picks>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;
+ gap:10px;cursor:pointer;min-height:44px}
+details.disc>summary::-webkit-details-marker,details.picks>summary::-webkit-details-marker{display:none}
+details.disc>summary::after,details.picks>summary::after{content:'';width:8px;height:8px;border-right:2px solid var(--muted);
+ border-bottom:2px solid var(--muted);transform:rotate(-45deg);opacity:.55;flex:none;transition:transform .2s}
+details.disc[open]>summary::after,details.picks[open]>summary::after{transform:rotate(45deg)}
+details.disc>summary>span{display:flex;flex-direction:column}details.disc>summary b{font-size:17px;font-weight:600}
+details.disc>summary .muted{font-size:13px}
+#mix.game{padding:6px 16px}#mix[open]{padding-bottom:12px}#pk>summary{padding:2px 0}
+details.picks{margin-top:10px;border-top:.5px solid var(--line)}details.picks>summary{font-size:15px;font-weight:600}
+h2 .ib{font-size:13px;opacity:.8}
+/* suggested combos */
+.card .side{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.placed{display:inline-flex;align-items:center;gap:6px;border:0!important;background:transparent!important;font-size:15px;
+ color:var(--muted);padding:2px 0}
+.placed input{appearance:none;-webkit-appearance:none;width:22px;height:22px;border-radius:50%;margin:0;
+ box-shadow:inset 0 0 0 1.5px var(--muted);transition:background .15s}
+.placed input:checked{background:var(--accent);box-shadow:none}
+.placed input:checked::after{content:'';display:block;width:6px;height:11px;margin:3px 0 0 7px;border:solid #fff;
+ border-width:0 2px 2px 0;transform:rotate(45deg)}
+.placed input:checked+span{color:var(--ink)}
+.card .quote input.amt{width:64px;text-align:center;border-radius:10px;border:0;background:var(--card2);color:var(--ink);
+ font:600 17px -apple-system,system-ui;padding:12px 6px}
+.card .quote .btn.go{flex:1;white-space:nowrap;font-size:16px}.card .quote .btn.quiet{padding:12px 8px}.batch .btn{width:100%}
+.stats{gap:10px}.stat{border-radius:12px!important}
 .hidegame{display:none!important}
 input.txt,textarea{border-radius:12px!important;border:1px solid var(--line)!important;background:var(--card2)!important;
  color:var(--ink);font-size:16px}
@@ -5296,7 +5333,7 @@ def settings_page(all_games, days, counts):
                          slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
                          slider("accept_pct", "Minimum offer to accept", 50, 100, 5, "% of fair"),
                          "Minimum offer: Buy on Kalshi flags offers below this share of the fair payout."),
-        "mix": "<details class='game' id='mix'><summary><b>Combo mix</b> <span class='muted'>· how many of each type</span></summary>"
+        "mix": "<details class='game disc' id='mix'><summary><span><b>Combo mix</b><span class='muted'>How many of each type</span></span></summary>"
                + ("" if not LG().get("full") else
                   section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
                           slider("upsets_min", "Fewest underdogs", 0, 8) + slider("upsets_max", "Most underdogs", 0, 8)))
@@ -5306,11 +5343,12 @@ def settings_page(all_games, days, counts):
         "days": section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
                         f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
                         f"{'tomorrow' if CFG.get('next_day') else 'today'}.") if by_day() else
-                section("Days", "".join(switch(k, f"{d} ({counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'} this week)")
+                section("Days", "".join(switch(k, f"{d} <span class='muted'>· {counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'}</span>")
                                         for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
                         "Sunday is always in."),
         "picks": section("Your picks", ("".join(picks) if len(picks) <= 6 else
-                                        f"<details id='pk'><summary class='muted'>{len(picks)} games · tap to lock or skip</summary>"
+                                        f"<details id='pk' class='disc'><summary><span><b>{len(picks)} games</b>"
+                                        f"<span class='muted'>Tap to lock a team or skip a game</span></span></summary>"
                                         f"{''.join(picks)}</details>") or "<div class='muted'>No games listed yet.</div>",
                          "Lock a team to put it in every combo, or skip a game."),
         "look": section("Look", switch("dark", "Dark mode")),
@@ -5414,7 +5452,7 @@ def settings_page(all_games, days, counts):
                if latest and version_tuple(latest) > version_tuple(VERSION) else "")
         notice_html = [x for x in top if "class='game'" in x]
         body = "".join([
-            f"<header><h1>Build {LG()['name']} combos</h1><div class='sub' id='budgetline'></div></header><section>",
+            f"<header><h1>Build</h1><div class='sub'>{LG()['icon']} {LG()['name']} · <span id='budgetline'></span></div></header><section>",
             upd, "".join(notice_html),
             ("" if CFG.get("built_once") else
              "<div class='tip'><b>New here?</b> The settings below are already set to sensible defaults. Tap "
