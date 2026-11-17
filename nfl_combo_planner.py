@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.43"
+VERSION = "2026.11.16.44"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -155,6 +155,16 @@ def next_league():
     """The next league in the list (NFL -> NBA -> NHL -> NFL)."""
     order = list(LEAGUES)
     return order[(order.index(LEAGUE["code"]) + 1) % len(order)]
+
+
+def sport_seg(via="nav"):
+    """The sport picker: a segmented control at the top of Build and Results (NFL, NBA, NHL, Mix).
+    via='form' saves the Build page's settings before switching."""
+    btns = "".join(
+        f"<button class='{'on' if k == LEAGUE['code'] else ''}' onclick=\"" +
+        (f"go('lg-{k}')" if via == "form" else f"location.href='combo://nav/lg-{k}'") + f"\">{v['short']}</button>"
+        for k, v in LEAGUES.items())
+    return f"<div class='tabs seg'>{btns}</div>"
 
 
 def LG():
@@ -1696,7 +1706,7 @@ if(FOCUS){ var fc=document.querySelector('.card[data-i="'+FOCUS+'"]');
 """
 
 
-def exposure_html(combo_picks, title="How much rides on one result"):
+def exposure_html(combo_picks, title="How much rides on one result", folded=False):
     """combo_picks: one list of (ticker, name) per live combo. Shows which picks the
     most combos depend on, and warns above your max-share setting."""
     n = len(combo_picks)
@@ -1719,6 +1729,10 @@ def exposure_html(combo_picks, title="How much rides on one result"):
     warn = (f"<div class='warn'>That's over your {CFG['max_share']}% limit. Full-slate combos and "
             f"locked picks include every game on purpose, so they push this up.</div>" if over else
             f"<div class='muted' style='font-size:13px'>Within your {CFG['max_share']}% limit.</div>")
+    if folded:                                    # one line that opens: value first, risk one tap away
+        return (f"<details class='lostbox' id='expo' style='margin:0'><summary><span>{head}"
+                + (f" <span class='neg' style='font-weight:600'>Over your {CFG['max_share']}% limit</span>" if over else "")
+                + f"</span></summary><div style='padding:0 16px 12px'>{warn}{rows}</div></details>")
     return (f"<div class='batch'><div><b>{title}</b></div><div>{head}</div>{warn}{rows}</div>")
 
 
@@ -1770,17 +1784,17 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
            f"<div class='stat'><b>{money(spent)}</b><span class='lbl'>total stake</span></div>"
            f"<div class='stat'><b>{p_any:.0%}</b><span class='lbl'>chance one hits</span></div>"
            f"<div class='stat'><b>{money(best)}</b><span class='lbl'>biggest payout</span></div></div>",
-           "<div class='top-notes'>" + "".join(f"<div class='note'>{e(n)}</div>" for n in notes) + "</div>",
            "<div style='padding:8px 16px 0'>" + exposure_html(
-               [[(l["ticker"], l["pick"]) for l in c["legs"]] for c in combos]) + "</div>",
+               [[(l["ticker"], l["pick"]) for l in c["legs"]] for c in combos], folded=True) + "</div>",
            "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">Combos</button>"
            "<button id='b-games' onclick=\"tab('games')\">Games</button>"
            "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
            "<section id='combos'>"]
     if can_trade():
-        out.append("<div class='batch'><button class='btn go' id='getall' onclick='getAll()'>Get offers for selected (0)</button>"
-                   "<button class='btn quiet' onclick='selAll()'>Select all not placed</button>"
-                   "<div class='trade' id='t0'></div></div>")
+        out.append("<div class='quote' style='margin:0 16px 4px;justify-content:space-between'>"
+                   "<div class='trade' id='t0' style='flex:1;font-size:13px'></div>"
+                   "<button class='btn quiet' style='flex:none;min-height:0;padding:6px 0' onclick='autoQuotes()'>"
+                   "Refresh prices</button></div>")
     under = []
     for i, (c, p) in enumerate(zip(combos, p_each), 1):
         chance = f"{p:.1%}" if p >= 0.001 else "under 0.1%"
@@ -1796,17 +1810,19 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             f"data-min1='{c['min'] / CFG['stake']:.6f}'><div class='top'><div>"
             f"<div class='tier'>#{i} · {e(c['tier'])}</div>"
             f"<div class='pay'>{money(c['fair'])}</div>"
-            f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div>{est_line}</div>"
+            f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div>{est_line}"
+            + (f"<div class='muted' style='font-size:12px;margin-top:2px'>Your {CFG['accept_pct']}% cut-off: "
+               f"<span class='minv'>{money(c['min'])}</span></div>" if can_trade() else "") + "</div>"
             f"<div class='side'>"
-            + (f"<label class='placed sel'><input type='checkbox' class='pick' value='{i}' onchange='selCount()'><span>Select</span></label>" if can_trade() else "")
-            + f"<label class='placed'><input type='checkbox' onchange='tog({i})'><span>Placed</span></label></div></div>"
-            f"<div class='min'>Take Kalshi's offer if it's at least <b class='minv'>{money(c['min'])}</b>"
+            + ("" if can_trade() else f"<label class='placed'><input type='checkbox' onchange='tog({i})'><span>Placed</span></label>")
+            + "</div></div>"
+            f"<div class='min'{HIDE if can_trade() else ''}>Take Kalshi's offer if it's at least <b class='{'minv0' if can_trade() else 'minv'}'>{money(c['min'])}</b>"
             f"<div class='quote'{HIDE if can_trade() else ''}><span>Kalshi offers $</span>"
             f"<input inputmode='decimal' placeholder='amount' onchange='quote({i},this)'>"
             f"<span class='verdict' style='display:none'></span></div></div>"
             f"<div class='quote'><span>Bet $</span><input class='amt' inputmode='decimal' value='{CFG['stake']}' "
             f"onchange='amt({i},this)'>"
-            + (f"<button class='btn go' onclick='act(\"buy\",{i})'>Buy on Kalshi</button>" if can_trade() else "")
+            + (f"<button class='btn' onclick='act(\"buy\",{i})'>New price</button>" if can_trade() else "")
             + f"<button class='btn quiet' onclick='act(\"swap\",{i})'>Swap</button>"
             + f"</div><div class='trade' id='t{i}'></div>"
             + ((card_notes or {}).get(i) or "")
@@ -1878,6 +1894,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                            f"Probably breaking news (injury?). Check before betting.</div>")
             out.append("</div>")
     out.append("</section><section id='record' class='hidden'><!--RECORD--></section>")
+    out.append("<div class='foot'>" + "".join(f"<div>{e(n)}</div>" for n in notes) + "</div>")
     out.append("<div class='foot'>Fair payout is what the combo would pay with no house cut. "
                "Kalshi's offer will be lower; the minimum is your cut-off for a fair-ish deal. "
                "Chances assume games are independent.</div>")
@@ -2272,7 +2289,7 @@ def results_page(sunday):
                     f"<span>{money_cell}</span></div>")
     net = tot["back"] - tot["decided"]
     sub = f"{sunday:%a %b %-d} games" if by_day() else f"Week of {sunday:%b %-d}"
-    body = [head, f"<header><h1>Results</h1><div class='sub'>{LG()['icon']} {LG()['name']} · {sub}</div></header>"]
+    body = [head, f"<header><h1>Results</h1>{sport_seg()}<div class='sub'>{sub}</div></header>"]
     if this:
         body.append(
             "<div style='padding:0 16px'><div class='batch now'>"
@@ -2316,7 +2333,7 @@ def results_page(sunday):
         all_net = sum(w["back"] - w["in"] for w in weeks.values())
         lines = "".join(
             f"<div class='row' style='padding:6px 0;border-top:1px solid var(--line)'><span>"
-            f"{dt.date.fromisoformat(k):%b %-d}<br><small class='muted'>{int(w['n'])} combos · "
+            f"{dt.date.fromisoformat(k):%b %-d}<br><small class='muted'>{int(w['n'])} combo{'s' * (int(w['n']) != 1)} · "
             f"{int(w['won'])} paid off · {money(w['in'])} in</small></span>"
             f"<span class='{'pos' if w['back'] >= w['in'] else 'neg'}'>{'+' if w['back'] >= w['in'] else '−'}"
             f"{money(abs(w['back'] - w['in']))}</span></div>"
@@ -2556,9 +2573,7 @@ def bind_controls(win, bar):
     win.name = ""
     for btn in bar.subviews:
         btn.action = lambda sender: native_nav(sender.name)
-    win.left_button_items = [ui.ButtonItem(title=f"{v['icon']} {v['short']}",
-                                           action=(lambda code: (lambda sender: native_nav("lg-" + code)))(k))
-                             for k, v in LEAGUES.items()]
+    win.left_button_items = []                 # the sport is chosen on Build and Results, not up here
     win.right_button_items = [ui.ButtonItem(title="⟳", action=lambda sender: native_nav("refresh"))]
 
 
@@ -2717,6 +2732,7 @@ ol{margin:10px 0 0}li{padding:12px 0;border-top:1px solid var(--line);gap:12px}
 .tabs button{background:transparent!important;color:var(--muted)!important;border-radius:9px;padding:9px 4px;font-size:14px;
  transition:background .2s,color .2s}.tabs button.on{background:var(--thumb)!important;color:var(--ink)!important;
  box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.tabs.seg{margin:10px 0 6px}
 .fbar{display:flex;flex-direction:column;gap:10px;margin:0 0 14px}
 .fchips{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}
 .fchips::-webkit-scrollbar{display:none}.fchips:empty{display:none}
@@ -5577,7 +5593,7 @@ def accept_offer(i):
     import time
     o = CTX["offers"].get(i)
     if not o:
-        return {"error": "That offer is gone. Tap Buy on Kalshi to get a fresh one."}
+        return {"error": "That offer expired. Tap New price for a fresh one."}
     spent = week_spend()
     if spent + o["stake"] > CFG["budget"] + 0.01:
         return {"error": f"That would take this {slate_word()} to {money(spent + o['stake'])}, over your "
@@ -5764,7 +5780,7 @@ def flip_pick(i, ticker):
     note = (f"<div class='min'>{head} Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
             f"{likely} ({p_old:.1%} → {p_new:.1%}), fair payout {money(old['fair'])} → {money(new['fair'])}, "
             f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + " ".join(extra) +
-            " Tap Flip again to undo. Buy on Kalshi shows whether the real offer is good.</div>")
+            " Tap Flip again to undo. New price shows whether Kalshi's offer is good.</div>")
     CTX["combos"][i - 1] = new
     CTX["offers"].pop(i, None)
     CTX.setdefault("card_notes", {})[i] = note
@@ -5859,8 +5875,7 @@ def handle_action(webview, parts):
                         return False
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     got = sum(pool.map(one, wanted))
-                say(f"<span class='muted'>{got} of {len(wanted)} prices in. Accept or decline on each card. "
-                    "Offers expire after a minute or two: tap Buy on Kalshi for a fresh one.</span>", 0)
+                say(f"<span class='muted'>{got} of {len(wanted)} prices in · offers last a minute or two</span>", 0)
             elif action == "custom":
                 k, note = add_own_combo([t for t in (parts[3] if len(parts) > 3 else "").split(",") if t])
                 if not k:
@@ -5925,15 +5940,17 @@ def handle_action(webview, parts):
 def offer_html(i, o):
     if "error" in o:
         return f"<span class='verdict no'>{html.escape(o['error'])}</span>"
-    verdict = ("<span class='verdict ok'>Above your cut-off</span>" if o["ok"] else
-               f"<span class='verdict no'>Below your {CFG['accept_pct']}% cut-off ({money(o['min'])})</span>")
-    ev = (f"<div class='muted' style='font-size:13px;margin-top:4px'>{o['pct']:.0%} of fair · expected "
+    pct = f"{o['pct']:.0%} of fair" if o.get("pct") else ""
+    verdict = (f"<span class='verdict ok'>{pct or 'Above your cut-off'}</span>" if o["ok"] else
+               f"<span class='verdict no'>{pct + ' · ' if pct else ''}under your {CFG['accept_pct']}%</span>")
+    ev = (f"<div class='muted' style='font-size:13px;margin-top:2px'>Expected "
           f"{signed_money(o['stake'] * (o['pct'] - 1))} per {money(o['stake'])} bet</div>" if o.get("pct") else "")
-    return (f"<div>Kalshi offers <b>{money(o['pays'])}</b> if it hits, for your "
-            f"{money(o['stake'])} ({o['price'] * 100:.2f}¢ a contract). {verdict}</div>{ev}"
-            f"<div class='quote'><button class='btn go' onclick='act(\"accept\",{i})'>"
-            f"{'Accept' if o['ok'] else 'Accept anyway'}</button>"
-            f"<button class='btn' onclick='act(\"decline\",{i})'>No thanks</button></div>")
+    accept = (f"<button class='btn go' onclick='act(\"accept\",{i})'>Accept · {money(o['stake'])}</button>"
+              f"<button class='btn' onclick='act(\"decline\",{i})'>Skip</button>" if o["ok"] else
+              f"<button class='btn' onclick='act(\"decline\",{i})'>Skip</button>"
+              f"<button class='btn quiet' onclick='act(\"accept\",{i})'>Accept anyway</button>")
+    return (f"<div class='row' style='align-items:center'><span>Kalshi pays <b>{money(o['pays'])}</b></span>{verdict}</div>"
+            f"{ev}<div class='quote'>{accept}</div>")
 
 
 # ================================================================ settings screen (a page in the same window)
@@ -5945,7 +5962,7 @@ function label(k){ var s=document.getElementById(k), d=SL[k]; if(!s) return;
 function val(k){ var el=document.getElementById(k); return el ? +el.value : 0; }
 function budget(){ var n=val('full_count')+val('safer_count')+val('middle_count')+val('moonshot_count');
   var st=val('stake'), cap=val('budget'), b=document.getElementById('budgetline'); if(!b) return;
-  b.textContent = n+' combos x $'+st+' = $'+(n*st)+(n*st>cap ? '  (over your cap!)' : '  (cap $'+cap+')');
+  b.textContent = n+' combo'+(n===1?'':'s')+' × $'+st+' = $'+(n*st)+(n*st>cap ? ' · over your $'+cap+' cap' : ' · cap $'+cap);
   b.className = n*st>cap ? 'neg' : ''; }
 function txtval(k){ var el=document.getElementById(k); return el ? el.value : ''; }
 function collect(){ var out={};
@@ -6035,7 +6052,7 @@ def settings_page(all_games, days, counts):
         "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
                          slider("budget", "Mix cap" if is_mix() else "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
                          slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair"),
-                         "Minimum offer: Buy on Kalshi flags offers below this share of the fair payout."),
+                         "Kalshi's prices are marked below your cut-off when they pay less than this share of the fair payout."),
         "mix": "<details class='game disc' id='mix'><summary><span><b>Combo mix</b><span class='muted'>How many of each type</span></span></summary>"
                + ("" if not LG().get("full") else
                   section("Full slate (every game)", slider("full_count", "Combos", 0, 10) +
@@ -6163,7 +6180,7 @@ def settings_page(all_games, days, counts):
                if latest and version_tuple(latest) > version_tuple(VERSION) else "")
         notice_html = [x for x in top if "class='game'" in x]
         body = "".join([
-            f"<header><h1>Build</h1><div class='sub'>{LG()['icon']} {LG()['name']} · <span id='budgetline'></span></div></header><section>",
+            f"<header><h1>Build</h1>{sport_seg('form')}<div class='sub'><span id='budgetline'></span></div></header><section>",
             upd, "".join(notice_html),
             ("" if CFG.get("built_once") else
              "<div class='tip'><b>New here?</b> The settings below are already set to sensible defaults. Tap "
@@ -6601,7 +6618,7 @@ def main():
     matched, news = attach_fair(all_games, book)
     remember_pregame(all_games)
     if book and matched < len(all_games):
-        notes.append(f"{len(all_games) - matched} game(s) had no sportsbook match and use Kalshi's prices.")
+        notes.append(f"{len(all_games) - matched} game{'s' * ((len(all_games) - matched) != 1)} had no sportsbook match and use Kalshi's prices.")
 
     on = day_on()
     book_fair = {e: [x["fair"] for x in sides] for e, sides in all_games.items() if sides[0].get("src")}
@@ -6619,11 +6636,11 @@ def main():
                           "probably breaking news. Lock a team to include it anyway.")
     if any("disagree" in v for v in skipped.values()):
         n = sum("disagree" in v for v in skipped.values())
-        notes.append(f"Left out {n} game(s) with likely breaking news. See the Games tab.")
+        notes.append(f"Left out {n} game{'s' * ((n) != 1)} with likely breaking news. See the Games tab.")
     live_in = [e for e in live if e not in skipped and on[days[e]]]
     live_out = [e for e in live if e in skipped and on[days[e]]]
     if live:
-        notes.append(f"Mid-day build: {len(live_in)} game(s) in progress included at Kalshi's live prices"
+        notes.append(f"Mid-day build: {len(live_in)} game{'s' * ((len(live_in)) != 1)} in progress included at Kalshi's live prices"
                      + (f", {len(live_out)} left out as bad bets right now (see the Games tab)" if live_out else "")
                      + ". Live prices move fast, so get offers soon. Kalshi may not offer combos that "
                        "include games already under way.")
@@ -6634,10 +6651,10 @@ def main():
         why = [f"Only {len(games)} game{'s' if len(games) != 1 else ''} can be picked right now, "
                "and a combo plan needs at least 4."]
         if live_out:
-            why.append(f"{len(live_out)} game(s) in progress were left out as bad bets: nearly decided, "
+            why.append(f"{len(live_out)} game{'s' * ((len(live_out)) != 1)} in progress were left out as bad bets: nearly decided, "
                        f"prices jumping too much, or no team with at least a {CFG['live_min']}% live chance.")
         if off:
-            why.append(f"{len(off)} game(s) are on days you have switched off ({', '.join(offdays)}).")
+            why.append(f"{len(off)} game{'s' * ((len(off)) != 1)} are on days you have switched off ({', '.join(offdays)}).")
         if any(v == "You skipped this game." for v in skipped.values()):
             why.append("Some games are set to Skip in Settings.")
         why.append("Games that have already finished aren't listed.")
