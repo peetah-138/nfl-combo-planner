@@ -2,8 +2,10 @@
 #
 # Runs the same engine as the phone planner, with no screens. Every refresh (15 s by default):
 #   - reads your live combos in every sport, the scores, and Kalshi's in-game prices,
-#   - sends push notifications through ntfy (picks won/lost, "worth cashing out", games turning).
-# It never cashes anything out: cash-outs still need your tap on the phone.
+#   - sends push notifications through ntfy (picks won/lost, "worth cashing out", games turning),
+#   - if you turned on Auto cash-out in the phone's Settings: cashes out a combo when its card would
+#     say Cash out (a pick already won, and Kalshi's offer beats waiting at your Let it ride level).
+#     While the watcher runs, only it auto-sells, so nothing is sold twice. Off unless you turn it on.
 #
 # Files live in ~/combowatch (or $COMBOWATCH_HOME):
 #   engine.py                  the planner engine, downloaded from GitHub and kept up to date
@@ -19,10 +21,10 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.16.22"
+WATCHER_VERSION = "2026.11.16.37"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs")
+SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell")
 
 
 def log(*a):
@@ -81,6 +83,27 @@ def fetch_settings(conf, E):
     return applied
 
 
+def listen_for_settings(conf, E, lock):
+    """Keeps a connection open to the settings channel, so a change you save on the phone lands
+    here within a second or two. Reconnects on its own; the minute-by-minute check stays as backup."""
+    import threading
+
+    def run():
+        while True:
+            try:
+                with requests.get(f"{NTFY}/{conf['topic']}-cfg/json", stream=True, timeout=(10, 120)) as r:
+                    for line in r.iter_lines():
+                        if line and json.loads(line).get("event") == "message":
+                            with lock:
+                                if fetch_settings(conf, E):
+                                    E.CFG["auto_cash"] = False
+            except Exception as err:          # dropped connection, Wi-Fi blip: wait and reconnect
+                log("settings listener reconnecting:", type(err).__name__)
+                time.sleep(15)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def heartbeat(conf, E, note=""):
     """A small status message the phone reads to show the watcher is alive."""
     live = sum(1 for h in (E.MINE.get("hold") or {}).values() if h.get("left", 1) > 0)
@@ -132,16 +155,34 @@ def update_if_newer(E):
 
 
 def estimate_offers(E):
-    """The watcher doesn't ask Kalshi for cash-out quotes (that would cancel the phone's), so for
-    alerts it estimates them: fair value times the discount Kalshi buyers usually take."""
+    """The watcher doesn't ask Kalshi for a cash-out quote on every combo (that would cancel the
+    phone's), so it estimates them: fair value times the discount Kalshi buyers usually take.
+    With Auto cash-out on, a combo with a pick already won that's estimated within 10% of its
+    Let it ride price gets a real Kalshi offer (at most every few minutes), so the sell decision
+    is made on a real price."""
     now = time.time()
+    real_every = max(3, int(E.CFG.get("cash_every", 3))) * 60
+    asked = E.MINE.setdefault("pi_asked", {})
     for t, h in (E.MINE.get("hold") or {}).items():
         if h.get("left", 1) <= 0:
             continue
+        cur = E.MINE["cash"].get(t) or {}
+        if cur.get("rfq") not in (None, "estimate") and now - cur.get("at", 0) <= E.offer_life():
+            continue                                  # a real offer is still good
         live = any(lv for _, lv, _ in h.get("legs_left") or [])
         price = min(E.kalshi_discount(live) * h["p"], 0.99)
-        E.MINE["cash"][t] = {"offer": round(price * h["pays"], 2), "contracts": h["pays"], "price": price,
-                             "rfq": "estimate", "quote": None, "frac": 1.0, "at": now}
+        est = {"offer": round(price * h["pays"], 2), "contracts": h["pays"], "price": price,
+               "rfq": "estimate", "quote": None, "frac": 1.0, "at": now}
+        E.MINE["cash"][t] = est
+        if not (E.CFG.get("auto_sell") and h.get("won_some")) or now - asked.get(t, 0) < real_every:
+            continue
+        thr = E.wait_threshold(t)
+        if thr and est["offer"] >= 0.9 * thr:
+            asked[t] = now
+            real = E.get_cash_offer(t)
+            if real.get("offer"):
+                E.MINE["cash"][t] = real
+                log(f"real offer for {h['label']}: ${real['offer']:.2f} (sells at ${thr:.2f}+)")
 
 
 def main():
@@ -152,6 +193,7 @@ def main():
     E.loading = lambda *a, **k: None
     E.notify = lambda msg: push(conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."))
     E.console_note = lambda msg: log(msg)
+    E.auto_cash_checks = lambda: []        # no quotes on every combo; see estimate_offers
     E.set_league("nfl")                    # Live covers every sport; this only picks the main game list
     fetch_settings(conf, E)
     E.CFG["auto_cash"] = False
@@ -161,6 +203,9 @@ def main():
         log("no Kalshi access; waiting 10 minutes")
         time.sleep(600)
         return 1
+    import threading
+    lock = threading.Lock()
+    listen_for_settings(conf, E, lock)
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0}
@@ -169,8 +214,9 @@ def main():
         try:
             if t0 - last["cfg"] > 60:
                 last["cfg"] = t0
-                fetch_settings(conf, E)
-                E.CFG["auto_cash"] = False
+                with lock:
+                    fetch_settings(conf, E)
+                    E.CFG["auto_cash"] = False
             if not E.MINE.get("all_games") or t0 - last["init"] > 3600:      # this week's games, hourly
                 last["init"] = t0
                 games, days, sunday = E.week_games(E.fetch_markets(), loose=True)
@@ -180,7 +226,7 @@ def main():
                 _, E.MINE["snap"] = E.mine_page(live=True)
             estimate_offers(E)
             E.ACCT_CACHE["at"] = 0
-            alerts = E.live_check(None)
+            alerts = E.live_check(None)            # also auto cash-out, if the phone turned it on
             if alerts:
                 log("alerts:", alerts)
             if t0 - last["sell"] > 60:
@@ -188,7 +234,7 @@ def main():
                 done = E.autosell_pass()
                 if done:
                     log("auto-sell placed or moved:", done)
-            if t0 - last["hb"] > 240:
+            if t0 - last["hb"] > 55:                 # the phone takes over if this stops for 3 minutes
                 last["hb"] = t0
                 heartbeat(conf, E)
             if t0 - last["upd"] > 1800:

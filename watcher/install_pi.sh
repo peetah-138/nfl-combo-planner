@@ -29,6 +29,7 @@ if sudo test -f "$DIR/kalshi_private_key.pem" && [ "${1:-}" != "--new-key" ]; th
 else
   echo
   echo "Make a NEW Kalshi API key just for the Pi (Kalshi > Account > API keys), so you can revoke it on its own."
+  echo "Give it read + write access if you want the Pi to do Auto cash-out (read-only is fine for alerts only)."
   read -r -p "Paste its Key ID and press Enter: " KEYID </dev/tty
   echo "Now paste its private key (the whole thing, BEGIN to END lines), then press Enter:"
   pem=""

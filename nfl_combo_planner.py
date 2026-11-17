@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.36"
+VERSION = "2026.11.16.37"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3023,7 +3023,7 @@ def live_check(webview):
                 page, snap = mine_page(live=True)
         except Exception:
             pass
-    sold = auto_sell_now(MINE.get("plan"))
+    sold = [] if pi else auto_sell_now(MINE.get("plan"))     # with the Pi on, only the Pi sells
     if sold:
         ACCT_CACHE["at"] = 0
         MINE["flash"] = " ".join(sold)
@@ -3054,14 +3054,19 @@ def auto_sell_now(plan):
             h, o = MINE["hold"].get(t), fresh_offer(t)
             if not (f and h and o and h.get("won_some")) or t in MINE.get("selling", set()):
                 continue
-            whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
-            if whole < wait_threshold(t):
+            thr = wait_threshold(t)
+            if o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
-            if f < 1 or o.get("frac", 1.0) < 1:
+            if f < 1 or o.get("frac", 1.0) < 1 or o.get("rfq") == "estimate":   # the Pi only estimates
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
-                if not o.get("offer") or o["offer"] < CASH_SLIP * whole * f:
+                if not o.get("offer") or o["offer"] / max(o.get("frac", 1.0), 0.01) < CASH_SLIP * thr:
                     continue
+            held = {a["ticker"]: a for a in (fetch_account(max_age=0, every_league=True)[0] or [])}
+            a = held.get(t)
+            if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
+                drop_cash(t)                    # already sold (by you, the Pi or the phone): leave it
+                continue
             msg = accept_cash(t)
             out.append(("🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ") + msg)
     finally:
@@ -3260,7 +3265,8 @@ def cash_block(ticker, plan):
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     if CFG.get("auto_sell") and can_trade() and not h.get("rough"):
         thr = wait_threshold(ticker)
-        out.append("<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: "
+        who = "your Pi " if in_pythonista() and watcher_alive() else ""
+        out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: {who}"
                    + (f"sells by itself if Kalshi offers about {money(thr)} or more." if h.get("won_some") and thr
                       else "it waits until a pick in this combo has won.") + "</div>")
     tp = (MINE.get("tp") or {}).get(ticker)
@@ -3867,7 +3873,7 @@ def autosell_pass():
 
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
-WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs")
+WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell")
 WATCH = {"at": 0, "hb": None}
 
 
@@ -3885,7 +3891,7 @@ def watcher_conf():
 
 
 def watcher_status(max_age=60):
-    """The Pi's latest heartbeat (it sends one every 4 minutes), or None."""
+    """The Pi's latest heartbeat (it sends one every minute), or None."""
     import time
     c = watcher_conf()
     if not c:
@@ -3894,7 +3900,7 @@ def watcher_status(max_age=60):
         return WATCH["hb"]
     WATCH["at"] = time.time()
     try:
-        r = requests.get(f"{NTFY}/{c['topic']}-hb/json", params={"poll": "1", "since": "20m"}, timeout=6)
+        r = requests.get(f"{NTFY}/{c['topic']}-hb/json", params={"poll": "1", "since": "10m"}, timeout=6)
         msgs = [json.loads(x) for x in r.text.splitlines() if x.strip()] if r.ok else []
         WATCH["hb"] = json.loads(msgs[-1]["message"]) if msgs else None
     except (requests.RequestException, ValueError, KeyError):
@@ -3903,16 +3909,17 @@ def watcher_status(max_age=60):
 
 
 def watcher_alive():
-    """True while the Pi has checked in within the last 10 minutes: it then moves the auto-sells
-    and sends the alerts, and the phone stays out of its way."""
+    """True while the Pi has checked in within the last 3 minutes: it then sends the alerts and
+    does auto cash-out, and the phone stays out of its way."""
     import time
     hb = watcher_status()
-    return bool(hb and time.time() - hb.get("at", 0) < 600)
+    return bool(hb and time.time() - hb.get("at", 0) < 180)
 
 
 def send_watcher_settings():
-    """Send your auto-sell settings (and Kalshi's learned discount) to the Pi, signed so only
-    your phone can change them. Never sends keys."""
+    """Send your Let it ride / Auto cash-out settings (and Kalshi's learned discount) to the Pi,
+    signed so only your phone can change them. The Pi is listening, so it takes effect within
+    seconds. Never sends keys."""
     import hmac, hashlib, time
     c = watcher_conf()
     if not c:
@@ -3934,10 +3941,10 @@ def watcher_line():
     if not watcher_conf():
         return ""
     hb = watcher_status()
-    if hb and time.time() - hb.get("at", 0) < 600:
+    if hb and time.time() - hb.get("at", 0) < 180:
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
         return (f"<div class='wline'>🖥 Pi watcher on · checked {t}</div>")
-    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 10+ minutes. Your phone is handling "
+    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 3+ minutes. Your phone is handling "
             "alerts while it's open.</div>")
 
 
@@ -3978,7 +3985,7 @@ def cancel_take_profit(ticker):
 
 def drop_cash(ticker):
     o = MINE["cash"].pop(ticker, None)
-    if o and o.get("rfq"):
+    if o and o.get("rfq") and o["rfq"] != "estimate":
         try:
             kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
         except Exception:
@@ -5462,8 +5469,8 @@ def settings_page(all_games, days, counts):
                          "game. Cautious acts on your real bankroll, Steady 2×, Balanced 4×, Bold 10×, Ride it out "
                          "only near full value. Auto cash-out sells by itself when the card says Cash out: a pick "
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
-                         "while the planner is open (Kalshi buys combos back only through live offers), and tells "
-                         "you each time. Otherwise nothing sells unless you confirm."
+                         "while the planner is open, or all the time if your Pi watcher is running (Kalshi buys "
+                         "combos back only through live offers), and tells you each time. Otherwise nothing sells unless you confirm."
                          + (" Auto-sell puts a standing sell order on Kalshi that fills only if a buyer pays that "
                             "much." if AUTOSELL else ""))),
         "kalshi": section("Kalshi account",
@@ -5488,9 +5495,10 @@ def settings_page(all_games, days, counts):
                            + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                            + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else ""),
                            "A Raspberry Pi at home that runs all the time: it sends alerts (through the ntfy app) "
-                           "with your phone locked, like when a combo is worth cashing out. Saving here also sends "
-                           "your Let it ride level to it, signed so only your phone can change it. Cash-outs "
-                           "still need your tap here."),
+                           "with your phone locked and, if you turn on Auto cash-out, does that too, by the same "
+                           "rules (while it's running, only the Pi auto-sells, so nothing sells twice). Saving here "
+                           "sends your Let it ride level and Auto cash-out switch to it, signed so only your phone "
+                           "can change them. Its own Kalshi key needs read + write access to sell."),
         "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>"
                         f"<div class='muted' style='font-size:12px;margin-top:8px;word-break:break-all'>Shortcut link: "
                         f"{e(launch_url())}</div>",
@@ -5592,10 +5600,14 @@ def settings_page(all_games, days, counts):
                         cleared.append(k)          # you blanked it and tapped Save on Settings
                     else:
                         vals.pop(k)                # anything else never clears a saved key
+            before = {k: CFG.get(k) for k in WATCHER_SYNCED}
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
             save_cfg(cleared)
+            if choice != "save" and before != {k: CFG.get(k) for k in WATCHER_SYNCED}:
+                import threading               # left Settings another way: the Pi still hears of it
+                threading.Thread(target=send_watcher_settings, daemon=True).start()
             if pem.strip():
                 save_private_key(pem)
             result["go"] = choice
