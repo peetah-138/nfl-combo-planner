@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.48"
+VERSION = "2026.11.16.49"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -151,6 +151,61 @@ LEAGUES = {
                            "safer_count": 3, "safer_min": 2, "safer_max": 3,
                            "middle_count": 3, "middle_min": 3, "middle_max": 5,
                            "moonshot_count": 2, "moonshot_min": 5, "moonshot_max": 8}},
+    # College basketball: huge daily slates and the softest lines; games without a sportsbook line
+    # are left out (Kalshi alone isn't a reliable fair price for small-conference games).
+    "ncaamb": {"name": "Men's college basketball", "short": "CBB", "icon": "🏀", "series": "KXNCAAMBGAME",
+               "odds": "basketball_ncaab", "espn": "basketball/mens-college-basketball", "espn_q": {"groups": "50"},
+               "slate": "day", "game_hours": 2.25, "periods": 2, "full": False, "teams": None, "require_line": True,
+               "settings": "combo_settings_ncaamb.json", "latest": "combos_latest_ncaamb.html",
+               "defaults": {"budget": 40, "full_count": 0, "mix_v3": True,
+                            "safer_count": 3, "safer_min": 2, "safer_max": 3, "middle_count": 3, "middle_min": 3,
+                            "middle_max": 4, "moonshot_count": 2, "moonshot_min": 6, "moonshot_max": 9}},
+    "ncaawb": {"name": "Women's college basketball", "short": "WCBB", "icon": "🏀", "series": "KXNCAAWBGAME",
+               "odds": "basketball_wncaab", "espn": "basketball/womens-college-basketball", "espn_q": {"groups": "50"},
+               "slate": "day", "game_hours": 2.25, "periods": 4, "full": False, "teams": None, "require_line": True,
+               "settings": "combo_settings_ncaawb.json", "latest": "combos_latest_ncaawb.html",
+               "defaults": {"budget": 30, "full_count": 0, "mix_v3": True,
+                            "safer_count": 2, "safer_min": 2, "safer_max": 3, "middle_count": 2, "middle_min": 3,
+                            "middle_max": 4, "moonshot_count": 2, "moonshot_min": 5, "moonshot_max": 8}},
+    # EuroLeague: overtime decides every game (no draws); strong home court is already in the lines.
+    "euroleague": {"name": "EuroLeague", "short": "Euro", "icon": "🏀", "series": "KXEUROLEAGUEGAME",
+                   "odds": "basketball_euroleague", "espn": None, "espn_q": {}, "slate": "day", "game_hours": 2.25,
+                   "periods": 4, "full": False, "teams": None, "require_line": True,
+                   "settings": "combo_settings_euroleague.json", "latest": "combos_latest_euroleague.html",
+                   "defaults": {"budget": 25, "full_count": 0, "mix_v3": True, "next_day": False,
+                                "safer_count": 2, "safer_min": 2, "safer_max": 2, "middle_count": 2, "middle_min": 3,
+                                "middle_max": 3, "moonshot_count": 1, "moonshot_min": 4, "moonshot_max": 5}},
+    # UFC: one card a week, ~12 fights; big favourites are common but upsets land about a third of the
+    # time, so favourites under 60% count as coin flips. The main card (the late fights) goes last.
+    "ufc": {"name": "UFC", "short": "UFC", "icon": "🥊", "series": "KXUFCFIGHT", "odds": "mma_mixed_martial_arts",
+            "espn": None, "espn_q": {}, "slate": "week", "game_hours": 0.5, "periods": 3, "full": False, "teams": None,
+            "require_line": True, "close": 0.60,
+            "settings": "combo_settings_ufc.json", "latest": "combos_latest_ufc.html",
+            "defaults": {"budget": 25, "full_count": 0, "mix_v3": True, "saturday": True, "thursday": True, "monday": False,
+                         "safer_count": 2, "safer_min": 2, "safer_max": 3, "middle_count": 2, "middle_min": 3,
+                         "middle_max": 4, "moonshot_count": 1, "moonshot_min": 5, "moonshot_max": 7}},
+    # Soccer: a "to win" pick loses on a draw (about 1 in 4 games), so near-even games are traps:
+    # favourites under 50% count as close, picks under 30% are skipped, combos stay short.
+    "soccer": {"name": "Soccer", "short": "Soccer", "icon": "⚽", "series": "KXEPLGAME,KXLALIGAGAME,KXSERIEAGAME,KXBUNDESLIGAGAME,KXLIGUE1GAME,KXMLSGAME,KXLIGAMXGAME",
+               "odds": ["soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga",
+                        "soccer_france_ligue_one", "soccer_usa_mls", "soccer_mexico_ligamx"], "regions": "eu",
+               "espn": ["soccer/eng.1", "soccer/esp.1", "soccer/ita.1", "soccer/ger.1", "soccer/fra.1",
+                        "soccer/usa.1", "soccer/mex.1"], "espn_q": {},
+               "slate": "week", "game_hours": 2.0, "periods": 2, "full": False, "teams": None, "require_line": True,
+               "close": 0.50, "min_pick": 0.30,
+               "settings": "combo_settings_soccer.json", "latest": "combos_latest_soccer.html",
+               "defaults": {"budget": 30, "full_count": 0, "mix_v3": True, "saturday": True, "thursday": True, "monday": True,
+                            "safer_count": 3, "safer_min": 2, "safer_max": 2, "middle_count": 3, "middle_min": 3,
+                            "middle_max": 3, "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
+    # ATP tennis: two outcomes (a retirement settles by Kalshi's rules); start times follow the order of
+    # play, so "underdogs late" is off. The odds feed lists tennis tournament by tournament.
+    "tennis": {"name": "ATP tennis", "short": "Tennis", "icon": "🎾", "series": "KXATPMATCH", "odds": "tennis_atp",
+               "espn": None, "espn_q": {}, "slate": "day", "game_hours": 2.5, "periods": 3, "full": False,
+               "teams": None, "require_line": True,
+               "settings": "combo_settings_tennis.json", "latest": "combos_latest_tennis.html",
+               "defaults": {"budget": 25, "full_count": 0, "mix_v3": True, "dogs_late": False,
+                            "safer_count": 2, "safer_min": 2, "safer_max": 3, "middle_count": 2, "middle_min": 3,
+                            "middle_max": 4, "moonshot_count": 1, "moonshot_min": 5, "moonshot_max": 6}},
     # Every sport at once: combos that mix NFL, NBA, NHL and college football (Kalshi's cross-sport combos).
     "mix": {"name": "Mixed sports", "short": "Mix", "icon": "🎲", "series": "KXNFLGAME,KXNBAGAME,KXNHLGAME,KXNCAAFGAME",
             "odds": "mixed", "espn": "football/nfl", "espn_q": {}, "slate": "mix", "game_hours": 3.5, "periods": 4,
@@ -164,6 +219,12 @@ LEAGUES = {
 MIX_SPORTS = ("nfl", "nba", "nhl", "ncaaf")
 MIX_WINDOWS = ["Same day", "Through the weekend", "Next 7 days"]
 LEAGUE = {"code": "nfl"}
+PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; the rest are under More
+
+
+def sport_rule(ticker, key, default):
+    """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
+    return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
 SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto")
 
 
@@ -176,11 +237,18 @@ def next_league():
 def sport_seg(via="nav"):
     """The sport picker: a segmented control at the top of Build and Results (NFL, NBA, NHL, Mix).
     via='form' saves the Build page's settings before switching."""
-    btns = "".join(
-        f"<button class='{'on' if k == LEAGUE['code'] else ''}' onclick=\"" +
-        (f"go('lg-{k}')" if via == "form" else f"location.href='combo://nav/lg-{k}'") + f"\">{v['short']}</button>"
-        for k, v in LEAGUES.items())
-    return f"<div class='tabs seg'>{btns}</div>"
+    tap = lambda k: (f"go('lg-{k}')" if via == "form" else f"location.href='combo://nav/lg-{k}'")
+    more = [k for k in LEAGUES if k not in PRIMARY_SPORTS and k != "mix"]
+    cur = LEAGUE["code"]
+    btns = "".join(f"<button class='{'on' if k == cur else ''}' onclick=\"{tap(k)}\">{LEAGUES[k]['short']}</button>"
+                   for k in list(PRIMARY_SPORTS) + ["mix"])
+    btns += (f"<button class='{'on' if cur in more else ''}' onclick=\"var m=document.getElementById('moresp');"
+             f"m.style.display=m.style.display==='flex'?'none':'flex'\">"
+             f"{LEAGUES[cur]['short'] if cur in more else 'More'} ▾</button>")
+    chips = "".join(f"<button class='btn {'go' if k == cur else 'quiet'}' style='flex:none;min-height:0;padding:7px 12px' "
+                    f"onclick=\"{tap(k)}\">{LEAGUES[k]['icon']} {LEAGUES[k]['name']}</button>" for k in more)
+    return (f"<div class='tabs seg'>{btns}</div><div id='moresp' style='display:none;flex-wrap:wrap;gap:8px;"
+            f"margin:0 0 6px'>{chips}</div>")
 
 
 def LG():
@@ -444,6 +512,28 @@ def start_key(event):
     return t.timestamp() if t else 9e12
 
 
+def is_tie_market(m):
+    """A soccer game's draw market (it can't be picked: the planner bets on teams)."""
+    t = (m.get("ticker") or "").upper()
+    return t.endswith(("-TIE", "-DRAW")) or (m.get("yes_sub_title") or "").strip().lower() in ("tie", "draw")
+
+
+def other_side(sides, s):
+    """The opposing team (never the draw)."""
+    return next((x for x in sides if x is not s and not x.get("tie")), None) or next(x for x in sides if x is not s)
+
+
+def draw_result(sides, r):
+    """Which side wins in one simulated game, for 2 or 3 outcomes, from a random r in [0, 1)."""
+    tot = sum(x["fair"] for x in sides) or 1
+    acc = 0.0
+    for x in sides:
+        acc += x["fair"] / tot
+        if r < acc:
+            return x
+    return sides[-1]
+
+
 def team_name(m):
     """Kalshi's name for a pick, made clear where it's cut short ("New York I" -> "New York Islanders")."""
     name = m.get("yes_sub_title") or m["ticker"]
@@ -504,9 +594,10 @@ def week_games(markets, loose=False):
             games[m["event_ticker"]].append({
                 "event": m["event_ticker"], "ticker": m["ticker"],
                 "abbr": m["ticker"].rsplit("-", 1)[-1].upper(),
-                "pick": team_name(m), "p": p,
+                "pick": team_name(m), "p": p, "tie": is_tie_market(m),
                 "bid": live_bid(m), "exp": m.get("expected_expiration_time") or ""})
-    games = {e: s for e, s in games.items() if len(s) == 2}
+    games = {e: s for e, s in games.items()
+             if len(s) == 2 or (len(s) == 3 and sum(1 for x in s if x.get("tie")) == 1)}   # soccer: + a draw
     order = sorted(games, key=lambda e: (day_seq().index(days[e]), games[e][0]["exp"]))
     return {e: games[e] for e in order}, {e: days[e] for e in order}, sunday
 
@@ -592,6 +683,17 @@ SHARP_BOOKS = ("betfair_ex_eu", "betfair_ex_uk", "matchbook", "lowvig", "betonli
 def fetch_book_odds(key):
     """{full team name: (fair win chance, source)} plus a note for the report. The Mix mode asks
     for each sport and merges them (team names don't repeat across leagues)."""
+    odds = LG().get("odds")
+    if isinstance(odds, list) or odds == "tennis_atp":
+        keys = odds if isinstance(odds, list) else tennis_keys(key)
+        fair, notes = {}, []
+        BOOK_GAMES.clear()
+        for k in keys:
+            f, n = fetch_book_odds_one(key, f"https://api.the-odds-api.com/v4/sports/{k}/odds", keep=True,
+                                       regions=LG().get("regions", "us,eu"))
+            fair.update(f)
+            notes.append(n)
+        return fair, (notes[-1] if notes else "No tennis tournaments are listed by the sportsbooks right now.")
     if not is_mix():
         return fetch_book_odds_one(key, ODDS_URL)
     fair, notes = {}, []
@@ -603,10 +705,20 @@ def fetch_book_odds(key):
     return fair, notes[-1] if notes else ""
 
 
-def fetch_book_odds_one(key, url, keep=False):
+def tennis_keys(key):
+    """The ATP tournaments the odds feed lists right now (asking costs no credits)."""
+    try:
+        r = requests.get("https://api.the-odds-api.com/v4/sports", params={"apiKey": key}, timeout=15)
+        return [x["key"] for x in (r.json() if r.ok else []) if str(x.get("key", "")).startswith("tennis_atp")
+                and x.get("active")][:3]
+    except (requests.RequestException, ValueError):
+        return []
+
+
+def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
     try:
         r = requests.get(url, timeout=20, params={
-            "apiKey": key, "regions": "us,eu", "markets": "h2h", "oddsFormat": "decimal"})
+            "apiKey": key, "regions": regions, "markets": "h2h", "oddsFormat": "decimal"})
     except requests.RequestException:
         return {}, "Couldn't reach the sportsbook service, so chances use Kalshi's prices."
     if r.status_code == 401:
@@ -631,10 +743,12 @@ def fetch_book_odds_one(key, url, keep=False):
         for b in ev.get("bookmakers", []):
             for mk in b.get("markets", []):
                 outs = mk.get("outcomes", [])
-                if mk.get("key") != "h2h" or len(outs) != 2:
+                if mk.get("key") != "h2h" or len(outs) not in (2, 3):
                     continue
                 inv = [1 / o["price"] for o in outs]
                 for o, i in zip(outs, inv):
+                    if o.get("name", "").lower() == "draw":
+                        continue                  # teams only; the draw is 1 minus the two
                     p = i / sum(inv)
                     books[o["name"]].append(p)
                     if b.get("key") == "pinnacle":
@@ -653,6 +767,11 @@ def fetch_book_odds_one(key, url, keep=False):
     note = "Chances and fair payouts use sportsbook lines (Pinnacle when available)."
     if left:
         note += f" {left} free credits left this month."
+        try:
+            if float(left) < 60:
+                note += " Running low: build less often, or soccer (7 leagues) only on weekends."
+        except ValueError:
+            pass
     return fair, note
 
 
@@ -699,8 +818,10 @@ def match_book(pick, book):
 def attach_fair(games, book):
     """Give every side a fair win chance, its edge vs Kalshi, and a news gap."""
     matched, news = 0, {}
-    for e, sides in games.items():
-        kal = [s["p"] / sum(x["p"] for x in sides) for s in sides]
+    for e, sides_all in games.items():
+        kal_all = [s["p"] / sum(x["p"] for x in sides_all) for s in sides_all]
+        sides = [x for x in sides_all if not x.get("tie")]       # match the two teams; a draw follows
+        kal = [k for x, k in zip(sides_all, kal_all) if not x.get("tie")]
         names = []
         for s in sides:
             full = (sport_teams(ticker_sport(s["ticker"])) or TEAMS).get(s["abbr"])
@@ -725,21 +846,34 @@ def attach_fair(games, book):
             matched += 1
         else:
             raw, src = kal, None
-        for s, r, k in zip(sides, raw, kal):
-            s["fair"] = r / sum(raw)
-            s["src"] = src
-            s["edge"] = s["fair"] - s["p"] if src else None
-        news[e] = max(abs(s["fair"] - k) for s, k in zip(sides, kal)) if src else 0
+        ties = [x for x in sides_all if x.get("tie")]
+        if ties:                                  # 3-way: the books' team chances already leave room for a draw
+            total = 1.0 if src else sum(kal_all)
+            raw = list(raw) if src else kal
+            tie_raw = max(0.02, total - sum(raw)) if src else kal_all[sides_all.index(ties[0])]
+            norm = sum(raw) + tie_raw
+            for s, r in zip(sides, raw):
+                s["fair"] = r / norm
+            ties[0]["fair"] = tie_raw / norm
+            for s in sides_all:
+                s["src"] = src
+                s["edge"] = s["fair"] - s["p"] if src else None
+        else:
+            for s, r, k in zip(sides, raw, kal):
+                s["fair"] = r / sum(raw)
+                s["src"] = src
+                s["edge"] = s["fair"] - s["p"] if src else None
+        news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
 
 # ================================================================ combos
 def fav(sides):
-    return max(sides, key=lambda s: s["fair"])
+    return max([x for x in sides if not x.get("tie")] or sides, key=lambda s: s["fair"])
 
 
 def dog(sides):
-    return min(sides, key=lambda s: s["fair"])
+    return min([x for x in sides if not x.get("tie")] or sides, key=lambda s: s["fair"])
 
 
 VALUE_EDGE = 0.01     # Kalshi this much cheaper than the sharp line = a bargain pick
@@ -766,6 +900,10 @@ def game_value(sides):
 def pickable(side):
     """Teams in games under way need a real chance left (Kalshi's live price reflects
     the score and the clock). Teams in games not started yet are always pickable."""
+    if side.get("tie"):
+        return False                              # the planner bets on teams, not draws
+    if side["fair"] < sport_rule(side["ticker"], "min_pick", 0):
+        return False                              # e.g. soccer: long-shot "to win" picks lose to draws too
     return not side.get("live") or side["fair"] >= CFG["live_min"] / 100
 
 
@@ -824,12 +962,12 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
         late = set(by_time[-max(1, len(by_time) // 3):])     # the last third may be underdogs
     for e in chosen:
         opts = [x for x in games[e] if usage[x["ticker"]] < limit and pickable(x)]
-        if e not in late and CFG.get("dogs_late") and fav(games[e])["fair"] >= CLOSE_GAME:
+        if e not in late and CFG.get("dogs_late") and fav(games[e])["fair"] >= sport_rule(e, "close", CLOSE_GAME):
             f = fav(games[e])
             if f in opts and (f.get("edge") is None or f["edge"] > PRICEY_EDGE):
                 legs.append(f)                    # early games: take the favourite (unless it's overpriced)
             continue                              # favourite used up or pricey: leave this game out
-        if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < CLOSE_GAME \
+        if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < sport_rule(e, "close", CLOSE_GAME) \
                 and usage[opts[0]["ticker"]] != usage[opts[1]["ticker"]]:
             legs.append(min(opts, key=lambda x: usage[x["ticker"]]))
         else:
@@ -895,7 +1033,7 @@ def simulate(combos, games, trials=20000, seed=1):
     rng = random.Random(seed)
     any_hit, each = 0, [0] * len(combos)
     for _ in range(trials):
-        won = {(s[0] if rng.random() < s[0]["fair"] else s[1])["ticker"] for s in games.values()}
+        won = {draw_result(s, rng.random())["ticker"] for s in games.values()}
         hit = False
         for i, c in enumerate(combos):
             if all(l["ticker"] in won for l in c["legs"]):
@@ -1167,7 +1305,7 @@ def combo_leagues(legs):
     n, last = Counter(), {}
     for l in legs:
         t = (l["ticker"] or "").upper()
-        for code, pre in (("nba", "KXNBA"), ("nhl", "KXNHL"), ("ncaaf", "KXNCAAF"), ("nfl", "KXNFL")):
+        for code, pre in SPORT_PREFIX:
             if t.startswith(pre) and code in LEAGUES:
                 n[code] += 1
                 d = game_date({"event_ticker": t})
@@ -1179,22 +1317,16 @@ def combo_leagues(legs):
 
 
 def combo_league(legs):
-    """'nfl', 'nba', 'nhl' or 'other' from the picks' market tickers."""
-    ts = [(l["ticker"] or "").upper() for l in legs]
-    if any(t.startswith("KXNCAAMB") for t in ts):
-        return "ncaamb" if "ncaamb" in LEAGUES else "other"   # college was dropped: shown with NFL
-    if any(t.startswith("KXNBA") for t in ts):
-        return "nba"
-    if any(t.startswith("KXNHL") for t in ts):
-        return "nhl"
-    if any(t.startswith("KXNCAAF") for t in ts):
-        return "ncaaf"
-    if any(t.startswith("KXNFL") for t in ts):
-        return "nfl"
+    """The sport a combo belongs to (its first covered pick's), or 'other'."""
+    for l in legs:
+        code = ticker_sport(l["ticker"])
+        if code in LEAGUES:
+            return code
     return "other"
 
 
-WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME", "KXNCAAFGAME")
+WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAAWBGAME",
+                 "KXEUROLEAGUEGAME", "KXUFCFIGHT", "KXATPMATCH") + tuple(['KXEPLGAME', 'KXLALIGAGAME', 'KXSERIEAGAME', 'KXBUNDESLIGAGAME', 'KXLIGUE1GAME', 'KXMLSGAME', 'KXLIGAMXGAME'])
 
 
 def winners_only(legs):
@@ -1205,7 +1337,7 @@ def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
-    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL")):
+    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL", "KXNCAAWB", "KXEUROLEAGUE", "KXATP")):
         return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
@@ -1891,11 +2023,11 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             + ((card_notes or {}).get(i) or "")
             + f"<details class='picks'><summary><span>{len(c['legs'])} picks"
             + (lambda nd: f" · {nd} underdog{'s' * (nd != 1)}" if nd else "")(
-                sum(1 for l in c['legs'] if l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair']))
+                sum(1 for l in c['legs'] if l['fair'] < other_side(all_games[l['event']], l)['fair']))
             + (" · " + " ".join(sorted({sport_icon(l["ticker"]) for l in c["legs"]})) if is_mix() else "")
             + f"<span class='muted' style='font-weight:400'> · see all</span></span></summary>" + decision_html(c["legs"]) + "<ol>")
         for n, l in enumerate(sorted(c["legs"], key=lambda l: (start_key(l["event"]), order[l["event"]])), 1):
-            other = next(s for s in all_games[l["event"]] if s is not l)
+            other = other_side(all_games[l["event"]], l)
             tags = ""
             if l.get("live"):
                 tags += '<span class="tag bad">Live</span> '
@@ -1948,6 +2080,10 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                     if not pickable(s):
                         tag += f'<span class="tag red">Too unlikely to pick (under {CFG["live_min"]}%)</span> '
                     nums = f"live {s['fair']:.0%} · Kalshi {s['p'] * 100:.0f}¢"
+                if s.get("tie"):                  # soccer draw: shown for context, never picked
+                    out.append(f"<div class='row'><span style='color:var(--muted)'>Draw · not pickable (a draw loses either team)</span>"
+                               f"<span class='nums'>{nums}</span></div>")
+                    continue
                 out.append(f"<div class='row mypick' data-t='{e(s['ticker'])}' data-e='{e(x)}' onclick='myPick(this)'>"
                            f"<span><b>{(sport_icon(s['ticker']) + ' ') if is_mix() else ''}{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
                            f"<span class='nums'>{nums}</span></div>")
@@ -3834,6 +3970,8 @@ def hedge_for(ticker):
     for sides in (MINE.get("all_games") or {}).values():
         mine = next((x for x in sides if x["ticker"] == leg_t), None)
         if mine:
+            if any(x.get("tie") for x in sides):
+                return None                       # a draw is possible: no single hedge covers it (yet)
             other = next((x for x in sides if x is not mine), None)
             buy = other if side == "yes" else mine
             break
@@ -3948,8 +4086,18 @@ SPORTS = {
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
     "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
               "q": {"groups": "80"}, "periods": 4, "day": False, "hours": 3.5},
+    "ncaawb": {"icon": "🏀", "name": "Women's college", "espn": "basketball/womens-college-basketball",
+               "q": {"groups": "50"}, "periods": 4, "day": True, "hours": 2.25},
+    "euroleague": {"icon": "🏀", "name": "EuroLeague", "espn": None, "q": {}, "periods": 4, "day": True, "hours": 2.25},
+    "ufc": {"icon": "🥊", "name": "UFC", "espn": None, "q": {}, "periods": 3, "day": False, "hours": 0.5},
+    "soccer": {"icon": "⚽", "name": "Soccer", "espn": ["soccer/eng.1", "soccer/esp.1", "soccer/ita.1", "soccer/ger.1",
+                                                       "soccer/fra.1", "soccer/usa.1", "soccer/mex.1"],
+               "q": {}, "periods": 2, "day": False, "hours": 2.0},
+    "tennis": {"icon": "🎾", "name": "Tennis", "espn": None, "q": {}, "periods": 3, "day": True, "hours": 2.5},
 }
-SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("ncaaf", "KXNCAAF"), ("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL"))
+SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("ncaawb", "KXNCAAWB"), ("ncaaf", "KXNCAAF"), ("nba", "KXNBA"),
+                ("nhl", "KXNHL"), ("nfl", "KXNFL"), ("euroleague", "KXEUROLEAGUE"), ("ufc", "KXUFC"),
+                ("tennis", "KXATP")) + tuple(("soccer", x[:-4]) for x in ['KXEPLGAME', 'KXLALIGAGAME', 'KXSERIEAGAME', 'KXBUNDESLIGAGAME', 'KXLIGUE1GAME', 'KXMLSGAME', 'KXLIGAMXGAME'])
 
 
 def ticker_sport(ticker):
@@ -3968,21 +4116,24 @@ def fetch_scores(max_age=45, code=None):
     code = code or LEAGUE["code"]
     sp = SPORTS.get(code)
     got = SCORES_BY.get(code) or {"at": 0, "by": {}}
-    if not sp or time.time() - got["at"] < max_age:
+    if not sp or not sp.get("espn") or time.time() - got["at"] < max_age:
         return got["by"]
     by = {}
     try:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/{sp['espn']}/scoreboard"
-        q = dict(sp["q"])
-        if sp["day"]:                            # teams play most nights: yesterday to 3 days out
-            today = dt.date.today()
-            q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}",
-                     limit=400)
-        r = requests.get(url, params=q, timeout=8)
-        events = r.json().get("events", []) if r.ok else []
-        if not events and "dates" in q:
-            r = requests.get(url, params=sp["q"], timeout=8)
-            events = r.json().get("events", []) if r.ok else []
+        events = []
+        for path in (sp["espn"] if isinstance(sp["espn"], list) else [sp["espn"]]):
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard"
+            q = dict(sp["q"])
+            if sp["day"]:                        # teams play most nights: yesterday to 3 days out
+                today = dt.date.today()
+                q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}",
+                         limit=400)
+            r = requests.get(url, params=q, timeout=8)
+            evs = r.json().get("events", []) if r.ok else []
+            if not evs and "dates" in q:
+                r = requests.get(url, params=sp["q"], timeout=8)
+                evs = r.json().get("events", []) if r.ok else []
+            events += evs
         for ev in events:
             comp = (ev.get("competitions") or [{}])[0]
             st = comp.get("status") or ev.get("status") or {}
@@ -5024,12 +5175,14 @@ def mine_page(live=False):
                 res = {"yes": "no", "no": "yes"}[res]
         if l.get("side", "yes") == "no":            # betting a team NOT to win
             res = {"yes": "no", "no": "yes"}.get(res)
+            if s and any(x.get("tie") for x in all_games[s["event"]]):   # 3-way: "not X" = other team or a draw
+                return f"{s['pick']} doesn't win", "", 1 - s["fair"], res
             if s:
-                other = next(x for x in all_games[s["event"]] if x is not s)
+                other = other_side(all_games[s["event"]], s)
                 return other["pick"], s["pick"], other["fair"], res
             return f"Against {TEAMS.get(abbr, abbr)}", "", None, res
         if s:
-            other = next(x for x in all_games[s["event"]] if x is not s)
+            other = other_side(all_games[s["event"]], s)
             return s["pick"], other["pick"], s["fair"], res
         info = MARKET_INFO.get(l["ticker"]) or {}
         lp = info.get("live")
@@ -5051,7 +5204,7 @@ def mine_page(live=False):
     patterns = Counter()
     trials = 8000 if live else 20000
     for _ in range(trials):                     # play the rest of the weekend out
-        won = {ev: (s[0] if rng.random() < s[0]["fair"] else s[1])["ticker"] for ev, s in all_games.items()}
+        won = {ev: draw_result(s, rng.random())["ticker"] for ev, s in all_games.items()}
         drawn = {}                                # other sports' picks: one result per pick per run
         hit = False
         hit_now = []
@@ -5112,7 +5265,7 @@ def mine_page(live=False):
             t = l["ticker"]
             if l.get("side", "yes") == "no":
                 s0 = side_of.get(t)
-                other = next((x for x in all_games[s0["event"]] if x is not s0), None) if s0 else None
+                other = other_side(all_games[s0["event"]], s0) if s0 else None
                 t = other["ticker"] if other else None
             v = pregame.get(t) if t else None
             if v is None and t in side_of and not started(side_of[t]) and not r:
@@ -5966,7 +6119,10 @@ def flip_pick(i, ticker):
     leg = next((l for l in old["legs"] if l["ticker"] == ticker), None)
     if leg is None:
         return False, "That pick isn't in this combo any more. Tap Results to refresh."
-    other = next(x for x in CTX["all_games"][leg["event"]] if x["ticker"] != ticker)
+    other = next(x for x in CTX["all_games"][leg["event"]] if x["ticker"] != ticker and not x.get("tie"))
+    if not pickable(other) and not other.get("live"):
+        return False, (f"{e(other['pick'])} is only {other['fair']:.0%} to win, below the "
+                       f"{sport_rule(other['ticker'], 'min_pick', 0):.0%} floor for this sport.")
     if not pickable(other):
         return False, (f"{e(other['pick'])} is only {other['fair']:.0%} live with the game under way, "
                        f"below your {CFG['live_min']}% minimum, so it can't be picked.")
@@ -6877,6 +7033,10 @@ def main():
             continue
         if CFG["picks"].get(e) == "skip":
             skipped[e] = "You skipped this game."
+        elif book and sport_rule(e, "require_line", False) and not any(x.get("src") for x in all_games[e]) \
+                and CFG["picks"].get(e) is None:
+            skipped[e] = ("Left out: no sportsbook line for this game, so there's no way to tell whether "
+                          "Kalshi's price is fair. Lock a team to include it anyway.")
         elif CFG["skip_news"] and news.get(e, 0) >= NEWS_GAP and on[days[e]] \
                 and CFG["picks"].get(e) is None:
             skipped[e] = (f"Left out: Kalshi and the sportsbooks disagree by {news[e]:.0%}, "
