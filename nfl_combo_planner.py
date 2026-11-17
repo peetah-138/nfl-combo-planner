@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.52"
+VERSION = "2026.11.17.53"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -681,6 +681,201 @@ SHARP_BOOKS = ("betfair_ex_eu", "betfair_ex_uk", "matchbook", "lowvig", "betonli
 
 
 def fetch_book_odds(key):
+    """{full team name: (fair win chance, source)} plus a note. Sharp lines from the odds service when
+    there's a key (Pinnacle first), filled in and cross-checked with free sources (ESPN's sportsbook
+    line and Polymarket). With the Mac hub, the Mac does all of this and shares one cache."""
+    if hub_up():
+        got = hub_call("odds", timeout=60, league=LEAGUE["code"], key=key or "")
+        if got and isinstance(got.get("snap"), dict):
+            return load_book_state(got["snap"]), got["snap"].get("note", "")
+    sharp = sharp_snapshot(key) if key else empty_snapshot()
+    snap = merge_books(sharp, free_snapshot(league_codes()))
+    return load_book_state(snap), snap["note"]
+
+
+def league_codes():
+    return list(MIX_SPORTS) if is_mix() else [LEAGUE["code"]]
+
+
+def empty_snapshot(note=""):
+    return {"fair": {}, "games": {}, "opp": {}, "kick": {}, "note": note}
+
+
+def sharp_snapshot(key):
+    """The odds service's lines for the league on screen (uses free credits)."""
+    BOOK_GAMES.clear()
+    BOOK_OPP.clear()
+    TEAM_KICKOFF.clear()
+    fair, note = _sharp_book_odds(key)
+    games = {t: [dict(g, fair=list(g["fair"]), day=str(g["day"]) if g.get("day") else None) for g in gs]
+             for t, gs in BOOK_GAMES.items()}
+    return {"fair": {k: list(v) for k, v in fair.items()}, "games": games,
+            "opp": dict(BOOK_OPP), "kick": dict(TEAM_KICKOFF), "note": note}
+
+
+def merge_books(sharp, free):
+    """Sharp lines win; free sources fill in games the odds service doesn't list."""
+    out = empty_snapshot()
+    for part in (free, sharp):                     # sharp second, so it overrides
+        out["fair"].update(part["fair"])
+        out["games"].update(part["games"])
+        out["opp"].update(part["opp"])
+        out["kick"].update(part["kick"])
+    n_free = len(set(free["fair"]) - set(sharp["fair"]))
+    notes = [sharp["note"]] if sharp["note"] else []
+    if free["fair"]:
+        notes.append(f"Free lines ({free['note']}) cover {len(free['fair'])} teams"
+                     + (f", {n_free} the odds service didn't list." if sharp["fair"] else "."))
+    out["note"] = " ".join(notes) or "No sportsbook lines found, so chances use Kalshi's prices."
+    return out
+
+
+def load_book_state(snap):
+    """Put a snapshot into the planner's sportsbook tables; returns {team: (chance, source)}."""
+    BOOK_GAMES.clear()
+    for t, gs in snap.get("games", {}).items():
+        BOOK_GAMES[t] = [dict(g, fair=tuple(g["fair"]), day=_as_date(g.get("day"))) for g in gs]
+    BOOK_OPP.clear()
+    BOOK_OPP.update(snap.get("opp", {}))
+    TEAM_KICKOFF.update(snap.get("kick", {}))
+    return {t: tuple(v) for t, v in snap.get("fair", {}).items()}
+
+
+def _as_date(x):
+    if isinstance(x, dt.date) or not x:
+        return x or None
+    try:
+        return dt.date.fromisoformat(str(x)[:10])
+    except ValueError:
+        return None
+
+
+def american_chance(x):
+    """'-150' / 130 / 'EVEN' -> implied chance (with the book's cut still in), or None."""
+    try:
+        s = str(x).strip().upper()
+        v = 100.0 if s in ("EVEN", "EV", "PK") else float(s.replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+    if v == 0 or -100 < v < 100 and s not in ("EVEN", "EV", "PK"):
+        return None
+    return -v / (-v + 100) if v < 0 else 100 / (v + 100)
+
+
+def espn_moneyline(comp):
+    """(home chance, away chance, draw chance or None, book name) with the cut removed, or None."""
+    for o in comp.get("odds") or []:
+        ml = o.get("moneyline") or {}
+        def pick(side):
+            d = ml.get(side) or {}
+            for when in ("close", "current", "open"):
+                c = american_chance(((d.get(when) or {}).get("odds")))
+                if c:
+                    return c
+            return american_chance((o.get(f"{side}TeamOdds") or {}).get("moneyLine")) if side != "draw" else \
+                american_chance((o.get("drawOdds") or {}).get("moneyLine"))
+        h, a, d = pick("home"), pick("away"), pick("draw")
+        if h and a:
+            tot = h + a + (d or 0)
+            return h / tot, a / tot, (d / tot if d else None), (o.get("provider") or {}).get("name") or "ESPN"
+    return None
+
+
+POLY_TAGS = {"nfl": ["nfl"], "nba": ["nba"], "nhl": ["nhl"], "ncaaf": ["cfb", "college-football"],
+             "ncaamb": ["cbb", "ncaab"], "ncaawb": ["wncaab"], "ufc": ["ufc"], "euroleague": ["euroleague"]}
+
+
+def poly_games(code):
+    """Polymarket's two-way game markets for a league: [(name A, name B, chance A)], mid-price, liquid only."""
+    out = []
+    for tag in POLY_TAGS.get(code, []):
+        try:
+            r = requests.get("https://gamma-api.polymarket.com/events", timeout=12,
+                             params={"tag_slug": tag, "closed": "false", "active": "true", "limit": 200})
+            evs = r.json() if r.ok else []
+        except (requests.RequestException, ValueError):
+            evs = []
+        for ev in evs if isinstance(evs, list) else []:
+            for m in ev.get("markets") or []:
+                if m.get("sportsMarketType") not in (None, "moneyline") or m.get("closed"):
+                    continue
+                try:
+                    names, prices = json.loads(m.get("outcomes") or "[]"), json.loads(m.get("outcomePrices") or "[]")
+                    liq = float(m.get("liquidityNum") or m.get("liquidity") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if len(names) != 2 or len(prices) != 2 or liq < 2000 or "yes" in (str(names[0]).lower(), str(names[1]).lower()):
+                    continue
+                bid, ask = m.get("bestBid"), m.get("bestAsk")
+                p = (float(bid) + float(ask)) / 2 if bid and ask and float(ask) - float(bid) <= 0.06 else float(prices[0])
+                if 0.02 < p < 0.98:
+                    out.append((str(names[0]), str(names[1]), p))
+        if out:
+            break
+    return out
+
+
+def _team_is(name, team):
+    n = norm_team(name)
+    return n and any(n == norm_team(team.get(k) or "") for k in
+                     ("displayName", "shortDisplayName", "name", "abbreviation", "location", "nickname"))
+
+
+def free_snapshot(codes):
+    """Free sportsbook-style lines: ESPN's posted moneyline (book cut removed) and Polymarket's
+    price, averaged when both have the game. Team names follow ESPN, like the odds service."""
+    snap = empty_snapshot()
+    used = set()
+    for code in codes:
+        sp = SPORTS.get(code)
+        if not sp or not sp.get("espn"):
+            continue
+        poly = poly_games(code)
+        today = dt.date.today()
+        for path in (sp["espn"] if isinstance(sp["espn"], list) else [sp["espn"]]):
+            q = dict(sp.get("q") or {}, limit=400)
+            q["dates"] = f"{today:%Y%m%d}-{today + dt.timedelta(days=7):%Y%m%d}"
+            try:
+                r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard", params=q, timeout=12)
+                evs = r.json().get("events", []) if r.ok else []
+            except (requests.RequestException, ValueError):
+                evs = []
+            for ev in evs:
+                comp = (ev.get("competitions") or [{}])[0]
+                if ((comp.get("status") or {}).get("type") or {}).get("state", "pre") != "pre":
+                    continue
+                teams = {c.get("homeAway"): (c.get("team") or {}) for c in comp.get("competitors") or []}
+                home, away = teams.get("home"), teams.get("away")
+                if not home or not away or not home.get("displayName") or not away.get("displayName"):
+                    continue
+                ml = espn_moneyline(comp)
+                pm = next(((p if _team_is(a, home) else 1 - p) for a, b, p in poly
+                           if (_team_is(a, home) and _team_is(b, away)) or (_team_is(a, away) and _team_is(b, home))), None)
+                if ml and ml[2] is None and pm is not None:
+                    ph, src = (ml[0] + pm) / 2, f"{ml[3]} + Polymarket"
+                    used.update((ml[3], "Polymarket"))
+                elif ml:
+                    ph, src = ml[0], ml[3]
+                    used.add(ml[3])
+                elif pm is not None:
+                    ph, src = pm, "Polymarket"
+                    used.add("Polymarket")
+                else:
+                    continue
+                pa = ml[1] if ml and ml[2] is not None else 1 - ph   # with a draw, the two don't add to 1
+                start = ev.get("date") or comp.get("date") or ""
+                for me, other, p in ((home, away, ph), (away, home, pa)):
+                    nm, op = me["displayName"], other["displayName"]
+                    snap["fair"].setdefault(nm, [p, src])
+                    snap["games"].setdefault(nm, []).append({"fair": [p, src], "start": start,
+                                                             "day": str(espn_day(start) or "") or None, "opp": op})
+                    snap["opp"].setdefault(nm, op)
+                    snap["kick"].setdefault(nm, start)
+    snap["note"] = " + ".join(sorted(used)) or "none"
+    return snap
+
+
+def _sharp_book_odds(key):
     """{full team name: (fair win chance, source)} plus a note for the report. The Mix mode asks
     for each sport and merges them (team names don't repeat across leagues)."""
     odds = LG().get("odds")
@@ -3492,10 +3687,9 @@ def show_mine(all_games, days, sunday):
     """Your combos already placed on Kalshi for this week, with optional live alerts."""
     APP["where"] = "mine"
     book, notes = {}, []
-    if CFG["odds_key"]:
-        loading("Getting sportsbook odds…")
-        book, n = fetch_book_odds(CFG["odds_key"])
-        notes.append(n)
+    loading("Getting sportsbook odds…")
+    book, n = fetch_book_odds(CFG["odds_key"])
+    notes.append(n)
     MINE.update({"all_games": all_games, "days": days, "sunday": sunday, "book": book,
                  "notes": notes, "live": False, "last": None})
     page, MINE["snap"] = mine_page()
@@ -6373,9 +6567,7 @@ def ctx_from_history(build, all_games, days, sunday):
     Combos whose games have started can't be rebuilt and are left as they are."""
     if not build or build["week"] != sunday.isoformat() or build.get("league", "nfl") != LEAGUE["code"]:
         return None
-    book = {}
-    if CFG["odds_key"]:
-        book, _ = fetch_book_odds(CFG["odds_key"])
+    book, _ = fetch_book_odds(CFG["odds_key"])
     _, news = attach_fair(all_games, book)
     side_of = {s["ticker"]: s for v in all_games.values() for s in v}
     on = day_on()
@@ -7201,13 +7393,9 @@ def main():
         save_cfg()
 
     notes = []
-    book = {}
-    if CFG["odds_key"]:
-        loading("Getting sportsbook odds…")
-        book, note = fetch_book_odds(CFG["odds_key"])
-        notes.append(note)
-    else:
-        notes.append("Chances use Kalshi's prices. Add a sportsbook key in settings for sharper fair payouts.")
+    loading("Getting sportsbook odds…")
+    book, note = fetch_book_odds(CFG["odds_key"])
+    notes.append(note)
     matched, news = attach_fair(all_games, book)
     remember_pregame(all_games)
     if book and matched < len(all_games):

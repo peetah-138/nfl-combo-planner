@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.52"
+WATCHER_VERSION = "2026.11.17.53"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -322,11 +322,66 @@ class HubCache:
                     log("hub warm skipped:", type(err).__name__, err)
 
 
+class HubOdds:
+    """Sportsbook lines for the phone, from a second copy of the engine (so changing league here never
+    touches the watcher's own). Free lines (ESPN, Polymarket) refresh every 3 minutes; the paid odds
+    service is asked at most every 6 hours per league, or every 40 minutes once its games are near,
+    so the phone's builds share one set of credits instead of spending them on every tap."""
+    FREE_TTL, SHARP_TTL, SHARP_NEAR_TTL, NEAR = 180, 6 * 3600, 40 * 60, 4 * 3600
+
+    def __init__(self):
+        self.H, self.lock, self.free, self.sharp = None, threading.Lock(), {}, {}
+
+    def engine(self):
+        if self.H is None:
+            self.H = load_engine()
+            self.H.present = self.H.loading = lambda *a, **k: None
+        return self.H
+
+    @staticmethod
+    def soonest(snap):
+        import datetime as dt
+        now, best = time.time(), None
+        for start in (snap.get("kick") or {}).values():
+            try:
+                t = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if t > now and (best is None or t < best):
+                best = t
+        return best
+
+    def get(self, league, key):
+        with self.lock:
+            H = self.engine()
+            H.set_league(league)
+            now = time.time()
+            f = self.free.get(league)
+            if not f or now - f[0] > self.FREE_TTL:
+                f = (now, H.free_snapshot(H.league_codes()))
+                self.free[league] = f
+            sh = self.sharp.get(league)
+            if key:
+                soon = self.soonest(f[1])
+                ttl = self.SHARP_NEAR_TTL if soon and soon - now < self.NEAR else self.SHARP_TTL
+                if not sh or now - sh[0] > ttl:
+                    got = H.sharp_snapshot(key)
+                    if got["fair"] or not sh:
+                        sh = (now, got)
+                        self.sharp[league] = sh
+                    log(f"odds service asked for {league}: {len(got['fair'])} teams")
+            snap = H.merge_books(sh[1] if sh else H.empty_snapshot(), f[1])
+            if sh:
+                snap["note"] += f" Sportsbook lines checked {int((now - sh[0]) / 60)} min ago (shared by the Mac)."
+            return snap
+
+
 def start_hub(conf, E):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     secret, cache, seen = conf["secret"], HubCache(E), {}
+    odds = HubOdds()
     seen_lock = threading.Lock()
     threading.Thread(target=cache.warm, daemon=True, name="hub-warm").start()
 
@@ -341,6 +396,8 @@ def start_hub(conf, E):
             if not url.startswith(E.HUB_GET_HOSTS):
                 return {"status": 403, "text": "not allowed"}
             return cache.get(url, req.get("params") or {})
+        if op == "odds":
+            return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
             method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
             if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path):
