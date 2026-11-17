@@ -348,8 +348,24 @@ PLISTEOF
 # keep the log small: start fresh if it's over 5 MB
 if [ -f "$LOG" ] && [ $(( $(wc -c <"$LOG") )) -gt 5000000 ]; then mv "$LOG" "$LOG.old"; fi
 start=0; [ -f "$LOG" ] && start=$(( $(wc -l <"$LOG") ))
+# restart the background job; macOS takes a moment to let go of the old one, so wait and retry
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+for _ in $(seq 1 20); do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+loaded=0
+for _ in 1 2 3 4 5; do
+  if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then loaded=1; break; fi
+  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then   # it's back already: just restart it
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null && loaded=1 && break
+  fi
+  sleep 2
+done
+if [ "$loaded" != 1 ]; then
+  say "macOS wouldn't start the background job just now. Restart the Mac (or log out and back in) and it starts by itself; or run this setup again in a minute."
+  exit 1
+fi
 
 echo
 echo "Starting... (checking Kalshi)"
