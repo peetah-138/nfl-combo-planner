@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.63"
+VERSION = "2026.11.17.64"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3356,7 +3356,7 @@ window.__kids=function(a,b){
   else if(fi<free.length&&free[fi].nodeType===nb.nodeType&&free[fi].nodeName===nb.nodeName){m=free[fi++];}
   out.push(m?window.__morph(m,nb):window.__fresh(nb));});
  var keepOrder=a.id==='alive';            /* the sort on the page decides this order, not the server */
- old.forEach(function(c){if(out.indexOf(c)<0&&c.id!=='toast'&&c.parentNode===a)a.removeChild(c);});
+ old.forEach(function(c){if(out.indexOf(c)<0&&c.id!=='toast'&&String(c.id||'').indexOf('cw')!==0&&c.parentNode===a)a.removeChild(c);});
  out.forEach(function(n,i){if(n.parentNode!==a)a.appendChild(n);else if(!keepOrder&&a.childNodes[i]!==n)a.insertBefore(n,a.childNodes[i]||null);});};
 window.__tick=function(el,from,to){el.textContent=to;
  var m1=/^([^0-9-]*)(-?[0-9,]+(?:\.[0-9]+)?)(.*)$/.exec(from),m2=/^([^0-9-]*)(-?[0-9,]+(?:\.[0-9]+)?)(.*)$/.exec(to);

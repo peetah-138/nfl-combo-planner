@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.63"
+WATCHER_VERSION = "2026.11.17.64"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -739,32 +739,65 @@ WEBAPP_PORT = 8766
 
 BRIDGE_JS = r"""<script>
 (function(){
-var TOK="__CWTOK__", V=__CWV__;
+var TOK="__CWTOK__", V=__CWV__, wrap=document.getElementById('cwwrap');
 function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
   headers:{'Content-Type':'application/json','X-CW':TOK},body:JSON.stringify(b)});}
 function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
 window.__cwgo=go;
 window.__cw={set href(u){go(u);},get href(){return location.href;}};
-window.__cwtab=function(t){post('/app/tab',{t:t});};
+window.__cwtab=function(t){if(t!=='refresh')mark(t);post('/app/tab',{t:t});};
+function mark(t){document.querySelectorAll('#cwbar button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
   var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
+async function newPage(v){              /* swap the page in place: no white flash, no reload */
+  var r=await fetch('/app?frag=1',{credentials:'same-origin',headers:{'X-CW':TOK}});
+  var h=await r.text();V=v;
+  if(window.__load){window.__load(h);}else{document.open();document.write(h);document.close();}
+  if(!wrap.isConnected)document.body.appendChild(wrap);
+  mark(r.headers.get('X-CW-Where')||'');}
 async function poll(){for(;;){try{
   var r=await fetch('/app/poll?v='+V,{credentials:'same-origin',headers:{'X-CW':TOK}});
   if(r.status==403){location.href='/';return;}
   var d=await r.json();
-  if(d.v!==V){location.reload();return;}
+  if(d.v!==V){await newPage(d.v);}
   for(const j of d.js){var out='';try{out=(0,eval)(j.code);}catch(err){out='';}
-    post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
-}catch(err){await new Promise(function(r){setTimeout(r,2000);});}}}
+    if(!wrap.isConnected)document.body.appendChild(wrap);
+    if(j.w)post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
+}catch(err){await new Promise(function(r){setTimeout(r,1500);});}}}
 poll();
 })();
 </script>"""
 
-TABBAR = """<style>body{padding-bottom:84px!important}
-#cwbar{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card,#1c1c1e);border-top:1px solid var(--line,#333);
-padding:6px 0 calc(6px + env(safe-area-inset-bottom));z-index:9999}
-#cwbar button{flex:1;background:none;border:0;color:var(--muted,#98989f);font:600 13px -apple-system,system-ui;padding:8px 0}
-#cwbar button.on{color:var(--accent,#0a84ff)}</style><div id='cwbar'>%s</div>"""
+ICONS = {
+    "mine": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='5' fill='currentColor'/><circle cx='12' cy='12' r='9.5' fill='none' stroke='currentColor' stroke-width='1.6' opacity='.45'/></svg>",
+    "build": "<svg viewBox='0 0 24 24'><path d='M12 4.5v15M4.5 12h15' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'/></svg>",
+    "results": "<svg viewBox='0 0 24 24'><path d='M5 19V11M12 19V5M19 19v-6' stroke='currentColor' stroke-width='2.4' stroke-linecap='round'/></svg>",
+    "settings": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='3.2' fill='none' stroke='currentColor' stroke-width='1.9'/><path d='M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8' stroke='currentColor' stroke-width='1.9' stroke-linecap='round'/></svg>",
+}
+
+SHELL_CSS = """<style>
+body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important;-webkit-tap-highlight-color:transparent}
+#cwbar{position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;justify-content:space-around;
+ padding:6px 4px calc(4px + env(safe-area-inset-bottom));
+ background:color-mix(in srgb,var(--card,#1c1c1e) 78%,transparent);-webkit-backdrop-filter:saturate(180%) blur(20px);
+ backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line,rgba(84,84,88,.6))}
+#cwbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:0;
+ color:var(--muted,#98989f);font:500 10.5px -apple-system,system-ui;letter-spacing:.01em;padding:4px 0;cursor:pointer;
+ transition:color .15s,transform .12s}
+#cwbar button:active{transform:scale(.92)}
+#cwbar button svg{width:25px;height:25px}
+#cwbar button.on{color:var(--accent,#0a84ff)}
+#cwref{position:fixed;top:calc(10px + env(safe-area-inset-top));right:14px;z-index:9999;width:36px;height:36px;border-radius:50%;
+ display:flex;align-items:center;justify-content:center;
+ border:0;background:color-mix(in srgb,var(--card,#1c1c1e) 80%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+ color:var(--accent,#0a84ff);font:600 17px -apple-system;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .3s}
+#cwref:active{transform:rotate(180deg) scale(.92)}
+</style>"""
+
+PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name='mobile-web-app-capable' content='yes'>"
+            "<meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>"
+            "<meta name='apple-mobile-web-app-title' content='Combos'><meta name='theme-color' content='#000000'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>")
 
 
 def webapp_main():
@@ -786,13 +819,20 @@ def webapp_main():
                 self.html, self.v, self.q = h, self.v + 1, []
                 self.cv.notify_all()
 
-        def js(self, code, timeout=4.0):
+        def quiet(self, h):
+            """The page changed in place (already sent to the browser): remember it for a reload."""
+            with self.cv:
+                self.html = h
+
+        def js(self, code, timeout=4.0, wait=False):
             if not self.active():
                 return ""
             with self.cv:
                 i = next(self.ids)
-                self.q.append({"id": i, "code": code})
+                self.q.append({"id": i, "code": code, "w": wait})
                 self.cv.notify_all()
+                if not wait:
+                    return ""                       # the planner never needs these answers: don't wait
                 end = time.time() + timeout
                 while i not in self.res and time.time() < end:
                     self.cv.wait(end - time.time())
@@ -859,13 +899,13 @@ def webapp_main():
                 except ValueError:
                     pass
             if js.startswith("window.__swap(") and js.endswith(")"):
-                try:
+                try:                                # a refresh of the same page: update it in place
                     body = json.loads(js[len("window.__swap("):-1])
                     head = B.html.split("<body", 1)[0] if "<body" in B.html else "<html><head></head>"
-                    B.load(head + "<body>" + body + "</body></html>")
-                    return ""
+                    B.quiet(head + "<body>" + body + "</body></html>")
                 except ValueError:
                     pass
+                return B.js(js.replace("location.href=", "__cw.href="))
             return B.js(js)
 
     class ButtonItem:
@@ -884,7 +924,7 @@ def webapp_main():
     console = types.ModuleType("console")
 
     def alert(title, message="", button1="OK", *a, **k):
-        got = B.js("confirm(%s)?'1':''" % json.dumps(f"{title}\n\n{message}".strip()), timeout=120)
+        got = B.js("confirm(%s)?'1':''" % json.dumps(f"{title}\n\n{message}".strip()), timeout=120, wait=True)
         if got != "1":
             raise KeyboardInterrupt
         return 1
@@ -927,18 +967,23 @@ def webapp_main():
     set_league(A.LEAGUE["code"])
     started = {"run": False}
 
-    def page():
+    def page(frag=False):
         h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
-                       "<body style='background:#000;color:#fff;font:17px -apple-system;padding:40px'>Starting the planner…</body></html>")
+                       "<body style='background:#000;color:#8e8e93;font:600 17px -apple-system;display:flex;"
+                       "align-items:center;justify-content:center;height:90vh'>Starting the planner…</body></html>")
         h = h.replace("location.href=", "__cw.href=")
+        if frag:
+            return h
         where = A.APP.get("where") or "mine"
-        tabs = "".join(f"<button class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">{icon} {label}</button>"
-                       for k, icon, label in A.TABS) + "<button onclick=\"__cwtab('refresh')\">⟳</button>"
-        bridge = BRIDGE_JS.replace("__CWV__", str(B.v))
-        extra = bridge + (TABBAR % tabs)
-        h = h.replace("</body>", extra + "</body>") if "</body>" in h else h + extra
-        if "viewport" not in h:
-            h = h.replace("<head>", "<head><meta name='viewport' content='width=device-width,initial-scale=1'>", 1)
+        tabs = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
+                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
+        wrap = (f"<div id='cwwrap'>{SHELL_CSS}<div id='cwbar'>{tabs}</div>"
+                "<button id='cwref' aria-label='Refresh' onclick=\"__cwtab('refresh')\"><svg viewBox='0 0 24 24' width='18' height='18'>"
+                "<path d='M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5' fill='none' stroke='currentColor' stroke-width='2.2' "
+                "stroke-linecap='round' stroke-linejoin='round'/></svg></button>"
+                + BRIDGE_JS.replace("__CWV__", str(B.v)) + "</div>")
+        h = h.replace("</body>", wrap + "</body>") if "</body>" in h else h + wrap
+        h = h.replace("<head>", "<head>" + PWA_HEAD, 1) if "<head>" in h else PWA_HEAD + h
         return h
 
     def start():
@@ -961,9 +1006,11 @@ def webapp_main():
         def log_message(self, *a):
             pass
 
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json", extra=None):
             body = body.encode() if isinstance(body, str) else body
             self.send_response(code)
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
@@ -984,13 +1031,16 @@ def webapp_main():
                     v = int(self.path.split("v=", 1)[1].split("&")[0])
                 except (IndexError, ValueError):
                     v = -1
-                if was_idle and started["run"]:
-                    threading.Thread(target=A.native_nav, args=("refresh",), daemon=True).start()
+                if was_idle and started["run"]:     # back after a while: show fresh data (Live if waiting on Build)
+                    to = "mine" if A.APP.get("settings_wait") and A.can_trade() and A.APP.get("where") != "mine" else "refresh"
+                    threading.Timer(1.0, A.native_nav, (to,)).start()
                 return self._send(200, json.dumps(B.poll(v)))
             if self.path.split("?")[0] in ("/app", "/app/"):
                 B.seen = time.time()
                 start()
-                return self._send(200, page(), "text/html; charset=utf-8")
+                frag = "frag=1" in self.path
+                return self._send(200, page(frag), "text/html; charset=utf-8",
+                                  {"X-CW-Where": A.APP.get("where") or ""})
             self._send(404, "{}")
 
         def do_POST(self):
@@ -1023,6 +1073,7 @@ def webapp_main():
     srv = ThreadingHTTPServer(("127.0.0.1", WEBAPP_PORT), H)
     srv.daemon_threads = True
     log(f"planner app for the browser ready (engine {A.VERSION})")
+    start()                                         # warm up now, so the first open is instant
     srv.serve_forever()
 
 
@@ -1045,9 +1096,11 @@ def webapp_proxy(handler, tok, method, path, body=b""):
     import urllib.request, urllib.error
     req = urllib.request.Request(f"http://127.0.0.1:{WEBAPP_PORT}{path}", data=body if method == "POST" else None,
                                  method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json"})
+    where = ""
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
             code, ctype, data = r.status, r.headers.get("Content-Type", "application/json"), r.read()
+            where = r.headers.get("X-CW-Where") or ""
     except urllib.error.HTTPError as err:
         code, ctype, data = err.code, "application/json", b"{}"
     except (urllib.error.URLError, OSError):
@@ -1061,6 +1114,8 @@ def webapp_proxy(handler, tok, method, path, body=b""):
     handler.send_header("Content-Type", ctype)
     handler.send_header("Cache-Control", "no-store")
     handler.send_header("X-Frame-Options", "DENY")
+    if where:
+        handler.send_header("X-CW-Where", where)
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
@@ -1216,7 +1271,7 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
-            if web and u.path.startswith("/app/"):
+            if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok:
                     return self._send(403, b"")
