@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.55"
+WATCHER_VERSION = "2026.11.17.56"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -510,7 +510,9 @@ main{max-width:720px;margin:0 auto;padding:16px}h1{font-size:26px;margin:8px 0 4
 .row{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}.mute{color:var(--mute);font-size:14px}
 button,input{font:inherit;border-radius:10px;border:1px solid var(--line);padding:9px 14px}button{background:var(--acc);color:#fff;border:0;cursor:pointer}
 button.sell{background:var(--good)}.msg{padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--line);margin:8px 0}
-pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}"""
+pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}.tab{padding:7px 12px;border-radius:999px;border:1px solid var(--line);color:var(--ink);text-decoration:none;background:var(--card)}
+.tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}"""
 
 
 class Web:
@@ -544,7 +546,7 @@ class Web:
         self.sessions[tok] = now + 30 * 86400
         return tok, ""
 
-    def page(self, tok, note=""):
+    def page(self, tok, note="", build=""):
         import html as h
         E = self.E
         e = h.escape
@@ -578,9 +580,11 @@ class Web:
                 f"<h1>Combo Hub</h1><div class='mute'>Your Mac · planner {e(E.VERSION)} · {time.strftime('%-I:%M %p')}</div>"
                 + (f"<div class='msg'>{e(note)}</div>" if note else "")
                 + f"<h2>Live combos ({len(rows)})</h2>" + ("".join(rows) or "<div class='card mute'>Nothing riding right now.</div>")
+                + f"<h2>Build &amp; buy</h2>{build}"
                 + f"<h2>Shadow auto-trading</h2><div class='card'>{e(sm)}</div>"
+                + f"<h2>Which odds are most accurate</h2><div class='card'>{e(E.accuracy_text(E.accuracy_summary()))}</div>"
                 + f"<h2>What the Mac has been doing</h2><div class='card'><pre>{e(tail)}</pre></div>"
-                "<div class='mute'>Buying new combos stays in the planner app for now.</div></main></body></html>")
+                "</main></body></html>")
 
     def act(self, form):
         E, t, do = self.E, form.get("t", ""), form.get("do", "")
@@ -611,6 +615,136 @@ class Web:
                 f"<button>Open</button></div></form>{('<p>' + h.escape(msg) + '</p>') if msg else ''}</div></main></body></html>")
 
 
+WEB_LEAGUES = (("nfl", "NFL"), ("nba", "NBA"), ("nhl", "NHL"), ("ncaaf", "CFB"), ("ncaamb", "CBB"))
+
+
+class WebBuild:
+    """Build and buy from the web view, using the hub's second engine (same lock as odds and shadow),
+    so nothing here touches the watcher's own live state."""
+    def __init__(self, odds):
+        self.odds, self.cur = odds, None
+
+    def build(self, lg):
+        import random
+        o = self.odds
+        with o.lock:
+            snap = o.get(lg, "")
+            H = o.engine()
+            games, _, _ = H.week_games(H.fetch_markets())
+            book = H.load_book_state(snap)
+            H.attach_fair(games, book)
+            combos, _ = H.build_combos(games, {}, random.Random(int(time.time() // 600))) if games else ([], None)
+            combos = [c for c in combos if not any(H.started(l) for l in c["legs"])][:12]
+            rows = []
+            for c in combos:
+                est = H.est_offer(c)
+                rows.append({"est": est[0], "est_pct": est[1], "thin": H.thin_legs(c["legs"])})
+            self.cur = {"lg": lg, "combos": combos, "rows": rows, "stake": H.CFG["stake"], "offers": {},
+                        "cut": H.CFG["accept_pct"], "at": time.time(), "name": H.LG()["name"]}
+        return self.cur
+
+    def quote(self, i):
+        b = self.cur
+        if not b or not 1 <= i <= len(b["combos"]) or time.time() - b["at"] > 1800:
+            return "Those suggestions are out of date. Build again."
+        o = self.odds
+        with o.lock:
+            H = o.engine()
+            H.set_league(b["lg"])
+            H.CTX.clear()
+            H.CTX.update(combos=b["combos"], stake=b["stake"], offers={}, build_id=None)
+            r = H.get_offer(i)
+            if r.get("error"):
+                return r["error"]
+            b["offers"][i] = dict(H.CTX["offers"][i], got=time.time(), pct=r.get("pct"), ok=r.get("ok"))
+        pct = f" ({r['pct']:.0%} of fair)" if r.get("pct") else ""
+        verdict = "" if r.get("ok") else f" That's under your {b['cut']}% cut-off."
+        return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
+
+    def buy(self, i):
+        b = self.cur
+        off = (b or {}).get("offers", {}).get(i)
+        if not off or time.time() - off["got"] > 20:
+            return "That price expired. Tap Get price again."
+        o = self.odds
+        with o.lock:
+            H = o.engine()
+            H.set_league(b["lg"])
+            H.CTX.clear()
+            H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
+            log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
+            r = H.accept_offer(i)
+        b["offers"].pop(i, None)
+        if r.get("error"):
+            return r["error"]
+        return f"✅ Bought: {H.money(off['stake'])} to win {H.money(r['pays'])}. It shows under Live within a minute."
+
+    def html(self, tok):
+        import html as h
+        e = h.escape
+        b = self.cur
+        tabs = "".join(f"<a class='tab{' on' if b and b['lg'] == lg else ''}' href='/?build={lg}'>{nm}</a>"
+                       for lg, nm in WEB_LEAGUES)
+        if not b:
+            return f"<div class='tabs'>{tabs}</div><div class='card mute'>Pick a league to build suggestions.</div>"
+        if not b["combos"]:
+            return f"<div class='tabs'>{tabs}</div><div class='card mute'>No {e(b['name'])} games to build from right now.</div>"
+        H = self.odds.engine()
+        cards = []
+        for i, (c, row) in enumerate(zip(b["combos"], b["rows"]), 1):
+            picks = " + ".join(f"{e(l['pick'])} <span class='mute'>{l['fair']:.0%}</span>" for l in c["legs"])
+            est = (f"Kalshi will likely pay about {H.money(row['est'] * b['stake'] / H.CFG['stake'])} "
+                   f"({row['est_pct']:.0%} of fair)" if row.get("est") else "")
+            thin = (f"<div class='mute'>⚠️ Thin Kalshi order book on {e(', '.join(row['thin']))}: its price may be off.</div>"
+                    if row["thin"] else "")
+            off = b["offers"].get(i)
+            fresh = off and time.time() - off["got"] < 20
+            btn = (f"<button class='sell' name='do' value='bbuy'>Buy {H.money(off['stake'])} to win {H.money(off['pays'])}"
+                   f"{'' if off.get('ok') else ' (under cut-off)'}</button>" if fresh else
+                   "<button name='do' value='bquote'>Get price</button>")
+            cards.append(f"<div class='card'><div><b>{len(c['legs'])} picks</b> · fair pays "
+                         f"{H.money(c['fair'])} for {H.money(b['stake'])}</div><div style='margin:6px 0'>{picks}</div>"
+                         f"<div class='mute'>{est}</div>{thin}<form method='post' action='/act' style='margin-top:8px'>"
+                         f"<input type='hidden' name='tok' value='{e(tok)}'><input type='hidden' name='i' value='{i}'>"
+                         f"{btn}</form></div>")
+        return (f"<div class='tabs'>{tabs}</div><div class='mute'>{e(b['name'])} suggestions · built "
+                f"{time.strftime('%-I:%M %p', time.localtime(b['at']))} · your weekly cap still applies</div>"
+                + "".join(cards))
+
+
+def accuracy_loop(odds, every=300):
+    """Before each game: record every source's price (sportsbooks, Polymarket, Kalshi, the planner's
+    blend); after it: score them. Over a season this says which source to trust, and the free blend
+    re-weights itself from it once there are 150+ games of each."""
+    time.sleep(90)
+    last_resolve = 0
+    while True:
+        for code in SHADOW_LEAGUES:
+            try:
+                with odds.lock:
+                    snap = odds.get(code, "")
+                    soon = odds.soonest(snap)
+                    if soon and soon - time.time() < 1500:          # a game starts within 25 minutes
+                        H = odds.engine()
+                        games, _, _ = H.week_games(H.fetch_markets())
+                        H.attach_fair(games, H.load_book_state(snap))
+                        n = H.accuracy_record(games, snap)
+                        if n:
+                            log(f"accuracy: recorded {n} {code} game(s) at kickoff")
+            except Exception as err:
+                log(f"accuracy {code} skipped:", type(err).__name__, err)
+        if time.time() - last_resolve > 1800:
+            last_resolve = time.time()
+            try:
+                with odds.lock:
+                    n = odds.engine().accuracy_resolve()
+                if n:
+                    log(f"accuracy: scored {n} finished game(s)")
+            except Exception as err:
+                log("accuracy scoring skipped:", type(err).__name__, err)
+        time.sleep(every)
+
+
 def start_hub(conf, E, odds=None):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
@@ -618,6 +752,7 @@ def start_hub(conf, E, odds=None):
     secret, cache, seen = conf["secret"], HubCache(E), {}
     web = Web(conf, E) if conf.get("web", True) else None
     odds = odds or HubOdds()
+    builder = WebBuild(odds)
     seen_lock = threading.Lock()
     threading.Thread(target=cache.warm, daemon=True, name="hub-warm").start()
 
@@ -633,7 +768,7 @@ def start_hub(conf, E, odds=None):
                 return {"status": 403, "text": "not allowed"}
             return cache.get(url, req.get("params") or {})
         if op == "shadow":
-            return {"summary": E.shadow_summary()}
+            return {"summary": E.shadow_summary(), "accuracy": E.accuracy_summary()}
         if op == "odds":
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
@@ -683,7 +818,15 @@ def start_hub(conf, E, odds=None):
                 tok, form = web.session(self), self._form(n)
                 if not tok or form.get("tok") != tok:      # signed in, and the button came from our own page
                     return self._html(403, web.login_page("Please sign in again."))
-                return self._html(200, web.page(tok, web.act(form)))
+                if form.get("do") in ("bquote", "bbuy"):
+                    try:
+                        i = int(form.get("i", "0"))
+                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(i)
+                    except Exception as err:
+                        log("web build action failed:", type(err).__name__, err)
+                        msg = f"That didn't work: {type(err).__name__}. Nothing was bought."
+                    return self._html(200, web.page(tok, msg, builder.html(tok)))
+                return self._html(200, web.page(tok, web.act(form), builder.html(tok)))
             if self.path != "/v1" or not 0 < n < 2_000_000:
                 return self._send(403, b"")
             req = E.hub_unseal(secret, self.rfile.read(n))
@@ -706,9 +849,21 @@ def start_hub(conf, E, odds=None):
             self._send(200, E.hub_seal(secret, out))
 
         def do_GET(self):
-            if web and self.path in ("/", "/index.html"):
+            from urllib.parse import urlparse, parse_qs
+            u = urlparse(self.path)
+            if web and u.path in ("/", "/index.html"):
                 tok = web.session(self)
-                return self._html(200, web.page(tok) if tok else web.login_page())
+                if not tok:
+                    return self._html(200, web.login_page())
+                lg = (parse_qs(u.query).get("build") or [""])[0]
+                note = ""
+                if lg in dict(WEB_LEAGUES):
+                    try:
+                        builder.build(lg)
+                    except Exception as err:
+                        log("web build failed:", type(err).__name__, err)
+                        note = f"Couldn't build just now ({type(err).__name__}). Try again in a minute."
+                return self._html(200, web.page(tok, note, builder.html(tok)))
             self._send(404, b"")
 
         def _send(self, code, body):
@@ -776,6 +931,7 @@ def main():
         start_hub(conf, E, odds)
         if conf.get("shadow", True):
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
+        threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
@@ -833,6 +989,7 @@ def main():
                     text = E.weekly_text(st)
                     try:
                         text += "\n" + E.shadow_text(E.shadow_summary())
+                        text += "\n🎯 " + E.accuracy_text(E.accuracy_summary())
                     except Exception:
                         pass
                     push(conf, text, title="Weekly report", priority="low")

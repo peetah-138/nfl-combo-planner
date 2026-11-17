@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.55"
+VERSION = "2026.11.17.56"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -725,6 +725,9 @@ def sharp_snapshot(key):
 def merge_books(sharp, free):
     """Sharp lines win; free sources fill in games the odds service doesn't list."""
     out = empty_snapshot()
+    out["parts"] = {t: dict(v) for t, v in (free.get("parts") or {}).items()}
+    for t, v in sharp["fair"].items():
+        out["parts"].setdefault(t, {})["pinnacle" if v[1] == "Pinnacle" else "odds service"] = v[0]
     for part in (free, sharp):                     # sharp second, so it overrides
         out["fair"].update(part["fair"])
         out["games"].update(part["games"])
@@ -860,8 +863,9 @@ def free_snapshot(codes):
                 ml = espn_moneyline(comp)
                 pm = next(((p if _team_is(a, home) else 1 - p) for a, b, p in poly
                            if (_team_is(a, home) and _team_is(b, away)) or (_team_is(a, away) and _team_is(b, home))), None)
+                w_book, w_poly = source_weights()
                 if ml and ml[2] is None and pm is not None:
-                    ph, src = (ml[0] + pm) / 2, f"{ml[3]} + Polymarket"
+                    ph, src = (w_book * ml[0] + w_poly * pm) / (w_book + w_poly), f"{ml[3]} + Polymarket"
                     used.update((ml[3], "Polymarket"))
                 elif ml:
                     ph, src = ml[0], ml[3]
@@ -873,8 +877,14 @@ def free_snapshot(codes):
                     continue
                 pa = ml[1] if ml and ml[2] is not None else 1 - ph   # with a draw, the two don't add to 1
                 start = ev.get("date") or comp.get("date") or ""
-                for me, other, p in ((home, away, ph), (away, home, pa)):
+                parts = {"home": {}, "away": {}}
+                if ml:
+                    parts["home"]["sportsbook"], parts["away"]["sportsbook"] = ml[0], ml[1]
+                if pm is not None:
+                    parts["home"]["polymarket"], parts["away"]["polymarket"] = pm, 1 - pm
+                for me, other, p, side in ((home, away, ph, "home"), (away, home, pa, "away")):
                     nm, op = me["displayName"], other["displayName"]
+                    snap.setdefault("parts", {})[nm] = parts[side]
                     snap["fair"].setdefault(nm, [p, src])
                     snap["games"].setdefault(nm, []).append({"fair": [p, src], "start": start,
                                                              "day": str(espn_day(start) or "") or None, "opp": op})
@@ -1067,6 +1077,8 @@ def attach_fair(games, book):
                 s["fair"] = r / sum(raw)
                 s["src"] = src
                 s["edge"] = s["fair"] - s["p"] if src else None
+        for s, n in zip(sides, names):
+            s["book_name"] = n if src else None
         news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
@@ -2722,8 +2734,11 @@ def results_page(sunday):
         body.append("<section><div class='empty'>No combos for this week yet.</div>")
     body.append(breakdown_html())
     if hub_up():
-        got = hub_call("shadow", timeout=10)
-        body.append(shadow_html((got or {}).get("summary")))
+        got = hub_call("shadow", timeout=10) or {}
+        body.append(shadow_html(got.get("summary")))
+        if got.get("accuracy") is not None:
+            body.append("<section><h2><span>🎯 Which odds are most accurate</span></h2><div class='game'><div class='row'>"
+                        f"<span>{html.escape(accuracy_text(got['accuracy']))}</span></div></div></section>")
     pi = pi_report()
     if pi and pi.get("stats"):
         body.append(edge_html(pi["stats"], "From your Pi, which records every kickoff price · updated "
@@ -7883,7 +7898,13 @@ def shadow_candidates_with(book):
             continue                              # quote close to game time, when combos price best
         out.append(((est_offer(c)[1] or 0.8 * c["kalshi"] / c["fair"]), c))
     out.sort(key=lambda x: -x[0])
-    return [c for _, c in out]
+    good = []
+    for _, c in out:
+        if len(good) >= 6:
+            break
+        if not thin_legs(c["legs"]):              # thin order books make Kalshi's price unreliable
+            good.append(c)
+    return good
 
 
 SHADOW_WINDOW = 8 * 3600
@@ -7935,6 +7956,170 @@ def shadow_html(sm):
             "<div class='row'><span class='muted'>Your Mac runs the full-auto strategy with real Kalshi quotes "
             "but no money. It only paper-buys when a quote pays more than fair. Go live only once this shows a "
             "profit over 50+ bets.</span></div></div></section>")
+
+
+# ================================================================ order books (Kalshi)
+BOOK_DEPTH = {}
+
+
+def book_depth(ticker, max_age=60):
+    """Kalshi's order book for one pick: {'bid', 'ask', 'spread', 'ask_size' (contracts at the best
+    ask), 'thin'}. Thin = wide spread or little size, so the price isn't reliable. None if unknown."""
+    now = time.time()
+    got = BOOK_DEPTH.get(ticker)
+    if got and now - got[0] < max_age:
+        return got[1]
+    try:
+        r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
+        ob = ((r.json() or {}).get("orderbook") or {}) if r.ok else {}
+    except (requests.RequestException, ValueError):
+        return None
+
+    def levels(side):
+        rows = ob.get(f"{side}_dollars") or [[x[0] / 100, x[1]] for x in (ob.get(side) or [])]
+        out = []
+        for row in rows:
+            try:
+                out.append((float(row[0]), float(row[1])))
+            except (TypeError, ValueError, IndexError):
+                pass
+        return sorted(out)
+    yes, no = levels("yes"), levels("no")
+    if not yes or not no:
+        info = {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
+                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
+    else:
+        bid, ask = yes[-1][0], 1 - no[-1][0]
+        info = {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
+                "thin": ask - bid > 0.04 or no[-1][1] < 100}
+    BOOK_DEPTH[ticker] = (now, info)
+    if len(BOOK_DEPTH) > 3000:
+        for k in sorted(BOOK_DEPTH, key=lambda k: BOOK_DEPTH[k][0])[:1000]:
+            BOOK_DEPTH.pop(k, None)
+    return info
+
+
+def thin_legs(legs):
+    """Picks in a combo whose Kalshi price comes from a thin order book (names), checked live."""
+    out = []
+    for l in legs:
+        d = book_depth(l["ticker"])
+        if d and d["thin"]:
+            out.append(l["pick"])
+    return out
+
+
+# ================================================================ which odds source is most accurate
+ACCURACY = os.path.join(HERE, "combo_accuracy.json")
+SOURCES = ("pinnacle", "odds service", "sportsbook", "polymarket", "kalshi", "blend")
+ACC_CACHE = {}
+
+
+def accuracy_state():
+    st = load_json(ACCURACY, {})
+    st.setdefault("open", {})
+    st.setdefault("done", [])
+    return st
+
+
+def accuracy_record(games, snap, window=1200):
+    """For games starting within `window` seconds: remember each source's chance for one team
+    (the latest seen before kickoff counts). Call often before games."""
+    st = accuracy_state()
+    now = time.time()
+    parts = snap.get("parts") or {}
+    n = 0
+    for e, sides in games.items():
+        if len(sides) != 2 or any(x.get("tie") for x in sides):
+            continue                                  # two-way games only (draws muddy the scoring)
+        try:
+            kt = dt.datetime.fromisoformat(str(KICKOFF.get(e)).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if not (now < kt < now + window):
+            continue
+        a = sides[0]
+        if not a.get("book_name"):
+            continue
+        tot = sum(x["p"] for x in sides)
+        row = {"team": a["book_name"], "ticker": a["ticker"], "kick": kt, "league": ticker_sport(a["ticker"]),
+               "kalshi": round(a["p"] / tot, 4), "blend": round(a["fair"], 4)}
+        for src, p in (parts.get(a["book_name"]) or {}).items():
+            row[src] = round(p, 4)
+        st["open"][e] = row
+        n += 1
+    if n:
+        save_json(ACCURACY, st)
+    return n
+
+
+def accuracy_resolve():
+    """Score recorded games that have finished (from Kalshi's settled results)."""
+    st = accuracy_state()
+    due = {e: r for e, r in st["open"].items() if time.time() > r["kick"] + 2 * 3600}
+    if not due:
+        return 0
+    res = fetch_results({r["ticker"] for r in due.values()})
+    n = 0
+    for e, r in due.items():
+        out = res.get(r["ticker"])
+        if out in ("yes", "no"):
+            st["done"].append(dict(r, won=1 if out == "yes" else 0))
+            del st["open"][e]
+            n += 1
+        elif time.time() > r["kick"] + 4 * 86400:
+            del st["open"][e]                         # never settled (postponed?): drop it
+    st["done"] = st["done"][-3000:]
+    save_json(ACCURACY, st)
+    ACC_CACHE.clear()
+    return n
+
+
+def accuracy_summary():
+    """Per source: games scored, Brier score (lower is better), and the gain over Kalshi's own
+    pre-game price on the same games (positive = more accurate than Kalshi)."""
+    done = accuracy_state()["done"]
+    out = {}
+    for src in SOURCES:
+        rows = [r for r in done if r.get(src) is not None]
+        if not rows:
+            continue
+        brier = sum((r[src] - r["won"]) ** 2 for r in rows) / len(rows)
+        both = [r for r in rows if r.get("kalshi") is not None]
+        vs = None
+        if both and src != "kalshi":
+            vs = (sum((r["kalshi"] - r["won"]) ** 2 for r in both) - sum((r[src] - r["won"]) ** 2 for r in both)) / len(both)
+        out[src] = {"n": len(rows), "brier": round(brier, 4), "vs_kalshi": round(vs, 4) if vs is not None else None}
+    return out
+
+
+def source_weights():
+    """(sportsbook weight, Polymarket weight) for the free blend: even until 150 games of each are
+    scored, then by measured accuracy (inverse Brier score)."""
+    try:
+        if "sum" not in ACC_CACHE or time.time() - ACC_CACHE.get("at", 0) > 3600:
+            ACC_CACHE.update(sum=accuracy_summary(), at=time.time())
+        sm = ACC_CACHE["sum"]
+    except Exception:
+        return 1.0, 1.0
+    b, p = sm.get("sportsbook"), sm.get("polymarket")
+    if not b or not p or min(b["n"], p["n"]) < 150:
+        return 1.0, 1.0
+    wb, wp = 1 / max(b["brier"], 0.05), 1 / max(p["brier"], 0.05)
+    return 2 * wb / (wb + wp), 2 * wp / (wb + wp)
+
+
+def accuracy_text(sm):
+    if not sm:
+        return "Nothing scored yet: the Mac records every source's price at kickoff and scores it when the game ends."
+    names = {"pinnacle": "Pinnacle", "odds service": "Odds service", "sportsbook": "ESPN's sportsbook",
+             "polymarket": "Polymarket", "kalshi": "Kalshi", "blend": "Planner's fair price"}
+    parts = []
+    for src, v in sorted(sm.items(), key=lambda kv: kv[1]["brier"]):
+        vs = v.get("vs_kalshi")
+        parts.append(f"{names.get(src, src)} {v['brier']:.3f} ({v['n']} games"
+                     + (f", {'more' if vs > 0 else 'less'} accurate than Kalshi" if vs else "") + ")")
+    return "Brier score, lower is better: " + "; ".join(parts) + "."
 
 
 def _as_auto(fn):
