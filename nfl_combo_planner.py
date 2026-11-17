@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.35"
+VERSION = "2026.11.16.36"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -42,6 +42,7 @@ CFG = {
     "tp_follow": True,    # move auto-sell orders as chances change, while the planner is open
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
+    "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -132,7 +133,7 @@ LEAGUES = {
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell")
 
 
 def next_league():
@@ -3022,13 +3023,50 @@ def live_check(webview):
                 page, snap = mine_page(live=True)
         except Exception:
             pass
-    cash_alerts_now = cash_alerts(MINE.get("plan"))
+    sold = auto_sell_now(MINE.get("plan"))
+    if sold:
+        ACCT_CACHE["at"] = 0
+        MINE["flash"] = " ".join(sold)
+        page, snap = mine_page(live=True)
+        for msg in sold:
+            notify(msg)
+    cash_alerts_now = [] if sold else cash_alerts(MINE.get("plan"))
     alerts = diff_alerts(MINE.get("snap") or {}, snap) + pre_alerts + cash_alerts_now
     MINE["snap"] = snap
     present(page, MineKeeper())
     for msg in ([] if pi else alerts[:4]):        # the Pi sends these when it's running
         notify(msg)
     return alerts
+
+
+def auto_sell_now(plan):
+    """Auto cash-out (Settings, off by default): sells what the plan says to cash out, by itself,
+    the same advice the card shows as Cash out. That already means a pick has won and Kalshi's
+    offer is at least the Let it ride price for waiting another game; both are checked again here.
+    Uses Kalshi's cash-out offers (the only way it buys combos back), so it runs while the planner
+    is open. Returns the messages to send."""
+    if not (CFG.get("auto_sell") and plan and can_trade()) or MINE.get("busy"):
+        return []
+    out = []
+    MINE["busy"] = True
+    try:
+        for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
+            h, o = MINE["hold"].get(t), fresh_offer(t)
+            if not (f and h and o and h.get("won_some")) or t in MINE.get("selling", set()):
+                continue
+            whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+            if whole < wait_threshold(t):
+                continue
+            if f < 1 or o.get("frac", 1.0) < 1:
+                o = get_cash_offer(t, f)
+                MINE["cash"][t] = o
+                if not o.get("offer") or o["offer"] < CASH_SLIP * whole * f:
+                    continue
+            msg = accept_cash(t)
+            out.append(("🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ") + msg)
+    finally:
+        MINE["busy"] = False
+    return out
 
 
 def notify(msg):
@@ -3220,6 +3258,11 @@ def cash_block(ticker, plan):
            f" <span class='muted'>({money(pays)} back)</span>"
            + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
+    if CFG.get("auto_sell") and can_trade() and not h.get("rough"):
+        thr = wait_threshold(ticker)
+        out.append("<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: "
+                   + (f"sells by itself if Kalshi offers about {money(thr)} or more." if h.get("won_some") and thr
+                      else "it waits until a pick in this combo has won.") + "</div>")
     tp = (MINE.get("tp") or {}).get(ticker)
     if tp:
         st = order_steps(tp)
@@ -4181,7 +4224,7 @@ def auto_cash_checks():
     per Settings) so Cash out is always one confirm away, and alert when the plan says to
     cash something out. Never sells on its own."""
     import time
-    if not CFG["auto_cash"] or not can_trade():
+    if not (CFG["auto_cash"] or CFG.get("auto_sell")) or not can_trade():
         return []
     soon = before_risky_game()
     for t, (nm, when) in soon.items():
@@ -5408,6 +5451,7 @@ def settings_page(all_games, days, counts):
                 + slider("cash_every", "Fresh cash-out offers every", 1, 10, 1, " min")
                         + slider("ride", "Let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
+                        + switch("auto_sell", "Auto cash-out at my Let it ride level")
                         + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
                             + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
                             + switch("tp_auto", "Auto-sell all my live combos (every league)")) if AUTOSELL else ""),
@@ -5416,7 +5460,10 @@ def settings_page(all_games, days, counts):
                          "out the games still to come in order and, at each step, weighs cashing out then (at the "
                          "discount Kalshi buyers really pay, learned from your own offers) against waiting another "
                          "game. Cautious acts on your real bankroll, Steady 2×, Balanced 4×, Bold 10×, Ride it out "
-                         "only near full value. Nothing sells unless you confirm."
+                         "only near full value. Auto cash-out sells by itself when the card says Cash out: a pick "
+                         "has already won and Kalshi's offer beats waiting another game at your level. It works "
+                         "while the planner is open (Kalshi buys combos back only through live offers), and tells "
+                         "you each time. Otherwise nothing sells unless you confirm."
                          + (" Auto-sell puts a standing sell order on Kalshi that fills only if a buyer pays that "
                             "much." if AUTOSELL else ""))),
         "kalshi": section("Kalshi account",
