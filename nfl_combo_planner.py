@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.41"
+VERSION = "2026.11.16.42"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1622,8 +1622,14 @@ function myPrice(){ var t=Array.prototype.map.call(document.querySelectorAll('.m
   if(t.length<2){ myMsg("<span class='muted'>Pick at least 2 teams.</span>"); return; }
   myMsg("<span class='muted'>Adding your combo…</span>");
   try{ location.href='combo://custom/'+BUILD+'/0/'+encodeURIComponent(t.join(',')); }catch(e){} }
+function autoQuotes(){ var all=Array.prototype.map.call(document.querySelectorAll('.card[data-i]'),function(c){return +c.dataset.i;})
+  .filter(function(i){ return state.placed.indexOf(i)<0; });
+  if(!all.length) return;
+  all.forEach(function(i){ tradeMsg(i,"<span class='muted'>Getting Kalshi's price…</span>"); });
+  try{ location.href='combo://batch/'+BUILD+'/0/'+all.map(function(i){ return i+':'+stakeOf(i); }).join(',')+'/auto'; }catch(e){} }
 function markPlaced(i,pays){ if(state.placed.indexOf(i)<0) state.placed.push(i); state.quotes[i]=pays; paint(); }
 paint();
+if(window.AUTOQ){ setTimeout(autoQuotes, 300); }
 if(FOCUS){ var fc=document.querySelector('.card[data-i="'+FOCUS+'"]');
   if(fc){ fc.scrollIntoView(); fc.style.outline='2px solid var(--accent)'; } }
 """
@@ -2279,6 +2285,8 @@ def show_build(all_games=None, days=None, sunday=None):
         if ctx:
             CTX.update(ctx)
     page = inject_state(page)
+    if CTX.pop("autoq", False) and can_trade():          # a fresh build: get Kalshi's price for every combo
+        page = page.replace("<script>var FOCUS=", "<script>var AUTOQ=1;var FOCUS=", 1)
 
     @safe_delegate
     class Keeper:
@@ -5503,9 +5511,14 @@ def get_offer(i, amount=None, check_cap=True):
 def accept_offer(i):
     """Step 4: accept. 'no' is correct: it hits the seller's NO bid, which buys you YES."""
     import time
-    o = CTX["offers"].pop(i, None)
+    o = CTX["offers"].get(i)
     if not o:
         return {"error": "That offer is gone. Tap Buy on Kalshi to get a fresh one."}
+    spent = week_spend()
+    if spent + o["stake"] > CFG["budget"] + 0.01:
+        return {"error": f"That would take this {slate_word()} to {money(spent + o['stake'])}, over your "
+                         f"{money(CFG['budget'])} cap. Raise the cap in Settings to go ahead."}
+    CTX["offers"].pop(i, None)
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "no"})
@@ -5759,15 +5772,17 @@ def handle_action(webview, parts):
                         except ValueError:
                             wanted.append((int(k), CTX["stake"]))
                 total = sum(a for _, a in wanted)
-                spent = week_spend()
-                if spent + total > CFG["budget"] + 0.01:
+                auto = len(parts) > 4 and parts[4] == "auto"     # prices only: the cap applies when you Accept
+                spent = 0 if auto else week_spend()
+                if not auto and spent + total > CFG["budget"] + 0.01:
                     say(f"<span class='verdict no'>Those add up to {money(total)}, which would take this "
                         f"{slate_word()} to {money(spent + total)}, over your {money(CFG['budget'])} cap. "
                         "Untick some or lower the amounts.</span>", 0)
                     for k, _ in wanted:
                         say("", k)
                     return
-                say(f"<span class='muted'>Getting {len(wanted)} offers at once… (up to 25 seconds)</span>", 0)
+                say(f"<span class='muted'>Getting Kalshi's price for {'all ' if auto else ''}{len(wanted)} combos… "
+                    "(up to a minute)</span>", 0)
 
                 def one(item):
                     k, amt = item
@@ -5780,8 +5795,8 @@ def handle_action(webview, parts):
                         return False
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     got = sum(pool.map(one, wanted))
-                say(f"<span class='muted'>{got} of {len(wanted)} offers in. Accept or decline each "
-                    "one on its card. Offers can expire after a minute or two.</span>", 0)
+                say(f"<span class='muted'>{got} of {len(wanted)} prices in. Accept or decline on each card. "
+                    "Offers expire after a minute or two: tap Buy on Kalshi for a fresh one.</span>", 0)
             elif action == "custom":
                 k, note = add_own_combo([t for t in (parts[3] if len(parts) > 3 else "").split(",") if t])
                 if not k:
@@ -6642,7 +6657,7 @@ def main():
     CTX.clear()
     CTX.update({"games": games, "all_games": all_games, "days": days, "sunday": sunday,
                 "locks": locks, "skipped": skipped, "news": news, "notes": notes, "combos": combos,
-                "build_id": build_id, "stake": CFG["stake"], "offers": {}})
+                "build_id": build_id, "stake": CFG["stake"], "offers": {}, "autoq": True})
     console_note(f"Built {len(combos)} combos (${len(combos) * CFG['stake']}). Opening results...")
     show_build()
 
