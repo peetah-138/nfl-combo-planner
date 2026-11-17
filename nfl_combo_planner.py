@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.49"
+VERSION = "2026.11.17.50"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4686,7 +4686,7 @@ def watcher_alive():
     does auto cash-out, and the phone stays out of its way."""
     import time
     hb = watcher_status()
-    return bool(hb and time.time() - hb.get("at", 0) < 180)
+    return bool(hb and time.time() - hb.get("at", 0) < 180 and not hb.get("err"))
 
 
 def send_watcher_settings():
@@ -4729,13 +4729,21 @@ def watcher_line():
     if not watcher_conf():
         return ""
     hb = watcher_status()
+    if hb and time.time() - hb.get("at", 0) < 180 and hb.get("err"):
+        return ("<div class='wline bad'>🖥 Pi watcher is running but its checks are failing: "
+                f"{html.escape(hb['err'])}. Your phone is handling alerts and cash-outs while it's open.</div>")
     if hb and time.time() - hb.get("at", 0) < 180:
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
         extra = (" · ⏸ auto cash-out paused (save Settings with it on to resume)" if hb.get("paused") else "") + \
                 (f" · waiting for you to update this phone to {hb['waiting']}" if hb.get("waiting") else "")
         return f"<div class='wline'>🖥 Pi watcher on · checked {t}{extra}</div>"
-    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 3+ minutes. Your phone is handling "
-            "alerts while it's open.</div>")
+    last = ""
+    if hb and hb.get("at"):
+        t = dt.datetime.fromtimestamp(hb["at"])
+        last = (f" Last heard from {t.strftime('%-I:%M %p')}" + ("" if t.date() == dt.date.today() else t.strftime(" %a"))
+                + f" on version {hb.get('engine', '?')}.")
+    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 3+ minutes." + last +
+            " Your phone is handling alerts while it's open.</div>")
 
 
 def start_autosell_keeper():

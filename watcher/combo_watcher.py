@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.16.48"
+WATCHER_VERSION = "2026.11.17.50"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -138,7 +138,7 @@ def pause(conf, E):
                "Settings with Auto cash-out on.", priority="high")
 
 
-def heartbeat(conf, E, note=""):
+def heartbeat(conf, E, note="", err=""):
     """A small status message the phone reads to show the watcher is alive."""
     holds = E.MINE.get("hold") or {}
     live = sum(1 for h in holds.values() if h.get("left", 1) > 0)
@@ -149,7 +149,8 @@ def heartbeat(conf, E, note=""):
     body = json.dumps({"at": int(time.time()), "v": WATCHER_VERSION, "engine": E.VERSION, "live": live,
                        "orders": sum(len(v) for v in (E.MINE.get("tp") or {}).values()), "note": note,
                        "paused": bool(conf.get("paused")), "waiting": conf.get("waiting") or "",
-                       "playing": playing, "next": int(min(upcoming)) if upcoming else None, "cash": cash[:4]})
+                       "playing": playing, "next": int(min(upcoming)) if upcoming else None, "cash": cash[:4],
+                       "err": err[:160]})
     try:
         requests.post(f"{NTFY}/{conf['topic']}-hb", data=body.encode(), timeout=10,
                       headers={"Cache": "yes"})
@@ -335,6 +336,12 @@ def main():
         except Exception as err:
             log("check failed:", type(err).__name__, err)
             traceback.print_exc()
+            if time.time() - last["hb"] > 55:      # still report in, with the error, so the phone shows it
+                last["hb"] = time.time()
+                try:
+                    heartbeat(conf, E, err=f"{type(err).__name__}: {err}")
+                except Exception:
+                    pass
             time.sleep(30)
         time.sleep(max(5, int(E.CFG.get("refresh_secs", 15)) - (time.time() - t0)))
 
