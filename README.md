@@ -50,6 +50,11 @@ admin page, turn off key expiry for the Pi so it stays connected.
 
 ## Optional: the watcher on a Mac (instead of a Pi)
 
+**Easiest:** download `watcher/Combo-Watcher.zip`, unzip it, and open **Combo Watcher**. It walks you through
+Tailscale, the Mac's Kalshi key and your phone's pairing code in its own window, and later shows the
+watcher's status with buttons to update, change the passcode, replace the key or remove it.
+
+
 A Mac that stays plugged in can run the same watcher. In Terminal:
 
 ```

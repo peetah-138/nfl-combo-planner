@@ -20,7 +20,9 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$DIR/watcher.log"
 PY="$DIR/.venv/bin/python"
 GUI=0
+AUTO=0       # --auto: driven by the Combo Watcher app (answers come in CW_* variables; progress as STEP: lines)
 if [ "${1:-}" = "--gui" ]; then GUI=1; shift; fi
+if [ "${1:-}" = "--auto" ]; then AUTO=1; shift; fi
 TITLE="Combo Watcher Setup"
 
 say() {      # a message (GUI dialog or terminal text)
@@ -30,6 +32,7 @@ on run argv
   display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK"
 end run
 AS
+  elif [ "$AUTO" = 1 ]; then printf 'MSG: %s\n' "$(printf '%s' "$1" | tr '\n' ' ')"
   else echo; echo "$1"; fi
 }
 
@@ -80,7 +83,9 @@ Web view: open $hub in any browser on your Tailscale network (iPhone, iPad, this
 
 On your iPhone: planner > Settings > Pi watcher, paste this code, tap Save."
   fi
-  if [ "$GUI" = 1 ]; then
+  if [ "$AUTO" = 1 ]; then
+    printf 'CODE: %s\nHUB: %s\nPASS: %s\n' "$code" "$hub" "$pass"
+  elif [ "$GUI" = 1 ]; then
     b=$(osascript - "$msg" "$code" "$TITLE" <<'AS'
 on run argv
   set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title (item 3 of argv) buttons {"Done", "Copy code"} default button "Copy code"
@@ -148,7 +153,9 @@ case "${1:-}" in
     ip=$(tailscale_ip)
     head="$head
 Tailscale: ${ip:-not signed in}"
-    if [ "$GUI" = 1 ]; then
+    if [ "$AUTO" = 1 ]; then
+      printf 'STATE: %s\nTS: %s\n' "${state:-stopped}" "${ip:-}"; tail -n 12 "$LOG" 2>/dev/null | sed 's/^/LOG: /'
+    elif [ "$GUI" = 1 ]; then
       say "$head
 
 Latest activity:
@@ -209,6 +216,7 @@ umask 077
 # Python: a private copy via uv (no Xcode tools, no admin password, nothing system-wide).
 UV="$(command -v uv || true)"
 [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ] && UV="$HOME/.local/bin/uv"
+echo "STEP: python"
 if [ -z "$UV" ]; then
   echo "Installing uv (a small Python installer, about 30 MB)..."
   curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null
@@ -220,6 +228,7 @@ if [ ! -x "$PY" ]; then
 fi
 "$UV" pip install -q --python "$PY" requests
 
+echo "STEP: download"
 echo "Downloading the planner..."
 tmp=$(mktemp -d)
 curl -fsSL "$REPO/nfl_combo_planner.py" -o "$tmp/engine.py"
@@ -229,10 +238,17 @@ install -m 600 "$tmp/engine.py" "$DIR/engine.py"
 install -m 600 "$tmp/combo_watcher.py" "$DIR/combo_watcher.py"
 rm -rf "$tmp"
 
+echo "STEP: key"
 if [ -f "$DIR/kalshi_private_key.pem" ] && [ "${1:-}" != "--new-key" ]; then
   echo "Kalshi key already set up (run with --new-key to replace it)."
 else
-  if [ "$GUI" = 1 ]; then
+  if [ "$AUTO" = 1 ]; then
+    KEYID="${CW_KEYID:-}"
+    if [ -z "$KEYID" ] || [ ! -f "${CW_KEYFILE:-}" ] || ! grep -q "BEGIN" "$CW_KEYFILE"; then
+      echo "ERROR: The Key ID or private key file is missing or isn't a Kalshi private key."; exit 3
+    fi
+    pem=$(cat "$CW_KEYFILE")$'\n'
+  elif [ "$GUI" = 1 ]; then
     open "https://kalshi.com/account/profile" 2>/dev/null || true
     say "Step 2: make a NEW Kalshi API key just for this Mac (so you can revoke it on its own).
 
@@ -283,9 +299,12 @@ AS
   fi
 fi
 
+echo "STEP: pairing"
 new_pairing=0
 if [ ! -f "$DIR/watcher.json" ]; then
-  if [ "$GUI" = 1 ]; then
+  if [ "$AUTO" = 1 ]; then
+    PAIR="${CW_PAIR:-}"
+  elif [ "$GUI" = 1 ]; then
     PAIR=$(ask "Step 3: your phone's current pairing code, so your ntfy alerts keep working.
 
 On your iPhone: planner > Settings > Pi watcher, copy the code (with Handoff it pastes right here). Leave this empty to start a new pairing instead." "")
@@ -321,6 +340,7 @@ if not c.get("web_pass"):
     json.dump(c, open(sys.argv[1], "w"))
 PYEOF
 
+echo "STEP: start"
 # Background job: starts at login, restarts if it stops, keeps the Mac awake (caffeinate) while plugged in.
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLISTEOF
@@ -368,28 +388,39 @@ if [ "$loaded" != 1 ]; then
 fi
 
 echo
+echo "STEP: kalshi"
 echo "Starting... (checking Kalshi)"
-for _ in $(seq 1 20); do
+kalshi="wait"                                    # the watcher retries a slow first check by itself
+for _ in $(seq 1 45); do
   sleep 2
-  if tail -n +$((start + 1)) "$LOG" 2>/dev/null | grep -qE "started|Kalshi check failed|no Kalshi access"; then break; fi
+  new=$(tail -n +$((start + 1)) "$LOG" 2>/dev/null || true)
+  if echo "$new" | grep -q "Kalshi OK"; then kalshi=ok; break; fi
+  if echo "$new" | grep -q "no Kalshi access"; then kalshi=fail; break; fi
+  if [ "$(echo "$new" | grep -c "Kalshi check failed")" -ge 3 ]; then kalshi=fail; break; fi
 done
 tail -n 4 "$LOG" 2>/dev/null || true
+[ "$AUTO" = 1 ] && echo "KALSHI: $kalshi $(tail -n +$((start + 1)) "$LOG" 2>/dev/null | grep -E 'Kalshi check failed|no Kalshi access' | tail -1 | cut -c21-200)"
 
 out=$(pair_code); code=$(echo "$out" | sed -n 1p); hub=$(echo "$out" | sed -n 2p)
 topic=$("$PY" -c "import json;print(json.load(open('$DIR/watcher.json'))['topic'])")
-if grep -qE "Kalshi check failed|no Kalshi access" <(tail -n +$((start + 1)) "$LOG" 2>/dev/null); then
+if [ "$kalshi" = fail ] && [ "$AUTO" != 1 ]; then
   say "The watcher is installed, but Kalshi didn't accept its key yet:
 
 $(tail -n +$((start + 1)) "$LOG" | grep -E 'Kalshi check failed|no Kalshi access' | tail -1 | cut -c21-200)
 
 Check the Key ID and file, then run setup again and choose Use a different Kalshi key."
 fi
-if [ "$new_pairing" = 1 ]; then
+[ "$AUTO" = 1 ] && [ "$new_pairing" = 1 ] && echo "TOPIC: $topic"
+if [ "$new_pairing" = 1 ] && [ "$AUTO" != 1 ]; then
   say "In the ntfy app on your iPhone, tap + and subscribe to this topic (keep it private):
 
 $topic"
 fi
-if [ "$code" != "$(cat "$DIR/.shown_code" 2>/dev/null)" ]; then   # only when the phone needs a new code
+if [ "$AUTO" = 1 ]; then
+  printf 'CODE: %s\nHUB: %s\nPASS: %s\nCHANGED: %s\n' "$code" "$hub" "$(echo "$out" | sed -n 3p)" \
+    "$([ "$code" != "$(cat "$DIR/.shown_code" 2>/dev/null)" ] && echo yes || echo no)"
+  printf '%s' "$code" > "$DIR/.shown_code"
+elif [ "$code" != "$(cat "$DIR/.shown_code" 2>/dev/null)" ]; then   # only when the phone needs a new code
   show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
   printf '%s' "$code" > "$DIR/.shown_code"
 fi
@@ -399,6 +430,7 @@ cat > "$HOME/Desktop/Combo Hub.webloc" <<'WEBLOC'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>URL</key><string>http://localhost:8765/</string></dict></plist>
 WEBLOC
+[ "$AUTO" = 1 ] && { echo "DONE"; exit 0; }
 say "All set. Combo Watcher is running on this Mac.
 
 Keep it plugged in with the lid OPEN (the screen can go dark; a closed lid puts it to sleep). Moving it to another Wi-Fi network is fine: Tailscale keeps the same address.

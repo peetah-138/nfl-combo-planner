@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.64"
+WATCHER_VERSION = "2026.11.17.65"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -745,8 +745,8 @@ function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
 function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
 window.__cwgo=go;
 window.__cw={set href(u){go(u);},get href(){return location.href;}};
-window.__cwtab=function(t){if(t!=='refresh')mark(t);post('/app/tab',{t:t});};
-function mark(t){document.querySelectorAll('#cwbar button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
+window.__cwtab=function(t){if(t!=='refresh')mark(t);else{var r=document.getElementById('cwref');if(r){r.classList.add('spin');setTimeout(function(){r.classList.remove('spin')},400);}}post('/app/tab',{t:t});};
+function mark(t){if(!t)return;document.querySelectorAll('#cwbar button,#cwside nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
   var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
 async function newPage(v){              /* swap the page in place: no white flash, no reload */
@@ -776,23 +776,84 @@ ICONS = {
 }
 
 SHELL_CSS = """<style>
-body{padding-bottom:calc(64px + env(safe-area-inset-bottom))!important;-webkit-tap-highlight-color:transparent}
+/* ---------- Combo Hub: the planner's screens, dressed for the browser ---------- */
+html{-webkit-text-size-adjust:100%}
+body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"tnum" 1,"ss01" 1;
+ padding-bottom:calc(76px + env(safe-area-inset-bottom))!important;-webkit-tap-highlight-color:transparent}
+@media (display-mode:standalone){body{padding-top:env(safe-area-inset-top)!important}}
+h1{letter-spacing:-.025em}
+.card,.game,.stat,details.lostbox,.quote{transition:transform .18s cubic-bezier(.2,.7,.3,1),box-shadow .18s,background-color .18s}
+.stat b{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.btn,button,.tabs button,summary,label.row,.pickrow .seg button{transition:background-color .15s,color .15s,transform .1s,opacity .15s}
+.btn:active,.tabs button:active{transform:scale(.97)}
+:focus-visible{outline:2px solid var(--accent,#0a84ff);outline-offset:2px;border-radius:10px}
+
+/* bottom tab bar (phone) */
 #cwbar{position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;justify-content:space-around;
- padding:6px 4px calc(4px + env(safe-area-inset-bottom));
- background:color-mix(in srgb,var(--card,#1c1c1e) 78%,transparent);-webkit-backdrop-filter:saturate(180%) blur(20px);
- backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line,rgba(84,84,88,.6))}
-#cwbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:0;
- color:var(--muted,#98989f);font:500 10.5px -apple-system,system-ui;letter-spacing:.01em;padding:4px 0;cursor:pointer;
- transition:color .15s,transform .12s}
-#cwbar button:active{transform:scale(.92)}
-#cwbar button svg{width:25px;height:25px}
+ padding:7px 6px calc(5px + env(safe-area-inset-bottom));
+ background:color-mix(in srgb,var(--bg,#000) 72%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);
+ backdrop-filter:saturate(180%) blur(24px);border-top:.5px solid var(--line,rgba(84,84,88,.6))}
+#cwbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;
+ color:var(--muted,#98989f);font:600 10.5px -apple-system,system-ui;letter-spacing:.01em;padding:3px 0;cursor:pointer}
+#cwbar button svg{width:26px;height:26px;transition:transform .2s cubic-bezier(.2,.7,.3,1.4)}
 #cwbar button.on{color:var(--accent,#0a84ff)}
-#cwref{position:fixed;top:calc(10px + env(safe-area-inset-top));right:14px;z-index:9999;width:36px;height:36px;border-radius:50%;
- display:flex;align-items:center;justify-content:center;
- border:0;background:color-mix(in srgb,var(--card,#1c1c1e) 80%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
- color:var(--accent,#0a84ff);font:600 17px -apple-system;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .3s}
-#cwref:active{transform:rotate(180deg) scale(.92)}
+#cwbar button.on svg{transform:scale(1.06)}
+#cwref{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;z-index:9999;width:38px;height:38px;border-radius:50%;
+ display:flex;align-items:center;justify-content:center;border:.5px solid var(--line,rgba(84,84,88,.6));
+ background:color-mix(in srgb,var(--card,#1c1c1e) 82%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
+ color:var(--accent,#0a84ff);cursor:pointer;transition:transform .35s cubic-bezier(.2,.7,.3,1)}
+#cwref:active,#cwref.spin{transform:rotate(200deg)}
+#cwside{display:none}
+
+/* ---------- laptop & desktop: sidebar, centred content, cards in a grid ---------- */
+@media (min-width:900px){
+ body{padding:0 40px 56px 292px!important;font-size:16px}
+ #cwbar{display:none}
+ #cwside{display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;width:252px;z-index:9999;padding:26px 14px 18px;
+  background:color-mix(in srgb,var(--card,#1c1c1e) 55%,var(--bg,#000));border-right:.5px solid var(--line,rgba(84,84,88,.6));
+  -webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px)}
+ #cwside .brand{display:flex;align-items:center;gap:11px;padding:0 10px 26px;font:700 19px -apple-system,system-ui;
+  letter-spacing:-.02em;color:var(--ink,#fff)}
+ #cwside .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+  background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff);box-shadow:0 4px 14px rgba(80,90,255,.35)}
+ #cwside .mark svg{width:20px;height:20px}
+ #cwside nav{display:flex;flex-direction:column;gap:3px}
+ #cwside nav button{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border:0;border-radius:10px;
+  background:none;color:var(--ink,#fff);font:500 15px -apple-system,system-ui;cursor:pointer;text-align:left;opacity:.82}
+ #cwside nav button svg{width:21px;height:21px;color:var(--muted,#98989f)}
+ #cwside nav button:hover{background:var(--card2,#2c2c2e);opacity:1}
+ #cwside nav button.on{background:var(--accentbg,rgba(10,132,255,.18));color:var(--accent,#0a84ff);opacity:1;font-weight:600}
+ #cwside nav button.on svg{color:var(--accent,#0a84ff)}
+ #cwside .foot{margin-top:auto;padding:12px 12px 0;border-top:.5px solid var(--line,rgba(84,84,88,.6));
+  font:500 12px -apple-system,system-ui;color:var(--muted,#98989f);line-height:1.5}
+ #cwside .foot button{margin-top:10px;display:flex;align-items:center;gap:8px;border:0;background:var(--card2,#2c2c2e);
+  color:var(--ink,#fff);font:600 13px -apple-system;padding:8px 12px;border-radius:9px;cursor:pointer}
+ #cwside .foot button:hover{background:var(--press,#3a3a3c)}
+ #cwref{display:none}
+ body>*:not(#cwwrap):not(script):not(.ptr){max-width:1040px;margin-left:auto!important;margin-right:auto!important}
+ body:has(#budgetline)>*:not(#cwwrap):not(script):not(.ptr){max-width:760px}
+ header{padding-top:38px!important}
+ h1{font-size:40px!important}
+ .tabs,.seg{max-width:560px}
+ .stats{gap:16px!important}
+ .stat{padding:20px 22px!important;border-radius:18px!important}
+ .stat b{font-size:30px!important}
+ section#combos:has(>.card~.card),section:has(>.card~.card~.card){display:grid!important;
+  grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px;align-items:start}
+ section:has(>.card~.card)>:not(.card){grid-column:1/-1}
+ section:has(>.card~.card)>.card{margin:0!important}
+ .card,.game,.stat{border:.5px solid var(--line,rgba(84,84,88,.45))}
+ .card:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,.28)}
+ .row:hover,label.row:hover,summary:hover{background:color-mix(in srgb,var(--card2,#2c2c2e) 60%,transparent)}
+ a,button,summary,label,.btn{cursor:pointer}
+ ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:var(--track,#444);border-radius:10px;border:3px solid var(--bg,#000)}
+}
+@media (min-width:1500px){body>*:not(#cwwrap):not(script):not(.ptr){max-width:1240px}}
 </style>"""
+
+MARK = ("<svg viewBox='0 0 24 24'><path d='M4 15.5l4.2-4.2 3.3 3.3L20 6' fill='none' stroke='#fff' stroke-width='2.6' "
+        "stroke-linecap='round' stroke-linejoin='round'/><circle cx='20' cy='6' r='1.6' fill='#fff'/></svg>")
+
 
 PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name='mobile-web-app-capable' content='yes'>"
             "<meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>"
@@ -977,7 +1038,12 @@ def webapp_main():
         where = A.APP.get("where") or "mine"
         tabs = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
                        f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
-        wrap = (f"<div id='cwwrap'>{SHELL_CSS}<div id='cwbar'>{tabs}</div>"
+        side = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
+                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
+        side = (f"<aside id='cwside'><div class='brand'><div class='mark'>{MARK}</div>Combo Hub</div><nav>{side}</nav>"
+                f"<div class='foot'>Running on your Mac · v{A.VERSION}<br>Live data refreshes by itself"
+                "<button onclick=\"__cwtab('refresh')\">↻ Refresh now</button></div></aside>")
+        wrap = (f"<div id='cwwrap'>{SHELL_CSS}{side}<div id='cwbar'>{tabs}</div>"
                 "<button id='cwref' aria-label='Refresh' onclick=\"__cwtab('refresh')\"><svg viewBox='0 0 24 24' width='18' height='18'>"
                 "<path d='M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5' fill='none' stroke='currentColor' stroke-width='2.2' "
                 "stroke-linecap='round' stroke-linejoin='round'/></svg></button>"
@@ -994,6 +1060,8 @@ def webapp_main():
             if A.can_trade():                       # open on Live, like the phone
                 def to_live():
                     for _ in range(120):
+                        if started.get("user"):             # you've tapped something: leave you there
+                            return
                         if "id='budgetline'" in B.html and A.APP.get("settings_wait"):
                             time.sleep(1)
                             return A.native_nav("mine")
@@ -1031,9 +1099,12 @@ def webapp_main():
                     v = int(self.path.split("v=", 1)[1].split("&")[0])
                 except (IndexError, ValueError):
                     v = -1
-                if was_idle and started["run"]:     # back after a while: show fresh data (Live if waiting on Build)
-                    to = "mine" if A.APP.get("settings_wait") and A.can_trade() and A.APP.get("where") != "mine" else "refresh"
-                    threading.Timer(1.0, A.native_nav, (to,)).start()
+                if was_idle and started["run"]:
+                    if not started.get("shown") and A.can_trade() and A.APP.get("where") != "mine":
+                        threading.Timer(1.0, A.native_nav, ("mine",)).start()   # very first visit: open on Live
+                    elif A.APP.get("where") == "mine" and not A.APP.get("settings_wait"):
+                        threading.Timer(1.0, A.native_nav, ("refresh",)).start()   # back on Live: fresh numbers
+                started["shown"] = True                     # after that, never move you off the screen you're on
                 return self._send(200, json.dumps(B.poll(v)))
             if self.path.split("?")[0] in ("/app", "/app/"):
                 B.seen = time.time()
@@ -1048,6 +1119,8 @@ def webapp_main():
             if self.path == "/app/result":
                 B.result(d.get("id"), str(d.get("value", "")))
                 return self._send(200, "{}")
+            if self.path in ("/app/nav", "/app/tab"):
+                started["user"] = started["shown"] = True
             if self.path == "/app/nav":
                 u = str(d.get("u", ""))
                 web = A.APP.get("web")
