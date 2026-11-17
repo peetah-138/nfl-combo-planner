@@ -316,7 +316,7 @@ ${S.keyname&&S.keyname!=='Pasted key'?'<button class="btn link" onclick="api(\'/
 foot([{t:'Done',cls:'primary',on:'finish()'}]);}
 function finish(){rail(5,true);view(`<div class="badge" style="background:linear-gradient(145deg,#34c759,#1f9d55)"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
 <h1>All done</h1><p class="lead">You can close this tab. Open Combo Watcher from Applications any time to check on it, update it or change settings.</p>`);
-foot([{t:'Open Combo Hub',cls:'primary',on:"api('/api/open',{what:'hub'})"}]);
+foot([{t:'Open Combo Hub',cls:'primary',on:"location.href='http://localhost:8765/'"}]);
 api('/api/quit',{}).catch(()=>{});setTimeout(()=>{try{window.close();}catch(e){}},400);}
 async function copy(t,b){await api('/api/copy',{text:t});b.textContent='Copied ✓';}
 async function dash(){S.st=await api('/api/state');const s=S.st;$('#steps').innerHTML='';$('#sidefoot').textContent='Combo Watcher '+(s.version?'v'+s.version:'');
