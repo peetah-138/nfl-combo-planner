@@ -16,6 +16,7 @@ LINKS = {"tailscale": "https://tailscale.com/download/mac", "kalshi": "https://k
 JOB = {"running": False, "lines": [], "steps": [], "result": {}, "error": "", "done": False}
 KEY = {"path": "", "name": "", "tmp": ""}
 LAST = {"t": time.time()}
+PAGE_SEEN = {"n": 0}
 
 
 def sh(*cmd, timeout=20, env=None):
@@ -102,6 +103,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         LAST["t"] = time.time()
         if self.path.split("?")[0] == "/" and f"t={TOKEN}" in self.path:
+            PAGE_SEEN["n"] += 1
             return self.send(200, PAGE.replace("__TOKEN__", TOKEN), "text/html; charset=utf-8")
         if self.headers.get("X-Token") != TOKEN:
             return self.send(403, "{}")
@@ -343,23 +345,24 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={TOKEN}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    opened_window = False
     if os.path.exists(WINDOW_JS) and shutil.which("osascript"):
-        t0 = time.time()
-        p = subprocess.Popen(["osascript", "-l", "JavaScript", WINDOW_JS, url, ICON],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        try:
-            p.wait(timeout=4)
-        except subprocess.TimeoutExpired:
-            opened_window = True
-            p.wait()                                    # the window is open: wait until it's closed
+        print("opening the window", flush=True)
+        p = subprocess.Popen(["osascript", "-l", "JavaScript", WINDOW_JS, url, ICON])   # errors go to setup.log
+        for _ in range(40):                              # the window counts once it has loaded the page
+            time.sleep(0.25)
+            if PAGE_SEEN["n"] or p.poll() is not None:
+                break
+        if PAGE_SEEN["n"]:
+            p.wait()                                     # open: stay until it's closed
             return 0
-        if time.time() - t0 < 4:
-            sys.stderr.write((p.stderr.read() or b"").decode()[-400:])
-    if not opened_window:                               # no window: use the browser instead
-        subprocess.run(["open", url])
-        while time.time() - LAST["t"] < 1800:
-            time.sleep(5)
+        print("the window didn't appear (exit %s); using the browser" % p.poll(), flush=True)
+        try:
+            p.kill()
+        except OSError:
+            pass
+    subprocess.run(["open", url])
+    while time.time() - LAST["t"] < 1800:
+        time.sleep(5)
     return 0
 
 
