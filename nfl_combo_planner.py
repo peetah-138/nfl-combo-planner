@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.44"
+VERSION = "2026.11.16.45"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -45,7 +45,8 @@ CFG = {
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
-    "mix_window": 0,      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
+    "mix_window": 0,
+    "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -141,9 +142,9 @@ LEAGUES = {
             "full": False, "teams": None,
             "settings": "combo_settings_mix.json", "latest": "combos_latest_mix.html",
             "defaults": {"budget": 50, "full_count": 0,
-                         "safer_count": 3, "safer_min": 2, "safer_max": 3,
-                         "middle_count": 3, "middle_min": 3, "middle_max": 4,
-                         "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
+                         "safer_count": 2, "safer_min": 2, "safer_max": 3,
+                         "middle_count": 3, "middle_min": 4, "middle_max": 5,
+                         "moonshot_count": 3, "moonshot_min": 6, "moonshot_max": 9}},
 }
 MIX_SPORTS = ("nfl", "nba", "nhl")
 MIX_WINDOWS = ["Same day", "Through the weekend", "Next 7 days"]
@@ -232,6 +233,10 @@ def set_league(code):
     if SAVED != MAIN_SAVED:                      # keys and bankroll are shared by every league
         main = load_json(MAIN_SAVED, {})
         CFG.update({k: main[k] for k in SHARED_KEYS if k in main})
+    if code == "mix" and not CFG.get("mix_v2"):
+        if (CFG.get("middle_max"), CFG.get("moonshot_max"), CFG.get("moonshot_min")) == (4, 6, 4):
+            CFG.update({k: v for k, v in LEAGUES["mix"]["defaults"].items() if k != "budget"})
+        CFG["mix_v2"] = True
     if not CFG.get("cut_v2"):                     # the fair-price cut-off moved from 80% to 90% of fair
         if CFG.get("accept_pct") == 80:
             CFG["accept_pct"] = 90
@@ -421,6 +426,27 @@ def start_key(event):
     return t.timestamp() if t else 9e12
 
 
+def team_name(m):
+    """Kalshi's name for a pick, made clear where it's cut short ("New York I" -> "New York Islanders")."""
+    name = m.get("yes_sub_title") or m["ticker"]
+    if re.search(r" [A-Z]$", name):
+        full = sport_teams(ticker_sport(m["ticker"])).get(m["ticker"].rsplit("-", 1)[-1].upper())
+        if full:
+            return full
+    return name
+
+
+def sport_icon(ticker):
+    """The sport's emoji for a pick (shown in the Mix mode, where combos mix sports)."""
+    return (SPORTS.get(ticker_sport(ticker)) or {}).get("icon", "")
+
+
+def when_text(event, day):
+    """'Wed 4:45 PM' without the day twice."""
+    t, d = start_label(event), day_tag(day)
+    return t if (t and d and t.startswith(d)) else " ".join(x for x in (d, t) if x)
+
+
 def week_games(markets, loose=False):
     """This NFL week's games (Thu-Mon around the coming Sunday), or for daily leagues today's
     (or tomorrow's) games, keyed by game. Returns (games, day label per game, slate date).
@@ -460,7 +486,7 @@ def week_games(markets, loose=False):
             games[m["event_ticker"]].append({
                 "event": m["event_ticker"], "ticker": m["ticker"],
                 "abbr": m["ticker"].rsplit("-", 1)[-1].upper(),
-                "pick": m.get("yes_sub_title") or m["ticker"], "p": p,
+                "pick": team_name(m), "p": p,
                 "bid": live_bid(m), "exp": m.get("expected_expiration_time") or ""})
     games = {e: s for e, s in games.items() if len(s) == 2}
     order = sorted(games, key=lambda e: (day_seq().index(days[e]), games[e][0]["exp"]))
@@ -1827,8 +1853,9 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             + f"</div><div class='trade' id='t{i}'></div>"
             + ((card_notes or {}).get(i) or "")
             + f"<details class='picks'><summary><span>{len(c['legs'])} picks"
-            + (f" · {sum(1 for l in c['legs'] if l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair'])} underdogs"
-               if any(l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair'] for l in c['legs']) else "")
+            + (lambda nd: f" · {nd} underdog{'s' * (nd != 1)}" if nd else "")(
+                sum(1 for l in c['legs'] if l['fair'] < next(x for x in all_games[l['event']] if x is not l)['fair']))
+            + (" · " + " ".join(sorted({sport_icon(l["ticker"]) for l in c["legs"]})) if is_mix() else "")
             + f"<span class='muted' style='font-weight:400'> · see all</span></span></summary>" + decision_html(c["legs"]) + "<ol>")
         for n, l in enumerate(sorted(c["legs"], key=lambda l: (start_key(l["event"]), order[l["event"]])), 1):
             other = next(s for s in all_games[l["event"]] if s is not l)
@@ -1840,9 +1867,9 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             if l["fair"] < other["fair"]:
                 tags += '<span class="tag dog">Underdog</span> '
             tags += edge_tag(l)
-            out.append(f"<li><span class='n'>{n}</span><span class='who'><b>{e(l['pick'])}</b> {tags}"
-                       f"<small>to beat {e(other['pick'])} · "
-                       f"{' '.join(x for x in (day_tag(days[l['event']]), start_label(l['event'])) if x)}</small></span>"
+            sp = (sport_icon(l["ticker"]) + " ") if is_mix() else ""
+            out.append(f"<li><span class='n'>{n}</span><span class='who'><b>{sp}{e(l['pick'])}</b> {tags}"
+                       f"<small>to beat {e(other['pick'])} · {when_text(l['event'], days[l['event']])}</small></span>"
                        f"<span class='pct'>{l['fair']:.0%}</span>"
                        f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
         out.append("</ol></details></div>")
@@ -1885,7 +1912,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                         tag += f'<span class="tag red">Too unlikely to pick (under {CFG["live_min"]}%)</span> '
                     nums = f"live {s['fair']:.0%} · Kalshi {s['p'] * 100:.0f}¢"
                 out.append(f"<div class='row mypick' data-t='{e(s['ticker'])}' data-e='{e(x)}' onclick='myPick(this)'>"
-                           f"<span><b>{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
+                           f"<span><b>{(sport_icon(s['ticker']) + ' ') if is_mix() else ''}{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
                            f"<span class='nums'>{nums}</span></div>")
             if x in skipped:
                 out.append(f"<div class='warn'>{e(skipped[x])}</div>")
