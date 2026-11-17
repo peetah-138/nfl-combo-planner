@@ -8,6 +8,7 @@
 #
 #   bash install_mac.sh --status            is it running? last lines of its log
 #   bash install_mac.sh --code              print the phone's pairing code (with this Mac's hub address)
+#   bash install_mac.sh --passcode NEW      set your own web view passcode
 #   bash install_mac.sh --healthcheck URL   dead-man alert (free healthchecks.io check)
 #   bash install_mac.sh --new-key           replace its Kalshi key
 #   bash install_mac.sh --uninstall         stop it and remove it (keeps ~/combowatch)
@@ -113,9 +114,10 @@ PYEOF
 
 if [ "$GUI" = 1 ] && [ -f "$DIR/watcher.json" ] && [ -x "$PY" ] && [ -z "${1:-}" ]; then
   pick=$(choose "Combo Watcher is installed on this Mac. What would you like to do?" \
-    "Update or repair it" "Show phone pairing code" "Check that it's running" "Use a different Kalshi key" "Remove it from this Mac")
+    "Update or repair it" "Show phone pairing code" "Set my own web passcode" "Check that it's running" "Use a different Kalshi key" "Remove it from this Mac")
   case "$pick" in
     "Show phone pairing code") set -- --code ;;
+    "Set my own web passcode") set -- --passcode ;;
     "Check that it's running") set -- --status ;;
     "Use a different Kalshi key") set -- --new-key ;;
     "Remove it from this Mac") set -- --uninstall ;;
@@ -124,6 +126,15 @@ if [ "$GUI" = 1 ] && [ -f "$DIR/watcher.json" ] && [ -x "$PY" ] && [ -z "${1:-}"
 fi
 
 case "${1:-}" in
+  --passcode)
+    np="${2:-}"
+    [ -z "$np" ] && np=$(ask "Choose a passcode for Combo Hub (at least 6 characters). It's only needed on devices other than this Mac and your phone's Open Combo Hub link." "")
+    if [ "${#np}" -lt 6 ]; then say "That's too short. Use at least 6 characters."; exit 1; fi
+    "$PY" -c "import json,sys;p='$DIR/watcher.json';c=json.load(open(p));c['web_pass']=sys.argv[1];json.dump(c,open(p,'w'))" "$np"
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    say "Done. Combo Hub's passcode is now: $np
+(Anyone signed in on another device will need to sign in again.)"
+    exit 0 ;;
   --code)
     out=$(pair_code); show_code "$(echo "$out" | sed -n 1p)" "$(echo "$out" | sed -n 2p)" "$(echo "$out" | sed -n 3p)"
     exit 0 ;;
