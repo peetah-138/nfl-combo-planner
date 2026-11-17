@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.27"
+VERSION = "2026.11.16.28"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2403,6 +2403,38 @@ ol{margin:10px 0 0}li{padding:12px 0;border-top:1px solid var(--line);gap:12px}
  padding:12px 16px;margin:0 0 12px;box-shadow:var(--shadow)}.alertrow b{font-size:15px;font-weight:650;display:block}
 .alertrow span{font-size:13px;color:var(--muted)}
 .wline{font-size:13px;color:var(--muted);margin:0 4px 10px}.wline.bad{color:var(--bad)}
+.gstrip{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;margin:2px -16px 6px;padding:2px 16px 4px}
+.gstrip::-webkit-scrollbar{display:none}
+.gchip{flex:none;display:flex;flex-direction:column;align-items:flex-start;gap:3px;border:0;border-radius:14px;
+ padding:9px 12px;background:var(--card);color:var(--ink);font:14px -apple-system,system-ui,sans-serif;box-shadow:var(--shadow);
+ transition:box-shadow .15s,transform .12s}.gchip:active{transform:scale(.97)}
+.gchip .gt{white-space:nowrap}.gchip .gb{font-size:12px;color:var(--muted);white-space:nowrap}
+.gchip.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+.lv{color:var(--red);font-weight:650}.lv::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+ background:var(--red);margin-right:5px;vertical-align:2px;animation:pulse 1.4s ease-in-out infinite}
+.gchip .gb .lv::before{width:5px;height:5px}
+.ghead{display:none;align-items:center;justify-content:space-between;margin:8px 4px 0}.ghead.on{display:flex}
+.ghead span{font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.list{background:var(--card);border-radius:18px;padding:0 14px;box-shadow:var(--shadow)}
+.list:empty{display:none}
+details.crow{border-top:1px solid var(--line)}.list>details.crow:first-child,.nitem:first-child details.crow{border-top:0}
+details.crow>summary{display:flex;align-items:center;gap:10px;padding:12px 0;list-style:none;cursor:pointer}
+details.crow>summary::-webkit-details-marker{display:none}
+.ci{width:22px;text-align:center;font-size:17px;flex:none}
+.cg{flex:1;min-width:0}.cg b{font-size:15px}.cg .dots{margin-left:4px}
+.cl{display:block;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.cn{display:flex;flex-direction:column;align-items:flex-end;flex:none}.cn b{font-size:15px}.cn span{font-size:12px;color:var(--muted)}
+details.crow[open]>summary .chev{transform:rotate(180deg)}
+.cexp{padding:2px 0 4px}.cexp .chips{margin-bottom:8px}
+.nitem{border-top:1px solid var(--line);padding-bottom:12px}.nitem:first-child{border-top:0}
+.nitem .quote{margin-top:0}.nitem .quote .btn{width:100%}
+#combos h2{margin:20px 4px 8px}
+.quietbox{margin:14px 0 12px}.quietbox>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;
+ background:var(--card);border-radius:18px;padding:14px 16px;list-style:none;cursor:pointer;box-shadow:var(--shadow)}
+.quietbox>summary::-webkit-details-marker{display:none}.quietbox>summary b{display:block;font-size:16px}
+.quietbox>summary .muted{font-size:13px}.quietbox[open]>summary{border-radius:18px 18px 0 0}
+.quietbox[open]>summary .chev{transform:rotate(180deg)}.quietbox .list{border-radius:0 0 18px 18px;border-top:1px solid var(--line)}
+.hidegame{display:none!important}
 input.txt,textarea{border-radius:12px!important;border:1px solid var(--line)!important;background:var(--card2)!important;
  color:var(--ink);font-size:16px}
 input[type=range]{accent-color:var(--accent)}
@@ -4091,26 +4123,24 @@ def cash_alerts(plan):
 
 
 LIVE_VIEW_JS = r"""
-window.__view=window.__view||(function(){try{return JSON.parse(localStorage.getItem('liveview'))||{};}catch(e){return {};}})();
-function view(k,v){window.__view[k]=v;try{localStorage.setItem('liveview',JSON.stringify(window.__view));}catch(e){}applyView();}
-function applyView(){var lg=window.__view.lg||'all',so=window.__view.sort||'t';
- if(lg!=='all'&&!document.querySelector('.fchip[data-v="'+lg+'"]'))lg='all';
- document.querySelectorAll('.fchip').forEach(function(b){b.classList.toggle('on',b.dataset.v===lg);});
- document.querySelectorAll('.schip').forEach(function(b){b.classList.toggle('on',b.dataset.v===so);});
- document.querySelectorAll('details.card[data-lg]').forEach(function(c){
-  c.style.display=(lg==='all'||c.dataset.lg.split(' ').indexOf(lg)>=0)?'':'none';});
- var box=document.getElementById('alive');if(box){var cs=[].slice.call(box.children);
-  cs.sort(function(a,b){if(so==='pay')return b.dataset.pay-a.dataset.pay;if(so==='p')return b.dataset.p-a.dataset.p;
-   return (a.dataset.t-b.dataset.t)||(a.dataset.i-b.dataset.i);});
-  var same=cs.every(function(c,i){return box.children[i]===c;});
-  if(!same){var r0=new Map();cs.forEach(function(c){r0.set(c,c.getBoundingClientRect().top);});
-   cs.forEach(function(c){box.appendChild(c);});
-   if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches)cs.forEach(function(c){
-    var d=r0.get(c)-c.getBoundingClientRect().top;if(!d||c.style.display==='none')return;
-    c.style.transition='none';c.style.transform='translateY('+d+'px)';
-    requestAnimationFrame(function(){requestAnimationFrame(function(){c.style.transition='transform .35s cubic-bezier(.2,.7,.3,1)';
-     c.style.transform='';});});});}}}
-window.__after=applyView;applyView();
+window.__game=window.__game||'';
+function pickGame(g){window.__game=(window.__game===g?'':g);applyGame();
+ if(window.__game){var el=document.getElementById('ghead');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});}}
+function applyGame(){var g=window.__game;
+ if(g&&!document.getElementById('g-'+g))g=window.__game='';
+ document.querySelectorAll('.gchip').forEach(function(c){c.classList.toggle('sel',c.dataset.g===g);});
+ var head=document.getElementById('ghead');if(head){head.classList.toggle('on',!!g);
+  var c=g&&document.getElementById('g-'+g);document.getElementById('gname').textContent=c?('Riding on '+c.querySelector('.gt').textContent.trim()):'';}
+ document.querySelectorAll('details.crow[data-games]').forEach(function(r){var hit=!g||r.dataset.games.split(' ').indexOf(g)>=0;
+  var box=r.closest('.nitem')||r;box.classList.toggle('hidegame',!hit);});
+ var q=document.getElementById('quietbox');if(q){if(g){if(!q.dataset.was)q.dataset.was=q.open?'1':'0';q.open=true;}
+  else if(q.dataset.was){q.open=q.dataset.was==='1';delete q.dataset.was;}}
+ ['needs','quiet','won'].forEach(function(id){var l=document.getElementById(id);if(!l)return;
+  var any=[].some.call(l.querySelectorAll('details.crow'),function(r){return !(r.closest('.nitem')||r).classList.contains('hidegame');});
+  var h=document.getElementById('h-'+id)||(id==='quiet'?q:null);if(h)h.classList.toggle('hidegame',!!g&&!any);
+  l.classList.toggle('hidegame',!!g&&!any);});
+ var don=document.getElementById('donebox');if(don)don.classList.toggle('hidegame',!!g);}
+window.__after=applyGame;applyGame();
 """
 
 
@@ -4347,15 +4377,47 @@ def mine_page(live=False):
         else:
             preview = ("Needs " if len(need_names) < len(legs_sorted) else "") + " · ".join(need_names[:3]) + (
                 f" · +{len(need_names) - 3}" if len(need_names) > 3 else "")
-        cards.append((group, f"<details class='card' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
-                     f"data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' data-p='{p:.5f}' data-i='{i}'"
-                     f"@@OPEN:{e(a['ticker'])}@@><summary><div class='top'><div>"
-                     f"<div class='chips'>{chip}"
+        # what the row says: the live score if a game is on, else what it still needs and when
+        live_sc = next((leg_score(l) for l, (_, _, _, r) in legs_sorted if not r and pick_state(l, side_of) == "live"
+                        and leg_score(l)), None)
+        if group == "pending" and live_sc:
+            context = (f"<span class='lv'>{e(live_sc['abbr'])} {live_sc['me']}–{live_sc['opp']} "
+                       f"{e(live_sc['opp_abbr'])} · {e(live_sc['detail'])}</span>")
+        elif group == "pending":
+            context = e(preview) + (f" · {e(when)}" if when and when != "Live now" else "")
+        else:
+            context = e(preview)
+        # the two numbers: what you'd make cashing out now, and the chance it hits
+        if group == "pending":
+            o = fresh_offer(a["ticker"])
+            val = o["offer"] / max(o.get("frac", 1.0), 0.01) if o else kalshi_discount(any_live) * p * a["pays"]
+            gnow = val - a["cost"]
+            n1 = (f"<b class='{'pos' if gnow >= 0.5 else 'neg' if gnow <= -0.5 else ''}' data-k='g-{e(a['ticker'])}'>"
+                  f"{'~' if not o else ''}{'+' if gnow >= 0 else '−'}{money(abs(gnow))}</b>")
+            pct_txt = f"{p:.0%}" if p >= 0.01 else f"{p:.1%}" if p >= 0.001 else "<0.1%"
+            n2 = f"<span data-k='p-{e(a['ticker'])}'>{pct_txt}</span>"
+        elif group == "cashed":
+            gain = a["back"] - a["cost"]
+            n1 = f"<b class='{'pos' if gain >= 0 else 'neg'}'>{'+' if gain >= 0 else '−'}{money(abs(gain))}</b>"
+            n2 = "<span>cashed</span>"
+        elif group == "won":
+            n1, n2 = f"<b class='pos'>+{money(a['pays'] - a['cost'])}</b>", "<span>won</span>"
+        else:
+            n1, n2 = f"<b class='neg'>−{money(a['cost'])}</b>", "<span>lost</span>"
+        games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
+                                    for l, (_, _, _, r) in legs_sorted if not r}))
+        kind = ("playing" if any_live else "quiet") if group == "pending" else group
+        cards.append((group, f"<details class='crow' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
+                     f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "
+                     f"data-p='{p:.5f}' data-i='{i}'><summary>"
+                     f"<span class='ci'>{SPORTS.get(sp, {}).get('icon', '🎯')}</span>"
+                     f"<span class='cg'><b>Combo {i}</b> <span class='dots'>{dots}</span>"
+                     f"<span class='cl'>{context}</span></span>"
+                     f"<span class='cn'>{n1}{n2}</span><span class='chev'></span></summary>"
+                     f"<div class='cexp'><div class='chips'>{chip}"
                      + (f"<span class='when{' on' if any_live else ''}'>{e(when)}</span>" if when else "")
-                     + f"</div><div class='tier'>Combo {i} · {len(a['legs'])} picks <span class='dots'>{dots}</span></div>{pay_line}"
-                     f"<div class='muted' style='font-size:13px;margin-top:2px'>{e(preview)}</div></div>"
-                     f"<div style='text-align:right;white-space:nowrap'><span data-k='p-{e(a['ticker'])}'>{status}</span>"
-                     f"<span class='chev'></span></div></div></summary>{value}<ol>{''.join(rows)}</ol>"
+                     + f"<span style='margin-left:auto'>{status}</span></div>{pay_line}</div>"
+                     f"{value}<ol>{''.join(rows)}</ol>"
                      f"<div class='cardfoot'><a class='klink' href='combo://open/{quote(KALSHI_WEB + '/portfolio', safe='')}'>"
                      f"Open in Kalshi ↗</a></div></details>"))
 
@@ -4418,31 +4480,84 @@ def mine_page(live=False):
                 "<div class='seg'><button class='schip' data-v='t' onclick=\"view('sort','t')\">Next game</button>"
                 "<button class='schip' data-v='pay' onclick=\"view('sort','pay')\">Payout</button>"
                 "<button class='schip' data-v='p' onclick=\"view('sort','p')\">Chance</button></div></div>")
-    body = [head, f"<header><h1>Live</h1>"
-                  f"<div class='sub'>{n_alive} still riding"
-                  + (f" · {n_cashed} cashed out" if n_cashed else "")
-                  + (f" · {len(present_sports)} sports" if len(present_sports) > 1 else "") + "</div></header>",
+    pend = {a["ticker"]: a for a in mine if snap.get(a["ticker"], {}).get("status") == "pending"}
+    by_id = {re.search(r"id='c-([^']+)'", c).group(1): (g, c) for g, c in cards}
+    todo = sorted(((t, f) for t, f in ((plan or {}).get("acts") or {}).items() if f and t in MINE["hold"]),
+                  key=lambda x: -MINE["hold"][x[0]]["hold"])
+    todo_ids = {html.escape(t) for t, _ in todo}
+    # game strip: every game your live combos still need, playing ones first
+    games = {}
+    for a, inf in zip(mine, infos):
+        if a["ticker"] not in pend:
+            continue
+        for l, (nm, _, _, r) in zip(a["legs"], inf):
+            if r:
+                continue
+            ev = l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0]
+            g = games.setdefault(ev, {"n": set(), "sc": leg_score(l), "nm": nm, "t": leg_start(l, side_of),
+                                      "sp": ticker_sport(l["ticker"]) or "other"})
+            g["n"].add(a["ticker"])
+    def chip_of(ev, g):
+        sc, icon = g["sc"], SPORTS.get(g["sp"], {}).get("icon", "🎯")
+        playing = bool(sc and sc["state"] == "in")
+        if sc and sc["state"] in ("in", "post"):
+            top = f"{e(sc['abbr'])} <b>{sc['me']}</b> · {e(sc['opp_abbr'])} <b>{sc['opp']}</b>"
+            bot = f"<span class='{'lv' if playing else 'muted'}'>{e(sc['detail'])}</span>"
+        else:
+            top = e(sc["abbr"] + " · " + sc["opp_abbr"]) if sc else e(g["nm"])
+            bot = f"<span class='muted'>{e(when_label(g['t']) or 'upcoming')}</span>"
+        return (playing, g["t"].timestamp() if g["t"] else 9e12,
+                f"<button class='gchip{' on' if playing else ''}' id='g-{e(ev)}' data-g='{e(ev)}' onclick=\"pickGame('{e(ev)}')\">"
+                f"<span class='gt'>{icon} {top}</span><span class='gb'>{bot} · {len(g['n'])}</span></button>")
+    gchips = sorted((chip_of(ev, g) for ev, g in games.items()), key=lambda x: (not x[0], x[1]))
+    n_live_games = sum(1 for c in gchips if c[0])
+    summary = f"<div class='gstrip' id='gstrip'>{''.join(c[2] for c in gchips)}</div>" if gchips else ""
+    def rows_of(ids):
+        return "".join(by_id[i][1] for i in ids if i in by_id)
+    pend_ids = sorted((html.escape(t) for t in pend), key=lambda i: float(re.search(r"data-t='([0-9.e+]+)'", by_id[i][1]).group(1))
+                      if i in by_id else 9e12)
+    quiet = [i for i in pend_ids if i not in todo_ids]           # nothing to do: folded into one line
+    n_playing = sum(1 for i in quiet if "data-kind='playing'" in by_id.get(i, ("", ""))[1])
+    needs = ""
+    if todo:
+        items = "".join(f"<div class='nitem' id='n-{html.escape(t)}'>{by_id[html.escape(t)][1]}"
+                        f"<div class='quote'>{action_button(t, f, MINE['hold'][t]) if k == 0 else action_button(t, f, MINE['hold'][t]).replace('btn go cashb', 'btn cashb')}</div></div>"
+                        for k, (t, f) in enumerate(todo) if html.escape(t) in by_id)
+        needs = f"<h2 id='h-needs'>Needs you · {len(todo)}</h2><div class='list' id='needs'>{items}</div>"
+    missing = [t for t in MINE["hold"] if not fresh_offer(t)]
+    offers_btn = (f"<div class='quote'><button class='btn quiet cashb' onclick=\"cash('askall','all')\">"
+                  f"Get cash-out offers{' for the rest' if len(missing) < len(MINE['hold']) else ''}</button></div>"
+                  if missing and can_trade() and pend else "")
+    nxt_quiet = min((float(re.search(r"data-t='([0-9.e+]+)'", by_id[i][1]).group(1)) for i in quiet), default=9e12)
+    quiet_when = when_label(dt.datetime.fromtimestamp(nxt_quiet).astimezone()) if nxt_quiet < 9e11 else ""
+    won_ids = [i for i, (g, _) in by_id.items() if g == "won"]
+    finished = [i for i, (g, _) in by_id.items() if g in ("cashed", "lost")]
+    body = [head, f"<header><h1>Live</h1><div class='sub'>"
+                  + (f"<span class='lv'>{n_live_games} game{'s' if n_live_games != 1 else ''} on now</span> · " if n_live_games else "")
+                  + f"{len(pend)} combo{'s' if len(pend) != 1 else ''} riding</div></header>",
             (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
-            f"<div style='padding:0 16px'>{strip}<div id='now'>{now_box}</div>{alerts_row}</div>",
-            "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">My combos</button>"
+            "<div class='tabs'><button id='b-combos' class='on' onclick=\"tab('combos')\">Live</button>"
             "<button id='b-record' onclick=\"tab('record')\">Record</button></div>",
-            "<section id='combos'>"]
-    # live combos first, then winners; lost ones tucked into a collapsed section at the bottom
-    alive_cards = [c for g, c in cards if g == "pending"] + [c for g, c in cards if g == "won"]
-    lost_cards = [c for g, c in cards if g == "lost"]
-    cashed_cards = [c for g, c in cards if g == "cashed"]
+            "<section id='combos'>", summary,
+            "<div class='ghead' id='ghead'><span id='gname'></span><button class='btn quiet' onclick=\"pickGame('')\">Show all</button></div>",
+            needs,
+            (f"<details class='quietbox' id='quietbox'><summary><span><b>Riding quietly · {len(quiet)} combo"
+             f"{'s' if len(quiet) != 1 else ''}</b><span class='muted'>Nothing to do"
+             + (f" · {n_playing} playing now" if n_playing else f" · next game {e(quiet_when)}" if quiet_when else "")
+             + f"</span></span><span class='chev'></span></summary>"
+             f"<div class='list' id='quiet'>{rows_of(quiet)}</div></details>" if quiet else ""),
+            (f"<h2>Won · {len(won_ids)}</h2><div class='list' id='won'>{rows_of(won_ids)}</div>" if won_ids else ""),
+            offers_btn]
     if not cards:
         body.append("<div class='empty'><b>No live combos</b><br>Combos you place on Kalshi, in any sport, "
                     "show up here with live scores and cash-out offers.</div>")
-    elif not alive_cards:
+    elif not pend:
         body.append("<div class='empty'><b>Nothing still riding</b><br>Your finished combos are below.</div>")
-    body.append(fbar + "<div id='alive'>" + "".join(alive_cards) + "</div>")
-    if cashed_cards:
-        body.append(f"<details class='lostbox' id='cashedbox'><summary>Cashed out ({len(cashed_cards)})"
-                    f"<span class='muted'> · tap to show</span></summary>{''.join(cashed_cards)}</details>")
-    if lost_cards:
-        body.append(f"<details class='lostbox' id='lostbox'><summary>Lost combos ({len(lost_cards)})"
-                    f"<span class='muted'> · tap to show</span></summary>{''.join(lost_cards)}</details>")
+    if finished:
+        body.append(f"<details class='lostbox' id='donebox'><summary>Finished · {len(finished)}"
+                    f"<span class='muted'> · cashed out and lost</span></summary>"
+                    f"<div class='list'>{rows_of(finished)}</div></details>")
+    body.append(alerts_row)
     body.append(details)
     history = load_json(HISTORY, {"builds": []})
     body.append(f"</section><section id='record' class='hidden'>"
