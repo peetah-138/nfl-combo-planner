@@ -389,7 +389,10 @@ if [ "$new_pairing" = 1 ]; then
 
 $topic"
 fi
-show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
+if [ "$code" != "$(cat "$DIR/.shown_code" 2>/dev/null)" ]; then   # only when the phone needs a new code
+  show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
+  printf '%s' "$code" > "$DIR/.shown_code"
+fi
 # a Desktop icon for the web view on this Mac (no passcode needed on the Mac itself)
 cat > "$HOME/Desktop/Combo Hub.webloc" <<'WEBLOC'
 <?xml version="1.0" encoding="UTF-8"?>
