@@ -13,12 +13,12 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.37"
+VERSION = "2026.11.16.38"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
 CFG = {
-    "stake": 5, "budget": 100, "accept_pct": 80,
+    "stake": 5, "budget": 100, "accept_pct": 90,
     "full_count": 3, "upsets_min": 3, "upsets_max": 4,
     "safer_count": 2,    "safer_min": 2,    "safer_max": 4,
     "middle_count": 3,   "middle_min": 4,   "middle_max": 7,
@@ -43,6 +43,8 @@ CFG = {
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
+    "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
+    "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -196,6 +198,10 @@ def set_league(code):
     if SAVED != MAIN_SAVED:                      # keys and bankroll are shared by every league
         main = load_json(MAIN_SAVED, {})
         CFG.update({k: main[k] for k in SHARED_KEYS if k in main})
+    if not CFG.get("cut_v2"):                     # the fair-price cut-off moved from 80% to 90% of fair
+        if CFG.get("accept_pct") == 80:
+            CFG["accept_pct"] = 90
+        CFG["cut_v2"] = True
     keys = load_json(KEYS_SAVED, {})             # a saved key is never lost to a blank
     for k in KEY_FIELDS:
         if not str(CFG.get(k, "")).strip() and keys.get(k):
@@ -485,6 +491,9 @@ TEAM_KICKOFF = {}   # full team name -> kickoff time, from the sportsbook feed
 KICKOFF = {}        # Kalshi game -> kickoff time
 
 
+SHARP_BOOKS = ("betfair_ex_eu", "betfair_ex_uk", "matchbook", "lowvig", "betonlineag", "circasports")
+
+
 def fetch_book_odds(key):
     """{full team name: (fair win chance, source)} plus a note for the report."""
     try:
@@ -509,7 +518,7 @@ def fetch_book_odds(key):
             for team in (home, away):
                 if team:
                     TEAM_KICKOFF.setdefault(team, ev["commence_time"])
-        books, pinnacle = defaultdict(list), {}
+        books, pinnacle, sharp = defaultdict(list), {}, defaultdict(list)
         for b in ev.get("bookmakers", []):
             for mk in b.get("markets", []):
                 outs = mk.get("outcomes", [])
@@ -521,8 +530,12 @@ def fetch_book_odds(key):
                     books[o["name"]].append(p)
                     if b.get("key") == "pinnacle":
                         pinnacle[o["name"]] = p
+                    elif b.get("key") in SHARP_BOOKS:
+                        sharp[o["name"]].append(p)
         for team, ps in books.items():
-            f = (pinnacle[team], "Pinnacle") if team in pinnacle else (statistics.median(ps), f"{len(ps)} books")
+            f = ((pinnacle[team], "Pinnacle") if team in pinnacle else
+                 (statistics.median(sharp[team]), "sharp books") if sharp.get(team) else
+                 (statistics.median(ps), f"{len(ps)} books"))
             fair.setdefault(team, f)              # the soonest game, for anything that only knows the team
             BOOK_GAMES.setdefault(team, []).append({   # every game, so a pick can be matched by date
                 "fair": f, "start": ev.get("commence_time") or "",
@@ -1294,8 +1307,30 @@ def started(side):
     return now >= end - dt.timedelta(hours=LG()["game_hours"])
 
 
+CLOSING = os.path.join(HERE, "closing_chances.json")   # each pick's last chance seen before kickoff
+
+
+def record_closing(all_games):
+    """Keep each pick's latest chance until its game starts: the market's final word before
+    kickoff, which the edge report compares your price against."""
+    saved = load_json(CLOSING, {})
+    changed = False
+    for sides in all_games.values():
+        for s in sides:
+            v = s.get("fair") or s.get("p")
+            if v and not started(s) and saved.get(s["ticker"]) != round(v, 4):
+                saved[s["ticker"]] = round(v, 4)
+                changed = True
+    if changed:
+        cutoff = dt.date.today() - dt.timedelta(days=150)
+        saved = {t: v for t, v in saved.items() if (game_date({"event_ticker": t}) or cutoff) >= cutoff}
+        save_json(CLOSING, saved)
+    return saved
+
+
 def remember_pregame(all_games):
     """Save each pick's chance the first time we see it before kickoff."""
+    record_closing(all_games)
     saved = load_json(PREGAME, {})
     changed = False
     for sides in all_games.values():
@@ -1667,14 +1702,22 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
         out.append("<div class='batch'><button class='btn go' id='getall' onclick='getAll()'>Get offers for selected (0)</button>"
                    "<button class='btn quiet' onclick='selAll()'>Select all not placed</button>"
                    "<div class='trade' id='t0'></div></div>")
+    under = []
     for i, (c, p) in enumerate(zip(combos, p_each), 1):
         chance = f"{p:.1%}" if p >= 0.001 else "under 0.1%"
+        est_pays, est_pct = est_offer(c)
+        est_line = (f"<div class='muted' style='font-size:13px;margin-top:4px'>Kalshi will likely pay about "
+                    f"{money(est_pays)} ({est_pct:.0%} of fair) · expected {signed_money(CFG['stake'] * (est_pct - 1))} "
+                    f"per {money(CFG['stake'])}</div>" if est_pct else "")
+        start_i = len(out)
+        if est_pct and est_pct < CFG["accept_pct"] / 100 and not (card_notes or {}).get(i):
+            under.append(start_i)
         out.append(
             f"<div class='card' data-i='{i}' data-min='{c['min']:.0f}' data-fair1='{c['fair'] / CFG['stake']:.6f}' "
             f"data-min1='{c['min'] / CFG['stake']:.6f}'><div class='top'><div>"
             f"<div class='tier'>#{i} · {e(c['tier'])}</div>"
             f"<div class='pay'>{money(c['fair'])}</div>"
-            f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div></div>"
+            f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div>{est_line}</div>"
             f"<div class='side'>"
             + (f"<label class='placed sel'><input type='checkbox' class='pick' value='{i}' onchange='selCount()'><span>Select</span></label>" if can_trade() else "")
             + f"<label class='placed'><input type='checkbox' onchange='tog({i})'><span>Placed</span></label></div></div>"
@@ -1708,6 +1751,17 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                        f"<span class='pct'>{l['fair']:.0%}</span>"
                        f"<button class='flip' onclick='act2(\"flip\",{i},\"{e(l['ticker'])}\")'>Flip</button></li>")
         out.append("</ol></details></div>")
+        if under and under[-1] == start_i:
+            under[-1] = (start_i, len(out))
+    if under:                                    # likely under the cut-off: folded away, still there
+        cards = []
+        for a, b in reversed(under):
+            cards = out[a:b] + cards
+            del out[a:b]
+        out.append(f"<details class='lostbox' id='underbox' style='margin:12px 16px 0'><summary><b>{len(under)} "
+                   f"combo{'s' * (len(under) != 1)} likely under your {CFG['accept_pct']}% cut-off</b>"
+                   "<span class='muted' style='font-weight:400'> · estimated from your past quotes</span></summary>"
+                   + "".join(cards) + "</details>")
     out.append("</section>")
 
     on = day_on()
@@ -1878,6 +1932,184 @@ def breakdown_html():
             f"cost before yesterday, so the two won't match exactly.</div></div></details>")
 
 
+# ================================================================ edge report
+CAL_BUCKETS = (("Under 5%", 0, 0.05), ("5–15%", 0.05, 0.15), ("15–30%", 0.15, 0.30), ("30% or more", 0.30, 1.01))
+
+
+def edge_stats(acct, days=150):
+    """The numbers that say whether this is profitable: your price vs the kickoff price, how often
+    combos hit vs the chance the market gave them, returns by picks and sport, and what cash-outs
+    earned vs holding. Plain numbers (JSON-safe), so the Pi can send them to the phone."""
+    import time
+    close = load_json(CLOSING, {})
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
+    mine = [a for a in acct or [] if (a.get("week") or "9") >= since]
+    cashed = [a for a in mine if a["status"] == "cashed"]
+    res = fetch_results({l["ticker"] for a in cashed for l in a["legs"] if l["ticker"]}) if cashed else {}
+
+    def games_say(a):
+        rs = [res.get(l["ticker"]) if l.get("side", "yes") == "yes" else
+              {"yes": "no", "no": "yes"}.get(res.get(l["ticker"])) for l in a["legs"]]
+        return "lost" if "no" in rs else "won" if rs and all(r == "yes" for r in rs) else None
+
+    st = {"at": int(time.time()), "days": days, "clv": [0.0, 0.0, 0], "cal": {b[0]: [0, 0.0, 0] for b in CAL_BUCKETS},
+          "picks": {}, "sport": {}, "cash": [0, 0.0, 0.0, 0], "week": [0, 0.0, 0.0, 0, 0], "season": [0.0, 0.0]}
+    for a in mine:
+        probs = []
+        for l in a["legs"]:
+            v = close.get(l["ticker"] or "")
+            if v is None:
+                probs = None
+                break
+            probs.append(v if l.get("side", "yes") == "yes" else 1 - v)
+        fair = math.prod(probs) if probs else None
+        full = a.get("full_pays") or a["pays"]
+        if fair and a["cost"] > 0:
+            st["clv"][0] += a["cost"]
+            st["clv"][1] += full * fair
+            st["clv"][2] += 1
+        hit = {"won": 1, "lost": 0}.get(a["status"])
+        g = games_say(a) if a["status"] == "cashed" else None
+        if hit is None and g:
+            hit = 1 if g == "won" else 0
+        if fair is not None and hit is not None:
+            b = next(k for k, lo, hi in CAL_BUCKETS if lo <= fair < hi)
+            st["cal"][b][0] += 1
+            st["cal"][b][1] += fair
+            st["cal"][b][2] += hit
+        if a["status"] == "pending":
+            continue
+        n = len(a["legs"])
+        k = "2 picks" if n <= 2 else "3 picks" if n == 3 else "4 picks" if n == 4 else "5–6 picks" if n <= 6 else "7+ picks"
+        for key, bucket in ((k, st["picks"]), (LEAGUES.get(a.get("lg"), {}).get("name", "Other"), st["sport"])):
+            row = bucket.setdefault(key, [0, 0.0, 0.0])
+            row[0] += 1
+            row[1] += a["cost"]
+            row[2] += a["back"]
+        st["season"][0] += a["cost"]
+        st["season"][1] += a["back"]
+        if a["status"] == "cashed":
+            st["cash"][0] += 1
+            st["cash"][1] += a["back"]
+            if g == "won":
+                st["cash"][2] += full
+            elif g is None:
+                st["cash"][3] += 1
+        if (a.get("week") or "") >= week_ago:
+            w = st["week"]
+            w[0] += 1
+            w[1] += a["cost"]
+            w[2] += a["back"]
+            w[3] += a["status"] in ("won", "cashed") and a["back"] > a["cost"]
+            w[4] += a["status"] == "cashed"
+    return st
+
+
+def signed_money(x):
+    return ("+" if x >= 0 else "−") + money(abs(x))
+
+
+def edge_html(st, source=""):
+    """Results: the edge report, from the Pi's numbers when it's running (it sees every kickoff)."""
+    if not st:
+        return ""
+    paid, worth, n = st["clv"]
+    out = ["<h2>Your edge</h2><div class='game'>"]
+    if n:
+        clv = worth / paid - 1 if paid else 0
+        out.append(f"<div class='row'><b>Your prices vs. kickoff</b><b class='{'pos' if clv >= 0 else 'neg'}' "
+                   f"style='font-size:22px'>{'+' if clv >= 0 else '−'}{abs(clv):.1%}</b></div>"
+                   f"<div class='muted' style='font-size:13px'>{n} combo{'s' * (n != 1)}: you paid {money(paid)} for "
+                   f"combos the market valued at {money(worth)} just before kickoff. Above 0% means you buy better than "
+                   "the market's final price, the clearest sign of a long-term edge.</div>")
+    else:
+        out.append("<div class='muted' style='font-size:13px'>No kickoff prices yet. They're recorded while the "
+                   "planner or the Pi is watching before games start.</div>")
+    cal = [(k, *st["cal"][k]) for k, _, _ in CAL_BUCKETS if st["cal"].get(k, [0])[0]]
+    if cal:
+        out.append("<div style='margin-top:10px'><b>Did combos hit as often as priced?</b></div>")
+        for k, cnt, psum, hits in cal:
+            out.append(f"<div class='row' style='padding:4px 0;border-top:1px solid var(--line)'><span>{k} chance "
+                       f"<small class='muted'>{cnt} combo{'s' * (cnt != 1)}</small></span><span>expected "
+                       f"{psum / cnt:.0%} · hit <b>{hits / cnt:.0%}</b></span></div>")
+    for title, key in (("By number of picks", "picks"), ("By sport", "sport")):
+        rows = st.get(key) or {}
+        if not rows:
+            continue
+        order = ["2 picks", "3 picks", "4 picks", "5–6 picks", "7+ picks"] if key == "picks" else sorted(rows)
+        out.append(f"<div style='margin-top:10px'><b>{title}</b> <small class='muted'>(settled)</small></div>")
+        for k in order:
+            if k not in rows:
+                continue
+            cnt, cost, back = rows[k]
+            r = back / cost - 1 if cost else 0
+            out.append(f"<div class='row' style='padding:4px 0;border-top:1px solid var(--line)'><span>{k} "
+                       f"<small class='muted'>{cnt} · {money(cost)} in</small></span><span class='{'pos' if r >= 0 else 'neg'}'>"
+                       f"{signed_money(back - cost)} ({'+' if r >= 0 else '−'}{abs(r):.0%})</span></div>")
+    cn, got, would, still = st["cash"]
+    if cn:
+        decided = cn - still
+        out.append(f"<div style='margin-top:10px'><b>Cash-outs</b></div><div class='muted' style='font-size:13px'>"
+                   f"{cn} cashed out for {money(got)}." + (f" Of the {decided} now decided, holding would have paid "
+                   f"{money(would)}." if decided else "") + (f" {still} not decided yet." if still else "") + "</div>")
+    if source:
+        out.append(f"<div class='muted' style='font-size:12px;margin-top:8px'>{source}</div>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def weekly_text(st):
+    """The Monday push: last 7 days, plus the price-vs-kickoff number for the season."""
+    n, cost, back, paid_off, cashed = st["week"]
+    paid, worth, k = st["clv"]
+    clv = (f" Prices vs. kickoff, season: {'+' if worth >= paid else '−'}{abs(worth / paid - 1):.1%}." if k and paid else "")
+    if not n:
+        return "📊 Weekly report: no combos settled in the last 7 days." + clv
+    return (f"📊 Last 7 days: {n} combo{'s' * (n != 1)} settled, {money(cost)} in, {money(back)} back "
+            f"({signed_money(back - cost)}). {paid_off} paid off, {cashed} cashed out." + clv +
+            " Details in the planner under Results.")
+
+
+def seal(secret, obj):
+    """Encrypt + sign a small JSON object with the pairing secret (for numbers sent through ntfy)."""
+    import hmac, hashlib, base64
+    raw = json.dumps(obj, separators=(",", ":")).encode()
+    nonce = os.urandom(16)
+    key = hashlib.sha256((secret + "|seal").encode()).digest()
+    stream = b"".join(hashlib.sha256(key + nonce + i.to_bytes(4, "big")).digest() for i in range(len(raw) // 32 + 1))
+    ct = bytes(a ^ b for a, b in zip(raw, stream))
+    mac = hmac.new(secret.encode(), nonce + ct, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(nonce + mac + ct).decode()
+
+
+def unseal(secret, blob):
+    import hmac, hashlib, base64
+    try:
+        data = base64.urlsafe_b64decode(blob.encode())
+        nonce, mac, ct = data[:16], data[16:48], data[48:]
+        if not hmac.compare_digest(mac, hmac.new(secret.encode(), nonce + ct, hashlib.sha256).digest()):
+            return None
+        key = hashlib.sha256((secret + "|seal").encode()).digest()
+        stream = b"".join(hashlib.sha256(key + nonce + i.to_bytes(4, "big")).digest() for i in range(len(ct) // 32 + 1))
+        return json.loads(bytes(a ^ b for a, b in zip(ct, stream)))
+    except (ValueError, TypeError):
+        return None
+
+
+def pi_report():
+    """The Pi's latest edge numbers (it records every kickoff price), or None."""
+    c = watcher_conf()
+    if not c:
+        return None
+    try:
+        r = requests.get(f"{NTFY}/{c['topic']}-report/json", params={"poll": "1", "since": "24h"}, timeout=6)
+        msgs = [json.loads(x) for x in r.text.splitlines() if x.strip()] if r.ok else []
+        return unseal(c["secret"], msgs[-1]["message"]) if msgs else None
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
 def results_page(sunday):
     """This week's money and outcomes, then week by week. Kept short."""
     e = html.escape
@@ -1977,6 +2209,13 @@ def results_page(sunday):
     else:
         body.append("<section><div class='empty'>No combos for this week yet.</div>")
     body.append(breakdown_html())
+    pi = pi_report()
+    if pi and pi.get("stats"):
+        body.append(edge_html(pi["stats"], "From your Pi, which records every kickoff price · updated "
+                              + dt.datetime.fromtimestamp(pi["stats"]["at"]).strftime("%-I:%M %p")))
+    else:
+        body.append(edge_html(edge_stats(acct), "From this phone: kickoff prices are recorded only while the "
+                              "planner is open before games, so the Pi's report is more complete."))
     # week by week
     weeks = defaultdict(lambda: defaultdict(float))
     for a in acct:
@@ -3006,6 +3245,11 @@ def live_check(webview):
     """One refresh: current prices and results, redraw the page, send any alerts."""
     all_games, days, _ = week_games(fetch_markets(), loose=True)
     MINE["all_games"].update(all_games)    # current prices, keeps finished games
+    try:
+        attach_fair(all_games, {})             # Kalshi's prices, for the kickoff record
+        record_closing(all_games)
+    except Exception:
+        pass
     MINE["days"].update(days)
     MINE["book"] = {}                      # live chances use Kalshi's in-game prices
     if MINE.get("busy"):
@@ -3023,6 +3267,12 @@ def live_check(webview):
                 page, snap = mine_page(live=True)
         except Exception:
             pass
+    if pi:
+        MINE["pi_was_alive"] = True
+    elif MINE.get("pi_was_alive") and watcher_conf():
+        MINE["pi_was_alive"] = False             # the Pi went quiet: say so once, the phone takes over
+        notify("🖥 Your Pi watcher stopped checking in. This phone is handling alerts and auto cash-out "
+               "while the planner is open. Check the Pi's power and network.")
     sold = [] if pi else auto_sell_now(MINE.get("plan"))     # with the Pi on, only the Pi sells
     if sold:
         ACCT_CACHE["at"] = 0
@@ -3037,6 +3287,42 @@ def live_check(webview):
     for msg in ([] if pi else alerts[:4]):        # the Pi sends these when it's running
         notify(msg)
     return alerts
+
+
+SELL_LOG = os.path.join(HERE, "combo_autosell_log.jsonl")   # every automatic cash-out decision, one per line
+
+
+def log_decision(rec):
+    """One line per automatic cash-out decision (sold, or skipped and why), trimmed to the last 1,000."""
+    import time
+    rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+               by="phone" if in_pythonista() else "pi", ride=ride_level()[0])
+    try:
+        with open(SELL_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        if os.path.getsize(SELL_LOG) > 300000:
+            with open(SELL_LOG, encoding="utf-8") as f:
+                lines = f.readlines()[-1000:]
+            with open(SELL_LOG, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+    except OSError:
+        pass
+    console_note("auto cash-out: " + json.dumps(rec))
+
+
+def sold_today():
+    """Automatic cash-outs made by this device today."""
+    today = dt.date.today().isoformat()
+    try:
+        with open(SELL_LOG, encoding="utf-8") as f:
+            return sum(1 for x in f if '"result": "sold"' in x and f'"when": "{today}' in x)
+    except OSError:
+        return 0
+
+
+def turning_against(h):
+    """A game in this combo is on and going the wrong way (your pick under 50% live)."""
+    return any(live and c < 0.5 for c, live, _ in h.get("legs_left") or [])
 
 
 def auto_sell_now(plan):
@@ -3067,7 +3353,21 @@ def auto_sell_now(plan):
             if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
                 drop_cash(t)                    # already sold (by you, the Pi or the phone): leave it
                 continue
+            rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2),
+                   "chance": round(h["p"], 4), "cost": round(h["cost"], 2), "pays": h["pays"],
+                   "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []]}
+            if sold_today() >= int(CFG.get("auto_cap", 5)):
+                log_decision(dict(rec, result="skipped", why="daily cap reached"))
+                if MINE.get("cap_told") != dt.date.today().isoformat():
+                    MINE["cap_told"] = dt.date.today().isoformat()
+                    out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
+                               f"{h['label']} qualifies too: open the planner to cash it out yourself.")
+                continue
+            if o["offer"] < h["cost"] * o.get("frac", 1.0) and not turning_against(h):
+                log_decision(dict(rec, result="skipped", why="below what you paid"))
+                continue
             msg = accept_cash(t)
+            log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
             out.append(("🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ") + msg)
     finally:
         MINE["busy"] = False
@@ -3307,13 +3607,136 @@ def cash_block(ticker, plan):
         out.append(f"<div style='margin-top:8px'>Kalshi offers <b>{money(o['offer'])}</b>{size} "
                    f"<span class='verdict {cls}'>{word}</span></div>"
                    f"<div class='muted' style='font-size:13px;margin-top:4px'>{plan_words(ticker, f, o, h, W)}</div>"
-                   f"<div class='quote pair'>{main}<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>")
+                   + insurance_words(h, o) +
+                   f"<div class='quote pair'>{main}<button class='btn cashb' onclick=\"cash('no','{t}')\">Keep it</button></div>"
+                   + hedge_block(ticker, h, o))
     else:
         tag = "<span class='tag good'>Worth checking</span> " if h["worth"] else ""
         out.append(f"<div class='quote'>{tag}<button class='btn cashb' onclick=\"cash('ask','{t}')\">"
-                   f"Get cash-out offer</button></div>")
+                   f"Get cash-out offer</button></div>" + hedge_block(ticker, h, None))
     out.append("</div>")
     return "".join(out)
+
+
+# ---------------------------------------------------------------- hedging
+HEDGES = os.path.join(HERE, "combo_hedges.json")   # combo -> contracts of the other side already bought
+FEE_RATE = 0.07                                     # Kalshi's trading fee: about 7% x price x (1 - price)
+
+
+def qty(x):
+    """A contract count as Kalshi shows it: 41.67, 42."""
+    return f"{x:,.2f}".rstrip("0").rstrip(".")
+
+
+def hedge_for(ticker):
+    """For a combo down to its last pick: buying the other side of that game so you collect about
+    the same whichever team wins. {ticker, name, price, n, cost, locked, done} or None."""
+    h = MINE["hold"].get(ticker) or {}
+    need = h.get("need") or []
+    if len(need) != 1:
+        return None
+    (side, leg_t), _ = need[0]
+    for sides in (MINE.get("all_games") or {}).values():
+        mine = next((x for x in sides if x["ticker"] == leg_t), None)
+        if mine:
+            other = next((x for x in sides if x is not mine), None)
+            buy = other if side == "yes" else mine
+            break
+    else:
+        return None
+    q = buy.get("p") if buy else None
+    if not q or not 0.01 <= q <= 0.97:
+        return None
+    done = (load_json(HEDGES, {}).get(ticker) or {}).get("n", 0.0)
+    n = math.floor((h["pays"] - done) * 100) / 100
+    if n < 1:
+        return {"ticker": buy["ticker"], "name": buy["pick"], "done": done, "n": 0}
+    fee = math.ceil(FEE_RATE * n * q * (1 - q) * 100) / 100
+    cost = n * q + fee
+    return {"ticker": buy["ticker"], "name": buy["pick"], "price": q, "n": n, "fee": fee,
+            "cost": cost, "locked": n - cost, "done": done}
+
+
+def place_hedge(ticker):
+    """Buy the other side of the last pick's game, at today's price or not at all (fills now or
+    cancels). Only runs after you confirm. Returns a message."""
+    import uuid
+    h = MINE["hold"].get(ticker) or {}
+    hg = hedge_for(ticker)
+    if not hg or not hg.get("n"):
+        return "Nothing to hedge on this combo now."
+    body = {"ticker": hg["ticker"], "side": "bid", "count": f"{hg['n']:.2f}", "price": f"{hg['price']:.4f}",
+            "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross",
+            "client_order_id": str(uuid.uuid4())}
+    try:
+        r = kalshi_send("POST", "/portfolio/events/orders", body) or {}
+        filled = float(r.get("fill_count") or 0)
+    except RuntimeError as err:
+        if "(404)" not in str(err):
+            return f"Kalshi didn't take the hedge: {err}"
+        legacy = {"ticker": hg["ticker"], "action": "buy", "side": "yes", "type": "limit",
+                  "count": int(hg["n"]), "yes_price": int(round(hg["price"] * 100)),
+                  "time_in_force": "immediate_or_cancel", "client_order_id": str(uuid.uuid4())}
+        try:
+            o = (kalshi_send("POST", "/portfolio/orders", legacy) or {}).get("order") or {}
+        except RuntimeError as err2:
+            return f"Kalshi didn't take the hedge: {err2}"
+        filled = float(o.get("fill_count_fp") or o.get("fill_count") or
+                       (legacy["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
+    except PermissionError:
+        return "Kalshi refused. Your API key needs write (trading) access to hedge."
+    ACCT_CACHE["at"] = 0
+    if filled <= 0:
+        return f"No one was selling {hg['name']} at {hg['price'] * 100:.0f}¢ just now. Nothing was bought."
+    d = load_json(HEDGES, {})
+    d[ticker] = {"n": round(hg["done"] + filled, 2), "ticker": hg["ticker"], "name": hg["name"]}
+    save_json(HEDGES, d)
+    haptic("success")
+    locked = filled * (1 - hg["price"]) - hg["fee"] * filled / hg["n"]
+    if filled + 0.01 < hg["n"]:
+        return (f"✅ Hedged part of {h.get('label', 'the combo')}: bought {qty(filled)} of {qty(hg['n'])} {hg['name']} at "
+                f"{hg['price'] * 100:.0f}¢. Tap Hedge again for the rest at the new price.")
+    return (f"✅ Hedged {h.get('label', 'the combo')}: bought {qty(filled)} {hg['name']} at {hg['price'] * 100:.0f}¢. "
+            f"You collect about {money(filled)} whichever team wins: about {money(locked)} locked in after the hedge.")
+
+
+def hedge_block(ticker, h, o):
+    """Card lines: what hedging locks in, next to the cash-out offer, with its own confirm."""
+    hg = hedge_for(ticker)
+    if not hg:
+        return ""
+    if not hg.get("n"):
+        return (f"<div class='muted' style='font-size:13px;margin-top:6px'>🛡 Hedged with {qty(hg['done'])} "
+                f"{html.escape(hg['name'])}: you collect about the same whichever team wins.</div>")
+    if hg["locked"] <= 0:
+        return ""
+    vs = ""
+    if o:
+        diff = hg["locked"] - o["offer"] / max(o.get("frac", 1.0), 0.01)
+        vs = (f" That's <b>{money(diff)} more</b> than cashing out." if diff > 0.5 else
+              f" Cashing out gets {money(-diff)} more." if diff < -0.5 else " About the same as cashing out.")
+    title = (f"Hedge {h['label']}: buy {qty(hg['n'])} {hg['name']} at {hg['price'] * 100:.0f}¢ "
+             f"({money(hg['cost'])})?")
+    sub = (f"You'd collect about {money(hg['n'])} whichever team wins, so about {money(hg['locked'])} is locked in "
+           f"({gain_words(hg['locked'], h['cost'])}). Buys now at {hg['price'] * 100:.0f}¢ or not at all; fee about "
+           f"{money(hg['fee'])}.")
+    args = ",".join(json.dumps(x) for x in (title, sub, f"combo://cash/hedgego/{ticker}", f"Hedge · lock in {money(hg['locked'])}"))
+    return (f"<div style='margin-top:10px;font-size:14px'>🛡 <b>Or hedge:</b> buy {qty(hg['n'])} {html.escape(hg['name'])} at "
+            f"{hg['price'] * 100:.0f}¢ ({money(hg['cost'])}) and collect about {money(hg['n'])} either way: locks in "
+            f"<b>{money(hg['locked'])}</b>.{vs}</div><div class='quote'><button class='btn quiet cashb' "
+            f"onclick=\"{html.escape(f'sheet({args})')}\">Hedge · lock in {money(hg['locked'])}</button></div>")
+
+
+def insurance_words(h, o):
+    """What cashing out gives up vs holding, on average: the price of a sure thing."""
+    if not o:
+        return ""
+    whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+    gap = h["p"] * h["pays"] - whole
+    if gap < 0.5:
+        return ""
+    return (f"<div class='muted' style='font-size:13px;margin-top:4px'>Cashing out gives up about {money(gap)} "
+            f"on average vs. holding, in exchange for a sure {money(whole)}.</div>")
 
 
 # ---------------------------------------------------------------- scores
@@ -3873,7 +4296,8 @@ def autosell_pass():
 
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
-WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell")
+WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap")
+PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
 
@@ -3925,7 +4349,8 @@ def send_watcher_settings():
     if not c:
         return False
     body = json.dumps({"at": int(time.time()), "cfg": {k: CFG.get(k) for k in WATCHER_SYNCED},
-                       "discount": load_json(DISCOUNT_FILE, {})}, separators=(",", ":"))
+                       "discount": load_json(DISCOUNT_FILE, {}), "approve": load_json(PI_APPROVE, {})},
+                      separators=(",", ":"))
     sig = hmac.new(c["secret"].encode(), body.encode(), hashlib.sha256).hexdigest()
     try:
         requests.post(f"{NTFY}/{c['topic']}-cfg", data=json.dumps({"body": body, "sig": sig}).encode(),
@@ -3933,6 +4358,20 @@ def send_watcher_settings():
         return True
     except requests.RequestException:
         return False
+
+
+def approve_pi_update(version, engine_bytes):
+    """After this phone updates: tell the Pi it may install exactly this version (the engine and
+    watcher files, by their SHA-256), signed like any setting. The Pi installs nothing else."""
+    import hashlib
+    try:
+        w = requests.get(UPDATE_URL + "/watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=20)
+        w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
+    except requests.RequestException:
+        w_sha = ""
+    save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha})
+    if watcher_conf():
+        send_watcher_settings()
 
 
 def watcher_line():
@@ -3943,7 +4382,9 @@ def watcher_line():
     hb = watcher_status()
     if hb and time.time() - hb.get("at", 0) < 180:
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
-        return (f"<div class='wline'>🖥 Pi watcher on · checked {t}</div>")
+        extra = (" · ⏸ auto cash-out paused (save Settings with it on to resume)" if hb.get("paused") else "") + \
+                (f" · waiting for you to update this phone to {hb['waiting']}" if hb.get("waiting") else "")
+        return f"<div class='wline'>🖥 Pi watcher on · checked {t}{extra}</div>"
     return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 3+ minutes. Your phone is handling "
             "alerts while it's open.</div>")
 
@@ -4159,7 +4600,10 @@ def cash_action(action, ticker):
     APP["quiet"] = True                      # update the page in place, no loading screen
     confirm_after = None
     try:
-        if action == "tp" and not AUTOSELL:
+        if action == "hedgego":
+            loading("Placing the hedge on Kalshi…")
+            MINE["flash"] = place_hedge(ticker)
+        elif action == "tp" and not AUTOSELL:
             MINE["flash"] = "Auto-sell isn't available: Kalshi only buys combos back through cash-out offers."
         elif action == "tp":
             loading("Placing your auto-sell order on Kalshi…")
@@ -4957,6 +5401,38 @@ def week_spend():
     return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
 
 
+BUY_RATIO = os.path.join(HERE, "combo_buy_ratio.json")   # Kalshi's combo quotes vs single-game prices
+
+
+def note_buy_ratio(n_legs, ratio):
+    """Remember how Kalshi's combo quote compared with the single-game prices, by number of picks."""
+    if not 0.2 < ratio < 2:
+        return
+    d = load_json(BUY_RATIO, {})
+    k = str(min(n_legs, 8))
+    d[k] = (d.get(k, []) + [round(ratio, 4)])[-30:]
+    save_json(BUY_RATIO, d)
+
+
+def est_quote_ratio(n_legs):
+    """Typical combo quote / single-game price for this many picks (None until 3+ quotes)."""
+    d = load_json(BUY_RATIO, {})
+    near = d.get(str(min(n_legs, 8))) or []
+    if len(near) < 3:
+        near = [x for v in d.values() for x in v]
+    return statistics.median(near) if len(near) >= 3 else None
+
+
+def est_offer(c, stake=None):
+    """(estimated Kalshi payout, share of fair) for a suggested combo, or (None, None)."""
+    r = est_quote_ratio(len(c["legs"]))
+    if not r or not c.get("kalshi") or not c.get("fair"):
+        return None, None
+    k = (stake or CFG["stake"]) / CFG["stake"]
+    pays = c["kalshi"] * r * k
+    return pays, pays / (c["fair"] * k)
+
+
 def get_offer(i, amount=None, check_cap=True):
     """Steps 1-3: make the combo market, ask for a price, wait for the best offer."""
     import time
@@ -4998,9 +5474,12 @@ def get_offer(i, amount=None, check_cap=True):
     yes_price, q = best
     pays = stake / yes_price
     minimum = c["min"] * stake / CTX["stake"]
+    if c.get("kalshi"):
+        note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
+    pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
                         "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None}
-    return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake}
+    return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct}
 
 
 def accept_offer(i):
@@ -5311,10 +5790,12 @@ def handle_action(webview, parts):
 def offer_html(i, o):
     if "error" in o:
         return f"<span class='verdict no'>{html.escape(o['error'])}</span>"
-    verdict = ("<span class='verdict ok'>Above your minimum</span>" if o["ok"] else
-               f"<span class='verdict no'>Below your {money(o['min'])} minimum</span>")
+    verdict = ("<span class='verdict ok'>Above your cut-off</span>" if o["ok"] else
+               f"<span class='verdict no'>Below your {CFG['accept_pct']}% cut-off ({money(o['min'])})</span>")
+    ev = (f"<div class='muted' style='font-size:13px;margin-top:4px'>{o['pct']:.0%} of fair · expected "
+          f"{signed_money(o['stake'] * (o['pct'] - 1))} per {money(o['stake'])} bet</div>" if o.get("pct") else "")
     return (f"<div>Kalshi offers <b>{money(o['pays'])}</b> if it hits, for your "
-            f"{money(o['stake'])} ({o['price'] * 100:.2f}¢ a contract). {verdict}</div>"
+            f"{money(o['stake'])} ({o['price'] * 100:.2f}¢ a contract). {verdict}</div>{ev}"
             f"<div class='quote'><button class='btn go' onclick='act(\"accept\",{i})'>"
             f"{'Accept' if o['ok'] else 'Accept anyway'}</button>"
             f"<button class='btn' onclick='act(\"decline\",{i})'>No thanks</button></div>")
@@ -5418,7 +5899,7 @@ def settings_page(all_games, days, counts):
     sec = {
         "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
                          slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
-                         slider("accept_pct", "Minimum offer to accept", 50, 100, 5, "% of fair"),
+                         slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair"),
                          "Minimum offer: Buy on Kalshi flags offers below this share of the fair payout."),
         "mix": "<details class='game disc' id='mix'><summary><span><b>Combo mix</b><span class='muted'>How many of each type</span></span></summary>"
                + ("" if not LG().get("full") else
@@ -5459,6 +5940,7 @@ def settings_page(all_games, days, counts):
                         + slider("ride", "Let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
+                        + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
                         + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
                             + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
                             + switch("tp_auto", "Auto-sell all my live combos (every league)")) if AUTOSELL else ""),
@@ -5470,7 +5952,9 @@ def settings_page(all_games, days, counts):
                          "only near full value. Auto cash-out sells by itself when the card says Cash out: a pick "
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
                          "while the planner is open, or all the time if your Pi watcher is running (Kalshi buys "
-                         "combos back only through live offers), and tells you each time. Otherwise nothing sells unless you confirm."
+                         "combos back only through live offers), and tells you each time. It stops after the daily "
+                         "limit and never sells for less than you paid unless a game is turning against you. "
+                         "Otherwise nothing sells unless you confirm."
                          + (" Auto-sell puts a standing sell order on Kalshi that fills only if a buyer pays that "
                             "much." if AUTOSELL else ""))),
         "kalshi": section("Kalshi account",
@@ -5902,6 +6386,7 @@ def install_update():
         if not getattr(r, "ok", False):
             return False, "Couldn't download the update. Check your connection and try again."
         src = r.content.decode("utf-8", errors="strict")
+        raw = r.content
     except (requests.RequestException, UnicodeDecodeError, AttributeError):
         return False, "Couldn't download the update. Check your connection and try again."
     found = re.search(r'^VERSION = "([0-9.]+)"', src, re.M)
@@ -5925,6 +6410,10 @@ def install_update():
         os.replace(tmp, me)
     except OSError as err:
         return False, f"Couldn't save the update ({err}). Your current version is unchanged."
+    try:
+        approve_pi_update(found.group(1), raw)
+    except Exception:
+        pass
     return True, (f"Updated to version {found.group(1)}. Close this window with the X at the top left, "
                   "then tap Run. (The previous version is saved as combo_planner_engine_backup.txt.)")
     # (that message only shows if the new version can't start in this window by itself)

@@ -9,6 +9,18 @@ REPO=https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main
 DIR=/var/lib/combowatch
 SVC=/etc/systemd/system/combowatch.service
 
+if [ "${1:-}" = "--healthcheck" ]; then
+  # Dead-man switch: a free healthchecks.io check (period 5 min, grace 5 min) that alerts you if the Pi goes quiet.
+  url="${2:-}"
+  if [[ ! "$url" =~ ^https://hc-ping\.com/[A-Za-z0-9/_-]+$ ]]; then
+    echo "Usage: bash install_pi.sh --healthcheck https://hc-ping.com/<your check's id>"; exit 1
+  fi
+  sudo -u combowatch python3 -c "import json,sys;p='$DIR/watcher.json';c=json.load(open(p));c['healthcheck_url']=sys.argv[1];json.dump(c,open(p,'w'))" "$url"
+  sudo systemctl restart combowatch
+  echo "Dead-man alert on: healthchecks.io will tell you if the Pi stops checking in."
+  exit 0
+fi
+
 echo "== Combo planner watcher setup =="
 sudo apt-get update -qq
 sudo apt-get install -y -qq python3 python3-requests ca-certificates >/dev/null

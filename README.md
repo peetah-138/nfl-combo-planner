@@ -25,6 +25,29 @@ on iPhone.
 
 New versions arrive through **Settings → Check for updates**.
 
+## Optional: the Raspberry Pi watcher
+
+A Pi at home watches your combos around the clock, sends alerts through the ntfy app and, if you turn
+it on, does Auto cash-out by the same rules as the phone. Install it with `watcher/install_pi.sh`
+(it prints a pairing code for Settings → Pi watcher). It installs a new version only after your phone
+has updated to that exact version.
+
+**Dead-man alert.** Make a free check at healthchecks.io (period 5 minutes, grace 5 minutes), copy its
+ping URL, then on the Pi run:
+
+    bash install_pi.sh --healthcheck https://hc-ping.com/<your check's id>
+
+healthchecks.io emails or texts you if the Pi stops checking in.
+
+**Reach the Pi from anywhere (Tailscale).** On the Pi:
+
+    curl -fsSL https://tailscale.com/install.sh | sh
+    sudo tailscale up --ssh
+
+Open the link it prints and sign in. Install Tailscale on your Mac and iPhone with the same account.
+Then `ssh <you>@combowatch` works from anywhere, with nothing opened to the internet. In the Tailscale
+admin page, turn off key expiry for the Pi so it stays connected.
+
 ## Files
 
 - `nfl_combo_planner.py`: the planner (installed on the phone as `combo_planner_engine.py`).
