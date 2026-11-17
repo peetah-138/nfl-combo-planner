@@ -345,7 +345,8 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={TOKEN}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    if os.path.exists(WINDOW_JS) and shutil.which("osascript"):
+    if os.environ.get("CW_WINDOW") == "1" and os.path.exists(WINDOW_JS) and shutil.which("osascript"):
+        # the native window isn't reliable yet on every Mac: off unless asked for
         print("opening the window", flush=True)
         p = subprocess.Popen(["osascript", "-l", "JavaScript", WINDOW_JS, url, ICON])   # errors go to setup.log
         for _ in range(40):                              # the window counts once it has loaded the page
