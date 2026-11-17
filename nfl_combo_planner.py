@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.29"
+VERSION = "2026.11.16.30"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2434,6 +2434,50 @@ details.crow[open]>summary .chev{transform:rotate(180deg)}
 .quietbox>summary::-webkit-details-marker{display:none}.quietbox>summary b{display:block;font-size:16px}
 .quietbox>summary .muted{font-size:13px}.quietbox[open]>summary{border-radius:18px 18px 0 0}
 .quietbox[open]>summary .chev{transform:rotate(180deg)}.quietbox .list{border-radius:0 0 18px 18px;border-top:1px solid var(--line)}
+/* ---- iOS polish: system type sizes, inset grouped lists, hairlines, press states ---- */
+body{font-size:17px;letter-spacing:-.01em}
+header{padding:12px 20px 2px}h1{font-size:34px;font-weight:700;letter-spacing:.01em;line-height:1.2}
+.sub{font-size:15px;color:var(--muted)}
+#combos h2,h2{font-size:13px;font-weight:400;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);margin:24px 16px 7px}
+.list,.quietbox>summary,.alertrow,.lostbox>summary{border-radius:12px!important;box-shadow:none!important}
+.list{padding:0 0 0 16px}
+details.crow{border-top:0;position:relative}
+details.crow+details.crow::before,.nitem+.nitem::before{content:'';position:absolute;left:44px;right:0;top:0;height:.5px;background:var(--line)}
+.nitem{position:relative;border-top:0;padding:0 16px 14px 0}.nitem details.crow{position:static}
+details.crow>summary{min-height:60px;padding:10px 16px 10px 0;margin-left:-16px;padding-left:16px;gap:12px;
+ transition:background .2s ease}
+details.crow>summary:active,.quietbox>summary:active,.lostbox>summary:active{background:var(--press);transition:none}
+.ci{width:30px;height:30px;border-radius:8px;background:var(--tile);display:flex;align-items:center;justify-content:center;font-size:17px}
+.cg b{font-size:17px;font-weight:600}.cl{font-size:15px}
+.cn b{font-size:17px;font-weight:600}.cn span{font-size:13px}
+.chev{width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);
+ opacity:.55;margin-left:2px;flex:none;transition:transform .2s ease}
+details.crow[open]>summary .chev,.quietbox[open]>summary .chev{transform:rotate(45deg)}
+.dots .d{width:6px;height:6px}
+.btn{border-radius:14px;min-height:50px;font-size:17px;font-weight:600}
+.btn.two .bt{font-size:17px;font-weight:600}.btn.two .bs{font-size:13px}
+.quietbox>summary{padding:12px 16px;min-height:60px}.quietbox>summary b{font-size:17px;font-weight:600}
+.quietbox>summary .muted{font-size:15px;display:block}
+.quietbox .list{border-radius:0 0 12px 12px!important;border-top:.5px solid var(--line)}
+.quietbox[open]>summary{border-radius:12px 12px 0 0!important}
+.lostbox>summary{font-size:17px;font-weight:600}
+.alertrow{padding:10px 16px;min-height:60px}.alertrow b{font-size:17px;font-weight:400}.alertrow span{font-size:13px}
+.tabs{margin:10px 16px 6px;padding:2px;border-radius:9px}.tabs button{font-size:13px;font-weight:600;padding:6px 4px;border-radius:7px}
+.gstrip{gap:10px;margin:8px -16px 2px;padding:4px 16px 6px;scroll-snap-type:x proximity}
+.gchip{scroll-snap-align:start;width:140px;align-items:stretch;gap:4px;border-radius:14px;padding:10px 12px 9px;
+ background:var(--card);box-shadow:none;text-align:left}
+.gtop{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;color:var(--muted)}
+.gtop .gsp{font-size:13px}
+.gr{display:flex;justify-content:space-between;font-size:15px;color:var(--muted);line-height:1.25}
+.gr b{font-weight:600}.gr.w{color:var(--ink)}.gr.w b{font-weight:700}
+.gchip:not(.on) .gr{color:var(--ink)}
+.gmine{font-size:12px;color:var(--accent);font-weight:600;margin-top:2px}
+.gchip.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+.ghead{margin:14px 16px 0}
+.cexp{padding:4px 16px 8px 0}.cardfoot{margin-right:16px}
+details.crow>ol,details.crow>.min{margin-right:16px}
+.min{border-radius:12px;background:var(--card2)}
+.tag,.verdict{font-size:12px;font-weight:600}
 .hidegame{display:none!important}
 input.txt,textarea{border-radius:12px!important;border:1px solid var(--line)!important;background:var(--card2)!important;
  color:var(--ink);font-size:16px}
@@ -2623,6 +2667,20 @@ def combo_url(ticker):
     return f"{KALSHI_WEB}/markets/{series}/combo/{event}?marketTicker={ticker}"
 
 
+def tap_haptic():
+    """The light 'selection' tick iOS uses for pickers and segmented controls."""
+    try:
+        from objc_util import ObjCClass, on_main_thread
+
+        @on_main_thread
+        def tick():
+            g = ObjCClass("UISelectionFeedbackGenerator").new()
+            g.selectionChanged()
+        tick()
+    except Exception:
+        pass
+
+
 def haptic(kind="success"):
     """A tap you can feel: success, warning or error (iPhone only, silently skipped elsewhere)."""
     try:
@@ -2692,6 +2750,9 @@ class NavKeeper:
             except Exception:
                 pass
             return False
+        if url.startswith("combo://haptic/"):
+            tap_haptic()
+            return False
         if self.inner is not None:
             return self.inner.webview_should_start_load(webview, url, nav_type)
         return not url.startswith("combo://")
@@ -2736,17 +2797,17 @@ def go_to(target):
     threading.Thread(target=run, daemon=True).start()
 
 
-DARK_CSS = ("<style>:root{color-scheme:dark;--bg:#0b0c10;--card:#16181e;--card2:#1e2129;--ink:#f3f4f6;"
-            "--muted:#8b93a1;--line:rgba(255,255,255,.07);--accent:#4d8dff;--accentbg:rgba(77,141,255,.15);"
-            "--good:#34d27b;--goodbg:rgba(52,210,123,.14);--bad:#ffc53d;--badbg:rgba(255,197,61,.14);"
-            "--red:#ff5d55;--redbg:rgba(255,93,85,.15);--dogbg:rgba(185,162,255,.15);--dog:#b9a2ff;--done:#13201a;"
-            "--track:#1b1e25;--thumb:#30343e;--shadow:none}"
+DARK_CSS = ("<style>:root{color-scheme:dark;--bg:#000000;--card:#1c1c1e;--card2:#2c2c2e;--ink:#ffffff;"
+            "--muted:#98989f;--line:rgba(84,84,88,.6);--accent:#0a84ff;--accentbg:rgba(10,132,255,.18);"
+            "--good:#30d158;--goodbg:rgba(48,209,88,.16);--bad:#ff9f0a;--badbg:rgba(255,159,10,.16);"
+            "--red:#ff453a;--redbg:rgba(255,69,58,.16);--dogbg:rgba(191,90,242,.18);--dog:#bf5af2;--done:#0f2416;"
+            "--track:rgba(118,118,128,.24);--thumb:#636366;--shadow:none;--press:#2c2c2e;--tile:#2c2c2e}"
             "body{background:var(--bg);color:var(--ink)}</style>")
-LIGHT_CSS = ("<style>:root{color-scheme:light;--bg:#f2f2f7;--card:#ffffff;--card2:#f4f5f8;--ink:#0d0f14;"
-             "--muted:#6b7280;--line:rgba(0,0,0,.07);--accent:#0a6cff;--accentbg:rgba(10,108,255,.10);"
-             "--good:#16a34a;--goodbg:rgba(22,163,74,.12);--bad:#b7791f;--badbg:rgba(234,179,8,.16);"
-             "--red:#dc2626;--redbg:rgba(220,38,38,.10);--dogbg:rgba(109,40,217,.09);--dog:#6d28d9;--done:#eef7f0;"
-             "--track:#e3e4e9;--thumb:#ffffff;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 20px rgba(15,20,30,.05)}"
+LIGHT_CSS = ("<style>:root{color-scheme:light;--bg:#f2f2f7;--card:#ffffff;--card2:#f2f2f7;--ink:#000000;"
+             "--muted:#8a8a8e;--line:rgba(60,60,67,.22);--accent:#007aff;--accentbg:rgba(0,122,255,.12);"
+             "--good:#248a3d;--goodbg:rgba(52,199,89,.14);--bad:#c93400;--badbg:rgba(255,149,0,.16);"
+             "--red:#d70015;--redbg:rgba(255,59,48,.12);--dogbg:rgba(175,82,222,.12);--dog:#8944ab;--done:#eaf7ee;"
+             "--track:rgba(118,118,128,.12);--thumb:#ffffff;--shadow:none;--press:#e5e5ea;--tile:#f2f2f7}"
              "body{background:var(--bg);color:var(--ink)}</style>")
 
 
@@ -4124,13 +4185,16 @@ def cash_alerts(plan):
 
 LIVE_VIEW_JS = r"""
 window.__game=window.__game||'';
-function pickGame(g){window.__game=(window.__game===g?'':g);applyGame();
+function buzz(){try{location.href='combo://haptic/tap';}catch(e){}}
+if(!window.__hz){window.__hz=1;document.addEventListener('click',function(ev){
+ if(ev.target.closest('details.crow>summary,.quietbox>summary,details.lostbox>summary'))buzz();},true);}
+function pickGame(g){buzz();window.__game=(window.__game===g?'':g);applyGame();
  if(window.__game){var el=document.getElementById('ghead');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});}}
 function applyGame(){var g=window.__game;
  if(g&&!document.getElementById('g-'+g))g=window.__game='';
  document.querySelectorAll('.gchip').forEach(function(c){c.classList.toggle('sel',c.dataset.g===g);});
  var head=document.getElementById('ghead');if(head){head.classList.toggle('on',!!g);
-  var c=g&&document.getElementById('g-'+g);document.getElementById('gname').textContent=c?('Riding on '+c.querySelector('.gt').textContent.trim()):'';}
+  var c=g&&document.getElementById('g-'+g);document.getElementById('gname').textContent=c?('Riding on '+[].map.call(c.querySelectorAll('.gr>span:first-child'),function(x){return x.textContent.trim();}).filter(Boolean).join(' vs ')):'';}
  document.querySelectorAll('details.crow[data-games]').forEach(function(r){var hit=!g||r.dataset.games.split(' ').indexOf(g)>=0;
   var box=r.closest('.nitem')||r;box.classList.toggle('hidegame',!hit);});
  var q=document.getElementById('quietbox');if(q){if(g){if(!q.dataset.was)q.dataset.was=q.open?'1':'0';q.open=true;}
@@ -4500,15 +4564,21 @@ def mine_page(live=False):
     def chip_of(ev, g):
         sc, icon = g["sc"], SPORTS.get(g["sp"], {}).get("icon", "🎯")
         playing = bool(sc and sc["state"] == "in")
+        n = len(g["n"])
+        mine = f"{n} combo{'s' if n != 1 else ''}"
         if sc and sc["state"] in ("in", "post"):
-            top = f"{e(sc['abbr'])} <b>{sc['me']}</b> · {e(sc['opp_abbr'])} <b>{sc['opp']}</b>"
-            bot = f"<span class='{'lv' if playing else 'muted'}'>{e(sc['detail'])}</span>"
+            lead = "me" if sc["me"] > sc["opp"] else "opp" if sc["opp"] > sc["me"] else ""
+            teams = (f"<span class='gr{' w' if lead == 'me' else ''}'><span>{e(sc['abbr'])}</span><b>{sc['me']}</b></span>"
+                     f"<span class='gr{' w' if lead == 'opp' else ''}'><span>{e(sc['opp_abbr'])}</span><b>{sc['opp']}</b></span>")
+            status = f"<span class='{'lv' if playing else ''}'>{e(sc['detail'])}</span>"
         else:
-            top = e(sc["abbr"] + " · " + sc["opp_abbr"]) if sc else e(g["nm"])
-            bot = f"<span class='muted'>{e(when_label(g['t']) or 'upcoming')}</span>"
+            teams = ((f"<span class='gr'><span>{e(sc['abbr'])}</span></span><span class='gr'><span>{e(sc['opp_abbr'])}</span></span>")
+                     if sc else f"<span class='gr'><span>{e(g['nm'])}</span></span><span class='gr'><span>&nbsp;</span></span>")
+            status = f"<span>{e(when_label(g['t']) or 'Upcoming')}</span>"
         return (playing, g["t"].timestamp() if g["t"] else 9e12,
-                f"<button class='gchip{' on' if playing else ''}' id='g-{e(ev)}' data-g='{e(ev)}' onclick=\"pickGame('{e(ev)}')\">"
-                f"<span class='gt'>{icon} {top}</span><span class='gb'>{bot} · {len(g['n'])}</span></button>")
+                f"<button class='gchip{' on' if playing else ''}' id='g-{e(ev)}' data-g='{e(ev)}' "
+                f"onclick=\"pickGame('{e(ev)}')\"><span class='gtop'><span class='gsp'>{icon}</span>{status}</span>"
+                f"{teams}<span class='gmine'>{mine}</span></button>")
     gchips = sorted((chip_of(ev, g) for ev, g in games.items()), key=lambda x: (not x[0], x[1]))
     n_live_games = sum(1 for c in gchips if c[0])
     summary = f"<div class='gstrip' id='gstrip'>{''.join(c[2] for c in gchips)}</div>" if gchips else ""
