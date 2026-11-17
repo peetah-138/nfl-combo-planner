@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.25"
+VERSION = "2026.11.16.26"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2487,13 +2487,75 @@ def fallback_nav(page):
             f"<nav class='fnav'>{links}</nav>")
 
 
+TOUR_SLIDES = [
+    ("🏠", "Live is home base",
+     "Every combo you hold, in every sport, with live scores. The dots show each pick: "
+     "<b class='pos'>green</b> won, <b style='color:var(--red)'>red</b> lost, hollow still to play. Tap a card for the details."),
+    ("👆", "Right now tells you what to do",
+     "When something's worth doing, like cashing out a combo, it shows up at the top as one button. "
+     "Nothing is ever bought or sold until you tap and confirm."),
+    ("＋", "Build makes the combos",
+     "Pick your budget and tap <b>Build combos</b>. The planner suggests a mix of safer and long-shot combos, "
+     "and you choose which to place. The defaults are a good start."),
+    ("🎯", "Let it ride, or lock it in",
+     "Turn on alerts on the Live page to hear about big moments. In Settings, <b>Auto-sell</b> can sell a "
+     "combo for you at a price you'd be happy with. Everything else in Settings can wait."),
+]
+
+
+def tour_html():
+    """A four-card swipeable introduction, shown once after setup (and from Settings any time)."""
+    cards = "".join(
+        f"<div class='tslide'><div class='ticon'>{icon}</div><h2>{title}</h2><p>{text}</p></div>"
+        for icon, title, text in TOUR_SLIDES)
+    dots = "".join("<i></i>" for _ in TOUR_SLIDES)
+    return ("<div id='tour' class='tour'><div class='tsheet'>"
+            f"<button class='tskip' onclick='tourEnd(0)'>Skip</button><div class='ttrack' id='ttrack'>{cards}</div>"
+            f"<div class='tdots' id='tdots'>{dots}</div>"
+            "<button class='btn go big' id='tnext' onclick='tourNext()'>Next</button></div></div>"
+            "<script>(function(){if(window.__tourDone){var t=document.getElementById('tour');if(t)t.remove();return;}"
+            "var tr=document.getElementById('ttrack'),n=tr.children.length;"
+            "function cur(){return Math.round(tr.scrollLeft/tr.clientWidth);}"
+            "function paint(){var i=cur();[].forEach.call(document.querySelectorAll('#tdots i'),function(d,k){d.className=k===i?'on':'';});"
+            "document.getElementById('tnext').textContent=i===n-1?'Build my first combos':'Next';}"
+            "tr.addEventListener('scroll',function(){clearTimeout(window.__ts);window.__ts=setTimeout(paint,60);},{passive:true});"
+            "window.tourNext=function(){var i=cur();if(i>=n-1)return tourEnd(1);tr.scrollTo({left:(i+1)*tr.clientWidth,behavior:'smooth'});};"
+            "window.tourEnd=function(build){window.__tourDone=1;var t=document.getElementById('tour');"
+            "if(t){t.classList.add('out');setTimeout(function(){t.remove();},260);}"
+            "location.href='combo://nav/'+(build?'tour-build':'tourdone');};paint();})();</script>")
+
+
+TOUR_CSS = """
+.tour{position:fixed;inset:0;z-index:50;background:rgba(5,7,12,.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+ display:flex;align-items:flex-end;animation:tin .28s ease both}
+.tour.out{animation:tout .26s ease both}@keyframes tin{from{opacity:0}}@keyframes tout{to{opacity:0}}
+.tsheet{position:relative;width:100%;background:var(--card);border-radius:26px 26px 0 0;
+ padding:22px 0 calc(22px + env(safe-area-inset-bottom));animation:tup .34s cubic-bezier(.2,.7,.3,1) both}
+@keyframes tup{from{transform:translateY(40px)}}
+.tskip{position:absolute;right:16px;top:14px;border:0;background:transparent;color:var(--muted);font:600 15px -apple-system,system-ui;padding:8px}
+.ttrack{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none}.ttrack::-webkit-scrollbar{display:none}
+.tslide{flex:0 0 100%;scroll-snap-align:start;padding:18px 26px 4px;box-sizing:border-box}
+.ticon{width:56px;height:56px;border-radius:16px;background:var(--accentbg);display:flex;align-items:center;justify-content:center;
+ font-size:28px;margin-bottom:14px}
+.tslide h2{all:unset;display:block;font:800 24px/1.15 -apple-system,system-ui;letter-spacing:-.02em;margin-bottom:8px;color:var(--ink)}
+.tslide p{margin:0;font-size:16px;line-height:1.5;color:var(--muted)}.tslide p b{color:var(--ink)}.tslide p b.pos{color:var(--good)}
+.tdots{display:flex;gap:6px;justify-content:center;margin:18px 0 14px}.tdots i{width:7px;height:7px;border-radius:50%;
+ background:var(--line);transition:width .2s,background .2s}.tdots i.on{width:20px;border-radius:4px;background:var(--accent)}
+.tsheet .btn{display:block;width:calc(100% - 52px);margin:0 26px}
+.tip{background:var(--accentbg);border-radius:16px;padding:14px 16px;font-size:15px;margin:0 0 14px}
+.tip b{color:var(--accent)}
+"""
+
+
 def app_frame(page):
     """Page extras inside the web view: pull-to-refresh, the in-place swap and confirm dialogs.
     The title bar and tab bar are native controls (see _web)."""
     if "<body>" not in page or "id='ptr'" in page:
         return page
     refresh = (APP.get("where") or "") in ("mine", "results")
-    page = page.replace("</head>", f"<style>{APP_CSS}</style></head>", 1)
+    page = page.replace("</head>", f"<style>{APP_CSS}{TOUR_CSS}</style></head>", 1)
+    if CFG.get("tour_pending") and "<h1>Welcome</h1>" not in page and "id='tour'" not in page and can_trade():
+        page = page.replace("</body>", tour_html() + "</body>", 1)
     page = page.replace("<body>", "<body><div class='ptr' id='ptr'></div>" + ("" if APP.get("bar") is not None
                         or not in_pythonista() else fallback_nav(page)), 1)
     page = page.replace("</body>", f"<script>{APP_JS}window.REFRESH={'true' if refresh else 'false'};</script></body>", 1)
@@ -2604,6 +2666,12 @@ class NavKeeper:
 def go_to(target):
     """Switch to My combos, Results or Settings in the same window."""
     import threading
+    if target in ("tourdone", "tour-build", "tour"):
+        CFG["tour_pending"] = target == "tour"
+        save_cfg()
+        if target == "tourdone":
+            return
+        target = "build" if target == "tour-build" else "refresh"
     MINE["live"] = False
     waiting = APP.get("settings_wait")
     if target == "close":
@@ -5006,6 +5074,9 @@ def settings_page(all_games, days, counts):
     mode = RUN_OPTS.pop("smode", None) or APP.get("smode") or "build"
     if not CFG.get("kalshi_key_id") and not os.path.exists(KEYFILE):
         mode = "setup"                            # first run: a short welcome instead of every setting
+        if not CFG.get("tour_pending"):
+            CFG["tour_pending"] = True            # the quick tour follows once Kalshi is connected
+            save_json(SAVED, CFG)
     APP["smode"] = mode
     APP["where"] = mode
     sec = {
@@ -5133,6 +5204,9 @@ def settings_page(all_games, days, counts):
         body = "".join([
             f"<header><h1>Build {LG()['name']} combos</h1><div class='sub' id='budgetline'></div></header><section>",
             upd, "".join(notice_html),
+            ("" if CFG.get("built_once") else
+             "<div class='tip'><b>New here?</b> The settings below are already set to sensible defaults. Tap "
+             "<b>Build combos</b> at the bottom to see suggestions. Nothing is placed until you choose to.</div>"),
             sec["days"], sec["money"], sec["mix"], sec["picks"],
             "<button class='btn go big' style='margin:18px 0 8px' onclick=\"go('build')\">Build combos</button>",
             "</section>"])
@@ -5144,10 +5218,14 @@ def settings_page(all_games, days, counts):
         body = "".join([
             "<header><h1>Settings</h1></header><section>",
             ("<div class='stack'>" + "".join(urgent) + "</div>") if urgent else "",
-            sec["look"], sec["cash"], sec["order"], sec["midday"], sec["overlap"], sec["kalshi"], sec["odds"],
-            sec["watcher"], sec["home"],
+            sec["look"], sec["cash"], sec["kalshi"], sec["odds"],
+            "<details class='lostbox' id='moreset'><summary>More settings · game order, overlap, mid-day, Pi watcher</summary>",
+            sec["order"], sec["midday"], sec["overlap"], sec["watcher"], "</details>",
+            sec["home"],
             "<button class='btn go big' style='margin:22px 0 4px' onclick=\"go('save')\">Save settings</button>",
-            ("<h2>About</h2><div class='stack'>" + "".join(routine) + "</div>") if routine else "",
+            "<h2>About</h2><div class='stack'>" + "".join(routine)
+            + "<a class='btn big' style='display:flex;align-items:center;justify-content:center;text-decoration:none' "
+              "href='combo://nav/tour'>Show the quick tour</a></div>",
             vline, "</section>"])
     css_extra = (".stack{display:flex;flex-direction:column;gap:8px;margin-top:8px}.big{width:100%;padding:13px;font-size:16px}"
                  ".srow{padding:6px 0}.srow input[type=range]{width:100%}.swrow{padding:8px 0;gap:12px}"
@@ -5309,6 +5387,9 @@ def main():
         return main()
     if choice != "build":
         return console_note("Closed without building.")
+    if not CFG.get("built_once"):
+        CFG["built_once"] = True
+        save_cfg()
 
     notes = []
     book = {}
