@@ -289,7 +289,7 @@ async function pasteKey(){const t=(await api('/api/paste',{})).text;const r=awai
  if(r.ok){S.keyname=r.name;$('#kname').textContent='✓ '+r.name;$('#kerr').textContent='';}else $('#kerr').textContent=r.error+' Copy the whole key first, then tap Paste instead.';kv();}
 function phone(){rail(3);if(S.st.installed){return install();}
 view(`<h1>Link your iPhone</h1><p class="lead">Paste the pairing code from the planner on your phone, so your alerts and settings keep working. No code yet? Leave it empty and we'll make a new one.</p>
-<div class="card"><label>Pairing code <span style="color:var(--mute);font-weight:400">· planner › Settings › Pi watcher</span></label>
+<div class="card"><label>Pairing code <span style="color:var(--mute);font-weight:400">· planner › Settings › Watcher</span></label>
 <textarea id="pair" placeholder="Paste the code here (copy it on your iPhone; with Handoff it pastes on this Mac)" oninput="S.pair=this.value">${esc(S.pair)}</textarea>
 <div class="row" style="margin-top:10px"><button class="btn" onclick="pasteInto('pair')">Paste</button></div></div>`);
 foot([{t:'Back',on:'key()'},{t:'Install',cls:'primary',on:'install()'}]);}
@@ -308,12 +308,16 @@ S.res=p.result;rail(5,true);done();}
 function done(){const r=S.res||{},ok=(r.kalshi||'').startsWith('ok');
 view(`<div class="badge" style="background:linear-gradient(145deg,#34c759,#1f9d55);box-shadow:0 8px 22px rgba(31,157,85,.3)"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div><h1>Your Mac is the hub</h1><p class="lead">It's running in the background and starts by itself after a restart. Keep it plugged in with the lid open.</p>
 <div class="card"><div class="row"><div class="grow"><h3>Kalshi</h3><p>${ok?'Connected':'Still connecting: this can take a minute after starting'}</p></div><span class="pill ${ok?'good':'wait'}"><i></i>${ok?'Connected':'Connecting'}</span></div></div>
-${r.changed==='yes'||r.topic?`<div class="card"><h3>On your iPhone</h3><p style="margin-bottom:10px">Planner › Settings › Pi watcher: replace the code with this one and tap Save.</p>
+${r.changed==='yes'||r.topic?`<div class="card"><h3>On your iPhone</h3><p style="margin-bottom:10px">Planner › Settings › Watcher: replace the code with this one and tap Save.</p>
 <div class="code">${esc(r.code)}</div><div class="row" style="margin-top:10px"><button class="btn primary" onclick="copy('${esc(r.code)}',this)">Copy code</button></div></div>`:''}
 ${r.topic?`<div class="card"><h3>Alerts</h3><p>In the ntfy app on your iPhone, subscribe to <b class="code" style="display:inline;padding:2px 6px">${esc(r.topic)}</b></p></div>`:''}
 <div class="card"><div class="row"><div class="grow"><h3>Combo Hub</h3><p>The planner in your browser · passcode ${esc(r.pass||'')}</p></div><button class="btn" onclick="api('/api/open',{what:'hub'})">Open</button></div></div>
 ${S.keyname&&S.keyname!=='Pasted key'?'<button class="btn link" onclick="api(\'/api/trashkey\',{});this.textContent=\'Moved the key file to the Trash ✓\'">Move the downloaded key file to the Trash</button>':''}`);
-foot([{t:'Done',cls:'primary',on:"api('/api/quit',{})"}]);}
+foot([{t:'Done',cls:'primary',on:'finish()'}]);}
+function finish(){rail(5,true);view(`<div class="badge" style="background:linear-gradient(145deg,#34c759,#1f9d55)"><svg width="30" height="30" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+<h1>All done</h1><p class="lead">You can close this tab. Open Combo Watcher from Applications any time to check on it, update it or change settings.</p>`);
+foot([{t:'Open Combo Hub',cls:'primary',on:"api('/api/open',{what:'hub'})"}]);
+api('/api/quit',{}).catch(()=>{});setTimeout(()=>{try{window.close();}catch(e){}},400);}
 async function copy(t,b){await api('/api/copy',{text:t});b.textContent='Copied ✓';}
 async function dash(){S.st=await api('/api/state');const s=S.st;$('#steps').innerHTML='';$('#sidefoot').textContent='Combo Watcher '+(s.version?'v'+s.version:'');
 const ts=!!s.tailscale,run=s.running,k=s.kalshi==='ok';
@@ -328,7 +332,7 @@ view(`<h1>Combo Watcher</h1><p class="lead">Your Mac is ${run?'watching your com
 <button class="btn danger" onclick="removeIt()">Remove…</button></div>`);
 foot([{t:'Open Combo Hub',on:"api('/api/open',{what:'hub'})"},{t:'Update now',cls:'primary',on:"S.mode='repair';rail(4);install()"}]);
 clearTimeout(S.dt);S.dt=setTimeout(()=>{if($('#steps').innerHTML===''&&document.querySelector('h1').textContent==='Combo Watcher')dash();},5000);}
-async function showCode(){const r=await api('/api/code',{});view(`<h1>Phone pairing code</h1><p class="lead">On your iPhone: planner › Settings › Pi watcher. You only need this if you're pairing a new phone.</p>
+async function showCode(){const r=await api('/api/code',{});view(`<h1>Phone pairing code</h1><p class="lead">On your iPhone: planner › Settings › Watcher. You only need this if you're pairing a new phone.</p>
 <div class="card"><div class="code">${esc(r.CODE)}</div><div class="row" style="margin-top:10px"><button class="btn primary" onclick="copy('${esc(r.CODE)}',this)">Copy code</button></div></div>
 <div class="card"><h3>Combo Hub</h3><p>${esc(r.HUB||'')} · passcode ${esc(r.PASS||'')}</p></div>`);foot([{t:'Back',cls:'primary',on:'dash()'}]);}
 function passcode(){view(`<h1>Combo Hub passcode</h1><p class="lead">Needed only on devices other than this Mac and your iPhone's Open Combo Hub link.</p>

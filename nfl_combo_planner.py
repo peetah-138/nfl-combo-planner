@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.65"
+VERSION = "2026.11.17.66"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2557,7 +2557,7 @@ def edge_html(st, source=""):
                    "the market's final price, the clearest sign of a long-term edge.</div>")
     else:
         out.append("<div class='muted' style='font-size:13px'>No kickoff prices yet. They're recorded while the "
-                   "planner or the Pi is watching before games start.</div>")
+                   "planner or your watcher is watching before games start.</div>")
     cal = [(k, *st["cal"][k]) for k, _, _ in CAL_BUCKETS if st["cal"].get(k, [0])[0]]
     if cal:
         out.append("<div style='margin-top:10px'><b>Did combos hit as often as priced?</b></div>")
@@ -2749,11 +2749,11 @@ def results_page(sunday):
                         f"<span>{html.escape(accuracy_text(got['accuracy']))}</span></div></div></section>")
     pi = pi_report()
     if pi and pi.get("stats"):
-        body.append(edge_html(pi["stats"], "From your Pi, which records every kickoff price · updated "
+        body.append(edge_html(pi["stats"], f"From your {wname()}, which records every kickoff price · updated "
                               + dt.datetime.fromtimestamp(pi["stats"]["at"]).strftime("%-I:%M %p")))
     else:
         body.append(edge_html(edge_stats(acct), "From this phone: kickoff prices are recorded only while the "
-                              "planner is open before games, so the Pi's report is more complete."))
+                              "planner is open before games, so the watcher's report is more complete."))
     # week by week
     weeks = defaultdict(lambda: defaultdict(float))
     for a in acct:
@@ -3823,8 +3823,8 @@ def live_check(webview):
         MINE["pi_was_alive"] = True
     elif MINE.get("pi_was_alive") and watcher_conf():
         MINE["pi_was_alive"] = False             # the Pi went quiet: say so once, the phone takes over
-        notify("🖥 Your Pi watcher stopped checking in. This phone is handling alerts and auto cash-out "
-               "while the planner is open. Check the Pi's power and network.")
+        notify(f"🖥 Your {wname()} watcher stopped checking in. This phone is handling alerts and auto cash-out "
+               f"while the planner is open. Check the {wname()}'s power and network.")
     sold = [] if pi else auto_sell_now(MINE.get("plan"))     # with the Pi on, only the Pi sells
     if sold:
         ACCT_CACHE["at"] = 0
@@ -4136,10 +4136,10 @@ def cash_block(ticker, plan):
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     if CFG.get("auto_sell") and can_trade() and not h.get("rough"):
         thr = wait_threshold(ticker)
-        who = "your Pi " if in_pythonista() and watcher_alive() else ""
-        out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: {who}"
+        who = f"your {wname()}" if in_pythonista() and watcher_alive() else "it"
+        out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: {who} "
                    + (f"sells by itself if Kalshi offers about {money(thr)} or more." if h.get("won_some") and thr
-                      else "it waits until a pick in this combo has won.") + "</div>")
+                      else "waits until a pick in this combo has won.") + "</div>")
     tp = (MINE.get("tp") or {}).get(ticker)
     if tp:
         st = order_steps(tp)
@@ -5082,7 +5082,7 @@ def open_hub_web(webview=None):
             pass
     c = hub_conf()
     if not c:
-        return say("Pair your Mac first (Settings > Pi watcher).")
+        return say("Pair your Mac first (Settings > Watcher).")
     got = hub_call("weblink", timeout=8)
     if got is None:
         return say("Couldn't reach your Mac. Is Tailscale on?")
@@ -5191,6 +5191,17 @@ def refresh_pi_approval():
         pass
 
 
+def wname():
+    """What's watching: 'Mac' (it says so in its heartbeat, or the phone is paired with the Mac hub) or 'Pi'."""
+    try:
+        hb = watcher_status()
+    except Exception:
+        hb = None
+    if (hb or {}).get("host"):
+        return hb["host"]
+    return "Mac" if hub_conf() else "Pi"
+
+
 def watcher_line():
     """One line for Live: is the Pi watching?"""
     import time
@@ -5205,7 +5216,7 @@ def _watcher_line():
     import time
     hb = watcher_status()
     if hb and time.time() - hb.get("at", 0) < 180 and hb.get("err"):
-        return ("<div class='wline bad'>🖥 Pi watcher is running but its checks are failing: "
+        return (f"<div class='wline bad'>🖥 {wname()} watcher is running but its checks are failing: "
                 f"{html.escape(hb['err'])}. Your phone is handling alerts and cash-outs while it's open.</div>")
     if hb and time.time() - hb.get("at", 0) < 180:
         t = dt.datetime.fromtimestamp(hb["at"]).strftime("%-I:%M %p")
@@ -5218,7 +5229,7 @@ def _watcher_line():
         t = dt.datetime.fromtimestamp(hb["at"])
         last = (f" Last heard from {t.strftime('%-I:%M %p')}" + ("" if t.date() == dt.date.today() else t.strftime(" %a"))
                 + f" on version {hb.get('engine', '?')}.")
-    return ("<div class='wline bad'>🖥 Pi watcher hasn't checked in for 3+ minutes." + last +
+    return (f"<div class='wline bad'>🖥 {wname()} watcher hasn't checked in for 3+ minutes." + last +
             " Your phone is handling alerts while it's open.</div>")
 
 
@@ -5471,6 +5482,8 @@ def cash_action(action, ticker):
             drop_cash(ticker)
         redraw_mine()
     except Exception as err:
+        import traceback
+        traceback.print_exc()                       # the Mac's log keeps the details
         present(error_page(f"Something went wrong: {type(err).__name__}: {err}"))
         confirm_after = None
     finally:
@@ -6993,7 +7006,7 @@ def settings_page(all_games, days, counts):
                          "game. Cautious acts on your real bankroll, Steady 2×, Balanced 4×, Bold 10×, Ride it out "
                          "only near full value. Auto cash-out sells by itself when the card says Cash out: a pick "
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
-                         "while the planner is open, or all the time if your Pi watcher is running (Kalshi buys "
+                         "while the planner is open, or all the time if your watcher (Mac or Pi) is running (Kalshi buys "
                          "combos back only through live offers), and tells you each time. It stops after the daily "
                          "limit and never sells for less than you paid unless a game is turning against you. When a combo is "
                          "down to its last game and buying the other team locks in more than the cash-out offer, it "
@@ -7017,14 +7030,14 @@ def settings_page(all_games, days, counts):
                         + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                         + switch("skip_news", "Leave out games where Kalshi and the books disagree a lot"),
                         "Free key from the-odds-api.com. Without it, chances use Kalshi's prices only."),
-        "watcher": section("Pi watcher",
-                           f"<input class='txt' id='watcher_code' placeholder='Paste the pairing code from the Pi' "
+        "watcher": section("Watcher (Mac or Pi)",
+                           f"<input class='txt' id='watcher_code' placeholder='Paste the pairing code from your Mac or Pi' "
                            f"autocapitalize='off' autocorrect='off' spellcheck='false' value='{e(CFG.get('watcher_code', ''))}'>"
                            + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
                            + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else ""),
-                           "A Raspberry Pi at home that runs all the time: it sends alerts (through the ntfy app) "
+                           "Your Mac (or a Raspberry Pi) at home, running all the time: it sends alerts (through the ntfy app) "
                            "with your phone locked and, if you turn on Auto cash-out, does that too, by the same "
-                           "rules (while it's running, only the Pi auto-sells, so nothing sells twice). Saving here "
+                           "rules (while it's running, only the watcher auto-sells, so nothing sells twice). Saving here "
                            "sends your Let it ride level and Auto cash-out switch to it, signed so only your phone "
                            "can change them. Its own Kalshi key needs read + write access to sell."),
         "home": section("Home Screen", "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>"
@@ -7088,7 +7101,7 @@ def settings_page(all_games, days, counts):
             "<header><h1>Settings</h1></header><section>",
             ("<div class='stack'>" + "".join(urgent) + "</div>") if urgent else "",
             sec["look"], sec["cash"], sec["kalshi"], sec["odds"],
-            "<details class='lostbox' id='moreset'><summary>More settings · game order, overlap, mid-day, Pi watcher</summary>",
+            "<details class='lostbox' id='moreset'><summary>More settings · game order, overlap, mid-day, watcher</summary>",
             sec["order"], sec["midday"], sec["overlap"], sec["watcher"], "</details>",
             sec["home"],
             "<button class='btn go big' style='margin:22px 0 4px' onclick=\"go('save')\">Save settings</button>",
@@ -7330,7 +7343,7 @@ def money(x):
 code = (load("combo_keys.json").get("watcher_code") or load("combo_settings.json").get("watcher_code") or "").strip()
 lines = []
 if not code:
-    lines = ["Pair your Pi watcher in the planner's", "Settings to see your combos here."]
+    lines = ["Pair your watcher in the planner's", "Settings to see your combos here."]
 else:
     conf = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)).decode())
     hb = json.loads(latest(conf["topic"] + "-hb", "10m") or "{}")
@@ -7348,7 +7361,7 @@ else:
         if hb.get("paused"):
             lines.append("⏸ Auto cash-out paused")
     else:
-        lines.append("No word from the Pi in 10+ minutes")
+        lines.append("No word from your watcher in 10+ minutes")
     st = rep.get("stats") or {}
     w = st.get("week") or [0, 0, 0]
     if w[0]:
@@ -7459,7 +7472,7 @@ def main():
         return show_mine(all_games, days, sunday)
     if choice == "save":
         sent = send_watcher_settings()
-        RUN_OPTS["notice"] = "Saved." + (" Sent to the Pi watcher." if sent else "") + (
+        RUN_OPTS["notice"] = "Saved." + (f" Sent to your {wname()}." if sent else "") + (
             "" if CFG.get("odds_key") else " (No sportsbook key: chances use Kalshi's prices.)")
         RUN_OPTS["smode"] = "settings"
         RUN_OPTS["goto"] = "settings"

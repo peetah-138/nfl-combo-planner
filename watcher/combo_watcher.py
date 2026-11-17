@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.65"
+WATCHER_VERSION = "2026.11.17.66"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -760,6 +760,7 @@ async function poll(){for(;;){try{
   if(r.status==403){location.href='/';return;}
   var d=await r.json();
   if(d.v!==V){await newPage(d.v);}
+  if(d.where)mark(d.where);
   for(const j of d.js){var out='';try{out=(0,eval)(j.code);}catch(err){out='';}
     if(!wrap.isConnected)document.body.appendChild(wrap);
     if(j.w)post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
@@ -1105,7 +1106,7 @@ def webapp_main():
                     elif A.APP.get("where") == "mine" and not A.APP.get("settings_wait"):
                         threading.Timer(1.0, A.native_nav, ("refresh",)).start()   # back on Live: fresh numbers
                 started["shown"] = True                     # after that, never move you off the screen you're on
-                return self._send(200, json.dumps(B.poll(v)))
+                return self._send(200, json.dumps(dict(B.poll(v), where=A.APP.get("where") or "")))
             if self.path.split("?")[0] in ("/app", "/app/"):
                 B.seen = time.time()
                 start()

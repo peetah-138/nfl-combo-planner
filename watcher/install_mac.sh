@@ -73,7 +73,7 @@ show_code() {   # the pairing code to paste on the phone (GUI: with a Copy butto
   local code="$1" hub="$2" pass="${3:-}"
   local msg
   if [ -n "$hub" ]; then
-    msg="Last step, on your iPhone: open the planner > Settings > Pi watcher, replace the code with this one, and tap Save.
+    msg="Last step, on your iPhone: open the planner > Settings > Watcher, replace the code with this one, and tap Save.
 
 Mac hub: $hub (over Tailscale, works on any network)
 
@@ -81,7 +81,7 @@ Web view: open $hub in any browser on your Tailscale network (iPhone, iPad, this
   else
     msg="Tailscale isn't signed in on this Mac yet, so the phone can't use it as its hub. This code still turns on alerts and auto cash-out. Run setup again after signing in to Tailscale to get the full code.
 
-On your iPhone: planner > Settings > Pi watcher, paste this code, tap Save."
+On your iPhone: planner > Settings > Watcher, paste this code, tap Save."
   fi
   if [ "$AUTO" = 1 ]; then
     printf 'CODE: %s\nHUB: %s\nPASS: %s\n' "$code" "$hub" "$pass"
@@ -307,11 +307,11 @@ if [ ! -f "$DIR/watcher.json" ]; then
   elif [ "$GUI" = 1 ]; then
     PAIR=$(ask "Step 3: your phone's current pairing code, so your ntfy alerts keep working.
 
-On your iPhone: planner > Settings > Pi watcher, copy the code (with Handoff it pastes right here). Leave this empty to start a new pairing instead." "")
+On your iPhone: planner > Settings > Watcher, copy the code (with Handoff it pastes right here). Leave this empty to start a new pairing instead." "")
   else
     echo
     echo "Already paired a Pi with your phone? Paste the pairing code from the phone"
-    echo "(planner Settings > Pi watcher) to keep the same ntfy topic and pairing. Or just press Enter for a new one."
+    echo "(planner Settings > Watcher) to keep the same ntfy topic and pairing. Or just press Enter for a new one."
     read -r -p "Pairing code: " PAIR </dev/tty
   fi
   if [ -n "$PAIR" ]; then
