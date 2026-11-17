@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.40"
+VERSION = "2026.11.16.41"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1610,6 +1610,18 @@ function getAll(){ var p=picked(); if(!p.length){ tradeMsg(0,"<span class='muted
   var list=p.map(function(i){ return i+':'+stakeOf(i); }).join(',');
   p.forEach(function(i){ tradeMsg(i,"<span class='muted'>Asking Kalshi for a price…</span>"); });
   try{ location.href='combo://batch/'+BUILD+'/0/'+list; }catch(e){} }
+function myPick(r){ var on=!r.classList.contains('sel');
+  document.querySelectorAll('.mypick[data-e="'+r.dataset.e+'"]').forEach(function(x){x.classList.remove('sel');x.style.background='';});
+  if(on){ r.classList.add('sel'); r.style.background='var(--accentbg, rgba(10,132,255,.15))'; }
+  var n=document.querySelectorAll('.mypick.sel').length, bar=document.getElementById('mybar');
+  bar.style.display=n?'flex':'none'; document.getElementById('mybtn').textContent='Price my '+n+' pick'+(n===1?'':'s'); }
+function myClear(){ document.querySelectorAll('.mypick.sel').forEach(function(x){x.classList.remove('sel');x.style.background='';});
+  document.getElementById('mybar').style.display='none'; myMsg(''); }
+function myMsg(h){ var m=document.getElementById('mymsg'); if(m) m.innerHTML=h; }
+function myPrice(){ var t=Array.prototype.map.call(document.querySelectorAll('.mypick.sel'),function(x){return x.dataset.t;});
+  if(t.length<2){ myMsg("<span class='muted'>Pick at least 2 teams.</span>"); return; }
+  myMsg("<span class='muted'>Adding your combo…</span>");
+  try{ location.href='combo://custom/'+BUILD+'/0/'+encodeURIComponent(t.join(',')); }catch(e){} }
 function markPlaced(i,pays){ if(state.placed.indexOf(i)<0) state.placed.push(i); state.quotes[i]=pays; paint(); }
 paint();
 if(FOCUS){ var fc=document.querySelector('.card[data-i="'+FOCUS+'"]');
@@ -1765,7 +1777,12 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
     out.append("</section>")
 
     on = day_on()
-    out.append("<section id='games' class='hidden'>")
+    out.append("<section id='games' class='hidden'><div class='muted' style='font-size:13px;margin:4px 4px 8px'>"
+               "Building your own combo? Tap the teams you want (one per game), then Price my picks to see the fair "
+               "payout and Kalshi's quote before you buy.</div><div id='mybar' style='display:none;position:sticky;"
+               "top:8px;z-index:5;margin-bottom:8px' class='quote'><button class='btn go' onclick='myPrice()' id='mybtn'>"
+               "Price my picks</button><button class='btn quiet' onclick='myClear()'>Clear</button></div>"
+               "<div id='mymsg'></div>")
     for day in DAY_ORDER:
         evs = sorted((x for x in all_games if days[x] == day), key=lambda x: -fav(all_games[x])["fair"])
         if not evs:
@@ -1784,7 +1801,8 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                     if not pickable(s):
                         tag += f'<span class="tag red">Too unlikely to pick (under {CFG["live_min"]}%)</span> '
                     nums = f"live {s['fair']:.0%} · Kalshi {s['p'] * 100:.0f}¢"
-                out.append(f"<div class='row'><span><b>{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
+                out.append(f"<div class='row mypick' data-t='{e(s['ticker'])}' data-e='{e(x)}' onclick='myPick(this)'>"
+                           f"<span><b>{e(s['pick'])}</b> {tag}{edge_tag(s)}</span>"
                            f"<span class='nums'>{nums}</span></div>")
             if x in skipped:
                 out.append(f"<div class='warn'>{e(skipped[x])}</div>")
@@ -2271,7 +2289,7 @@ def show_build(all_games=None, days=None, sunday=None):
             if parts[0] == "settings":
                 reopen_settings(webview)
                 return False
-            if parts[0] in ("swap", "buy", "accept", "decline", "batch", "flip"):
+            if parts[0] in ("swap", "buy", "accept", "decline", "batch", "flip", "custom"):
                 handle_action(webview, parts)
                 return False
             hist = load_json(HISTORY, {"builds": []})
@@ -5583,6 +5601,32 @@ def swap_combo(i):
     return True
 
 
+def add_own_combo(tickers):
+    """A combo you pick yourself on the Games list: priced like the planner's own (fair payout,
+    Kalshi's quote, % of fair) before you buy. Returns (its number, None) or (0, why not)."""
+    pool = {s["ticker"]: s for sides in CTX["all_games"].values() for s in sides}
+    legs = [pool[t] for t in tickers if t in pool]
+    if len(legs) < 2:
+        return 0, "Pick at least 2 teams, one per game."
+    if len({l["event"] for l in legs}) != len(legs):
+        return 0, "Pick one team per game."
+    for l in legs:                                    # games outside the slate join the simulation
+        CTX["games"].setdefault(l["event"], CTX["all_games"][l["event"]])
+    stake = CTX["stake"]
+    fair_pay = stake / math.prod(l["fair"] for l in legs)
+    new = {"kind": "own", "tier": "Your combo", "legs": legs, "fair": fair_pay,
+           "min": fair_pay * CFG["accept_pct"] / 100, "kalshi": stake / math.prod(l["p"] for l in legs)}
+    CTX["combos"].append(new)
+    k = len(CTX["combos"])
+    hist = load_json(HISTORY, {"builds": []})
+    b = next((x for x in hist["builds"] if x["id"] == CTX["build_id"]), None)
+    if b is not None:
+        b["combos"].append({"kind": "own", "tier": "Your combo", "fair": round(fair_pay, 2), "min": round(new["min"], 2),
+                            "legs": [{"ticker": l["ticker"], "pick": l["pick"], "dog": l["fair"] < 0.5} for l in legs]})
+        save_json(HISTORY, hist)
+    return k, None
+
+
 def save_combo(i, new):
     """Write a changed combo back to the saved history (and clear its Placed/offer)."""
     hist = load_json(HISTORY, {"builds": []})
@@ -5690,7 +5734,7 @@ def handle_action(webview, parts):
     """Runs Swap / Buy / Accept / No thanks in the background and updates the page."""
     import threading
     action, i = parts[0], int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-    if not CTX or (not i and action != "batch"):
+    if not CTX or (not i and action not in ("batch", "custom")):
         webview.evaluate_javascript("tradeMsg(%d, %s)" % (i, json.dumps(
             "<span class='verdict no'>Swap and Buy work on this week's combos. Tap Build for a fresh set.</span>")))
         return
@@ -5738,6 +5782,18 @@ def handle_action(webview, parts):
                     got = sum(pool.map(one, wanted))
                 say(f"<span class='muted'>{got} of {len(wanted)} offers in. Accept or decline each "
                     "one on its card. Offers can expire after a minute or two.</span>", 0)
+            elif action == "custom":
+                k, note = add_own_combo([t for t in (parts[3] if len(parts) > 3 else "").split(",") if t])
+                if not k:
+                    webview.evaluate_javascript("myMsg(%s)" % json.dumps(f"<span class='verdict no'>{note}</span>"))
+                    return
+                rerender(focus=k)
+                with open(LATEST, encoding="utf-8") as f:
+                    swap_page(webview, inject_state(f.read(), quiet=True))
+                if can_trade():
+                    say("<span class='muted'>Asking Kalshi for a price… (up to 20 seconds). Nothing is bought until "
+                        "you tap Accept.</span>", k)
+                    say(offer_html(k, get_offer(k)), k)
             elif action == "flip":
                 ok, note = flip_pick(i, unquote(parts[3]) if len(parts) > 3 else "")
                 if ok:
