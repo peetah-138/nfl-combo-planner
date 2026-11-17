@@ -7,13 +7,13 @@ from the-odds-api.com). It never places a bet.
 Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
-import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys, time
+import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys, threading, time
 from collections import defaultdict
 from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.60"
+VERSION = "2026.11.17.61"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -371,11 +371,17 @@ def load_json(path, default):
 
 
 def save_json(path, data):
+    """Write all at once (temp file, then swap), so another copy reading it never sees half a file."""
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
-    except OSError:
-        pass
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def money(x):

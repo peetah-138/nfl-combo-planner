@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.60"
+WATCHER_VERSION = "2026.11.17.61"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -701,7 +701,7 @@ class WebBuild:
         import html as h
         e = h.escape
         b = self.cur
-        tabs = "".join(f"<a class='tab{' on' if b and b['lg'] == lg else ''}' href='/?build={lg}'>{nm}</a>"
+        tabs = "".join(f"<a class='tab{' on' if b and b['lg'] == lg else ''}' href='/simple?build={lg}'>{nm}</a>"
                        for lg, nm in WEB_LEAGUES)
         if not b:
             return f"<div class='tabs'>{tabs}</div><div class='card mute'>Pick a league to build suggestions.</div>"
@@ -728,6 +728,342 @@ class WebBuild:
         return (f"<div class='tabs'>{tabs}</div><div class='mute'>{e(b['name'])} suggestions · built "
                 f"{time.strftime('%-I:%M %p', time.localtime(b['at']))} · your weekly cap still applies</div>"
                 + "".join(cards))
+
+
+# ---------------------------------------------------------------- the planner app, in a browser
+# The Mac runs a separate copy of the planner (its own process) that believes it is on the phone:
+# a stand-in "ui" module turns its window into a bridge. Pages it shows go to your browser; taps in
+# the browser go back to it, exactly as on the phone. The hub (port 8765) signs you in and passes
+# requests through to it on this Mac only (port 8766).
+WEBAPP_PORT = 8766
+
+BRIDGE_JS = r"""<script>
+(function(){
+var TOK="__CWTOK__", V=__CWV__;
+function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
+  headers:{'Content-Type':'application/json','X-CW':TOK},body:JSON.stringify(b)});}
+function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
+window.__cwgo=go;
+window.__cw={set href(u){go(u);},get href(){return location.href;}};
+window.__cwtab=function(t){post('/app/tab',{t:t});};
+document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
+  var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
+async function poll(){for(;;){try{
+  var r=await fetch('/app/poll?v='+V,{credentials:'same-origin',headers:{'X-CW':TOK}});
+  if(r.status==403){location.href='/';return;}
+  var d=await r.json();
+  if(d.v!==V){location.reload();return;}
+  for(const j of d.js){var out='';try{out=(0,eval)(j.code);}catch(err){out='';}
+    post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
+}catch(err){await new Promise(function(r){setTimeout(r,2000);});}}}
+poll();
+})();
+</script>"""
+
+TABBAR = """<style>body{padding-bottom:84px!important}
+#cwbar{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card,#1c1c1e);border-top:1px solid var(--line,#333);
+padding:6px 0 calc(6px + env(safe-area-inset-bottom));z-index:9999}
+#cwbar button{flex:1;background:none;border:0;color:var(--muted,#98989f);font:600 13px -apple-system,system-ui;padding:8px 0}
+#cwbar button.on{color:var(--accent,#0a84ff)}</style><div id='cwbar'>%s</div>"""
+
+
+def webapp_main():
+    """Run the planner app for the browser (started by the watcher as its own process)."""
+    import threading, types, itertools
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Bridge:
+        def __init__(self):
+            self.cv = threading.Condition()
+            self.html, self.v, self.q, self.res, self.seen = "", 0, [], {}, 0.0
+            self.ids = itertools.count(1)
+
+        def active(self):
+            return time.time() - self.seen < 120
+
+        def load(self, h):
+            with self.cv:
+                self.html, self.v, self.q = h, self.v + 1, []
+                self.cv.notify_all()
+
+        def js(self, code, timeout=4.0):
+            if not self.active():
+                return ""
+            with self.cv:
+                i = next(self.ids)
+                self.q.append({"id": i, "code": code})
+                self.cv.notify_all()
+                end = time.time() + timeout
+                while i not in self.res and time.time() < end:
+                    self.cv.wait(end - time.time())
+                return self.res.pop(i, "")
+
+        def poll(self, v):
+            self.seen = time.time()
+            with self.cv:
+                end = time.time() + 20
+                while v == self.v and not self.q and time.time() < end:
+                    self.cv.wait(end - time.time())
+                out, self.q = self.q, []
+                return {"v": self.v, "js": out}
+
+        def result(self, i, value):
+            with self.cv:
+                self.res[i] = value
+                self.cv.notify_all()
+                if len(self.res) > 200:
+                    self.res.clear()
+
+    B = Bridge()
+
+    # ---- stand-ins for Pythonista's modules, so the planner runs its phone code here
+    ui = types.ModuleType("ui")
+
+    class View:
+        def __init__(self, **kw):
+            self.subviews, self.hidden, self.on_screen = [], False, False
+            self.frame = self.bounds = (0, 0, 390, 844)
+            self.left_button_items = self.right_button_items = []
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+        def add_subview(self, v):
+            self.subviews.append(v)
+
+        def present(self, *a, **k):
+            self.on_screen = True
+
+        def close(self):
+            pass
+
+        def layout(self):
+            pass
+
+        def wait_modal(self):
+            pass
+
+    class WebView(View):
+        delegate = None
+
+        def load_html(self, h):
+            B.load(h)
+
+        def evaluate_javascript(self, js):
+            # whole-page swaps become a fresh page in the browser (so a reload shows the same thing)
+            if js.startswith("typeof window.__load") or js.startswith("typeof window.__swap"):
+                return "function"
+            if js.startswith("window.__load(") and js.endswith(")"):
+                try:
+                    B.load(json.loads(js[len("window.__load("):-1]))
+                    return ""
+                except ValueError:
+                    pass
+            if js.startswith("window.__swap(") and js.endswith(")"):
+                try:
+                    body = json.loads(js[len("window.__swap("):-1])
+                    head = B.html.split("<body", 1)[0] if "<body" in B.html else "<html><head></head>"
+                    B.load(head + "<body>" + body + "</body></html>")
+                    return ""
+                except ValueError:
+                    pass
+            return B.js(js)
+
+    class ButtonItem:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    for name in ("Label", "Button", "ScrollView", "Slider", "Switch", "TextField", "TextView", "SegmentedControl"):
+        setattr(ui, name, type(name, (View,), {}))
+    ui.View, ui.WebView, ui.ButtonItem = View, WebView, ButtonItem
+    ui.AUTOCAPITALIZE_NONE = 0
+    ui.delay = lambda fn, t: threading.Timer(t, fn).start()
+    ui.in_background = lambda fn: (lambda *a, **k: threading.Thread(target=fn, args=a, kwargs=k, daemon=True).start())
+    ui.get_screen_size = lambda: (390, 844)
+
+    console = types.ModuleType("console")
+
+    def alert(title, message="", button1="OK", *a, **k):
+        got = B.js("confirm(%s)?'1':''" % json.dumps(f"{title}\n\n{message}".strip()), timeout=120)
+        if got != "1":
+            raise KeyboardInterrupt
+        return 1
+    console.alert = alert
+    console.set_idle_timer_disabled = lambda on: None
+    console.hud_alert = lambda *a, **k: None
+    notification = types.ModuleType("notification")
+    notification.schedule = notification.remove_all_scheduled = lambda *a, **k: None
+    clipboard = types.ModuleType("clipboard")
+    _clip = {"t": ""}
+    clipboard.set = lambda t: _clip.update(t=t)
+    clipboard.get = lambda: _clip["t"]
+    appex = types.ModuleType("appex")
+    appex.is_running_extension = lambda: False
+    sys.modules.update(ui=ui, console=console, notification=notification, clipboard=clipboard, appex=appex)
+
+    A = load_engine()
+    A.latest_version = lambda: A.VERSION            # the watcher installs updates (phone-approved); not this copy
+    A.install_update = lambda *a, **k: None
+    A.write_helpers = lambda *a, **k: None
+    A.schedule_buy_nudge = lambda *a, **k: None
+    A.watcher_alive = lambda *a, **k: True          # the watcher does the automatic cash-outs, never this copy
+    A.start_autosell_keeper = lambda *a, **k: None
+    A.window_open = lambda: A.APP.get("web") is not None and B.active()   # live updates pause with no browser
+    A.open_outside = lambda url: B.js("window.open(%s,'_blank');''" % json.dumps(url))
+    A.tap_haptic = lambda *a, **k: None
+    try:                                            # get data, odds and trades through the hub like the phone
+        c = json.load(open(CONF))                   # does: one shared cache, one set of odds credits
+        hub = {"topic": c["topic"], "secret": c["secret"], "hub": f"http://127.0.0.1:{c.get('hub_port', 8765)}"}
+        A.hub_conf = lambda: hub                    # in memory only; never saved to the settings file
+    except (OSError, ValueError, KeyError):
+        pass
+    _set_league = A.set_league
+
+    def set_league(code):                           # settings reload with each sport: keep these
+        _set_league(code)
+        A.CFG["tour_pending"] = False
+        A.CFG["built_once"] = True                  # you're not new: no first-time tips
+    A.set_league = set_league
+    set_league(A.LEAGUE["code"])
+    started = {"run": False}
+
+    def page():
+        h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+                       "<body style='background:#000;color:#fff;font:17px -apple-system;padding:40px'>Starting the planner…</body></html>")
+        h = h.replace("location.href=", "__cw.href=")
+        where = A.APP.get("where") or "mine"
+        tabs = "".join(f"<button class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">{icon} {label}</button>"
+                       for k, icon, label in A.TABS) + "<button onclick=\"__cwtab('refresh')\">⟳</button>"
+        bridge = BRIDGE_JS.replace("__CWV__", str(B.v))
+        extra = bridge + (TABBAR % tabs)
+        h = h.replace("</body>", extra + "</body>") if "</body>" in h else h + extra
+        if "viewport" not in h:
+            h = h.replace("<head>", "<head><meta name='viewport' content='width=device-width,initial-scale=1'>", 1)
+        return h
+
+    def start():
+        if not started["run"]:
+            started["run"] = True
+            A.RUN_OPTS["goto"] = "mine" if A.can_trade() else "build"
+            threading.Thread(target=A.run, daemon=True, name="app").start()
+            if A.can_trade():                       # open on Live, like the phone
+                def to_live():
+                    for _ in range(120):
+                        if "id='budgetline'" in B.html and A.APP.get("settings_wait"):
+                            time.sleep(1)
+                            return A.native_nav("mine")
+                        if A.APP.get("where") == "mine":
+                            return
+                        time.sleep(0.5)
+                threading.Thread(target=to_live, daemon=True).start()
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype="application/json"):
+            body = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _json(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                return json.loads(self.rfile.read(n) or b"{}") if 0 < n < 100_000 else {}
+            except ValueError:
+                return {}
+
+        def do_GET(self):
+            if self.path.startswith("/app/poll"):
+                was_idle = not B.active()
+                try:
+                    v = int(self.path.split("v=", 1)[1].split("&")[0])
+                except (IndexError, ValueError):
+                    v = -1
+                if was_idle and started["run"]:
+                    threading.Thread(target=A.native_nav, args=("refresh",), daemon=True).start()
+                return self._send(200, json.dumps(B.poll(v)))
+            if self.path.split("?")[0] in ("/app", "/app/"):
+                B.seen = time.time()
+                start()
+                return self._send(200, page(), "text/html; charset=utf-8")
+            self._send(404, "{}")
+
+        def do_POST(self):
+            d = self._json()
+            if self.path == "/app/result":
+                B.result(d.get("id"), str(d.get("value", "")))
+                return self._send(200, "{}")
+            if self.path == "/app/nav":
+                u = str(d.get("u", ""))
+                web = A.APP.get("web")
+                dg = getattr(web, "delegate", None)
+                if u.startswith("combo://") and dg is not None:
+                    threading.Thread(target=dg.webview_should_start_load, args=(web, u, 0), daemon=True).start()
+                return self._send(200, "{}")
+            if self.path == "/app/tab":
+                t = str(d.get("t", ""))
+                if t in ("mine", "build", "results", "settings", "refresh"):
+                    threading.Thread(target=A.native_nav, args=(t,), daemon=True).start()
+                return self._send(200, "{}")
+            self._send(404, "{}")
+
+    parent = os.getppid()
+
+    def orphan_check():                             # the watcher restarted (e.g. an update): go too
+        while True:
+            time.sleep(5)
+            if os.getppid() != parent:
+                os._exit(0)
+    threading.Thread(target=orphan_check, daemon=True).start()
+    srv = ThreadingHTTPServer(("127.0.0.1", WEBAPP_PORT), H)
+    srv.daemon_threads = True
+    log(f"planner app for the browser ready (engine {A.VERSION})")
+    srv.serve_forever()
+
+
+def start_webapp():
+    """Keep the browser copy of the planner running in its own process."""
+    import subprocess
+
+    def keep():
+        while True:
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--webapp"],
+                                 env=dict(os.environ, COMBOWATCH_HOME=HOME))
+            p.wait()
+            log("browser app stopped (code %s); restarting" % p.returncode)
+            time.sleep(10)
+    threading.Thread(target=keep, daemon=True, name="webapp").start()
+
+
+def webapp_proxy(handler, tok, method, path, body=b""):
+    """Pass a signed-in request through to the browser copy of the planner on this Mac."""
+    import urllib.request, urllib.error
+    req = urllib.request.Request(f"http://127.0.0.1:{WEBAPP_PORT}{path}", data=body if method == "POST" else None,
+                                 method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            code, ctype, data = r.status, r.headers.get("Content-Type", "application/json"), r.read()
+    except urllib.error.HTTPError as err:
+        code, ctype, data = err.code, "application/json", b"{}"
+    except (urllib.error.URLError, OSError):
+        code, ctype = 503, "text/html; charset=utf-8"
+        data = (b"<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                b"<body style='font:17px -apple-system;padding:40px'>The planner is starting on your Mac. "
+                b"<script>setTimeout(function(){location.reload()},3000)</script>")
+    if ctype.startswith("text/html"):
+        data = data.replace(b"__CWTOK__", tok.encode())
+    handler.send_response(code)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Frame-Options", "DENY")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
 
 
 def accuracy_loop(odds, every=300):
@@ -831,6 +1167,11 @@ def start_hub(conf, E, odds=None):
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
+            if web and self.path.startswith("/app/"):
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok or not 0 <= n < 200_000:
+                    return self._send(403, b"")
+                return webapp_proxy(self, tok, "POST", self.path, self.rfile.read(n) if n else b"")
             if web and self.path == "/login":
                 tok, msg = web.login(self._form(n))
                 return self._html(303, "", cookie=tok, location="/") if tok else self._html(200, web.login_page(msg))
@@ -875,7 +1216,12 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
-            if web and u.path in ("/", "/index.html"):
+            if web and u.path.startswith("/app/"):
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok:
+                    return self._send(403, b"")
+                return webapp_proxy(self, tok, "GET", self.path)
+            if web and u.path in ("/", "/index.html", "/simple"):
                 tok = web.session(self)
                 if not tok and self.client_address[0] == "127.0.0.1":   # on the Mac itself: no passcode
                     tok = web.new_session()
@@ -890,6 +1236,8 @@ def start_hub(conf, E, odds=None):
                     except Exception as err:
                         log("web build failed:", type(err).__name__, err)
                         note = f"Couldn't build just now ({type(err).__name__}). Try again in a minute."
+                if u.path != "/simple" and not lg and conf.get("webapp", True):
+                    return webapp_proxy(self, tok, "GET", "/app")
                 return self._html(200, web.page(tok, note, builder.html(tok)))
             self._send(404, b"")
 
@@ -963,6 +1311,8 @@ def main():
         if conf.get("shadow", True):
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
+        if conf.get("webapp", True):
+            start_webapp()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
@@ -1044,4 +1394,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--webapp" in sys.argv:
+        sys.exit(webapp_main() or 0)
     sys.exit(main() or 0)
