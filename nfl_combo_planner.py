@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.42"
+VERSION = "2026.11.16.43"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -45,6 +45,7 @@ CFG = {
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
+    "mix_window": 0,      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -83,6 +84,7 @@ TEAMS = {
     "WAS": "Washington Commanders", "WSH": "Washington Commanders",
 }
 DAY_ORDER = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Today", "Tomorrow"]
+MIX_DAYS = []    # the Mix mode's day labels, in order (filled by week_games)
 NFL_TEAMS = TEAMS
 NBA_TEAMS = {
     "ATL": "Atlanta Hawks", "BOS": "Boston Celtics", "BKN": "Brooklyn Nets", "BRK": "Brooklyn Nets",
@@ -133,7 +135,18 @@ LEAGUES = {
                          "safer_count": 4, "safer_min": 2, "safer_max": 2,
                          "middle_count": 3, "middle_min": 3, "middle_max": 4,
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
+    # Every sport at once: combos that mix NFL, NBA and NHL games (Kalshi's cross-sport combos).
+    "mix": {"name": "Mixed sports", "short": "Mix", "icon": "🎲", "series": "KXNFLGAME,KXNBAGAME,KXNHLGAME",
+            "odds": "mixed", "espn": "football/nfl", "espn_q": {}, "slate": "mix", "game_hours": 3.5, "periods": 4,
+            "full": False, "teams": None,
+            "settings": "combo_settings_mix.json", "latest": "combos_latest_mix.html",
+            "defaults": {"budget": 50, "full_count": 0,
+                         "safer_count": 3, "safer_min": 2, "safer_max": 3,
+                         "middle_count": 3, "middle_min": 3, "middle_max": 4,
+                         "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
 }
+MIX_SPORTS = ("nfl", "nba", "nhl")
+MIX_WINDOWS = ["Same day", "Through the weekend", "Next 7 days"]
 LEAGUE = {"code": "nfl"}
 SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell")
 
@@ -150,7 +163,16 @@ def LG():
 
 def by_day():
     """True for daily slates (college basketball), False for the NFL's Thursday-Monday week."""
-    return LG()["slate"] == "day"
+    return LG()["slate"] == "day" or (LG()["slate"] == "mix" and not CFG.get("mix_window"))
+
+
+def is_mix():
+    return LG()["slate"] == "mix"
+
+
+def day_seq():
+    """The order day labels are shown in (the Mix mode makes its own)."""
+    return MIX_DAYS or DAY_ORDER
 
 
 def slate_word():
@@ -158,7 +180,9 @@ def slate_word():
 
 
 def day_on():
-    """Which day labels are switched on."""
+    """Which day labels are switched on (every day in the Mix mode's window)."""
+    if is_mix():
+        return defaultdict(lambda: True)
     return {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
             "Saturday": CFG["saturday"], "Monday": CFG["monday"], "Today": True, "Tomorrow": True}
 
@@ -316,9 +340,15 @@ def screen_live(all_games, book_fair):
 
 
 def fetch_markets():
+    if "," in SERIES:
+        return [m for ser in SERIES.split(",") for m in fetch_series(ser)]
+    return fetch_series(SERIES)
+
+
+def fetch_series(series):
     out, cursor = [], None
     while True:
-        params = {"series_ticker": SERIES, "status": "open", "limit": 1000}
+        params = {"series_ticker": series, "status": "open", "limit": 1000}
         if cursor:
             params["cursor"] = cursor
         r = requests.get(f"{KALSHI}/markets", params=params, timeout=20)
@@ -357,7 +387,7 @@ def start_dt(event):
             return dt.datetime.fromisoformat(kick.replace("Z", "+00:00"))
         if GAME_EXP.get(event):
             return (dt.datetime.fromisoformat(GAME_EXP[event].replace("Z", "+00:00"))
-                    - dt.timedelta(hours=LG()["game_hours"]))
+                    - dt.timedelta(hours=game_hours(event)))
     except ValueError:
         pass
     return None
@@ -386,7 +416,18 @@ def week_games(markets, loose=False):
     (or tomorrow's) games, keyed by game. Returns (games, day label per game, slate date).
     loose=True keeps near-certain prices (games nearly over) for live updates."""
     today = dt.date.today()
-    if by_day():
+    MIX_DAYS.clear()
+    if is_mix():
+        w = CFG.get("mix_window", 0)
+        first = 1 if (w == 0 and CFG.get("next_day")) else 0
+        last = first if w == 0 else (6 if w == 2 else max(1, (7 - today.weekday()) % 7 or 7))
+        day_of = {}
+        for k in range(first, last + 1):
+            d = today + dt.timedelta(days=k)
+            day_of[d] = "Today" if k == 0 else "Tomorrow" if k == 1 else f"{d:%A}"
+            MIX_DAYS.append(day_of[d])
+        sunday = today + dt.timedelta(days=first)
+    elif by_day():
         sunday = today + dt.timedelta(days=1 if CFG.get("next_day") else 0)
         day_of = {sunday: "Tomorrow" if CFG.get("next_day") else "Today"}
     else:
@@ -412,7 +453,7 @@ def week_games(markets, loose=False):
                 "pick": m.get("yes_sub_title") or m["ticker"], "p": p,
                 "bid": live_bid(m), "exp": m.get("expected_expiration_time") or ""})
     games = {e: s for e, s in games.items() if len(s) == 2}
-    order = sorted(games, key=lambda e: (DAY_ORDER.index(days[e]), games[e][0]["exp"]))
+    order = sorted(games, key=lambda e: (day_seq().index(days[e]), games[e][0]["exp"]))
     return {e: games[e] for e in order}, {e: days[e] for e in order}, sunday
 
 
@@ -495,9 +536,22 @@ SHARP_BOOKS = ("betfair_ex_eu", "betfair_ex_uk", "matchbook", "lowvig", "betonli
 
 
 def fetch_book_odds(key):
-    """{full team name: (fair win chance, source)} plus a note for the report."""
+    """{full team name: (fair win chance, source)} plus a note for the report. The Mix mode asks
+    for each sport and merges them (team names don't repeat across leagues)."""
+    if not is_mix():
+        return fetch_book_odds_one(key, ODDS_URL)
+    fair, notes = {}, []
+    BOOK_GAMES.clear()
+    for code in MIX_SPORTS:
+        f, n = fetch_book_odds_one(key, f"https://api.the-odds-api.com/v4/sports/{LEAGUES[code]['odds']}/odds", keep=True)
+        fair.update(f)
+        notes.append(n)
+    return fair, notes[-1] if notes else ""
+
+
+def fetch_book_odds_one(key, url, keep=False):
     try:
-        r = requests.get(ODDS_URL, timeout=20, params={
+        r = requests.get(url, timeout=20, params={
             "apiKey": key, "regions": "us,eu", "markets": "h2h", "oddsFormat": "decimal"})
     except requests.RequestException:
         return {}, "Couldn't reach the sportsbook service, so chances use Kalshi's prices."
@@ -508,7 +562,8 @@ def fetch_book_odds(key):
     if not r.ok:
         return {}, f"Sportsbook service error ({r.status_code}). Using Kalshi's prices."
     fair = {}
-    BOOK_GAMES.clear()
+    if not keep:
+        BOOK_GAMES.clear()
     for ev in sorted(r.json(), key=lambda ev: ev.get("commence_time") or "~"):
         home, away = ev.get("home_team"), ev.get("away_team")
         if home and away:
@@ -594,7 +649,7 @@ def attach_fair(games, book):
         kal = [s["p"] / sum(x["p"] for x in sides) for s in sides]
         names = []
         for s in sides:
-            full = TEAMS.get(s["abbr"])
+            full = (sport_teams(ticker_sport(s["ticker"])) or TEAMS).get(s["abbr"])
             if full not in book:
                 full = match_book(full or s["pick"], book) or match_book(s["pick"], book)
             names.append(full if full in book else None)
@@ -1050,7 +1105,8 @@ def combo_leagues(legs):
                 last[code] = max(last.get(code) or dt.date.min, d or dt.date.min)
     if not n:
         return ["nfl"]
-    return [max(n, key=lambda c: (n[c], last.get(c) or dt.date.min))]
+    main = [max(n, key=lambda c: (n[c], last.get(c) or dt.date.min))]
+    return main + ["mix"] if len(n) > 1 else main     # a cross-sport combo also shows under Mix
 
 
 def combo_league(legs):
@@ -1290,6 +1346,11 @@ def safe_delegate(cls):
 PREGAME = os.path.join(HERE, "pregame_chances.json")
 
 
+def game_hours(ticker):
+    """How long a game runs, by its sport (the Mix mode has several)."""
+    return (SPORTS.get(ticker_sport(ticker)) or {}).get("hours") or LG()["game_hours"]
+
+
 def started(side):
     """Has this game kicked off? Uses the real kickoff time from the sportsbook feed
     when we have it; otherwise estimates it as 3.5 hours before Kalshi expects to settle."""
@@ -1304,7 +1365,7 @@ def started(side):
         end = dt.datetime.fromisoformat(side["exp"].replace("Z", "+00:00"))
     except (KeyError, ValueError, AttributeError):
         return False
-    return now >= end - dt.timedelta(hours=LG()["game_hours"])
+    return now >= end - dt.timedelta(hours=game_hours(side.get("event") or side.get("ticker") or ""))
 
 
 CLOSING = os.path.join(HERE, "closing_chances.json")   # each pick's last chance seen before kickoff
@@ -1789,7 +1850,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
                "top:8px;z-index:5;margin-bottom:8px' class='quote'><button class='btn go' onclick='myPrice()' id='mybtn'>"
                "Price my picks</button><button class='btn quiet' onclick='myClear()'>Clear</button></div>"
                "<div id='mymsg'></div>")
-    for day in DAY_ORDER:
+    for day in day_seq():
         evs = sorted((x for x in all_games if days[x] == day), key=lambda x: -fav(all_games[x])["fair"])
         if not evs:
             continue
@@ -5423,6 +5484,9 @@ def find_collection(legs):
 def week_spend():
     """What you've already spent on this week's NFL combos (from your account)."""
     acct, _, _ = fetch_account()
+    if is_mix():                                   # mixed combos still to play or playing today
+        today = dt.date.today().isoformat()
+        return sum(a["cost"] for a in acct or [] if (a.get("week") or "") >= today)
     week = CTX.get("sunday").isoformat() if CTX.get("sunday") else None
     return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
 
@@ -5969,7 +6033,7 @@ def settings_page(all_games, days, counts):
     APP["where"] = mode
     sec = {
         "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
-                         slider("budget", "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
+                         slider("budget", "Mix cap" if is_mix() else "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
                          slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair"),
                          "Minimum offer: Buy on Kalshi flags offers below this share of the fair payout."),
         "mix": "<details class='game disc' id='mix'><summary><span><b>Combo mix</b><span class='muted'>How many of each type</span></span></summary>"
@@ -5979,7 +6043,11 @@ def settings_page(all_games, days, counts):
                + "".join(section(t.capitalize(), slider(f"{t}_count", "Combos", 0, 10) +
                                  slider(f"{t}_min", "Fewest games", 2, top_) + slider(f"{t}_max", "Most games", 2, top_))
                          for t, top_ in [("safer", 8), ("middle", 12), ("moonshot", 16)]) + "</details>",
-        "days": section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
+        "days": section("Games from", slider("mix_window", "Window", 0, 2, 1, "", names=MIX_WINDOWS)
+                        + switch("next_day", "Same day means tomorrow"),
+                        f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} across the NFL, NBA and NHL in this "
+                        "window. Combos mix them; Kalshi decides which games it allows together.") if is_mix() else
+                section("Day", switch("next_day", "Use tomorrow's games instead of today's"),
                         f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
                         f"{'tomorrow' if CFG.get('next_day') else 'today'}.") if by_day() else
                 section("Days", "".join(switch(k, f"{d} <span class='muted'>· {counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'}</span>")
