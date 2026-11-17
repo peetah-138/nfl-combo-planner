@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.57"
+WATCHER_VERSION = "2026.11.17.58"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -543,9 +543,26 @@ class Web:
         if not _h.compare_digest(form.get("pass", "").strip(), self.conf["web_pass"]):
             self.fails.append(now)
             return None, "That passcode isn't right."
+        return self.new_session(), ""
+
+    def new_session(self):
+        import secrets
         tok = secrets.token_urlsafe(24)
-        self.sessions[tok] = now + 30 * 86400
-        return tok, ""
+        self.sessions[tok] = time.time() + 30 * 86400
+        return tok
+
+    def issue_once(self):
+        """A one-time sign-in link for the phone (asked for over the sealed hub channel); 60 seconds."""
+        import secrets
+        t = secrets.token_urlsafe(24)
+        now = time.time()
+        self.once = {k: v for k, v in getattr(self, "once", {}).items() if v > now}
+        self.once[t] = now + 60
+        return "/once?t=" + t
+
+    def use_once(self, t):
+        exp = getattr(self, "once", {}).pop(t, None)
+        return self.new_session() if exp and exp > time.time() else None
 
     def page(self, tok, note="", build=""):
         import html as h
@@ -768,6 +785,8 @@ def start_hub(conf, E, odds=None):
             if not url.startswith(E.HUB_GET_HOSTS):
                 return {"status": 403, "text": "not allowed"}
             return cache.get(url, req.get("params") or {})
+        if op == "weblink":
+            return {"path": web.issue_once()} if web else {"err": "kalshi", "msg": "Web view is off."}
         if op == "shadow":
             return {"summary": E.shadow_summary(), "accuracy": E.accuracy_summary()}
         if op == "odds":
@@ -852,8 +871,15 @@ def start_hub(conf, E, odds=None):
         def do_GET(self):
             from urllib.parse import urlparse, parse_qs
             u = urlparse(self.path)
+            if web and u.path == "/once":
+                tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
+                return self._html(303, "", cookie=tok, location="/") if tok else \
+                    self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
             if web and u.path in ("/", "/index.html"):
                 tok = web.session(self)
+                if not tok and self.client_address[0] == "127.0.0.1":   # on the Mac itself: no passcode
+                    tok = web.new_session()
+                    return self._html(303, "", cookie=tok, location=self.path)
                 if not tok:
                     return self._html(200, web.login_page())
                 lg = (parse_qs(u.query).get("build") or [""])[0]

@@ -363,9 +363,18 @@ if [ "$new_pairing" = 1 ]; then
 $topic"
 fi
 show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
+# a Desktop icon for the web view on this Mac (no passcode needed on the Mac itself)
+cat > "$HOME/Desktop/Combo Hub.webloc" <<'WEBLOC'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>URL</key><string>http://localhost:8765/</string></dict></plist>
+WEBLOC
 say "All set. Combo Watcher is running on this Mac.
 
 Keep it plugged in with the lid OPEN (the screen can go dark; a closed lid puts it to sleep). Moving it to another Wi-Fi network is fine: Tailscale keeps the same address.
 
-If macOS asks whether python3.12 may accept incoming connections, click Allow. After a restart, log in once and it starts by itself."
+If macOS asks whether python3.12 may accept incoming connections, click Allow. After a restart, log in once and it starts by itself.
+
+Combo Hub (the web view) is now on your Desktop. On your iPhone, tap Open Combo Hub on the planner's Live screen."
+[ "$GUI" = 1 ] && open "http://localhost:8765/" 2>/dev/null || true
 [ "$GUI" = 1 ] || echo "Check on it any time:  bash install_mac.sh --status     Live log:  tail -f ~/combowatch/watcher.log"

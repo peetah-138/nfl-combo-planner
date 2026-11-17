@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.57"
+VERSION = "2026.11.17.58"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3572,6 +3572,10 @@ class NavKeeper:
             except Exception:
                 pass
             return False
+        if url.startswith("combo://hubweb"):
+            import threading
+            threading.Thread(target=open_hub_web, daemon=True).start()
+            return False
         if url.startswith("combo://haptic/"):
             tap_haptic()
             return False
@@ -5058,13 +5062,25 @@ def confirm_backup_trade(method, path):
                        "2 minutes to place this with your phone's backup key.")
 
 
+def open_hub_web():
+    """Open the Mac's web view in Safari, already signed in (a one-time link from the Mac)."""
+    c = hub_conf()
+    got = hub_call("weblink", timeout=8) if c else None
+    if not got or not got.get("path"):
+        console_note("Couldn't reach your Mac to open the web view. Is Tailscale on?")
+        return
+    open_outside(c["hub"].rstrip("/") + got["path"])
+
+
 def hub_line():
     """One line for Live/Settings about the Mac hub, or ''."""
     if not hub_conf():
         return ""
     if hub_up():
         ms = f" · {HUB['ms']:.0f} ms" if HUB.get("ms") else ""
-        return (f"<div class='wline'>💻 Mac hub connected{ms}. Live data and trades go through your Mac.</div>")
+        return (f"<div class='wline'>💻 Mac hub connected{ms}. Live data and trades go through your Mac. "
+                "<a href='combo://hubweb' style='color:var(--accent);font-weight:600;text-decoration:none'>"
+                "Open Combo Hub ↗</a></div>")
     return (f"<div class='wline bad'>💻 Can't reach your Mac ({html.escape(HUB['why'] or 'no connection')}). "
             "The phone is checking Kalshi itself; trades use its backup key and ask first. "
             "Is Tailscale on?</div>")
