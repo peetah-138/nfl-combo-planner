@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.45"
+VERSION = "2026.11.16.46"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -44,6 +44,8 @@ CFG = {
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
+    "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
+    "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
     "mix_window": 0,
     "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
@@ -136,8 +138,17 @@ LEAGUES = {
                          "safer_count": 4, "safer_min": 2, "safer_max": 2,
                          "middle_count": 3, "middle_min": 3, "middle_max": 4,
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
-    # Every sport at once: combos that mix NFL, NBA and NHL games (Kalshi's cross-sport combos).
-    "mix": {"name": "Mixed sports", "short": "Mix", "icon": "🎲", "series": "KXNFLGAME,KXNBAGAME,KXNHLGAME",
+    # College football: big Saturday slates, many lopsided games. Kalshi's names are used for teams.
+    "ncaaf": {"name": "College football", "short": "CFB", "icon": "🎓", "series": "KXNCAAFGAME",
+              "odds": "americanfootball_ncaaf", "espn": "football/college-football", "espn_q": {"groups": "80"},
+              "slate": "week", "game_hours": 3.5, "periods": 4, "full": False, "teams": None,
+              "settings": "combo_settings_ncaaf.json", "latest": "combos_latest_ncaaf.html",
+              "defaults": {"budget": 50, "thursday": True, "saturday": True, "monday": False, "full_count": 0,
+                           "safer_count": 3, "safer_min": 2, "safer_max": 3,
+                           "middle_count": 3, "middle_min": 3, "middle_max": 5,
+                           "moonshot_count": 2, "moonshot_min": 5, "moonshot_max": 8}},
+    # Every sport at once: combos that mix NFL, NBA, NHL and college football (Kalshi's cross-sport combos).
+    "mix": {"name": "Mixed sports", "short": "Mix", "icon": "🎲", "series": "KXNFLGAME,KXNBAGAME,KXNHLGAME,KXNCAAFGAME",
             "odds": "mixed", "espn": "football/nfl", "espn_q": {}, "slate": "mix", "game_hours": 3.5, "periods": 4,
             "full": False, "teams": None,
             "settings": "combo_settings_mix.json", "latest": "combos_latest_mix.html",
@@ -146,10 +157,10 @@ LEAGUES = {
                          "middle_count": 3, "middle_min": 4, "middle_max": 5,
                          "moonshot_count": 3, "moonshot_min": 6, "moonshot_max": 9}},
 }
-MIX_SPORTS = ("nfl", "nba", "nhl")
+MIX_SPORTS = ("nfl", "nba", "nhl", "ncaaf")
 MIX_WINDOWS = ["Same day", "Through the weekend", "Next 7 days"]
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap")
 
 
 def next_league():
@@ -1134,7 +1145,7 @@ def combo_leagues(legs):
     n, last = Counter(), {}
     for l in legs:
         t = (l["ticker"] or "").upper()
-        for code, pre in (("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL")):
+        for code, pre in (("nba", "KXNBA"), ("nhl", "KXNHL"), ("ncaaf", "KXNCAAF"), ("nfl", "KXNFL")):
             if t.startswith(pre) and code in LEAGUES:
                 n[code] += 1
                 d = game_date({"event_ticker": t})
@@ -1154,12 +1165,14 @@ def combo_league(legs):
         return "nba"
     if any(t.startswith("KXNHL") for t in ts):
         return "nhl"
+    if any(t.startswith("KXNCAAF") for t in ts):
+        return "ncaaf"
     if any(t.startswith("KXNFL") for t in ts):
         return "nfl"
     return "other"
 
 
-WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME")
+WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME", "KXNCAAFGAME")
 
 
 def winners_only(legs):
@@ -3445,7 +3458,7 @@ def sold_today():
     today = dt.date.today().isoformat()
     try:
         with open(SELL_LOG, encoding="utf-8") as f:
-            return sum(1 for x in f if '"result": "sold"' in x and f'"when": "{today}' in x)
+            return sum(1 for x in f if ('"result": "sold"' in x or '"result": "hedged"' in x) and f'"when": "{today}' in x)
     except OSError:
         return 0
 
@@ -3496,6 +3509,22 @@ def auto_sell_now(plan):
             if o["offer"] < h["cost"] * o.get("frac", 1.0) and not turning_against(h):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
+            hg = hedge_for(t) if CFG.get("auto_hedge") else None
+            whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+            if hg and hg.get("n") and hg["locked"] > whole + 0.5:
+                if hg["cost"] > float(CFG.get("hedge_cap", 100)):
+                    rec["hedge_skipped"] = f"hedge would cost {money(hg['cost'])}, over the {money(CFG.get('hedge_cap', 100))} cap"
+                else:
+                    if t in MINE["cash"]:
+                        drop_cash(t)            # not selling: release the cash-out request
+                    msg = place_hedge(t)
+                    ok = msg.startswith("✅")
+                    log_decision(dict(rec, result="hedged" if ok else "hedge failed", hedge_cost=round(hg["cost"], 2),
+                                      locked=round(hg["locked"], 2), note=msg[:140]))
+                    if ok:
+                        out.append(f"🤖 Auto-hedge (Let it ride: {ride_level()[0]}): locks in more than the "
+                                   f"{money(whole)} cash-out. " + msg)
+                        continue
             msg = accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
             out.append(("🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ") + msg)
@@ -3881,8 +3910,10 @@ SPORTS = {
     "nhl": {"icon": "🏒", "name": "NHL", "espn": "hockey/nhl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
     "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
+    "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
+              "q": {"groups": "80"}, "periods": 4, "day": False, "hours": 3.5},
 }
-SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL"))
+SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("ncaaf", "KXNCAAF"), ("nba", "KXNBA"), ("nhl", "KXNHL"), ("nfl", "KXNFL"))
 
 
 def ticker_sport(ticker):
@@ -3891,7 +3922,7 @@ def ticker_sport(ticker):
 
 
 def sport_teams(code):
-    return {"nfl": NFL_TEAMS, "nba": NBA_TEAMS, "nhl": NHL_TEAMS}.get(code, {})
+    return {"nfl": NFL_TEAMS, "nba": NBA_TEAMS, "nhl": NHL_TEAMS}.get(code, {})     # college: Kalshi's names
 
 
 def fetch_scores(max_age=45, code=None):
@@ -4426,7 +4457,8 @@ def autosell_pass():
 
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
-WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap")
+WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+                  "auto_hedge", "hedge_cap")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -5354,6 +5386,48 @@ def mine_page(live=False):
 
 
 
+def combos_catalog_html():
+    """Every kind of event Kalshi allows in combos right now (its open combo collections), grouped
+    by series, with what the planner already covers. A screenshot of this is what's needed to add more."""
+    e = html.escape
+    series, colls, cursor = defaultdict(set), [], None
+    try:
+        for _ in range(15):
+            params = {"status": "open", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            r = requests.get(f"{KALSHI}/multivariate_event_collections", timeout=20, params=params)
+            r.raise_for_status()
+            data = r.json()
+            for c in data.get("multivariate_contracts", []):
+                evs = [a.get("ticker") for a in c.get("associated_events", [])] or list(c.get("associated_event_tickers") or [])
+                colls.append((c.get("title") or c.get("collection_ticker", ""), len(evs), c.get("size_max")))
+                for ev in evs:
+                    if ev:
+                        series[ev.split("-", 1)[0]].add(ev)
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+    except (requests.RequestException, ValueError) as err:
+        return error_page(f"Couldn't ask Kalshi just now ({err}). Try again in a minute.", "What can go in combos?", crash=False)
+    covered = set(WINNER_SERIES)
+    rows = "".join(
+        f"<div class='row' style='padding:7px 0;border-top:1px solid var(--line)'><span><b>{e(k)}</b>"
+        f"<br><small class='muted'>{len(v)} event{'s' * (len(v) != 1)} open now</small></span>"
+        f"<span class='{'pos' if k in covered else 'muted'}'>{'✓ in the planner' if k in covered else 'not yet'}</span></div>"
+        for k, v in sorted(series.items(), key=lambda kv: (kv[0] not in covered, -len(kv[1]))))
+    cl = "".join(f"<div class='row' style='padding:5px 0;border-top:1px solid var(--line)'><span>{e(t)}</span>"
+                 f"<span class='muted'>{n} events{f' · up to {m} picks' if m else ''}</span></div>"
+                 for t, n, m in sorted(colls, key=lambda x: -x[1])[:40])
+    return themed("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,"
+                  f"initial-scale=1'><title>Combo events</title><style>{CSS}</style></head><body><header><h1>What can go in "
+                  f"combos?</h1><div class='sub'>{len(series)} kinds of events in {len(colls)} Kalshi combo groups, right now"
+                  "</div></header><section><div class='muted' style='font-size:13px;margin:0 4px 8px'>Send a screenshot of "
+                  "this list to add more of them to the planner.</div><div class='game'>" + (rows or "<div class='empty'>"
+                  "Kalshi returned no open combo groups.</div>") + "</div><h2>Combo groups</h2><div class='game'>" + cl +
+                  "</div></section></body></html>")
+
+
 def diagnose():
     """Step-by-step check of the Kalshi connection, shown as a page."""
     e = html.escape
@@ -6054,6 +6128,7 @@ def settings_page(all_games, days, counts):
         top.append("<button class='btn big' onclick=\"go('update')\">Check for updates</button>")
     if CFG.get("kalshi_key_id") or os.path.exists(KEYFILE):
         top.append("<button class='btn big' onclick=\"go('check')\">Check Kalshi connection</button>")
+        top.append("<button class='btn big' onclick=\"go('catalog')\">What can go in combos?</button>")
 
     picks = []
     for ev, (a, b) in all_games.items():
@@ -6124,6 +6199,8 @@ def settings_page(all_games, days, counts):
                                  names=[n for n, _ in RIDE])
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
                         + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
+                        + switch("auto_hedge", "Hedge instead when that locks in more")
+                        + slider("hedge_cap", "Most to spend on one hedge", 25, 500, 25, "$")
                         + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
                             + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
                             + switch("tp_auto", "Auto-sell all my live combos (every league)")) if AUTOSELL else ""),
@@ -6136,7 +6213,9 @@ def settings_page(all_games, days, counts):
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
                          "while the planner is open, or all the time if your Pi watcher is running (Kalshi buys "
                          "combos back only through live offers), and tells you each time. It stops after the daily "
-                         "limit and never sells for less than you paid unless a game is turning against you. "
+                         "limit and never sells for less than you paid unless a game is turning against you. When a combo is "
+                         "down to its last game and buying the other team locks in more than the cash-out offer, it "
+                         "hedges instead (a purchase, up to your hedge limit; above it, it cashes out). "
                          "Otherwise nothing sells unless you confirm."
                          + (" Auto-sell puts a standing sell order on Kalshi that fills only if a buyer pays that "
                             "much." if AUTOSELL else ""))),
@@ -6617,6 +6696,9 @@ def main():
         APP["where"] = "results"
     if choice == "check":
         return diagnose()
+    if choice == "catalog":
+        loading("Asking Kalshi which events it allows in combos…")
+        return present(combos_catalog_html())
     if choice == "update":
         loading("Checking for updates…")
         ok, msg = install_update()
