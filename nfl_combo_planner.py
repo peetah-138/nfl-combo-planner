@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.46"
+VERSION = "2026.11.16.47"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3187,6 +3187,15 @@ class NavKeeper:
         if url.startswith("combo://haptic/"):
             tap_haptic()
             return False
+        if url.startswith("combo://copy/catalog"):
+            try:
+                import clipboard
+                clipboard.set(CATALOG.get("text", ""))
+                webview.evaluate_javascript("toast('Copied. Paste it into your chat with Claude.');"
+                                            "setTimeout(function(){toast('')},2500)")
+            except Exception:
+                pass
+            return False
         if self.inner is not None:
             return self.inner.webview_should_start_load(webview, url, nav_type)
         return not url.startswith("combo://")
@@ -5386,6 +5395,9 @@ def mine_page(live=False):
 
 
 
+CATALOG = {}
+
+
 def combos_catalog_html():
     """Every kind of event Kalshi allows in combos right now (its open combo collections), grouped
     by series, with what the planner already covers. A screenshot of this is what's needed to add more."""
@@ -5411,19 +5423,30 @@ def combos_catalog_html():
     except (requests.RequestException, ValueError) as err:
         return error_page(f"Couldn't ask Kalshi just now ({err}). Try again in a minute.", "What can go in combos?", crash=False)
     covered = set(WINNER_SERIES)
-    rows = "".join(
-        f"<div class='row' style='padding:7px 0;border-top:1px solid var(--line)'><span><b>{e(k)}</b>"
-        f"<br><small class='muted'>{len(v)} event{'s' * (len(v) != 1)} open now</small></span>"
-        f"<span class='{'pos' if k in covered else 'muted'}'>{'✓ in the planner' if k in covered else 'not yet'}</span></div>"
-        for k, v in sorted(series.items(), key=lambda kv: (kv[0] not in covered, -len(kv[1]))))
+    winners = {k: v for k, v in series.items() if k.endswith(("GAME", "MATCH", "WINNER", "FIGHT", "BOUT"))}
+    others = {k: v for k, v in series.items() if k not in winners}
+    order = lambda d: sorted(d.items(), key=lambda kv: (kv[0] not in covered, -len(kv[1])))
+
+    def row(k, v):
+        return (f"<div class='row' style='padding:7px 0;border-top:1px solid var(--line)'><span><b>{e(k)}</b>"
+                f"<br><small class='muted'>{len(v)} event{'s' * (len(v) != 1)} open now</small></span>"
+                f"<span class='{'pos' if k in covered else 'muted'}'>{'✓ in the planner' if k in covered else 'not yet'}</span></div>")
+    rows = ("<div class='muted' style='font-size:13px;margin:2px 0 4px'>Game and match winners: what the planner "
+            "builds with</div>" + "".join(row(k, v) for k, v in order(winners))
+            + f"<details class='disc' style='margin-top:8px'><summary><span><b>{len(others)} other kinds</b><span class='muted'>"
+              "spreads, totals, halves, player props</span></span></summary>"
+            + "".join(row(k, v) for k, v in order(others)) + "</details>")
+    CATALOG["text"] = "Kalshi combo events (" + dt.datetime.now().strftime("%b %-d %-I:%M %p") + "):\n" + "\n".join(
+        f"{k}: {len(v)} open{' (in planner)' if k in covered else ''} e.g. {sorted(v)[0]}" for k, v in order(series)) + \
+        "\nGroups: " + "; ".join(f"{t} ({n} events, max {m})" for t, n, m in colls)
     cl = "".join(f"<div class='row' style='padding:5px 0;border-top:1px solid var(--line)'><span>{e(t)}</span>"
                  f"<span class='muted'>{n} events{f' · up to {m} picks' if m else ''}</span></div>"
                  for t, n, m in sorted(colls, key=lambda x: -x[1])[:40])
     return themed("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,"
                   f"initial-scale=1'><title>Combo events</title><style>{CSS}</style></head><body><header><h1>What can go in "
                   f"combos?</h1><div class='sub'>{len(series)} kinds of events in {len(colls)} Kalshi combo groups, right now"
-                  "</div></header><section><div class='muted' style='font-size:13px;margin:0 4px 8px'>Send a screenshot of "
-                  "this list to add more of them to the planner.</div><div class='game'>" + (rows or "<div class='empty'>"
+                  "</div></header><section><button class='btn go big' style='margin:0 0 12px' "
+                  "onclick=\"location.href='combo://copy/catalog'\">Copy list to send Claude</button><div class='game'>" + (rows or "<div class='empty'>"
                   "Kalshi returned no open combo groups.</div>") + "</div><h2>Combo groups</h2><div class='game'>" + cl +
                   "</div></section></body></html>")
 
