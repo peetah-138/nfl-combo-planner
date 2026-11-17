@@ -1,16 +1,42 @@
-# NFL combo planner
+# Kalshi combo planner (iPhone)
 
-A Pythonista (iPhone) script that plans Kalshi NFL combo bets, reads your own
-Kalshi account, and (only when you tap Accept) can place combos for you.
+Builds Kalshi sports combos (NFL, NBA, NHL), tracks them live with scores and
+cash-out offers, and can keep auto-sell orders working. Runs in **Pythonista 3**
+on iPhone.
 
-This repository holds **code only**. Your API keys, settings and betting history
-are stored in separate files on your phone and are never uploaded here.
+## Set up (about 10 minutes)
 
-- `nfl_combo_planner.py` – the planner. Its **Update** button downloads new
-  versions from this repo, checks them, keeps a backup, and swaps them in.
-- `version.txt` – the latest version number (the planner checks this).
-- `install_planner.py` – one-time installer for switching an existing phone
-  over to the auto-updating version.
+1. **Install Pythonista 3** from the App Store and open it once.
+2. **Make a Kalshi API key**: kalshi.com → Account → API keys → Create key.
+   Choose read + write (the planner places and cashes out combos only when you
+   tap to confirm). Copy the Key ID and the whole private key. Kalshi shows the
+   private key only once.
+3. **Install the planner**: in Pythonista open the console (swipe left from the
+   editor, or tap `>_`), paste this line and tap Return:
 
-Anyone who can push to this repo controls what the planner on your phone runs,
-including with your Kalshi trading key. Keep write access to yourself.
+   ```
+   import requests; exec(requests.get('https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/install_planner.py').text)
+   ```
+
+4. **Run it**: open `nfl_combo_planner.py` and tap ▶. A Welcome screen asks for
+   your Key ID and private key, an optional free odds key (the-odds-api.com), and
+   offers to add a Home Screen icon. Don't open `combo_planner_engine.py` in the
+   editor. It's large and updates replace it.
+
+New versions arrive through **Settings → Check for updates**.
+
+## Files
+
+- `nfl_combo_planner.py`: the planner (installed on the phone as `combo_planner_engine.py`).
+- `install_planner.py`: installer and repair tool.
+- `version.txt`: latest version number.
+- `watcher/`: optional always-on watcher for a Raspberry Pi (`install_pi.sh`).
+
+This repository holds **code only**. API keys, settings and betting history stay
+in separate files on your phone and are never uploaded.
+
+**Trust:** anyone who can push to this repository controls what the planner runs
+on your phone, including with your Kalshi trading key. Only install from someone
+you trust, or use a read-only Kalshi key and place bets yourself.
+
+Bet responsibly: the planner estimates chances and can't promise outcomes.

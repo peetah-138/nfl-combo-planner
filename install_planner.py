@@ -8,10 +8,13 @@
 import os, re, requests
 
 URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/nfl_combo_planner.py"
-HERE = os.path.dirname(os.path.abspath(__file__))
+try:
+    HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:                # pasted into the Pythonista console: install into "This iPhone"
+    HERE = os.path.expanduser("~/Documents")
 ENGINE = os.path.join(HERE, "combo_planner_engine.py")
 LAUNCHER = os.path.join(HERE, "nfl_combo_planner.py")
-LAUNCHER_CODE = '''# Kalshi combo planner (NFL and college basketball). Tap Run.
+LAUNCHER_CODE = '''# Kalshi combo planner (NFL, NBA, NHL). Tap Run.
 # The planner itself is combo_planner_engine.py. Don't open that one: it's large and updates replace it.
 import os, runpy; runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "combo_planner_engine.py"), run_name="__main__")
 '''
@@ -55,7 +58,8 @@ def main():
     os.replace(LAUNCHER + ".new", LAUNCHER)
     print(f"Installed version {ver.group(1)}.")
     print("Done! Open nfl_combo_planner.py (it's only 3 lines now) and tap Run.")
-    print("You can delete this install_planner.py file.")
+    if "__file__" in globals():
+        print("You can delete this install_planner.py file.")
 
 
 main()

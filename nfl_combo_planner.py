@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.23"
+VERSION = "2026.11.16.24"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4973,6 +4973,8 @@ def settings_page(all_games, days, counts):
 
     have_key = os.path.exists(KEYFILE)
     mode = RUN_OPTS.pop("smode", None) or APP.get("smode") or "build"
+    if not CFG.get("kalshi_key_id") and not os.path.exists(KEYFILE):
+        mode = "setup"                            # first run: a short welcome instead of every setting
     APP["smode"] = mode
     APP["where"] = mode
     sec = {
@@ -5065,7 +5067,35 @@ def settings_page(all_games, days, counts):
     vline = (f"<div class='muted' style='text-align:center;font-size:13px;margin:14px 0 30px'>Version {VERSION} · "
              + ("up to date" if latest and version_tuple(latest) <= version_tuple(VERSION) else
                 "update available" if latest else "couldn't check for updates") + "</div>")
-    if mode == "build":
+    if mode == "setup":
+        def step(n, title, body, note):
+            return (f"<div class='card' style='padding:16px'><div class='tier'>Step {n}</div>"
+                    f"<div style='font-size:19px;font-weight:750;margin:2px 0 8px'>{title}</div>{body}"
+                    f"<div class='muted' style='font-size:13px;margin-top:10px'>{note}</div></div>")
+        link = lambda url, text: (f"<a class='btn' style='display:flex;align-items:center;justify-content:center;"
+                                  f"text-decoration:none;margin:0 0 10px' href='combo://open/{quote(url, safe='')}'>{text}</a>")
+        body = "".join([
+            "<header><h1>Welcome</h1><div class='sub'>Two minutes of setup, then you're building combos.</div></header><section>",
+            "".join(x for x in top if "class='game'" in x),
+            step(1, "Connect Kalshi",
+                 link(KALSHI_WEB + "/account/profile", "Open Kalshi API keys ↗")
+                 + "<input class='txt' id='kalshi_key_id' placeholder='Key ID' autocapitalize='off' autocorrect='off' spellcheck='false'>"
+                 + "<textarea class='txt' id='pem' rows='4' style='margin-top:8px' autocapitalize='off' autocorrect='off' "
+                   "spellcheck='false' placeholder='Paste the whole private key (BEGIN … END)'></textarea>"
+                 + "<button class='btn go big' style='margin-top:10px' onclick=\"go('check')\">Save &amp; connect</button>",
+                 "In Kalshi: Account → API keys → Create. Choose read + write so the planner can place and cash out "
+                 "combos, but only when you tap to confirm. Kalshi shows the private key once: copy all of it. "
+                 "Both stay on this phone only."),
+            step(2, "Sportsbook odds <span class='muted' style='font-size:14px;font-weight:600'>optional</span>",
+                 link("https://the-odds-api.com/#get-access", "Get a free odds key ↗")
+                 + f"<input class='txt' id='odds_key' placeholder='Odds key' autocapitalize='off' autocorrect='off' "
+                   f"spellcheck='false' value='{e(CFG['odds_key'])}'>",
+                 "Lets the planner compare Kalshi's prices with the sportsbooks to find value. The free plan is plenty."),
+            step(3, "Put it on your Home Screen <span class='muted' style='font-size:14px;font-weight:600'>optional</span>",
+                 "<button class='btn' onclick=\"go('homescreen')\">Add to Home Screen…</button>",
+                 "Opens the planner with one tap, without the Pythonista editor. You can do this later in Settings."),
+            "</section>"])
+    elif mode == "build":
         upd = (f"<div class='note'>Update available: see the Settings tab.</div>"
                if latest and version_tuple(latest) > version_tuple(VERSION) else "")
         notice_html = [x for x in top if "class='game'" in x]
