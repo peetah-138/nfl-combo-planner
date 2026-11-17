@@ -21,6 +21,16 @@ if [ "${1:-}" = "--healthcheck" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "--backup" ] || [ "${1:-}" = "--main" ]; then
+  # --backup: the Mac is the main watcher; this Pi only sends alerts while the Mac is quiet, never trades.
+  role=$([ "$1" = "--backup" ] && echo backup || echo main)
+  sudo -u combowatch python3 -c "import json,sys;p='$DIR/watcher.json';c=json.load(open(p));c['role']=sys.argv[1];json.dump(c,open(p,'w'))" "$role"
+  sudo systemctl restart combowatch
+  echo "This Pi is now the $role watcher."
+  [ "$role" = backup ] && echo "Give it a READ-ONLY Kalshi key if you can: bash install_pi.sh --new-key"
+  exit 0
+fi
+
 echo "== Combo planner watcher setup =="
 sudo apt-get update -qq
 sudo apt-get install -y -qq python3 python3-requests ca-certificates >/dev/null

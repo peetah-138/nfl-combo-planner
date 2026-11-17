@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.54"
+VERSION = "2026.11.17.55"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -46,6 +46,10 @@ CFG = {
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
+    "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
+    "notify_price": True, # Mac: a combo's price just got noticeably better
+    "notify_cash": True,  # Mac: cash-outs and hedges worth taking or done
+    "notify_news": True,  # Mac: sportsbooks moved sharply on a game you hold or might pick
     "prefer_hedge": True, # hedge even when it locks in up to 5% less than the cash-out (no 10% buyer's cut)
     "size_auto": True,    # bet more when Kalshi's price is good: $3 near the cut-off up to $10 above fair
     "size_min": 3, "size_max": 10,
@@ -225,7 +229,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news")
 
 
 def next_league():
@@ -4868,7 +4872,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "auto_hedge", "hedge_cap", "prefer_hedge")
+                  "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -6896,6 +6900,12 @@ def settings_page(all_games, days, counts):
                         + switch("auto_hedge", "Hedge instead when that locks in more")
                         + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
                         + slider("hedge_cap", "Most to spend on one hedge", 25, 500, 25, "$")
+                        + "<div class='row'><span class='muted'>Notifications from your Mac (bundled, at most one "
+                          "every 30 min; quiet 10 PM-7 AM except urgent)</span></div>"
+                        + switch("notify_value", "Combos quoting at a fair price")
+                        + switch("notify_price", "A better price on a combo")
+                        + switch("notify_cash", "Cash-outs and hedges")
+                        + switch("notify_news", "Big line moves and news")
                         + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
                             + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
                             + switch("tp_auto", "Auto-sell all my live combos (every league)")) if AUTOSELL else ""),
@@ -7789,7 +7799,7 @@ def shadow_settle(st):
     return changed
 
 
-def shadow_pass(book_snap, log=print):
+def shadow_pass(book_snap, log=print, alert=None):
     """One round for the league on screen: settle, then quote the best couple of combos and paper-buy
     any that pay at least the threshold. Returns a list of things that happened."""
     st = shadow_state()
@@ -7826,6 +7836,16 @@ def shadow_pass(book_snap, log=print):
         if r.get("error") or not r.get("pct"):
             continue
         pct = r["pct"]
+        key = "|".join(sorted(l["ticker"] for l in c["legs"]))
+        before = st.setdefault("seen", {}).get(key)
+        st["seen"][key] = round(pct, 4)
+        if alert and pct * 100 >= CFG["accept_pct"]:
+            picks = ", ".join(l["pick"] for l in c["legs"])
+            if before is None:
+                alert(f"💡 A {len(c['legs'])}-pick {LG()['name']} combo is quoting at {pct:.0%} of fair: {picks}. "
+                      "Build it from the Games list to get your own price.", "value")
+            elif pct - before >= 0.05:
+                alert(f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair.", "price")
         st["quotes"].append({"day": today, "pct": round(pct, 4), "legs": len(c["legs"]), "league": LEAGUE["code"]})
         stake = 10 if pct >= 1.10 else 8 if pct >= 1.05 else 5
         if pct * 100 < st["min_pct"] or spent_today + stake > st["per_day"] or stake > st["bank"]:
@@ -7840,6 +7860,8 @@ def shadow_pass(book_snap, log=print):
                            "stake": stake, "pays": round(pays, 2), "pct": round(pct, 4), "status": "open"})
         did.append(f"paper-bought {len(c['legs'])}-pick at {pct:.0%} of fair: {money(stake)} to win {money(pays)}")
     st["quotes"] = st["quotes"][-500:]
+    if len(st.get("seen", {})) > 400:
+        st["seen"] = dict(list(st["seen"].items())[-300:])
     save_json(SHADOW, st)
     return did
 

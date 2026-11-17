@@ -66,12 +66,14 @@ tailscale_ip() {
 }
 
 show_code() {   # the pairing code to paste on the phone (GUI: with a Copy button)
-  local code="$1" hub="$2"
+  local code="$1" hub="$2" pass="${3:-}"
   local msg
   if [ -n "$hub" ]; then
     msg="Last step, on your iPhone: open the planner > Settings > Pi watcher, replace the code with this one, and tap Save.
 
-Mac hub: $hub (over Tailscale, works on any network)"
+Mac hub: $hub (over Tailscale, works on any network)
+
+Web view: open $hub in any browser on your Tailscale network (iPhone, iPad, this Mac). Passcode: $pass"
   else
     msg="Tailscale isn't signed in on this Mac yet, so the phone can't use it as its hub. This code still turns on alerts and auto cash-out. Run setup again after signing in to Tailscale to get the full code.
 
@@ -105,6 +107,7 @@ if sys.argv[2]:
     out["hub"] = f"http://{sys.argv[2]}:{c.get('hub_port', 8765)}"
 print(base64.urlsafe_b64encode(json.dumps(out).encode()).decode().rstrip("="))
 print(out.get("hub", ""))
+print(c.get("web_pass", ""))
 PYEOF
 }
 
@@ -122,7 +125,7 @@ fi
 
 case "${1:-}" in
   --code)
-    out=$(pair_code); show_code "$(echo "$out" | sed -n 1p)" "$(echo "$out" | sed -n 2p)"
+    out=$(pair_code); show_code "$(echo "$out" | sed -n 1p)" "$(echo "$out" | sed -n 2p)" "$(echo "$out" | sed -n 3p)"
     exit 0 ;;
   --status)
     if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
@@ -299,6 +302,13 @@ PYEOF
   fi
   chmod 600 "$DIR/watcher.json"
 fi
+"$PY" - "$DIR/watcher.json" <<'PYEOF'
+import json, secrets, sys
+c = json.load(open(sys.argv[1]))
+if not c.get("web_pass"):
+    c["web_pass"] = "".join(secrets.choice("23456789abcdefghjkmnpqrstuvwxyz") for _ in range(8))
+    json.dump(c, open(sys.argv[1], "w"))
+PYEOF
 
 # Background job: starts at login, restarts if it stops, keeps the Mac awake (caffeinate) while plugged in.
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -352,7 +362,7 @@ if [ "$new_pairing" = 1 ]; then
 
 $topic"
 fi
-show_code "$code" "$hub"
+show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
 say "All set. Combo Watcher is running on this Mac.
 
 Keep it plugged in with the lid OPEN (the screen can go dark; a closed lid puts it to sleep). Moving it to another Wi-Fi network is fine: Tailscale keeps the same address.

@@ -21,11 +21,11 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.54"
+WATCHER_VERSION = "2026.11.17.55"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-          "auto_hedge", "hedge_cap", "prefer_hedge")
+          "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news")
 
 
 def log(*a):
@@ -138,6 +138,17 @@ def pause(conf, E):
                "Settings with Auto cash-out on.", priority="high")
 
 
+def mac_alive(conf):
+    """For a backup watcher: has the main watcher (the Mac) checked in within 3 minutes?"""
+    try:
+        r = requests.get(f"{NTFY}/{conf['topic']}-hb/json", params={"poll": "1", "since": "10m"}, timeout=8)
+        msgs = [json.loads(x) for x in r.text.splitlines() if x.strip()] if r.ok else []
+        hb = json.loads(msgs[-1]["message"]) if msgs else {}
+        return time.time() - float(hb.get("at", 0)) < 180
+    except (requests.RequestException, ValueError, KeyError):
+        return True                                   # can't tell: stay quiet rather than double up
+
+
 def heartbeat(conf, E, note="", err=""):
     """A small status message the phone reads to show the watcher is alive."""
     holds = E.MINE.get("hold") or {}
@@ -152,7 +163,7 @@ def heartbeat(conf, E, note="", err=""):
                        "playing": playing, "next": int(min(upcoming)) if upcoming else None, "cash": cash[:4],
                        "err": err[:160]})
     try:
-        requests.post(f"{NTFY}/{conf['topic']}-hb", data=body.encode(), timeout=10,
+        requests.post(f"{NTFY}/{conf['topic']}-hb{'2' if conf.get('role') == 'backup' else ''}", data=body.encode(), timeout=10,
                       headers={"Cache": "yes"})
     except requests.RequestException:
         pass
@@ -331,6 +342,7 @@ class HubOdds:
 
     def __init__(self):
         self.H, self.lock, self.free, self.sharp = None, threading.RLock(), {}, {}
+        self.pending, self.told = {}, {}
 
     def engine(self):
         if self.H is None:
@@ -351,6 +363,38 @@ class HubOdds:
                 best = t
         return best
 
+    def note_moves(self, league, old, new):
+        """Remember sharp moves (8+ points) on games within a day."""
+        import datetime as dt
+        soon = time.time() + 86400
+        for team, v in new["fair"].items():
+            was = old["fair"].get(team)
+            if not was or abs(v[0] - was[0]) < 0.08 or team in self.told.get(league, {}):
+                continue
+            try:
+                kick = dt.datetime.fromisoformat(str(new["kick"].get(team)).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if time.time() < kick < soon:
+                self.pending.setdefault(league, []).append((team, was[0], v[0], new["opp"].get(team, "")))
+                self.told.setdefault(league, {})[team] = time.time()
+
+    def moves(self, league, held):
+        """Messages for line moves since last asked: games you hold first, then other near games."""
+        with self.lock:
+            got = self.pending.pop(league, [])
+            for t, at in list(self.told.get(league, {}).items()):
+                if time.time() - at > 6 * 3600:
+                    del self.told[league][t]
+        out = []
+        for team, a, b, opp in got:
+            if b < a:                                 # report each game once, from the side that rose
+                continue
+            mine = team in held or opp in held
+            out.append(f"{'⚠️ Your game: ' if mine else '📉 '}sportsbooks moved to {team} {b:.0%} "
+                       f"(from {a:.0%}) vs {opp}. Often injury or lineup news.")
+        return out
+
     def get(self, league, key):
         with self.lock:
             H = self.engine()
@@ -358,8 +402,11 @@ class HubOdds:
             now = time.time()
             f = self.free.get(league)
             if not f or now - f[0] > self.FREE_TTL:
+                old = f
                 f = (now, H.free_snapshot(H.league_codes()))
                 self.free[league] = f
+                if old:
+                    self.note_moves(league, old[1], f[1])
             sh = self.sharp.get(league)
             if key:
                 soon = self.soonest(f[1])
@@ -376,10 +423,66 @@ class HubOdds:
             return snap
 
 
+class Notifier:
+    """Urgent alerts (cash-outs, hedges, anything done automatically, combos at risk) go out at once.
+    Everything else waits and goes out together, at most once every 30 minutes, never 10 PM-7 AM.
+    Each kind can be switched off in the phone's Settings."""
+    URGENT = ("cash out", "cashing out", "cashed out", "cash-out", "hedge", "auto", "turning", "at risk", "can't", "couldn't",
+              "refused", "paused")
+    SWITCH = {"value": "notify_value", "price": "notify_price", "cash": "notify_cash", "news": "notify_news"}
+
+    def __init__(self, conf, E, every=1800):
+        self.conf, self.E, self.every = conf, E, every
+        self.q, self.last, self.lock = [], 0.0, threading.Lock()
+
+    def add(self, msg, kind=None):
+        low = msg.lower()
+        kind = kind or ("cash" if ("cash" in low or "hedge" in low) else "info")
+        auto_done = "auto" in low and ("cashed" in low or "hedged" in low or "sold" in low)
+        if kind in self.SWITCH and not self.E.CFG.get(self.SWITCH[kind], True) and not auto_done:
+            return False                              # switched off (actions it took are always reported)
+        if kind in ("cash", "info") and any(w in low for w in self.URGENT):
+            push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
+                 pause_button=bool(self.E.CFG.get("auto_sell")))
+            return True
+        with self.lock:
+            if msg not in self.q:
+                self.q.append(msg)
+        return True
+
+    def flush(self, now=None):
+        now = now or time.time()
+        hour = time.localtime(now).tm_hour
+        with self.lock:
+            if not self.q or hour >= 22 or hour < 7 or now - self.last < self.every:
+                return 0
+            msgs, self.q = self.q, []
+        self.last = now
+        body = "\n".join("• " + m for m in msgs[:8]) + (f"\n(+{len(msgs) - 8} more)" if len(msgs) > 8 else "")
+        push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low")
+        return len(msgs)
+
+
 SHADOW_LEAGUES = ("nfl", "nba", "nhl", "ncaaf", "ncaamb")
 
 
-def shadow_loop(odds, every=1800):
+def held_teams(odds):
+    """Team names in your live combos."""
+    E = WATCHER.get("E")
+    out = set()
+    for h in ((E.MINE.get("hold") or {}).values() if E else []):
+        for item in h.get("need") or []:
+            try:
+                out.add(str(item[1]))
+            except (IndexError, TypeError):
+                pass
+    return out
+
+
+WATCHER = {}
+
+
+def shadow_loop(odds, notifier=None, every=1800):
     """Paper full-auto trading on the Mac (see the planner's shadow section). Real quotes, no money."""
     time.sleep(120)
     while True:
@@ -387,7 +490,9 @@ def shadow_loop(odds, every=1800):
             try:
                 with odds.lock:
                     snap = odds.get(code, "")            # free lines + any sharp lines already cached
-                    did = odds.engine().shadow_pass(snap, log=log)
+                    did = odds.engine().shadow_pass(snap, log=log, alert=notifier.add if notifier else None)
+                    for m in odds.moves(code, held_teams(odds)) if notifier else []:
+                        notifier.add(m, "news")
                 if did:
                     log(f"shadow {code}:", "; ".join(did))
             except Exception as err:
@@ -395,11 +500,123 @@ def shadow_loop(odds, every=1800):
         time.sleep(every)
 
 
+
+# ---------------------------------------------------------------- web view (any browser on your Tailscale network)
+WEB_CSS = """:root{--bg:#f4f5f7;--card:#fff;--ink:#16181d;--mute:#6b7280;--line:#e5e7eb;--good:#15803d;--bad:#b91c1c;--acc:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--ink:#eef0f3;--mute:#9aa1ad;--line:#2a2e36;--good:#4ade80;--bad:#f87171;--acc:#5b9dff}}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px -apple-system,system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}h1{font-size:26px;margin:8px 0 4px}h2{font-size:15px;color:var(--mute);margin:22px 0 8px;text-transform:uppercase;letter-spacing:.04em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:8px 0}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}.mute{color:var(--mute);font-size:14px}
+button,input{font:inherit;border-radius:10px;border:1px solid var(--line);padding:9px 14px}button{background:var(--acc);color:#fff;border:0;cursor:pointer}
+button.sell{background:var(--good)}.msg{padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--line);margin:8px 0}
+pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}"""
+
+
+class Web:
+    """A small page for any browser on your Tailscale network: your live combos with a real cash-out
+    button, the shadow record, and what the Mac has been doing. Passcode required; sessions last 30 days."""
+    def __init__(self, conf, E):
+        import secrets
+        self.conf, self.E, self.sessions, self.fails = conf, E, {}, []
+        if not conf.get("web_pass"):
+            conf["web_pass"] = "".join(secrets.choice("23456789abcdefghjkmnpqrstuvwxyz") for _ in range(8))
+            E.save_json(CONF, conf)
+        self.lock = threading.Lock()
+
+    def session(self, handler):
+        import http.cookies
+        c = http.cookies.SimpleCookie(handler.headers.get("Cookie") or "")
+        tok = c["cw"].value if "cw" in c else ""
+        exp = self.sessions.get(tok)
+        return tok if exp and exp > time.time() else None
+
+    def login(self, form):
+        import secrets, hmac as _h
+        now = time.time()
+        self.fails = [t for t in self.fails if now - t < 600]
+        if len(self.fails) >= 5:
+            return None, "Too many tries. Wait 10 minutes."
+        if not _h.compare_digest(form.get("pass", "").strip(), self.conf["web_pass"]):
+            self.fails.append(now)
+            return None, "That passcode isn't right."
+        tok = secrets.token_urlsafe(24)
+        self.sessions[tok] = now + 30 * 86400
+        return tok, ""
+
+    def page(self, tok, note=""):
+        import html as h
+        E = self.E
+        e = h.escape
+        holds = E.MINE.get("hold") or {}
+        rows = []
+        for t, x in sorted(holds.items(), key=lambda kv: kv[1].get("label", "")):
+            if x.get("left", 1) <= 0:
+                continue
+            o = (E.MINE.get("cash") or {}).get(t) or {}
+            real = bool(o.get("rfq")) and time.time() - o.get("at", 0) < 25
+            picks = ", ".join(str(n) for _, n in x.get("need") or [])
+            act = (f"<form method='post' action='/act'><input type='hidden' name='t' value='{e(t)}'>"
+                   f"<input type='hidden' name='tok' value='{e(tok)}'>"
+                   + (f"<button class='sell' name='do' value='sell'>Sell now for {E.money(o['offer'])}</button>" if real else
+                      "<button name='do' value='quote'>Get cash-out offer</button>") + "</form>")
+            rows.append(f"<div class='card'><div class='row'><b>{e(x.get('label', 'Combo'))}</b>"
+                        f"<span class='mute'>paid {E.money(x.get('cost', 0))} · pays {E.money(x.get('pays', 0))} · "
+                        f"{x.get('p', 0):.0%} to hit</span></div><div class='mute'>Still needs: {e(picks)}</div>"
+                        f"<div class='row' style='margin-top:8px'>{act}</div></div>")
+        try:
+            sm = E.shadow_text(E.shadow_summary())
+        except Exception:
+            sm = "Shadow record not available yet."
+        try:
+            with open(os.path.join(HOME, "watcher.log"), encoding="utf-8", errors="replace") as f:
+                tail = "".join(f.readlines()[-25:])
+        except OSError:
+            tail = ""
+        return ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>Combo Hub</title><style>{WEB_CSS}</style><meta http-equiv='refresh' content='60'></head><body><main>"
+                f"<h1>Combo Hub</h1><div class='mute'>Your Mac · planner {e(E.VERSION)} · {time.strftime('%-I:%M %p')}</div>"
+                + (f"<div class='msg'>{e(note)}</div>" if note else "")
+                + f"<h2>Live combos ({len(rows)})</h2>" + ("".join(rows) or "<div class='card mute'>Nothing riding right now.</div>")
+                + f"<h2>Shadow auto-trading</h2><div class='card'>{e(sm)}</div>"
+                + f"<h2>What the Mac has been doing</h2><div class='card'><pre>{e(tail)}</pre></div>"
+                "<div class='mute'>Buying new combos stays in the planner app for now.</div></main></body></html>")
+
+    def act(self, form):
+        E, t, do = self.E, form.get("t", ""), form.get("do", "")
+        if t not in (E.MINE.get("hold") or {}):
+            return "That combo isn't live any more."
+        with self.lock:
+            E.MINE["busy"] = True                     # keep automatic cash-outs out of the way meanwhile
+            try:
+                if do == "quote":
+                    o = E.get_cash_offer(t)
+                    if o.get("error"):
+                        return o["error"]
+                    E.MINE["cash"][t] = o
+                    return f"Kalshi offers {E.money(o['offer'])}. Tap Sell now within 20 seconds to take it."
+                if do == "sell":
+                    log("web cash-out:", t)
+                    return E.re.sub("<[^>]+>", "", E.accept_cash(t))
+                return "Unknown action."
+            finally:
+                E.MINE["busy"] = False
+
+    def login_page(self, msg=""):
+        import html as h
+        return ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>Combo Hub</title><style>{WEB_CSS}</style></head><body><main><h1>Combo Hub</h1>"
+                f"<div class='card'><form method='post' action='/login'><div class='mute'>Passcode (shown by the Mac setup)</div>"
+                f"<div class='row' style='margin-top:8px'><input name='pass' type='password' autocomplete='current-password' autofocus>"
+                f"<button>Open</button></div></form>{('<p>' + h.escape(msg) + '</p>') if msg else ''}</div></main></body></html>")
+
+
 def start_hub(conf, E, odds=None):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     secret, cache, seen = conf["secret"], HubCache(E), {}
+    web = Web(conf, E) if conf.get("web", True) else None
     odds = odds or HubOdds()
     seen_lock = threading.Lock()
     threading.Thread(target=cache.warm, daemon=True, name="hub-warm").start()
@@ -437,8 +654,36 @@ def start_hub(conf, E, odds=None):
         def log_message(self, *a):
             pass
 
+        def _form(self, n):
+            from urllib.parse import parse_qs
+            raw = self.rfile.read(n).decode("utf-8", "replace") if 0 < n < 10_000 else ""
+            return {k: v[0] for k, v in parse_qs(raw).items()}
+
+        def _html(self, code, page, cookie=None, location=None):
+            body = page.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            if cookie:
+                self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict")
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
+            if web and self.path == "/login":
+                tok, msg = web.login(self._form(n))
+                return self._html(303, "", cookie=tok, location="/") if tok else self._html(200, web.login_page(msg))
+            if web and self.path == "/act":
+                tok, form = web.session(self), self._form(n)
+                if not tok or form.get("tok") != tok:      # signed in, and the button came from our own page
+                    return self._html(403, web.login_page("Please sign in again."))
+                return self._html(200, web.page(tok, web.act(form)))
             if self.path != "/v1" or not 0 < n < 2_000_000:
                 return self._send(403, b"")
             req = E.hub_unseal(secret, self.rfile.read(n))
@@ -461,6 +706,9 @@ def start_hub(conf, E, odds=None):
             self._send(200, E.hub_seal(secret, out))
 
         def do_GET(self):
+            if web and self.path in ("/", "/index.html"):
+                tok = web.session(self)
+                return self._html(200, web.page(tok) if tok else web.login_page())
             self._send(404, b"")
 
         def _send(self, code, body):
@@ -479,7 +727,8 @@ def start_hub(conf, E, odds=None):
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True, name="hub").start()
     ip = hub_address()
-    log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)"))
+    log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)")
+        + (" · web view on the same address" if web else ""))
     return srv
 
 
@@ -516,11 +765,17 @@ def main():
     lock = threading.Lock()
     listen_for_settings(conf, E, lock)
     E.SCORES_MAX_AGE = 8                    # live scores every few seconds while games are on
+    notifier = Notifier(conf, E)
+    E.notify = notifier.add
+    backup = conf.get("role") == "backup"            # a Pi kept as alerts-only backup for the Mac
+    if backup:
+        log("backup mode: alerts only, and only while the Mac is quiet; never trades")
+    WATCHER["E"] = E
     if conf.get("hub", sys.platform == "darwin"):      # the Mac hub; a Pi only if asked
         odds = HubOdds()
         start_hub(conf, E, odds)
         if conf.get("shadow", True):
-            threading.Thread(target=shadow_loop, args=(odds,), daemon=True, name="shadow").start()
+            threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
@@ -549,6 +804,21 @@ def main():
                 done = E.autosell_pass()
                 if done:
                     log("auto-sell placed or moved:", done)
+            if backup:
+                E.CFG["auto_sell"] = False
+                if t0 - last.get("mac", 0) > 60:
+                    last["mac"] = t0
+                    quiet = not mac_alive(conf)
+                    if quiet != last.get("quiet", False):
+                        push(conf, "🛟 Your Mac has gone quiet, so the Pi is sending alerts until it's back." if quiet
+                             else "✅ Your Mac is back; the Pi is quiet again.", priority="high" if quiet else "low")
+                    last["quiet"] = quiet
+                if not last.get("quiet"):
+                    notifier.q.clear()
+                    E.notify = lambda msg: None
+                else:
+                    E.notify = notifier.add
+            notifier.flush()
             if t0 - last["hb"] > 55:                 # the phone takes over if this stops for 3 minutes
                 last["hb"] = t0
                 heartbeat(conf, E)
