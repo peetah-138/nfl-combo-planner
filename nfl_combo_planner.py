@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.47"
+VERSION = "2026.11.16.48"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -46,6 +46,10 @@ CFG = {
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
+    "prefer_hedge": True, # hedge even when it locks in up to 5% less than the cash-out (no 10% buyer's cut)
+    "size_auto": True,    # bet more when Kalshi's price is good: $3 near the cut-off up to $10 above fair
+    "size_min": 3, "size_max": 10,
+    "mix_v3": False,      # (one-time move to mostly 2-4 pick combos + 2 moonshots)
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
     "mix_window": 0,
     "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
@@ -160,7 +164,7 @@ LEAGUES = {
 MIX_SPORTS = ("nfl", "nba", "nhl", "ncaaf")
 MIX_WINDOWS = ["Same day", "Through the weekend", "Next 7 days"]
 LEAGUE = {"code": "nfl"}
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto")
 
 
 def next_league():
@@ -244,6 +248,9 @@ def set_league(code):
     if SAVED != MAIN_SAVED:                      # keys and bankroll are shared by every league
         main = load_json(MAIN_SAVED, {})
         CFG.update({k: main[k] for k in SHARED_KEYS if k in main})
+    if not CFG.get("mix_v3"):                     # mostly 2-4 pick combos at good prices + 2 moonshots
+        CFG.update(full_count=0, safer_count=4, safer_min=2, safer_max=3,
+                   middle_count=4, middle_min=3, middle_max=4, moonshot_count=2, mix_v3=True, mix_v2=True)
     if code == "mix" and not CFG.get("mix_v2"):
         if (CFG.get("middle_max"), CFG.get("moonshot_max"), CFG.get("moonshot_min")) == (4, 6, 4):
             CFG.update({k: v for k, v in LEAGUES["mix"]["defaults"].items() if k != "budget"})
@@ -735,10 +742,25 @@ def dog(sides):
     return min(sides, key=lambda s: s["fair"])
 
 
+VALUE_EDGE = 0.01     # Kalshi this much cheaper than the sharp line = a bargain pick
+PRICEY_EDGE = -0.02   # this much dearer = overpriced: used only when nothing better fits
+
+
 def weight(s, usage):
-    """Likelier picks, Kalshi bargains, and picks not used much yet score higher."""
+    """Bargains first: Kalshi pricing a team under the sharp sportsbook line scores much higher,
+    overpriced picks much lower; then likelier picks and picks not used much yet."""
     edge = max(-0.1, min(0.1, s["edge"] or 0))
-    return max(0.01, s["fair"] ** 2 * (1 + 8 * edge)) / (1 + usage[s["ticker"]])
+    value = math.exp(25 * edge) * (0.05 if edge <= PRICEY_EDGE else 1)
+    return max(1e-4, s["fair"] ** 2 * value) / (1 + usage[s["ticker"]])
+
+
+def game_value(sides):
+    """How much a game is worth including: one with a bargain side counts triple, one that's
+    overpriced on both sides barely counts (no sportsbook line = neutral)."""
+    edges = [x["edge"] for x in sides if x.get("edge") is not None]
+    if not edges:
+        return 1.0
+    return 3.0 if max(edges) >= VALUE_EDGE else 0.15 if max(edges) <= PRICEY_EDGE else 1.0
 
 
 def pickable(side):
@@ -789,7 +811,7 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
     extra = max(0, min(size - len(locked), len(eligible)))
     if len(locked) + extra < 2:
         return None
-    gw = {e: 1 / (1 + sum(usage[s["ticker"]] for s in games[e])) for e in eligible}
+    gw = {e: game_value(games[e]) / (1 + sum(usage[s["ticker"]] for s in games[e])) for e in eligible}
     chosen, pool = [], list(eligible)
     for _ in range(extra):
         e = rng.choices(pool, weights=[gw[x] for x in pool])[0]
@@ -804,9 +826,9 @@ def pick_partial(games, free, locked, size, rng, usage, limit):
         opts = [x for x in games[e] if usage[x["ticker"]] < limit and pickable(x)]
         if e not in late and CFG.get("dogs_late") and fav(games[e])["fair"] >= CLOSE_GAME:
             f = fav(games[e])
-            if f in opts:
-                legs.append(f)                    # early games: take the favourite
-            continue                              # favourite used up: leave this game out, no early underdog
+            if f in opts and (f.get("edge") is None or f["edge"] > PRICEY_EDGE):
+                legs.append(f)                    # early games: take the favourite (unless it's overpriced)
+            continue                              # favourite used up or pricey: leave this game out
         if CFG["hedge_close"] and len(opts) == 2 and fav(games[e])["fair"] < CLOSE_GAME \
                 and usage[opts[0]["ticker"]] != usage[opts[1]["ticker"]]:
             legs.append(min(opts, key=lambda x: usage[x["ticker"]]))
@@ -1737,6 +1759,8 @@ function autoQuotes(){ var all=Array.prototype.map.call(document.querySelectorAl
   if(!all.length) return;
   all.forEach(function(i){ tradeMsg(i,"<span class='muted'>Getting Kalshi's price…</span>"); });
   try{ location.href='combo://batch/'+BUILD+'/0/'+all.map(function(i){ return i+':'+stakeOf(i); }).join(',')+'/auto'; }catch(e){} }
+function setStake(i,v){ var c=document.querySelector('.card[data-i="'+i+'"]'); if(!c) return;
+  var el=c.querySelector('.amt'); if(el){ el.value=v; amt(i,el); } }
 function markPlaced(i,pays){ if(state.placed.indexOf(i)<0) state.placed.push(i); state.quotes[i]=pays; paint(); }
 paint();
 if(window.AUTOQ){ setTimeout(autoQuotes, 300); }
@@ -3520,7 +3544,9 @@ def auto_sell_now(plan):
                 continue
             hg = hedge_for(t) if CFG.get("auto_hedge") else None
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
-            if hg and hg.get("n") and hg["locked"] > whole + 0.5:
+            better = hg["locked"] >= whole * (0.95 if CFG.get("prefer_hedge", True) else 1.0) + (0 if CFG.get("prefer_hedge", True) else 0.5) \
+                if hg and hg.get("n") else False
+            if better:
                 if hg["cost"] > float(CFG.get("hedge_cap", 100)):
                     rec["hedge_skipped"] = f"hedge would cost {money(hg['cost'])}, over the {money(CFG.get('hedge_cap', 100))} cap"
                 else:
@@ -3531,8 +3557,9 @@ def auto_sell_now(plan):
                     log_decision(dict(rec, result="hedged" if ok else "hedge failed", hedge_cost=round(hg["cost"], 2),
                                       locked=round(hg["locked"], 2), note=msg[:140]))
                     if ok:
-                        out.append(f"🤖 Auto-hedge (Let it ride: {ride_level()[0]}): locks in more than the "
-                                   f"{money(whole)} cash-out. " + msg)
+                        vs = ("more than" if hg["locked"] > whole + 0.5 else "about the same as")
+                        out.append(f"🤖 Auto-hedge (Let it ride: {ride_level()[0]}): locks in {vs} the "
+                                   f"{money(whole)} cash-out, without the buyer's cut. " + msg)
                         continue
             msg = accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
@@ -4467,7 +4494,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "auto_hedge", "hedge_cap")
+                  "auto_hedge", "hedge_cap", "prefer_hedge")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -5631,6 +5658,78 @@ def week_spend():
     return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
 
 
+QUOTE_LOG = os.path.join(HERE, "combo_quote_times.json")   # each quote's % of fair and hours before its first game
+BUY_WINDOWS = [(48, 1e9, "2 or more days before"), (24, 48, "the day before"), (8, 24, "8 to 24 hours before"),
+               (2, 8, "2 to 8 hours before"), (0, 2, "in the last 2 hours")]
+
+
+def note_quote_time(legs, pct):
+    """Remember when this quote came, relative to the combo's first game, to learn the best time to buy."""
+    starts = [x for x in (start_dt(l["event"]) for l in legs if l.get("event")) if x]
+    if not starts or not pct:
+        return
+    hrs = (min(starts) - dt.datetime.now(dt.timezone.utc)).total_seconds() / 3600
+    if hrs < 0:
+        return
+    d = load_json(QUOTE_LOG, [])
+    d = (d + [[int(time.time()), round(hrs, 1), round(pct, 4)]])[-400:]
+    save_json(QUOTE_LOG, d)
+
+
+def best_buy_window():
+    """(lo, hi, label, gain) for when your combos have priced best vs your usual, once there's
+    enough data (20+ quotes, 5+ in that window, 2+ points better), else None."""
+    d = load_json(QUOTE_LOG, [])
+    if len(d) < 20:
+        return None
+    overall = statistics.median(x[2] for x in d)
+    best = None
+    for lo, hi, label in BUY_WINDOWS:
+        xs = [x[2] for x in d if lo <= x[1] < hi]
+        if len(xs) >= 5:
+            m = statistics.median(xs)
+            if m - overall >= 0.02 and (best is None or m > best[3] + overall):
+                best = (lo, hi, label, m - overall)
+    return best
+
+
+def schedule_buy_nudge(all_games):
+    """On a game day, one notification at the time your combos usually price best (learned)."""
+    w = best_buy_window()
+    if not w or not in_pythonista():
+        return
+    starts = sorted(x for x in (start_dt(e) for e in all_games) if x and x > dt.datetime.now(dt.timezone.utc))
+    if not starts:
+        return
+    when = starts[0] - dt.timedelta(hours=(w[0] + min(w[1], w[0] + 24)) / 2)
+    secs = (when - dt.datetime.now(dt.timezone.utc)).total_seconds()
+    key = when.astimezone().strftime("%Y-%m-%d")
+    told = load_json(BUY_NUDGE, {})
+    if secs < 60 or told.get("day") == key:
+        return
+    try:
+        import notification
+        notification.schedule(f"⏰ Your combos usually price best about now ({w[2]} the games, "
+                              f"+{w[3]:.0%} of fair). Open Build to get today's prices.", delay=secs, sound_name="default")
+        save_json(BUY_NUDGE, {"day": key})
+    except Exception:
+        pass
+
+
+BUY_NUDGE = os.path.join(HERE, "combo_buy_nudge.json")
+
+
+def stake_for(pct):
+    """How much to bet on a combo, from Kalshi's price as a share of fair: nothing under your
+    cut-off, the least just above it, the most when it's above fair."""
+    cut = CFG["accept_pct"] / 100
+    if pct < cut:
+        return 0
+    lo, hi = CFG.get("size_min", 3), CFG.get("size_max", 10)
+    steps = [(1.03, hi), (0.99, round(lo + (hi - lo) * 5 / 7)), (0.94, round(lo + (hi - lo) * 2 / 7)), (0, lo)]
+    return next(v for edge, v in steps if pct >= edge)
+
+
 BUY_RATIO = os.path.join(HERE, "combo_buy_ratio.json")   # Kalshi's combo quotes vs single-game prices
 
 
@@ -5707,6 +5806,7 @@ def get_offer(i, amount=None, check_cap=True):
     if c.get("kalshi"):
         note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
     pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
+    note_quote_time(c["legs"], pct)
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
                         "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct}
@@ -5992,6 +6092,15 @@ def handle_action(webview, parts):
                     k, amt = item
                     try:
                         o = get_offer(k, amt, check_cap=False)
+                        if auto and CFG.get("size_auto") and o.get("pct"):
+                            want = stake_for(o["pct"])
+                            if want and abs(want - amt) > 0.01:
+                                say(f"<span class='muted'>{o['pct']:.0%} of fair: getting the price for "
+                                    f"{money(want)}…</span>", k)
+                                o2 = get_offer(k, want, check_cap=False)
+                                if "error" not in o2:
+                                    o = o2
+                            webview.evaluate_javascript("setStake(%d, %s)" % (k, json.dumps(o["stake"] if want else amt)))
                         say(offer_html(k, o), k)
                         return "error" not in o
                     except Exception as err:
@@ -6176,7 +6285,8 @@ def settings_page(all_games, days, counts):
     sec = {
         "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
                          slider("budget", "Mix cap" if is_mix() else "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
-                         slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair"),
+                         slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair") +
+                         switch("size_auto", "Bet more when the price is good ($3 to $10)"),
                          "Kalshi's prices are marked below your cut-off when they pay less than this share of the fair payout."),
         "mix": "<details class='game disc' id='mix'><summary><span><b>Combo mix</b><span class='muted'>How many of each type</span></span></summary>"
                + ("" if not LG().get("full") else
@@ -6223,6 +6333,7 @@ def settings_page(all_games, days, counts):
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
                         + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
                         + switch("auto_hedge", "Hedge instead when that locks in more")
+                        + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
                         + slider("hedge_cap", "Most to spend on one hedge", 25, 500, 25, "$")
                         + ((switch("tp_follow", "Move auto-sell prices as games are won or lost")
                             + switch("tp_ladder", "Auto-sell in thirds (a ladder of prices)")
@@ -6309,7 +6420,10 @@ def settings_page(all_games, days, counts):
                if latest and version_tuple(latest) > version_tuple(VERSION) else "")
         notice_html = [x for x in top if "class='game'" in x]
         body = "".join([
-            f"<header><h1>Build</h1>{sport_seg('form')}<div class='sub'><span id='budgetline'></span></div></header><section>",
+            f"<header><h1>Build</h1>{sport_seg('form')}<div class='sub'><span id='budgetline'></span></div>"
+            + (lambda w: f"<div class='muted' style='font-size:13px;margin-top:4px'>⏰ Your combos have priced best {w[2]} "
+               f"the games (+{w[3]:.0%} of fair).</div>" if w else "")(best_buy_window())
+            + "</header><section>",
             upd, "".join(notice_html),
             ("" if CFG.get("built_once") else
              "<div class='tip'><b>New here?</b> The settings below are already set to sensible defaults. Tap "
@@ -6664,6 +6778,7 @@ def main():
     RUN_OPTS["latest"] = latest_version()
     all_games, days, sunday = week_games(fetch_markets())
     CFG["picks"] = {e: v for e, v in CFG["picks"].items() if e in all_games}  # drop old weeks
+    schedule_buy_nudge(all_games)
     import_key_file()
     start_autosell_keeper()
     counts = defaultdict(int)
