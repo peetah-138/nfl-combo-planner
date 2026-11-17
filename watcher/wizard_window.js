@@ -56,8 +56,11 @@ function run(argv) {
   win.contentView.addSubview(web);
   web.loadRequest($.NSURLRequest.requestWithURL($.NSURL.URLWithString(url)));
 
+  app.finishLaunching;
+  win.setFrameDisplay($.NSMakeRect(200, 150, 900, 640), true);
   win.center;
-  win.makeKeyAndOrderFront(null);
+  win.makeKeyAndOrderFront(win);
+  win.orderFrontRegardless;
   app.activateIgnoringOtherApps(true);
   app.run;
 }
