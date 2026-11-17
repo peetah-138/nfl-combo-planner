@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.61"
+VERSION = "2026.11.17.62"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -5168,6 +5168,27 @@ def approve_pi_update(version, engine_bytes):
         send_watcher_settings()
 
 
+def refresh_pi_approval():
+    """At each launch: re-approve this exact version for the Mac/Pi. Fixes an approval made while
+    GitHub's file cache still served the previous watcher (the Mac then refuses the mismatch)."""
+    import hashlib
+    try:
+        with open(ENGINE if os.path.exists(ENGINE) else SCRIPT_PATH, "rb") as f:
+            mine = f.read()
+        if f'VERSION = "{VERSION}"'.encode() not in mine:
+            return                                  # not the file that's running: approve nothing
+        ok = load_json(PI_APPROVE, {})
+        w = requests.get(UPDATE_URL + "/watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=20,
+                         headers={"Cache-Control": "no-cache"})
+        w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
+        e_sha = hashlib.sha256(mine).hexdigest()
+        if w_sha and (ok.get("version") != VERSION or ok.get("watcher") != w_sha or ok.get("engine") != e_sha):
+            save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha})
+            send_watcher_settings()
+    except (OSError, requests.RequestException):
+        pass
+
+
 def watcher_line():
     """One line for Live: is the Pi watching?"""
     import time
@@ -7404,6 +7425,8 @@ def main():
     all_games, days, sunday = week_games(fetch_markets())
     CFG["picks"] = {e: v for e, v in CFG["picks"].items() if e in all_games}  # drop old weeks
     schedule_buy_nudge(all_games)
+    if in_pythonista() and watcher_conf():
+        threading.Thread(target=refresh_pi_approval, daemon=True).start()
     import_key_file()
     start_autosell_keeper()
     counts = defaultdict(int)
