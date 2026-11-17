@@ -106,14 +106,15 @@ def load_engine():
 def update_if_newer(E):
     """Download a newer engine (and watcher) from GitHub. Returns True if the watcher should restart."""
     try:
-        latest = requests.get(REPO + "version.txt", timeout=15, headers={"Cache-Control": "no-cache"}).text.strip()
+        latest = requests.get(REPO + "version.txt", params={"t": int(time.time())}, timeout=15,
+                              headers={"Cache-Control": "no-cache"}).text.strip()
     except requests.RequestException:
         return False
     if not re.fullmatch(r"[0-9.]+", latest) or latest == getattr(E, "VERSION", ""):
         return False
     try:
-        src = requests.get(REPO + "nfl_combo_planner.py", timeout=30).text
-        wsrc = requests.get(REPO + "watcher/combo_watcher.py", timeout=30).text
+        src = requests.get(REPO + "nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30).text
+        wsrc = requests.get(REPO + "watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=30).text
         compile(src, "engine.py", "exec")
         compile(wsrc, "combo_watcher.py", "exec")
     except (requests.RequestException, SyntaxError) as err:

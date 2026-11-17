@@ -7,13 +7,13 @@ from the-odds-api.com). It never places a bet.
 Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
-import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys
+import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys, time
 from collections import defaultdict
 from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.28"
+VERSION = "2026.11.16.29"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -5675,7 +5675,8 @@ def version_tuple(v):
 def latest_version():
     """Newest published version, or None if it can't be checked right now."""
     try:
-        r = requests.get(UPDATE_URL + "/version.txt", timeout=6, headers={"Cache-Control": "no-cache"})
+        r = requests.get(UPDATE_URL + "/version.txt", params={"t": int(time.time())}, timeout=6,
+                         headers={"Cache-Control": "no-cache"})   # the query skips GitHub's 5-minute cache
         if r.ok and re.fullmatch(r"[0-9.]+", r.text.strip()):
             return r.text.strip()
     except requests.RequestException:
@@ -5687,7 +5688,8 @@ def install_update():
     """Download the newest version, check it, keep a backup, swap it in.
     Returns (ok, message). Your settings, keys and history are separate files and stay put."""
     try:
-        r = requests.get(UPDATE_URL + "/nfl_combo_planner.py", timeout=30, headers={"Cache-Control": "no-cache"})
+        r = requests.get(UPDATE_URL + "/nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30,
+                         headers={"Cache-Control": "no-cache"})
         if not getattr(r, "ok", False):
             return False, "Couldn't download the update. Check your connection and try again."
         src = r.content.decode("utf-8", errors="strict")
