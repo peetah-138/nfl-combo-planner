@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.32"
+VERSION = "2026.11.16.33"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2132,6 +2132,12 @@ def _colors():
            ("#f4f5f7", "#ffffff", "#16181d", "#6b7280", "#1f6feb")
 
 
+class _NoWindow:
+    """Stands in for the window in a copy that has handed it to a newer copy: everything is a no-op."""
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 def _web():
     """The one window everything shows in. Created once, then reused, so pages
     swap in place and the code never shows between them. The title bar and the tab bar
@@ -2139,6 +2145,8 @@ def _web():
     import ui
     if window_open():
         return APP["web"]
+    if APP.get("superseded"):        # a newer copy owns the window; this one must never open another
+        return _NoWindow()
     bg, card, ink, muted, accent = _colors()
 
     class Window(ui.View):            # a plain view can notice when it's closed;
@@ -4241,7 +4249,13 @@ function applyGame(){var g=window.__game;
  document.querySelectorAll('details.crow[data-games]').forEach(function(r){var hit=!g||r.dataset.games.split(' ').indexOf(g)>=0;
   var box=r.closest('.nitem')||r;box.classList.toggle('hidegame',!hit);});
  var q=document.getElementById('quietbox');if(q){if(g){if(!q.dataset.was)q.dataset.was=q.open?'1':'0';q.open=true;}
-  else if(q.dataset.was){q.open=q.dataset.was==='1';delete q.dataset.was;}}
+  else if(q.dataset.was){q.open=q.dataset.was==='1';delete q.dataset.was;}
+  var qb=q.querySelector('summary b'),qs=q.querySelector('summary .muted');
+  if(qb){if(qb.dataset.orig===undefined){qb.dataset.orig=qb.textContent;qs.dataset.orig=qs.textContent;}
+   if(g){var n=[].filter.call(q.querySelectorAll('details.crow'),function(r){return !r.classList.contains('hidegame');}).length;
+    qb.textContent=n+' combo'+(n===1?'':'s')+' on this game';qs.textContent='Nothing to do';}
+   else{qb.textContent=qb.dataset.orig;qs.textContent=qs.dataset.orig;}}}
+ if(g){var sel=document.getElementById('g-'+g);if(sel&&sel.scrollIntoView)sel.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});}
  ['needs','quiet','won'].forEach(function(id){var l=document.getElementById(id);if(!l)return;
   var any=[].some.call(l.querySelectorAll('details.crow'),function(r){return !(r.closest('.nitem')||r).classList.contains('hidegame');});
   var h=document.getElementById('h-'+id)||(id==='quiet'?q:null);if(h)h.classList.toggle('hidegame',!!g&&!any);
@@ -5853,8 +5867,34 @@ class Stop(Exception):
         self.title = title
 
 
+def take_over_open_window():
+    """Running the planner again (Run, or the home-screen icon) while it's already open used to
+    start a second copy in a second window on top of the first, both refreshing. Now the new copy
+    takes over the open window and the old copy stands down, the same way an update does."""
+    import builtins
+    old = getattr(builtins, "_combo_planner_app", None)
+    builtins._combo_planner_app = APP
+    if not in_pythonista() or old is None or old is APP or old.get("closed") or old.get("web") is None:
+        return
+    try:
+        if not old["win"].on_screen:
+            return
+    except Exception:
+        return
+    keep = dict(RUN_OPTS)
+    try:
+        adopt_window(old, None)
+    except Exception:
+        return
+    for k in ("goto", "smode", "notice"):      # a plain relaunch opens where it normally would
+        RUN_OPTS.pop(k, None)
+        if k in keep:
+            RUN_OPTS[k] = keep[k]
+
+
 def run():
     """main(), but any failure shows a readable page instead of a stuck spinner."""
+    take_over_open_window()
     try:
         main()
     except Stop as stop:
