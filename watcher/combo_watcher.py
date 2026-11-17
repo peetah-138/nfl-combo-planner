@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.16.38"
+WATCHER_VERSION = "2026.11.16.39"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap")
@@ -76,6 +76,9 @@ def fetch_settings(conf, E):
             if k in data.get("cfg", {}):
                 E.CFG[k] = data["cfg"][k]
         if isinstance(data.get("approve"), dict) and data["approve"].get("version"):
+            if data["approve"].get("version") != getattr(E, "VERSION", "") and \
+                    data["approve"] != conf.get("approve"):
+                conf["update_now"] = True              # your phone just updated: follow it right away
             conf["approve"] = data["approve"]          # the exact update files your phone installed
         if conf.get("paused"):
             if data.get("at", 0) > conf["paused"] and data.get("cfg", {}).get("auto_sell"):
@@ -318,7 +321,7 @@ def main():
                     conf["report_week"] = wk               # Monday morning, once a week
                     E.save_json(CONF, conf)
                     push(conf, E.weekly_text(st), title="Weekly report", priority="low")
-            if t0 - last["upd"] > 1800:
+            if conf.pop("update_now", False) or t0 - last["upd"] > 1800:
                 last["upd"] = t0
                 if update_if_newer(E, conf):
                     return 0                      # systemd starts the new version
