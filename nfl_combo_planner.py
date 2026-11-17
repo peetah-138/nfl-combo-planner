@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.58"
+VERSION = "2026.11.17.59"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3574,7 +3574,8 @@ class NavKeeper:
             return False
         if url.startswith("combo://hubweb"):
             import threading
-            threading.Thread(target=open_hub_web, daemon=True).start()
+            webview.evaluate_javascript("toast('Opening Combo Hub…')")
+            threading.Thread(target=open_hub_web, args=(webview,), daemon=True).start()
             return False
         if url.startswith("combo://haptic/"):
             tap_haptic()
@@ -5062,14 +5063,29 @@ def confirm_backup_trade(method, path):
                        "2 minutes to place this with your phone's backup key.")
 
 
-def open_hub_web():
-    """Open the Mac's web view in Safari, already signed in (a one-time link from the Mac)."""
+def open_hub_web(webview=None):
+    """Open the Mac's web view in Safari, already signed in (a one-time link from the Mac). If the
+    Mac hasn't updated yet, opens the plain page (it asks for the passcode)."""
+    def say(msg):
+        try:
+            if webview is not None:
+                webview.evaluate_javascript("toast(%s);setTimeout(function(){toast('')},4000)" % json.dumps(msg))
+        except Exception:
+            pass
     c = hub_conf()
-    got = hub_call("weblink", timeout=8) if c else None
-    if not got or not got.get("path"):
-        console_note("Couldn't reach your Mac to open the web view. Is Tailscale on?")
-        return
-    open_outside(c["hub"].rstrip("/") + got["path"])
+    if not c:
+        return say("Pair your Mac first (Settings > Pi watcher).")
+    got = hub_call("weblink", timeout=8)
+    if got is None:
+        return say("Couldn't reach your Mac. Is Tailscale on?")
+    url = c["hub"].rstrip("/") + (got.get("path") or "/")
+    try:
+        import webbrowser
+        webbrowser.open("safari-" + url if in_pythonista() else url)
+    except Exception:
+        open_outside(url)
+    if not got.get("path"):
+        say("Your Mac is still updating, so it may ask for the passcode this time.")
 
 
 def hub_line():
