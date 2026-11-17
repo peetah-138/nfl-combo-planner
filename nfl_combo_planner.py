@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.33"
+VERSION = "2026.11.16.34"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4299,11 +4299,29 @@ def mine_page(live=False):
     if not live:
         loading("Working out your chances…")
 
+    for code in {ticker_sport(l["ticker"]) for a in mine for l in a["legs"]} | {LEAGUE["code"]}:
+        if code:
+            fetch_scores(code=code)
+
+    def final_result(l):
+        """'yes'/'no' for the bettor once ESPN shows the game final, before Kalshi settles it
+        (that can take an hour). Game-winner picks only; a tie decides nothing here."""
+        if not (l["ticker"] or "").startswith(WINNER_SERIES):
+            return None
+        sc = leg_score(l)                       # already from the side the pick needs
+        if not sc or sc.get("state") != "post" or sc["me"] == sc["opp"]:
+            return None
+        return "yes" if sc["me"] > sc["opp"] else "no"
+
     def leg_info(l):
         """(name, opponent, chance, result) for one pick, from the bettor's side."""
         s = side_of.get(l["ticker"])
         res = results.get(l["ticker"])
         abbr = (l["ticker"] or "").rsplit("-", 1)[-1]
+        if res is None and final_result(l):
+            res = final_result(l)
+            if l.get("side", "yes") == "no":        # undo the flip below: the score is already our side's
+                res = {"yes": "no", "no": "yes"}[res]
         if l.get("side", "yes") == "no":            # betting a team NOT to win
             res = {"yes": "no", "no": "yes"}.get(res)
             if s:
@@ -4375,9 +4393,6 @@ def mine_page(live=False):
         patterns[frozenset(hit_now)] += 1
         hits_any += hit
     MINE["patterns"] = patterns
-    for code in {ticker_sport(l["ticker"]) for a in mine for l in a["legs"]} | {LEAGUE["code"]}:
-        if code:
-            fetch_scores(code=code)
 
     order = {ev: i for i, ev in enumerate(all_games)}
     snap = {}
@@ -4514,7 +4529,7 @@ def mine_page(live=False):
             val = o["offer"] / max(o.get("frac", 1.0), 0.01) if o else kalshi_discount(any_live) * p * a["pays"]
             gnow = val - a["cost"]
             n1 = (f"<b class='{'pos' if gnow >= 0.5 else 'neg' if gnow <= -0.5 else ''}' data-k='g-{e(a['ticker'])}'>"
-                  f"{'~' if not o else ''}{'+' if gnow >= 0 else '−'}{money(abs(gnow))}</b>")
+                  f"{('≈ ' if not o else '') + ('+' if gnow >= 0 else '−')}{money(abs(gnow))}</b>")
             pct_txt = f"{p:.0%}" if p >= 0.01 else f"{p:.1%}" if p >= 0.001 else "<0.1%"
             n2 = f"<span data-k='p-{e(a['ticker'])}'>{pct_txt}</span>"
         elif group == "cashed":
