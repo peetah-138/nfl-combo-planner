@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.16.30"
+VERSION = "2026.11.16.31"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2464,13 +2464,19 @@ details.crow[open]>summary .chev,.quietbox[open]>summary .chev{transform:rotate(
 .alertrow{padding:10px 16px;min-height:60px}.alertrow b{font-size:17px;font-weight:400}.alertrow span{font-size:13px}
 .tabs{margin:10px 16px 6px;padding:2px;border-radius:9px}.tabs button{font-size:13px;font-weight:600;padding:6px 4px;border-radius:7px}
 .gstrip{gap:10px;margin:8px -16px 2px;padding:4px 16px 6px;scroll-snap-type:x proximity}
-.gchip{scroll-snap-align:start;width:140px;align-items:stretch;gap:4px;border-radius:14px;padding:10px 12px 9px;
- background:var(--card);box-shadow:none;text-align:left}
+.gstrip{align-items:flex-start}
+.gchip{scroll-snap-align:start;flex:none;width:142px;height:auto;display:flex;flex-direction:column;align-items:stretch;gap:3px;
+ border-radius:14px;padding:9px 12px 8px;background:var(--card);box-shadow:none;text-align:left;cursor:pointer;
+ -webkit-user-select:none;user-select:none}
+.gchip:active{transform:scale(.97)}
+.gr.you span{color:var(--ink);font-weight:600}
+.gr i{font-style:normal;font-size:9px;font-weight:700;letter-spacing:.04em;color:var(--accent);background:var(--accentbg);
+ padding:1px 4px;border-radius:4px;margin-left:5px;vertical-align:2px}
+.gr.you{position:relative}.gr.you::before{content:'';position:absolute;left:-12px;top:3px;bottom:3px;width:3px;border-radius:2px;background:var(--accent)}
 .gtop{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;color:var(--muted)}
 .gtop .gsp{font-size:13px}
 .gr{display:flex;justify-content:space-between;font-size:15px;color:var(--muted);line-height:1.25}
 .gr b{font-weight:600}.gr.w{color:var(--ink)}.gr.w b{font-weight:700}
-.gchip:not(.on) .gr{color:var(--ink)}
 .gmine{font-size:12px;color:var(--accent);font-weight:600;margin-top:2px}
 .gchip.sel{box-shadow:inset 0 0 0 2px var(--accent)}
 .ghead{margin:14px 16px 0}
@@ -4194,7 +4200,7 @@ function applyGame(){var g=window.__game;
  if(g&&!document.getElementById('g-'+g))g=window.__game='';
  document.querySelectorAll('.gchip').forEach(function(c){c.classList.toggle('sel',c.dataset.g===g);});
  var head=document.getElementById('ghead');if(head){head.classList.toggle('on',!!g);
-  var c=g&&document.getElementById('g-'+g);document.getElementById('gname').textContent=c?('Riding on '+[].map.call(c.querySelectorAll('.gr>span:first-child'),function(x){return x.textContent.trim();}).filter(Boolean).join(' vs ')):'';}
+  var c=g&&document.getElementById('g-'+g);document.getElementById('gname').textContent=c?('Riding on '+[].map.call(c.querySelectorAll('.gr>span:first-child'),function(x){return x.childNodes[0].textContent.trim();}).filter(Boolean).join(' vs ')):'';}
  document.querySelectorAll('details.crow[data-games]').forEach(function(r){var hit=!g||r.dataset.games.split(' ').indexOf(g)>=0;
   var box=r.closest('.nitem')||r;box.classList.toggle('hidegame',!hit);});
  var q=document.getElementById('quietbox');if(q){if(g){if(!q.dataset.was)q.dataset.was=q.open?'1':'0';q.open=true;}
@@ -4558,28 +4564,31 @@ def mine_page(live=False):
             if r:
                 continue
             ev = l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0]
-            g = games.setdefault(ev, {"n": set(), "sc": leg_score(l), "nm": nm, "t": leg_start(l, side_of),
-                                      "sp": ticker_sport(l["ticker"]) or "other"})
+            sc_l = leg_score(l)
+            g = games.setdefault(ev, {"n": set(), "sc": sc_l, "nm": nm, "t": leg_start(l, side_of),
+                                      "sp": ticker_sport(l["ticker"]) or "other", "mine": set()})
             g["n"].add(a["ticker"])
+            if sc_l:
+                g["mine"].add(sc_l["abbr"])           # the team this pick needs to win
     def chip_of(ev, g):
         sc, icon = g["sc"], SPORTS.get(g["sp"], {}).get("icon", "🎯")
         playing = bool(sc and sc["state"] == "in")
         n = len(g["n"])
-        mine = f"{n} combo{'s' if n != 1 else ''}"
-        if sc and sc["state"] in ("in", "post"):
-            lead = "me" if sc["me"] > sc["opp"] else "opp" if sc["opp"] > sc["me"] else ""
-            teams = (f"<span class='gr{' w' if lead == 'me' else ''}'><span>{e(sc['abbr'])}</span><b>{sc['me']}</b></span>"
-                     f"<span class='gr{' w' if lead == 'opp' else ''}'><span>{e(sc['opp_abbr'])}</span><b>{sc['opp']}</b></span>")
-            status = f"<span class='{'lv' if playing else ''}'>{e(sc['detail'])}</span>"
-        else:
-            teams = ((f"<span class='gr'><span>{e(sc['abbr'])}</span></span><span class='gr'><span>{e(sc['opp_abbr'])}</span></span>")
-                     if sc else f"<span class='gr'><span>{e(g['nm'])}</span></span><span class='gr'><span>&nbsp;</span></span>")
-            status = f"<span>{e(when_label(g['t']) or 'Upcoming')}</span>"
-        return (playing, g["t"].timestamp() if g["t"] else 9e12,
-                f"<button class='gchip{' on' if playing else ''}' id='g-{e(ev)}' data-g='{e(ev)}' "
-                f"onclick=\"pickGame('{e(ev)}')\"><span class='gtop'><span class='gsp'>{icon}</span>{status}</span>"
-                f"{teams}<span class='gmine'>{mine}</span></button>")
-    gchips = sorted((chip_of(ev, g) for ev, g in games.items()), key=lambda x: (not x[0], x[1]))
+        if not playing:
+            return (False, 0, "")
+        both = len(g["mine"]) > 1                  # combos on both sides of this game
+        def team(abbr, pts, lead):
+            yours = abbr in g["mine"]
+            return (f"<div class='gr{' w' if lead else ''}{' you' if yours else ''}'><span>{e(abbr)}"
+                    + ("<i>YOU</i>" if yours and not both else "") + f"</span><b>{pts}</b></div>")
+        me_first = [(sc["abbr"], sc["me"], sc["me"] > sc["opp"]), (sc["opp_abbr"], sc["opp"], sc["opp"] > sc["me"])]
+        teams = "".join(team(*x) for x in me_first)       # your pick is listed first
+        return (True, g["t"].timestamp() if g["t"] else 9e12,
+                f"<div role='button' class='gchip' id='g-{e(ev)}' data-g='{e(ev)}' onclick=\"pickGame('{e(ev)}')\">"
+                f"<div class='gtop'><span class='gsp'>{icon}</span><span class='lv'>{e(sc['detail'])}</span></div>"
+                f"{teams}<div class='gmine'>{n} combo{'s' if n != 1 else ''}"
+                + (" · both sides" if both else "") + "</div></div>")
+    gchips = sorted((c for c in (chip_of(ev, g) for ev, g in games.items()) if c[0]), key=lambda x: x[1])
     n_live_games = sum(1 for c in gchips if c[0])
     summary = f"<div class='gstrip' id='gstrip'>{''.join(c[2] for c in gchips)}</div>" if gchips else ""
     def rows_of(ids):
