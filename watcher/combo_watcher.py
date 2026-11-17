@@ -12,7 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
-import base64, hashlib, hmac, importlib.util, json, os, re, sys, time, traceback
+import base64, hashlib, hmac, importlib.util, json, os, re, sys, threading, time, traceback
 
 import requests
 
@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.51"
+WATCHER_VERSION = "2026.11.17.52"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -257,6 +257,154 @@ def estimate_offers(E):
                 log(f"real offer for {h['label']}: ${real['offer']:.2f} (sells at ${thr:.2f}+)")
 
 
+
+# ---------------------------------------------------------------- Mac hub: the phone's data and trades
+HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate_event_collections|series)(/|$)")
+
+
+def hub_address():
+    """This machine's Tailscale address (100.64.0.0/10), or ''."""
+    import subprocess
+    for cmd in (["ifconfig"], ["ip", "-4", "addr"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for ip in re.findall(r"inet (100\.(\d+)\.\d+\.\d+)", out):
+            if 64 <= int(ip[1]) <= 127:
+                return ip[0]
+    return ""
+
+
+class HubCache:
+    """Recent public reads, kept fresh in the background for whatever the phone asked for lately."""
+    def __init__(self, E):
+        self.E, self.lock = E, threading.Lock()
+        self.data, self.wanted = {}, {}
+
+    @staticmethod
+    def ttl(url):
+        if "espn.com" in url:
+            return 20
+        if "/multivariate_event_collections" in url or "/series" in url:
+            return 120
+        return 12
+
+    def get(self, url, params, fresh=False):
+        key = url + "?" + json.dumps(params, sort_keys=True)
+        now = time.time()
+        with self.lock:
+            self.wanted[key] = (now, url, params)
+            hit = self.data.get(key)
+        if hit and not fresh and now - hit[0] < self.ttl(url):
+            return hit[1]
+        r = requests.get(url, params=params, timeout=20)
+        val = {"status": r.status_code, "text": r.text}
+        if r.ok:
+            with self.lock:
+                self.data[key] = (time.time(), val)
+        return val
+
+    def warm(self):
+        while True:
+            time.sleep(8)
+            now = time.time()
+            with self.lock:
+                for k in [k for k, (t, _, _) in self.wanted.items() if now - t > 1800]:
+                    self.wanted.pop(k, None)
+                    self.data.pop(k, None)
+                todo = [(u, p) for k, (t, u, p) in self.wanted.items()
+                        if now - (self.data.get(k) or (0,))[0] > self.ttl(u) - 6][:60]
+            for u, p in todo:
+                try:
+                    self.get(u, p, fresh=True)
+                except Exception as err:          # one bad read doesn't stop the rest
+                    log("hub warm skipped:", type(err).__name__, err)
+
+
+def start_hub(conf, E):
+    """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
+    pairing secret, recent, and not a replay; anything else gets a bare 403."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    secret, cache, seen = conf["secret"], HubCache(E), {}
+    seen_lock = threading.Lock()
+    threading.Thread(target=cache.warm, daemon=True, name="hub-warm").start()
+
+    def handle(req):
+        op = req.get("op")
+        if op == "ping":
+            return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
+        if op == "account":
+            return {"value": list(E.fetch_account(max_age=15, every_league=True))}
+        if op == "get":
+            url = str(req.get("url", ""))
+            if not url.startswith(E.HUB_GET_HOSTS):
+                return {"status": 403, "text": "not allowed"}
+            return cache.get(url, req.get("params") or {})
+        if op == "kalshi":
+            method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
+            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path):
+                return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}
+            if method != "GET":
+                log("phone trade:", method, path)
+            try:
+                return {"json": E.kalshi_send(method, path, req.get("body"), req.get("params") or None)}
+            except PermissionError as err:
+                return {"err": "perm", "msg": str(err)}
+            except (RuntimeError, ValueError, OSError, requests.RequestException) as err:
+                return {"err": "kalshi", "msg": str(err)}
+        return {"err": "kalshi", "msg": "unknown request"}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            if self.path != "/v1" or not 0 < n < 2_000_000:
+                return self._send(403, b"")
+            req = E.hub_unseal(secret, self.rfile.read(n))
+            now = time.time()
+            if not isinstance(req, dict) or abs(now - float(req.get("ts", 0))) > 300 or not req.get("n"):
+                return self._send(403, b"")
+            with seen_lock:
+                if req["n"] in seen:
+                    return self._send(403, b"")
+                seen[req["n"]] = now
+                if len(seen) > 5000:
+                    for k in [k for k, t in seen.items() if now - t > 600]:
+                        del seen[k]
+            try:
+                out = handle(req)
+            except Exception as err:
+                log("hub request failed:", req.get("op"), type(err).__name__, err)
+                out = {"err": "kalshi", "msg": f"The Mac hit an error: {type(err).__name__}"}
+            out["re"] = req["n"]
+            self._send(200, E.hub_seal(secret, out))
+
+        def do_GET(self):
+            self._send(404, b"")
+
+        def _send(self, code, body):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    port = int(conf.get("hub_port") or 8765)
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+    except OSError as err:
+        log(f"hub not started (port {port}):", err)
+        return None
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True, name="hub").start()
+    ip = hub_address()
+    log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)"))
+    return srv
+
+
 def main():
     conf = load_conf()
     E = load_engine()
@@ -289,6 +437,8 @@ def main():
     import threading
     lock = threading.Lock()
     listen_for_settings(conf, E, lock)
+    if conf.get("hub", sys.platform == "darwin"):      # the Mac hub; a Pi only if asked
+        start_hub(conf, E)
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}

@@ -62,6 +62,12 @@ so the existing ntfy topic keeps working. It runs in the background whenever you
 itself, keeps the Mac awake while plugged in (leave the lid open), and only installs updates your phone approved.
 `bash install_mac.sh --status` shows whether it's running. Run only one watcher at a time (Pi or Mac).
 
+**Mac hub.** With Tailscale on the Mac and your iPhone, the installer prints a pairing code that includes the
+Mac's address. Paste it into the phone (Settings > Pi watcher) and the phone gets its Kalshi data from the Mac
+(kept fresh all the time) and sends trades there to be placed with the Mac's key. Everything between them is
+encrypted and signed with the pairing secret. If the Mac can't be reached, the phone checks Kalshi itself and
+uses its own backup key, after a second tap. `bash install_mac.sh --code` prints the code again.
+
 ## Files
 
 - `nfl_combo_planner.py`: the planner (installed on the phone as `combo_planner_engine.py`).

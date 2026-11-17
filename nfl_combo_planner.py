@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.51"
+VERSION = "2026.11.17.52"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1212,6 +1212,8 @@ def sign(key, message):
 def account_get(key, key_id, path, params=None):
     """Signed GET to Kalshi's account API. path like /portfolio/fills."""
     import base64, time
+    if hub_up():
+        return hub_kalshi("GET", path, params=params)
     full = "/trade-api/v2" + path
     ts = str(int(time.time() * 1000))
     sig = base64.b64encode(sign(key, (ts + "GET" + full).encode())).decode()
@@ -1375,6 +1377,10 @@ def fetch_account(max_age=60, every_league=False):
 
 
 def _fetch_account():
+    if hub_up():
+        got = hub_call("account", timeout=30)
+        if got and isinstance(got.get("value"), list):
+            return tuple(got["value"])
     key_id = CFG.get("kalshi_key_id", "").strip()
     if not key_id or not os.path.exists(KEYFILE):
         return None, None, None
@@ -4663,6 +4669,171 @@ def watcher_conf():
         return None
 
 
+# ================================================================ Mac hub (stage 1)
+# When the pairing code includes a Mac hub address, the phone gets its data from the Mac (which keeps
+# it fresh all the time) and sends trades there to be placed with the Mac's key. Every request and
+# reply is compressed, encrypted and signed with the pairing secret. If the Mac can't be reached, the
+# phone checks Kalshi itself and trades with its own backup key, after you confirm.
+import threading as _threading
+_requests = requests
+HUB = {"up": None, "at": 0.0, "info": {}, "ms": None, "why": "", "armed": 0.0}
+HUB_PORT = 8765
+HUB_RECHECK_UP, HUB_RECHECK_DOWN = 30, 45
+HUB_GET_HOSTS = (KALSHI + "/", "https://site.api.espn.com/")
+AUTO = _threading.local()          # set while an automatic cash-out/hedge runs (no confirm prompt)
+
+
+def hub_conf():
+    c = watcher_conf()
+    return c if c and c.get("hub") else None
+
+
+def _hub_stream(secret, nonce, n):
+    import hashlib
+    key = hashlib.sha256((secret + "|hub").encode()).digest()
+    return b"".join(hashlib.sha256(key + nonce + i.to_bytes(4, "big")).digest()
+                    for i in range(n // 32 + 1))[:n]
+
+
+def hub_seal(secret, obj):
+    """Compress, encrypt and sign one message (bytes)."""
+    import zlib, hmac, hashlib
+    raw = zlib.compress(json.dumps(obj, separators=(",", ":")).encode(), 6)
+    nonce = os.urandom(16)
+    ct = (int.from_bytes(raw, "big") ^ int.from_bytes(_hub_stream(secret, nonce, len(raw)), "big")).to_bytes(len(raw), "big")
+    return nonce + hmac.new(secret.encode(), b"hub" + nonce + ct, hashlib.sha256).digest() + ct
+
+
+def hub_unseal(secret, data):
+    import zlib, hmac, hashlib
+    try:
+        nonce, mac, ct = data[:16], data[16:48], data[48:]
+        if len(nonce) < 16 or not ct or not hmac.compare_digest(
+                mac, hmac.new(secret.encode(), b"hub" + nonce + ct, hashlib.sha256).digest()):
+            return None
+        raw = (int.from_bytes(ct, "big") ^ int.from_bytes(_hub_stream(secret, nonce, len(ct)), "big")).to_bytes(len(ct), "big")
+        return json.loads(zlib.decompress(raw))
+    except (ValueError, TypeError, zlib.error):
+        return None
+
+
+def hub_call(op, timeout=10, **kw):
+    """Ask the Mac. Returns its reply (a dict) or None if it couldn't be reached."""
+    import time
+    c = hub_conf()
+    if not c:
+        return None
+    n = os.urandom(8).hex()
+    t0 = time.time()
+    try:
+        r = _requests.post(c["hub"].rstrip("/") + "/v1", data=hub_seal(c["secret"], dict(kw, op=op, ts=t0, n=n)),
+                           timeout=timeout, headers={"Content-Type": "application/octet-stream"})
+    except _requests.RequestException as err:
+        hub_mark(False, "no answer" if "timed out" in str(err).lower() else "can't connect")
+        return None
+    out = hub_unseal(c["secret"], r.content) if r.status_code == 200 else None
+    if not out or out.get("re") != n:
+        hub_mark(False, f"the Mac refused the request ({r.status_code})" if r.status_code != 200
+                 else "the reply didn't check out (pairing code changed?)")
+        return None
+    hub_mark(True, ms=(time.time() - t0) * 1000)
+    return out
+
+
+def hub_mark(up, why="", ms=None):
+    import time
+    HUB.update(up=up, at=time.time(), why=why)
+    if ms is not None:
+        HUB["ms"] = ms
+
+
+def hub_up():
+    """True if the Mac hub is configured and answering (checked at most every 30-45 s)."""
+    import time
+    if not hub_conf():
+        return False
+    wait = HUB_RECHECK_UP if HUB["up"] else HUB_RECHECK_DOWN
+    if HUB["up"] is None or time.time() - HUB["at"] > wait:
+        got = hub_call("ping", timeout=3)
+        if got:
+            HUB["info"] = got
+    return bool(HUB["up"])
+
+
+class _HubResp:
+    """Enough of a requests.Response for the planner's public GETs."""
+    def __init__(self, got, url):
+        self.status_code, self.url = int(got.get("status", 0)), url
+        self.text = got.get("text") or ""
+        self.content, self.headers = self.text.encode(), {}
+        self.ok = 200 <= self.status_code < 400
+
+    def json(self):
+        return json.loads(self.text)
+
+    def raise_for_status(self):
+        if not self.ok:
+            raise _requests.HTTPError(f"{self.status_code} from {self.url} (via your Mac)")
+
+
+class _HubRequests:
+    """The planner's `requests`: public Kalshi and ESPN reads come from the Mac when it's up."""
+    def __init__(self, real):
+        self._r = real
+
+    def __getattr__(self, k):
+        return getattr(self._r, k)
+
+    def get(self, url, params=None, **kw):
+        if not kw.get("headers") and str(url).startswith(HUB_GET_HOSTS) and hub_up():
+            got = hub_call("get", timeout=max(10, kw.get("timeout") or 0), url=url, params=params or {})
+            if got and "status" in got:
+                return _HubResp(got, url)
+        return self._r.get(url, params=params, **kw)
+
+
+requests = _HubRequests(_requests)
+
+
+def hub_kalshi(method, path, body=None, params=None):
+    """Have the Mac sign and send one Kalshi request with its key."""
+    got = hub_call("kalshi", timeout=40, method=method, path=path, body=body, params=params or {})
+    if got is None:
+        if method == "GET":
+            raise _requests.ConnectionError("Your Mac stopped answering.")
+        raise RuntimeError("Lost contact with your Mac during this trade, so it may or may not have gone "
+                           "through. Check Kalshi before trying again.")
+    if got.get("err") == "perm":
+        raise PermissionError(got.get("msg") or "Kalshi refused the Mac's key.")
+    if got.get("err"):
+        raise RuntimeError(got.get("msg") or "The Mac couldn't place that.")
+    return got.get("json")
+
+
+def confirm_backup_trade(method, path):
+    """The Mac is paired but unreachable: trades from a tap need a second tap to use the phone's key."""
+    import time
+    if method == "GET" or getattr(AUTO, "on", False) or not hub_conf():
+        return
+    if time.time() - HUB["armed"] < 120:
+        return
+    HUB["armed"] = time.time()
+    raise RuntimeError(f"Your Mac isn't answering ({HUB['why'] or 'no connection'}). Tap again within "
+                       "2 minutes to place this with your phone's backup key.")
+
+
+def hub_line():
+    """One line for Live/Settings about the Mac hub, or ''."""
+    if not hub_conf():
+        return ""
+    if hub_up():
+        ms = f" · {HUB['ms']:.0f} ms" if HUB.get("ms") else ""
+        return (f"<div class='wline'>💻 Mac hub connected{ms}. Live data and trades go through your Mac.</div>")
+    return (f"<div class='wline bad'>💻 Can't reach your Mac ({html.escape(HUB['why'] or 'no connection')}). "
+            "The phone is checking Kalshi itself; trades use its backup key and ask first. "
+            "Is Tailscale on?</div>")
+
+
 def watcher_status(max_age=60):
     """The Pi's latest heartbeat (it sends one every minute), or None."""
     import time
@@ -4728,6 +4899,13 @@ def watcher_line():
     import time
     if not watcher_conf():
         return ""
+    if hub_conf():
+        return hub_line() + _watcher_line()
+    return _watcher_line()
+
+
+def _watcher_line():
+    import time
     hb = watcher_status()
     if hb and time.time() - hb.get("at", 0) < 180 and hb.get("err"):
         return ("<div class='wline bad'>🖥 Pi watcher is running but its checks are failing: "
@@ -5731,6 +5909,9 @@ CTX = {}   # this session's slate: games, combos, build id, pending offers
 def kalshi_send(method, path, body=None, params=None):
     """Signed request with your key (used for buying). Returns JSON or None."""
     import base64, time
+    if hub_up():
+        return hub_kalshi(method, path, body, params)
+    confirm_backup_trade(method, path)
     key_id = CFG.get("kalshi_key_id", "").strip()
     with open(KEYFILE, encoding="utf-8") as f:
         key = load_private_key(f.read())
@@ -5755,7 +5936,8 @@ def kalshi_send(method, path, body=None, params=None):
 
 
 def can_trade():
-    return bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)
+    return (bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)) or \
+        (hub_up() and bool(HUB["info"].get("trade")))
 
 
 def combo_rules(events):
@@ -7354,6 +7536,22 @@ def launch():
             except Exception:
                 pass                              # a broken engine: fall back to this version
     run()
+
+
+def _as_auto(fn):
+    """Automatic cash-outs/hedges you turned on don't stop to ask about the backup key."""
+    def run(*a, **k):
+        AUTO.on = True
+        try:
+            return fn(*a, **k)
+        finally:
+            AUTO.on = False
+    run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+    return run
+
+
+auto_sell_now = _as_auto(auto_sell_now)
+autosell_pass = _as_auto(autosell_pass)
 
 
 if __name__ == "__main__":

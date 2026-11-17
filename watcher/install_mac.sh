@@ -7,6 +7,7 @@
 # itself only to versions your phone has approved. No admin password needed.
 #
 #   bash install_mac.sh --status            is it running? last lines of its log
+#   bash install_mac.sh --code              print the phone's pairing code (with this Mac's hub address)
 #   bash install_mac.sh --healthcheck URL   dead-man alert (free healthchecks.io check)
 #   bash install_mac.sh --new-key           replace its Kalshi key
 #   bash install_mac.sh --uninstall         stop it and remove it (keeps ~/combowatch)
@@ -18,7 +19,31 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$DIR/watcher.log"
 PY="$DIR/.venv/bin/python"
 
+pair_code() {   # the phone's pairing code, with this Mac's Tailscale address as the hub
+  local ip
+  ip=$(ifconfig 2>/dev/null | awk '/inet 100\./{print $2}' | while read -r a; do
+         o2=$(echo "$a" | cut -d. -f2); [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && echo "$a" && break; done)
+  "$PY" - "$DIR/watcher.json" "$ip" <<'PYEOF'
+import base64, json, sys
+c = json.load(open(sys.argv[1]))
+out = {"topic": c["topic"], "secret": c["secret"]}
+if sys.argv[2]:
+    out["hub"] = f"http://{sys.argv[2]}:{c.get('hub_port', 8765)}"
+print(base64.urlsafe_b64encode(json.dumps(out).encode()).decode().rstrip("="))
+print(out.get("hub", ""))
+PYEOF
+}
+
 case "${1:-}" in
+  --code)
+    out=$(pair_code); code=$(echo "$out" | sed -n 1p); hub=$(echo "$out" | sed -n 2p)
+    if [ -z "$hub" ]; then
+      echo "No Tailscale address found. Open the Tailscale app on this Mac, sign in, then run this again."; exit 1
+    fi
+    echo "Mac hub: $hub"
+    echo "In the planner on your phone: Settings > Pi watcher, replace the code with this one, tap Save:"
+    echo "     $code"
+    exit 0 ;;
   --status)
     if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
       state=$(launchctl print "gui/$(id -u)/$LABEL" | awk -F'= ' '/^\tstate/{print $2; exit}')
@@ -158,19 +183,27 @@ for _ in $(seq 1 20); do
 done
 tail -n 4 "$LOG" 2>/dev/null || true
 
-code=$("$PY" -c "import json,base64;c=json.load(open('$DIR/watcher.json'));print(base64.urlsafe_b64encode(json.dumps({'topic':c['topic'],'secret':c['secret']}).encode()).decode().rstrip('='))")
+out=$(pair_code); code=$(echo "$out" | sed -n 1p); hub=$(echo "$out" | sed -n 2p)
 topic=$("$PY" -c "import json;print(json.load(open('$DIR/watcher.json'))['topic'])")
 echo
-echo "== Done. The watcher is running on this Mac. =="
+echo "== Done. The watcher and hub are running on this Mac. =="
 if [ "$new_pairing" = 1 ]; then
   echo
-  echo "1) In the ntfy app on your iPhone, tap + and subscribe to this topic (keep it private):"
+  echo "In the ntfy app on your iPhone, tap + and subscribe to this topic (keep it private):"
   echo "     $topic"
-  echo "2) In the planner on your phone: Settings > Pi watcher, paste this pairing code, tap Save:"
-  echo "     $code"
-else
-  echo "It uses your existing pairing, so nothing to change on the phone."
 fi
+echo
+if [ -n "$hub" ]; then
+  echo "Mac hub: $hub (over Tailscale)"
+  echo "In the planner on your phone: Settings > Pi watcher, replace the code with this one, tap Save:"
+else
+  echo "No Tailscale address yet, so the phone can't use this Mac as its hub. Install Tailscale"
+  echo "(tailscale.com/download), sign in with the same account as your iPhone, then run: bash install_mac.sh --code"
+  echo "Meanwhile, this pairing code turns on alerts and auto cash-out (Settings > Pi watcher):"
+fi
+echo "     $code"
+echo
+echo "If macOS asks whether python3.12 may accept incoming connections, click Allow."
 echo
 echo "Keep the Mac plugged in with the lid OPEN (the screen can turn off; a closed lid puts it to sleep)."
 echo "After a restart or power cut, log in once and it starts again by itself."
