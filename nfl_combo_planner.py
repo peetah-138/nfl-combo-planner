@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.101"
+VERSION = "2026.11.18.102"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4032,14 +4032,14 @@ def take_profit_reason(t, h):
         q, P = h["p"], h["pays"]
         lam, why_note = swing_lambda(h)
         hold_risky = q * P - lam * P * math.sqrt(max(q * (1 - q), 0))
-        floor2 = max(hold_risky, 1.5 * h["cost"], 0.8 * q * P)   # never less than 80% of what it's worth
+        floor2 = max(hold_risky, 1.5 * h["cost"])
         if q >= 0.5 and max(est / 0.95, real) >= floor2:
             hits.append(("checkpoint" if why_note else "smart", floor2))
     if hits:
         return min(hits, key=lambda x: x[1])
     if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
-            and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= max(1.1 * h["cost"], 0.8 * h["p"] * h["pays"]):
-        return "lock in", max(1.1 * h["cost"], 0.8 * h["p"] * h["pays"])
+            and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= 1.1 * h["cost"]:
+        return "lock in", 1.1 * h["cost"]
     return None, 0.0
 
 
