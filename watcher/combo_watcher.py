@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.87"
+WATCHER_VERSION = "2026.11.17.88"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1374,6 +1374,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .dlegs svg{width:120px;height:28px}
 .bars2 .br{display:grid;grid-template-columns:110px minmax(0,1fr) 92px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0}
 .bars2 .tr2{height:10px;background:var(--panel2);border-radius:6px;position:relative;overflow:hidden}.bars2 .tr2 i{position:absolute;top:0;bottom:0;border-radius:6px}
+.sgt{display:grid;grid-template-columns:minmax(0,1fr) 46px 54px 66px;gap:7px 8px;font-size:12.5px;align-items:center}
+.sgt>span{text-align:right}.sgt>span:nth-child(-n+4){color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.sgt b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.25}.sgt b small{font-weight:500}
 .qline{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:9px 12px;font-size:12.5px;background:var(--panel2)}.qline span{color:var(--sub)}
 .qline.good{background:var(--yesbg)}.qline.good b{color:var(--yes)}.qline.bad{background:var(--nobg)}.qline.bad b{color:var(--no)}
 .pred{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--panel2);color:var(--sub)}
@@ -1776,10 +1779,18 @@ function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',wa
 function killerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac buy killer deals?</h3><p>Only deals that pass every check, up to 2 a day and $20 a day, inside your cap. Every buy sends an alert with a Pause button.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();killerMode('on',true)">Turn on</button></div>`);return;}
  S.set.killer.mode=m;setv('killer_mode',m);renderSettings();toast(m==='on'?'Killer deals: the Mac buys them now. Pause from any alert.':m==='watch'?'Killer deals: watch only.':'Killer deals off.',5000);}
 function singlesCard(d){const ss=d.singles||[];if(!ss.length)return '';
+ if(S.sgView==='odds')return singlesOdds(ss);
  return `<div class="card"><h3>Single games <span>best prices</span></h3><div class="m" style="font-size:12px;margin:-4px 0 8px">Kalshi's price vs the sharp books' chance to win, after Kalshi's fee. No combo maker taking a cut.</div>
   ${ss.map(x=>`<div class="moment"><span class="k" style="color:${x.edge>=0.025?'var(--yes)':x.edge>0?'var(--sub)':'var(--mute)'}">${x.edge>=0.025?'🎯':'·'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">vs ${esc(short(x.opp))} · ${Math.round(x.p*100)}¢ · fair ${pct(x.fair)}</span></span>
    ${x.idea?`<button class="btn acc" style="padding:6px 10px" onclick="singleFromBoard('${x.ticker}',this)">${(x.edge*100).toFixed(1)}¢ edge</button>`:`<b class="m" style="font-size:12px">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</b>`}</div>`).join('')}
-  ${ss.some(x=>x.idea)?'':'<div class="m" style="font-size:12px;margin-top:8px">Nothing at least 2.5¢ under fair right now: Kalshi is pricing these games in line with the sharp books. The Mac keeps checking every 10 minutes and alerts you when one opens up.</div>'}</div>`;}
+  ${ss.some(x=>x.idea)?'':'<div class="m" style="font-size:12px;margin-top:8px">Nothing at least 2.5¢ under fair right now: Kalshi is pricing these games in line with the sharp books. The Mac keeps checking every 10 minutes and alerts you when one opens up.</div>'}
+  <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='odds';renderBuild()">Win and sell-early chances</button></div>`;}
+function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
+ return `<div class="card"><h3>Single games <span>win and sell-early</span></h3>
+  <div class="m" style="font-size:12px;margin:-4px 0 8px">Per $1 contract: chance to win, what it profits if it wins, the chance its price is up 10¢ at some point (a chance to sell early at a profit), and the expected profit after Kalshi's fee.</div>
+  <div class="sgt"><span></span><span>Win</span><span>Up 10¢</span><span>Expected</span>${rows.map(x=>`<b>${esc(short(x.pick))}<small class="m" style="display:block">${Math.round(x.p*100)}¢, wins +${Math.round(x.profit*100)}¢</small></b><span>${pct(x.win)}</span><span>${pct(x.touch)}</span><span class="${x.ev>=0?'up':'down'}">${x.ev>=0?'+':'−'}${Math.abs(x.ev*100).toFixed(1)}%</span>`).join('')}</div>
+  <div class="m" style="font-size:12px;margin-top:8px">Read honestly: a likely winner pays little, and a price that's up 10¢ often comes back down. Selling early doesn't create profit on its own; the expected column is what you make on average, and it's only positive when Kalshi's price is below fair.</div>
+  <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='';renderBuild()">Back to best prices</button></div>`;}
 async function singleFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'singleidea',t}).catch(()=>({ok:false}));
  if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
  const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
@@ -2175,11 +2186,18 @@ def webapp_main():
             for x in sd:
                 if x.get("tie") or not x.get("fair") or not x.get("p") or x.get("src") is None or A.started(x):
                     continue
-                edge = x["fair"] - x["p"] - A.single_fee(x["p"])
+                fee = A.single_fee(x["p"])
+                edge = x["fair"] - x["p"] - fee
+                up = min(0.99, x["p"] + 0.10)
+                # A fair price drifts like a fair coin's running odds: the chance it ever trades up to `up`
+                # before the game ends is fair / up (and it must, if the team wins).
+                touch = min(1.0, x["fair"] / up)
                 out.append({"ticker": x["ticker"], "pick": x["pick"], "p": x["p"], "fair": x["fair"],
-                            "edge": round(edge, 4), "opp": A.opp_of(games, x), "idea": edge >= A.SINGLE_MIN_EDGE})
+                            "edge": round(edge, 4), "opp": A.opp_of(games, x), "idea": edge >= A.SINGLE_MIN_EDGE,
+                            "ev": round(edge / (x["p"] + fee), 4), "touch": round(touch, 3), "win": x["fair"],
+                            "profit": round(1 - x["p"] - fee, 4)})
         out.sort(key=lambda r: -r["edge"])
-        return out[:6]
+        return out[:8]
 
     def api_build(lg, rebuild=True):
         import random
