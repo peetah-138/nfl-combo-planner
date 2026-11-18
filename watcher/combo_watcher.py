@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.98"
+WATCHER_VERSION = "2026.11.18.99"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -821,11 +821,23 @@ def ensure_crypto():
 def panel_loop(odds, conf, every=60):
     """Buys approved panel bets when they're due (rechecked, swapped if needed) and runs the paper panel."""
     time.sleep(180)
+    n = 0
     while True:
         try:
             with odds.lock:
                 H = odds.engine()
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
+                n += 1
+                if n % 5 == 0:                            # results, exits and game-time prices
+                    H.panel_settle()
+                lt = time.localtime()
+                if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
+                    conf["recap_day"] = time.strftime("%Y-%m-%d")
+                    r = H.recap()
+                    if r.get("bets"):
+                        out.append(f"☀️ Yesterday: {'+' if r['pl'] >= 0 else '−'}${abs(r['pl']):.2f} · {r['won']} up, {r['lost']} down"
+                                   + (f" · 🔥 {r['streak']} days up in a row" if r.get("streak", 0) > 1 else "")
+                                   + (f". Best: {r['best']['what']}." if r.get("best") and r["best"]["pl"] > 0 else "."))
             for m in out:
                 log(m)
                 push(conf, m)
@@ -842,6 +854,7 @@ def history_loop(E, every=900):
             E.killer_resolve()
             E.maker_resolve()
             got = E.resolve_quotes()
+            E.resolve_closes()
             if got:
                 log(f"history: {got} quotes settled")
             n += 1
@@ -1738,6 +1751,20 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
  .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
 }
+.sweat{--p:0;--q:0;display:inline-grid;place-content:center;width:26px;height:26px;border-radius:50%;margin-right:7px;vertical-align:middle;
+ background:radial-gradient(closest-side,var(--panel) 72%,transparent 74% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),color-mix(in srgb,var(--yes) 45%,transparent) 0 calc(var(--q)*1%),var(--panel2) 0)}
+.sweat i{font-style:normal;font-size:9px;font-weight:800;color:var(--sub)}
+.trow.hot{box-shadow:inset 3px 0 0 var(--yes)}
+.moment-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 14px;margin:0 0 12px;border-radius:14px;
+ background:color-mix(in srgb,var(--yes) 14%,var(--panel));border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);animation:glow 2.4s ease-in-out infinite}
+.moment-bar b{display:block;font-size:14.5px}.moment-bar span{font-size:12.5px;color:var(--sub)}
+@keyframes glow{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--yes) 18%,transparent)}}
+.recap .rh{display:flex;justify-content:space-between;align-items:flex-start}.recap .x{border:0;background:none;color:var(--mute);font-size:16px;cursor:pointer}
+.confetti{position:fixed;inset:0;pointer-events:none;z-index:99;overflow:hidden}.confetti i{position:absolute;top:-12px;width:8px;height:12px;border-radius:2px;animation:fall 2.2s cubic-bezier(.2,.6,.4,1) forwards}
+@keyframes fall{to{top:105vh;transform:rotate(720deg) translateX(40px);opacity:.9}}
+.whatif{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wi{padding:10px 12px;border-radius:12px;background:var(--panel2)}.wi span{display:block;font-size:12px;color:var(--sub)}
+.wi b{font-size:20px}.wi.up b{color:var(--yes)}.wi.down b{color:var(--no)}.wi small{display:block;font-size:11.5px;color:var(--mute)}
+@media (prefers-reduced-motion:reduce){.moment-bar{animation:none}.confetti{display:none}}
 .panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
  background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
@@ -1855,7 +1882,7 @@ function renderLive(){const d=S.live;const m=$('#main');
   <div class="kpi"><span>Chance one hits</span><b>${pct(d.chance_one)}</b></div>
   <div class="kpi"><span>Cash-out value now</span><b>${(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real)?'≈ ':''}${money(d.cash_now)}</b></div>
   <div class="kpi"><span>Biggest payout</span><b class="up">${money(d.best)}</b></div></div>
- ${doNow(d,cs)}
+ ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
  <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
@@ -1908,9 +1935,16 @@ async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/
 async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
 function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
+function sweat(c){if(c.group!=='pending')return '';const n=c.legs.length,w=c.legs.filter(l=>l.res==='yes').length;
+ const liveUp=c.legs.filter(l=>!l.res&&l.state==='live'&&(l.live??l.chance)>=.5).length;const p=Math.round(w/n*100),q=Math.round((w+liveUp)/n*100);
+ return `<span class="sweat" title="${w} of ${n} picks won${liveUp?`, ${liveUp} winning now`:''}" style="--p:${p};--q:${q}"><i>${w}/${n}</i></span>`;}
+function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer);if(!m.length)return '';
+ const auto=S.live&&S.live.auto_sell;
+ return m.map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
+  ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('');}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
- return `<div class="trow" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
+ return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${sweat(c)}${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
@@ -2298,7 +2332,10 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
-   <div><h2 style="margin:0 0 6px">Your combos on this game</h2>${r.combos.map(c=>`<div class="moment" style="cursor:pointer" onclick="openCombo('${c.t}')"><span class="k">🎯</span><span><b>${esc(c.label)}</b> <span class="m">${c.legs} picks · ${pct(c.p)} to hit</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}</div></div>
+   <div><h2 style="margin:0 0 6px">Your combos on this game</h2>${r.combos.map(c=>`<div class="moment" style="cursor:pointer" onclick="openCombo('${c.t}')"><span class="k">🎯</span><span><b>${esc(c.label)}</b> <span class="m">${c.legs} picks · ${pct(c.p)} to hit</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}
+   ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
+    <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
+    ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
   ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
@@ -2310,12 +2347,25 @@ function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style=
   <path d="${d} L${X(t1)} ${8+ih} L${pl} ${8+ih}Z" fill="${col}" opacity=".08"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>
   <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
 // ---------------- live events from the Mac
+async function loadRecap(){const h=new Date().getHours();const day=new Date().toDateString();
+ let seen='';try{seen=localStorage.getItem('cw_recap')||''}catch(e){}
+ if(h<5||h>=14||seen===day){S.recap=null;return;}S.recap=await api('/app/api/recap').catch(()=>null);if(S.view==='live')renderLive();}
+function recapCard(){const r=S.recap;if(!r||!r.bets||!r.bets.length)return '';
+ return `<div class="card recap"><div class="rh"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Yesterday</div>
+  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down${r.streak>1?` · 🔥 ${r.streak} days up in a row`:''}</span></div>
+  <button class="x" onclick="try{localStorage.setItem('cw_recap',new Date().toDateString())}catch(e){};S.recap=null;renderLive()">✕</button></div>
+  ${r.best&&r.best.pl>0?`<div class="mini">Best<b class="up">${esc(r.best.what)} ${smoney(r.best.pl)}</b></div>`:''}${r.worst&&r.worst.pl<0?`<div class="mini">Worst<b class="down">${esc(r.worst.what)} ${smoney(r.worst.pl)}</b></div>`:''}
+  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}</div>`;}
+function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
+ for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
+ document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
 function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
  es.onopen=()=>{S.live_ok=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
   if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
+  if(ev.kind==='settled'&&/ won$/.test(ev.text||''))celebrate();
   if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
   if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
@@ -2401,7 +2451,7 @@ async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np
 // ---------------- refresh loop
 window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
 if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
-chrome();render();load(S.view);connect();
+chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
  if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
  if((S.fid.keys||[]).some(k=>k.rp===location.hostname))return;localStorage.setItem('cw_fid_asked','1');
@@ -2615,7 +2665,7 @@ def webapp_main():
             orders = jsonable(A.maker_summary()["open"]) if A.STORE.get("db") else []
         except Exception:
             orders = []
-        return dict(out, ideas=ideas, orders=orders) if isinstance(out, dict) else out
+        return dict(out, ideas=ideas, orders=orders, auto_sell=bool(A.CFG.get("auto_sell"))) if isinstance(out, dict) else out
 
     def side_view(s):
         return {"ticker": s["ticker"], "pick": s["pick"], "abbr": s.get("abbr", ""), "p": s.get("p"),
@@ -2877,7 +2927,21 @@ def webapp_main():
                         combos.append({"t": v["t"], "label": v["label"], "p": v.get("p"), "pays": v["pays"],
                                        "cost": v["cost"], "legs": len(v["legs"])})
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
-        return jsonable({"leg": leg, "combos": combos, "story": story})
+        wi = None
+        if leg and leg.get("state") == "live":
+            ch = leg.get("live") if leg.get("live") is not None else leg.get("chance")
+            try:
+                wi = A.what_if(t, ch, leg.get("side", "yes"))
+            except Exception:
+                wi = None
+            if wi and ch:
+                disc = A.kalshi_discount(True)
+                for c in combos:
+                    if c.get("p"):
+                        c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
+                        c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
+                        c["now"] = round(c["pays"] * c["p"] * disc, 2)
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi})
 
     def api_games():
         d = api_live() or {}
@@ -3244,6 +3308,8 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/recap":
+                        out = jsonable(A.recap()) if A.STORE.get("db") else {}
                     elif path == "/app/api/panel":
                         out = api_panel(q.get("v") or "all")
                     elif path == "/app/api/orders":
