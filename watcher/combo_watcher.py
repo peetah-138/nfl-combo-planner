@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.69"
+WATCHER_VERSION = "2026.11.17.70"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -971,6 +971,48 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .tabbar{display:none}
+/* settings */
+.set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
+.sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
+.sidx a{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:9px;color:var(--sub);font-weight:600;font-size:13.5px}
+.sidx a:hover{background:var(--panel2);color:var(--ink)}.sidx .sv{margin-top:14px;padding:0 12px;color:var(--mute);font-size:12px}
+.shead{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:2px 0 18px}.shead h1{margin:0;font-size:24px;letter-spacing:-.02em}
+.shead p{margin:4px 0 0;color:var(--mute)}.saved{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--mute);display:flex;align-items:center;gap:7px}
+.saved.ok{color:var(--yes)}
+.scard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:18px;scroll-margin-top:84px}
+.scard>header{padding:18px 22px 14px;display:flex;gap:12px;align-items:flex-start}.scard>header .ic{font-size:18px;line-height:1.2}
+.scard h3{margin:0;font-size:15.5px;letter-spacing:-.01em}.scard header p{margin:3px 0 0;color:var(--mute);font-size:12.5px;max-width:560px}
+.srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
+.srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
+.srow.dim{opacity:.45;pointer-events:none}
+.rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
+input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
+ background:linear-gradient(90deg,var(--acc) var(--p,50%),var(--panel2) var(--p,50%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45),0 0 0 1px rgba(0,0,0,.06)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45)}
+.tg{-webkit-appearance:none;appearance:none;width:44px;height:26px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);position:relative;flex:none;cursor:pointer;transition:background .18s}
+.tg::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .18s}
+.tg:checked{background:var(--yes);border-color:var(--yes)}.tg:checked::after{transform:translateX(18px)}
+.seg{display:flex;background:var(--panel2);border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{border:0;background:none;padding:7px 11px;border-radius:8px;color:var(--sub);font-weight:600;font-size:12.5px}
+.seg button.on{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.mixt{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,minmax(96px,126px));align-items:center;border-top:1px solid var(--line)}
+.mixt>div{padding:11px 22px 11px 0;border-top:1px solid var(--line)}.mixt>div:nth-child(4n+1){padding-left:22px}
+.mixt .h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding-top:12px;padding-bottom:6px}
+.mixt b{display:block;font-weight:600}.mixt small{color:var(--mute);font-size:12px}
+.stp{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:9px;background:var(--panel2);overflow:hidden}
+.stp button{border:0;background:none;width:30px;height:30px;color:var(--sub);font-size:16px;font-weight:600}.stp button:hover{color:var(--ink);background:var(--hover)}
+.stp span{min-width:28px;text-align:center;font-weight:700}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));border-top:1px solid var(--line);overflow:hidden}
+.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.kv b{font-size:14.5px;display:flex;align-items:center;gap:7px;margin-top:2px;word-break:break-all}
+.sact{display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-top:1px solid var(--line)}
+.code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
+.logbox{font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--sub);background:var(--bg);border-top:1px solid var(--line);padding:12px 22px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;border-radius:0 0 var(--r) var(--r)}
+input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font:inherit}
+@media (max-width:1100px){.set{grid-template-columns:minmax(0,1fr)}.sidx{position:static;display:flex;overflow-x:auto;scrollbar-width:none;gap:4px;margin-bottom:6px}.sidx a{white-space:nowrap;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:6px 12px;font-size:12.5px}.sidx .sv{display:none}}
+@media (max-width:640px){.srow{flex-wrap:wrap;gap:10px;padding:13px 16px}.srow .rng{width:100%}.scard>header{padding:16px 16px 12px}.kv>div{padding:12px 16px}.sact{padding:12px 16px}
+ .mixt{grid-template-columns:minmax(0,1fr) repeat(3,auto)}.mixt small{display:none}.mixt>div{padding:10px 6px 10px 0}.mixt>div:nth-child(4n){padding-right:16px}.mixt>div:nth-child(4n+1){padding-left:16px}.stp button{width:24px;height:28px}.stp span{min-width:18px}.seg button{padding:7px 8px}}
 /* medium windows */
 @media (max-width:1360px){
  .grid{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}.side .card{margin:0}
@@ -1016,8 +1058,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
   <div class="status" id="st"><span class="dot"></span>Mac · live</div>
   <button class="cta" onclick="go('build')">＋ Build combos</button>
   <div class="menu"><button onclick="menu()" aria-label="More">⋯</button><div class="dd" id="dd">
-   <a href="/app/classic">Planner settings</a><a href="/app/classic">Classic screens</a>
-   <button id="macset" onclick="admin()" style="display:none">Mac settings</button>
+   <button onclick="go('settings')">Settings</button><a href="/app/classic">Classic screens</a>
    <button onclick="location.reload()">Reload</button></div></div>
  </div>
 </header>
@@ -1038,6 +1079,7 @@ const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
  build:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
  results:'<svg viewBox="0 0 24 24"><path d="M5 19v-7M12 19V6M19 19v-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+ settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
 const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
 function toast(m,ms){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
@@ -1047,18 +1089,19 @@ function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'))
 function modal(h){$('#sheet').innerHTML=h;$('#modal').classList.add('on');}
 function closeModal(){$('#modal').classList.remove('on');}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
-function chrome(){const tabs=[['live','Live'],['build','Build'],['results','Results']];
+function chrome(){const tabs=[['live','Live'],['build','Build'],['results','Results'],['settings','Settings']];
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
- $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('')+`<button onclick="menuSheet()">${SVG.more}More</button>`;
- if(LOCAL)$('#macset').style.display='';}
+ $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
+}
 function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
  <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
 function go(v){S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
-function render(){({live:renderLive,build:renderBuild,results:renderResults}[S.view]||renderLive)();}
+function render(){({live:renderLive,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
 async function load(v,fresh){try{
  if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
  if(v==='build'){S.build=await api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':''));}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
+ if(v==='settings'){const [st,mac]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null]);S.set=st;S.mac=mac;}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
@@ -1185,6 +1228,73 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
    <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
  </aside></div>`;}
+// ---------------- settings
+const UNITS={stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
+const RANGES={stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
+function fmtv(k,v){const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
+function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
+ return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
+  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');this.nextElementSibling.textContent=fmtv('${k}',this.value)" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
+function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
+function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
+function stp(k,lo,hi){const v=S.set.values[k];return `<div class="stp"><button onclick="bump('${k}',-1,${lo},${hi})">−</button><span>${v}</span><button onclick="bump('${k}',1,${lo},${hi})">＋</button></div>`;}
+function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d));if(v===S.set.values[k])return;setv(k,v);
+ const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
+function scard(id,ic,title,sub,inner){return `<section class="scard" id="s-${id}"><header><span class="ic">${ic}</span><div><h3>${title}</h3>${sub?`<p>${sub}</p>`:''}</div></header>${inner}</section>`;}
+const PEND={};let saveT=null;
+function setv(k,v){S.set.values[k]=v;PEND[k]=v;saved('Saving…');clearTimeout(saveT);saveT=setTimeout(flush,450);
+ if(['auto_sell','auto_hedge','include_live','auto_cash','size_auto'].includes(k))renderSettings();}
+async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)delete PEND[k];
+ const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
+ if(r.ok){S.build=null;saved('Saved','ok');if(r.synced===true)toast('Saved · the Mac watcher has it now.');else if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
+ else{saved('Not saved');toast(r.msg||'Couldn\'t save. Check the connection.');}}
+function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
+function sport(lg){S.slg=lg;S.set=null;renderSettings();load('settings');}
+function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<div class="set"><div></div><div>${skel(8)}</div></div>`;return;}
+ const v=d.values,mode=d.mode,mac=S.mac;
+ const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekend cap';
+ const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
+  mode==='day'?tgl('next_day','Use tomorrow\'s games','Instead of today\'s'):
+  tgl('thursday','Thursday games')+tgl('saturday','Saturday games')+tgl('monday','Monday games')+`<div class="srow"><div class="l"><small>Sunday is always in.</small></div></div>`;
+ const tiers=(d.full?[['full','Full slate','Every game','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos',null,2,8],['middle','Middle','The core of the mix',null,2,12],['moonshot','Moonshot','Long shots, big payouts',null,2,16]]);
+ const mix=`<div class="mixt"><div class="h">Type</div><div class="h">Combos</div><div class="h">Fewest</div><div class="h">Most</div>${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
+  return `<div><b>${n}</b><small>${s}${unit?' · '+unit:' · games'}</small></div><div>${stp(t+'_count',0,10)}</div><div>${stp(b+'_min',alt?0:lo,hi)}</div><div>${stp(b+'_max',alt?0:lo,hi)}</div>`;}).join('')}</div>`;
+ const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
+ const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
+ const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
+   <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
+   <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Phone-approved update</span><b>${esc(mac.approved||'—')}</b></div></div>
+   <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
+   ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
+  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Mac controls are on the Mac itself'}</b><small>${LOCAL?'Reload in a moment.':'Open Combo Hub on the Mac for updates, the pairing code and the passcode.'}</small></div></div>`;
+ m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
+ <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
+ <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
+ ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
+   rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Fair-price cut-off','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+ ${scard('mix','🧩','Combo mix','How many of each kind to build, and how many games in each.',mix)}
+ ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
+   +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
+ ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
+   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
+   +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
+   +tgl('auto_sell','Auto cash-out at my Let it ride level','The Mac sells by itself, logged and capped')+rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
+   +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
+ ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
+   tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
+ ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here. Updates install by themselves once your phone approves them.':'',macCard)}
+ ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b>${d.keys.kalshi?'<span class="dot"></span>Connected through the Mac':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
+   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="/app/classic">Classic screens</a></div>`)}
+ </div></div>`;}
+async function macDo(a,b){if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
+ toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
+async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
+ <div class="code" id="pc">${esc(r.code||'')}</div><p class="m" style="font-size:12.5px">Hub: ${esc(r.hub||'Tailscale not signed in: the phone can only use the Mac at home.')}</p>
+ <div class="row"><button class="btn" onclick="closeModal()">Close</button><button class="btn acc" onclick="navigator.clipboard.writeText($('#pc').textContent).then(()=>toast('Copied'))">Copy</button></div>`);}
+function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other than this Mac. Your phone's Open Combo Hub link signs in by itself.</p>
+ <input class="txt" id="np" placeholder="At least 6 characters" autocomplete="new-password"><p class="m" id="perr" style="color:var(--no);min-height:18px"></p>
+ <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
+async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
 chrome();render();load(S.view);
 setInterval(()=>{if(document.hidden)return;if(S.view==='live'&&!$('#modal').classList.contains('on'))load('live');},12000);
@@ -1468,6 +1578,62 @@ def webapp_main():
                              "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
                              "edge": edge})
 
+    SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
+                "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
+                "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
+                "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
+                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
+                "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news")
+
+    def send_synced():
+        """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
+        try:
+            c = json.load(open(CONF))
+            body = json.dumps({"at": int(time.time()), "cfg": {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}},
+                              separators=(",", ":"))
+            requests.post(f"{NTFY}/{c['topic']}-cfg", timeout=8, headers={"Cache": "yes"},
+                          data=json.dumps({"body": body, "sig": sign(c["secret"], body)}).encode())
+            return True
+        except (OSError, ValueError, KeyError, requests.RequestException):
+            return False
+
+    def api_settings(lg, vals=None):
+        with alock:
+            if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
+                A.set_league(lg)
+                BUILD["lg"] = None
+            synced = None
+            if vals:
+                before = {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}
+                for k, v in vals.items():
+                    if k not in SET_KEYS or k not in A.CFG:
+                        continue
+                    cur = A.CFG[k]
+                    try:
+                        v = bool(v) if isinstance(cur, bool) else int(round(float(v))) if isinstance(cur, int) \
+                            else float(v) if isinstance(cur, float) else None
+                    except (TypeError, ValueError):
+                        continue
+                    if v is not None:
+                        A.CFG[k] = v
+                for t in ("upsets", "safer", "middle", "moonshot"):
+                    if A.CFG.get(f"{t}_min", 0) > A.CFG.get(f"{t}_max", 99):
+                        A.CFG[f"{t}_max"] = A.CFG[f"{t}_min"]
+                A.save_cfg()
+                BUILD["lg"] = None                      # the next Build uses the new settings
+                LIVE["at"] = 0
+                if before != {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}:
+                    synced = send_synced()
+            mode = "mix" if A.is_mix() else "day" if A.by_day() else "week"
+            return jsonable({"ok": True, "lg": A.LEAGUE["code"], "name": A.LG()["name"], "mode": mode,
+                             "full": bool(A.LG().get("full")), "synced": synced,
+                             "values": {k: A.CFG.get(k) for k in SET_KEYS if k in A.CFG},
+                             "keys": {"kalshi": bool(A.CFG.get("kalshi_key_id")) or bool(A.hub_conf()),
+                                      "odds": bool(A.CFG.get("odds_key"))},
+                             "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
+                             "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
+                                         for k, v in A.LEAGUES.items()]})
+
     def api_act(d):
         a, t = str(d.get("a", "")), str(d.get("t", ""))
         with alock:
@@ -1599,6 +1765,8 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/settings":
+                        out = api_settings(q.get("lg") or "")
                     else:
                         return self._send(404, "{}")
                 except Exception as err:
@@ -1616,6 +1784,14 @@ def webapp_main():
 
         def do_POST(self):
             d = self._json()
+            if self.path == "/app/api/settings":
+                try:
+                    out = api_settings(str(d.get("lg", "")), d.get("values") or {})
+                except Exception as err:
+                    import traceback
+                    traceback.print_exc()
+                    out = {"ok": False, "msg": f"Couldn't save: {type(err).__name__}: {err}"}
+                return self._send(200, json.dumps(out, default=str))
             if self.path == "/app/api/act":
                 try:
                     out = api_act(d)
@@ -1670,6 +1846,74 @@ def start_webapp():
             log("browser app stopped (code %s); restarting" % p.returncode)
             time.sleep(10)
     threading.Thread(target=keep, daemon=True, name="webapp").start()
+
+
+STARTED = time.time()
+
+
+def mac_tailscale_ip():
+    import subprocess
+    try:
+        out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for ip, b in re.findall(r"inet (100\.(\d+)\.\d+\.\d+)", out):
+        if 64 <= int(b) <= 127:
+            return ip
+    return ""
+
+
+def mac_settings(conf, web, d, tok):
+    """Combo Hub's This Mac section: status, pairing code, passcode, update. Only from the Mac itself."""
+    import base64, subprocess
+    a = str(d.get("a", ""))
+    E = WATCHER.get("E")
+    if a == "status":
+        try:
+            with open(os.path.join(HOME, "watcher.log"), encoding="utf-8", errors="replace") as fh:
+                tail = [l.rstrip()[:200] for l in fh.readlines()[-12:]]
+        except OSError:
+            tail = []
+        return {"ok": True, "watcher": WATCHER_VERSION, "engine": getattr(E, "VERSION", ""), "up": int(time.time() - STARTED),
+                "ts": mac_tailscale_ip(), "pass": conf.get("web_pass", ""), "role": conf.get("role") or "main",
+                "paused": bool(conf.get("paused")), "approved": (conf.get("approve") or {}).get("version", ""),
+                "log": tail}
+    if a == "code":
+        ip = mac_tailscale_ip()
+        out = {"topic": conf["topic"], "secret": conf["secret"]}
+        if ip:
+            out["hub"] = f"http://{ip}:{conf.get('hub_port', 8765)}"
+        return {"ok": True, "code": base64.urlsafe_b64encode(json.dumps(out).encode()).decode().rstrip("="),
+                "hub": out.get("hub", "")}
+    if a == "passcode":
+        p = str(d.get("pass", "")).strip()
+        if len(p) < 6 or len(p) > 64:
+            return {"ok": False, "msg": "Use 6 to 64 characters."}
+        conf["web_pass"] = p
+        save = getattr(E, "save_json", None)
+        if save:
+            save(CONF, conf)
+        else:
+            with open(CONF, "w") as fh:
+                json.dump(conf, fh)
+        web.sessions = {k: v for k, v in web.sessions.items() if k == tok}   # everyone else signs in again
+        return {"ok": True, "msg": "Passcode changed. Other devices sign in again with the new one."}
+    if a == "update":
+        d2 = os.path.join(HOME, "setup")
+        os.makedirs(d2, exist_ok=True)
+        r = requests.get(REPO + "watcher/install_mac.sh", params={"t": int(time.time())}, timeout=20)
+        if not r.ok:
+            return {"ok": False, "msg": "Couldn't download the update. Check this Mac's internet."}
+        path = os.path.join(d2, "install_mac.sh")
+        with open(path, "wb") as out:
+            out.write(r.content)
+        with open(os.path.join(HOME, "setup.log"), "a") as lg:
+            subprocess.Popen(["bash", path, "--auto"], stdout=lg, stderr=lg, start_new_session=True)
+        log("update started from Combo Hub")
+        return {"ok": True, "msg": "Updating. Combo Hub reconnects in about a minute."}
+    if a == "advanced":
+        return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
+    return {"ok": False, "msg": "Unknown action."}
 
 
 def open_admin():
@@ -1829,6 +2073,16 @@ def start_hub(conf, E, odds=None):
                     return self._send(403, b"")
                 ok = open_admin()
                 return self._send(200, json.dumps({"ok": ok}).encode())
+            if web and self.path == "/app/mac":             # This Mac (Settings): only from the Mac itself
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok or self.client_address[0] != "127.0.0.1" or not 0 <= n < 10_000:
+                    return self._send(403, b"")
+                try:
+                    out = mac_settings(conf, web, json.loads(self.rfile.read(n) or b"{}"), tok)
+                except Exception as err:
+                    log("Mac settings failed:", type(err).__name__, err)
+                    out = {"ok": False, "msg": f"That didn't work: {type(err).__name__}"}
+                return self._send(200, json.dumps(out).encode())
             if web and self.path.startswith("/app/"):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok or not 0 <= n < 200_000:
