@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.85"
+VERSION = "2026.11.17.86"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8956,7 +8956,7 @@ def shadow_candidates_with(book):
             pred = predict_quote(c)
         except Exception:
             pass
-        if pred and pred["n"] >= 40 and pred["p_clear"] < 0.03:
+        if pred and pred["n"] >= 40 and pred["p_clear"] <= 0.05:
             continue                              # learned: Kalshi won't price this near fair; save the quote
         out.append(((pred["pct"] if pred else None) or est_offer(c)[1] or 0.8 * c["kalshi"] / c["fair"], c))
     out.sort(key=lambda x: -x[0])
@@ -9438,7 +9438,8 @@ def quote_model(days=60):
     for r, x in zip(rows, r_all):
         pred = mu + sum(eff.get(k, 0) for k in (("n", _nbucket(r["n"])), ("h", _hbucket(r["hours"])), ("s", r["sport"] or "?")))
         resid.append(x - pred)
-    sd_r = max(statistics.pstdev(resid) if len(resid) > 2 else sd, 0.03)
+    # honest spread: never under 8%, and wider while there are few quotes to learn from
+    sd_r = max(statistics.pstdev(resid) if len(resid) > 2 else sd, 0.08) * math.sqrt(1 + 12 / len(rows))
     return {"mu": mu, "eff": {f"{a}:{b}": round(v, 4) for (a, b), v in eff.items()}, "sd": sd_r, "n": len(rows),
             "at": time.time()}
 
@@ -9463,7 +9464,7 @@ def predict_quote(c, model=None):
     pct = base * math.exp(lr)
     cut = CFG["accept_pct"] / 100
     z = (math.log(cut / base) - lr) / m["sd"]
-    p_clear = 0.5 * math.erfc(z / math.sqrt(2))
+    p_clear = min(0.95, max(0.05, 0.5 * math.erfc(z / math.sqrt(2))))   # a model is never certain
     return {"pct": round(pct, 4), "p_clear": round(p_clear, 3), "n": m["n"]}
 
 
