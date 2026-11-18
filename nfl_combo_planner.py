@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.90"
+VERSION = "2026.11.17.91"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8593,8 +8593,9 @@ def line_fair(code, kind, line, team_is_home, g):
     return None
 
 
-def line_candidates(code):
-    """Spread and total markets where Kalshi's price is clearly below the model's fair chance."""
+def line_candidates(code, everything=False):
+    """Spread and total markets where Kalshi's price is clearly below the model's fair chance
+    (everything=True: all markets near the sportsbook line, for the Build board)."""
     mk, lines = line_markets(code), espn_lines(code)
     if not mk or not lines:
         return []
@@ -8636,11 +8637,11 @@ def line_candidates(code):
         if fair is None:
             continue
         edge = fair - p - single_fee(p)
-        if edge >= LINE_MIN_EDGE and edge / p >= 0.06:
+        if everything or (edge >= LINE_MIN_EDGE and edge / p >= 0.06):
             out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
-                        "start": g.get("start")})
+                        "start": g.get("start"), "game": f"{g['away'].split()[-1]} at {g['home'].split()[-1]}"})
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
 
 

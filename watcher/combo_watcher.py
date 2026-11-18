@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.90"
+WATCHER_VERSION = "2026.11.17.91"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1387,6 +1387,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .sgt{display:grid;grid-template-columns:minmax(0,1fr) 46px 54px 66px;gap:7px 8px;font-size:12.5px;align-items:center}
 .sgt>span{text-align:right}.sgt>span:nth-child(-n+4){color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .sgt b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.25}.sgt b small{font-weight:500}
+.lines .lhd{padding:10px 16px 6px;font-weight:700;font-size:13px;border-top:1px solid var(--line)}
+.lrow2{display:grid;grid-template-columns:minmax(0,1fr) 48px 48px 78px;gap:8px;align-items:center;padding:6px 16px;font-size:13px}
+.lrow2 .btn{padding:5px 8px;font-size:12px}
 .daybar{margin:-2px 0 12px;width:max-content;max-width:100%}
 .qline{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:9px 12px;font-size:12.5px;background:var(--panel2)}.qline span{color:var(--sub)}
 .qline.good{background:var(--yesbg)}.qline.good b{color:var(--yes)}.qline.bad{background:var(--nobg)}.qline.bad b{color:var(--no)}
@@ -1667,6 +1670,7 @@ function renderBuild(){const d=S.build;const m=$('#main');
   <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
+  ${linesBlock(d)}
   <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
  </div><aside>${slip(d)}${singlesCard(d)}</aside></div>`;}
@@ -1824,6 +1828,15 @@ function dayBar(d){const v=d.days;if(!v)return '';const b=(on,lab,js)=>`<button 
 async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild();
  const r=await api('/app/api/settings',{lg:S.lg,values:vals}).catch(()=>({ok:false}));if(!r.ok){toast('Couldn\'t change the days.');return;}
  S.build=null;renderBuild();load('build',true);}
+function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games={};ls.forEach(x=>{(games[x.game]=games[x.game]||[]).push(x);});
+ return `<h2>Spreads &amp; totals <span class="n">${ls.length}</span><span class="r m" style="font-size:12px">Kalshi price · model chance from the sportsbook line</span></h2>
+  <div class="tbl lines"><div class="lrow2 m" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:10px"><span></span><span class="num">Kalshi</span><span class="num">Chance</span><span class="num" style="text-align:center">Edge</span></div>${Object.entries(games).map(([g,xs])=>`<div class="lhd">${esc(g)} <span class="m">· book ${xs.find(x=>x.kind==='spread')?'spread '+xs.find(x=>x.kind==='spread').book_line:''}${xs.find(x=>x.kind==='total')?' · total '+xs.find(x=>x.kind==='total').book_line:''}</span></div>
+   ${xs.sort((a,b)=>a.kind.localeCompare(b.kind)||a.line-b.line).map(x=>`<div class="lrow2"><span>${x.kind==='spread'?'📏':'➕'} ${esc(x.pick.replace(/ \(.*\)$/,''))}</span><span class="num">${Math.round(x.p*100)}¢</span><span class="num m">${pct(x.fair)}</span>
+    <button class="btn ${x.edge>=0.04?'acc':'ghost'}" onclick="lineFromBoard('${x.ticker}',this)">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</button></div>`).join('')}`).join('')}</div>
+  <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`;}
+async function lineFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'lineidea',t}).catch(()=>({ok:false}));
+ if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
+ const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -2263,6 +2276,11 @@ def webapp_main():
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
                 BUILD.update(lg=lg, note=note, at=time.time())
+                try:                                    # spreads and totals, priced with the score model
+                    BUILD["lines"] = [x for x in A.line_candidates(lg, everything=True)][:40]
+                except Exception as err:
+                    print("lines:", err, flush=True)
+                    BUILD["lines"] = []
             games = A.CTX.get("all_games") or {}
             board = []
             for e, sides in games.items():
@@ -2276,7 +2294,7 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend() if A.can_trade() else 0,
                              "board": board, "combos": [combo_view(i, c) for i, c in enumerate(A.CTX.get("combos") or [], 1)],
-                             "singles": singles_view(games),
+                             "singles": singles_view(games), "lines": BUILD.get("lines") or [],
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
                                       "windows": A.MIX_WINDOWS},
@@ -2572,6 +2590,19 @@ def webapp_main():
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                                  "clears": r.get("ok")})
+            if a == "lineidea":                         # a spread or total from the Build board, as a buy idea
+                x = next((x for x in BUILD.get("lines") or [] if x["ticker"] == str(d.get("t", ""))), None)
+                if not x:
+                    return {"ok": False, "msg": "That line isn't on the board any more."}
+                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
+                stake = A.edge_stake(1 + (pct - 1) * 0.7, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
+                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
+                sid = A.store_suggestion({"legs": [dict(x, event=x.get("event") or "")], "fair": stake / x["fair"]},
+                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
+                if sid:
+                    A.store_x("update suggestions set note=? where id=?",
+                              (f"Priced from the sportsbook {x['kind']} of {x['book_line']:g} with a score model", sid))
+                return {"ok": bool(sid), "id": sid}
             if a == "singleidea":                       # a single game from the Build board, as a buy idea
                 tk = str(d.get("t", ""))
                 x = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
