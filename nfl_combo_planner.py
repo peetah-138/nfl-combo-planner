@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.81"
+VERSION = "2026.11.17.82"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4134,7 +4134,7 @@ def plan_cashout():
         for t in sorted(offers, key=lambda x: -MINE["hold"][x]["hold"]):
             h = MINE["hold"][t]
             if not h.get("won_some"):
-                continue        # nothing won yet: you bought it for the upside, so hold it
+                continue        # nothing earned yet (no pick won, no big in-game gain): hold for the upside
             bar = wait_threshold(t) * (0.97 if t in MINE.get("advised", set()) else 1.0)
             if acts_price(t) * h["pays"] < bar:
                 continue        # waiting at least one more game is worth more than this offer
@@ -5642,6 +5642,9 @@ def redraw_mine():
     present(page, MineKeeper())
 
 
+PROGRESS_MULT = 1.75    # games under way and the chance up 75%+ on the price you paid counts as earned
+
+
 def before_risky_game():
     """Live combos whose next undecided game starts within 20 minutes, after at least one
     pick has already won: the moment to look at a cash-out. {ticker: (game label, start)}"""
@@ -5914,13 +5917,19 @@ def mine_page(live=False):
         fair_pay = a["cost"] / math.prod(pre) if not missing and pre else None
         left = sum(1 for *_, r in inf if not r)
         if st == "pending":
+            ll = legs_left_of(a["legs"], inf, side_of)
+            paid = a["cost"] / a["pays"] if a["pays"] else 1.0
+            # "Earned" = a pick has won, or (for games played at the same time, where nothing is won
+            # until the end) the games are on and the combo's chance is well above what you paid.
+            progressed = any(lv for _, lv, _ in ll) and p >= PROGRESS_MULT * paid
             MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
-                                         "won_some": any(r == "yes" for *_, r in inf),
+                                         "won_some": any(r == "yes" for *_, r in inf) or progressed,
+                                         "progressed": progressed and not any(r == "yes" for *_, r in inf),
                                          "need": [((l.get("side", "yes"), l["ticker"]), nm)
                                                   for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
                                          "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"],
-                                         "legs_left": legs_left_of(a["legs"], inf, side_of)}
+                                         "legs_left": ll}
         if st == "cashed":
             gain = a["back"] - a["cost"]
             status = f"<span class='tag {'good' if gain >= 0 else 'bad'}'>Cashed out</span>"

@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.81"
+WATCHER_VERSION = "2026.11.17.82"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -36,6 +36,9 @@ def log(*a):
 def load_conf():
     with open(CONF, encoding="utf-8") as f:
         return json.load(f)
+
+
+PUSHLOG = {"at": 0, "ok": None, "title": "", "msg": "", "code": 0}
 
 
 def hub_base(conf):
@@ -57,9 +60,12 @@ def push(conf, msg, title="Combo planner", priority="default", topic=None, pause
     if pause_button:
         headers["Actions"] = f"http, Pause auto cash-out, {NTFY}/{conf['topic']}-pause, method=POST, body=pause, clear=true"
     try:
-        requests.post(f"{NTFY}/{topic or conf['topic']}", data=msg.encode("utf-8"), timeout=10, headers=headers)
+        r = requests.post(f"{NTFY}/{topic or conf['topic']}", data=msg.encode("utf-8"), timeout=10, headers=headers)
+        if not topic:
+            PUSHLOG.update(at=time.time(), ok=r.ok, title=title, msg=msg[:120], code=r.status_code)
     except requests.RequestException as err:
         log("push failed:", err)
+        PUSHLOG.update(at=time.time(), ok=False, title=title, msg=f"failed: {err}"[:120], code=0)
 
 
 def sign(secret, body):
@@ -1876,6 +1882,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
    <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
    <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
+   <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Mac controls are on the Mac itself'}</b><small>${LOCAL?'Reload in a moment.':'Open Combo Hub on the Mac for updates, the pairing code and the passcode.'}</small></div></div>`;
@@ -2715,7 +2722,8 @@ def mac_settings(conf, web, d, tok):
                 "ts": mac_tailscale_ip(), "pass": conf.get("web_pass", ""), "role": conf.get("role") or "main",
                 "paused": bool(conf.get("paused")), "approved": (conf.get("approve") or {}).get("version", ""),
                 "https": conf.get("https") or {}, "push_devices": len(PUSH.subs()), "push_ok": PUSH.ok(),
-                "auto_update": auto_updates(conf),
+                "auto_update": auto_updates(conf), "last_push": dict(PUSHLOG),
+                "quiet": not (7 <= time.localtime().tm_hour < 22),
                 "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
                                         "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
                 "log": tail}
@@ -2754,6 +2762,13 @@ def mac_settings(conf, web, d, tok):
         return {"ok": True, "msg": "Updating. Combo Hub reconnects in about a minute."}
     if a == "advanced":
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
+    if a == "testpush":
+        push(conf, "✅ Test from your Mac. If you see this, ntfy alerts are working.", title="Combo Hub test", priority="high",
+             click="/app")
+        sent = PUSH.send("Combo Hub test", "If you see this, Combo Hub notifications are working.", tag="test")
+        return {"ok": True, "msg": f"Sent a test to ntfy ({'ok' if PUSHLOG.get('ok') else 'failed'})"
+                                   + (f" and to {sent} Combo Hub device{'s' * (sent != 1)}." if sent else
+                                      ". No devices are signed up for Combo Hub notifications yet.")}
     if a == "autoupdate":
         conf["auto_update"] = bool(d.get("on"))
         (E.save_json if E else (lambda p, c: json.dump(c, open(p, "w"))))(CONF, conf)
