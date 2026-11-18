@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.79"
+VERSION = "2026.11.17.80"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -57,6 +57,7 @@ CFG = {
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
     "mix_window": 0,
     "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
+    "killer_mode": "watch",  # Mac buys killer deals by itself: "off", "watch" (only records), "on"
     "hub_ui": True,       # with the Mac reachable, open Combo Hub's screens inside this app
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
@@ -230,7 +231,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "hub_ui")
 
 
 def next_league():
@@ -4995,7 +4996,8 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news")
+                  "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
+                  "killer_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -8106,6 +8108,14 @@ def shadow_pass(book_snap, log=print, alert=None):
         except Exception as err:                  # a quote that fails is just skipped
             log("shadow quote failed:", type(err).__name__, err)
             continue
+        if (not r.get("error") and r.get("pct") and r["pct"] >= KILLER["combo_pct"]
+                and len(c["legs"]) <= KILLER["combo_legs"] and CFG.get("killer_mode", "watch") != "off"):
+            ok, why_not = killer_check(c["legs"], book_snap)
+            if ok:                                         # a killer combo: take this quote while it's live
+                killer_act("combo", c["legs"], r["stake"], r["pays"], r["pct"],
+                           lambda: _killer_combo(i), alert, log)
+            else:
+                log("near-killer combo held back:", "; ".join(why_not))
         o = CTX["offers"].pop(i, None)
         if o:
             try:
@@ -8346,6 +8356,120 @@ def game_context(code, *teams):
     return out[:3]
 
 
+# ---- killer deals: bought by the Mac on its own, only when every check passes (see KILLER)
+KILLER = {"single_edge": 0.08, "single_rel": 0.15, "combo_pct": 1.15, "combo_legs": 4, "per_buy": 10.0,
+          "per_day": 2, "day_dollars": 20.0, "agree": 0.02, "steady_mins": 30, "news_hours": 3}
+
+
+def killer_today():
+    start = time.mktime(dt.date.today().timetuple())
+    rows = store_rows("select stake from killer where mode='on' and status='bought' and ts >= ?", (start,))
+    return len(rows), sum(r["stake"] for r in rows)
+
+
+def sources_agree(snap, pick, fair):
+    """At least two odds sources within 2 points of each other and of the fair chance we use."""
+    parts = (snap or {}).get("parts") or {}
+    p = parts.get(pick)
+    if p is None:
+        last = (pick or "").split()[-1:]
+        p = next((v for k, v in parts.items() if last and k.split()[-1:] == last), None)
+    vals = [v for v in (p or {}).values() if isinstance(v, (int, float))]
+    close = [v for v in vals if abs(v - fair) <= KILLER["agree"]]
+    return len(close) >= 2, len(vals)
+
+
+def steady(ticker, fair, mins=None):
+    """Seen at about this fair chance for the last half hour (not a flash or a line still moving)."""
+    mins = mins or KILLER["steady_mins"]
+    rows = store_rows("select ts, fair from fairs where ticker=? and ts > ? order by ts",
+                      (ticker, time.time() - mins * 60 * 1.5))
+    if not rows or time.time() - rows[0]["ts"] < mins * 60 * 0.66:
+        return False                                  # not watched long enough yet
+    return max(abs(r["fair"] - fair) for r in rows) <= KILLER["agree"]
+
+
+def killer_check(legs, snap, live_ok=()):
+    """(ok, reasons-not) for picks a killer deal would rest on."""
+    why = []
+    for l in legs:
+        if started(l):
+            why.append(f"{l['pick']}: game in progress")
+            continue
+        ok, n = sources_agree(snap, l["pick"], l["fair"])
+        if not ok:
+            why.append(f"{l['pick']}: needs two odds sources agreeing ({n} found)")
+        if not steady(l["ticker"], l["fair"]):
+            why.append(f"{l['pick']}: line not steady for {KILLER['steady_mins']} minutes yet")
+        d = book_depth(l["ticker"])
+        if not d or d.get("thin"):
+            why.append(f"{l['pick']}: thin order book")
+    try:
+        _, fresh = injury_note(LEAGUE["code"], *[l["pick"] for l in legs], hours=KILLER["news_hours"])
+        if fresh:
+            why.append("fresh injury news")
+    except Exception:
+        pass
+    return not why, why
+
+
+def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
+    """Record a killer deal; in 'on' mode (and inside the caps) buy it with `buy()`. Returns a line."""
+    mode = CFG.get("killer_mode", "watch")
+    if mode == "off":
+        return None
+    picks = " + ".join(l["pick"] for l in legs)
+    key = json.dumps(sorted(l["ticker"] for l in legs))
+    if store_rows("select 1 from killer where legs=? and ts > ?", (key, time.time() - 6 * 3600)):
+        return None                                   # one per deal
+    status, why = "watched", ""
+    if mode == "on":
+        n, dollars = killer_today()
+        spent = week_spend() if can_trade() else 0
+        if n >= KILLER["per_day"] or dollars + stake > KILLER["day_dollars"] + 0.01:
+            status, why = "skipped", "daily killer-deal cap reached"
+        elif spent + stake > CFG["budget"] + 0.01:
+            status, why = "skipped", "over your spending cap"
+        else:
+            ok, msg = buy()
+            status, why = ("bought", msg) if ok else ("failed", msg)
+    store_x("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) values(?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), kind, key, picks, mode, status, stake, pays, round(pct, 4), why))
+    if alert:
+        if status == "bought":
+            _alert(alert, f"🔥 Auto-bought a killer deal: {picks} for {money(stake)} to win {money(pays)} "
+                          f"({pct:.0%} of fair). {why}", "cash", "/app")
+        elif status == "watched":
+            _alert(alert, f"🔥 Killer deal (watch mode, nothing bought): {picks} at {pct:.0%} of fair, "
+                          f"{money(stake)} to win {money(pays)}. Tap to buy it yourself.", "value", "/app")
+    log(f"killer deal {status}: {picks} at {pct:.0%} {why}")
+    return status
+
+
+def killer_resolve():
+    """Settle killer-deal records (watched ones too) so Results can show how they did."""
+    rows = store_rows("select rowid, legs from killer where outcome is null and ts < ?", (time.time() - 2 * 3600,))
+    if not rows:
+        return 0
+    res = fetch_results({t for r in rows for t in json.loads(r["legs"])})
+    n = 0
+    for r in rows:
+        rs = [res.get(t) for t in json.loads(r["legs"])]
+        out = "lost" if "no" in rs else "won" if all(x == "yes" for x in rs) else None
+        if out:
+            store_x("update killer set outcome=? where rowid=?", (out, r["rowid"]))
+            n += 1
+    return n
+
+
+def killer_summary():
+    rows = store_rows("select * from killer order by ts desc limit 60")
+    done = [r for r in rows if r["outcome"] and r["status"] in ("watched", "bought")]
+    pl = sum((r["pays"] if r["outcome"] == "won" else 0) - r["stake"] for r in done)
+    return {"mode": CFG.get("killer_mode", "watch"), "rows": rows[:12], "settled": len(done), "pl": round(pl, 2),
+            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER}
+
+
 def single_pass(book_snap, alert=None, log=print):
     """Look for single-game value in the league on screen; each one becomes a buy idea (no quotes needed)."""
     if not STORE["db"]:
@@ -8359,7 +8483,10 @@ def single_pass(book_snap, alert=None, log=print):
         skipped, live = screen_live(games, bf)
         live_ok = set(live) - set(skipped)
     did, now = [], time.time()
+    for x in single_candidates(games, live_ok)[:8]:              # remember fair chances for the steadiness check
+        store_x("insert into fairs values(?,?,?,?)", (now, x["ticker"], x["fair"], x["p"]))
     for x in single_candidates(games, live_ok)[:4]:
+        told = False
         d = book_depth(x["ticker"])
         if d and d["thin"]:
             continue                                  # a thin book: the price isn't real
@@ -8377,6 +8504,22 @@ def single_pass(book_snap, alert=None, log=print):
             continue                                  # already offered, and not meaningfully better
         stake = edge_stake(pct, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
         n = max(1, int(stake / (x["p"] + single_fee(x["p"]))))
+        if x["edge"] >= KILLER["single_edge"] and x["edge"] / x["p"] >= KILLER["single_rel"] and \
+                CFG.get("killer_mode", "watch") != "off":
+            ok, why_not = killer_check([x], book_snap)
+            if ok:
+                d = book_depth(x["ticker"], max_age=0) or {}
+                ask = d.get("ask") or x["p"]
+                kn = max(1, int(min(stake, KILLER["per_buy"]) / (ask + single_fee(ask))))
+                if (d.get("ask_size") or 0) >= kn and fair_ok(x, ask):
+                    st = killer_act("single", [x], round(kn * (ask + single_fee(ask)), 2), float(kn),
+                                    x["fair"] / (ask + single_fee(ask)),
+                                    lambda: _killer_single(x["ticker"], kn, ask), alert, log)
+                    if st == "bought":
+                        continue                       # bought, and its own alert already went out
+                    told = st == "watched"
+            else:
+                log(f"near-killer {x['pick']} held back: {'; '.join(why_not)}")
         c = {"legs": [x], "fair": stake / x["fair"]}
         sid = store_suggestion(c, {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
         live = " (game in progress)" if started(x) else ""
@@ -8386,10 +8529,23 @@ def single_pass(book_snap, alert=None, log=print):
         msg = (f"🎯 Single: {x['pick']}{live} at {x['p'] * 100:.0f}¢ on Kalshi; the sharp books say "
                f"{x['fair']:.0%}. About {x['edge'] * 100:.1f}¢ a contract in your favour after the fee."
                + (f" Injuries: {'; '.join(inj[:2])}." if inj else ""))
-        if alert:
+        if alert and not told:
             _alert(alert, msg, "value", f"/app#s={sid}" if sid else "/app")
         did.append(f"single idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
+
+
+def fair_ok(x, ask):
+    return x["fair"] - ask - single_fee(ask) >= KILLER["single_edge"] * 0.9
+
+
+def _killer_single(ticker, n, price):
+    filled, err = buy_single(ticker, n, price)
+    if err:
+        return False, err
+    if filled <= 0:
+        return False, "nobody was selling at that price any more"
+    return True, f"Bought {filled:g} at {price * 100:.0f}¢."
 
 
 def buy_single(ticker, n, price):
@@ -8454,6 +8610,15 @@ def live_suggestions(max_age=3600, limit=6):
         seen.add(r["legs"])
         out.append(dict(r, legs=json.loads(r["legs"]), sport=LEAGUES.get(r["lg"], {}).get("short", r["lg"])))
     return out[:limit]
+
+
+def _killer_combo(i):
+    if i not in CTX["offers"]:
+        return False, "the quote expired"
+    r = accept_offer(i)
+    if r.get("error"):
+        return False, r["error"]
+    return True, "Bought at Kalshi's quote."
 
 
 def shadow_candidates_with(book):
@@ -8741,6 +8906,10 @@ create table if not exists bets(combo text primary key, first_seen real, cost re
   sports text, status text, back real, settled real, p_first real);
 create table if not exists events(ts real, kind text, combo text, text text);
 create table if not exists plays(ts real, ticker text, me int, opp int, detail text);
+create table if not exists fairs(ts real, ticker text, fair real, price real);
+create index if not exists fairs_t on fairs(ticker, ts);
+create table if not exists killer(ts real, kind text, legs text, picks text, mode text, status text, stake real,
+  pays real, pct real, why text, outcome text);
 create index if not exists plays_t on plays(ticker, ts);
 create table if not exists suggestions(id text primary key, ts real, lg text, legs text, picks text, n int,
   pct real, pays real, stake real, fair real, kick real);

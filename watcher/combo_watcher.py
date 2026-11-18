@@ -21,11 +21,12 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.79"
+WATCHER_VERSION = "2026.11.17.80"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-          "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news")
+          "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
+          "killer_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
 
 
 def log(*a):
@@ -94,11 +95,14 @@ def fetch_settings(conf, E):
                 conf["update_now"] = True              # your phone just updated: follow it right away
             conf["approve"] = data["approve"]          # the exact update files your phone installed
         if conf.get("paused"):
-            if data.get("at", 0) > conf["paused"] and data.get("cfg", {}).get("auto_sell"):
+            if data.get("at", 0) > conf["paused"] and (data.get("cfg", {}).get("auto_sell") or
+                                                        data.get("cfg", {}).get("killer_mode") == "on"):
                 conf.pop("paused")                     # you saved Settings with Auto cash-out on: resume
                 push(conf, "▶️ Auto cash-out resumed on the Pi.", priority="low")
             else:
                 E.CFG["auto_sell"] = False
+                if E.CFG.get("killer_mode") == "on":
+                    E.CFG["killer_mode"] = "watch"
         if isinstance(data.get("discount"), dict):          # what Kalshi buyers really pay, learned on the phone
             E.save_json(E.DISCOUNT_FILE, data["discount"])
         conf["settings_at"] = data["at"]
@@ -144,10 +148,13 @@ def pause(conf, E):
         return
     conf["paused"] = int(time.time())
     E.CFG["auto_sell"] = False
+    if E.CFG.get("killer_mode") == "on":
+        E.CFG["killer_mode"] = "watch"             # pausing also stops killer-deal buying
+        E.save_json(E.SAVED, E.CFG)
     E.save_json(CONF, conf)
     log("auto cash-out paused from a notification")
-    push(conf, "⏸ Auto cash-out paused on the Pi. Alerts continue. To resume, open the planner and save "
-               "Settings with Auto cash-out on.", priority="high")
+    push(conf, "⏸ Automatic selling and killer-deal buying are paused. Alerts continue. To resume, turn them back "
+               "on in Combo Hub's Settings.", priority="high")
 
 
 def mac_alive(conf):
@@ -373,6 +380,11 @@ class HubOdds:
         if self.H is None:
             self.H = load_engine()
             self.H.present = self.H.loading = lambda *a, **k: None
+            try:                                    # the shadow, buy ideas and killer deals write history too
+                self.H.store_open(os.path.join(HOME, "combo_history.db"))
+            except Exception as err:
+                log("history off for the odds engine:", err)
+            self.H.console_note = lambda msg: log(msg)
         return self.H
 
     @staticmethod
@@ -784,6 +796,7 @@ def history_loop(E, every=900):
     n = 0
     while True:
         try:
+            E.killer_resolve()
             got = E.resolve_quotes()
             if got:
                 log(f"history: {got} quotes settled")
@@ -1728,6 +1741,16 @@ function httpsRow(mac){const h=mac.https||{};
  if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
  if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>Tailscale needs you to allow https for your network once. Open the link, approve, then tap Check.</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
  return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac.':h.state?'Not on yet ('+esc(h.state)+').':'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
+function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
+ const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
+ return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
+  <div class="seg">${['off','watch','on'].map(m=>`<button class="${k.mode===m?'on':''}" onclick="killerMode('${m}')">${M[m]}</button>`).join('')}</div></div>
+  <div class="srow" style="display:block"><div class="m" style="font-size:12.5px;line-height:1.6">
+   Single game: ${Math.round((r.single_edge||.08)*100)}¢+ a contract and ${Math.round((r.single_rel||.15)*100)}%+ under fair, after the fee · Combo: Kalshi quote ${Math.round((r.combo_pct||1.15)*100)}%+ of fair, ${r.combo_legs||4} picks or fewer ·
+   two odds sources agree within ${Math.round((r.agree||.02)*100)} points · line steady ${r.steady_mins||30} minutes · no injury news in ${r.news_hours||3} hours · enough for sale on Kalshi · games not started · up to ${money(r.per_buy||10)} each.</div>
+   ${k.settled?`<div class="mini" style="margin-top:6px">Record so far<b class="${k.pl>=0?'up':'down'}">${smoney(k.pl)} on ${money(k.staked)} (${k.settled})</b></div>`:''}${rows?`<div style="margin-top:6px">${rows}</div>`:''}</div>`;}
+function killerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac buy killer deals?</h3><p>Only deals that pass every check, up to 2 a day and $20 a day, inside your cap. Every buy sends an alert with a Pause button.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();killerMode('on',true)">Turn on</button></div>`);return;}
+ S.set.killer.mode=m;setv('killer_mode',m);renderSettings();toast(m==='on'?'Killer deals: the Mac buys them now. Pause from any alert.':m==='watch'?'Killer deals: watch only.':'Killer deals off.',5000);}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -1842,7 +1865,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const tiers=(d.full?[['full','Full slate','Every game','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos',null,2,8],['middle','Middle','The core of the mix',null,2,12],['moonshot','Moonshot','Long shots, big payouts',null,2,16]]);
  const mix=`<div class="mixt"><div class="h">Type</div><div class="h">Combos</div><div class="h">Fewest</div><div class="h">Most</div>${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
   return `<div><b>${n}</b><small>${s}${unit?' · '+unit:' · games'}</small></div><div>${stp(t+'_count',0,10)}</div><div>${stp(b+'_min',alt?0:lo,hi)}</div><div>${stp(b+'_max',alt?0:lo,hi)}</div>`;}).join('')}</div>`;
- const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
+ const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
@@ -1860,6 +1883,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${scard('mix','🧩','Combo mix','How many of each kind to build, and how many games in each.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
+ ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
  ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
    rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
    +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
@@ -2194,7 +2218,8 @@ def webapp_main():
                              "shadow": (shadow or {}).get("summary"), "accuracy": (shadow or {}).get("accuracy"),
                              "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
                              "edge": edge, "backtest": A.backtest() if A.STORE.get("db") else None,
-                             "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done)})
+                             "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
+                             "killer": A.killer_summary() if A.STORE.get("db") else None})
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
@@ -2305,7 +2330,7 @@ def webapp_main():
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
-                "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news")
+                "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -2331,6 +2356,10 @@ def webapp_main():
                     if k not in SET_KEYS or k not in A.CFG:
                         continue
                     cur = A.CFG[k]
+                    if k == "killer_mode":
+                        if v in ("off", "watch", "on"):
+                            A.CFG[k] = v
+                        continue
                     try:
                         v = bool(v) if isinstance(cur, bool) else int(round(float(v))) if isinstance(cur, int) \
                             else float(v) if isinstance(cur, float) else None
@@ -2353,6 +2382,7 @@ def webapp_main():
                              "keys": {"kalshi": bool(A.CFG.get("kalshi_key_id")) or bool(A.hub_conf()),
                                       "odds": bool(A.CFG.get("odds_key"))},
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
+                             "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -3076,6 +3106,9 @@ def main():
     E.CFG["auto_cash"] = False
     if conf.get("paused"):
         E.CFG["auto_sell"] = False
+        if E.CFG.get("killer_mode") == "on":
+            E.CFG["killer_mode"] = "watch"
+            E.save_json(E.SAVED, E.CFG)
     if not E.can_trade():
         push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the watcher.",
              priority="high")
@@ -3154,6 +3187,7 @@ def main():
                     log("auto-sell placed or moved:", done)
             if backup:
                 E.CFG["auto_sell"] = False
+                E.CFG["killer_mode"] = "off"
                 if t0 - last.get("mac", 0) > 60:
                     last["mac"] = t0
                     quiet = not mac_alive(conf)
