@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.78"
+VERSION = "2026.11.17.79"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8211,6 +8211,205 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=()):
     return out
 
 
+# ---- single-game ideas: no combo maker, just Kalshi's price plus its fee
+SINGLE_MIN_EDGE = 0.025           # at least 2.5 cents a contract better than fair, after the fee
+
+
+def single_fee(p):
+    return FEE_RATE * p * (1 - p)
+
+
+def opp_of(games, x):
+    return next((y["pick"] for y in games.get(x.get("event"), []) if y["ticker"] != x["ticker"] and not y.get("tie")), "")
+
+
+def single_candidates(games, live_ok=(), min_fair=0.2):
+    """Teams whose Kalshi price (the ask) is clearly below the sharp books' fair chance, after the fee."""
+    out = []
+    for e, sides in games.items():
+        for x in sides:
+            if x.get("tie") or not x.get("fair") or not x.get("p") or x["fair"] < min_fair or x["p"] >= 0.97:
+                continue
+            if started(x) and e not in live_ok:
+                continue
+            if x.get("src") is None and not x.get("live"):
+                continue
+            edge = x["fair"] - x["p"] - single_fee(x["p"])
+            if edge >= SINGLE_MIN_EDGE and edge / x["p"] >= 0.04:
+                out.append(dict(x, edge=round(edge, 4)))
+    return sorted(out, key=lambda x: -x["edge"] / x["p"])
+
+
+INJ = {}
+
+
+def league_injuries(code, max_age=1800):
+    """ESPN's injury report for a league: {team name (lower): [(player, position, status, iso date, note)]}.
+    Cached half an hour. Empty when ESPN has no report for the sport."""
+    path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn")
+    if not path:
+        return {}
+    got = INJ.get(code)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    out = {}
+    try:
+        r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{path}/injuries", timeout=12)
+        data = r.json() if r.ok else {}
+        for team in data.get("injuries") or []:
+            name = ((team.get("team") or {}).get("displayName") or team.get("displayName") or "").lower()
+            rows = []
+            for it in team.get("injuries") or []:
+                ath = it.get("athlete") or {}
+                rows.append((ath.get("displayName") or "", (ath.get("position") or {}).get("abbreviation") or "",
+                             it.get("status") or (it.get("type") or {}).get("description") or "",
+                             it.get("date") or "", (it.get("shortComment") or "")[:140]))
+            if name:
+                out[name] = rows
+    except (requests.RequestException, ValueError, AttributeError):
+        out = {}
+    INJ[code] = (time.time(), out)
+    return out
+
+
+def injury_note(code, *teams, hours=48):
+    """The injuries worth knowing for these teams: Out or Doubtful, newest first (short text), and
+    whether any is fresh (reported in the last 3 hours, when prices may still be catching up)."""
+    rep_ = league_injuries(code)
+    lines, fresh = [], False
+    now = dt.datetime.now(dt.timezone.utc)
+    for t in teams:
+        tl = (t or "").lower()
+        rows = rep_.get(tl) or next((v for k, v in rep_.items() if tl and (tl in k or k.split()[-1] == tl.split()[-1])), [])
+        for name, pos, status, when, note in rows:
+            st = status.lower()
+            if not any(w in st for w in ("out", "doubtful", "injured reserve", "suspension")):
+                continue
+            try:
+                age = (now - dt.datetime.fromisoformat(when.replace("Z", "+00:00"))).total_seconds() / 3600
+            except ValueError:
+                age = 99
+            if age > hours and "out" not in st:
+                continue
+            fresh = fresh or age < 3
+            lines.append((age, f"{t.split()[-1] if t else ''}: {name} ({pos}) {status}"))
+    lines.sort()
+    return [x for _, x in lines[:4]], fresh
+
+
+CTXNOTE = {}
+
+
+def _espn_board(code, day, max_age=1800):
+    path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn")
+    if not path:
+        return []
+    k = (code, day)
+    got = CTXNOTE.get(k)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    try:
+        q = dict((LEAGUES.get(code) or {}).get("espn_q") or {}, dates=day)
+        r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard", params=q, timeout=12)
+        evs = (r.json() if r.ok else {}).get("events") or []
+    except (requests.RequestException, ValueError):
+        evs = []
+    CTXNOTE[k] = (time.time(), evs)
+    return evs
+
+
+def game_context(code, *teams):
+    """Short context for a card: back-to-backs (NBA, NHL) and outdoor weather (football), from ESPN."""
+    out = []
+    names = [t.lower() for t in teams if t]
+    if not names:
+        return out
+    today = dt.date.today()
+    try:
+        if code in ("nba", "nhl", "ncaamb", "ncaawb"):
+            played = set()
+            for ev in _espn_board(code, (today - dt.timedelta(days=1)).strftime("%Y%m%d"), max_age=6 * 3600):
+                for c in ((ev.get("competitions") or [{}])[0].get("competitors") or []):
+                    played.add(((c.get("team") or {}).get("displayName") or "").lower())
+            out += [f"{t.split()[-1].title()} played yesterday (back-to-back)" for t in names if t in played]
+        if code in ("nfl", "ncaaf"):
+            for ev in _espn_board(code, today.strftime("%Y%m%d")):
+                comp = (ev.get("competitions") or [{}])[0]
+                teams_in = {((c.get("team") or {}).get("displayName") or "").lower() for c in comp.get("competitors") or []}
+                if not teams_in & set(names) or (comp.get("venue") or {}).get("indoor"):
+                    continue
+                w = ev.get("weather") or comp.get("weather") or {}
+                if w:
+                    out.append(f"Outdoors: {w.get('temperature', '')}°F, {w.get('displayValue', '')}")
+    except Exception:
+        pass
+    return out[:3]
+
+
+def single_pass(book_snap, alert=None, log=print):
+    """Look for single-game value in the league on screen; each one becomes a buy idea (no quotes needed)."""
+    if not STORE["db"]:
+        return []
+    book = load_book_state(book_snap)
+    games, _, _ = week_games(fetch_markets())
+    attach_fair(games, book)
+    live_ok = set()
+    if CFG.get("include_live", True):
+        bf = {e: [x["fair"] for x in sd] for e, sd in games.items() if sd[0].get("src")}
+        skipped, live = screen_live(games, bf)
+        live_ok = set(live) - set(skipped)
+    did, now = [], time.time()
+    for x in single_candidates(games, live_ok)[:4]:
+        d = book_depth(x["ticker"])
+        if d and d["thin"]:
+            continue                                  # a thin book: the price isn't real
+        try:
+            inj, fresh = injury_note(LEAGUE["code"], x["pick"], x.get("opp") or opp_of(games, x))
+        except Exception:
+            inj, fresh = [], False
+        if fresh and x["edge"] >= 0.06:
+            log(f"single {x['pick']} skipped: fresh injury news and a big gap, prices may be catching up")
+            continue                                  # a gap that big right after news is usually the news
+        prev = store_rows("select pct, ts from suggestions where legs=? and n=1 order by ts desc limit 1",
+                          (json.dumps([x["ticker"]]),))
+        pct = x["fair"] / (x["p"] + single_fee(x["p"]))
+        if prev and now - prev[0]["ts"] < 7200 and pct - prev[0]["pct"] < 0.03:
+            continue                                  # already offered, and not meaningfully better
+        stake = edge_stake(pct, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
+        n = max(1, int(stake / (x["p"] + single_fee(x["p"]))))
+        c = {"legs": [x], "fair": stake / x["fair"]}
+        sid = store_suggestion(c, {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
+        live = " (game in progress)" if started(x) else ""
+        extra = game_context(LEAGUE["code"], x["pick"], x.get("opp") or opp_of(games, x))
+        if inj or extra:
+            store_x("update suggestions set note=? where id=?", (" · ".join(inj + extra), sid))
+        msg = (f"🎯 Single: {x['pick']}{live} at {x['p'] * 100:.0f}¢ on Kalshi; the sharp books say "
+               f"{x['fair']:.0%}. About {x['edge'] * 100:.1f}¢ a contract in your favour after the fee."
+               + (f" Injuries: {'; '.join(inj[:2])}." if inj else ""))
+        if alert:
+            _alert(alert, msg, "value", f"/app#s={sid}" if sid else "/app")
+        did.append(f"single idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
+    return did
+
+
+def buy_single(ticker, n, price):
+    """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap."""
+    import uuid
+    body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
+            "yes_price": int(round(price * 100)), "time_in_force": "immediate_or_cancel",
+            "client_order_id": str(uuid.uuid4())}
+    try:
+        o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
+    except PermissionError:
+        return 0, "Kalshi refused. The key needs write (trading) access."
+    except RuntimeError as err:
+        return 0, f"Kalshi didn't take the order: {err}"
+    filled = float(o.get("fill_count_fp") or o.get("fill_count") or
+                   (body["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
+    ACCT_CACHE["at"] = 0
+    return filled, None
+
+
 def _alert(alert, msg, kind, url):
     try:
         alert(msg, kind, url)
@@ -8231,6 +8430,14 @@ def store_suggestion(c, r, pct):
             (sid, now, LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
              " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
              r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live)))
+    try:                                              # who's out, for the card (from ESPN's injury report)
+        picks = [l["pick"] for l in c["legs"]]
+        inj, _ = injury_note(LEAGUE["code"], *picks)
+        extra = game_context(LEAGUE["code"], *picks)
+        if inj or extra:
+            store_x("update suggestions set note=? where id=?", (" · ".join(inj + extra), sid))
+    except Exception:
+        pass
     return sid
 
 
@@ -8554,6 +8761,10 @@ def store_open(path=None):
         db.executescript(_SCHEMA)
         try:
             db.execute("alter table suggestions add column live int")   # added after the first release
+        except Exception:
+            pass
+        try:
+            db.execute("alter table suggestions add column note text")
         except Exception:
             pass
         STORE.update(db=db, path=path)

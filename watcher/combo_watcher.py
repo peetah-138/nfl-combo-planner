@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.78"
+WATCHER_VERSION = "2026.11.17.79"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -823,6 +823,10 @@ def shadow_loop(odds, notifier=None, every=600):
                 with odds.lock:
                     snap = odds.get(code, "")            # free lines + any sharp lines already cached
                     did = odds.engine().shadow_pass(snap, log=log, alert=notifier.add if notifier else None)
+                    try:                                  # single games: value without a combo maker's cut
+                        did = (did or []) + odds.engine().single_pass(snap, alert=notifier.add if notifier else None, log=log)
+                    except Exception as err:
+                        log(f"singles {code} skipped:", type(err).__name__, err)
                     for m in odds.moves(code, held_teams(odds)) if notifier else []:
                         notifier.add(m, "news")
                 if did:
@@ -1554,17 +1558,26 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
 function ideaBlock(ideas){S.ideaq=S.ideaq||{};
  return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
   const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
+  if(x.n===1)return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>🎯 ${esc(x.picks)} <span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4>
+   <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
+   ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
+   <div class="dnums">${fresh?`<div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div>`:`<div>Value<b>${pct(x.pct)} of fair</b></div>`}</div></div>
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">Buy · ${left}s</button>`:
+    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;
   return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+   ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
    <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" onclick="buyIdea('${x.id}')">Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
  if(!r.ok){toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000};renderLive();
+ S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
  clearInterval(S.ideaT);S.ideaT=setInterval(()=>{if(S.view==='live'&&!$('#modal').classList.contains('on'))renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
  toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
+async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
+ toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
 function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
@@ -2374,6 +2387,27 @@ def webapp_main():
                 if not rows:
                     return {"ok": False, "msg": "That idea has expired."}
                 row = rows[0]
+                if row["n"] == 1:                           # a single game: today's price, straight from the book
+                    tk = json.loads(row["legs"])[0]
+                    if BUILD.get("lg") != row["lg"]:
+                        api_build(row["lg"], rebuild=True)
+                    side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
+                    dpt = A.book_depth(tk, max_age=0)
+                    if not side or not dpt or dpt.get("ask") is None:
+                        return {"ok": False, "msg": "Kalshi isn't listing that game right now."}
+                    ask, fair = dpt["ask"], side.get("fair") or 0
+                    fee = A.single_fee(ask)
+                    edge = fair - ask - fee
+                    pct = fair / (ask + fee) if ask else 0
+                    stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
+                    n = max(1, int(stake / (ask + fee)))
+                    n = min(n, int(dpt.get("ask_size") or n))
+                    spent = A.week_spend() if A.can_trade() else 0
+                    if spent + n * (ask + fee) > A.CFG["budget"] + 0.01:
+                        return {"ok": False, "msg": f"That would go over your {A.money(A.CFG['budget'])} cap."}
+                    return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
+                                     "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
+                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "msg": "A game in it is starting, so this one's off the table."}
                 if row.get("live") and row["ts"] < time.time() - 600:
@@ -2398,6 +2432,23 @@ def webapp_main():
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                                  "clears": r.get("ok")})
+            if a == "singlebuy":
+                rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
+                if not rows:
+                    return {"ok": False, "msg": "That idea has expired."}
+                n, price = int(d.get("n") or 0), float(d.get("price") or 0)
+                if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
+                    return {"ok": False, "msg": "That size or price isn't allowed."}
+                filled, err = A.buy_single(json.loads(rows[0]["legs"])[0], n, price)
+                LIVE["at"] = 0
+                if err:
+                    return {"ok": False, "msg": err}
+                if filled <= 0:
+                    return {"ok": False, "msg": f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
+                log_line = f"single bought: {filled:g} at {price:.2f}"
+                print(log_line, flush=True)
+                return {"ok": True, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
+                                           f"pays {A.money(filled)} if it wins.", "pays": filled}
             if a == "buy":
                 i = int(d.get("i", 0))
                 r = A.accept_offer(i)
