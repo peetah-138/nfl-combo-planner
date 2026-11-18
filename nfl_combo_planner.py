@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.96"
+VERSION = "2026.11.18.97"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -44,6 +44,9 @@ CFG = {
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
+    "take_profit": 75,    # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
+    "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
+    "stop_loss": False,   # auto cash-out: may sell below what you paid when a game turns against you
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -232,7 +235,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss")
 
 
 def next_league():
@@ -3907,6 +3910,35 @@ def turning_against(h):
     return any(live and c < 0.5 for c, live, _ in h.get("legs_left") or [])
 
 
+TP_MIN_GAIN = 1.25       # take profit only with at least 25% over what you paid
+TRAIL_ARM, TRAIL_DROP = 0.60, 0.20   # lock in: armed once the offer reached 60% of the payout (and 1.5x cost)
+
+
+def take_profit_reason(t, h):
+    """Whether Pete's profit rules say sell this combo now: "take profit" when the offer reaches his
+    take-profit % of the payout, or "lock in" when, after a big run-up, it has fallen 20% from its
+    high but is still a clear profit. Tracked on a steady estimate (live chance x payout x Kalshi's
+    usual discount) so a one-off quote can't fake a high or a drop; the real offer is checked before
+    any sale. Returns (reason, the least whole-combo offer to accept) or (None, 0)."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None, 0.0
+    live = any(lv for _, lv, _ in h.get("legs_left") or [])
+    est = kalshi_discount(live) * h["p"] * h["pays"]
+    o = MINE["cash"].get(t) or {}
+    real = o["offer"] / max(o.get("frac", 1.0), 0.01) if o.get("offer") and o.get("rfq") not in (None, "estimate") \
+        and time.time() - o.get("at", 0) <= offer_life() else 0.0
+    peak = MINE.setdefault("peak", {})
+    peak[t] = max(peak.get(t, 0.0), est)
+    tp = float(CFG.get("take_profit") or 0) / 100
+    floor = max(tp * h["pays"], TP_MIN_GAIN * h["cost"])
+    if tp and max(est / 0.9, real) >= floor:
+        return "take profit", floor
+    if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
+            and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= 1.1 * h["cost"]:
+        return "lock in", 1.1 * h["cost"]
+    return None, 0.0
+
+
 def auto_sell_now(plan):
     """Auto cash-out (Settings, off by default): sells what the plan says to cash out, by itself,
     the same advice the card shows as Cash out. That already means a pick has won and Kalshi's
@@ -3918,13 +3950,35 @@ def auto_sell_now(plan):
     out = []
     MINE["busy"] = True
     try:
-        for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
-            h, o = MINE["hold"].get(t), fresh_offer(t)
-            if not (f and h and o and h.get("won_some")) or t in MINE.get("selling", set()):
+        cands = [(t, f, "plan") for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]) if f]
+        asked = MINE.setdefault("tp_asked", {})
+        for t, h in list(MINE["hold"].items()):          # Pete's profit rules, on every live combo
+            if any(c[0] == t for c in cands):
                 continue
-            thr = wait_threshold(t)
-            if o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
+            why, floor = take_profit_reason(t, h)
+            if why and time.time() - asked.get(t, 0) >= 90:
+                asked[t] = time.time()
+                cands.append((t, 1.0, why))
+        for t, f, why in cands:
+            h = MINE["hold"].get(t)
+            o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
+            if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
+            if why == "plan":
+                if not h.get("won_some"):
+                    continue
+                thr = wait_threshold(t)
+            else:
+                thr = take_profit_reason(t, h)[1]
+                if not thr:
+                    continue
+            if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
+                continue
+            if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
+                    and o["offer"] / max(o.get("frac", 1.0), 0.01) < CASH_SLIP * thr:
+                continue                                  # a real offer just came in below the line
+            if why != "plan" and (o.get("rfq") in (None, "estimate") or time.time() - o.get("at", 0) > offer_life()):
+                o = dict(o, rfq="estimate")
             if f < 1 or o.get("frac", 1.0) < 1 or o.get("rfq") == "estimate":   # the Pi only estimates
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
@@ -3935,7 +3989,7 @@ def auto_sell_now(plan):
             if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
                 drop_cash(t)                    # already sold (by you, the Pi or the phone): leave it
                 continue
-            rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2),
+            rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2), "why": why,
                    "chance": round(h["p"], 4), "cost": round(h["cost"], 2), "pays": h["pays"],
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []]}
             if sold_today() >= int(CFG.get("auto_cap", 5)):
@@ -3945,7 +3999,7 @@ def auto_sell_now(plan):
                     out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
-            if o["offer"] < h["cost"] * o.get("frac", 1.0) and not turning_against(h):
+            if o["offer"] < h["cost"] * o.get("frac", 1.0) and not (CFG.get("stop_loss") and turning_against(h)):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             hg = hedge_for(t) if CFG.get("auto_hedge") else None
@@ -3969,7 +4023,12 @@ def auto_sell_now(plan):
                         continue
             msg = accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
-            out.append(("🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ") + msg)
+            lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
+                    "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. "}.get(
+                why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
+            out.append(lead + msg)
+            if msg.startswith("✅"):
+                MINE.get("peak", {}).pop(t, None)
     finally:
         MINE["busy"] = False
     return out
@@ -5042,7 +5101,8 @@ def autosell_pass():
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-                  "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
+                  "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
+                  "take_profit", "lock_trail", "stop_loss")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
