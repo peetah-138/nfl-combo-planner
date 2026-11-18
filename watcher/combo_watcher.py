@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.84"
+WATCHER_VERSION = "2026.11.17.85"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1531,7 +1531,10 @@ function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me
  return `<span class="leg ${c}" title="${tip}">${pre}${esc(short(l.name))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
-function short(n){n=String(n||'');const p=n.split(' ');return p.length>1&&n.length>9?p.slice(-1)[0]:n;}
+const PLACE_END=new Set(['City','Orleans','York','Bay','Angeles','Vegas','Francisco','Diego','Jersey','England','Louis','Antonio','Lake','Jose','Carolina','Florida','Dakota','Mexico','Virginia','Kentucky','Michigan','Illinois','Texas','Tech','State','Coast']);
+function short(n){n=String(n||'');const p=n.split(' ');if(p.length<2||n.length<=14)return n;const last=p[p.length-1];
+ if(PLACE_END.has(last))return p.slice(0,-1).map(w=>w[0]+'.').join('')+' '+last;   // "San Francisco" -> "S. Francisco", never just "City"
+ return last;}
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
  if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
