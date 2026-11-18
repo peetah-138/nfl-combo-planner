@@ -424,6 +424,20 @@ elif [ "$code" != "$(cat "$DIR/.shown_code" 2>/dev/null)" ]; then   # only when 
   show_code "$code" "$hub" "$(echo "$out" | sed -n 3p)"
   printf '%s' "$code" > "$DIR/.shown_code"
 fi
+# keep the Combo Watcher app itself current (its launcher can't update itself)
+for app in "/Applications/Combo Watcher.app" "$HOME/Applications/Combo Watcher.app"; do
+  if [ -d "$app" ]; then
+    t=$(mktemp -d)
+    if curl -fsSL --max-time 30 "$REPO/watcher/Combo-Watcher.zip" -o "$t/a.zip" && ditto -x -k "$t/a.zip" "$t" \
+       && [ -x "$t/Combo Watcher.app/Contents/MacOS/ComboWatcher" ] \
+       && ! cmp -s "$t/Combo Watcher.app/Contents/MacOS/ComboWatcher" "$app/Contents/MacOS/ComboWatcher"; then
+      xattr -dr com.apple.quarantine "$t/Combo Watcher.app" 2>/dev/null
+      rm -rf "$app.old" && mv "$app" "$app.old" && mv "$t/Combo Watcher.app" "$app" && rm -rf "$app.old"
+      echo "Combo Watcher app refreshed"
+    fi
+    rm -rf "$t"
+  fi
+done
 # a Desktop icon for the web view on this Mac (no passcode needed on the Mac itself)
 cat > "$HOME/Desktop/Combo Hub.webloc" <<'WEBLOC'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.68"
+VERSION = "2026.11.17.69"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4037,6 +4037,11 @@ def live_view(mine, views, plan, chance_one, balance):
         v["hold_value"] = round(h["hold"], 2)
         v["won_some"] = bool(h.get("won_some"))
         v["offer"] = round(o["offer"] / max(o.get("frac", 1.0), 0.01), 2) if o.get("offer") else None
+        if v["offer"] is None:                    # no offer asked for yet: what Kalshi usually pays for this
+            try:
+                v["offer"] = round(kalshi_discount(v["live"]) * v["p"] * v["pays"], 2)
+            except Exception:
+                pass
         v["offer_real"] = bool(real)
         v["offer_age"] = round(time.time() - o.get("at", 0)) if o.get("at") else None
         f = acts.get(t) or 0
@@ -5900,7 +5905,7 @@ def mine_page(live=False):
                 _lp = 1 - _lp
             _sc = leg_score(l) if not res else None
             vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
-                          "state": _st, "score": score_line(_sc) if _sc else "",
+                          "state": _st, "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
                           "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
                           "starts": start_label(l.get("event") or "") if not res else "",
                           "sport": ticker_sport(l["ticker"]) or "other", "side": l.get("side", "yes"),
