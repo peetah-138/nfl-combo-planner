@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.83"
+VERSION = "2026.11.17.84"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3542,6 +3542,11 @@ def haptic(kind="success"):
 
         @on_main_thread
         def buzz():
+            if kind == "tap":                         # a light tap for ordinary buttons
+                g = ObjCClass("UIImpactFeedbackGenerator").alloc().initWithStyle_(0)
+                g.prepare()
+                g.impactOccurred()
+                return
             g = ObjCClass("UINotificationFeedbackGenerator").new()
             g.prepare()
             g.notificationOccurred_({"success": 0, "warning": 1, "error": 2}.get(kind, 0))
@@ -5221,6 +5226,9 @@ class HubKeeper:
         self.base = base
 
     def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://haptic/"):
+            haptic({"success": "success", "error": "error", "warning": "warning"}.get(url.rsplit("/", 1)[-1], "tap"))
+            return False
         if url.startswith("combo://phone"):
             RUN_OPTS["phone_ui"] = True
             import threading

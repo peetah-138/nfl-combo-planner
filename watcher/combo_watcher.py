@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.83"
+WATCHER_VERSION = "2026.11.17.84"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1374,6 +1374,8 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .dlegs svg{width:120px;height:28px}
 .bars2 .br{display:grid;grid-template-columns:110px minmax(0,1fr) 92px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0}
 .bars2 .tr2{height:10px;background:var(--panel2);border-radius:6px;position:relative;overflow:hidden}.bars2 .tr2 i{position:absolute;top:0;bottom:0;border-radius:6px}
+.qline{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:9px 12px;font-size:12.5px;background:var(--panel2)}.qline span{color:var(--sub)}
+.qline.good{background:var(--yesbg)}.qline.good b{color:var(--yes)}.qline.bad{background:var(--nobg)}.qline.bad b{color:var(--no)}
 .pred{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--panel2);color:var(--sub)}
 .pred.good{background:var(--yesbg);color:var(--yes)}.pred.bad{background:var(--nobg);color:var(--no)}
 .live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--yes);margin-right:6px;animation:pulse 2s infinite}
@@ -1506,7 +1508,7 @@ function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'
 }
 function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
  <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
-function go(v){S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
+function go(v){hap();S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
 async function load(v,fresh){try{
  if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
@@ -1634,7 +1636,7 @@ async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await a
 function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
  modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" onclick="doSell('${t}')">Cash out</button></div>`);}
-async function doSell(t){$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);load('live',true);}
+async function doSell(t){hap();$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);load('live',true);}
 async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();api('/app/api/act',{a:'hedgego',t:'${t}'}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
 // ---------------- BUILD
@@ -1670,15 +1672,24 @@ async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Ask
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;
  return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
-  <div class="s" style="font-size:12.5px">${c.pred?`<span class="pred ${c.pred.p_clear>=.5?'good':c.pred.p_clear<.2?'bad':''}">≈ ${pct(c.pred.pct)} of fair · ${Math.round(c.pred.p_clear*100)}% chance it clears</span>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:'Get a price to see what Kalshi pays.'}
+  <div class="s" style="font-size:12.5px">${c.pred?`<span class="pred ${c.pred.p_clear>=.5?'good':c.pred.p_clear<.2?'bad':''}">≈ ${pct(c.pred.pct)} of fair · ${Math.round(c.pred.p_clear*100)}% chance it clears</span>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
-  <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" onclick="buy(${c.i})">Buy ${money(o.stake)} → ${money(o.pays)}${o.ok?'':' (under cut-off)'}</button>`:
+  ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
+  <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">Buy ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}</div></div>`;}
-async function quote(i){const b=$('#q'+i);if(b)b.innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'quote',i});
- if(!r.ok){toast(r.error||r.msg||'No price came in.');renderBuild();return;}S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,ok:r.ok,at:Date.now()/1000};renderBuild();
- toast(`Kalshi pays ${money(r.pays)} for ${money(r.stake)} · ${pct(r.pct)} of fair`,5000);setTimeout(renderBuild,20500);}
-async function buy(i,custom){const r=await api('/app/api/act',{a:'buy',i});toast(r.ok?`Bought. It shows on Live within a minute.`:(r.msg||'Didn\'t go through.'),5000);
+async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
+ const r=await api('/app/api/act',{a:'quote',i}).catch(e=>({ok:false,error:'Couldn\'t reach your Mac ('+(e&&e.message||e)+').'}));
+ if(!r.ok){hap('error');toast(r.error||r.msg||'No price came in.',6000);renderBuild();return;}
+ S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,cut:r.cut,at:Date.now()/1000};hap(r.clears?'success':'warning');renderBuild();
+ clearInterval(S.qT);S.qT=setInterval(()=>{if(S.view!=='build'||S.buying)return;const any=Object.values(S.quotes||{}).some(q=>q&&Date.now()/1000-q.at<21);renderBuild();if(!any)clearInterval(S.qT);},1000);}
+async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
+ let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
+ S.buying=false;hap(r.ok?'success':'error');toast(r.ok?`Bought: ${money(r.pays||0)} if it hits. It shows on Live within a minute.`:(r.msg||'Didn\'t go through.'),7000,r.ok?'good':'bad');
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];renderBuild();}
+function hap(k){try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+(k||'light');document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
+ if(navigator.vibrate){navigator.vibrate(k==='success'?[10,50,10]:k==='error'?[30,50,30]:k==='warning'?[20]:8);return;}
+ let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
+ l.click();if(k==='success'||k==='error')setTimeout(()=>l.click(),90);}catch(e){}}
 // ---------------- RESULTS
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
  const w=d.weeks||[];const mx=Math.max(1,...w.map(x=>Math.abs(x.pl)));const sh=d.shadow;
@@ -2422,7 +2433,8 @@ def webapp_main():
                                 r = r2
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
-                return jsonable({"ok": not r.get("error"), **{k: r.get(k) for k in ("pays", "stake", "pct", "ok", "error")}})
+                return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": A.CFG["accept_pct"],
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -2493,7 +2505,14 @@ def webapp_main():
                                            f"pays {A.money(filled)} if it wins.", "pays": filled}
             if a == "buy":
                 i = int(d.get("i", 0))
-                r = A.accept_offer(i)
+                print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
+                try:
+                    r = A.accept_offer(i)
+                except Exception as err:
+                    import traceback
+                    traceback.print_exc()
+                    r = {"error": f"{type(err).__name__}: {err}"}
+                print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
             if a == "custom":
