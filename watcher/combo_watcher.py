@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.93"
+WATCHER_VERSION = "2026.11.17.94"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -878,6 +878,13 @@ def shadow_loop(odds, notifier=None, every=600):
                     log(f"shadow {code}:", "; ".join(did))
             except Exception as err:
                 log(f"shadow {code} skipped:", type(err).__name__, err)
+        try:                                              # Sunday "cover the early games" paper test
+            with odds.lock:
+                did = odds.engine().cover_pass(log=log, alert=notifier.add if notifier else None)
+            if did:
+                log("cover test:", "; ".join(did))
+        except Exception as err:
+            log("cover test skipped:", type(err).__name__, err)
         time.sleep(every)
 
 
@@ -1780,7 +1787,15 @@ function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini
  return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
   <p style="margin:0 0 10px;color:var(--ink)">${esc(p.verdict)}</p>${row('Return on stake',p.roi,pc)}${row('Prices vs kickoff',p.clv,pc)}${row('Paper auto-trading',p.paper,pc)}
   <div class="m" style="font-size:12px;margin-top:8px">The $300 full-auto test waits for prices vs kickoff to be positive with confidence and the paper record to be up over 50+ bets.</div></div>`;}
-function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofCard(d.proof));
+function coverCard(c){if(!c)return '';const ws=c.weeks||[];
+ const rows=ws.slice(0,8).map(w=>w.status==='done'?`<div class="mini">${esc(w.sunday)} · ${w.k} games · ${w.upsets} upset${w.upsets===1?'':'s'}<b class="${w.pl>=0?'up':'down'}">${smoney(w.pl)} <span class="m" style="font-weight:500">of ${money(w.cost)}</span></b></div>`:
+  w.status==='open'?`<div class="mini">${esc(w.sunday)} · ${w.k} games · waiting for results<b class="m">${pct(w.p_ahead)} chance to be ahead</b></div>`:
+  `<div class="mini">${esc(w.sunday)}<b class="m">${w.status==='missed'?'missed (Mac was off before kickoff)':'no result'}</b></div>`).join('');
+ return `<div class="card"><h3>Cover the early games <span>paper test · NFL Sundays</span></h3>
+  ${c.n?`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px"><b style="font-size:30px;letter-spacing:-.03em" class="${c.pl>=0?'up':'down'}">${smoney(c.pl)}</b><span class="m">over ${c.n} Sunday${c.n===1?'':'s'}, ${money(c.cost)} on paper</span></div>`:''}
+  ${rows||'<div class="m">Starts this Sunday: the Mac snapshots the early games before kickoff, then works out what the one surviving combo would be worth at midday.</div>'}
+  <div class="m" style="font-size:12px;margin-top:8px">$5 on every possible result of the early games, cashed out at midday. No money is spent. Uses Kalshi's prices and the cut Kalshi usually takes on combos and cash-outs.</div></div>`;}
+function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
   <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
@@ -2403,7 +2418,8 @@ def webapp_main():
                              "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
                              "edge": edge, "backtest": A.backtest() if A.STORE.get("db") else None,
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
-                             "killer": A.killer_summary() if A.STORE.get("db") else None})
+                             "killer": A.killer_summary() if A.STORE.get("db") else None,
+                             "cover": A.cover_summary() if A.STORE.get("db") else None})
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""

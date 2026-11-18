@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.93"
+VERSION = "2026.11.17.94"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -9193,6 +9193,149 @@ def _kick_ts(leg):
         return None
 
 
+# ---------------------------------------------------------------- "cover the early games" paper test
+# Pete's idea: $5 full-slate combos on every possible result of the Sunday early games, so exactly one
+# survives to midday, then cash it out. Tracked on paper only: no quotes, no money. Prices are Kalshi's own
+# (each game's two prices scaled to add to 100%); what Kalshi pays for a combo and for a cash-out uses the
+# same measured ratios the rest of the planner uses.
+COVER = {"stake": 5.0, "window_min": 45, "max_games": 14}
+NFL_ALIAS = {"WSH": ("WAS",), "WAS": ("WSH",), "JAX": ("JAC",), "JAC": ("JAX",), "LAR": ("LA",), "LA": ("LAR",)}
+
+
+def _cover_kicks(day):
+    """ESPN kickoff times for that day's NFL games: [(abbrs, iso)]."""
+    out = []
+    for ev in _espn_board("nfl", day.strftime("%Y%m%d"), max_age=3600):
+        comp = (ev.get("competitions") or [{}])[0]
+        ab = [((c.get("team") or {}).get("abbreviation") or "").upper() for c in comp.get("competitors") or []]
+        if ev.get("date") and all(ab):
+            out.append((ab, ev["date"]))
+    return out
+
+
+def _cover_games(day):
+    """That day's NFL games on Kalshi: [{event, kick (unix), sides:[{ticker, abbr, p}]}], p scaled to 100%."""
+    by = defaultdict(list)
+    for m in fetch_series("KXNFLGAME"):
+        if game_date(m) != day or is_tie_market(m):
+            continue
+        p = live_price(m)
+        if p:
+            by[m["event_ticker"]].append({"ticker": m["ticker"], "abbr": m["ticker"].rsplit("-", 1)[-1].upper(),
+                                          "p": p, "exp": m.get("expected_expiration_time") or ""})
+    kicks = _cover_kicks(day)
+    out = []
+    for e, sd in by.items():
+        if len(sd) != 2:
+            continue
+        tot = sd[0]["p"] + sd[1]["p"]
+        for x in sd:
+            x["p"] = round(x["p"] / tot, 4)
+        tail = e.rsplit("-", 1)[-1].upper()
+        kick = None
+        for ab, iso in kicks:
+            if all(any(a in tail for a in (b,) + NFL_ALIAS.get(b, ())) for b in ab):
+                kick = dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+                break
+        if kick is None:
+            try:
+                kick = dt.datetime.fromisoformat(sd[0]["exp"].replace("Z", "+00:00")).timestamp() - game_hours(e) * 3600
+            except ValueError:
+                continue
+        out.append({"event": e, "kick": kick, "sides": [{k: x[k] for k in ("ticker", "abbr", "p")} for x in sd]})
+    return sorted(out, key=lambda g: g["kick"])
+
+
+def _cover_r_buy():
+    """What Kalshi pays for a long NFL combo as a share of fair, from your real quotes (median)."""
+    rows = store_rows("select pct from quotes where sport='nfl' and pct is not null and n>=6 order by ts desc limit 200")
+    if len(rows) < 10:
+        rows = store_rows("select pct from quotes where pct is not null and n>=5 order by ts desc limit 200")
+    xs = sorted(r["pct"] for r in rows if r["pct"])
+    return round(min(max(xs[len(xs) // 2], 0.4), 1.0), 3) if len(xs) >= 10 else 0.85
+
+
+def cover_math(early, r_buy, r_sell, stake=None):
+    """Before kickoff: cost, expected midday value and the chance it ends up ahead."""
+    stake = stake or COVER["stake"]
+    k = len(early)
+    cost = stake * 2 ** k
+    win_p = 0.0
+    if k <= COVER["max_games"]:
+        for picks in itertools.product(*[[x["p"] for x in g["sides"]] for g in early]):
+            pe = math.prod(picks)
+            if stake * r_buy * r_sell / pe > cost:
+                win_p += pe
+    return {"k": k, "cost": cost, "expect": round(cost * r_buy * r_sell, 2), "p_ahead": round(win_p, 4)}
+
+
+def cover_pass(log=print, alert=None):
+    """Sunday mornings: snapshot the early games before kickoff. After they finish: work out what the one
+    surviving combo would be worth at midday. Paper only."""
+    if not STORE["db"]:
+        return []
+    now, did = time.time(), []
+    today = dt.datetime.now(PACIFIC).date()
+    if today.weekday() == 6 and not store_rows("select 1 from cover where sunday=?", (today.isoformat(),)):
+        games = _cover_games(today)
+        if games:
+            first = games[0]["kick"]
+            early = [g for g in games if g["kick"] <= first + COVER["window_min"] * 60]
+            late = [g for g in games if g not in early]
+            if first - 3 * 3600 <= now <= first - 120:
+                r_buy, r_sell = _cover_r_buy(), kalshi_discount(live=False)
+                store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
+                        (today.isoformat(), now, json.dumps(early), json.dumps(late), r_buy, r_sell, "open", None))
+                m = cover_math(early, r_buy, r_sell)
+                did.append(f"cover test: {m['k']} early games, ${m['cost']:,.0f} on paper, {m['p_ahead']:.0%} chance to end up ahead")
+            elif now > first - 120:
+                store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
+                        (today.isoformat(), now, json.dumps(early), json.dumps(late), 0, 0, "missed", None))
+    for row in store_rows("select * from cover where status='open'"):
+        early = json.loads(row["early"])
+        res = fetch_results([x["ticker"] for g in early for x in g["sides"]])
+        if any(not any(res.get(x["ticker"]) for x in g["sides"]) for g in early):
+            if now - row["ts"] > 36 * 3600:
+                store_x("update cover set status='stale' where sunday=?", (row["sunday"],))
+            continue                                  # an early game hasn't been settled yet
+        stake, k = COVER["stake"], len(early)
+        winners = [next((x for x in g["sides"] if res.get(x["ticker"]) == "yes"), None) for g in early]
+        cost = stake * 2 ** k
+        if any(w is None for w in winners):           # a tie: every combo loses
+            pe, fair_v, worth = 0.0, 0.0, 0.0
+        else:
+            pe = math.prod(w["p"] for w in winners)
+            fair_v = stake / pe
+            worth = fair_v * row["r_buy"] * row["r_sell"]
+        m = cover_math(early, row["r_buy"], row["r_sell"])
+        out = {"k": k, "cost": cost, "chance": round(pe, 5), "fair": round(fair_v, 2), "worth": round(worth, 2),
+               "pl": round(worth - cost, 2), "upsets": sum(1 for w in winners if w and w["p"] < 0.5),
+               "winners": [w["abbr"] if w else "tie" for w in winners], "expect": m["expect"], "p_ahead": m["p_ahead"]}
+        store_x("update cover set status='done', result=? where sunday=?", (json.dumps(out), row["sunday"]))
+        msg = (f"📒 Cover-the-early-games test (paper, {row['sunday']}): {k} early games, {out['upsets']} upset"
+               f"{'' if out['upsets'] == 1 else 's'}. All {2 ** k} combos would have cost ${cost:,.0f}; the one left "
+               f"would be worth about ${worth:,.0f} at midday: {'+' if out['pl'] >= 0 else '−'}${abs(out['pl']):,.0f}.")
+        did.append(msg)
+        if alert:
+            alert(msg)
+    return did
+
+
+def cover_summary():
+    rows = store_rows("select * from cover order by sunday desc limit 20") if STORE["db"] else []
+    weeks = []
+    for r in rows:
+        x = {"sunday": r["sunday"], "status": r["status"]}
+        if r["result"]:
+            x.update(json.loads(r["result"]))
+        elif r["status"] == "open":
+            x.update(cover_math(json.loads(r["early"]), r["r_buy"], r["r_sell"]))
+        weeks.append(x)
+    done = [w for w in weeks if w["status"] == "done"]
+    return {"weeks": weeks, "n": len(done), "cost": round(sum(w["cost"] for w in done), 2),
+            "pl": round(sum(w["pl"] for w in done), 2)}
+
+
 def shadow_summary(st=None):
     st = st or shadow_state()
     done = [b for b in st["bets"] if b["status"] != "open"]
@@ -9407,6 +9550,8 @@ def accuracy_text(sm):
 STORE = {"db": None, "path": None, "last": {}}
 _SLOCK = threading.RLock()
 _SCHEMA = """
+create table if not exists cover(sunday text primary key, ts real, early text, late text, r_buy real, r_sell real,
+  status text, result text);
 create table if not exists ticks(ts real, ticker text, chance real, state text, score text);
 create index if not exists ticks_t on ticks(ticker, ts);
 create table if not exists offers(ts real, combo text, p real, pays real, hold real, offer real, real_offer int, verdict text);
