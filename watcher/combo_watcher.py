@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.102"
+WATCHER_VERSION = "2026.11.18.103"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1759,9 +1759,9 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
  .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
 }
-.sweat{--p:0;--q:0;display:inline-grid;place-content:center;width:26px;height:26px;border-radius:50%;margin-right:7px;vertical-align:middle;
- background:radial-gradient(closest-side,var(--panel) 72%,transparent 74% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),color-mix(in srgb,var(--yes) 45%,transparent) 0 calc(var(--q)*1%),var(--panel2) 0)}
-.sweat i{font-style:normal;font-size:9px;font-weight:800;color:var(--sub)}
+.trow .name b .sweat,.sweat{display:inline-flex!important;flex-direction:row;gap:3px;margin:0 0 0 9px;vertical-align:middle;position:relative;top:-1px;font-size:0}
+.sweat i{display:block;width:12px;height:6px;border-radius:3px;background:var(--line)}.sweat i.w{background:var(--yes)}
+.sweat i.u{background:color-mix(in srgb,var(--yes) 45%,var(--line))}.sweat i.x{background:var(--no)}
 .trow.hot{box-shadow:inset 3px 0 0 var(--yes)}
 .moment-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 14px;margin:0 0 12px;border-radius:14px;
  background:color-mix(in srgb,var(--yes) 14%,var(--panel));border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);animation:glow 2.4s ease-in-out infinite}
@@ -1943,16 +1943,16 @@ async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/
 async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
 function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
-function sweat(c){if(c.group!=='pending')return '';const n=c.legs.length,w=c.legs.filter(l=>l.res==='yes').length;
- const liveUp=c.legs.filter(l=>!l.res&&l.state==='live'&&(l.live??l.chance)>=.5).length;const p=Math.round(w/n*100),q=Math.round((w+liveUp)/n*100);
- return `<span class="sweat" title="${w} of ${n} picks won${liveUp?`, ${liveUp} winning now`:''}" style="--p:${p};--q:${q}"><i>${w}/${n}</i></span>`;}
+function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
+ const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
+ return `<span class="sweat" title="${w} of ${c.legs.length} picks won">${seg.map(s=>`<i class="${s}"></i>`).join('')}</span>`;}
 function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
  const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
  return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
   ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('')+more;}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
- return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${sweat(c)}${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
+ return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}</b><span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
