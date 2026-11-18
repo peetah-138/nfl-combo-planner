@@ -21,10 +21,10 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.97"
+WATCHER_VERSION = "2026.11.18.98"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
 
@@ -818,6 +818,22 @@ def ensure_crypto():
         log("cryptography install failed:", err)
 
 
+def panel_loop(odds, conf, every=60):
+    """Buys approved panel bets when they're due (rechecked, swapped if needed) and runs the paper panel."""
+    time.sleep(180)
+    while True:
+        try:
+            with odds.lock:
+                H = odds.engine()
+                out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
+            for m in out:
+                log(m)
+                push(conf, m)
+        except Exception as err:
+            log("panel buying skipped:", type(err).__name__, err)
+        time.sleep(every)
+
+
 def history_loop(E, every=900):
     """Settle recorded quotes once their games finish, and keep the history file trimmed."""
     n = 0
@@ -872,12 +888,24 @@ def shadow_loop(odds, notifier=None, every=600):
                         did = (did or []) + odds.engine().line_pass(code, alert=notifier.add if notifier else None, log=log)
                     except Exception as err:
                         log(f"lines {code} skipped:", type(err).__name__, err)
+                    try:                                  # the daily panel's candidates for this league
+                        odds.engine().panel_collect(snap, code, log=log)
+                    except Exception as err:
+                        log(f"panel {code} skipped:", type(err).__name__, err)
                     for m in odds.moves(code, held_teams(odds)) if notifier else []:
                         notifier.add(m, "news")
                 if did:
                     log(f"shadow {code}:", "; ".join(did))
             except Exception as err:
                 log(f"shadow {code} skipped:", type(err).__name__, err)
+        try:                                              # rebuild today's panel; settle; weekly cut-off review
+            with odds.lock:
+                H = odds.engine()
+                did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()]
+            if did:
+                log("panel:", "; ".join(did))
+        except Exception as err:
+            log("panel skipped:", type(err).__name__, err)
         try:                                              # Sunday "cover the early games" paper test
             with odds.lock:
                 did = odds.engine().cover_pass(log=log, alert=notifier.add if notifier else None)
@@ -1710,6 +1738,14 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
  .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
 }
+.panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
+ background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
+.pring b{font-size:18px;line-height:1}.pring small{font-size:9.5px;color:var(--mute);font-weight:600}
+.plist{display:flex;flex-direction:column;gap:8px}.pitem{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:12px;background:var(--panel2)}
+.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+.pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
+.pitem .ps{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}.pitem .ps b{font-size:15px}.pitem .x{border:0;background:none;color:var(--mute);font-size:15px;cursor:pointer;padding:2px 4px}
 .bets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
 .bet{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
 .bet .bt{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.bet .bt b{display:block;font-size:17px;line-height:1.3;margin-top:3px}
@@ -1777,10 +1813,10 @@ function go(v){hap();S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};c
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
 async function load(v,fresh){try{
  if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
- if(v==='build'){S.build=await api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':''));}
+ if(v==='build'){const [b,p]=await Promise.all([api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+(S.pview||'all')).catch(()=>null)]);S.build=b;S.panel=p;}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
  if(v==='games'){S.games=await api('/app/api/games');}
- if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();
+ if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{S.panelCuts=(await api('/app/api/panel?v=all')).cutoffs}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
@@ -1913,14 +1949,11 @@ async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r
 // ---------------- BUILD
 function renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
- const chipRow=`<div class="chips" style="margin-bottom:14px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none">${lgs.map(([k,n,i])=>`<button class="chip ${S.lg===k?'on':''}" onclick="setLg('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ const pv=S.pview||'all';const chipRow=`<div class="chips" style="margin-bottom:14px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix').map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+skel(7)+'</div><div class="skel" style="height:300px"></div></div>';return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0">Best bets <span class="n">${best.length}</span></h2><span style="flex:1"></span>${dayBar(d)}</div>
-  <div class="m" style="font-size:12.5px;margin:0 2px 12px">Only bets where Kalshi's price is better than the real chance, checked against the sharp sportsbooks. Not sure things: good bets, ranked by expected return.</div>
-  ${best.length?`<div class="bets">${best.map(betCard).join('')}</div>`:`<div class="card" style="text-align:center;padding:26px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing worth betting right now</b>
-   <div class="m" style="font-size:13px;line-height:1.5">Kalshi is pricing ${esc(d.name)} fairly at the moment. A bet shows up here only when it's priced below its real chance: a single game 2.5¢+ under fair, a spread or total 4¢+, or a combo Kalshi should pay at least fair for. The Mac checks every 10 minutes and notifies you when one appears.</div></div>`}
+  ${panelBlock(S.panel)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="S.adv=!adv;try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){};renderBuild()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`<h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
   <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
@@ -1931,6 +1964,39 @@ function renderBuild(){const d=S.build;const m=$('#main');
   <div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}
  </div><aside>${adv?slip(d)+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
+function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}if(k!=='all'&&k!==S.lg){setLg(k);}else load('build');}
+try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
+const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
+function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
+function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
+ const state=c.state||'';const chip={scheduled:`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',paper:'<span class="tag">Paper</span>',
+  skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
+ const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
+ const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
+ const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
+ return `<div class="pitem ${off?'off':''}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${esc(pTime(c.kick))}</div><b>${title}</b>
+  <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
+  <div class="ps"><b>${money(c.stake)}</b>${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
+function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);renderBuild();}
+function panelBlock(d){if(!d||!d.panel)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
+ const p=d.panel,st=p.stats||{},approved=p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
+ const live=items.filter(c=>!S.pOff.has(c.id));const total=live.reduce((a,c)=>a+c.stake,0);
+ const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'||approved?"Today's panel":(SPN[d.view]||d.view)+' panel'}</h2>
+   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','bought'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
+   <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
+ const btn=approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:'')
+  :`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelApprove(this)">Approve ${live.length} bet${live.length===1?'':'s'} · ${money(total)}</button>
+   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one about 45 minutes before its game, after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
+ const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
+ const other=d.approved_other?`<div class="m" style="font-size:12.5px;margin:6px 2px">Today's panel is already approved, so this is it. Tap ⭐ All to see it.</div>`:'';
+ return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
+  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${btn}</div>${longer}`;}
+async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
+async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
 function bestBets(d){const out=[];
  (d.singles||[]).filter(x=>x.idea).forEach(x=>out.push({k:'single',score:x.ev,x}));
@@ -2046,7 +2112,13 @@ function coverCard(c){if(!c)return '';const ws=c.weeks||[];
   ${c.n?`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px"><b style="font-size:30px;letter-spacing:-.03em" class="${c.pl>=0?'up':'down'}">${smoney(c.pl)}</b><span class="m">over ${c.n} Sunday${c.n===1?'':'s'}, ${money(c.cost)} on paper</span></div>`:''}
   ${rows||'<div class="m">Starts this Sunday: the Mac snapshots the early games before kickoff, then works out what the one surviving combo would be worth at midday.</div>'}
   <div class="m" style="font-size:12px;margin-top:8px">$5 on every possible result of the early games, cashed out at midday. No money is spent. Uses Kalshi's prices and the cut Kalshi usually takes on combos and cash-outs.</div></div>`;}
-function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
+function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const need=Math.max(0,50-pp.bets);
+ return `<div class="card"><h3>Is it working? <span>the daily panel</span></h3>
+  <div class="m" style="font-size:12.5px;margin-bottom:8px">A paper copy of each day's panel runs by itself, with no money. When it's ahead over 50+ bets and most days end up, it's ready to be handed $300.</div>
+  <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
+  <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
+  <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
+function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
   <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
@@ -2071,6 +2143,8 @@ function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofC
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
+function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
+ return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
 function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
  if(LOCAL&&!/\.ts\.net$/.test(location.hostname))return (f.keys||[]).length?`<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${f.keys.map(k=>esc(k.name)).join(', ')}</small></div><button class="btn ghost" onclick="fidRemoveAll()">Remove all</button></div>`:'';
  if(location.protocol!=='https:'||!window.PublicKeyCredential)return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${(S.pk||{}).https?`Works on the secure address. Open <a href="${esc(S.pk.https)}">${esc(S.pk.https.replace('https://',''))}</a> and turn it on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
@@ -2248,8 +2322,8 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
  }catch(x){}}
 function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
 // ---------------- settings
-const UNITS={take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
-const RANGES={take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
+const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
+const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
 function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
 function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
@@ -2293,7 +2367,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Fair-price cut-off','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Fair-price cut-off','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build, and how many games in each.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -2303,6 +2377,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
    +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
    +tgl('auto_sell','Auto cash-out','The Mac sells by itself, logged and capped')
+   +tgl('smart_sell','Smart profit-taking','Sells when locking in beats the risk of holding, by sport: a one-goal hockey lead is fragile, an early NBA lead isn\'t',!v.auto_sell)
    +rng('take_profit','Take profit at','Sell once Kalshi offers this much of the payout, if it\'s at least 25% more than you paid',!v.auto_sell)
    +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
    +tgl('stop_loss','Sell at a loss when a game turns','Off: never sells below what you paid',!v.auto_sell)
@@ -2698,7 +2773,8 @@ def webapp_main():
                              "edge": edge, "backtest": A.backtest() if A.STORE.get("db") else None,
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
-                             "cover": A.cover_summary() if A.STORE.get("db") else None})
+                             "cover": A.cover_summary() if A.STORE.get("db") else None,
+                             "panel": A.panel_record() if A.STORE.get("db") else None})
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
@@ -2770,6 +2846,17 @@ def webapp_main():
         order = ["2 picks", "3 picks", "4 picks", "5–6 picks", "7+ picks"]
         return [out[k] for k in order if k in out]
 
+    def api_panel(view="all"):
+        """Today's panel (or one sport's), its record and the cut-offs."""
+        if not A.STORE.get("db"):
+            return {"panel": None}
+        real = A.panel_get("real")
+        p = real if view in ("all", "") or (real and real["status"] != "draft") else A.panel_get(f"view:{view}")
+        sk = A.load_json(A.SIZING_FILE, {})
+        return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
+                         "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
+                         "approved_other": bool(real and real["status"] != "draft" and view not in ("all", ""))})
+
     def api_orders():
         return jsonable(A.maker_summary() if A.STORE.get("db") else {})
 
@@ -2813,7 +2900,7 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3008,6 +3095,12 @@ def webapp_main():
                 if not r.get("error") and 1 <= i <= len(A.CTX.get("combos") or []):
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
+            if a == "panel_approve":
+                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all")
+                return {"ok": ok, "msg": msg}
+            if a == "panel_cancel":
+                ok, msg = A.panel_cancel()
+                return {"ok": ok, "msg": msg}
             if a == "flip":                         # switch one pick to the other team, with a verdict
                 i, tk = int(d.get("i", 0)), str(d.get("t") or "")
                 if not 1 <= i <= len(A.CTX.get("combos") or []):
@@ -3151,6 +3244,8 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/panel":
+                        out = api_panel(q.get("v") or "all")
                     elif path == "/app/api/orders":
                         out = api_orders()
                     elif path == "/app/api/combo":
@@ -3767,6 +3862,8 @@ def main():
         start_hub(conf, E, odds)
         if conf.get("shadow", True):
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
+            if not backup:
+                threading.Thread(target=panel_loop, args=(odds, conf), daemon=True, name="panel").start()
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()

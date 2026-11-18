@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.97"
+VERSION = "2026.11.18.98"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -47,6 +47,8 @@ CFG = {
     "take_profit": 75,    # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
     "stop_loss": False,   # auto cash-out: may sell below what you paid when a game turns against you
+    "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
+    "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -235,7 +237,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
 
 
 def next_league():
@@ -3931,8 +3933,20 @@ def take_profit_reason(t, h):
     peak[t] = max(peak.get(t, 0.0), est)
     tp = float(CFG.get("take_profit") or 0) / 100
     floor = max(tp * h["pays"], TP_MIN_GAIN * h["cost"])
+    hits = []
     if tp and max(est / 0.9, real) >= floor:
-        return "take profit", floor
+        hits.append(("take profit", floor))
+    if CFG.get("smart_sell", True):                    # nimble: lock in when that beats the risk of holding
+        q, P = h["p"], h["pays"]
+        tick = [tk for (_, tk), _ in h.get("need") or []]
+        sw = [SWING.get(ticker_sport(tk) or "", 1.0) for tk in tick] or [1.0]
+        lam = 0.35 * sum(sw) / len(sw)                  # swingier sports (hockey, soccer) lock in sooner
+        hold_risky = q * P - lam * P * math.sqrt(max(q * (1 - q), 0))
+        floor2 = max(hold_risky, 1.5 * h["cost"])
+        if q >= 0.5 and max(est / 0.95, real) >= floor2:
+            hits.append(("smart", floor2))
+    if hits:
+        return min(hits, key=lambda x: x[1])
     if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
             and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= 1.1 * h["cost"]:
         return "lock in", 1.1 * h["cost"]
@@ -4024,7 +4038,8 @@ def auto_sell_now(plan):
             msg = accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
-                    "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. "}.get(
+                    "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. ",
+                    "smart": "🤖 Took the profit: locking it in now beats the risk of holding. "}.get(
                 why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
             out.append(lead + msg)
             if msg.startswith("✅"):
@@ -5102,7 +5117,7 @@ NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
-                  "take_profit", "lock_trail", "stop_loss")
+                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -9251,6 +9266,658 @@ def _kick_ts(leg):
         return dt.datetime.fromisoformat(str(KICKOFF.get(ev)).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+# ================================================================ the daily panel
+# Up to ~10 bets a day across sports and bet types, chosen together for the best chance that the whole
+# panel ends up ahead (Pete's goal), not the biggest possible profit. Rules:
+#  - every bet is priced at or better than its real chance (fair = the sharp books, margin removed),
+#    after Kalshi's fee; combos must be predicted to clear the (self-adjusting) cut-off
+#  - no hidden overlap: at most 2 bets ride on any one game, never both sides of one game
+#  - each sport on its own rhythm: NBA/NHL/college by the day, the NFL week as one slate
+#  - sell-early favorites: bought at fair or better with an exit price the Mac sells at by itself
+#  - NFL slate combos spread over the day's time slots, with the usual number of upsets built in
+# Pete approves a panel once; the Mac then buys each bet ~45 minutes before its game after checking the
+# price again, swapping in a similar bet if one no longer qualifies. A paper copy runs the panel fully
+# automatically alongside, which is the record that decides when it can be handed $300.
+PANEL = {"size": 10, "per_game": 2, "buy_before": 45 * 60, "longer_max": 2, "pool_age": 45 * 60,
+         "budget": 40.0, "max_bet_share": 0.05, "skim": 0.5}
+PANEL_POOL = {}            # code -> (time, [candidates])
+CUTOFF_FILE = os.path.join(HERE, "combo_cutoffs.json")
+SIZING_FILE = os.path.join(HERE, "combo_sizing.json")
+SWING = {"nhl": 1.25, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
+         "ncaamb": 0.9, "ncaawb": 0.9, "wnba": 0.85, "mlb": 1.05, "tennis": 1.0}   # how fast a lead can vanish
+
+
+def _local_day_end(now=None):
+    """4 a.m. Pacific tomorrow: today's panel covers games starting before then."""
+    t = dt.datetime.now(PACIFIC) if now is None else dt.datetime.fromtimestamp(now, PACIFIC)
+    end = (t + dt.timedelta(days=1)).replace(hour=4, minute=0, second=0, microsecond=0)
+    if t.hour < 4:
+        end -= dt.timedelta(days=1)
+    return end.timestamp()
+
+
+def _nfl_week_end(now=None):
+    """Tuesday 4 a.m. Pacific after this NFL week's Monday game."""
+    t = dt.datetime.now(PACIFIC) if now is None else dt.datetime.fromtimestamp(now, PACIFIC)
+    days = (1 - t.weekday()) % 7 or 7
+    return (t + dt.timedelta(days=days)).replace(hour=4, minute=0, second=0, microsecond=0).timestamp()
+
+
+# ---- the self-adjusting combo cut-off, per sport and size
+def _cut_key(code, n):
+    return f"{code}:{'2' if n <= 2 else '3-4' if n <= 4 else '5-7' if n <= 7 else '8+'}"
+
+
+def combo_cutoff(code, n):
+    """The share of fair a combo must be priced at for the panel. Starts at 95%; never below 85%."""
+    d = load_json(CUTOFF_FILE, {})
+    return float((d.get(_cut_key(code, n)) or {}).get("level", 95)) / 100
+
+
+def adjust_cutoffs(force=False):
+    """Once a week: move each group's cut-off a step from its own evidence. Up if combos bought just above
+    the bar have been returning well under what they cost; down (never below 85%) if the ones it would have
+    skipped, just under the bar, are returning more than they cost. Needs 30+ settled quotes in a band."""
+    d = load_json(CUTOFF_FILE, {})
+    if not force and time.time() - d.get("_at", 0) < 7 * 86400:
+        return []
+    if not STORE["db"]:
+        return []
+    rows = store_rows("select sport, n, pct, pays, stake, outcome from quotes where resolved=1 and pct is not null "
+                      "and ts > ?", (time.time() - 60 * 86400,))
+    groups = defaultdict(list)
+    for r in rows:
+        for sp in (r["sport"] or "").split(","):
+            groups[_cut_key(sp, r["n"] or 2)].append(r)
+    moved = []
+    for key, rs in groups.items():
+        cur = float((d.get(key) or {}).get("level", 95))
+        L = cur / 100
+        above = [r for r in rs if L <= r["pct"] < L + 0.05]
+        below = [r for r in rs if L - 0.05 <= r["pct"] < L]
+        ret = lambda xs: sum((r["pays"] / r["stake"]) if r["outcome"] == "won" else 0 for r in xs) / len(xs)
+        new, why = cur, ""
+        if len(above) >= 30 and ret(above) < 0.85:
+            new, why = min(cur + 2, 110), f"raised: combos just over the bar returned {ret(above):.0%} of their cost"
+        elif len(below) >= 30 and ret(below) >= 1.0 and cur > 85:
+            new, why = max(cur - 2, 85), f"lowered: combos just under the bar returned {ret(below):.0%} of their cost"
+        if new != cur:
+            d[key] = {"level": new, "why": why, "at": int(time.time()), "n": len(rs)}
+            moved.append(f"{key} {cur:.0f}% → {new:.0f}% ({why})")
+        else:
+            d.setdefault(key, {"level": cur, "why": "", "n": len(rs)})["n"] = len(rs)
+    d["_at"] = time.time()
+    save_json(CUTOFF_FILE, d)
+    return moved
+
+
+def cutoff_summary():
+    d = load_json(CUTOFF_FILE, {})
+    return [{"group": k, **v} for k, v in sorted(d.items()) if not k.startswith("_")]
+
+
+# ---- sizing that grows (slowly) with the bankroll, shrinks fast, and sets half of each month's profit aside
+def sizing_base(balance=None):
+    """The bankroll the panel sizes from: what's in Kalshi minus the profit set aside, and when it has grown,
+    only 10% more a week than last time (losses count right away)."""
+    s = load_json(SIZING_FILE, {})
+    bal = balance if balance is not None else (fetch_account(max_age=600, every_league=True)[1] or CFG.get("bankroll", 300))
+    now = time.time()
+    month = dt.datetime.now(PACIFIC).strftime("%Y-%m")
+    if s.get("month") != month:                       # new month: set aside half of last month's profit
+        start = s.get("month_start")
+        if start is not None and bal > start:
+            s["reserved"] = round(s.get("reserved", 0) + PANEL["skim"] * (bal - start), 2)
+            s["skim_note"] = f"Set aside {money(PANEL['skim'] * (bal - start))} of {s.get('month')}'s profit."
+        s.update(month=month, month_start=bal)
+    avail = max(bal - s.get("reserved", 0), 0)
+    prev = s.get("base") or avail
+    weeks = max((now - s.get("base_at", now)) / (7 * 86400), 0)
+    base = min(avail, prev * (1.10 ** weeks)) if avail > prev else avail
+    if now - s.get("base_at", 0) > 86400:
+        s.update(base=round(base, 2), base_at=now)
+    save_json(SIZING_FILE, s)
+    return base, s
+
+
+def _size(kind, ret, chance, base):
+    """Dollars for one panel bet: a quarter of Kelly on a shrunk edge, inside $2..5% of the bankroll."""
+    hi = max(2.0, PANEL["max_bet_share"] * base)
+    edge = max(ret, 0) * 0.7
+    if chance <= 0 or chance >= 1 or edge <= 0:
+        return 2.0
+    b = (1 + edge) / chance - 1
+    f = edge / b if b > 0 else 0
+    return round(min(hi, max(2.0, 0.25 * f * base)), 2)
+
+
+# ---- candidates
+def _cand(kind, code, legs, chance, ret, why, **extra):
+    kicks = [k for k in (_kick_ts(l) for l in legs) if k]
+    if not kicks:
+        for l in legs:
+            try:
+                kicks.append(dt.datetime.fromisoformat(str(l.get("start")).replace("Z", "+00:00")).timestamp())
+            except ValueError:
+                pass
+    return dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
+                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
+                 "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair")} for l in legs],
+                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
+                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
+
+
+def sell_early_candidates(games):
+    """Favorites (65-88%) priced at or under fair after the fee, with an exit price above it. Since a fair
+    price moves like a fair coin, the chance it touches the exit before the game ends is about fair/exit."""
+    out = []
+    for e, sides in games.items():
+        for x in sides:
+            if x.get("tie") or not x.get("fair") or not x.get("p") or started(x) or x.get("src") is None:
+                continue
+            if not 0.65 <= x["fair"] <= 0.88:
+                continue
+            fee = single_fee(x["p"])
+            if x["p"] + fee > x["fair"]:
+                continue
+            exit_ = round(min(0.97, x["p"] + max(0.06, (1 - x["p"]) * 0.45)), 2)
+            touch = min(0.99, x["fair"] / exit_)
+            gain = exit_ - x["p"] - fee - single_fee(exit_)
+            ev = touch * gain - (1 - touch) * (x["p"] + fee)
+            out.append(dict(x, exit=exit_, touch=round(touch, 4), ev=ev / x["p"]))
+    return sorted(out, key=lambda x: -x["touch"])
+
+
+def slate_combos(games, code, k=3):
+    """NFL-style slate combos: games from more than one time slot (so early wins create a sell point), with
+    as many underdogs as a slate usually produces (the sum of each game's upset chance), picking the
+    underdogs Kalshi prices cheapest against fair."""
+    pre = {e: [s for s in sd if not s.get("tie")] for e, sd in games.items()
+           if not any(started(s) for s in sd) and all(s.get("fair") and s.get("p") and s.get("src") for s in sd if not s.get("tie"))}
+    pre = {e: sd for e, sd in pre.items() if len(sd) == 2}
+    if len(pre) < 4:
+        return []
+    kick = {e: _kick_ts(sd[0]) or 0 for e, sd in pre.items()}
+    slots = sorted({round(t / 5400) for t in kick.values()})
+    if len(slots) < 2:
+        return []
+    out = []
+    evs = sorted(pre, key=lambda e: kick[e])
+    for n in (5, 6, 8):
+        if n > len(evs):
+            continue
+        # spread across slots: walk the slots round-robin, taking the games with the best-priced side first
+        by_slot = defaultdict(list)
+        for e in evs:
+            by_slot[round(kick[e] / 5400)].append(e)
+        for s in by_slot:
+            by_slot[s].sort(key=lambda e: -max(x["fair"] / x["p"] for x in pre[e]))
+        chosen, i = [], 0
+        while len(chosen) < n and any(by_slot.values()):
+            s = slots[i % len(slots)]
+            if by_slot.get(s):
+                chosen.append(by_slot[s].pop(0))
+            i += 1
+        favs = {e: max(pre[e], key=lambda x: x["fair"]) for e in chosen}
+        dogs = {e: min(pre[e], key=lambda x: x["fair"]) for e in chosen}
+        upsets = round(sum(d["fair"] for d in dogs.values()))
+        flip = sorted((e for e in chosen if dogs[e]["fair"] >= 0.3), key=lambda e: -dogs[e]["fair"] / dogs[e]["p"])[:upsets]
+        legs = [dogs[e] if e in flip else favs[e] for e in chosen]
+        chance = math.prod(l["fair"] for l in legs)
+        base = math.prod(l["fair"] / l["p"] for l in legs)
+        c = {"legs": legs, "fair": 1 / chance, "kalshi": 1 / math.prod(l["p"] for l in legs)}
+        pq = predict_quote(c)
+        pct = pq["pct"] if pq else base * maker_ratio(len(legs), _hours_to(legs))
+        out.append((pct, chance, legs, len(flip)))
+    out.sort(key=lambda t: -t[0])
+    return out[:k]
+
+
+def panel_collect(book_snap, code, log=print):
+    """Gather this league's panel candidates (pre-game only). Called for each league by the Mac."""
+    book = load_book_state(book_snap)
+    games, _, _ = week_games(fetch_markets())
+    attach_fair(games, book)
+    games = {e: sd for e, sd in games.items() if not any(started(x) for x in sd)}
+    cands = []
+    for x in single_candidates(games):
+        cands.append(_cand("single", code, [x], x["fair"], x["edge"] / (x["p"] + single_fee(x["p"])),
+                           f"Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance.", price=x["p"],
+                           opp=opp_of(games, x)))
+    for x in sell_early_candidates(games):
+        if any(c["id"] == "single:" + x["ticker"] for c in cands):
+            continue
+        cands.append(_cand("early", code, [x], x["touch"], x["ev"],
+                           f"Bought at fair or better; the Mac sells at {x['exit'] * 100:.0f}¢, which it reaches about "
+                           f"{x['touch']:.0%} of the time.", price=x["p"], exit=x["exit"], opp=opp_of(games, x)))
+    try:
+        for x in line_candidates(code):
+            if x["edge"] >= LINE_MIN_EDGE:
+                cands.append(_cand("line", code, [dict(x, start=x.get("start"))], x["fair"], x["edge"] / x["p"],
+                                   f"From the sportsbook line and how often games land past it.", price=x["p"],
+                                   game=x.get("game"), line_kind=x.get("kind")))
+    except Exception as err:
+        log(f"panel lines {code}:", type(err).__name__, err)
+    for c in value_combos(games, k=6):
+        n = len(c["legs"])
+        pq = predict_quote(c)
+        pct = pq["pct"] if pq else c.get("value_pct")
+        if pct and pct >= combo_cutoff(code, n):
+            cands.append(_cand("combo", code, c["legs"], math.prod(l["fair"] for l in c["legs"]), pct - 1,
+                               "Every pick is priced under its real chance, so the combo should pay more than it's worth.",
+                               pct=round(pct, 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3)))
+    if code == "nfl":
+        for pct, chance, legs, ups in slate_combos(games, code):
+            if pct >= combo_cutoff(code, len(legs)):
+                cands.append(_cand("combo", code, legs, chance, pct - 1,
+                                   f"Spread across the day's time slots with {ups} upset{'s' if ups != 1 else ''} built in "
+                                   f"(a Sunday usually has that many), so early wins give a chance to cash out.",
+                                   pct=round(pct, 4), fair_mult=round(1 / chance, 3), slate=True))
+    PANEL_POOL[code] = (time.time(), cands)
+    return cands
+
+
+# ---- choosing the panel
+def _events_of(c):
+    return [re.sub(r"(SPREAD|TOTAL)-", "GAME-", l.get("event") or "") for l in c["legs"]]
+
+
+def _sim_panel(items, n=3000, seed=7):
+    """Monte Carlo of the panel's total profit. Games are shared, so bets on the same game move together."""
+    rng = random.Random(seed)
+    totals = []
+    for _ in range(n):
+        res, tot = {}, 0.0
+        for c in items:
+            s = c["stake"]
+            if c["kind"] == "combo":
+                won = True
+                for l in c["legs"]:
+                    if l["ticker"] not in res:
+                        res[l["ticker"]] = rng.random() < l["fair"]
+                    won &= res[l["ticker"]]
+                tot += s * (c["pct"] * c["fair_mult"] - 1) if won else -s
+            elif c["kind"] == "early":
+                l = c["legs"][0]
+                if l["ticker"] not in res:
+                    res[l["ticker"]] = rng.random() < l["fair"]
+                touched = res[l["ticker"]] or rng.random() < max(c["chance"] - l["fair"], 0) / max(1 - l["fair"], 1e-6)
+                p = c["price"]
+                n_ = s / (p + single_fee(p))
+                tot += n_ * (c["exit"] - p - single_fee(p) - single_fee(c["exit"])) if touched else -s
+            else:
+                l = c["legs"][0]
+                key = l["ticker"]
+                if key not in res:
+                    res[key] = rng.random() < l["fair"]
+                p = c["price"]
+                n_ = s / (p + single_fee(p))
+                tot += n_ * 1.0 - s if res[key] else -s
+        totals.append(tot)
+    return totals
+
+
+def choose_panel(cands, budget, base, size=None):
+    """Greedy: keep adding the bet that most raises the chance the panel finishes ahead (expected profit
+    breaks ties), inside the overlap rules and the budget."""
+    size = size or PANEL["size"]
+    picked, spent, per_game = [], 0.0, defaultdict(int)
+    solo = set()                                       # games that already carry a single, spread or total
+    pool = [dict(c, stake=_size(c["kind"], c["ret"], c["chance"], base)) for c in cands if c["ret"] >= 0]
+    while len(picked) < size and pool:
+        best = None
+        for c in pool:
+            evs = _events_of(c)
+            if any(per_game[e] >= PANEL["per_game"] for e in evs):
+                continue
+            if c["kind"] != "combo" and evs[0] in solo:
+                continue                                       # one straight bet per game: no team + over overlap
+            if spent + c["stake"] > budget + 0.01:
+                continue
+            tot = _sim_panel(picked + [c], n=1500)
+            pr = sum(1 for t in tot if t > 0) / len(tot)
+            ev = sum(tot) / len(tot)
+            score = pr + 0.05 * ev / max(budget, 1)
+            if best is None or score > best[0]:
+                best = (score, c, pr, ev)
+        if not best:
+            break
+        _, c, pr, ev = best
+        picked.append(c)
+        spent += c["stake"]
+        pool = [x for x in pool if x["id"] != c["id"]]
+        for e in _events_of(c):
+            per_game[e] += 1
+            if c["kind"] != "combo":
+                solo.add(e)
+    # every prefix of that order is a candidate panel; take the one most likely to finish ahead, but spread
+    # over at least a few bets when there are several (one sure-looking bet isn't a panel)
+    floor_n = min(len(picked), 3)
+    best_k, best_pr = len(picked), -1.0
+    for k in range(floor_n, len(picked) + 1):
+        tot = _sim_panel(picked[:k], n=2000)
+        pr = sum(1 for t in tot if t > 0) / len(tot)
+        if pr > best_pr + 0.005:
+            best_k, best_pr = k, pr
+    picked = picked[:best_k]
+    spent = sum(c["stake"] for c in picked)
+    tot = _sim_panel(picked) if picked else [0]
+    return picked, {"p_ahead": round(sum(1 for t in tot if t > 0) / len(tot), 3), "ev": round(sum(tot) / len(tot), 2),
+                    "stake": round(spent, 2), "worst": round(min(tot), 2), "best": round(max(tot), 2)}
+
+
+def sport_pay_index():
+    """How close to fair Kalshi pays on combos in each sport, relative to all sports (from your quotes)."""
+    if not STORE["db"]:
+        return {}
+    rows = store_rows("select sport, pct from quotes where pct is not null and ts > ?", (time.time() - 45 * 86400,))
+    by = defaultdict(list)
+    for r in rows:
+        by[r["sport"] or ""].append(r["pct"])
+    allv = [p for v in by.values() for p in v]
+    if len(allv) < 20:
+        return {}
+    mid = statistics.median(allv)
+    return {k: round(statistics.median(v) / mid, 3) for k, v in by.items() if len(v) >= 10 and "," not in k}
+
+
+def build_panel(codes=None, budget=None, now=None):
+    """Today's panel (and a couple of longer plays) from the latest candidates of each league."""
+    now = now or time.time()
+    budget = float(budget or CFG.get("panel_budget", PANEL["budget"]))
+    base, _ = sizing_base()
+    day_end, nfl_end = _local_day_end(now), _nfl_week_end(now)
+    idx = sport_pay_index()
+    today, longer = [], []
+    for code, (at, cands) in PANEL_POOL.items():
+        if now - at > PANEL["pool_age"] or (codes and code not in codes):
+            continue
+        for c in cands:
+            if not c.get("kick") or c["kick"] < now + 20 * 60:
+                continue
+            c = dict(c)
+            if c["kind"] == "combo":                       # lean toward the sports that pay closest to fair
+                c["ret"] = c["ret"] + (idx.get(code, 1.0) - 1.0)
+            end = nfl_end if code == "nfl" else day_end
+            if c["last"] <= end:
+                today.append(c)
+            elif c["kind"] == "combo" and c["last"] <= now + 3 * 86400 and c["ret"] >= 0.10:
+                longer.append(c)
+    picked, stats = choose_panel(today, budget, base)
+    used = {e for c in picked for e in _events_of(c)}
+    longer = [dict(c, stake=_size(c["kind"], c["ret"], c["chance"], base)) for c in
+              sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
+    for c in picked:
+        c["buy_at"] = max(now, (c["kick"] or now) - PANEL["buy_before"])
+    return {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
+            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL)}
+
+
+# ---- storage, approval and the Mac's scheduled buying
+def _panel_day(now=None):
+    t = dt.datetime.now(PACIFIC) if now is None else dt.datetime.fromtimestamp(now, PACIFIC)
+    return (t - dt.timedelta(hours=4)).date().isoformat()
+
+
+def panel_save_draft(p, mode="real"):
+    """Keep the latest draft for today (replaced every round until it's approved)."""
+    if not STORE["db"]:
+        return
+    day = _panel_day(p["at"])
+    store_x("create table if not exists panel(day text, mode text, ts real, status text, body text, primary key(day, mode))")
+    row = store_rows("select status from panel where day=? and mode=?", (day, mode))
+    if row and row[0]["status"] != "draft":
+        return
+    store_x("insert or replace into panel values(?,?,?,?,?)", (day, mode, p["at"], "draft", json.dumps(p)))
+
+
+def panel_get(mode="real", day=None):
+    if not STORE["db"]:
+        return None
+    store_x("create table if not exists panel(day text, mode text, ts real, status text, body text, primary key(day, mode))")
+    rows = store_rows("select * from panel where day=? and mode=?", (day or _panel_day(), mode))
+    if not rows:
+        return None
+    p = json.loads(rows[0]["body"])
+    p["status"] = rows[0]["status"]
+    return p
+
+
+def panel_put(p, mode="real", status=None):
+    day = _panel_day(p["at"])
+    store_x("update panel set body=?, status=coalesce(?, status) where day=? and mode=?",
+            (json.dumps({k: v for k, v in p.items() if k != "status"}), status, day, mode))
+
+
+def panel_approve(ids=None, view="all"):
+    """Pete's tap: the Mac may buy these panel bets (all by default) at their scheduled times. A one-sport
+    panel (view = its code) becomes today's panel when approved."""
+    real = panel_get()
+    if real and real["status"] in ("approved", "cancelled"):
+        return False, "Today's panel is already approved. Cancel it first to approve a different one."
+    p = panel_get("real" if view in ("all", "", None) else f"view:{view}")
+    if not p:
+        return False, "There's no panel yet. Give it a few minutes."
+    if view not in ("all", "", None):
+        store_x("insert or replace into panel values(?,?,?,?,?)",
+                (_panel_day(p["at"]), "real", p["at"], "draft", json.dumps({k: v for k, v in p.items() if k != "status"})))
+    for c in p["items"]:
+        if ids is None or c["id"] in ids:
+            c["state"] = c.get("state") or "scheduled"
+        elif not c.get("state"):
+            c["state"] = "left out"
+    panel_put(p, status="approved")
+    n = sum(1 for c in p["items"] if c.get("state") == "scheduled")
+    return True, f"Approved {n} bet{'s' if n != 1 else ''}. The Mac buys each about 45 minutes before its game."
+
+
+def panel_cancel():
+    p = panel_get()
+    if not p:
+        return False, "No panel today."
+    for c in p["items"]:
+        if c.get("state") == "scheduled":
+            c["state"] = "cancelled"
+    panel_put(p, status="cancelled")
+    return True, "Stopped. Nothing else from today's panel will be bought."
+
+
+def _fresh(c):
+    """The same bet in the newest candidates, or None if it no longer qualifies."""
+    at, cands = PANEL_POOL.get(c["code"], (0, []))
+    if time.time() - at > PANEL["pool_age"]:
+        return None
+    return next((x for x in cands if x["id"] == c["id"] and x["ret"] >= 0), None)
+
+
+def _replacement(c, p):
+    """A similar bet: same kind of risk (chance within 12 points), starting within 2 hours, no overlap."""
+    used = {e for x in p["items"] if x.get("state") in ("scheduled", "bought", "paper") for e in _events_of(x)}
+    best = None
+    for code, (at, cands) in PANEL_POOL.items():
+        if time.time() - at > PANEL["pool_age"]:
+            continue
+        for x in cands:
+            if x["ret"] < 0 or not x.get("kick") or x["kick"] < time.time() + 15 * 60:
+                continue
+            if abs(x["chance"] - c["chance"]) > 0.12 or abs((x["kick"] or 0) - (c["kick"] or 0)) > 2 * 3600:
+                continue
+            if used & set(_events_of(x)) or any(y["id"] == x["id"] for y in p["items"]):
+                continue
+            if best is None or x["ret"] > best["ret"]:
+                best = x
+    return best
+
+
+def _buy_panel_bet(c):
+    """Place one panel bet for real. Returns (ok, note, details)."""
+    l = c["legs"][0]
+    if c["kind"] in ("single", "early", "line"):
+        book = book_depth(l["ticker"]) or {}
+        ask = book.get("ask") or c["price"]
+        limit = min(ask, l["fair"] - single_fee(ask) - (0.0 if c["kind"] == "early" else 0.005))
+        if limit < ask - 1e-9:
+            return False, f"the price moved to {ask * 100:.0f}¢, no longer under fair", {}
+        n = int(c["stake"] // (ask + single_fee(ask)))
+        if n < 1:
+            return False, "the stake is under one contract", {}
+        filled, err = buy_single(l["ticker"], n, ask)
+        if err or filled <= 0:
+            return False, err or "nobody was selling at that price", {}
+        d = {"filled": filled, "price": ask}
+        if c["kind"] == "early":
+            e = post_sell(l["ticker"], filled, c["exit"])
+            d["exit_order"] = "placed" if not e else f"failed: {e}"
+        return True, f"bought {filled:g} at {ask * 100:.0f}¢", d
+    # combos: quote the exact picks and accept only if still at or over the cut-off
+    CTX.setdefault("offers", {})
+    CTX["stake"] = c["stake"]
+    legs = [dict(x) for x in c["legs"]]
+    CTX["combos"] = [{"kind": "panel", "tier": "Panel", "legs": legs, "fair": c["stake"] * c["fair_mult"],
+                      "min": c["stake"] * c["fair_mult"] * combo_cutoff(c["code"], len(legs)),
+                      "kalshi": c["stake"] / math.prod(x["p"] for x in legs)}]
+    q = get_offer(1, c["stake"], check_cap=False)
+    if q.get("error"):
+        return False, q["error"], {}
+    if not q.get("ok"):
+        return False, f"Kalshi offered {q['pct']:.0%} of fair, under the {combo_cutoff(c['code'], len(legs)):.0%} cut-off", {}
+    old_budget = CFG["budget"]
+    CFG["budget"] = 1e9                                # the panel has its own budget, checked when it was built
+    try:
+        r = accept_offer(1)
+    finally:
+        CFG["budget"] = old_budget
+    if r.get("error"):
+        return False, r["error"], {}
+    return True, f"bought for {money(c['stake'])}, pays {money(q['pays'])} ({q['pct']:.0%} of fair)", {"pays": q["pays"]}
+
+
+def panel_exec(alert=None, log=print, paused=False, may_trade=True):
+    """Every minute on the Mac: buy approved panel bets that are due (rechecked first, swapped if needed),
+    and run the paper panel the same way without money."""
+    out = []
+    now = time.time()
+    for mode in ("real", "paper"):
+        p = panel_get(mode)
+        if not p or p["status"] not in ("approved", "paper"):
+            continue
+        changed = False
+        for i, c in enumerate(list(p["items"])):
+            if c.get("state") != "scheduled" or c.get("buy_at", 0) > now:
+                continue
+            changed = True
+            if mode == "real" and (paused or not may_trade):
+                continue
+            f = _fresh(c)
+            if f is None:
+                alt = _replacement(c, p)
+                if alt:
+                    alt = dict(alt, stake=c["stake"], buy_at=now, state="scheduled", swapped_for=c["legs"][0]["pick"])
+                    c["state"] = "swapped"
+                    p["items"].append(alt)
+                    msg = (f"🔁 Panel: swapped {c['legs'][0]['pick']} for {alt['legs'][0]['pick']}"
+                           f" ({' + '.join(l['pick'] for l in alt['legs'][1:3])}" if len(alt['legs']) > 1 else
+                           f"🔁 Panel: swapped {c['legs'][0]['pick']} for {alt['legs'][0]['pick']}")
+                    if len(alt["legs"]) > 1:
+                        msg += ")"
+                    msg += ": its price no longer beat its chance."
+                    if mode == "real":
+                        out.append(msg)
+                else:
+                    c["state"] = "skipped"
+                    c["note"] = "no longer priced under its chance, and nothing similar qualified"
+                    if mode == "real":
+                        out.append(f"⏭️ Panel: skipped {c['legs'][0]['pick']}: its price moved and nothing similar qualified.")
+                continue
+            c.update({k: f[k] for k in ("legs", "chance", "ret", "price", "pct", "exit") if k in f})
+            if mode == "paper":
+                c["state"], c["paid"] = "paper", c.get("price")
+                continue
+            ok, note, d = _buy_panel_bet(c)
+            c.update(d)
+            c["state"], c["note"], c["at"] = ("bought" if ok else "failed"), note, int(now)
+            picks = " + ".join(l["pick"] for l in c["legs"])
+            out.append(("✅ Panel bought: " if ok else "⚠️ Panel couldn't buy ") + f"{picks}: {note}.")
+        if changed:
+            panel_put(p, mode)
+    return out
+
+
+def panel_settle():
+    """Record results for panel bets (real and paper) once their games are decided."""
+    out = []
+    for mode in ("real", "paper"):
+        for r in store_rows("select * from panel where mode=? and day >= ?", (mode, (dt.date.today() - dt.timedelta(days=10)).isoformat())) \
+                if STORE["db"] else []:
+            p = json.loads(r["body"])
+            changed = False
+            for c in p["items"]:
+                if c.get("state") not in ("bought", "paper") or c.get("result"):
+                    continue
+                res = fetch_results([l["ticker"] for l in c["legs"]])
+                if not all(res.get(l["ticker"]) in ("yes", "no") for l in c["legs"]):
+                    if c["kind"] == "early":                          # did the price touch the exit (its sell order filled)?
+                        b = book_depth(c["legs"][0]["ticker"]) or {}
+                        if (b.get("bid") or 0) >= c["exit"]:
+                            c["touched"] = True
+                            changed = True
+                    continue
+                won = all(res[l["ticker"]] == "yes" for l in c["legs"])
+                s = c["stake"]
+                p_ = c.get("paid") or c.get("price") or 0.5
+                if c["kind"] == "combo":
+                    pays = c.get("pays") or s * c.get("pct", 1) * c.get("fair_mult", 1)
+                    pl = pays - s if won else -s
+                elif c["kind"] == "early" and (won or c.get("touched")):
+                    n = s / (p_ + single_fee(p_))
+                    pl = n * (c["exit"] - p_ - single_fee(p_) - single_fee(c["exit"]))
+                else:
+                    n = s / (p_ + single_fee(p_))
+                    pl = n - s if won else -s
+                c["result"], c["pl"] = ("won" if pl > 0 else "lost"), round(pl, 2)
+                changed = True
+            if changed:
+                store_x("update panel set body=? where day=? and mode=?", (json.dumps(p), r["day"], mode))
+    return out
+
+
+def panel_record():
+    """The paper panel's record (the gate for handing it $300) and the real panel's."""
+    out = {}
+    for mode in ("real", "paper"):
+        rows = store_rows("select body from panel where mode=?", (mode,)) if STORE["db"] else []
+        bets = [c for r in rows for c in json.loads(r["body"]).get("items", []) if c.get("result")]
+        days = defaultdict(float)
+        for r in rows:
+            b = json.loads(r["body"])
+            for c in b.get("items", []):
+                if c.get("result"):
+                    days[_panel_day(b["at"])] += c["pl"]
+        out[mode] = {"bets": len(bets), "won": sum(1 for c in bets if c["result"] == "won"),
+                     "pl": round(sum(c["pl"] for c in bets), 2), "staked": round(sum(c["stake"] for c in bets), 2),
+                     "days": len(days), "days_up": sum(1 for v in days.values() if v > 0)}
+    pp = out["paper"]
+    pp["ready"] = pp["bets"] >= 50 and pp["pl"] > 0 and pp["days_up"] >= 0.55 * max(pp["days"], 1)
+    return out
+
+
+def panel_pass(log=print):
+    """After each round of collecting: rebuild today's draft, and start the paper copy for the day."""
+    for code in list(PANEL_POOL):                      # one-sport panels for the sport chips
+        v = build_panel(codes=[code])
+        if v["items"] or v["longer"]:
+            panel_save_draft(v, f"view:{code}")
+    p = build_panel()
+    if not p["items"]:
+        return []
+    panel_save_draft(p, "real")
+    if not panel_get("paper"):                         # the paper panel takes the day's first full draft as-is
+        q = dict(p, items=[dict(c, state="scheduled") for c in p["items"]])
+        panel_save_draft(q, "paper")
+        store_x("update panel set status='paper' where day=? and mode='paper'", (_panel_day(p["at"]),))
+    return [f"panel: {len(p['items'])} bets, {p['stats']['p_ahead']:.0%} chance to finish ahead"]
 
 
 # ---------------------------------------------------------------- "cover the early games" paper test
