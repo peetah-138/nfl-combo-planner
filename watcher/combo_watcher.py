@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.94"
+WATCHER_VERSION = "2026.11.17.95"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -903,23 +903,238 @@ pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}
 .tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}"""
 
 
+LOGIN_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Combo Hub">
+<meta name="theme-color" content="#0b0d12"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest">
+<title>Combo Hub</title><style>
+:root{--bg:#0b0d12;--panel:#151821;--line:#262a35;--ink:#f2f4f8;--mute:#8b93a3;--acc:#4f8cff;--bad:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--panel:#fff;--line:#dde1e8;--ink:#12151b;--mute:#667085;--acc:#2f6bff;--bad:#d92d20}}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,color-mix(in srgb,var(--acc) 22%,transparent),transparent 60%),var(--bg);
+ color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;
+ padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
+.box{width:100%;max-width:360px;text-align:center}
+.logo{width:76px;height:76px;border-radius:20px;box-shadow:0 12px 40px color-mix(in srgb,var(--acc) 40%,transparent);margin-bottom:18px}
+h1{font-size:28px;letter-spacing:-.02em;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 26px;font-size:15px}
+.fid{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:0;border-radius:14px;padding:15px;font-weight:600;font-size:17px;font-family:inherit;
+ background:var(--acc);color:#fff;cursor:pointer}.fid svg{width:24px;height:24px}
+.or{display:flex;align-items:center;gap:12px;color:var(--mute);font-size:13px;margin:20px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
+.field{position:relative}
+input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:var(--ink);padding:15px 52px 15px 16px;
+ font:600 20px ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.18em;text-align:center;outline:none;transition:border-color .15s,box-shadow .15s}
+input::placeholder{letter-spacing:normal;font:400 16px -apple-system,system-ui,sans-serif;color:var(--mute)}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(--acc) 22%,transparent)}
+.eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--mute);padding:8px;cursor:pointer}
+.go{width:100%;margin-top:12px;border:1px solid var(--line);border-radius:14px;padding:14px;font:600 17px -apple-system,system-ui,sans-serif;background:var(--panel);color:var(--ink);cursor:pointer}
+.solo .go{background:var(--acc);color:#fff;border:0}
+.msg{color:var(--bad);font-size:14px;min-height:20px;margin-top:12px}.hint{color:var(--mute);font-size:13px;margin-top:22px}.hint a{color:var(--acc)}
+.shake{animation:sh .4s}@keyframes sh{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+.spin{width:18px;height:18px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:r .7s linear infinite;display:inline-block}@keyframes r{to{transform:rotate(1turn)}}
+</style></head><body><div class="box" id="box">
+<img class="logo" src="data:image/png;base64,__ICON__" alt="">
+<h1>Combo Hub</h1><p class="sub" id="sub">Your Mac's betting desk</p>
+<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span>Unlock with Face ID</span></button>
+<div class="or">or use your passcode</div></div>
+<form method="post" action="/login" id="f"><div class="field"><input name="pass" id="p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Passcode" required>
+<button class="eye" type="button" aria-label="Show passcode" onclick="var p=document.getElementById('p');p.type=p.type==='password'?'text':'password'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+<button class="go" id="go">Unlock</button></form>
+<div class="msg" id="msg">__MSG__</div>
+<div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
+</div><script>
+const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
+if(msg.textContent.trim())box.classList.add('shake');
+document.getElementById('f').addEventListener('submit',()=>{document.getElementById('go').innerHTML='<span class="spin"></span>';});
+const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
+const e64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const can=window.PublicKeyCredential&&location.protocol==='https:';
+if(FID&&can){document.getElementById('fidwrap').style.display='';document.getElementById('hint').textContent='';}
+else{box.classList.add('solo');if(location.protocol!=='https:'&&HTTPS)document.getElementById('hint').innerHTML='Face ID works on the secure address: <a href="'+HTTPS+'">'+HTTPS.replace('https://','')+'</a>';}
+async function unlock(auto){const btn=document.getElementById('fid');const old=btn.innerHTML;
+ try{const o=await (await fetch('/auth/begin',{method:'POST',body:'{}'})).json();if(!o.ok)return;
+  btn.innerHTML='<span class="spin"></span>';
+  const c=await navigator.credentials.get({publicKey:{challenge:b64(o.challenge),rpId:o.rp,userVerification:'required',timeout:60000,
+   allowCredentials:o.ids.map(id=>({type:'public-key',id:b64(id)}))}});
+  const r=await (await fetch('/auth/finish',{method:'POST',body:JSON.stringify({id:c.id,clientDataJSON:e64(c.response.clientDataJSON),
+   authenticatorData:e64(c.response.authenticatorData),signature:e64(c.response.signature)})})).json();
+  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
+ }catch(e){if(!auto)msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or try again.':'Face ID isn\'t available here. Use the passcode.';}
+ btn.innerHTML=old;}
+document.getElementById('fid').onclick=()=>unlock(false);
+if(FID&&can&&!msg.textContent.trim())unlock(true);else document.getElementById('p').focus();
+</script></body></html>"""
+
+
+SESSIONS_FILE = os.path.join(HOME, "hub_sessions.json")    # sign-ins survive restarts and updates (hashed)
+
+
+def _cbor(b, i=0):
+    """Just enough CBOR to read a passkey's public key. Returns (value, next index)."""
+    ib = b[i]
+    mt, ai = ib >> 5, ib & 31
+    i += 1
+    if ai < 24:
+        n = ai
+    elif ai in (24, 25, 26, 27):
+        size = 1 << (ai - 24)
+        n = int.from_bytes(b[i:i + size], "big")
+        i += size
+    else:
+        raise ValueError("unsupported CBOR")
+    if mt == 0:
+        return n, i
+    if mt == 1:
+        return -1 - n, i
+    if mt in (2, 3):
+        v = b[i:i + n]
+        return (v if mt == 2 else v.decode()), i + n
+    if mt == 4:
+        out = []
+        for _ in range(n):
+            v, i = _cbor(b, i)
+            out.append(v)
+        return out, i
+    if mt == 5:
+        out = {}
+        for _ in range(n):
+            k, i = _cbor(b, i)
+            v, i = _cbor(b, i)
+            out[k] = v
+        return out, i
+    if mt == 7:
+        return {20: False, 21: True, 22: None}.get(ai), i
+    raise ValueError("unsupported CBOR")
+
+
+def _b64d(s):
+    import base64
+    s = str(s or "")
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
 class Web:
     """A small page for any browser on your Tailscale network: your live combos with a real cash-out
-    button, the shadow record, and what the Mac has been doing. Passcode required; sessions last 30 days."""
+    button, the shadow record, and what the Mac has been doing. Passcode or Face ID (a passkey) required;
+    sign-ins last 30 days and survive restarts."""
     def __init__(self, conf, E):
         import secrets
-        self.conf, self.E, self.sessions, self.fails = conf, E, {}, []
+        self.conf, self.E, self.fails = conf, E, []
         if not conf.get("web_pass"):
             conf["web_pass"] = "".join(secrets.choice("23456789abcdefghjkmnpqrstuvwxyz") for _ in range(8))
             E.save_json(CONF, conf)
         self.lock = threading.Lock()
+        self.challenges = {}
+        try:
+            with open(SESSIONS_FILE) as f:
+                self.sessions = {k: v for k, v in json.load(f).items() if v > time.time()}
+        except (OSError, ValueError):
+            self.sessions = {}
+
+    @staticmethod
+    def _h(tok):
+        return hashlib.sha256(tok.encode()).hexdigest()
+
+    def _save_sessions(self):
+        try:
+            now = time.time()
+            self.sessions = {k: v for k, v in self.sessions.items() if v > now}
+            tmp = SESSIONS_FILE + ".tmp"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                json.dump(self.sessions, f)
+            os.replace(tmp, SESSIONS_FILE)
+        except OSError:
+            pass
+
+    def keep_only(self, tok):
+        """After a passcode change: every other device signs in again."""
+        h = self._h(tok or "")
+        self.sessions = {k: v for k, v in self.sessions.items() if k == h}
+        self._save_sessions()
 
     def session(self, handler):
         import http.cookies
         c = http.cookies.SimpleCookie(handler.headers.get("Cookie") or "")
         tok = c["cw"].value if "cw" in c else ""
-        exp = self.sessions.get(tok)
+        exp = self.sessions.get(self._h(tok)) if tok else None
         return tok if exp and exp > time.time() else None
+
+    # ---- Face ID / Touch ID: passkeys (WebAuthn, ES256), only on the secure https address
+    @staticmethod
+    def rp_of(handler):
+        return (handler.headers.get("Host") or "").split(":")[0].lower()
+
+    def passkeys(self, rp=None):
+        return [p for p in self.conf.get("passkeys") or [] if rp is None or p.get("rp") == rp]
+
+    def challenge(self, kind):
+        import secrets
+        now = time.time()
+        self.challenges = {k: v for k, v in self.challenges.items() if v[1] > now}
+        c = secrets.token_urlsafe(32)
+        self.challenges[c] = (kind, now + 120)
+        return c
+
+    def _client(self, cdj, kind, rp):
+        cd = json.loads(cdj)
+        want = {"get": "webauthn.get", "reg": "webauthn.create"}[kind]
+        ch = self.challenges.pop(cd.get("challenge", ""), None)
+        if cd.get("type") != want or not ch or ch[0] != kind or ch[1] < time.time():
+            raise ValueError("challenge")
+        if cd.get("origin") != f"https://{rp}":
+            raise ValueError("origin")
+
+    def _check_auth_data(self, ad, rp):
+        if len(ad) < 37 or ad[:32] != hashlib.sha256(rp.encode()).digest():
+            raise ValueError("rp")
+        if not ad[32] & 0x01 or not ad[32] & 0x04:       # user present and verified (Face ID)
+            raise ValueError("not verified")
+
+    def passkey_register(self, d, rp, name):
+        cdj, att = _b64d(d.get("clientDataJSON")), _b64d(d.get("attestationObject"))
+        self._client(cdj, "reg", rp)
+        obj, _ = _cbor(att)
+        ad = obj["authData"]
+        self._check_auth_data(ad, rp)
+        if not ad[32] & 0x40:
+            raise ValueError("no key")
+        ln = int.from_bytes(ad[53:55], "big")
+        cid = ad[55:55 + ln]
+        key, _ = _cbor(ad, 55 + ln)
+        if key.get(1) != 2 or key.get(3) != -7 or key.get(-1) != 1:
+            raise ValueError("Only Face ID / Touch ID keys (ES256) are supported.")
+        import base64
+        b = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
+        pk = {"id": b(cid), "x": b(key[-2]), "y": b(key[-3]), "rp": rp, "name": name[:40] or "Device",
+              "added": int(time.time())}
+        self.conf["passkeys"] = [p for p in self.passkeys() if p["id"] != pk["id"]] + [pk]
+        self.E.save_json(CONF, self.conf)
+        log("Face ID sign-in added:", pk["name"])
+        return pk
+
+    def passkey_login(self, d, rp):
+        now = time.time()
+        self.fails = [x for x in self.fails if now - x < 600]
+        if len(self.fails) >= 5:
+            return None, "Too many tries. Wait 10 minutes."
+        try:
+            pk = next((p for p in self.passkeys(rp) if p["id"] == str(d.get("id") or "").rstrip("=")), None)
+            if not pk:
+                raise ValueError("unknown key")
+            cdj, ad, sig = _b64d(d.get("clientDataJSON")), _b64d(d.get("authenticatorData")), _b64d(d.get("signature"))
+            self._client(cdj, "get", rp)
+            self._check_auth_data(ad, rp)
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives import hashes
+            pub = ec.EllipticCurvePublicNumbers(int.from_bytes(_b64d(pk["x"]), "big"), int.from_bytes(_b64d(pk["y"]), "big"),
+                                                ec.SECP256R1()).public_key()
+            pub.verify(sig, ad + hashlib.sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
+        except Exception as err:
+            self.fails.append(now)
+            log("Face ID sign-in refused:", type(err).__name__, str(err)[:60])
+            return None, "Face ID didn't work. Use the passcode."
+        pk["used"] = int(now)
+        self.E.save_json(CONF, self.conf)
+        return self.new_session(), ""
 
     def login(self, form):
         import secrets, hmac as _h
@@ -935,7 +1150,8 @@ class Web:
     def new_session(self):
         import secrets
         tok = secrets.token_urlsafe(24)
-        self.sessions[tok] = time.time() + 30 * 86400
+        self.sessions[self._h(tok)] = time.time() + 30 * 86400
+        self._save_sessions()
         return tok
 
     def issue_once(self):
@@ -1011,13 +1227,12 @@ class Web:
             finally:
                 E.MINE["busy"] = False
 
-    def login_page(self, msg=""):
+    def login_page(self, msg="", rp=""):
         import html as h
-        return ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                f"<title>Combo Hub</title><style>{WEB_CSS}</style></head><body><main><h1>Combo Hub</h1>"
-                f"<div class='card'><form method='post' action='/login'><div class='mute'>Passcode (shown by the Mac setup)</div>"
-                f"<div class='row' style='margin-top:8px'><input name='pass' type='password' autocomplete='current-password' autofocus>"
-                f"<button>Open</button></div></form>{('<p>' + h.escape(msg) + '</p>') if msg else ''}</div></main></body></html>")
+        fid = bool(rp) and bool(self.passkeys(rp))
+        https = (self.conf.get("https") or {}).get("url") or ""
+        return LOGIN_HTML.replace("__MSG__", h.escape(msg)).replace("__FID__", "1" if fid else "") \
+            .replace("__HTTPS__", h.escape(https)).replace("__ICON__", ICON_PNG)
 
 
 WEB_LEAGUES = (("nfl", "NFL"), ("nba", "NBA"), ("nhl", "NHL"), ("ncaaf", "CFB"), ("ncaamb", "CBB"))
@@ -1558,7 +1773,7 @@ async function load(v,fresh){try{
  if(v==='build'){S.build=await api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':''));}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
  if(v==='games'){S.games=await api('/app/api/games');}
- if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;
+ if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
@@ -1820,6 +2035,25 @@ function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofC
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
+function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
+ if(LOCAL&&!/\.ts\.net$/.test(location.hostname))return (f.keys||[]).length?`<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${f.keys.map(k=>esc(k.name)).join(', ')}</small></div><button class="btn ghost" onclick="fidRemoveAll()">Remove all</button></div>`:'';
+ if(location.protocol!=='https:'||!window.PublicKeyCredential)return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${(S.pk||{}).https?`Works on the secure address. Open <a href="${esc(S.pk.https)}">${esc(S.pk.https.replace('https://',''))}</a> and turn it on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
+ return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:'Unlock Combo Hub with Face ID instead of typing the passcode.'}</small></div>
+  ${here.length?`<button class="btn ghost" onclick="fidRemoveAll()">Turn off</button>`:`<button class="btn acc" onclick="fidOn(this)">Turn on</button>`}</div>`;}
+const fb64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
+const fe64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+async function fidOn(btn){hap();try{if(btn)btn.innerHTML='<span class="spin"></span>';
+  const o=await api('/auth/reg-begin',{});const name=/iPhone/.test(navigator.userAgent)?'iPhone':/iPad/.test(navigator.userAgent)?'iPad':/Mac/.test(navigator.userAgent)?'Mac':'This device';
+  const c=await navigator.credentials.create({publicKey:{challenge:fb64(o.challenge),rp:{id:o.rp,name:'Combo Hub'},user:{id:fb64(o.user),name:'Combo Hub',displayName:'Combo Hub'},
+   pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',userVerification:'required'},
+   excludeCredentials:o.exclude.map(id=>({type:'public-key',id:fb64(id)})),attestation:'none',timeout:60000}});
+  const r=await api('/auth/reg-finish',{clientDataJSON:fe64(c.response.clientDataJSON),attestationObject:fe64(c.response.attestationObject),name});
+  hap(r.ok?'success':'error');toast(r.ok?'Face ID is on. Next time, just look at your phone to unlock.':(r.msg||'Couldn\'t turn it on.'),5000,r.ok?'good':'bad');
+ }catch(e){toast(e&&e.name==='NotAllowedError'?'Cancelled.':e&&e.name==='InvalidStateError'?'Face ID is already on for this device.':'Couldn\'t turn it on: '+(e&&e.message||e),5000);}
+ await fidLoad();if(S.view==='settings')renderSettings();}
+async function fidLoad(){S.fid=await api('/auth/list',{}).catch(()=>({keys:[]}));}
+async function fidRemoveAll(){const here=(S.fid.keys||[]).filter(k=>LOCAL&&!/\.ts\.net$/.test(location.hostname)||k.rp===location.hostname);
+ for(const k of here)await api('/auth/remove',{id:k.id});toast('Face ID sign-in turned off.');await fidLoad();renderSettings();}
 function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'PushManager' in window;
  if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
  if(!can)return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>On iPhone: open Combo Hub from its Home Screen icon (Share › Add to Home Screen), then turn them on here.</small></div></div>`;
@@ -2035,7 +2269,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    +tgl('auto_sell','Auto cash-out at my Let it ride level','The Mac sells by itself, logged and capped')+rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
    +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
-   pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
+   fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b>${d.keys.kalshi?'<span class="dot"></span>Connected through the Mac':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
@@ -2053,6 +2287,11 @@ async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np
 window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
 if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
 chrome();render();load(S.view);connect();
+setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
+ if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
+ if((S.fid.keys||[]).some(k=>k.rp===location.hostname))return;localStorage.setItem('cw_fid_asked','1');
+ modal(`<h3>Unlock with Face ID?</h3><p>Skip the passcode next time. Your face never leaves your phone; the Mac only keeps a key that can't be used anywhere else.</p>
+  <div class="row"><button class="btn" onclick="closeModal()">Not now</button><button class="btn acc" onclick="closeModal();fidOn()">Turn on Face ID</button></div>`);}catch(e){}},2500);
 setInterval(()=>{if(document.hidden)return;if(S.live_ok&&Date.now()-(S.lastLoad||0)<30000)return;if(['live','games'].includes(S.view)&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}},12000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view==='live')load('live');});
 </script></body></html>
@@ -3016,7 +3255,7 @@ def mac_settings(conf, web, d, tok):
         else:
             with open(CONF, "w") as fh:
                 json.dump(conf, fh)
-        web.sessions = {k: v for k, v in web.sessions.items() if k == tok}   # everyone else signs in again
+        web.keep_only(tok)                                                     # everyone else signs in again
         return {"ok": True, "msg": "Passcode changed. Other devices sign in again with the new one."}
     if a == "update":
         d2 = os.path.join(HOME, "setup")
@@ -3249,7 +3488,54 @@ def start_hub(conf, E, odds=None):
                 return webapp_proxy(self, tok, "POST", self.path, self.rfile.read(n) if n else b"")
             if web and self.path == "/login":
                 tok, msg = web.login(self._form(n))
-                return self._html(303, "", cookie=tok, location="/") if tok else self._html(200, web.login_page(msg))
+                return self._html(303, "", cookie=tok, location="/") if tok else self._html(200, web.login_page(msg, web.rp_of(self)))
+            if web and self.path.startswith("/auth/") and 0 <= n < 20_000:    # Face ID (passkeys)
+                try:
+                    d = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    d = {}
+                rp = web.rp_of(self)
+                if self.path == "/auth/begin":
+                    keys = web.passkeys(rp)
+                    out = {"ok": bool(keys), "challenge": web.challenge("get"), "rp": rp, "ids": [p["id"] for p in keys]}
+                    return self._send(200, json.dumps(out).encode())
+                if self.path == "/auth/finish":
+                    tok, msg = web.passkey_login(d, rp)
+                    body = json.dumps({"ok": bool(tok), "msg": msg}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Cache-Control", "no-store")
+                    if tok:
+                        self.send_header("Set-Cookie", f"cw={tok}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict; Secure")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    return self.wfile.write(body)
+                tok = web.session(self)                      # adding and removing need a signed-in device
+                if not tok or self.headers.get("X-CW") != tok:
+                    return self._send(403, b"")
+                if self.path == "/auth/list":
+                    out = {"ok": True, "rp": rp, "keys": [{k: p.get(k) for k in ("id", "name", "added", "used", "rp")}
+                                                           for p in web.passkeys()]}
+                elif self.path == "/auth/reg-begin":
+                    import secrets
+                    out = {"ok": True, "challenge": web.challenge("reg"), "rp": rp,
+                           "user": web.conf.setdefault("passkey_user", secrets.token_urlsafe(16)),
+                           "exclude": [p["id"] for p in web.passkeys(rp)]}
+                    E.save_json(CONF, web.conf)
+                elif self.path == "/auth/reg-finish":
+                    try:
+                        pk = web.passkey_register(d, rp, str(d.get("name") or "Device"))
+                        out = {"ok": True, "name": pk["name"]}
+                    except Exception as err:
+                        log("Face ID setup refused:", type(err).__name__, str(err)[:80])
+                        out = {"ok": False, "msg": str(err) if "supported" in str(err) else "Couldn't add Face ID. Try again."}
+                elif self.path == "/auth/remove":
+                    web.conf["passkeys"] = [p for p in web.passkeys() if p["id"] != d.get("id")]
+                    E.save_json(CONF, web.conf)
+                    out = {"ok": True}
+                else:
+                    out = {"ok": False}
+                return self._send(200, json.dumps(out).encode())
             if web and self.path == "/act":
                 tok, form = web.session(self), self._form(n)
                 if not tok or form.get("tok") != tok:      # signed in, and the button came from our own page
@@ -3332,7 +3618,7 @@ def start_hub(conf, E, odds=None):
             if web and u.path == "/app/classic" and "frag=1" not in u.query:
                 tok = web.session(self)
                 if not tok:
-                    return self._html(200, web.login_page())
+                    return self._html(200, web.login_page("", web.rp_of(self)))
                 return webapp_proxy(self, tok, "GET", self.path)
             if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
@@ -3345,7 +3631,7 @@ def start_hub(conf, E, odds=None):
                     tok = web.new_session()
                     return self._html(303, "", cookie=tok, location=self.path)
                 if not tok:
-                    return self._html(200, web.login_page())
+                    return self._html(200, web.login_page("", web.rp_of(self)))
                 lg = (parse_qs(u.query).get("build") or [""])[0]
                 note = ""
                 if lg in dict(WEB_LEAGUES):
