@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.71"
+WATCHER_VERSION = "2026.11.17.72"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -445,6 +445,9 @@ class Notifier:
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
                  pause_button=bool(self.E.CFG.get("auto_sell")))
+            threading.Thread(target=PUSH.send, args=("Combo Hub", msg.replace("Open the planner to confirm.", "Tap to decide.")),
+                             kwargs={"urgent": True, "tag": "urgent"}, daemon=True).start()
+            BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
             if msg not in self.q:
@@ -461,7 +464,299 @@ class Notifier:
         self.last = now
         body = "\n".join("• " + m for m in msgs[:8]) + (f"\n(+{len(msgs) - 8} more)" if len(msgs) > 8 else "")
         push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low")
+        threading.Thread(target=PUSH.send, args=(f"{len(msgs)} update{'s' * (len(msgs) != 1)}", body),
+                         kwargs={"tag": "digest"}, daemon=True).start()
         return len(msgs)
+
+
+class Bus:
+    """Live events for open Combo Hub screens (scores, swings, advice, settled combos, refreshes)."""
+    def __init__(self):
+        self.subs, self.lock, self.n = [], threading.Lock(), 0
+
+    def sub(self):
+        import queue
+        q = queue.Queue(maxsize=200)
+        with self.lock:
+            self.subs.append(q)
+        return q
+
+    def unsub(self, q):
+        with self.lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+    def publish(self, ev):
+        with self.lock:
+            self.n += 1
+            ev = dict(ev, id=self.n, at=time.time())
+            for q in list(self.subs):
+                try:
+                    q.put_nowait(ev)
+                except Exception:
+                    pass
+
+
+BUS = Bus()
+
+
+def is_local(handler):
+    """A request from this Mac itself, not one that came in through Tailscale's https front door
+    (which also arrives from 127.0.0.1, but carries forwarding headers)."""
+    h = handler.headers
+    return (handler.client_address[0] == "127.0.0.1" and not h.get("X-Forwarded-For")
+            and not h.get("Tailscale-User-Login") and not h.get("Forwarded"))
+
+
+# ---- https through Tailscale (a private address with a real certificate; needed for iPhone notifications)
+def tailscale_cli():
+    import shutil
+    for p in (shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
+              "/opt/homebrew/bin/tailscale", "/usr/bin/tailscale"):
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def tailscale_https(conf, port):
+    """Ask Tailscale to serve Combo Hub at https://<this-mac>.<tailnet>.ts.net. If the tailnet hasn't
+    allowed https yet, keep the one-time link that turns it on, for Settings > This Mac."""
+    import subprocess
+    cli = tailscale_cli()
+    if not cli:
+        conf["https"] = {"state": "no-cli"}
+        return None
+    try:
+        st = json.loads(subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=15).stdout or "{}")
+        name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        name = ""
+    if not name:
+        conf["https"] = {"state": "no-name"}
+        return None
+    url = f"https://{name}"
+    try:
+        r = requests.get(url + "/sw.js", timeout=8)
+        if r.ok and b"Combo Hub" in r.content:
+            conf["https"] = {"state": "on", "url": url}
+            return url
+    except requests.RequestException:
+        pass
+    try:
+        p = subprocess.run([cli, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=25)
+        out = (p.stdout or "") + (p.stderr or "")
+    except subprocess.TimeoutExpired as err:
+        out = ((err.stdout or b"").decode() if isinstance(err.stdout, bytes) else (err.stdout or "")) + \
+              ((err.stderr or b"").decode() if isinstance(err.stderr, bytes) else (err.stderr or ""))
+    except (OSError, subprocess.SubprocessError) as err:
+        out = str(err)
+    link = re.search(r"https://login\.tailscale\.com/\S+", out)
+    for _ in range(6):
+        try:
+            r = requests.get(url + "/sw.js", timeout=8)
+            if r.ok and b"Combo Hub" in r.content:
+                conf["https"] = {"state": "on", "url": url}
+                log("https on:", url)
+                return url
+        except requests.RequestException:
+            pass
+        time.sleep(3)
+    conf["https"] = {"state": "need-enable" if link else "failed", "link": link.group(0) if link else "",
+                     "detail": out.strip()[-300:]}
+    log("https not on yet:", conf["https"]["state"], conf["https"].get("link") or out.strip()[-160:])
+    return None
+
+
+# ---- iPhone notifications (Web Push from the home screen app; needs the https address)
+def _b64u(b):
+    import base64
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _b64u_dec(s):
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+class Push:
+    """VAPID keys made on this Mac, subscriptions from your devices, and the encrypted send (RFC 8291)."""
+    def __init__(self, home):
+        self.key_path = os.path.join(home, "vapid_private.pem")
+        self.sub_path = os.path.join(home, "push_subs.json")
+        self.lock = threading.Lock()
+        self.key = None
+
+    def ok(self):
+        try:
+            import cryptography  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def private(self):
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+        if self.key:
+            return self.key
+        if os.path.exists(self.key_path):
+            with open(self.key_path, "rb") as fh:
+                self.key = serialization.load_pem_private_key(fh.read(), None)
+        else:
+            self.key = ec.generate_private_key(ec.SECP256R1())
+            pem = self.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                         serialization.NoEncryption())
+            fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(pem)
+        return self.key
+
+    def public_b64(self):
+        from cryptography.hazmat.primitives import serialization
+        return _b64u(self.private().public_key().public_bytes(serialization.Encoding.X962,
+                                                               serialization.PublicFormat.UncompressedPoint))
+
+    def subs(self):
+        try:
+            with open(self.sub_path) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return []
+
+    def add(self, sub, label=""):
+        if not isinstance(sub, dict) or not str(sub.get("endpoint", "")).startswith("https://"):
+            return False
+        keys = sub.get("keys") or {}
+        if not keys.get("p256dh") or not keys.get("auth"):
+            return False
+        with self.lock:
+            cur = [x for x in self.subs() if x.get("endpoint") != sub["endpoint"]]
+            cur.append({"endpoint": sub["endpoint"], "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]},
+                        "label": str(label)[:60], "at": int(time.time())})
+            fd = os.open(self.sub_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(cur[-10:], fh)
+        return True
+
+    def remove(self, endpoint):
+        with self.lock:
+            cur = [x for x in self.subs() if x.get("endpoint") != endpoint]
+            fd = os.open(self.sub_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(cur, fh)
+
+    @staticmethod
+    def encrypt(sub, payload):
+        """aes128gcm content encoding for one subscription (RFC 8188 + RFC 8291)."""
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization, hashes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        ua_pub = _b64u_dec(sub["keys"]["p256dh"])
+        auth = _b64u_dec(sub["keys"]["auth"])
+        eph = ec.generate_private_key(ec.SECP256R1())
+        as_pub = eph.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        shared = eph.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ua_pub))
+        ikm = HKDF(hashes.SHA256(), 32, auth, b"WebPush: info\x00" + ua_pub + as_pub).derive(shared)
+        salt = os.urandom(16)
+        cek = HKDF(hashes.SHA256(), 16, salt, b"Content-Encoding: aes128gcm\x00").derive(ikm)
+        nonce = HKDF(hashes.SHA256(), 12, salt, b"Content-Encoding: nonce\x00").derive(ikm)
+        body = AESGCM(cek).encrypt(nonce, payload + b"\x02", None)
+        rs = 4096
+        return salt + rs.to_bytes(4, "big") + bytes([len(as_pub)]) + as_pub + body
+
+    def vapid(self, endpoint):
+        from urllib.parse import urlparse
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        u = urlparse(endpoint)
+        head = _b64u(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode())
+        claims = _b64u(json.dumps({"aud": f"{u.scheme}://{u.netloc}", "exp": int(time.time()) + 12 * 3600,
+                                   "sub": "https://github.com/peetah-138/nfl-combo-planner"}, separators=(",", ":")).encode())
+        msg = f"{head}.{claims}".encode()
+        r, s_ = decode_dss_signature(self.private().sign(msg, ec.ECDSA(hashes.SHA256())))
+        jwt = f"{head}.{claims}.{_b64u(r.to_bytes(32, 'big') + s_.to_bytes(32, 'big'))}"
+        return f"vapid t={jwt}, k={self.public_b64()}"
+
+    def send(self, title, body, url="/app", tag=None, urgent=False):
+        if not self.ok():
+            return 0
+        subs, sent = self.subs(), 0
+        data = json.dumps({"title": title, "body": body[:400], "url": url, "tag": tag or ""}).encode()
+        for sub in subs:
+            try:
+                r = requests.post(sub["endpoint"], data=self.encrypt(sub, data), timeout=10, headers={
+                    "Authorization": self.vapid(sub["endpoint"]), "Content-Encoding": "aes128gcm",
+                    "Content-Type": "application/octet-stream", "TTL": "3600", "Urgency": "high" if urgent else "normal"})
+                if r.status_code in (404, 410):
+                    self.remove(sub["endpoint"])          # that device unsubscribed
+                elif r.ok:
+                    sent += 1
+                else:
+                    log("push refused:", r.status_code, r.text[:120])
+            except Exception as err:
+                log("push failed:", type(err).__name__, err)
+        return sent
+
+
+PUSH = Push(HOME)
+ICON_PNG = "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"
+
+SW_JS = """// Combo Hub service worker: shows the Mac's notifications and opens the right screen when tapped.
+self.addEventListener('install', e => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data.json(); } catch (x) { d = {title: 'Combo Hub', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Combo Hub',
+    {body: d.body || '', tag: d.tag || undefined, data: {url: d.url || '/app'}, icon: '/icon.png', badge: '/icon.png'}));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/app';
+  e.waitUntil(self.clients.matchAll({type: 'window', includeUncontrolled: true}).then(cs => {
+    for (const c of cs) { if ('focus' in c) { c.navigate(url); return c.focus(); } }
+    return self.clients.openWindow(url);
+  }));
+});
+"""
+
+MANIFEST = json.dumps({"name": "Combo Hub", "short_name": "Combo Hub", "start_url": "/", "scope": "/", "display": "standalone",
+                       "background_color": "#0b0d12", "theme_color": "#0b0d12",
+                       "icons": [{"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]})
+
+
+def ensure_crypto():
+    """iPhone notifications need the cryptography package; an update that came in without the installer
+    adds it quietly the first time (uv is what the installer set the Mac up with)."""
+    if PUSH.ok() or sys.platform != "darwin":
+        return
+    import shutil, subprocess
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    if not os.path.exists(uv):
+        return
+    try:
+        subprocess.run([uv, "pip", "install", "-q", "--python", sys.executable, "cryptography"], timeout=300,
+                       capture_output=True)
+        log("installed cryptography for iPhone notifications" if PUSH.ok() else "couldn't install cryptography")
+    except (OSError, subprocess.SubprocessError) as err:
+        log("cryptography install failed:", err)
+
+
+def history_loop(E, every=900):
+    """Settle recorded quotes once their games finish, and keep the history file trimmed."""
+    n = 0
+    while True:
+        try:
+            got = E.resolve_quotes()
+            if got:
+                log(f"history: {got} quotes settled")
+            n += 1
+            if n % 96 == 1:
+                E.store_trim()
+        except Exception as err:
+            log("history loop:", type(err).__name__, err)
+        time.sleep(every)
 
 
 SHADOW_LEAGUES = ("nfl", "nba", "nhl", "ncaaf", "ncaamb")
@@ -866,7 +1161,7 @@ PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name=
 SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="data:image/png;base64,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">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0b0d12"><title>Combo Hub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -972,6 +1267,47 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .tabbar{display:none}
+/* phase 3 */
+.doit{display:grid;gap:10px;margin:4px 0 18px}
+.dcard{background:linear-gradient(100deg,var(--yesbg),transparent 70%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);border-radius:var(--r);padding:16px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
+.dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
+.dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
+.dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.dnums b{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em;text-transform:none}
+.dbtns{display:flex;gap:8px;grid-row:span 2}
+.calm{display:flex;align-items:center;gap:12px;color:var(--sub);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin:4px 0 18px;font-size:13.5px}
+.calm i{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg);flex:none}
+.why{color:var(--sub);font-size:12.5px;margin-top:6px}
+.moment{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+.moment:first-of-type{border-top:0}.moment .k{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:var(--panel2);font-size:13px}
+.moment time{color:var(--mute);font-size:11.5px}
+.flash{animation:fl 1.6s ease}@keyframes fl{0%{background:var(--accbg)}100%{background:transparent}}
+.games{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.gt{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:grid;gap:10px}
+.gt.live{border-color:color-mix(in srgb,var(--live) 50%,transparent)}
+.gt .top2{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.gt .tm{font-weight:700;font-size:15px}.gt .vs{color:var(--mute);font-size:12.5px}
+.gt .sc{font-size:24px;font-weight:800;letter-spacing:-.02em;text-align:right;line-height:1}.gt .sc small{display:block;font-size:11.5px;color:var(--mute);font-weight:600;margin-top:4px}
+.gt .ch{display:flex;align-items:baseline;gap:8px}.gt .ch b{font-size:22px}.gt .ch span{color:var(--mute);font-size:12px}
+.gt svg{width:100%;height:56px;display:block}
+.gt .ft{display:flex;justify-content:space-between;color:var(--sub);font-size:12.5px;border-top:1px solid var(--line);padding-top:10px}
+.sheet.wide{max-width:880px;max-height:calc(100vh - 40px);overflow:auto;padding:24px}
+.dhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
+.dkpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}
+.dkpis div{background:var(--panel2);border-radius:12px;padding:10px 12px}.dkpis span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.dkpis b{font-size:17px}
+.chartbox{background:var(--panel2);border-radius:12px;padding:12px 12px 6px;margin-bottom:16px}.chartbox svg{width:100%;display:block}
+.key{display:flex;gap:14px;font-size:12px;color:var(--sub);margin:2px 0 8px}.key i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.dlegs .lg{display:grid;grid-template-columns:minmax(0,1fr) 120px 56px;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
+.dlegs svg{width:120px;height:28px}
+.bars2 .br{display:grid;grid-template-columns:110px minmax(0,1fr) 92px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0}
+.bars2 .tr2{height:10px;background:var(--panel2);border-radius:6px;position:relative;overflow:hidden}.bars2 .tr2 i{position:absolute;top:0;bottom:0;border-radius:6px}
+.pred{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--panel2);color:var(--sub)}
+.pred.good{background:var(--yesbg);color:var(--yes)}.pred.bad{background:var(--nobg);color:var(--no)}
+.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--yes);margin-right:6px;animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--yes) 60%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@media (max-width:900px){.dcard{grid-template-columns:minmax(0,1fr)}.dbtns{grid-row:auto}.dbtns .btn{flex:1}.dkpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .modal{padding:0;align-items:flex-end}.sheet.wide{max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
+ .dlegs .lg{grid-template-columns:minmax(0,1fr) 84px 46px}.dlegs svg{width:84px}.games{grid-template-columns:minmax(0,1fr)}}
 /* settings */
 .set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
 .sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
@@ -1080,6 +1416,7 @@ const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
  build:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
  results:'<svg viewBox="0 0 24 24"><path d="M5 19v-7M12 19V6M19 19v-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+ games:'<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 5v14M3.5 12h17" stroke="currentColor" stroke-width="1.5" opacity=".7"/></svg>',
  settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
 const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
@@ -1088,21 +1425,23 @@ function menu(){$('#dd').classList.toggle('open');}
 document.addEventListener('click',e=>{if(!e.target.closest('.menu'))$('#dd').classList.remove('open');});
 function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'));}
 function modal(h){$('#sheet').innerHTML=h;$('#modal').classList.add('on');}
-function closeModal(){$('#modal').classList.remove('on');}
+function closeModal(){$('#modal').classList.remove('on');$('#sheet').classList.remove('wide');}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
-function chrome(){const tabs=[['live','Live'],['build','Build'],['results','Results'],['settings','Settings']];
+function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'],['results','Results'],['settings','Settings']];
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
  $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
 }
 function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
  <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
 function go(v){S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
-function render(){({live:renderLive,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
+function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
 async function load(v,fresh){try{
  if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
  if(v==='build'){S.build=await api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':''));}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
- if(v==='settings'){const [st,mac]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null]);S.set=st;S.mac=mac;}
+ if(v==='games'){S.games=await api('/app/api/games');}
+ if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;
+  try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
@@ -1132,13 +1471,28 @@ function renderLive(){const d=S.live;const m=$('#main');
   <div class="kpi"><span>Chance one hits</span><b>${pct(d.chance_one)}</b></div>
   <div class="kpi"><span>Cash-out value now</span><b>${(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real)?'≈ ':''}${money(d.cash_now)}</b></div>
   <div class="kpi"><span>Biggest payout</span><b class="up">${money(d.best)}</b></div></div>
- ${todo.length?`<h2>Needs a look <span class="n">${todo.length}</span></h2>`+todo.map(c=>`<div class="alert"><div class="ic">⚡</div><div style="flex:1;min-width:0"><b>${esc(c.label)} · worth cashing out</b>
-   <p>Kalshi offers ${money(c.offer)} (you paid ${money(c.cost)}). Holding is worth about ${money(c.hold_value)} to you.</p></div>
-   <div class="acts2" style="display:flex;gap:8px"><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out ${money(c.offer)}</button></div></div>`).join(''):''}
+ ${doNow(d,cs)}
  <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
  </div><aside class="side">${sideLive(d)}</aside></div>`;}
+function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
+ const items=[];
+ for(const c of pend){
+  if((d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
+  else if(c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
+  else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
+ }
+ items.sort((a,b)=>b.w-a.w);
+ if(!items.length)return pend.length?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${pend.length} combo${pend.length>1?'s':''} riding · the Mac tells you the moment one is worth selling.</span></div>`:'';
+ return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
+  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
+  if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
+   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
+  if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
+   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
+  return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
+   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`;}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
@@ -1149,13 +1503,19 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
    <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
-   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
+   ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
+   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
+    <button class="btn ghost" onclick="event.stopPropagation();openCombo('${c.t}')">Details</button>
     ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
     <button class="btn" ${S.busy[c.t]?'disabled':''} onclick="event.stopPropagation();ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
     ${c.offer_real?`<button class="btn yes" onclick="event.stopPropagation();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
 function tog(t){S.open[t]=!S.open[t];renderLive();}
+function moments(){const ev=(S.events||[]).slice(-8).reverse();if(!ev.length)return '';
+ const K={score:'🏟️',swing:'📈',advice:'⚡',settled:'🏁',alert:'🔔'};
+ return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment"><span class="k">${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
+function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return `<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
+ return moments()+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
   <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
@@ -1179,7 +1539,7 @@ function renderBuild(){const d=S.build;const m=$('#main');
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
   <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
-  <div class="cgrid">${d.combos.map(ccard).join('')}</div>
+  <div class="cgrid">${d.combos.slice().sort((a,b)=>((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
  </div><aside>${slip(d)}</aside></div>`;}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
@@ -1201,7 +1561,8 @@ async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Ask
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;
  return `<div class="ccard"><div class="hd"><div><div class="tier">${esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
-  <div class="s" style="font-size:12.5px">${c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:'Get a price to see what Kalshi pays.'}</div>
+  <div class="s" style="font-size:12.5px">${c.pred?`<span class="pred ${c.pred.p_clear>=.5?'good':c.pred.p_clear<.2?'bad':''}">≈ ${pct(c.pred.pct)} of fair · ${Math.round(c.pred.p_clear*100)}% chance it clears</span>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:'Get a price to see what Kalshi pays.'}
+   ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
   <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" onclick="buy(${c.i})">Buy ${money(o.stake)} → ${money(o.pays)}${o.ok?'':' (under cut-off)'}</button>`:
    `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}</div></div>`;}
 async function quote(i){const b=$('#q'+i);if(b)b.innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'quote',i});
@@ -1221,6 +1582,7 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
   <h2>By week</h2><div class="chart"><svg viewBox="0 0 ${Math.max(1,w.length)*60} 160" width="100%" height="170" preserveAspectRatio="none">
    <line x1="0" y1="80" x2="${w.length*60}" y2="80" stroke="var(--line)"/>${w.map((x,i)=>{const h=Math.abs(x.pl)/mx*70;return `<rect x="${i*60+14}" y="${x.pl>=0?80-h:80}" width="32" height="${Math.max(2,h)}" rx="4" fill="${x.pl>=0?'var(--yes)':'var(--no)'}"><title>${x.week}: ${smoney(x.pl)} on ${x.n}</title></rect>`}).join('')}</svg>
    <div style="display:flex">${w.map(x=>`<div style="width:${100/Math.max(1,w.length)}%;text-align:center;font-size:11px" class="m">${(x.week||'').slice(5)}</div>`).join('')}</div></div>
+  ${edgeBlock(d)}
   <h2>History <span class="n">${d.history.length}</span></h2><div class="tbl">${d.history.map(h=>`<div class="hrow"><div class="m" style="font-size:12.5px">${esc(h.week||'')}</div>
    <div class="hp"><div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div></div>
    <div class="num">${money(h.cost)}</div><div class="num ${h.back-h.cost>=0?'up':'down'}">${smoney(h.back-h.cost)}</div><span class="verdict ${h.status}">${h.status.toUpperCase()}</span></div>`).join('')||'<div class="empty"><b>No settled combos yet</b></div>'}</div>
@@ -1229,6 +1591,108 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
    <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
  </aside></div>`;}
+function edgeBlock(d){const e=d.edge||{};const out=[];
+ const clv=e.clv||[0,0,0];
+ if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
+  <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
+  <span class="m">You paid ${money(clv[0])} for combos the market valued at ${money(clv[1])} at kickoff.</span></div>
+  <div class="m" style="font-size:12.5px;margin-top:6px">Above 0% means you buy better than the market's final price: the earliest reliable sign of a real edge, long before wins and losses settle it.</div></div>`);}
+ const cal=Object.entries(e.cal||{}).filter(([k,v])=>v[0]);
+ if(cal.length)out.push(`<div class="card"><h3>Did combos hit as often as priced? <span>settled</span></h3><div class="bars2">${cal.map(([k,[n,ps,h]])=>{const ex=ps/n,hit=h/n,mx=Math.max(.05,...cal.map(([,v])=>Math.max(v[1]/v[0],v[2]/v[0])));
+  return `<div class="br"><span>${esc(k)} <span class="m">· ${n}</span></span><div style="display:grid;gap:3px"><div class="tr2"><i style="left:0;width:${ex/mx*100}%;background:var(--mute);opacity:.6"></i></div><div class="tr2"><i style="left:0;width:${hit/mx*100}%;background:${hit>=ex?'var(--yes)':'var(--no)'}"></i></div></div><span class="num">${pct(ex)} → <b>${pct(hit)}</b></span></div>`;}).join('')}</div>
+  <div class="key" style="margin-top:8px"><span><i style="background:var(--mute)"></i>Priced</span><span><i style="background:var(--yes)"></i>Actually hit</span></div></div>`);
+ const bt=(d.by_tier||[]);
+ if(bt.length){const mx=Math.max(1,...bt.map(r=>Math.abs(r.back-r.cost)));out.push(`<div class="card"><h3>Returns by number of picks <span>settled</span></h3><div class="bars2">${bt.map(r=>{const pl=r.back-r.cost;
+  return `<div class="br"><span>${esc(r.k)} <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${pl>=0?'left:50%':'right:50%'};width:${Math.abs(pl)/mx*50}%;background:${pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${pl>=0?'up':'down'}">${smoney(pl)}</span></div>`;}).join('')}</div></div>`);}
+ const md=d.model;
+ if(md){out.push(`<div class="card"><h3>How Kalshi prices combos <span>${md.n} quotes</span></h3>
+  <div class="m" style="font-size:12.5px;margin-bottom:8px">Kalshi's combo quote as a share of what its own single-game prices multiply out to. Learned from every quote the Mac sees; Build uses it to predict prices before asking.</div>
+  <div class="bars2">${Object.entries(md.by_picks||{}).sort((a,b)=>parseInt(a[0])-parseInt(b[0])).map(([k,v])=>`<div class="br"><span>${esc(k)} pick${k==='1'?'':'s'}</span><div class="tr2"><i style="left:0;width:${Math.min(100,v*100)}%;background:var(--acc)"></i></div><span class="num">${pct(v)}</span></div>`).join('')}
+  ${Object.entries(md.by_time||{}).map(([k,v])=>`<div class="br"><span>${esc(k)} to game</span><div class="tr2"><i style="left:0;width:${Math.min(100,v*100)}%;background:var(--live)"></i></div><span class="num">${pct(v)}</span></div>`).join('')}</div></div>`);}
+ const b=d.backtest;
+ if(b&&b.quotes){const rows=b.rows.filter(r=>r.n);const mx=Math.max(1,...rows.map(r=>Math.abs(r.pl)));const cut=(S.set&&S.set.values&&S.set.values.accept_pct)||null;
+  out.push(`<div class="card"><h3>What each cut-off would have earned <span>${b.quotes} settled quotes</span></h3>
+  <div class="m" style="font-size:12.5px;margin-bottom:8px">Every quote Kalshi gave (yours and the Mac's paper trades), bought only if it cleared that share of fair, settled with the real results.</div>
+  <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
+ if(!out.length)return `<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
+ return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
+function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'PushManager' in window;
+ if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
+ if(!can)return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>On iPhone: open Combo Hub from its Home Screen icon (Share › Add to Home Screen), then turn them on here.</small></div></div>`;
+ return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${S.pushOn?'On. Alerts from the Mac open the right screen when tapped.':'Get the Mac\'s alerts here, straight from Combo Hub.'}${pk.n?` · ${pk.n} device${pk.n>1?'s':''} signed up`:''}</small></div>
+  ${S.pushOn?`<button class="btn" onclick="pushTest()">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
+function urlB64(s){const p='='.repeat((4-s.length%4)%4);const b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)));}
+async function pushOn(btn){try{const perm=await Notification.requestPermission();
+  if(perm!=='granted'){toast('Notifications are blocked. Allow them in Settings › Notifications › Combo Hub.',6000);return;}
+  if(btn)btn.innerHTML='<span class="spin"></span>';
+  const k=await api('/app/push',{a:'key'});if(!k.ok){toast('The Mac is still updating. Try again in a few minutes.');return;}
+  const reg=await navigator.serviceWorker.register('/sw.js');await navigator.serviceWorker.ready;
+  const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(k.key)});
+  await api('/app/push',{a:'sub',sub:sub.toJSON(),label:/iPhone/.test(navigator.userAgent)?'iPhone':'Browser'});
+  const t=await api('/app/push',{a:'test'});S.pushOn=true;toast(t.sent?'Notifications are on. A test is on its way.':'Signed up. The test didn\'t go through yet.',5000);load('settings');
+ }catch(e){toast('Couldn\'t turn them on: '+(e&&e.message||e),6000);load('settings');}}
+async function pushTest(){const t=await api('/app/push',{a:'test'});toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
+async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistration();const sub=reg&&await reg.pushManager.getSubscription();if(sub){await api('/app/push',{a:'off',sub:sub.toJSON()});await sub.unsubscribe();}}catch(e){}S.pushOn=false;toast('Notifications off on this device.');load('settings');}
+function httpsRow(mac){const h=mac.https||{};
+ if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
+ if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>Tailscale needs you to allow https for your network once. Open the link, approve, then tap Check.</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
+ return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac.':h.state?'Not on yet ('+esc(h.state)+').':'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
+// ---------------- charts
+function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
+ return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
+function spark(pts,w,h,col){if(!pts||pts.length<2)return `<svg viewBox="0 0 ${w} ${h}"><line x1="0" x2="${w}" y1="${h/2}" y2="${h/2}" stroke="var(--line)" stroke-dasharray="3 4"/></svg>`;
+ const last=pts[pts.length-1][1];col=col||(last>=.5?'var(--yes)':'var(--no)');const p=sparkPath(pts,w,h-4,0,1);
+ return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><line x1="0" x2="${w}" y1="${(h-4)/2}" y2="${(h-4)/2}" stroke="var(--line)" stroke-dasharray="3 4"/>
+  <path d="${p} L${w} ${h} L0 ${h}Z" fill="${col}" opacity=".10"/><path d="${p}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;}
+function valueChart(off,cost,pays){if(!off||off.length<2)return '<div class="m" style="padding:18px 4px">The value chart fills in as the Mac watches this combo.</div>';
+ const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=W<600?190:200,pl=44,pb=22,iw=W-pl-8,ih=H-pb-10;const t0=off[0].ts,t1=off[off.length-1].ts;
+ const vals=off.flatMap(o=>[o.hold,o.offer]).filter(v=>v!=null).concat([cost]);const hi=Math.max(...vals)*1.08,lo=0;
+ const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>10+ih-(v-lo)/(hi-lo)*ih;
+ const line=k=>off.filter(o=>o[k]!=null).map((o,i)=>`${i?'L':'M'}${X(o.ts).toFixed(1)} ${Y(o[k]).toFixed(1)}`).join('');
+ const ticks=[0,.25,.5,.75,1].map(f=>lo+(hi-lo)*f);const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+ return `<div class="key"><span><i style="background:var(--acc)"></i>Worth holding</span><span><i style="background:var(--yes)"></i>Kalshi offer</span><span><i style="background:var(--mute)"></i>You paid</span></div>
+ <svg viewBox="0 0 ${W} ${H}">${ticks.map(v=>`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pl-6}" y="${Y(v)+4}" text-anchor="end" font-size="11" fill="var(--mute)">${money(v)}</text>`).join('')}
+  <line x1="${pl}" x2="${W-8}" y1="${Y(cost)}" y2="${Y(cost)}" stroke="var(--mute)" stroke-dasharray="4 4"/>
+  <path d="${line('hold')}" fill="none" stroke="var(--acc)" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="${line('offer')}" fill="none" stroke="var(--yes)" stroke-width="2" stroke-linejoin="round" opacity=".9"/>
+  ${off.filter(o=>o.real_offer&&o.offer!=null).map(o=>`<circle cx="${X(o.ts)}" cy="${Y(o.offer)}" r="3.5" fill="var(--yes)"/>`).join('')}
+  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
+// ---------------- combo detail
+async function openCombo(t){modal(`<div class="m" style="padding:30px;text-align:center"><span class="spin"></span></div>`);$('#sheet').classList.add('wide');
+ const r=await api('/app/api/combo?t='+encodeURIComponent(t)).catch(()=>null);const c=r&&r.combo;
+ if(!c){$('#sheet').innerHTML='<h3>Not found</h3><p>That combo isn\'t live any more.</p><div class="row"><button class="btn" onclick="closeModal()">Close</button></div>';return;}
+ const h=r.history||{offers:[],ticks:{}};const [vc,vt]=verdictOf(c);
+ $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${(c.sports||[]).map(s=>SPN[s]||s).join(' · ')}</div><h3 style="font-size:22px">${esc(c.label)}</h3><div class="m">${esc(nextLine(c))}</div></div>
+  <div style="display:flex;gap:8px;align-items:center"><span class="verdict ${vc}">${vt}</span><button class="btn ghost" onclick="closeModal()">Close</button></div></div>
+  <div class="dkpis"><div><span>Paid</span><b>${money(c.cost)}</b></div><div><span>Pays</span><b>${money(c.pays)}</b></div><div><span>Chance</span><b>${c.group==='pending'?pct(c.p):'—'}</b></div><div><span>${c.offer_real?'Offer':'Likely offer'}</span><b>${c.offer!=null?(c.offer_real?'':'≈ ')+money(c.offer):'—'}</b></div></div>
+  ${c.why?`<p style="margin:-4px 0 14px">${esc(c.why)}</p>`:''}
+  <div class="chartbox">${valueChart(h.offers,c.cost,c.pays)}</div>
+  <h2 style="margin:4px 0 6px">Picks <span class="n">${c.legs.length}</span></h2><div class="dlegs">${c.legs.map(l=>{const tk=(h.ticks||{})[l.ticker]||[];const pts=tk.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
+   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
+    ${l.res?`<span class="m" style="text-align:center">${l.res==='yes'?'✓ won':'✕ lost'}</span>`:spark(pts,120,28)}<b style="text-align:right">${l.res?'':pct(l.live!=null?l.live:l.chance)}</b></div>`;}).join('')}</div>
+  ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" onclick="closeModal();hedge('${c.t}')">Hedge · ${money(c.hedge.cost)}</button>`:''}
+   <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`;}
+// ---------------- games
+function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=`<div class="games">${'<div class="gt skel" style="height:190px"></div>'.repeat(6)}</div>`;return;}
+ const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you need show up here with live scores and win chances.</div>';return;}
+ const live=gs.filter(g=>g.state==='live'),rest=gs.filter(g=>g.state!=='live');
+ const tile=g=>{const ch=g.chance;const sc=g.sc;return `<div class="gt ${g.state==='live'?'live':''}"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${g.state!=='live'&&g.starts?' · '+esc(g.starts):''}</div></div>
+   ${g.state==='live'&&sc?`<div class="sc">${sc.me}–${sc.opp}<small>${esc(sc.detail||'')}</small></div>`:'<span class="tag" style="background:var(--panel2);color:var(--sub)">'+(g.state==='live'?'LIVE':'UPCOMING')+'</span>'}</div>
+   <div class="ch"><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b><span>${g.state==='live'?'to win right now':'to win'}</span></div>${spark(g.spark,300,56)}
+   <div class="ft"><span>In ${g.combos} combo${g.combos>1?'s':''}</span><b>${money(g.pays)} riding</b></div></div>`;};
+ m.innerHTML=(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(tile).join('')}</div>`:'')
+  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(tile).join('')}</div>`:'');}
+// ---------------- live events from the Mac
+function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
+ es.onopen=()=>{S.live_ok=true;stat();};
+ es.onerror=()=>{S.live_ok=false;stat();};
+ es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
+  if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
+  S.events=(S.events||[]).concat([ev]).slice(-30);
+  if(['score','advice','alert','settled'].includes(ev.kind))toast(ev.text,4500);
+  if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled');}};
+ }catch(x){}}
+function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
 // ---------------- settings
 const UNITS={stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
 const RANGES={stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
@@ -1266,6 +1730,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Phone-approved update</span><b>${esc(mac.approved||'—')}</b></div></div>
    <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
+   ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Mac controls are on the Mac itself'}</b><small>${LOCAL?'Reload in a moment.':'Open Combo Hub on the Mac for updates, the pairing code and the passcode.'}</small></div></div>`;
  m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
@@ -1282,10 +1747,10 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    +tgl('auto_sell','Auto cash-out at my Let it ride level','The Mac sells by itself, logged and capped')+rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
    +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
-   tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
+   pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here. Updates install by themselves once your phone approves them.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b>${d.keys.kalshi?'<span class="dot"></span>Connected through the Mac':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
-   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="/app/classic">Classic screens</a></div>`)}
+   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
  </div></div>`;}
 async function macDo(a,b){if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
  toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
@@ -1297,8 +1762,9 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
-chrome();render();load(S.view);
-setInterval(()=>{if(document.hidden)return;if(S.view==='live'&&!$('#modal').classList.contains('on'))load('live');},12000);
+window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
+chrome();render();load(S.view);connect();
+setInterval(()=>{if(document.hidden)return;if(S.live_ok&&Date.now()-(S.lastLoad||0)<30000)return;if(['live','games'].includes(S.view)&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}},12000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view==='live')load('live');});
 </script></body></html>
 """
@@ -1446,6 +1912,10 @@ def webapp_main():
     sys.modules.update(ui=ui, console=console, notification=notification, clipboard=clipboard, appex=appex)
 
     A = load_engine()
+    try:
+        A.store_open(os.path.join(HOME, "combo_history.db"))
+    except Exception as err:
+        print("history off:", err, flush=True)
     A.latest_version = lambda: A.VERSION            # the watcher installs updates (phone-approved); not this copy
     A.install_update = lambda *a, **k: None
     A.write_helpers = lambda *a, **k: None
@@ -1502,8 +1972,15 @@ def webapp_main():
 
     def combo_view(i, c):
         est = A.est_offer(c)
+        try:
+            pred = A.predict_quote(c)
+        except Exception:
+            pred = None
+        fx, heavy = A.exposure_factor(c["legs"])
+        size = A.stake_for(pred["pct"], c["legs"]) if pred and A.CFG.get("size_auto") else None
         return {"i": i, "kind": c.get("kind"), "tier": c.get("tier"), "fair": c.get("fair"), "min": c.get("min"),
-                "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1],
+                "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1], "pred": pred, "size": size,
+                "exposure": {"factor": fx, "team": heavy} if heavy else None,
                 "chance": 1.0 / (c["fair"] / A.CTX.get("stake", A.CFG["stake"])) if c.get("fair") else None,
                 "legs": [side_view(l) for l in c["legs"]],
                 "offer": {k: v for k, v in (A.CTX.get("offers", {}).get(i) or {}).items() if k in ("pays", "stake", "at")} or None}
@@ -1577,7 +2054,53 @@ def webapp_main():
                              "weeks": sorted(weeks.values(), key=lambda w: w["week"])[-12:], "history": hist,
                              "shadow": (shadow or {}).get("summary"), "accuracy": (shadow or {}).get("accuracy"),
                              "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
-                             "edge": edge})
+                             "edge": edge, "backtest": A.backtest() if A.STORE.get("db") else None,
+                             "model": model_summary(), "by_tier": by_tier(done)})
+
+    def model_summary():
+        m = A.quote_model() if A.STORE.get("db") else None
+        if not m:
+            return None
+        import math as _m
+        groups = {k: round(_m.exp(m["mu"] + v), 3) for k, v in m["eff"].items()}
+        return {"n": m["n"], "typical": round(_m.exp(m["mu"]), 3), "spread": round(m["sd"], 3),
+                "by_picks": {k[2:]: v for k, v in groups.items() if k.startswith("n:")},
+                "by_time": {k[2:]: v for k, v in groups.items() if k.startswith("h:")}}
+
+    def by_tier(done):
+        out = {}
+        for a in done:
+            n = len(a.get("legs") or [])
+            k = "2 picks" if n <= 2 else "3 picks" if n == 3 else "4 picks" if n == 4 else "5–6 picks" if n <= 6 else "7+ picks"
+            back = a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+            r = out.setdefault(k, {"k": k, "n": 0, "cost": 0.0, "back": 0.0, "won": 0})
+            r["n"] += 1
+            r["cost"] += a["cost"]
+            r["back"] += back
+            r["won"] += a["status"] == "won"
+        order = ["2 picks", "3 picks", "4 picks", "5–6 picks", "7+ picks"]
+        return [out[k] for k in order if k in out]
+
+    def api_combo(t):
+        view = (api_live() or {}).get("combos") or []
+        v = next((x for x in view if x["t"] == t), None)
+        h = A.combo_history(t) if A.STORE.get("db") else {"offers": [], "ticks": {}}
+        return jsonable({"combo": v, "history": h})
+
+    def api_games():
+        d = api_live() or {}
+        games = d.get("games") or []
+        out = []
+        tick_of = {}
+        for v in d.get("combos") or []:
+            for lg in v.get("legs") or []:
+                tick_of[(lg["name"], lg.get("opp"))] = lg["ticker"]
+        for g in games:
+            tk = tick_of.get((g["name"], g.get("opp")))
+            hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
+                                (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
+            out.append(dict(g, ticker=tk, spark=[[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]))
+        return jsonable({"games": out, "at": d.get("at")})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
@@ -1651,6 +2174,13 @@ def webapp_main():
                 i = int(d.get("i", 0))
                 try:
                     r = A.get_offer(i, amount=d.get("stake"))
+                    c = A.CTX["combos"][i - 1]
+                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto") and not d.get("stake"):
+                        want = A.stake_for(r["pct"], c["legs"])  # the price sets the size, less if you're heavy on a team
+                        if want and abs(want - r["stake"]) > 0.01:
+                            r2 = A.get_offer(i, amount=want)
+                            if not r2.get("error"):
+                                r = r2
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), **{k: r.get(k) for k in ("pays", "stake", "pct", "ok", "error")}})
@@ -1766,6 +2296,10 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/combo":
+                        out = api_combo(q.get("t") or "")
+                    elif path == "/app/api/games":
+                        out = api_games()
                     elif path == "/app/api/settings":
                         out = api_settings(q.get("lg") or "")
                     else:
@@ -1878,6 +2412,9 @@ def mac_settings(conf, web, d, tok):
         return {"ok": True, "watcher": WATCHER_VERSION, "engine": getattr(E, "VERSION", ""), "up": int(time.time() - STARTED),
                 "ts": mac_tailscale_ip(), "pass": conf.get("web_pass", ""), "role": conf.get("role") or "main",
                 "paused": bool(conf.get("paused")), "approved": (conf.get("approve") or {}).get("version", ""),
+                "https": conf.get("https") or {}, "push_devices": len(PUSH.subs()), "push_ok": PUSH.ok(),
+                "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
+                                        "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
                 "log": tail}
     if a == "code":
         ip = mac_tailscale_ip()
@@ -1914,6 +2451,9 @@ def mac_settings(conf, web, d, tok):
         return {"ok": True, "msg": "Updating. Combo Hub reconnects in about a minute."}
     if a == "advanced":
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
+    if a == "https":
+        threading.Thread(target=tailscale_https, args=(conf, conf.get("hub_port", 8765)), daemon=True).start()
+        return {"ok": True, "msg": "Checking Tailscale's https address…"}
     return {"ok": False, "msg": "Unknown action."}
 
 
@@ -1941,7 +2481,7 @@ def webapp_proxy(handler, tok, method, path, body=b""):
     import urllib.request, urllib.error
     req = urllib.request.Request(f"http://127.0.0.1:{WEBAPP_PORT}{path}", data=body if method == "POST" else None,
                                  method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json",
-                                                         "X-CW-Local": "1" if handler.client_address[0] == "127.0.0.1" else "0"})
+                                                         "X-CW-Local": "1" if is_local(handler) else "0"})
     where = ""
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
@@ -2023,7 +2563,8 @@ def start_hub(conf, E, odds=None):
                 return {"status": 403, "text": "not allowed"}
             return cache.get(url, req.get("params") or {})
         if op == "weblink":
-            return {"path": web.issue_once()} if web else {"err": "kalshi", "msg": "Web view is off."}
+            return {"path": web.issue_once(), "base": (conf.get("https") or {}).get("url") or ""} if web else \
+                {"err": "kalshi", "msg": "Web view is off."}
         if op == "shadow":
             return {"summary": E.shadow_summary(), "accuracy": E.accuracy_summary()}
         if op == "odds":
@@ -2070,13 +2611,35 @@ def start_hub(conf, E, odds=None):
             n = int(self.headers.get("Content-Length") or 0)
             if web and self.path == "/app/admin":           # Mac settings: only from the Mac itself
                 tok = web.session(self)
-                if not tok or self.headers.get("X-CW") != tok or self.client_address[0] != "127.0.0.1":
+                if not tok or self.headers.get("X-CW") != tok or not is_local(self):
                     return self._send(403, b"")
                 ok = open_admin()
                 return self._send(200, json.dumps({"ok": ok}).encode())
+            if web and self.path == "/app/push":            # iPhone notifications: this device's subscription
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok or not 0 <= n < 10_000:
+                    return self._send(403, b"")
+                try:
+                    d = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    d = {}
+                a = d.get("a")
+                if a == "key":
+                    out = {"ok": PUSH.ok(), "key": PUSH.public_b64() if PUSH.ok() else "", "n": len(PUSH.subs()),
+                           "https": (conf.get("https") or {}).get("url") or ""}
+                elif a == "sub":
+                    out = {"ok": PUSH.add(d.get("sub"), d.get("label", ""))}
+                elif a == "off":
+                    PUSH.remove(str((d.get("sub") or {}).get("endpoint", "")))
+                    out = {"ok": True}
+                elif a == "test":
+                    out = {"ok": True, "sent": PUSH.send("Combo Hub", "Notifications are on. Tap to open Combo Hub.", tag="test")}
+                else:
+                    out = {"ok": False}
+                return self._send(200, json.dumps(out).encode())
             if web and self.path == "/app/mac":             # This Mac (Settings): only from the Mac itself
                 tok = web.session(self)
-                if not tok or self.headers.get("X-CW") != tok or self.client_address[0] != "127.0.0.1" or not 0 <= n < 10_000:
+                if not tok or self.headers.get("X-CW") != tok or not is_local(self) or not 0 <= n < 10_000:
                     return self._send(403, b"")
                 try:
                     out = mac_settings(conf, web, json.loads(self.rfile.read(n) or b"{}"), tok)
@@ -2129,6 +2692,44 @@ def start_hub(conf, E, odds=None):
         def do_GET(self):
             from urllib.parse import urlparse, parse_qs
             u = urlparse(self.path)
+            if web and u.path in ("/sw.js", "/manifest.webmanifest", "/icon.png", "/apple-touch-icon.png"):
+                import base64
+                body, ctype = ((SW_JS.encode(), "text/javascript") if u.path == "/sw.js" else
+                               (MANIFEST.encode(), "application/manifest+json") if u.path.endswith("webmanifest") else
+                               (base64.b64decode(ICON_PNG), "image/png"))
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-cache" if u.path == "/sw.js" else "max-age=86400")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            if web and u.path == "/app/events":           # live events, pushed as they happen
+                if not web.session(self):
+                    return self._send(403, b"")
+                q = BUS.sub()
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.end_headers()
+                    self.wfile.write(b"retry: 3000\n\n")
+                    self.wfile.flush()
+                    end = time.time() + 600                 # the browser reconnects by itself
+                    while time.time() < end:
+                        try:
+                            ev = q.get(timeout=15)
+                            self.wfile.write(f"data: {json.dumps(ev, default=str)}\n\n".encode())
+                        except Exception as err:
+                            if type(err).__name__ != "Empty":
+                                raise
+                            self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                finally:
+                    BUS.unsub(q)
+                return None
             if web and u.path == "/once":
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
@@ -2145,7 +2746,7 @@ def start_hub(conf, E, odds=None):
                 return webapp_proxy(self, tok, "GET", self.path)
             if web and u.path in ("/", "/index.html", "/simple"):
                 tok = web.session(self)
-                if not tok and self.client_address[0] == "127.0.0.1":   # on the Mac itself: no passcode
+                if not tok and is_local(self):                  # on the Mac itself: no passcode
                     tok = web.new_session()
                     return self._html(303, "", cookie=tok, location=self.path)
                 if not tok:
@@ -2178,6 +2779,8 @@ def start_hub(conf, E, odds=None):
         return None
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True, name="hub").start()
+    if web and conf.get("https_auto", True) and sys.platform == "darwin":
+        threading.Thread(target=tailscale_https, args=(conf, port), daemon=True, name="https").start()
     ip = hub_address()
     log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)")
         + (" · web view on the same address" if web else ""))
@@ -2227,6 +2830,12 @@ def main():
     if backup:
         log("backup mode: alerts only, and only while the Mac is quiet; never trades")
     WATCHER["E"] = E
+    try:
+        E.store_open(os.path.join(HOME, "combo_history.db"))
+        threading.Thread(target=history_loop, args=(E,), daemon=True, name="history").start()
+        threading.Thread(target=ensure_crypto, daemon=True, name="crypto").start()
+    except Exception as err:
+        log("history off:", type(err).__name__, err)
     if conf.get("hub", sys.platform == "darwin"):      # the Mac hub; a Pi only if asked
         odds = HubOdds()
         start_hub(conf, E, odds)
@@ -2258,6 +2867,12 @@ def main():
             alerts = E.live_check(None)            # also auto cash-out, if the phone turned it on
             if alerts:
                 log("alerts:", alerts)
+            try:                                   # history + live events for open screens
+                for ev in E.record_view(E.MINE.get("view")):
+                    BUS.publish(ev)
+                BUS.publish({"kind": "tick"})
+            except Exception as err:
+                log("record failed:", type(err).__name__, err)
             if t0 - last["sell"] > 60:
                 last["sell"] = t0
                 done = E.autosell_pass()

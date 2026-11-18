@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.71"
+VERSION = "2026.11.17.72"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -57,6 +57,7 @@ CFG = {
     "cut_v2": False,      # (one-time move of the fair-price cut-off to 90%)
     "mix_window": 0,
     "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
+    "hub_ui": True,       # with the Mac reachable, open Combo Hub's screens inside this app
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
 }
@@ -4046,6 +4047,13 @@ def live_view(mine, views, plan, chance_one, balance):
         v["offer_age"] = round(time.time() - o.get("at", 0)) if o.get("at") else None
         f = acts.get(t) or 0
         v["verdict"] = "sell" if f == 1 else "half" if f == 0.5 else "hold"
+        try:                                       # the reasoning, in numbers and one sentence
+            W = max(CFG["bankroll"], 1) + MINE.get("locked", 0)
+            v["hold_ce"] = round(single_value(h["p"], h["pays"], W), 2)
+            v["why"] = re.sub(r"<[^>]+>", "", plan_words(t, f, {"offer": v["offer"] or 0, "frac": 1.0}, h, W)) \
+                if v["offer"] else ""
+        except Exception:
+            v["hold_ce"], v["why"] = None, ""
         try:
             v["threshold"] = round(wait_threshold(t), 2) if h.get("won_some") else None
         except Exception:
@@ -5148,7 +5156,7 @@ def open_hub_web(webview=None):
     got = hub_call("weblink", timeout=8)
     if got is None:
         return say("Couldn't reach your Mac. Is Tailscale on?")
-    url = c["hub"].rstrip("/") + (got.get("path") or "/")
+    url = (got.get("base") or c["hub"]).rstrip("/") + (got.get("path") or "/")   # https when the Mac has it
     try:
         import webbrowser
         webbrowser.open("safari-" + url if in_pythonista() else url)
@@ -5156,6 +5164,51 @@ def open_hub_web(webview=None):
         open_outside(url)
     if not got.get("path"):
         say("Your Mac is still updating, so it may ask for the passcode this time.")
+
+
+def open_hub_inside():
+    """With the Mac reachable, show Combo Hub (same screens as the browser, always current) in this
+    app's window. False if it can't, so the phone's own screens open instead."""
+    if not CFG.get("hub_ui", True) or not hub_conf():
+        return False
+    loading("Connecting to your Mac…")
+    got = hub_call("weblink", timeout=5)
+    if not got or not got.get("path"):
+        return False
+    c = hub_conf()
+    base = (got.get("base") or c["hub"]).rstrip("/")
+    web = _web()
+    if web is None:
+        return False
+    web.delegate = HubKeeper(base)
+    APP.update(page="hub", where="hub", screen=None)
+    web.load_url(base + got["path"])
+    return True
+
+
+@safe_delegate
+class HubKeeper:
+    """Combo Hub inside the app: its own pages stay here, links to games open in Safari, and
+    'Phone screens' in its menu switches back to this app's own screens."""
+    def __init__(self, base):
+        self.base = base
+
+    def webview_should_start_load(self, webview, url, nav_type):
+        if url.startswith("combo://phone"):
+            RUN_OPTS["phone_ui"] = True
+            import threading
+            threading.Thread(target=run, daemon=True).start()
+            return False
+        if url.startswith(("http://", "https://")) and not url.startswith(self.base) and nav_type == "link_clicked":
+            open_outside(url)
+            return False
+        return not url.startswith("combo://")
+
+    def webview_did_finish_load(self, webview):
+        try:
+            webview.evaluate_javascript("window.__inapp&&window.__inapp()")
+        except Exception:
+            pass
 
 
 def hub_line():
@@ -6456,15 +6509,20 @@ def schedule_buy_nudge(all_games):
 BUY_NUDGE = os.path.join(HERE, "combo_buy_nudge.json")
 
 
-def stake_for(pct):
+def stake_for(pct, legs=None):
     """How much to bet on a combo, from Kalshi's price as a share of fair: nothing under your
-    cut-off, the least just above it, the most when it's above fair."""
+    cut-off, the least just above it, the most when it's above fair. With the picks given, less
+    when you already need one of them in combos carrying a big share of what's riding."""
     cut = CFG["accept_pct"] / 100
     if pct < cut:
         return 0
     lo, hi = CFG.get("size_min", 3), CFG.get("size_max", 10)
     steps = [(1.03, hi), (0.99, round(lo + (hi - lo) * 5 / 7)), (0.94, round(lo + (hi - lo) * 2 / 7)), (0, lo)]
-    return next(v for edge, v in steps if pct >= edge)
+    v = next(v for edge, v in steps if pct >= edge)
+    if legs:
+        f, _ = exposure_factor(legs)
+        v = max(lo, round(v * f))
+    return v
 
 
 BUY_RATIO = os.path.join(HERE, "combo_buy_ratio.json")   # Kalshi's combo quotes vs single-game prices
@@ -6544,6 +6602,10 @@ def get_offer(i, amount=None, check_cap=True):
         note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
     pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
     note_quote_time(c["legs"], pct)
+    try:
+        store_quote(c, stake, pays, pct)
+    except Exception:
+        pass
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
                         "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct}
@@ -6831,7 +6893,7 @@ def handle_action(webview, parts):
                     try:
                         o = get_offer(k, amt, check_cap=False)
                         if auto and CFG.get("size_auto") and o.get("pct"):
-                            want = stake_for(o["pct"])
+                            want = stake_for(o["pct"], CTX["combos"][k - 1]["legs"])
                             if want and abs(want - amt) > 0.01:
                                 say(f"<span class='muted'>{o['pct']:.0%} of fair: getting the price for "
                                     f"{money(want)}…</span>", k)
@@ -7117,7 +7179,8 @@ def settings_page(all_games, days, counts):
                            f"<input class='txt' id='watcher_code' placeholder='Paste the pairing code from your Mac or Pi' "
                            f"autocapitalize='off' autocorrect='off' spellcheck='false' value='{e(CFG.get('watcher_code', ''))}'>"
                            + "<button class='btn' style='margin-top:8px' onclick=\"go('save')\">Save</button>"
-                           + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else ""),
+                           + (f"<div style='margin-top:8px'>{watcher_line()}</div>" if CFG.get("watcher_code") else "")
+                           + (switch("hub_ui", "Open Combo Hub's screens when the Mac is reachable") if CFG.get("watcher_code") else ""),
                            "Your Mac (or a Raspberry Pi) at home, running all the time: it sends alerts (through the ntfy app) "
                            "with your phone locked and, if you turn on Auto cash-out, does that too, by the same "
                            "rules (while it's running, only the watcher auto-sells, so nothing sells twice). Saving here "
@@ -7518,6 +7581,8 @@ def main():
     set_league(load_json(LEAGUE_FILE, {}).get("league", LEAGUE["code"]))
     if in_pythonista():
         write_helpers()
+    if in_pythonista() and not RUN_OPTS.pop("phone_ui", False) and not RUN_OPTS.get("goto") and open_hub_inside():
+        return                                    # Combo Hub from the Mac, inside this app
     loading(f"Loading {'the ' + LG()['name'].lower() if by_day() else 'this week'}'s games from Kalshi…")
     RUN_OPTS["latest"] = latest_version()
     all_games, days, sunday = week_games(fetch_markets())
@@ -7989,7 +8054,7 @@ def shadow_pass(book_snap, log=print, alert=None):
     games_held = {frozenset(l["ticker"] for l in b["legs"]) for b in st["bets"]}
     cands = shadow_candidates_with(attach_fair_book)
     CTX.clear()
-    CTX.update(combos=cands, stake=CFG["stake"], offers={})
+    CTX.update(combos=cands, stake=CFG["stake"], offers={}, source="shadow")
     asked = 0
     for i, c in enumerate(cands, 1):
         if asked >= st["per_pass"] or q_today + asked >= st["quotes_per_day"]:
@@ -8280,6 +8345,257 @@ def accuracy_text(sm):
         parts.append(f"{names.get(src, src)} {v['brier']:.3f} ({v['n']} games"
                      + (f", {'more' if vs > 0 else 'less'} accurate than Kalshi" if vs else "") + ")")
     return "Brier score, lower is better: " + "; ".join(parts) + "."
+
+
+# ================================================================ history (the Mac keeps everything)
+# One SQLite file next to the engine: every Kalshi quote, every live tick of your picks, every cash-out
+# offer, and when you bought what. Only the Mac opens it (store_open); on the phone it stays off.
+STORE = {"db": None, "path": None, "last": {}}
+_SLOCK = threading.RLock()
+_SCHEMA = """
+create table if not exists ticks(ts real, ticker text, chance real, state text, score text);
+create index if not exists ticks_t on ticks(ticker, ts);
+create table if not exists offers(ts real, combo text, p real, pays real, hold real, offer real, real_offer int, verdict text);
+create index if not exists offers_c on offers(combo, ts);
+create table if not exists quotes(ts real, source text, sport text, n int, legs text, stake real, pays real,
+  fair real, kalshi real, pct real, hours real, outcome text, resolved real);
+create index if not exists quotes_r on quotes(outcome, ts);
+create table if not exists bets(combo text primary key, first_seen real, cost real, pays real, legs text,
+  sports text, status text, back real, settled real, p_first real);
+create table if not exists events(ts real, kind text, combo text, text text);
+"""
+
+
+def store_open(path=None):
+    """Open (or create) the history file. Safe to call more than once."""
+    import sqlite3
+    with _SLOCK:
+        if STORE["db"]:
+            return STORE["db"]
+        path = path or os.path.join(HERE, "combo_history.db")
+        db = sqlite3.connect(path, timeout=10, check_same_thread=False, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("pragma journal_mode=wal")
+        db.execute("pragma busy_timeout=8000")
+        db.executescript(_SCHEMA)
+        STORE.update(db=db, path=path)
+        return db
+
+
+def store_x(sql, args=()):
+    db = STORE["db"]
+    if not db:
+        return None
+    with _SLOCK:
+        try:
+            return db.execute(sql, args)
+        except Exception as err:                     # history is best-effort: never break a trade over it
+            console_note(f"history: {type(err).__name__}: {err}")
+            return None
+
+
+def store_rows(sql, args=()):
+    cur = store_x(sql, args)
+    return [dict(r) for r in cur.fetchall()] if cur is not None else []
+
+
+def _hours_to(legs):
+    ts = [x for x in (_kick_ts(l) for l in legs) if x]
+    return round((min(ts) - time.time()) / 3600, 2) if ts else None
+
+
+def store_quote(c, stake, pays, pct, source=None):
+    """Every combo quote Kalshi gives (yours, the shadow's), with what the market and the books said."""
+    if not STORE["db"]:
+        return
+    k = stake / max(CTX.get("stake") or stake, 0.01)
+    legs = [[l["ticker"], round(l.get("p") or 0, 4), round(l.get("fair") or 0, 4)] for l in c["legs"]]
+    sports = sorted({ticker_sport(l["ticker"]) or "other" for l in c["legs"]})
+    store_x("insert into quotes(ts, source, sport, n, legs, stake, pays, fair, kalshi, pct, hours) values(?,?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), source or CTX.get("source") or "build", ",".join(sports), len(c["legs"]), json.dumps(legs),
+             stake, round(pays, 2), round((c.get("fair") or 0) * k, 2), round((c.get("kalshi") or 0) * k, 2),
+             round(pct, 4) if pct else None, _hours_to(c["legs"])))
+
+
+def resolve_quotes(limit=200):
+    """Mark old quotes won or lost once Kalshi settles their games (for the back-test and the predictor)."""
+    rows = store_rows("select rowid, legs from quotes where outcome is null and ts < ? order by ts limit ?",
+                      (time.time() - 3 * 3600, limit))
+    if not rows:
+        return 0
+    legs = {r["rowid"]: [x[0] for x in json.loads(r["legs"])] for r in rows}
+    res = fetch_results({t for v in legs.values() for t in v})
+    n = 0
+    for rid, ts in legs.items():
+        rs = [res.get(t) for t in ts]
+        out = "lost" if "no" in rs else "won" if all(r == "yes" for r in rs) else None
+        if out:
+            store_x("update quotes set outcome=?, resolved=? where rowid=?", (out, time.time(), rid))
+            n += 1
+    return n
+
+
+def record_view(view):
+    """Called each time the Mac refreshes Live: writes ticks and offers that changed, notes new bets and
+    results, and returns the events worth pushing to open screens (scores, big swings, settled combos)."""
+    if not STORE["db"] or not view:
+        return []
+    now, last, ev = time.time(), STORE["last"], []
+    for v in view.get("combos") or []:
+        t = v["t"]
+        if v["group"] == "pending":
+            if ("bet", t) not in last:
+                last[("bet", t)] = 1
+                store_x("insert or ignore into bets(combo, first_seen, cost, pays, legs, sports, status, p_first) "
+                        "values(?,?,?,?,?,?,?,?)", (t, now, v["cost"], v["pays"], json.dumps([l["ticker"] for l in v["legs"]]),
+                                                    ",".join(v.get("sports") or []), "pending", v.get("p")))
+            key = ("off", t)
+            sig = (round(v.get("p") or 0, 3), round(v.get("offer") or 0), v.get("verdict"), bool(v.get("offer_real")))
+            prev = last.get(key)
+            if not prev or prev[1] != sig and now - prev[0] > 20 or now - prev[0] > 120:
+                last[key] = (now, sig)
+                store_x("insert into offers values(?,?,?,?,?,?,?,?)",
+                        (now, t, v.get("p"), v.get("pays"), v.get("hold_value"), v.get("offer"),
+                         int(bool(v.get("offer_real"))), v.get("verdict")))
+                if prev and prev[1][2] != sig[2] and sig[2] in ("sell", "half"):
+                    ev.append({"kind": "advice", "combo": t, "text": f"{v['label']}: time to {'cash out' if sig[2] == 'sell' else 'cash out half'}"})
+            for lg in v["legs"]:
+                if lg.get("res"):
+                    continue
+                ch = lg["live"] if lg.get("live") is not None else lg.get("chance")
+                key = ("tick", lg["ticker"])
+                sig = (round(ch or 0, 3), lg.get("state"), lg.get("score") or "")
+                prev = last.get(key)
+                if not prev or prev[1] != sig and now - prev[0] > 4 or now - prev[0] > 300:
+                    last[key] = (now, sig)
+                    store_x("insert into ticks values(?,?,?,?,?)", (now, lg["ticker"], ch, lg.get("state"), lg.get("score")))
+                    if prev and prev[1][2] != sig[2] and sig[2]:
+                        ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "text": f"{lg['name']}: {sig[2]}"})
+                    elif prev and abs((prev[1][0] or 0) - (sig[0] or 0)) >= 0.08:
+                        ev.append({"kind": "swing", "combo": t, "ticker": lg["ticker"],
+                                   "text": f"{lg['name']} now {sig[0]:.0%} to win"})
+        elif ("done", t) not in last:
+            last[("done", t)] = 1
+            cur = store_rows("select status from bets where combo=?", (t,))
+            if cur and cur[0]["status"] == "pending":
+                store_x("update bets set status=?, back=?, settled=? where combo=?",
+                        (v["group"], v.get("back") if v["group"] == "cashed" else v["pays"] if v["group"] == "won" else 0,
+                         now, t))
+                ev.append({"kind": "settled", "combo": t, "text": f"{v['label']} {v['group']}"})
+    for e in ev:
+        store_x("insert into events values(?,?,?,?)", (now, e["kind"], e.get("combo"), e["text"]))
+    if len(last) > 20000:
+        STORE["last"] = {k: v for k, v in list(last.items())[-10000:]}
+    return ev
+
+
+def store_trim(days=120):
+    """Keep the file a sensible size: ticks for 30 days, everything else for `days`."""
+    cut = time.time() - days * 86400
+    store_x("delete from ticks where ts < ?", (time.time() - 30 * 86400,))
+    store_x("delete from offers where ts < ?", (cut,))
+    store_x("delete from events where ts < ?", (cut,))
+
+
+# ---- the quote predictor: what share of fair Kalshi will pay, before asking
+def _hbucket(h):
+    return "?" if h is None else "<2h" if h < 2 else "2-8h" if h < 8 else "8h+"
+
+
+def _nbucket(n):
+    return str(n) if n <= 4 else "5-6" if n <= 6 else "7+"
+
+
+def quote_model(days=60):
+    """Learn Kalshi's combo pricing from every recorded quote: quote ÷ Kalshi's own single-game prices,
+    by number of picks, time to game and sport, each pulled toward the overall typical value when it has
+    few quotes (so one odd quote can't swing it). Also how far quotes scatter around that."""
+    rows = store_rows("select n, hours, sport, pays, kalshi, pct, fair from quotes where ts > ? and kalshi > 0 and pays > 0",
+                      (time.time() - days * 86400,))
+    if len(rows) < 5:
+        return None
+    r_all = [math.log(r["pays"] / r["kalshi"]) for r in rows]
+    mu = statistics.mean(r_all)
+    sd = statistics.pstdev(r_all) if len(r_all) > 2 else 0.1
+    groups = {}
+    for r, x in zip(rows, r_all):
+        for key in (("n", _nbucket(r["n"])), ("h", _hbucket(r["hours"])), ("s", r["sport"] or "?")):
+            groups.setdefault(key, []).append(x)
+    k0 = 6.0                                             # quotes it takes to trust a group halfway
+    eff = {k: (sum(v) + k0 * mu) / (len(v) + k0) - mu for k, v in groups.items()}
+    resid = []
+    for r, x in zip(rows, r_all):
+        pred = mu + sum(eff.get(k, 0) for k in (("n", _nbucket(r["n"])), ("h", _hbucket(r["hours"])), ("s", r["sport"] or "?")))
+        resid.append(x - pred)
+    sd_r = max(statistics.pstdev(resid) if len(resid) > 2 else sd, 0.03)
+    return {"mu": mu, "eff": {f"{a}:{b}": round(v, 4) for (a, b), v in eff.items()}, "sd": sd_r, "n": len(rows),
+            "at": time.time()}
+
+
+QMODEL = {"m": None, "at": 0}
+
+
+def predict_quote(c, model=None):
+    """{'pct': expected share of fair, 'p_clear': chance it clears your cut-off, 'n': quotes learned from}
+    for a suggested combo, or None until enough quotes are recorded."""
+    m = model or QMODEL["m"]
+    if (m is None or time.time() - QMODEL["at"] > 600) and STORE["db"] and model is None:
+        QMODEL.update(m=quote_model(), at=time.time())
+        m = QMODEL["m"]
+    if not m or not c.get("kalshi") or not c.get("fair"):
+        return None
+    n = len(c["legs"])
+    sport = ",".join(sorted({ticker_sport(l["ticker"]) or "other" for l in c["legs"]}))
+    e = m["eff"]
+    lr = m["mu"] + e.get(f"n:{_nbucket(n)}", 0) + e.get(f"h:{_hbucket(_hours_to(c['legs']))}", 0) + e.get(f"s:{sport}", 0)
+    base = c["kalshi"] / c["fair"]
+    pct = base * math.exp(lr)
+    cut = CFG["accept_pct"] / 100
+    z = (math.log(cut / base) - lr) / m["sd"]
+    p_clear = 0.5 * math.erfc(z / math.sqrt(2))
+    return {"pct": round(pct, 4), "p_clear": round(p_clear, 3), "n": m["n"]}
+
+
+# ---- sizing across combos: don't pile more on a team you already need
+def exposure_factor(legs):
+    """1.0 when the picks are new to you; down to 0.5 when you already need one of them in combos
+    that pay a big share of everything riding."""
+    hold = MINE.get("hold") or {}
+    total = sum(h.get("pays", 0) for h in hold.values())
+    if not total:
+        return 1.0, None
+    worst, name = 0.0, None
+    for l in legs:
+        on = sum(h["pays"] for h in hold.values() if any(k[1] == l["ticker"] for k, _ in h.get("need") or []))
+        if on / total > worst:
+            worst, name = on / total, l.get("pick") or l["ticker"]
+    return round(max(0.5, 1 - worst * 0.6), 2), (name if worst >= 0.25 else None)
+
+
+# ---- back-test: what each fair-price cut-off would have earned on the quotes Kalshi actually gave
+def backtest(days=120):
+    rows = store_rows("select pct, pays, stake, outcome from quotes where outcome is not null and pct is not null and ts > ?",
+                      (time.time() - days * 86400,))
+    out = []
+    for cut in range(70, 121, 5):
+        take = [r for r in rows if r["pct"] * 100 >= cut]
+        staked = sum(r["stake"] for r in take)
+        back = sum(r["pays"] for r in take if r["outcome"] == "won")
+        out.append({"cut": cut, "n": len(take), "staked": round(staked, 2), "pl": round(back - staked, 2),
+                    "roi": round((back - staked) / staked, 4) if staked else None})
+    return {"rows": out, "quotes": len(rows)}
+
+
+def combo_history(t):
+    """A live combo's story for the detail screen: its value over time and each pick's chance over time."""
+    offers = store_rows("select ts, p, hold, offer, real_offer, verdict from offers where combo=? order by ts", (t,))
+    legs = store_rows("select legs from bets where combo=?", (t,))
+    ticks = {}
+    if legs:
+        for tk in json.loads(legs[0]["legs"]):
+            ticks[tk] = store_rows("select ts, chance, state, score from ticks where ticker=? and ts > ? order by ts",
+                                   (tk, time.time() - 3 * 86400))
+    return {"offers": offers[-600:], "ticks": {k: v[-400:] for k, v in ticks.items()}}
 
 
 def _as_auto(fn):

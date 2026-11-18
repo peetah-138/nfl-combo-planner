@@ -226,7 +226,7 @@ if [ ! -x "$PY" ]; then
   echo "Setting up Python..."
   "$UV" venv -q --python 3.12 "$DIR/.venv"
 fi
-"$UV" pip install -q --python "$PY" requests
+"$UV" pip install -q --python "$PY" requests cryptography
 
 echo "STEP: download"
 echo "Downloading the planner..."

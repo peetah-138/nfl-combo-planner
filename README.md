@@ -73,6 +73,22 @@ Mac's address. Paste it into the phone (Settings > Pi watcher) and the phone get
 encrypted and signed with the pairing secret. If the Mac can't be reached, the phone checks Kalshi itself and
 uses its own backup key, after a second tap. `bash install_mac.sh --code` prints the code again.
 
+## Combo Hub (the Mac's screens)
+
+Combo Hub runs on the Mac and opens in any browser on your Tailscale network, on the Mac itself, from the
+planner on your iPhone (it opens inside the app when the Mac is reachable), or from a Home Screen icon.
+
+- **Live**: a *Do now* list (cash out, hedge, or get an offer, each with its reason), your combos, and live Moments.
+- **Games**: every game you need, with the score, its win chance over the game, and how much rides on it.
+- **Build**: the board, suggested combos ranked by how likely Kalshi's price clears your cut-off, and suggested bet sizes.
+- **Results**: profit, your prices vs kickoff, calibration, returns by number of picks, how Kalshi prices combos,
+  and a back-test of your fair-price cut-off.
+- **Settings**: planner settings per sport, notifications, and This Mac (updates, pairing code, passcode, https).
+
+The Mac keeps a history file (`combo_history.db` in `~/combowatch`): every Kalshi quote, live tick, cash-out offer
+and result. It never leaves the Mac. For iPhone notifications, Combo Hub needs Tailscale's https address: the Mac
+turns it on by itself, or Settings › This Mac shows the one link to approve.
+
 ## Files
 
 - `nfl_combo_planner.py`: the planner (installed on the phone as `combo_planner_engine.py`).
