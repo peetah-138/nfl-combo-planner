@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+# never commit settings, keys, history or sign-ins (this repo is public)
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+combo_*.json
+combowatch*.json
+hub_sessions.json
+watcher_conf.json
+.DS_Store

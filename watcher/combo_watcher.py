@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.99"
+WATCHER_VERSION = "2026.11.18.100"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1087,10 +1087,15 @@ class Web:
             pass
 
     def keep_only(self, tok):
-        """After a passcode change: every other device signs in again."""
+        """After a passcode change: every other device signs in again, and every Face ID sign-in is removed
+        (one added from a stolen session must not survive the change). Turn Face ID back on afterwards."""
         h = self._h(tok or "")
         self.sessions = {k: v for k, v in self.sessions.items() if k == h}
         self._save_sessions()
+        if self.conf.get("passkeys"):
+            log(f"passcode changed: removed {len(self.conf['passkeys'])} Face ID sign-in(s)")
+            self.conf["passkeys"] = []
+            self.E.save_json(CONF, self.conf)
 
     def session(self, handler):
         import http.cookies
@@ -1111,6 +1116,9 @@ class Web:
         import secrets
         now = time.time()
         self.challenges = {k: v for k, v in self.challenges.items() if v[1] > now}
+        if len(self.challenges) > 50:                     # unauthenticated callers can't grow this without limit
+            for k in sorted(self.challenges, key=lambda k: self.challenges[k][1])[:len(self.challenges) - 50]:
+                self.challenges.pop(k, None)
         c = secrets.token_urlsafe(32)
         self.challenges[c] = (kind, now + 120)
         return c
@@ -1153,10 +1161,10 @@ class Web:
         return pk
 
     def passkey_login(self, d, rp):
-        now = time.time()
-        self.fails = [x for x in self.fails if now - x < 600]
-        if len(self.fails) >= 5:
-            return None, "Too many tries. Wait 10 minutes."
+        now = time.time()                                 # its own lockout: failed Face ID can't lock out the passcode
+        self.pk_fails = [x for x in getattr(self, "pk_fails", []) if now - x < 600]
+        if len(self.pk_fails) >= 5:
+            return None, "Face ID is paused for 10 minutes after failed tries. Use the passcode."
         try:
             pk = next((p for p in self.passkeys(rp) if p["id"] == str(d.get("id") or "").rstrip("=")), None)
             if not pk:
@@ -1170,7 +1178,7 @@ class Web:
                                                 ec.SECP256R1()).public_key()
             pub.verify(sig, ad + hashlib.sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
         except Exception as err:
-            self.fails.append(now)
+            self.pk_fails.append(now)
             log("Face ID sign-in refused:", type(err).__name__, str(err)[:60])
             return None, "Face ID didn't work. Use the passcode."
         pk["used"] = int(now)
@@ -1843,7 +1851,7 @@ async function load(v,fresh){try{
  if(v==='build'){const [b,p]=await Promise.all([api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+(S.pview||'all')).catch(()=>null)]);S.build=b;S.panel=p;}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
  if(v==='games'){S.games=await api('/app/api/games');}
- if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{S.panelCuts=(await api('/app/api/panel?v=all')).cutoffs}catch(e){}
+ if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
@@ -1938,10 +1946,10 @@ function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[
 function sweat(c){if(c.group!=='pending')return '';const n=c.legs.length,w=c.legs.filter(l=>l.res==='yes').length;
  const liveUp=c.legs.filter(l=>!l.res&&l.state==='live'&&(l.live??l.chance)>=.5).length;const p=Math.round(w/n*100),q=Math.round((w+liveUp)/n*100);
  return `<span class="sweat" title="${w} of ${n} picks won${liveUp?`, ${liveUp} winning now`:''}" style="--p:${p};--q:${q}"><i>${w}/${n}</i></span>`;}
-function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer);if(!m.length)return '';
- const auto=S.live&&S.live.auto_sell;
- return m.map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
-  ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('');}
+function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
+ const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
+ return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
+  ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('')+more;}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${sweat(c)}${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
@@ -2003,7 +2011,7 @@ try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
 function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
- const state=c.state||'';const chip={scheduled:`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',paper:'<span class="tag">Paper</span>',
+ const state=c.state||'';const chip={scheduled:`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
@@ -2019,16 +2027,16 @@ function panelBlock(d){if(!d||!d.panel)return `<div class="card" style="text-ali
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'||approved?"Today's panel":(SPN[d.view]||d.view)+' panel'}</h2>
    <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','bought'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
    <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
- const btn=approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:'')
+ const btn=approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelApprove(this)">Restart today's panel</button>`:'')
   :`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelApprove(this)">Approve ${live.length} bet${live.length===1?'':'s'} · ${money(total)}</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one about 45 minutes before its game, after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
+   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other=d.approved_other?`<div class="m" style="font-size:12.5px;margin:6px 2px">Today's panel is already approved, so this is it. Tap ⭐ All to see it.</div>`:'';
  return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${btn}</div>${longer}`;}
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
@@ -2177,6 +2185,7 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
+function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);load('settings')})">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
  return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
 function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
@@ -2417,7 +2426,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Fair-price cut-off','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build, and how many games in each.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -3160,8 +3169,11 @@ def webapp_main():
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
             if a == "panel_approve":
-                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all")
+                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"))
                 return {"ok": ok, "msg": msg}
+            if a == "skim_moved":
+                amt = A.skim_moved()
+                return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
             if a == "panel_cancel":
                 ok, msg = A.panel_cancel()
                 return {"ok": ok, "msg": msg}
