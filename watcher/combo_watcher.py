@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.72"
+WATCHER_VERSION = "2026.11.17.73"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -195,9 +195,16 @@ def load_engine():
     return E
 
 
+def auto_updates(conf):
+    """Install new versions as soon as they're out, no approval needed. On by default on the Mac
+    (you chose this); a Pi keeps waiting for the phone unless turned on."""
+    return bool(conf.get("auto_update", sys.platform == "darwin"))
+
+
 def update_if_newer(E, conf):
-    """Install a newer engine and watcher from GitHub, but only the exact files your phone
-    installed (it sends their SHA-256, signed). Returns True if the watcher should restart."""
+    """Install a newer engine and watcher from GitHub. With automatic updates on, any new version
+    whose two files agree on it; otherwise only the exact files your phone installed (it sends
+    their SHA-256, signed). Returns True if the watcher should restart."""
     try:
         latest = requests.get(REPO + "version.txt", params={"t": int(time.time())}, timeout=15,
                               headers={"Cache-Control": "no-cache"}).text.strip()
@@ -207,7 +214,8 @@ def update_if_newer(E, conf):
         conf.pop("waiting", None)
         return False
     ok = conf.get("approve") or {}
-    if ok.get("version") != latest:
+    auto = auto_updates(conf) and ok.get("version") != latest
+    if ok.get("version") != latest and not auto:
         if conf.get("waiting") != latest:
             conf["waiting"] = latest
             log(f"version {latest} is out; waiting until your phone updates to it")
@@ -215,10 +223,14 @@ def update_if_newer(E, conf):
     try:
         sb = requests.get(REPO + "nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30).content
         wb = requests.get(REPO + "watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=30).content
-        if hashlib.sha256(sb).hexdigest() != ok.get("engine") or hashlib.sha256(wb).hexdigest() != ok.get("watcher"):
+        if not auto and (hashlib.sha256(sb).hexdigest() != ok.get("engine") or
+                         hashlib.sha256(wb).hexdigest() != ok.get("watcher")):
             log(f"update {latest} skipped: the files don't match what your phone approved")
             return False
         src, wsrc = sb.decode("utf-8"), wb.decode("utf-8")
+        if auto and f'WATCHER_VERSION = "{latest}"' not in wsrc:
+            log(f"update {latest} waiting: GitHub is still sending older files")   # mid-publish or a stale copy
+            return False
         compile(src, "engine.py", "exec")
         compile(wsrc, "combo_watcher.py", "exec")
     except (requests.RequestException, SyntaxError, UnicodeDecodeError) as err:
@@ -234,7 +246,7 @@ def update_if_newer(E, conf):
         f.write(wsrc)
     os.replace(me + ".new", me)
     conf.pop("waiting", None)
-    log("updated to", latest, "(approved by your phone) - restarting")
+    log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
     return True
 
 
@@ -1728,8 +1740,9 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
-   <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Phone-approved update</span><b>${esc(mac.approved||'—')}</b></div></div>
+   <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
    <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
+   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Mac controls are on the Mac itself'}</b><small>${LOCAL?'Reload in a moment.':'Open Combo Hub on the Mac for updates, the pairing code and the passcode.'}</small></div></div>`;
@@ -1748,7 +1761,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
- ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here. Updates install by themselves once your phone approves them.':'',macCard)}
+ ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b>${d.keys.kalshi?'<span class="dot"></span>Connected through the Mac':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
  </div></div>`;}
@@ -2413,6 +2426,7 @@ def mac_settings(conf, web, d, tok):
                 "ts": mac_tailscale_ip(), "pass": conf.get("web_pass", ""), "role": conf.get("role") or "main",
                 "paused": bool(conf.get("paused")), "approved": (conf.get("approve") or {}).get("version", ""),
                 "https": conf.get("https") or {}, "push_devices": len(PUSH.subs()), "push_ok": PUSH.ok(),
+                "auto_update": auto_updates(conf),
                 "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
                                         "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
                 "log": tail}
@@ -2451,6 +2465,12 @@ def mac_settings(conf, web, d, tok):
         return {"ok": True, "msg": "Updating. Combo Hub reconnects in about a minute."}
     if a == "advanced":
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
+    if a == "autoupdate":
+        conf["auto_update"] = bool(d.get("on"))
+        (E.save_json if E else (lambda p, c: json.dump(c, open(p, "w"))))(CONF, conf)
+        log("automatic updates", "on" if conf["auto_update"] else "off (waits for the phone)")
+        return {"ok": True, "msg": "Updates install automatically." if conf["auto_update"] else
+                "Updates now wait until your phone approves them."}
     if a == "https":
         threading.Thread(target=tailscale_https, args=(conf, conf.get("hub_port", 8765)), daemon=True).start()
         return {"ok": True, "msg": "Checking Tailscale's https address…"}
@@ -2911,7 +2931,7 @@ def main():
                     except Exception:
                         pass
                     push(conf, text, title="Weekly report", priority="low")
-            if conf.pop("update_now", False) or t0 - last["upd"] > 1800:
+            if conf.pop("update_now", False) or t0 - last["upd"] > (600 if auto_updates(conf) else 1800):
                 last["upd"] = t0
                 if update_if_newer(E, conf):
                     return 0                      # systemd starts the new version
