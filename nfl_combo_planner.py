@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.74"
+VERSION = "2026.11.17.75"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8005,12 +8005,14 @@ def launch():
 # expected), and settles each paper bet when the games finish. The record shows whether a real
 # full-auto budget would have made money before any is risked.
 SHADOW = os.path.join(HERE, "combo_shadow.json")
-SHADOW_DEF = {"start": 300.0, "min_pct": 100, "per_day": 30.0, "max_open": 15, "quotes_per_day": 12,
-              "per_pass": 2}
+SHADOW_DEF = {"start": 300.0, "min_pct": 100, "per_day": 30.0, "max_open": 15, "quotes_per_day": 60,
+              "per_pass": 3, "v": 2}
 
 
 def shadow_state():
     st = load_json(SHADOW, {})
+    if st and st.get("v", 1) < 2:                # more looks per day now that good ones become buy ideas
+        st.update(quotes_per_day=SHADOW_DEF["quotes_per_day"], per_pass=SHADOW_DEF["per_pass"], v=2)
     for k, v in SHADOW_DEF.items():
         st.setdefault(k, v)
     st.setdefault("bank", st["start"])
@@ -8047,7 +8049,7 @@ def shadow_pass(book_snap, log=print, alert=None):
     today = dt.date.today().isoformat()
     q_today = sum(1 for q in st["quotes"] if q["day"] == today)
     spent_today = sum(b["stake"] for b in st["bets"] if b["day"] == today)
-    if q_today >= st["quotes_per_day"] or sum(b["status"] == "open" for b in st["bets"]) >= st["max_open"]:
+    if q_today >= st["quotes_per_day"]:          # (a full paper portfolio still looks for buy ideas)
         save_json(SHADOW, st)
         return did
     attach_fair_book = load_book_state(book_snap)
@@ -8079,16 +8081,21 @@ def shadow_pass(book_snap, log=print, alert=None):
         key = "|".join(sorted(l["ticker"] for l in c["legs"]))
         before = st.setdefault("seen", {}).get(key)
         st["seen"][key] = round(pct, 4)
-        if alert and pct * 100 >= CFG["accept_pct"]:
-            picks = ", ".join(l["pick"] for l in c["legs"])
-            if before is None:
-                alert(f"💡 A {len(c['legs'])}-pick {LG()['name']} combo is quoting at {pct:.0%} of fair: {picks}. "
-                      "Build it from the Games list to get your own price.", "value")
-            elif pct - before >= 0.05:
-                alert(f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair.", "price")
+        if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05):
+            sid = store_suggestion(c, r, pct)            # a buy idea: Live shows it, one tap gets your price
+            picks = " + ".join(l["pick"] for l in c["legs"])
+            url = f"/app#s={sid}" if sid else "/app"
+            pays_txt = f"{money(r['stake'])} pays about {money(r['pays'])}"
+            if alert and before is None:
+                _alert(alert, f"💡 Buy idea: {picks} ({LG()['name']}) is priced at {pct:.0%} of fair. "
+                              f"{pays_txt}. Tap to get your price.", "value", url)
+            elif alert:
+                _alert(alert, f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair. {pays_txt}.",
+                       "price", url)
         st["quotes"].append({"day": today, "pct": round(pct, 4), "legs": len(c["legs"]), "league": LEAGUE["code"]})
         stake = 10 if pct >= 1.10 else 8 if pct >= 1.05 else 5
-        if pct * 100 < st["min_pct"] or spent_today + stake > st["per_day"] or stake > st["bank"]:
+        if pct * 100 < st["min_pct"] or spent_today + stake > st["per_day"] or stake > st["bank"] or \
+                sum(b["status"] == "open" for b in st["bets"]) >= st["max_open"]:
             did.append(f"quoted {len(c['legs'])}-pick at {pct:.0%} of fair: passed")
             continue
         pays = r["pays"] * stake / r["stake"]
@@ -8106,6 +8113,39 @@ def shadow_pass(book_snap, log=print, alert=None):
     return did
 
 
+def _alert(alert, msg, kind, url):
+    try:
+        alert(msg, kind, url)
+    except TypeError:                                 # an older alert function: no link
+        alert(msg, kind)
+
+
+def store_suggestion(c, r, pct):
+    """Remember a combo Kalshi just priced at or above your cut-off, so Live can offer it. Returns its id."""
+    if not STORE["db"]:
+        return None
+    kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x]
+    sid = f"{int(time.time())}{random.randint(100, 999)}"
+    store_x("insert into suggestions values(?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, time.time(), LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
+             " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
+             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None))
+    return sid
+
+
+def live_suggestions(max_age=3600, limit=6):
+    """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks."""
+    rows = store_rows("select * from suggestions where ts > ? and (kick is null or kick > ?) order by pct desc",
+                      (time.time() - max_age, time.time() + 300))
+    seen, out = set(), []
+    for r in rows:
+        if r["legs"] in seen:
+            continue
+        seen.add(r["legs"])
+        out.append(dict(r, legs=json.loads(r["legs"]), sport=LEAGUES.get(r["lg"], {}).get("short", r["lg"])))
+    return out[:limit]
+
+
 def shadow_candidates_with(book):
     games, days, slate = week_games(fetch_markets())
     attach_fair(games, book)
@@ -8121,7 +8161,14 @@ def shadow_candidates_with(book):
         kicks = [_kick_ts(l) for l in c["legs"]]
         if None in kicks or min(kicks) - time.time() > SHADOW_WINDOW:
             continue                              # quote close to game time, when combos price best
-        out.append(((est_offer(c)[1] or 0.8 * c["kalshi"] / c["fair"]), c))
+        pred = None
+        try:
+            pred = predict_quote(c)
+        except Exception:
+            pass
+        if pred and pred["n"] >= 40 and pred["p_clear"] < 0.03:
+            continue                              # learned: Kalshi won't price this near fair; save the quote
+        out.append(((pred["pct"] if pred else None) or est_offer(c)[1] or 0.8 * c["kalshi"] / c["fair"], c))
     out.sort(key=lambda x: -x[0])
     good = []
     for _, c in out:
@@ -8363,6 +8410,8 @@ create index if not exists quotes_r on quotes(outcome, ts);
 create table if not exists bets(combo text primary key, first_seen real, cost real, pays real, legs text,
   sports text, status text, back real, settled real, p_first real);
 create table if not exists events(ts real, kind text, combo text, text text);
+create table if not exists suggestions(id text primary key, ts real, lg text, legs text, picks text, n int,
+  pct real, pays real, stake real, fair real, kick real);
 """
 
 

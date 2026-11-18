@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.74"
+WATCHER_VERSION = "2026.11.17.75"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -37,10 +37,22 @@ def load_conf():
         return json.load(f)
 
 
-def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False):
+def hub_base(conf):
+    """Where Combo Hub opens from the phone: the https address when the Mac has it, else Tailscale's."""
+    url = (conf.get("https") or {}).get("url")
+    if url:
+        return url
+    ip = hub_address()
+    return f"http://{ip}:{conf.get('hub_port', 8765)}" if ip else ""
+
+
+def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False, click=None):
     """A notification on your phone (ntfy app subscribed to your topic). With pause_button, it
-    carries a "Pause auto cash-out" button that stops automatic sales until you resume."""
+    carries a "Pause auto cash-out" button that stops automatic sales until you resume. With click,
+    tapping it opens that Combo Hub page."""
     headers = {"Title": title, "Priority": priority, "Tags": "moneybag"}
+    if click and hub_base(conf):
+        headers["Click"] = hub_base(conf) + click
     if pause_button:
         headers["Actions"] = f"http, Pause auto cash-out, {NTFY}/{conf['topic']}-pause, method=POST, body=pause, clear=true"
     try:
@@ -448,8 +460,20 @@ class Notifier:
         self.conf, self.E, self.every = conf, E, every
         self.q, self.last, self.lock = [], 0.0, threading.Lock()
 
-    def add(self, msg, kind=None):
+    def add(self, msg, kind=None, url=None):
         low = msg.lower()
+        if kind in ("value", "price") and url:          # a buy idea: worth seeing now, while the price holds
+            BUS.publish({"kind": "idea", "text": msg})
+            if not self.E.CFG.get(self.SWITCH[kind], True):
+                return False
+            now, hour = time.time(), time.localtime().tm_hour
+            if 7 <= hour < 22 and now - getattr(self, "last_idea", 0) >= 600:
+                self.last_idea = now
+                push(self.conf, msg, title="Buy idea", priority="default", click=url)
+                threading.Thread(target=PUSH.send, args=("Buy idea", msg), kwargs={"url": url, "tag": "idea"},
+                                 daemon=True).start()
+                return True
+            return True                                  # it's waiting in Combo Hub's Do now list
         kind = kind or ("cash" if ("cash" in low or "hedge" in low) else "info")
         auto_done = "auto" in low and ("cashed" in low or "hedged" in low or "sold" in low)
         if kind in self.SWITCH and not self.E.CFG.get(self.SWITCH[kind], True) and not auto_done:
@@ -790,7 +814,7 @@ def held_teams(odds):
 WATCHER = {}
 
 
-def shadow_loop(odds, notifier=None, every=1800):
+def shadow_loop(odds, notifier=None, every=600):
     """Paper full-auto trading on the Mac (see the planner's shadow section). Real quotes, no money."""
     time.sleep(120)
     while True:
@@ -1286,6 +1310,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 /* phase 3 */
 .doit{display:grid;gap:10px;margin:4px 0 18px}
 .dcard{background:linear-gradient(100deg,var(--yesbg),transparent 70%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);border-radius:var(--r);padding:16px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
+.dcard.idea{background:linear-gradient(100deg,var(--accbg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
 .dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
 .dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
@@ -1507,6 +1532,9 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
   else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
  }
  items.sort((a,b)=>b.w-a.w);
+ const hid=(()=>{try{return JSON.parse(localStorage.getItem('cw_hide')||'[]')}catch(e){return []}})();
+ const ideas=(d.ideas||[]).filter(x=>!hid.includes(x.id));
+ if(!items.length&&ideas.length)return ideaBlock(ideas);
  if(!items.length)return pend.length?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${pend.length} combo${pend.length>1?'s':''} riding · the Mac tells you the moment one is worth selling.</span></div>`:'';
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
   const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
@@ -1515,7 +1543,22 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
   if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`;}
+   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+(ideas.length?ideaBlock(ideas):'');}
+function ideaBlock(ideas){S.ideaq=S.ideaq||{};
+ return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
+  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
+  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+   <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" onclick="buyIdea('${x.id}')">Buy · ${left}s</button>`:
+    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
+async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
+ const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
+ if(!r.ok){toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
+ S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000};renderLive();
+ clearInterval(S.ideaT);S.ideaT=setInterval(()=>{if(S.view==='live'&&!$('#modal').classList.contains('on'))renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
+async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
+ toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
+function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}</b><span>${esc(nextLine(c))}</span></div>
@@ -1712,8 +1755,8 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
   if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
-  if(['score','advice','alert','settled'].includes(ev.kind))toast(ev.text,4500);
-  if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled');}};
+  if(['score','advice','alert','settled','idea'].includes(ev.kind))toast(ev.text,4500);
+  if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
 function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
 // ---------------- settings
@@ -1787,6 +1830,7 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
 window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
+if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
 chrome();render();load(S.view);connect();
 setInterval(()=>{if(document.hidden)return;if(S.live_ok&&Date.now()-(S.lastLoad||0)<30000)return;if(['live','games'].includes(S.view)&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}},12000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view==='live')load('live');});
@@ -1987,7 +2031,12 @@ def webapp_main():
                 A.MINE["live"] = True
                 A.mine_page(live=True)
                 LIVE.update(at=time.time(), data=jsonable(A.MINE.get("view") or {}))
-            return LIVE["data"]
+            out = LIVE["data"]
+        try:
+            ideas = jsonable(A.live_suggestions()) if A.STORE.get("db") else []
+        except Exception:
+            ideas = []
+        return dict(out, ideas=ideas) if isinstance(out, dict) else out
 
     def side_view(s):
         return {"ticker": s["ticker"], "pick": s["pick"], "abbr": s.get("abbr", ""), "p": s.get("p"),
@@ -2208,6 +2257,33 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), **{k: r.get(k) for k in ("pays", "stake", "pct", "ok", "error")}})
+            if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
+                rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
+                if not rows:
+                    return {"ok": False, "msg": "That idea has expired."}
+                row = rows[0]
+                if row["kick"] and row["kick"] < time.time() + 60:
+                    return {"ok": False, "msg": "Those games have started, so this one's off the table."}
+                if BUILD.get("lg") != row["lg"]:
+                    api_build(row["lg"], rebuild=True)
+                k, why = A.add_own_combo(json.loads(row["legs"]))
+                if not k:
+                    return {"ok": False, "msg": why or "Kalshi isn't listing those games any more."}
+                try:
+                    r = A.get_offer(k)
+                    c = A.CTX["combos"][k - 1]
+                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto"):
+                        want = A.stake_for(r["pct"], c["legs"])
+                        if want and abs(want - r["stake"]) > 0.01:
+                            r2 = A.get_offer(k, amount=want)
+                            if not r2.get("error"):
+                                r = r2
+                except (RuntimeError, PermissionError) as err:
+                    return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
+                if r.get("error"):
+                    return {"ok": False, "msg": r["error"]}
+                return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                                 "clears": r.get("ok")})
             if a == "buy":
                 i = int(d.get("i", 0))
                 r = A.accept_offer(i)
