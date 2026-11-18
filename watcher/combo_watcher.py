@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.89"
+WATCHER_VERSION = "2026.11.17.90"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1387,6 +1387,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .sgt{display:grid;grid-template-columns:minmax(0,1fr) 46px 54px 66px;gap:7px 8px;font-size:12.5px;align-items:center}
 .sgt>span{text-align:right}.sgt>span:nth-child(-n+4){color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .sgt b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.25}.sgt b small{font-weight:500}
+.daybar{margin:-2px 0 12px;width:max-content;max-width:100%}
 .qline{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:9px 12px;font-size:12.5px;background:var(--panel2)}.qline span{color:var(--sub)}
 .qline.good{background:var(--yesbg)}.qline.good b{color:var(--yes)}.qline.bad{background:var(--nobg)}.qline.bad b{color:var(--no)}
 .pred{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--panel2);color:var(--sub)}
@@ -1662,6 +1663,7 @@ function renderBuild(){const d=S.build;const m=$('#main');
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+skel(7)+'</div><div class="skel" style="height:300px"></div></div>';return;}
  m.innerHTML=chipRow+`<div class="grid"><div>
   <h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
+  ${dayBar(d)}
   <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
@@ -1815,6 +1817,13 @@ function makerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac place stan
  S.set.maker.mode=m;setv('maker_mode',m);renderSettings();toast(m==='on'?'Standing orders: on. They appear on Live.':m==='watch'?'Standing orders: watch only.':'Standing orders off. Any open ones are cancelled on the next pass.',5000);}
 function ordersCard(d){const os=d.orders||[];if(!os.length)return '';
  return `<div class="card"><h3>Standing orders <span>${os[0].mode==='on'?'on Kalshi':'watching'}</span></h3>${os.map(x=>`<div class="moment"><span class="k">${x.mode==='on'?'📌':'👀'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)}</span></span><time>${ago2(x.ts)}</time></div>`).join('')}</div>`;}
+function dayBar(d){const v=d.days;if(!v)return '';const b=(on,lab,js)=>`<button class="${on?'on':''}" onclick="${js}">${lab}</button>`;
+ if(v.mode==='day')return `<div class="seg daybar">${b(!v.next_day,'Today',"setDays({next_day:false})")}${b(v.next_day,'Tomorrow',"setDays({next_day:true})")}</div>`;
+ if(v.mode==='mix')return `<div class="seg daybar">${v.windows.map((w,i)=>b(v.mix_window===i,esc(w),`setDays({mix_window:${i}})`)).join('')}</div>`;
+ return `<div class="seg daybar">${b(v.thursday,'+ Thursday',`setDays({thursday:${!v.thursday}})`)}${b(true,'Sunday','')}${b(v.saturday,'+ Saturday',`setDays({saturday:${!v.saturday}})`)}${b(v.monday,'+ Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
+async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild();
+ const r=await api('/app/api/settings',{lg:S.lg,values:vals}).catch(()=>({ok:false}));if(!r.ok){toast('Couldn\'t change the days.');return;}
+ S.build=null;renderBuild();load('build',true);}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -2268,6 +2277,9 @@ def webapp_main():
                              "spent": A.week_spend() if A.can_trade() else 0,
                              "board": board, "combos": [combo_view(i, c) for i, c in enumerate(A.CTX.get("combos") or [], 1)],
                              "singles": singles_view(games),
+                             "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
+                                      **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
+                                      "windows": A.MIX_WINDOWS},
                              "leagues": [[k, A.SPORTS.get(k, {}).get("name", k.upper()), A.SPORTS.get(k, {}).get("icon", "")]
                                          for k in ("nfl", "nba", "nhl", "ncaaf", "ncaamb", "ncaawb", "soccer", "ufc", "tennis", "euroleague")
                                          if k in A.SPORTS]})
