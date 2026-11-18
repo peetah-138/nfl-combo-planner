@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.92"
+VERSION = "2026.11.17.93"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -232,7 +232,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs")
 
 
 def next_league():
@@ -5326,15 +5326,16 @@ def watcher_alive():
     return bool(hb and time.time() - hb.get("at", 0) < 180 and not hb.get("err"))
 
 
-def send_watcher_settings():
+def send_watcher_settings(with_cfg=True):
     """Send your Let it ride / Auto cash-out settings (and Kalshi's learned discount) to the Pi,
     signed so only your phone can change them. The Pi is listening, so it takes effect within
-    seconds. Never sends keys."""
+    seconds. Never sends keys. with_cfg=False (after an update) sends only the update approval,
+    so the phone's copy of the settings doesn't overwrite what you changed on the Mac."""
     import hmac, hashlib, time
     c = watcher_conf()
     if not c:
         return False
-    body = json.dumps({"at": int(time.time()), "cfg": {k: CFG.get(k) for k in WATCHER_SYNCED},
+    body = json.dumps({"at": int(time.time()), "cfg": {k: CFG.get(k) for k in WATCHER_SYNCED} if with_cfg else {},
                        "discount": load_json(DISCOUNT_FILE, {}), "approve": load_json(PI_APPROVE, {})},
                       separators=(",", ":"))
     sig = hmac.new(c["secret"].encode(), body.encode(), hashlib.sha256).hexdigest()
@@ -5357,7 +5358,7 @@ def approve_pi_update(version, engine_bytes):
         w_sha = ""
     save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha})
     if watcher_conf():
-        send_watcher_settings()
+        send_watcher_settings(with_cfg=False)
 
 
 def refresh_pi_approval():
@@ -5376,7 +5377,7 @@ def refresh_pi_approval():
         e_sha = hashlib.sha256(mine).hexdigest()
         if w_sha and (ok.get("version") != VERSION or ok.get("watcher") != w_sha or ok.get("engine") != e_sha):
             save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha})
-            send_watcher_settings()
+            send_watcher_settings(with_cfg=False)
     except (OSError, requests.RequestException):
         pass
 

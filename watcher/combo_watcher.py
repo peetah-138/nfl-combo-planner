@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.92"
+WATCHER_VERSION = "2026.11.17.93"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -72,6 +72,18 @@ def sign(secret, body):
     return hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
 
 
+def save_settings(E, keys=None):
+    """Write only the settings the watcher changed into the settings file, leaving the rest as
+    they are, so the watcher's copy never overwrites what you changed in Combo Hub."""
+    cur = E.load_json(E.SAVED, {})
+    cur.update({k: E.CFG[k] for k in (keys or SYNCED) if k in E.CFG})
+    E.save_json(E.SAVED, cur)
+    if getattr(E, "MAIN_SAVED", E.SAVED) != E.SAVED:
+        main = E.load_json(E.MAIN_SAVED, {})
+        main.update({k: E.CFG[k] for k in (keys or SYNCED) if k in E.CFG and k in getattr(E, "SHARED_KEYS", ())})
+        E.save_json(E.MAIN_SAVED, main)
+
+
 def fetch_settings(conf, E):
     """Apply the latest settings the phone sent, if they carry a valid signature."""
     try:
@@ -117,7 +129,7 @@ def fetch_settings(conf, E):
         conf["settings_at"] = data["at"]
         applied = True
     if applied:
-        E.save_json(E.SAVED, E.CFG)
+        save_settings(E)
         E.save_json(CONF, conf)
         log("applied settings from the phone:", {k: E.CFG.get(k) for k in SYNCED},
             "| updates allowed:", (conf.get("approve") or {}).get("version"))
@@ -165,7 +177,7 @@ def pause(conf, E):
             E.maker_cancel_all("paused from a notification", log)
         except Exception as err:
             log("cancelling standing orders failed:", err)
-    E.save_json(E.SAVED, E.CFG)
+    save_settings(E, ("auto_sell", "killer_mode", "maker_mode"))
     E.save_json(CONF, conf)
     log("auto cash-out paused from a notification")
     push(conf, "⏸ Automatic selling and killer-deal buying are paused. Alerts continue. To resume, turn them back "
@@ -1476,6 +1488,13 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
  .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
 }
+.slipbar{display:none}.leg.flip{cursor:pointer;border:1px dashed transparent}.leg.flip:hover{border-color:var(--acc)}
+.flipnote{font-size:12.5px;line-height:1.4;padding:9px 11px;border-radius:9px;background:var(--panel2);margin:2px 0 4px}.flipnote b.v{display:inline-block;margin-right:6px}
+.flipnote.good b.v{color:var(--yes)}.flipnote.bad b.v{color:var(--no)}.flipnote.mid b.v{color:var(--warn,#e0a040)}
+@media (max-width:900px){.slipbar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(74px + env(safe-area-inset-bottom));z-index:29;align-items:center;gap:10px;
+ padding:10px 12px 10px 14px;border-radius:14px;background:var(--acc);color:#fff;box-shadow:0 8px 28px rgba(0,0,0,.35);font-weight:700;font-size:14px}
+ .slipbar span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.slipbar button{border:0;border-radius:9px;padding:8px 12px;font-weight:800;background:#fff;color:var(--acc)}
+ .slipbar .x{background:transparent;color:#fff;padding:8px 6px}}
 @media (min-width:1361px){.numwrap{display:contents}}
 </style></head><body>
 <header class="top">
@@ -1671,12 +1690,15 @@ function renderBuild(){const d=S.build;const m=$('#main');
   <h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
   ${dayBar(d)}
   <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
-   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
   ${linesBlock(d)}
-  <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
+  <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" id="rebuildb" onclick="rebuild(this)">Rebuild</button></span></h2>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
- </div><aside>${slip(d)}${singlesCard(d)}</aside></div>`;}
+ </div><aside>${slip(d)}${singlesCard(d)}</aside></div>${slipBar()}`;}
+function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);if(!legs.length)return '';
+ const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
+ return `<div class="slipbar"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
  if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
@@ -1694,14 +1716,30 @@ async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Ask
  if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i});
  if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct}};renderBuild();
  toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)} (${pct(q.pct)} of fair). Buy within 20 seconds.`,6000);}
-function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;
- return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Rebuilding…';}
+ const before=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));S.quotes={};
+ await load('build',true);const after=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));
+ toast(before===after?'Prices refreshed. The best combos are still the same ones.':'New combos are ready.',4000,'good');}
+async function swapCombo(i,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}
+ const r=await api('/app/api/act',{a:'swap',i}).catch(()=>({ok:false}));if(S.quotes)delete S.quotes[i];if(S.flips)delete S.flips[i];
+ if(!r.ok){hap('error');toast(r.msg||'Couldn\'t find another one.');renderBuild();return;}
+ const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;renderBuild();hap('success');}
+async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
+ if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
+ const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
+ S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');renderBuild();}
+function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];
+ if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
+  <div style="display:flex;gap:8px"><button class="btn ghost" style="flex:1" onclick="go('live')">See it on Live</button><button class="btn ghost" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
+ return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+  <div class="legs">${c.legs.map(l=>`<span class="leg flip" title="Tap to flip to the other team" onclick="flipLeg(${c.i},'${l.ticker}')">${esc(short(l.pick))} ${pct(l.fair)} ⇄</span>`).join('')}</div>
+  ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
   <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
   ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
   <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">Buy ${money(o.stake)} → ${money(o.pays)}</button>`:
-   `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}</div></div>`;}
+   `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}<button class="btn ghost" title="Not this one: show a different combo" onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
 async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const r=await api('/app/api/act',{a:'quote',i}).catch(e=>({ok:false,error:'Couldn\'t reach your Mac ('+(e&&e.message||e)+').'}));
  if(!r.ok){hap('error');toast(r.error||r.msg||'No price came in.',6000);renderBuild();return;}
@@ -1710,7 +1748,8 @@ async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTM
 async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
  let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
  S.buying=false;hap(r.ok?'success':'error');toast(r.ok?`Bought: ${money(r.pays||0)} if it hits. It shows on Live within a minute.`:(r.msg||'Didn\'t go through.'),7000,r.ok?'good':'bad');
- if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];renderBuild();}
+ if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
+ if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
 function hap(k){try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+(k||'light');document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
  if(navigator.vibrate){navigator.vibrate(k==='success'?[10,50,10]:k==='error'?[30,50,30]:k==='warning'?[20]:8);return;}
  let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
@@ -2214,7 +2253,22 @@ def webapp_main():
                 "bid": s.get("bid"), "fair": s.get("fair"), "edge": s.get("edge"), "src": s.get("src"),
                 "tie": bool(s.get("tie")), "event": s["event"]}
 
-    def combo_view(i, c):
+    def legset(c):
+        return frozenset(l["ticker"] for l in c.get("legs") or [] if l.get("ticker"))
+
+    def owned_sets():
+        """Combos you already hold: bought here this session, plus pending ones on your Kalshi account."""
+        out = set(BUILD.setdefault("bought", set()))
+        try:
+            v = A.ACCT_CACHE.get("value")
+            for b in (v[0] if v else None) or []:
+                if b.get("status") == "pending":
+                    out.add(frozenset(l["ticker"] for l in b.get("legs") or [] if l.get("ticker")))
+        except Exception:
+            pass
+        return out
+
+    def combo_view(i, c, owned=None):
         est = A.est_offer(c)
         try:
             pred = A.predict_quote(c)
@@ -2223,6 +2277,7 @@ def webapp_main():
         fx, heavy = A.exposure_factor(c["legs"])
         size = A.stake_for(pred["pct"], c["legs"]) if pred and A.CFG.get("size_auto") else None
         return {"i": i, "kind": c.get("kind"), "tier": c.get("tier"), "fair": c.get("fair"), "min": c.get("min"),
+                "bought": legset(c) in (owned if owned is not None else owned_sets()),
                 "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1], "pred": pred, "size": size,
                 "value_pct": c.get("value_pct"),
                 "exposure": {"factor": fx, "team": heavy} if heavy else None,
@@ -2275,6 +2330,8 @@ def webapp_main():
                     combos = [c for c in vals if frozenset(l["ticker"] for l in c["legs"]) not in have] + combos
                 except Exception as err:
                     print("value search:", err, flush=True)
+                skip = owned_sets() | BUILD.setdefault("nope", set())      # yours already, or swapped away
+                combos = [c for c in combos if legset(c) not in skip] or combos
                 A.CTX.clear()
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
@@ -2297,7 +2354,7 @@ def webapp_main():
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend() if A.can_trade() else 0,
-                             "board": board, "combos": [combo_view(i, c) for i, c in enumerate(A.CTX.get("combos") or [], 1)],
+                             "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
                              "singles": singles_view(games), "lines": BUILD.get("lines") or [],
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
@@ -2480,6 +2537,11 @@ def webapp_main():
             if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
                 A.set_league(lg)
                 BUILD["lg"] = None
+            else:                                       # pick up changes the watcher or phone saved since
+                A.CFG.update({k: v for k, v in A.load_json(A.SAVED, {}).items() if k in A.CFG and k not in A.KEY_FIELDS})
+                if A.SAVED != A.MAIN_SAVED:
+                    main = A.load_json(A.MAIN_SAVED, {})
+                    A.CFG.update({k: main[k] for k in A.SHARED_KEYS if k in main and k not in A.KEY_FIELDS})
             synced = None
             if vals:
                 before = {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}
@@ -2648,7 +2710,45 @@ def webapp_main():
                     r = {"error": f"{type(err).__name__}: {err}"}
                 print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
+                if not r.get("error") and 1 <= i <= len(A.CTX.get("combos") or []):
+                    BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
+            if a == "flip":                         # switch one pick to the other team, with a verdict
+                i, tk = int(d.get("i", 0)), str(d.get("t") or "")
+                if not 1 <= i <= len(A.CTX.get("combos") or []):
+                    return {"ok": False, "msg": "That combo is gone. Tap Rebuild."}
+                ok, note = A.flip_pick(i, tk)
+                import html as _html
+                text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", "", note or ""))).strip()
+                if not ok:
+                    return {"ok": False, "msg": text}
+                verdict = "good" if "Good flip" in note else "bad" if "Worse bet" in note else "mid"
+                text = re.sub(r"^(Good flip|Worse bet|Trade-off)\s*", "", text).replace(" Tap Flip again to undo.", " Tap it again to undo.")
+                A.CTX.get("offers", {}).pop(i, None)
+                return jsonable({"ok": True, "verdict": verdict, "text": text, "combo": combo_view(i, A.CTX["combos"][i - 1])})
+            if a == "swap":                         # "not that one": a different combo in its place
+                import random
+                i = int(d.get("i", 0))
+                combos = A.CTX.get("combos") or []
+                if not 1 <= i <= len(combos):
+                    return {"ok": False, "msg": "That combo is gone. Tap Rebuild."}
+                old = combos[i - 1]
+                BUILD.setdefault("nope", set()).add(legset(old))
+                have = {legset(c) for c in combos} | owned_sets() | BUILD["nope"]
+                games = A.CTX.get("all_games") or {}
+                pick = None
+                for _ in range(8):
+                    cands, _x = A.build_combos(games, A.CFG.get("picks") or {}, random.Random()) if games else ([], None)
+                    new = [c for c in cands if legset(c) not in have]
+                    if new:
+                        pick = (next((c for c in new if c.get("tier") == old.get("tier") and len(c["legs"]) == len(old["legs"])), None)
+                                or next((c for c in new if c.get("tier") == old.get("tier")), None) or new[0])
+                        break
+                if not pick:
+                    return {"ok": False, "msg": "No other combo to offer from these games."}
+                combos[i - 1] = pick
+                A.CTX.get("offers", {}).pop(i, None)
+                return jsonable({"ok": True, "combo": combo_view(i, pick)})
             if a == "custom":
                 k, why = A.add_own_combo([str(x) for x in d.get("tickers") or []])
                 if not k:
@@ -3285,7 +3385,7 @@ def main():
             E.CFG["killer_mode"] = "watch"
         if E.CFG.get("maker_mode") == "on":
             E.CFG["maker_mode"] = "watch"
-        E.save_json(E.SAVED, E.CFG)
+        save_settings(E, ("auto_sell", "killer_mode", "maker_mode"))
     if not E.can_trade():
         push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the watcher.",
              priority="high")
