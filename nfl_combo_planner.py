@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.91"
+VERSION = "2026.11.17.92"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -97,7 +97,7 @@ TEAMS = {
     "SEA": "Seattle Seahawks", "TB": "Tampa Bay Buccaneers", "TEN": "Tennessee Titans",
     "WAS": "Washington Commanders", "WSH": "Washington Commanders",
 }
-DAY_ORDER = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Today", "Tomorrow"]
+DAY_ORDER = ["Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Monday", "Today", "Tomorrow"]
 MIX_DAYS = []    # the Mix mode's day labels, in order (filled by week_games)
 NFL_TEAMS = TEAMS
 NBA_TEAMS = {
@@ -284,7 +284,7 @@ def day_on():
     """Which day labels are switched on (every day in the Mix mode's window)."""
     if is_mix():
         return defaultdict(lambda: True)
-    return {"Sunday": True, "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
+    return {"Sunday": True, "Wednesday": CFG["thursday"], "Thursday": CFG["thursday"], "Friday": CFG["thursday"],
             "Saturday": CFG["saturday"], "Monday": CFG["monday"], "Today": True, "Tomorrow": True}
 
 
@@ -574,7 +574,7 @@ def when_text(event, day):
 
 
 def week_games(markets, loose=False):
-    """This NFL week's games (Thu-Mon around the coming Sunday), or for daily leagues today's
+    """This NFL week's games (Wed-Mon around the coming Sunday), or for daily leagues today's
     (or tomorrow's) games, keyed by game. Returns (games, day label per game, slate date).
     loose=True keeps near-certain prices (games nearly over) for live updates."""
     today = dt.date.today()
@@ -594,7 +594,7 @@ def week_games(markets, loose=False):
         day_of = {sunday: "Tomorrow" if CFG.get("next_day") else "Today"}
     else:
         sunday = today + dt.timedelta(days=(6 - today.weekday()) % 7)
-        day_of = {sunday + dt.timedelta(days=d): n for d, n in zip(range(-3, 2), DAY_ORDER)}
+        day_of = {sunday + dt.timedelta(days=d): n for d, n in zip(range(-4, 2), DAY_ORDER)}
         if today.weekday() == 0:                 # Monday: tonight's game still belongs to the
             day_of.setdefault(today, "Monday")   # week that just ended, so keep it in view
     games, days = defaultdict(list), {}
@@ -4053,6 +4053,44 @@ def acts_price(t):
     return o["offer"] / o["contracts"] if o and o["contracts"] else 0.0
 
 
+def day_money(mine):
+    """What actually finished today: money back from combos that won or were cashed today, what they cost,
+    and the profit. "Today" is when the combo finished (the Mac's record of it, else its last game's date),
+    not when it was bought, so a combo cashed yesterday with games tomorrow doesn't count today."""
+    today = dt.date.today()
+    when = {}
+    if STORE.get("db"):
+        for r in store_rows("select combo, settled from bets where settled is not null"):
+            try:
+                when[r["combo"]] = dt.date.fromtimestamp(float(r["settled"]))
+            except (TypeError, ValueError, OSError):
+                pass
+    back = cost = 0.0
+    won = cashed = lost = 0
+    for a in mine:
+        st = a["status"]
+        if st not in ("won", "lost", "cashed"):
+            continue
+        d = when.get(a["ticker"])
+        if d is None:
+            try:
+                d = dt.date.fromisoformat(a.get("week") or "")
+            except ValueError:
+                continue
+            if st == "cashed" and d > today:
+                continue                       # sold early, day unknown: don't guess it was today
+        if d != today:
+            continue
+        got = a["back"] if st == "cashed" else a["pays"] if st == "won" else 0.0
+        back += got
+        cost += a["cost"]
+        won += st == "won"
+        cashed += st == "cashed"
+        lost += st == "lost"
+    return {"back": round(back, 2), "cost": round(cost, 2), "pl": round(back - cost, 2),
+            "won": won, "cashed": cashed, "lost": lost}
+
+
 def live_view(mine, views, plan, chance_one, balance):
     """Everything Combo Hub's Live screen shows, as plain data."""
     import time
@@ -4111,10 +4149,11 @@ def live_view(mine, views, plan, chance_one, balance):
             x["pays"] += v["pays"]
     games = sorted(need.values(), key=lambda x: (x["state"] != "live", -x["combos"]))
     week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
-    settled = [a for a in mine if a["status"] in ("won", "lost", "cashed") and (a.get("week") or "") >= week_ago]
+    settled = [a for a in (MINE.get("acct") or mine) if a["status"] in ("won", "lost", "cashed") and (a.get("week") or "") >= week_ago]
     week_pl = sum((a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0) - a["cost"]
                   for a in settled)
-    return {"at": time.time(), "balance": balance, "combos": views,
+    today = day_money(MINE.get("acct") or mine)
+    return {"at": time.time(), "balance": balance, "combos": views, "today": today,
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
             "chance_one": chance_one, "best": max((v["pays"] for v in alive), default=0),
@@ -5791,6 +5830,7 @@ def mine_page(live=False):
 
     # every sport: everything still live, plus combos that finished in the last two days
     recent = (dt.date.today() - dt.timedelta(days=2)).isoformat()
+    MINE["acct"] = acct                            # the full list, for today's and the week's totals
     mine = [a for a in acct if a["status"] == "pending" or (a.get("week") or "") >= recent]
     if not live:
         loading("Checking game results…")
@@ -7160,7 +7200,8 @@ def settings_page(all_games, days, counts):
                         f"{len(all_games)} game{'' if len(all_games) == 1 else 's'} on Kalshi for "
                         f"{'tomorrow' if CFG.get('next_day') else 'today'}.") if by_day() else
                 section("Days", "".join(switch(k, f"{d} <span class='muted'>· {counts.get(d, 0)} game{'' if counts.get(d, 0) == 1 else 's'}</span>")
-                                        for k, d in [("thursday", "Thursday"), ("saturday", "Saturday"), ("monday", "Monday")]),
+                                        for k, d in [("thursday", "Wed & Thu" if any(x == "Wednesday" for x in days.values()) else "Thursday"),
+                                                     ("saturday", "Saturday"), ("monday", "Monday")]),
                         "Sunday is always in."),
         "picks": section("Your picks", ("".join(picks) if len(picks) <= 6 else
                                         f"<details id='pk' class='disc'><summary><span><b>{len(picks)} games</b>"
@@ -7651,7 +7692,7 @@ def main():
     start_autosell_keeper()
     counts = defaultdict(int)
     for d in days.values():
-        counts["Thursday" if d == "Friday" else d] += 1
+        counts["Thursday" if d in ("Friday", "Wednesday") else d] += 1
 
     goto = RUN_OPTS.pop("goto", None)
     APP["where"] = goto if goto in ("mine", "results", "settings") else APP.get("where")
