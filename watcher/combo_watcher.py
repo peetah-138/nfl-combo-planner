@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.76"
+WATCHER_VERSION = "2026.11.17.77"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1299,7 +1299,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .chart{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
 .hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
- padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}
+ padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}.toast.good{background:var(--yes);color:#04130c}.toast.bad{background:var(--no);color:#fff}
 .toast.on{opacity:1;transform:translateX(-50%)}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
 .modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
@@ -1333,6 +1333,10 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .gt .ch{display:flex;align-items:baseline;gap:8px}.gt .ch b{font-size:22px}.gt .ch span{color:var(--mute);font-size:12px}
 .gt svg{width:100%;height:56px;display:block}
 .gt .ft{display:flex;justify-content:space-between;color:var(--sub);font-size:12.5px;border-top:1px solid var(--line);padding-top:10px}
+.board2{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;background:var(--panel2);border-radius:14px;padding:16px 18px;margin-bottom:14px;box-shadow:inset 0 0 0 1.5px var(--line)}
+.board2.up{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--yes) 60%,transparent)}.board2.down{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--no) 60%,transparent)}
+.tm2{display:flex;align-items:center;gap:12px}.tm2.r{justify-content:flex-end}.tm2 span{font-weight:700;color:var(--sub)}.tm2 b{font-size:38px;letter-spacing:-.03em;line-height:1}
+.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px}
 .sheet.wide{max-width:880px;max-height:calc(100vh - 40px);overflow:auto;padding:24px}
 .dhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
 .dkpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}
@@ -1462,12 +1466,12 @@ const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="
  settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
 const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
-function toast(m,ms){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
+function toast(m,ms,tone){const t=$('#toast');t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
 function menu(){$('#dd').classList.toggle('open');}
 document.addEventListener('click',e=>{if(!e.target.closest('.menu'))$('#dd').classList.remove('open');});
 function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'));}
 function modal(h){$('#sheet').innerHTML=h;$('#modal').classList.add('on');}
-function closeModal(){$('#modal').classList.remove('on');$('#sheet').classList.remove('wide');}
+function closeModal(){$('#modal').classList.remove('on');$('#sheet').classList.remove('wide');S.gameOpen=null;}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
 function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'],['results','Results'],['settings','Settings']];
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
@@ -1566,7 +1570,7 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
   <div class="num offer" data-l="Offer">${offer}</div></div><div class="verdict ${vc}">${vt}</div></div>
-  ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
+  ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
    <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
    ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
@@ -1576,12 +1580,12 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
     <button class="btn" ${S.busy[c.t]?'disabled':''} onclick="event.stopPropagation();ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
     ${c.offer_real?`<button class="btn yes" onclick="event.stopPropagation();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
 function tog(t){S.open[t]=!S.open[t];renderLive();}
-function moments(){const ev=(S.events||[]).slice(-8).reverse();if(!ev.length)return '';
+function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);if(!ev.length)return '';
  const K={score:'🏟️',swing:'📈',advice:'⚡',settled:'🏁',alert:'🔔'};
- return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment"><span class="k">${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
+ return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
+ return moments()+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
   <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
@@ -1742,12 +1746,38 @@ async function openCombo(t){modal(`<div class="m" style="padding:30px;text-align
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=`<div class="games">${'<div class="gt skel" style="height:190px"></div>'.repeat(6)}</div>`;return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you need show up here with live scores and win chances.</div>';return;}
  const live=gs.filter(g=>g.state==='live'),rest=gs.filter(g=>g.state!=='live');
- const tile=g=>{const ch=g.chance;const sc=g.sc;const lc=g.state==='live'?legCls({state:'live',sc,live:ch}):'';return `<div class="gt ${g.state==='live'?'live '+lc:''}"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${g.state!=='live'&&g.starts?' · '+esc(g.starts):''}</div></div>
+ const tile=g=>{const ch=g.chance;const sc=g.sc;const lc=g.state==='live'?legCls({state:'live',sc,live:ch}):'';return `<div class="gt ${g.state==='live'?'live '+lc:''}" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${g.state!=='live'&&g.starts?' · '+esc(g.starts):''}</div></div>
    ${g.state==='live'&&sc?`<div class="sc">${sc.me}–${sc.opp}<small>${esc(sc.detail||'')}</small></div>`:'<span class="tag" style="background:var(--panel2);color:var(--sub)">'+(g.state==='live'?'LIVE':'UPCOMING')+'</span>'}</div>
    <div class="ch"><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b><span>${g.state==='live'?'to win right now':'to win'}</span></div>${spark(g.spark,300,56)}
    <div class="ft"><span>In ${g.combos} combo${g.combos>1?'s':''}</span><b>${money(g.pays)} riding</b></div></div>`;};
  m.innerHTML=(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(tile).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(tile).join('')}</div>`:'');}
+// ---------------- one game, live
+async function openGame(t){if(!t)return;S.gameOpen=t;modal(`<div class="m" style="padding:30px;text-align:center"><span class="spin"></span></div>`);$('#sheet').classList.add('wide');await drawGame();}
+async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
+ const r=await api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null);if(!r||!r.leg){$('#sheet').innerHTML='<h3>Game not found</h3><p>It may have finished and settled.</p><div class="row"><button class="btn" onclick="closeModal()">Close</button></div>';return;}
+ const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
+ const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
+ const plays=st.plays.slice().reverse();
+ $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'?' · <span style="color:var(--live)">LIVE</span>':''}</div>
+   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div><button class="btn ghost" onclick="closeModal()">Close</button></div>
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.starts||'Not started')}</div></div>`}</div>
+  <div class="dkpis"><div><span>${esc(short(l.name))} to win</span><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b></div><div><span>Your combos on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
+  <div class="chartbox">${winChart(pts,st.plays)}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
+   <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
+   <div><h2 style="margin:0 0 6px">Your combos on this game</h2>${r.combos.map(c=>`<div class="moment" style="cursor:pointer" onclick="openCombo('${c.t}')"><span class="k">🎯</span><span><b>${esc(c.label)}</b> <span class="m">${c.legs} picks · ${pct(c.p)} to hit</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}</div></div>
+  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;}
+function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
+ const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
+ const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
+ const last=pts[pts.length-1][1];const col=last>=.5?'var(--yes)':'var(--no)';const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+ return `<div class="key"><span><i style="background:${col}"></i>Chance to win</span><span><i style="background:var(--sub);height:8px;width:2px"></i>Score change</span></div><svg viewBox="0 0 ${W} ${H}">
+  ${[0,.25,.5,.75,1].map(v=>`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" ${v===.5?'stroke-dasharray="4 4"':''}/><text x="${pl-6}" y="${Y(v)+4}" font-size="11" text-anchor="end" fill="var(--mute)">${v*100}%</text>`).join('')}
+  ${(plays||[]).slice(1).filter(p=>p.ts>=t0).map(p=>`<line x1="${X(p.ts)}" x2="${X(p.ts)}" y1="8" y2="${8+ih}" stroke="var(--sub)" stroke-width="1" opacity=".35"/>`).join('')}
+  <path d="${d} L${X(t1)} ${8+ih} L${pl} ${8+ih}Z" fill="${col}" opacity=".08"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>
+  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
 // ---------------- live events from the Mac
 function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
  es.onopen=()=>{S.live_ok=true;stat();};
@@ -1755,7 +1785,8 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
   if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
-  if(['score','advice','alert','settled','idea'].includes(ev.kind))toast(ev.text,4500);
+  if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
+  if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
 function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
@@ -2165,6 +2196,19 @@ def webapp_main():
         h = A.combo_history(t) if A.STORE.get("db") else {"offers": [], "ticks": {}}
         return jsonable({"combo": v, "history": h})
 
+    def api_game(t):
+        d = api_live() or {}
+        leg, combos = None, []
+        for v in d.get("combos") or []:
+            for lg in v.get("legs") or []:
+                if lg["ticker"] == t:
+                    leg = leg or lg
+                    if v["group"] == "pending":
+                        combos.append({"t": v["t"], "label": v["label"], "p": v.get("p"), "pays": v["pays"],
+                                       "cost": v["cost"], "legs": len(v["legs"])})
+        story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
+        return jsonable({"leg": leg, "combos": combos, "story": story})
+
     def api_games():
         d = api_live() or {}
         games = d.get("games") or []
@@ -2174,7 +2218,7 @@ def webapp_main():
             for lg in v.get("legs") or []:
                 tick_of[(lg["name"], lg.get("opp"))] = lg["ticker"]
         for g in games:
-            tk = tick_of.get((g["name"], g.get("opp")))
+            tk = g.get("ticker") or tick_of.get((g["name"], g.get("opp")))
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             out.append(dict(g, ticker=tk, spark=[[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]))
@@ -2405,6 +2449,8 @@ def webapp_main():
                         out = api_results()
                     elif path == "/app/api/combo":
                         out = api_combo(q.get("t") or "")
+                    elif path == "/app/api/game":
+                        out = api_game(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
                     elif path == "/app/api/settings":

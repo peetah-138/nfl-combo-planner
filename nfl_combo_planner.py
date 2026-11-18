@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.76"
+VERSION = "2026.11.17.77"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4073,6 +4073,7 @@ def live_view(mine, views, plan, chance_one, balance):
                 continue
             k = (lg["ticker"], lg["side"])
             x = need.setdefault(k, {"name": lg["name"], "opp": lg["opp"], "sport": lg["sport"], "combos": 0, "pays": 0.0,
+                                    "ticker": lg["ticker"],
                                     "state": lg["state"], "score": lg["score"], "sc": lg["sc"], "starts": lg["starts"],
                                     "chance": lg["live"] if lg["live"] is not None else lg["chance"]})
             x["combos"] += 1
@@ -8428,6 +8429,8 @@ create index if not exists quotes_r on quotes(outcome, ts);
 create table if not exists bets(combo text primary key, first_seen real, cost real, pays real, legs text,
   sports text, status text, back real, settled real, p_first real);
 create table if not exists events(ts real, kind text, combo text, text text);
+create table if not exists plays(ts real, ticker text, me int, opp int, detail text);
+create index if not exists plays_t on plays(ticker, ts);
 create table if not exists suggestions(id text primary key, ts real, lg text, legs text, picks text, n int,
   pct real, pays real, stake real, fair real, kick real);
 """
@@ -8535,16 +8538,51 @@ def record_view(view):
                     continue
                 ch = lg["live"] if lg.get("live") is not None else lg.get("chance")
                 key = ("tick", lg["ticker"])
+                sc = lg.get("sc") or {}
+                pts = (sc.get("me"), sc.get("opp")) if sc else None
                 sig = (round(ch or 0, 3), lg.get("state"), lg.get("score") or "")
                 prev = last.get(key)
                 if not prev or prev[1] != sig and now - prev[0] > 4 or now - prev[0] > 300:
                     last[key] = (now, sig)
                     store_x("insert into ticks values(?,?,?,?,?)", (now, lg["ticker"], ch, lg.get("state"), lg.get("score")))
-                    if prev and prev[1][2] != sig[2] and sig[2]:
-                        ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "text": f"{lg['name']}: {sig[2]}"})
-                    elif prev and abs((prev[1][0] or 0) - (sig[0] or 0)) >= 0.08:
+                # a score change, once per game (not per combo, not when only the clock moves)
+                pkey = ("pts", lg["ticker"])
+                if pts and pts[0] is not None and last.get(pkey) != pts:
+                    had = last.get(pkey)
+                    last[pkey] = pts
+                    hoops = lg.get("sport") in ("nba", "ncaamb", "ncaawb", "euroleague", "tennis")
+                    flip = had is not None and (pts[0] > pts[1]) != (had[0] > had[1]) and pts[0] != pts[1]
+                    if had is not None and hoops:            # baskets come every minute: only lead changes
+                        if flip or now - last.get(("play", lg["ticker"]), 0) > 60:
+                            last[("play", lg["ticker"])] = now
+                            store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
+                        if flip:
+                            ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": pts[0] > pts[1],
+                                       "text": f"Your {short_name(lg['name'])} {'take the lead' if pts[0] > pts[1] else 'fall behind'}"
+                                               f" {pts[0]}–{pts[1]} vs {short_name(lg.get('opp') or sc.get('opp_abbr', ''))}"
+                                               + (f" · {sc['detail']}" if sc.get("detail") else "")})
+                    elif had is not None:
+                        store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
+                        mine = pts[0] - had[0] > 0
+                        word = SPORT_SCORE_WORD.get(lg.get("sport"), "Score")
+                        me_n, opp_n = short_name(lg["name"]), short_name(lg.get("opp") or sc.get("opp_abbr", ""))
+                        lead = "lead" if pts[0] > pts[1] else "trail" if pts[0] < pts[1] else "tied"
+                        ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": mine,
+                                   "text": (f"{word} for your {me_n}! " if mine else f"{opp_n} {word.lower()} against your {me_n}. ")
+                                           + (f"Tied {pts[0]}–{pts[1]}" if lead == "tied" else
+                                              f"{'Up' if lead == 'lead' else 'Down'} {max(pts)}–{min(pts)}")
+                                           + (f" · {sc['detail']}" if sc.get("detail") else "")})
+                    else:
+                        store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
+                skey = ("swing", lg["ticker"])
+                if ch is not None and lg.get("state") == "live":
+                    base = last.get(skey)
+                    if base is None:
+                        last[skey] = ch
+                    elif abs(ch - base) >= 0.12:              # a real swing, once per game, not per combo
+                        last[skey] = ch
                         ev.append({"kind": "swing", "combo": t, "ticker": lg["ticker"],
-                                   "text": f"{lg['name']} now {sig[0]:.0%} to win"})
+                                   "text": f"{short_name(lg['name'])} {'up' if ch > base else 'down'} to {ch:.0%} to win"})
         elif ("done", t) not in last:
             last[("done", t)] = 1
             cur = store_rows("select status from bets where combo=?", (t,))
@@ -8558,6 +8596,22 @@ def record_view(view):
     if len(last) > 20000:
         STORE["last"] = {k: v for k, v in list(last.items())[-10000:]}
     return ev
+
+
+SPORT_SCORE_WORD = {"nhl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
+
+
+def short_name(name):
+    w = (name or "").split()
+    return w[-1] if len(w) > 1 and len(name) > 12 else name
+
+
+def game_story(ticker, hours=8):
+    """One game's live story for the game screen: its win chance over time and every score change."""
+    return {"ticks": store_rows("select ts, chance, state, score from ticks where ticker=? and ts > ? order by ts",
+                                (ticker, time.time() - hours * 3600))[-500:],
+            "plays": store_rows("select ts, me, opp, detail from plays where ticker=? and ts > ? order by ts",
+                                (ticker, time.time() - hours * 3600))}
 
 
 def store_trim(days=120):
