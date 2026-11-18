@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.82"
+WATCHER_VERSION = "2026.11.17.83"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1697,7 +1697,7 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
    <div class="num">${money(h.cost)}</div><div class="num ${h.back-h.cost>=0?'up':'down'}">${smoney(h.back-h.cost)}</div><span class="verdict ${h.status}">${h.status.toUpperCase()}</span></div>`).join('')||'<div class="empty"><b>No settled combos yet</b></div>'}</div>
  </div><aside class="side">
   <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
-   <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
+   <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>${sh.same_game&&(sh.same_game.n||sh.same_game.open)?`<div class="mini">Same-game test (winner + total)<b class="${sh.same_game.pl>=0?'up':'down'}">${smoney(sh.same_game.pl)} · ${sh.same_game.n} settled, ${sh.same_game.open} open</b></div>`:''}`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
  </aside></div>`;}
 function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini">${lab}<b>${fmt(c.mean)} <span class="m" style="font-weight:500">(${fmt(c.lo)} to ${fmt(c.hi)}, ${c.n})</span></b></div>`:`<div class="mini">${lab}<b class="m">not enough yet</b></div>`;

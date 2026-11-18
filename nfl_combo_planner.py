@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.82"
+VERSION = "2026.11.17.83"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8121,7 +8121,7 @@ def shadow_pass(book_snap, log=print, alert=None):
         except Exception as err:                  # a quote that fails is just skipped
             log("shadow quote failed:", type(err).__name__, err)
             continue
-        if (not r.get("error") and r.get("pct") and r["pct"] >= KILLER["combo_pct"]
+        if (not r.get("error") and r.get("pct") and r["pct"] >= KILLER["combo_pct"] and not c.get("same_game")
                 and len(c["legs"]) <= KILLER["combo_legs"] and CFG.get("killer_mode", "watch") != "off"):
             ok, why_not = killer_check(c["legs"], book_snap)
             if ok:                                         # a killer combo: take this quote while it's live
@@ -8145,7 +8145,7 @@ def shadow_pass(book_snap, log=print, alert=None):
             st["reasked"] = (st["reasked"] + [key])[-200:]
         before = st.setdefault("seen", {}).get(key)
         st["seen"][key] = round(pct, 4)
-        if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05):
+        if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05) and not c.get("same_game"):
             sid = store_suggestion(c, r, pct)            # a buy idea: Live shows it, one tap gets your price
             picks = " + ".join(l["pick"] for l in c["legs"])
             url = f"/app#s={sid}" if sid else "/app"
@@ -8167,6 +8167,7 @@ def shadow_pass(book_snap, log=print, alert=None):
         st["bank"] -= stake
         spent_today += stake
         st["bets"].append({"id": f"S{len(st['bets']) + 1}", "day": today, "at": time.time(), "league": LEAGUE["code"],
+                           "same_game": bool(c.get("same_game")),
                            "legs": [{"ticker": l["ticker"], "pick": l["pick"], "fair": round(l["fair"], 4),
                                      "p": round(l["p"], 4)} for l in c["legs"]],
                            "stake": stake, "pays": round(pays, 2), "pct": round(pct, 4), "status": "open"})
@@ -8634,6 +8635,87 @@ def line_candidates(code):
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
 
 
+# ---- same-game combos (a team to win + the game's total): tested on paper first
+SAME_GAME_RHO = {"nfl": 0.05, "ncaaf": 0.05, "nba": 0.03, "ncaamb": 0.03}   # margin-total link (small)
+PROBE = {}
+
+
+def combo_probe(code):
+    """Does Kalshi let spread/total markets into combos with the game winner? Checked once a day:
+    {'total': bool, 'spread': bool, 'at'}."""
+    got = PROBE.get(code)
+    if got and time.time() - got["at"] < 86400:
+        return got
+    out = {"total": False, "spread": False, "at": time.time()}
+    mk = line_markets(code)
+    for kind in ("total", "spread"):
+        m = next((x for x in mk if x["kind"] == kind and x.get("event_ticker")), None)
+        if not m:
+            continue
+        try:
+            r = requests.get(f"{KALSHI}/multivariate_event_collections", timeout=20,
+                             params={"associated_event_ticker": m["event_ticker"], "status": "open", "limit": 50})
+            cols = r.json().get("multivariate_contracts", []) if r.ok else []
+        except (requests.RequestException, ValueError):
+            cols = []
+        game_ev = re.sub(r"(SPREAD|TOTAL)-", "GAME-", m["event_ticker"])
+        for c in cols:
+            inside = {a.get("ticker") for a in c.get("associated_events", [])} or set(c.get("associated_event_tickers") or [])
+            if m["event_ticker"] in inside and game_ev in inside:
+                out[kind] = True
+                break
+    PROBE[code] = out
+    if STORE["db"]:
+        store_x("insert into events values(?,?,?,?)", (time.time(), "probe", code, json.dumps(out)))
+    return out
+
+
+def joint_win_over(mu, sd_m, tot, sd_t, line, rho, over=True, n=20000):
+    """Chance the team wins AND the total goes over (or under) `line`, with margin and total
+    linked by rho. Monte Carlo with a fixed seed, so the same inputs give the same answer."""
+    rnd = random.Random(7)
+    hit = 0
+    for _ in range(n):
+        z1 = rnd.gauss(0, 1)
+        z2 = rho * z1 + math.sqrt(1 - rho * rho) * rnd.gauss(0, 1)
+        if mu + sd_m * z1 > 0 and ((tot + sd_t * z2 > line) == over):
+            hit += 1
+    return hit / n
+
+
+def same_game_combos(code, games, stake=None, k=2):
+    """Winner + total combos from the same game, priced jointly (not by multiplying), for the paper test."""
+    if code not in SAME_GAME_RHO or not combo_probe(code).get("total"):
+        return []
+    stake = stake or CFG["stake"]
+    lines, mk = espn_lines(code), [m for m in line_markets(code) if m["kind"] == "total"]
+    out = []
+    for e, sides in games.items():
+        for x in sides:
+            if x.get("tie") or not x.get("p") or started(x):
+                continue
+            g = next((gg for teams, gg in lines.items() if (x.get("pick") or "").lower() in teams), None)
+            if not g or g.get("spread_home") is None or g.get("total") is None:
+                continue
+            home = (x["pick"] or "").lower() == g["home"].lower()
+            mu = -g["spread_home"] if home else g["spread_home"]
+            tm = next((m for m in mk if g["home_abbr"] in m.get("event_ticker", "") and g["away_abbr"] in m.get("event_ticker", "")
+                       and abs(float(m.get("floor_strike") or 0) - g["total"]) <= 1.5 and price(m)), None)
+            if not tm:
+                continue
+            line = float(tm["floor_strike"])
+            joint = joint_win_over(mu, MARGIN_SD[code], g["total"], TOTAL_SD[code], line, SAME_GAME_RHO[code])
+            tp = price(tm)
+            leg2 = {"ticker": tm["ticker"], "event": tm["event_ticker"], "pick": f"Over {line:g}", "p": tp,
+                    "fair": _phi((g["total"] - line) / TOTAL_SD[code]), "src": "model"}
+            legs = [x, leg2]
+            out.append({"kind": "same_game", "tier": "Same game", "legs": legs, "fair": stake / joint,
+                        "kalshi": stake / (x["p"] * tp), "min": stake / joint * CFG["accept_pct"] / 100,
+                        "same_game": True, "value_pct": round(joint / (x["p"] * tp), 4)})
+    out.sort(key=lambda c: -c["value_pct"])
+    return out[:k]
+
+
 def line_pass(code, alert=None, log=print):
     """Spread and total ideas for one league (single bets: no combo maker). Model-priced, so never
     killer deals; shown with the line they're priced from."""
@@ -8841,6 +8923,10 @@ def shadow_candidates_with(book):
         combos = value_combos(games, live_ok=live_ok) + combos   # built for price first, then the usual mix
     except Exception as err:
         console_note(f"value search: {type(err).__name__}: {err}")
+    try:
+        combos = same_game_combos(LEAGUE["code"], games) + combos   # paper test of same-game pricing
+    except Exception as err:
+        console_note(f"same-game search: {type(err).__name__}: {err}")
     out, seen_keys = [], set()
     floor = CFG.get("live_min", 25) / 100
     for c in combos:
@@ -8879,8 +8965,11 @@ SHADOW_WINDOW = 8 * 3600
 
 
 def _kick_ts(leg):
+    ev = leg.get("event") or ""
+    if ev not in KICKOFF:
+        ev = re.sub(r"(SPREAD|TOTAL)-", "GAME-", ev)        # a spread/total: its game's kickoff
     try:
-        return dt.datetime.fromisoformat(str(KICKOFF.get(leg.get("event") or "")).replace("Z", "+00:00")).timestamp()
+        return dt.datetime.fromisoformat(str(KICKOFF.get(ev)).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
 
@@ -8896,7 +8985,10 @@ def shadow_summary(st=None):
             "n": len(done), "won": sum(b["status"] == "won" for b in done), "staked": staked, "back": round(back, 2),
             "quotes": len(qs), "best": max(qs) if qs else None,
             "median": statistics.median(qs) if qs else None, "near": sum(q >= 0.95 for q in qs),
-            "min_pct": st["min_pct"], "recent": st["bets"][-8:]}
+            "min_pct": st["min_pct"], "recent": st["bets"][-8:],
+            "same_game": {"n": sum(1 for b in done if b.get("same_game")),
+                          "pl": round(sum(b.get("payout", 0) - b["stake"] for b in done if b.get("same_game")), 2),
+                          "open": sum(1 for b in st["bets"] if b.get("same_game") and b["status"] == "open")}}
 
 
 def shadow_text(sm):
