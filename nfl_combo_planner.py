@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.75"
+VERSION = "2026.11.17.76"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8086,9 +8086,10 @@ def shadow_pass(book_snap, log=print, alert=None):
             picks = " + ".join(l["pick"] for l in c["legs"])
             url = f"/app#s={sid}" if sid else "/app"
             pays_txt = f"{money(r['stake'])} pays about {money(r['pays'])}"
+            inplay = " Includes a game in progress, so the price moves fast." if any(started(l) for l in c["legs"]) else ""
             if alert and before is None:
                 _alert(alert, f"💡 Buy idea: {picks} ({LG()['name']}) is priced at {pct:.0%} of fair. "
-                              f"{pays_txt}. Tap to get your price.", "value", url)
+                              f"{pays_txt}. Tap to get your price.{inplay}", "value", url)
             elif alert:
                 _alert(alert, f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair. {pays_txt}.",
                        "price", url)
@@ -8124,19 +8125,24 @@ def store_suggestion(c, r, pct):
     """Remember a combo Kalshi just priced at or above your cut-off, so Live can offer it. Returns its id."""
     if not STORE["db"]:
         return None
-    kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x]
-    sid = f"{int(time.time())}{random.randint(100, 999)}"
-    store_x("insert into suggestions values(?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, time.time(), LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
+    now = time.time()
+    live = any(started(l) for l in c["legs"])
+    kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x and x > now]   # the next game still to start
+    sid = f"{int(now)}{random.randint(100, 999)}"
+    store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live) "
+            "values(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, now, LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
              " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
-             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None))
+             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live)))
     return sid
 
 
 def live_suggestions(max_age=3600, limit=6):
     """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks."""
-    rows = store_rows("select * from suggestions where ts > ? and (kick is null or kick > ?) order by pct desc",
-                      (time.time() - max_age, time.time() + 300))
+    now = time.time()
+    rows = store_rows("select * from suggestions where ts > ? and (kick is null or kick > ?) "
+                      "and (coalesce(live, 0) = 0 or ts > ?) order by pct desc",
+                      (now - max_age, now + 300, now - 600))      # in-progress ideas go stale in 10 minutes
     seen, out = set(), []
     for r in rows:
         if r["legs"] in seen:
@@ -8151,13 +8157,25 @@ def shadow_candidates_with(book):
     attach_fair(games, book)
     if not games:
         return []
-    combos, _ = build_combos(games, {}, random.Random(int(time.time() // 3600)))
+    live_ok = set()
+    if CFG.get("include_live", True):              # games under way, with the same safety screens as Build
+        bf = {e: [x["fair"] for x in sides] for e, sides in games.items() if sides[0].get("src")}
+        skipped, live = screen_live(games, bf)
+        games = {e: sd for e, sd in games.items() if e not in skipped}
+        live_ok = set(live) - set(skipped)
+    games = {e: sd for e, sd in games.items() if e in live_ok or not any(started(x) for x in sd)}
+    if not games:
+        return []
+    combos, _ = build_combos(games, {}, random.Random(int(time.time() // 600)))
     out = []
+    floor = CFG.get("live_min", 25) / 100
     for c in combos:
-        if not c.get("fair") or not c.get("kalshi") or any(started(l) for l in c["legs"]):
+        if not c.get("fair") or not c.get("kalshi"):
             continue
-        if any(l.get("src") is None for l in c["legs"]):
-            continue                              # only picks with a sportsbook line to judge them by
+        if any(started(l) and (l["event"] not in live_ok or (l.get("fair") or 0) < floor) for l in c["legs"]):
+            continue                              # a game under way that failed the checks, or a long shot now
+        if any(l.get("src") is None and not l.get("live") for l in c["legs"]):
+            continue                              # only picks with a sportsbook line (or a checked live price)
         kicks = [_kick_ts(l) for l in c["legs"]]
         if None in kicks or min(kicks) - time.time() > SHADOW_WINDOW:
             continue                              # quote close to game time, when combos price best
@@ -8427,6 +8445,10 @@ def store_open(path=None):
         db.execute("pragma journal_mode=wal")
         db.execute("pragma busy_timeout=8000")
         db.executescript(_SCHEMA)
+        try:
+            db.execute("alter table suggestions add column live int")   # added after the first release
+        except Exception:
+            pass
         STORE.update(db=db, path=path)
         return db
 
