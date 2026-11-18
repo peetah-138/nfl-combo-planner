@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.103"
+VERSION = "2026.11.18.104"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -10112,6 +10112,46 @@ def panel_approve(ids=None, view="all", at=None):
     n = msg["n"]
     return True, (f"Approved {n} bet{'s' if n != 1 else ''}. Each one is bought shortly before its game "
                   f"(singles about 45 minutes before; combos at the time Kalshi has paid best).")
+
+
+def panel_add(ids, view):
+    """Add bets from one sport's panel to today's already-approved panel, inside the day's panel budget,
+    skipping any game today's panel already has a bet on."""
+    src = panel_get(f"view:{view}")
+    if not src:
+        return False, "Those picks are gone. Pull to refresh."
+    msg = {}
+
+    def fn(cur, st):
+        if st != "approved" or not cur:
+            msg["no"] = "Today's panel isn't approved, so approve this one instead."
+            return None
+        active = [c for c in cur["items"] if c.get("state") in ("scheduled", "buying", "bought", "check")]
+        used = {e for c in active for e in _events_of(c)}
+        room = float(cur.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
+        added, skipped = [], []
+        for c in src["items"]:
+            if c["id"] not in ids or _item(cur, c["id"]):
+                continue
+            if used & set(_events_of(c)):
+                skipped.append(c["legs"][0]["pick"])
+                continue
+            if c["stake"] > room + 0.01:
+                skipped.append(c["legs"][0]["pick"])
+                continue
+            room -= c["stake"]
+            used |= set(_events_of(c))
+            cur["items"].append(dict(c, state="scheduled", buy_at=max(time.time(), c.get("buy_at") or time.time())))
+            added.append(c["legs"][0]["pick"])
+        msg["added"], msg["skipped"] = added, skipped
+        return (cur, st) if added else None
+    panel_tx(_panel_day(), "real", fn)
+    if msg.get("no"):
+        return False, msg["no"]
+    a, k = msg.get("added", []), msg.get("skipped", [])
+    if not a:
+        return False, "Nothing added: " + ("those games already have a bet, or it's over today's panel budget." if k else "nothing selected.")
+    return True, (f"Added {len(a)} to today's panel." + (f" Left out {len(k)}: already a bet on that game, or over the budget." if k else ""))
 
 
 def panel_cancel():

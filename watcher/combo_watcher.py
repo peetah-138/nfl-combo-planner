@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.103"
+WATCHER_VERSION = "2026.11.18.104"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -256,6 +256,8 @@ def update_if_newer(E, conf):
                               headers={"Cache-Control": "no-cache"}).text.strip()
     except requests.RequestException:
         return False
+    if re.fullmatch(r"[0-9.]+", latest):
+        LATEST_SEEN.update(v=latest, at=time.time())
     if not re.fullmatch(r"[0-9.]+", latest) or latest == getattr(E, "VERSION", ""):
         conf.pop("waiting", None)
         return False
@@ -1851,7 +1853,7 @@ async function load(v,fresh){try{
  if(v==='build'){const [b,p]=await Promise.all([api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+(S.pview||'all')).catch(()=>null)]);S.build=b;S.panel=p;}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
  if(v==='games'){S.games=await api('/app/api/games');}
- if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):null,api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
+ if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
@@ -2020,23 +2022,30 @@ function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
   <div class="ps"><b>${money(c.stake)}</b>${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
 function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);renderBuild();}
-function panelBlock(d){if(!d||!d.panel)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
+function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
+  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac checks every 10 minutes. You can still build your own below.</div></div>`:`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
   <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
- const p=d.panel,st=p.stats||{},approved=p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
+ const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id));const total=live.reduce((a,c)=>a+c.stake,0);
- const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'||approved?"Today's panel":(SPN[d.view]||d.view)+' panel'}</h2>
+ const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
    <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','bought'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
    <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
- const btn=approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelApprove(this)">Restart today's panel</button>`:'')
+ const addMode=d.view!=='all'&&d.approved_other;
+ const btn=addMode?`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelAdd(this)">Add ${live.length} to today's panel · ${money(total)}</button>
+   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Today's panel is already approved. These are bought the same way, inside your daily panel budget.</div>`:approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelApprove(this)">Restart today's panel</button>`:'')
   :`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelApprove(this)">Approve ${live.length} bet${live.length===1?'':'s'} · ${money(total)}</button>
    <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
- const other=d.approved_other?`<div class="m" style="font-size:12.5px;margin:6px 2px">Today's panel is already approved, so this is it. Tap ⭐ All to see it.</div>`:'';
+ const other='';
  return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${btn}</div>${longer}`;}
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
+async function panelAdd(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_add',ids,view:S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
@@ -2421,7 +2430,10 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
-  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Mac controls are on the Mac itself'}</b><small>${LOCAL?'Reload in a moment.':'Open Combo Hub on the Mac for updates, the pairing code and the passcode.'}</small></div></div>`;
+  :!LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
+   <div><span>Newest</span><b>${mac.latest?(mac.latest===mac.engine?'<span class="up">Up to date</span>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
+   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code, passcode and update controls are on the Mac itself.</small></div></div>`
+  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div></div>`;
  m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
@@ -2445,7 +2457,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
- ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b>${d.keys.kalshi?'<span class="dot"></span>Connected through the Mac':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
+ ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
  </div></div>`;}
 async function macDo(a,b){if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
@@ -2910,7 +2922,7 @@ def webapp_main():
         if not A.STORE.get("db"):
             return {"panel": None}
         real = A.panel_get("real")
-        p = real if view in ("all", "") or (real and real["status"] != "draft") else A.panel_get(f"view:{view}")
+        p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
@@ -3174,6 +3186,9 @@ def webapp_main():
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
+            if a == "panel_add":
+                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
+                return {"ok": ok, "msg": msg}
             if a == "panel_cancel":
                 ok, msg = A.panel_cancel()
                 return {"ok": ok, "msg": msg}
@@ -3430,6 +3445,9 @@ def mac_tailscale_ip():
     return ""
 
 
+LATEST_SEEN = {}
+
+
 def mac_settings(conf, web, d, tok):
     """Combo Hub's This Mac section: status, pairing code, passcode, update. Only from the Mac itself."""
     import base64, subprocess
@@ -3684,6 +3702,16 @@ def start_hub(conf, E, odds=None):
                 else:
                     out = {"ok": False}
                 return self._send(200, json.dumps(out).encode())
+            if web and self.path == "/app/mac-info":        # read-only status for any signed-in device
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok:
+                    return self._send(403, b"")
+                eng = WATCHER.get("E")
+                info = {"ok": True, "watcher": WATCHER_VERSION, "engine": getattr(eng, "VERSION", ""),
+                        "up": int(time.time() - STARTED), "role": conf.get("role") or "main",
+                        "paused": bool(conf.get("paused")), "auto_update": auto_updates(conf),
+                        "waiting": conf.get("waiting") or "", "latest": LATEST_SEEN.get("v", "")}
+                return self._send(200, json.dumps(info).encode())
             if web and self.path == "/app/mac":             # This Mac (Settings): only from the Mac itself
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok or not is_local(self) or not 0 <= n < 10_000:
