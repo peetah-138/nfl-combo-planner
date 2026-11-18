@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.77"
+VERSION = "2026.11.17.78"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -769,6 +769,28 @@ def _as_date(x):
         return None
 
 
+def devig(implied):
+    """A sportsbook's implied chances (they add up to more than 100%) -> fair chances. Power method:
+    finds k with sum(p^k) = 1, which takes more of the book's cut off long shots than favourites,
+    matching how books actually shade lines (the favourite-longshot bias). Plain scaling as a fallback."""
+    ps = [p for p in implied if p and p > 0]
+    if len(ps) != len(implied) or not ps:
+        return implied
+    tot = sum(ps)
+    if not 1.0 < tot < 1.25:
+        return [p / tot for p in ps]
+    lo, hi = 1.0, 3.0
+    for _ in range(50):
+        k = (lo + hi) / 2
+        if sum(p ** k for p in ps) > 1:
+            lo = k
+        else:
+            hi = k
+    out = [p ** ((lo + hi) / 2) for p in ps]
+    t2 = sum(out)
+    return [p / t2 for p in out]
+
+
 def american_chance(x):
     """'-150' / 130 / 'EVEN' -> implied chance (with the book's cut still in), or None."""
     try:
@@ -795,8 +817,8 @@ def espn_moneyline(comp):
                 american_chance((o.get("drawOdds") or {}).get("moneyLine"))
         h, a, d = pick("home"), pick("away"), pick("draw")
         if h and a:
-            tot = h + a + (d or 0)
-            return h / tot, a / tot, (d / tot if d else None), (o.get("provider") or {}).get("name") or "ESPN"
+            fv = devig([h, a] + ([d] if d else []))
+            return fv[0], fv[1], (fv[2] if d else None), (o.get("provider") or {}).get("name") or "ESPN"
     return None
 
 
@@ -967,10 +989,10 @@ def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
                 if mk.get("key") != "h2h" or len(outs) not in (2, 3):
                     continue
                 inv = [1 / o["price"] for o in outs]
-                for o, i in zip(outs, inv):
+                fair_all = devig(inv)
+                for o, p in zip(outs, fair_all):
                     if o.get("name", "").lower() == "draw":
                         continue                  # teams only; the draw is 1 minus the two
-                    p = i / sum(inv)
                     books[o["name"]].append(p)
                     if b.get("key") == "pinnacle":
                         pinnacle[o["name"]] = p
@@ -4044,6 +4066,8 @@ def live_view(mine, views, plan, chance_one, balance):
             except Exception:
                 pass
         v["offer_real"] = bool(real)
+        v["fair_value"] = round(h["p"] * h["pays"], 2)          # what it's worth at the market's own chances
+        v["overpay"] = round(v["offer"] / v["fair_value"], 3) if real and v["offer"] and v["fair_value"] > 0 else None
         v["offer_age"] = round(time.time() - o.get("at", 0)) if o.get("at") else None
         f = acts.get(t) or 0
         v["verdict"] = "sell" if f == 1 else "half" if f == 0.5 else "hold"
@@ -6510,6 +6534,19 @@ def schedule_buy_nudge(all_games):
 BUY_NUDGE = os.path.join(HERE, "combo_buy_nudge.json")
 
 
+def edge_stake(pct, lo=3, hi=10, chance=None):
+    """Bet size from the edge (the Kelly rule). pct = Kalshi's payout as a share of fair. The edge is
+    pulled 30% toward zero first, since our fair chances aren't perfect, then Kelly's fraction of your
+    bankroll is used, inside your $lo-$hi limits. At or below fair: the least."""
+    q = min(max(chance or 0.25, 0.005), 0.95)       # the combo's chance of hitting
+    adj = 1 + (pct - 1) * 0.7
+    if adj <= 1:
+        return lo
+    b = adj / q - 1                                  # net odds at that price
+    f = (adj - 1) / b if b > 0 else 0                # Kelly: edge over odds
+    return int(max(lo, min(hi, round(CFG.get("bankroll", 500) * f))))
+
+
 def stake_for(pct, legs=None):
     """How much to bet on a combo, from Kalshi's price as a share of fair: nothing under your
     cut-off, the least just above it, the most when it's above fair. With the picks given, less
@@ -6518,8 +6555,7 @@ def stake_for(pct, legs=None):
     if pct < cut:
         return 0
     lo, hi = CFG.get("size_min", 3), CFG.get("size_max", 10)
-    steps = [(1.03, hi), (0.99, round(lo + (hi - lo) * 5 / 7)), (0.94, round(lo + (hi - lo) * 2 / 7)), (0, lo)]
-    v = next(v for edge, v in steps if pct >= edge)
+    v = edge_stake(pct, lo, hi, math.prod(l["fair"] for l in legs) if legs and all(l.get("fair") for l in legs) else None)
     if legs:
         f, _ = exposure_factor(legs)
         v = max(lo, round(v * f))
@@ -8115,6 +8151,66 @@ def shadow_pass(book_snap, log=print, alert=None):
     return did
 
 
+def maker_ratio(n, hours=None):
+    """What Kalshi's combo makers typically pay vs its own single-game prices, for n picks (learned)."""
+    m = QMODEL["m"]
+    if (m is None or time.time() - QMODEL["at"] > 600) and STORE["db"]:
+        QMODEL.update(m=quote_model(), at=time.time())
+        m = QMODEL["m"]
+    if m:
+        e = m["eff"]
+        return math.exp(m["mu"] + e.get(f"n:{_nbucket(n)}", 0) + e.get(f"h:{_hbucket(hours)}", 0))
+    r = est_quote_ratio(n)
+    return r or max(0.6, 0.97 - 0.035 * n)          # before anything is learned: a cautious guess
+
+
+def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=()):
+    """Combos built for price, not for chance: picks where Kalshi's own price is cheapest against the
+    sharp books' fair chance, combined so those gaps multiply. Scores every combination of the best
+    picks with the learned maker discount and keeps the ones most likely to be priced over fair."""
+    import itertools
+    stake = stake or CFG["stake"]
+    best = {}
+    for e, sides in games.items():
+        for x in sides:
+            if x.get("tie") or not x.get("fair") or not x.get("p") or x["fair"] < min_fair:
+                continue
+            if started(x) and e not in live_ok:
+                continue
+            if x.get("src") is None and not x.get("live"):
+                continue                               # no outside line: nothing to compare Kalshi against
+            edge = x["fair"] / x["p"]
+            if e not in best or edge > best[e][0]:
+                best[e] = (edge, x)
+    pool = sorted(best.values(), key=lambda t: -t[0])[:14]
+    scored = []
+    for n in range(2, max_legs + 1):
+        top = pool[:14 if n <= 3 else 11 if n == 4 else 9]
+        for combo in itertools.combinations(top, n):
+            legs = [x for _, x in combo]
+            mult = math.prod(ed for ed, _ in combo)    # Kalshi payout vs fair payout, before the maker's cut
+            hrs = _hours_to(legs)
+            pct = mult * maker_ratio(n, hrs)
+            chance = math.prod(l["fair"] for l in legs)
+            if chance < 0.01:
+                continue
+            scored.append((pct, chance, legs))
+    scored.sort(key=lambda t: -t[0])
+    out, used = [], {}
+    for pct, chance, legs in scored:
+        if len(out) >= k:
+            break
+        if any(used.get(l["ticker"], 0) >= 2 for l in legs):
+            continue                                   # spread it out: no pick in more than 2 value combos
+        for l in legs:
+            used[l["ticker"]] = used.get(l["ticker"], 0) + 1
+        fair_pay = stake / chance
+        out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+                    "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
+                    "value_pct": round(pct, 4)})
+    return out
+
+
 def _alert(alert, msg, kind, url):
     try:
         alert(msg, kind, url)
@@ -8168,11 +8264,19 @@ def shadow_candidates_with(book):
     if not games:
         return []
     combos, _ = build_combos(games, {}, random.Random(int(time.time() // 600)))
-    out = []
+    try:
+        combos = value_combos(games, live_ok=live_ok) + combos   # built for price first, then the usual mix
+    except Exception as err:
+        console_note(f"value search: {type(err).__name__}: {err}")
+    out, seen_keys = [], set()
     floor = CFG.get("live_min", 25) / 100
     for c in combos:
         if not c.get("fair") or not c.get("kalshi"):
             continue
+        ck = frozenset(l["ticker"] for l in c["legs"])
+        if ck in seen_keys:
+            continue
+        seen_keys.add(ck)
         if any(started(l) and (l["event"] not in live_ok or (l.get("fair") or 0) < floor) for l in c["legs"]):
             continue                              # a game under way that failed the checks, or a long shot now
         if any(l.get("src") is None and not l.get("live") for l in c["legs"]):

@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.77"
+WATCHER_VERSION = "2026.11.17.78"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1532,6 +1532,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const items=[];
  for(const c of pend){
   if((d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
+  else if(c.offer_real&&c.overpay&&c.overpay>=1.03)items.push({c,kind:'overpay',w:(c.offer||0)*1.1});
   else if(c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
   else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
  }
@@ -1544,6 +1545,8 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
   const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
+  if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
+   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
   if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
@@ -1609,7 +1612,7 @@ function renderBuild(){const d=S.build;const m=$('#main');
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" ${g.started?'disabled':''} onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
   <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
-  <div class="cgrid">${d.combos.slice().sort((a,b)=>((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
+  <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
  </div><aside>${slip(d)}</aside></div>`;}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
@@ -1629,7 +1632,7 @@ async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Ask
  if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct}};renderBuild();
  toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)} (${pct(q.pct)} of fair). Buy within 20 seconds.`,6000);}
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;
- return `<div class="ccard"><div class="hd"><div><div class="tier">${esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+ return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
   <div class="s" style="font-size:12.5px">${c.pred?`<span class="pred ${c.pred.p_clear>=.5?'good':c.pred.p_clear<.2?'bad':''}">≈ ${pct(c.pred.pct)} of fair · ${Math.round(c.pred.p_clear*100)}% chance it clears</span>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
@@ -1661,7 +1664,12 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
    <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
  </aside></div>`;}
-function edgeBlock(d){const e=d.edge||{};const out=[];
+function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini">${lab}<b>${fmt(c.mean)} <span class="m" style="font-weight:500">(${fmt(c.lo)} to ${fmt(c.hi)}, ${c.n})</span></b></div>`:`<div class="mini">${lab}<b class="m">not enough yet</b></div>`;
+ const pc=x=>(x>=0?'+':'−')+Math.abs(x*100).toFixed(1)+'%';
+ return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
+  <p style="margin:0 0 10px;color:var(--ink)">${esc(p.verdict)}</p>${row('Return on stake',p.roi,pc)}${row('Prices vs kickoff',p.clv,pc)}${row('Paper auto-trading',p.paper,pc)}
+  <div class="m" style="font-size:12px;margin-top:8px">The $300 full-auto test waits for prices vs kickoff to be positive with confidence and the paper record to be up over 50+ bets.</div></div>`;}
+function edgeBlock(d){const e=d.edge||{};const out=[];if(d.proof)out.push(proofCard(d.proof));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
   <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
@@ -1684,7 +1692,7 @@ function edgeBlock(d){const e=d.edge||{};const out=[];
   out.push(`<div class="card"><h3>What each cut-off would have earned <span>${b.quotes} settled quotes</span></h3>
   <div class="m" style="font-size:12.5px;margin-bottom:8px">Every quote Kalshi gave (yours and the Mac's paper trades), bought only if it cleared that share of fair, settled with the real results.</div>
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
- if(!out.length)return `<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
+ if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
 function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'PushManager' in window;
  if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
@@ -2084,6 +2092,7 @@ def webapp_main():
         size = A.stake_for(pred["pct"], c["legs"]) if pred and A.CFG.get("size_auto") else None
         return {"i": i, "kind": c.get("kind"), "tier": c.get("tier"), "fair": c.get("fair"), "min": c.get("min"),
                 "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1], "pred": pred, "size": size,
+                "value_pct": c.get("value_pct"),
                 "exposure": {"factor": fx, "team": heavy} if heavy else None,
                 "chance": 1.0 / (c["fair"] / A.CTX.get("stake", A.CFG["stake"])) if c.get("fair") else None,
                 "legs": [side_view(l) for l in c["legs"]],
@@ -2100,12 +2109,20 @@ def webapp_main():
                 except Exception as err:
                     book, note = {}, f"No sportsbook lines ({type(err).__name__})."
                 A.attach_fair(games, book)
+                live_ok = set()
                 try:                                    # games under way: live prices, same checks as the phone
                     bf = {e: [x["fair"] for x in sd] for e, sd in games.items() if sd[0].get("src")}
-                    A.screen_live(games, bf)
+                    skipped, live = A.screen_live(games, bf)
+                    live_ok = set(live) - set(skipped)
                 except Exception:
                     pass
                 combos, _ = A.build_combos(games, A.CFG.get("picks") or {}, random.Random()) if games else ([], None)
+                try:                                    # the value search's best few go first
+                    vals = A.value_combos(games, A.CFG["stake"], k=4, live_ok=live_ok) if games else []
+                    have = {frozenset(l["ticker"] for l in c["legs"]) for c in combos}
+                    combos = [c for c in vals if frozenset(l["ticker"] for l in c["legs"]) not in have] + combos
+                except Exception as err:
+                    print("value search:", err, flush=True)
                 A.CTX.clear()
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
@@ -2164,7 +2181,53 @@ def webapp_main():
                              "shadow": (shadow or {}).get("summary"), "accuracy": (shadow or {}).get("accuracy"),
                              "accuracy_text": A.accuracy_text((shadow or {}).get("accuracy") or {}),
                              "edge": edge, "backtest": A.backtest() if A.STORE.get("db") else None,
-                             "model": model_summary(), "by_tier": by_tier(done)})
+                             "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done)})
+
+    def proof(bets, done):
+        """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
+        import math as _m, statistics as _st
+
+        def ci(xs, weights=None):
+            n = len(xs)
+            if n < 2:
+                return None
+            if weights:
+                tot = sum(weights)
+                mean = sum(xs) / tot
+                se = _st.pstdev(xs) * _m.sqrt(n) / tot
+            else:
+                mean = _st.mean(xs)
+                se = _st.stdev(xs) / _m.sqrt(n)
+            return {"n": n, "mean": round(mean, 4), "lo": round(mean - 1.96 * se, 4), "hi": round(mean + 1.96 * se, 4)}
+        back = lambda a: a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+        roi = ci([back(a) - a["cost"] for a in done], [a["cost"] for a in done]) if done else None
+        close = A.load_json(A.CLOSING, {})
+        clv = []
+        for a in bets:
+            probs = []
+            for l in a.get("legs") or []:
+                v = close.get(l.get("ticker") or "")
+                if v is None:
+                    probs = None
+                    break
+                probs.append(v if l.get("side", "yes") == "yes" else 1 - v)
+            if probs and a["cost"] > 0:
+                clv.append((a.get("full_pays") or a["pays"]) * _m.prod(probs) / a["cost"] - 1)
+        clv_ci = ci(clv)
+        sh = [b for b in A.shadow_state().get("bets", []) if b["status"] != "open"]
+        paper = ci([b.get("payout", 0) - b["stake"] for b in sh], [b["stake"] for b in sh]) if sh else None
+        n = len(done)
+        if n < 30 and not (paper and paper["n"] >= 30):
+            verdict, tone = f"Too early to tell: {n} settled combo{'s' * (n != 1)}. Results are mostly luck until about 50.", "wait"
+        elif clv_ci and clv_ci["lo"] > 0 and paper and paper["mean"] > 0 and paper["n"] >= 50:
+            verdict, tone = "The edge looks real: you beat the kickoff price with confidence and the paper record is up. Ready for the $300 test.", "good"
+        elif roi and roi["hi"] < 0 and n >= 50:
+            verdict, tone = "Losing money with confidence. Raise the fair-price cut-off or bet less until prices vs kickoff turn positive.", "bad"
+        elif clv_ci and clv_ci["hi"] < 0 and clv_ci["n"] >= 40:
+            verdict, tone = "Your prices are worse than kickoff prices on average. That's the clearest sign of no edge: lean on Value picks and buy ideas only.", "bad"
+        else:
+            verdict, tone = "Not proven either way yet. Keep sizes small; this updates as combos settle.", "wait"
+        return {"roi": roi, "clv": clv_ci, "paper": paper, "verdict": verdict, "tone": tone}
 
     def model_summary():
         m = A.quote_model() if A.STORE.get("db") else None
