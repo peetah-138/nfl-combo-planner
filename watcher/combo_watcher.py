@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.86"
+WATCHER_VERSION = "2026.11.17.87"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1654,7 +1654,7 @@ function renderBuild(){const d=S.build;const m=$('#main');
     <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
   <h2>Suggested combos <span class="n">${d.combos.length}</span><span class="r"><button class="btn" onclick="load('build',true)">Rebuild</button></span></h2>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>
- </div><aside>${slip(d)}</aside></div>`;}
+ </div><aside>${slip(d)}${singlesCard(d)}</aside></div>`;}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
  if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
@@ -1775,6 +1775,14 @@ function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',wa
    ${k.settled?`<div class="mini" style="margin-top:6px">Record so far<b class="${k.pl>=0?'up':'down'}">${smoney(k.pl)} on ${money(k.staked)} (${k.settled})</b></div>`:''}${rows?`<div style="margin-top:6px">${rows}</div>`:''}</div>`;}
 function killerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac buy killer deals?</h3><p>Only deals that pass every check, up to 2 a day and $20 a day, inside your cap. Every buy sends an alert with a Pause button.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();killerMode('on',true)">Turn on</button></div>`);return;}
  S.set.killer.mode=m;setv('killer_mode',m);renderSettings();toast(m==='on'?'Killer deals: the Mac buys them now. Pause from any alert.':m==='watch'?'Killer deals: watch only.':'Killer deals off.',5000);}
+function singlesCard(d){const ss=d.singles||[];if(!ss.length)return '';
+ return `<div class="card"><h3>Single games <span>best prices</span></h3><div class="m" style="font-size:12px;margin:-4px 0 8px">Kalshi's price vs the sharp books' chance to win, after Kalshi's fee. No combo maker taking a cut.</div>
+  ${ss.map(x=>`<div class="moment"><span class="k" style="color:${x.edge>=0.025?'var(--yes)':x.edge>0?'var(--sub)':'var(--mute)'}">${x.edge>=0.025?'🎯':'·'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">vs ${esc(short(x.opp))} · ${Math.round(x.p*100)}¢ · fair ${pct(x.fair)}</span></span>
+   ${x.idea?`<button class="btn acc" style="padding:6px 10px" onclick="singleFromBoard('${x.ticker}',this)">${(x.edge*100).toFixed(1)}¢ edge</button>`:`<b class="m" style="font-size:12px">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</b>`}</div>`).join('')}
+  ${ss.some(x=>x.idea)?'':'<div class="m" style="font-size:12px;margin-top:8px">Nothing at least 2.5¢ under fair right now: Kalshi is pricing these games in line with the sharp books. The Mac keeps checking every 10 minutes and alerts you when one opens up.</div>'}</div>`;}
+async function singleFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'singleidea',t}).catch(()=>({ok:false}));
+ if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
+ const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -2160,6 +2168,19 @@ def webapp_main():
                 "legs": [side_view(l) for l in c["legs"]],
                 "offer": {k: v for k, v in (A.CTX.get("offers", {}).get(i) or {}).items() if k in ("pays", "stake", "at")} or None}
 
+    def singles_view(games):
+        """Every team's Kalshi price vs the sharp books' chance, after Kalshi's fee: best first."""
+        out = []
+        for e, sd in games.items():
+            for x in sd:
+                if x.get("tie") or not x.get("fair") or not x.get("p") or x.get("src") is None or A.started(x):
+                    continue
+                edge = x["fair"] - x["p"] - A.single_fee(x["p"])
+                out.append({"ticker": x["ticker"], "pick": x["pick"], "p": x["p"], "fair": x["fair"],
+                            "edge": round(edge, 4), "opp": A.opp_of(games, x), "idea": edge >= A.SINGLE_MIN_EDGE})
+        out.sort(key=lambda r: -r["edge"])
+        return out[:6]
+
     def api_build(lg, rebuild=True):
         import random
         with alock:
@@ -2202,6 +2223,7 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend() if A.can_trade() else 0,
                              "board": board, "combos": [combo_view(i, c) for i, c in enumerate(A.CTX.get("combos") or [], 1)],
+                             "singles": singles_view(games),
                              "leagues": [[k, A.SPORTS.get(k, {}).get("name", k.upper()), A.SPORTS.get(k, {}).get("icon", "")]
                                          for k in ("nfl", "nba", "nhl", "ncaaf", "ncaamb", "ncaawb", "soccer", "ufc", "tennis", "euroleague")
                                          if k in A.SPORTS]})
@@ -2489,6 +2511,17 @@ def webapp_main():
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                                  "clears": r.get("ok")})
+            if a == "singleidea":                       # a single game from the Build board, as a buy idea
+                tk = str(d.get("t", ""))
+                x = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
+                if not x or not x.get("fair") or not x.get("p"):
+                    return {"ok": False, "msg": "That team isn't on the board any more."}
+                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
+                stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
+                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
+                sid = A.store_suggestion({"legs": [x], "fair": stake / x["fair"]},
+                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
+                return {"ok": bool(sid), "id": sid}
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
