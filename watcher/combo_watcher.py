@@ -21,12 +21,12 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.88"
+WATCHER_VERSION = "2026.11.17.89"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-          "killer_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
+          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
 
 
 def log(*a):
@@ -102,13 +102,16 @@ def fetch_settings(conf, E):
             conf["approve"] = data["approve"]          # the exact update files your phone installed
         if conf.get("paused"):
             if data.get("at", 0) > conf["paused"] and (data.get("cfg", {}).get("auto_sell") or
-                                                        data.get("cfg", {}).get("killer_mode") == "on"):
+                                                        data.get("cfg", {}).get("killer_mode") == "on" or
+                                                        data.get("cfg", {}).get("maker_mode") == "on"):
                 conf.pop("paused")                     # you saved Settings with Auto cash-out on: resume
                 push(conf, "▶️ Auto cash-out resumed on the Pi.", priority="low")
             else:
                 E.CFG["auto_sell"] = False
                 if E.CFG.get("killer_mode") == "on":
                     E.CFG["killer_mode"] = "watch"
+                if E.CFG.get("maker_mode") == "on":
+                    E.CFG["maker_mode"] = "watch"
         if isinstance(data.get("discount"), dict):          # what Kalshi buyers really pay, learned on the phone
             E.save_json(E.DISCOUNT_FILE, data["discount"])
         conf["settings_at"] = data["at"]
@@ -156,7 +159,13 @@ def pause(conf, E):
     E.CFG["auto_sell"] = False
     if E.CFG.get("killer_mode") == "on":
         E.CFG["killer_mode"] = "watch"             # pausing also stops killer-deal buying
-        E.save_json(E.SAVED, E.CFG)
+    if E.CFG.get("maker_mode") == "on":
+        E.CFG["maker_mode"] = "watch"              # ...and standing orders, which are cancelled now
+        try:
+            E.maker_cancel_all("paused from a notification", log)
+        except Exception as err:
+            log("cancelling standing orders failed:", err)
+    E.save_json(E.SAVED, E.CFG)
     E.save_json(CONF, conf)
     log("auto cash-out paused from a notification")
     push(conf, "⏸ Automatic selling and killer-deal buying are paused. Alerts continue. To resume, turn them back "
@@ -803,6 +812,7 @@ def history_loop(E, every=900):
     while True:
         try:
             E.killer_resolve()
+            E.maker_resolve()
             got = E.resolve_quotes()
             if got:
                 log(f"history: {got} quotes settled")
@@ -1632,7 +1642,7 @@ function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse(
  return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
+ return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
   <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
@@ -1794,6 +1804,17 @@ function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
 async function singleFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'singleidea',t}).catch(()=>({ok:false}));
  if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
  const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
+function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
+ const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
+ return `<div class="srow"><div class="l"><b>Standing orders</b><small>The Mac keeps buy orders ${Math.round((r.discount||.03)*100)}¢ under the sharp books' chance, so you only buy when someone sells to you cheap. Watch only records what would have filled.</small></div>
+  <div class="seg">${['off','watch','on'].map(m=>`<button class="${k.mode===m?'on':''}" onclick="makerMode('${m}')">${M[m]}</button>`).join('')}</div></div>
+  <div class="srow" style="display:block"><div class="m" style="font-size:12.5px;line-height:1.6">Teams with a ${pct(r.min_fair||.2)}–${pct(r.max_fair||.85)} chance · two odds sources agree · games within ${r.horizon_hours||30} hours · one order per game · up to ${money(r.per_order||10)} each, ${r.max_orders||6} orders and ${money(r.max_dollars||40)} out at once, inside your cap ·
+   re-priced when the fair chance moves ${Math.round((r.reprice||.01)*100)}¢ · cancelled ${r.cancel_mins||20} minutes before the game and on injury news (Kalshi also expires them by itself).</div>
+   ${k.settled?`<div class="mini" style="margin-top:6px">Record so far<b class="${k.pl>=0?'up':'down'}">${smoney(k.pl)} (${k.settled} settled, ${k.filled} filled)</b></div>`:''}${rows?`<div style="margin-top:6px">${rows}</div>`:''}</div>`;}
+function makerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac place standing orders?</h3><p>Real buy orders on Kalshi, a few cents under fair, up to ${money(40)} out at once and inside your cap. They're cancelled before games start, on news, and when you tap Pause on any alert.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();makerMode('on',true)">Turn on</button></div>`);return;}
+ S.set.maker.mode=m;setv('maker_mode',m);renderSettings();toast(m==='on'?'Standing orders: on. They appear on Live.':m==='watch'?'Standing orders: watch only.':'Standing orders off. Any open ones are cancelled on the next pass.',5000);}
+function ordersCard(d){const os=d.orders||[];if(!os.length)return '';
+ return `<div class="card"><h3>Standing orders <span>${os[0].mode==='on'?'on Kalshi':'watching'}</span></h3>${os.map(x=>`<div class="moment"><span class="k">${x.mode==='on'?'📌':'👀'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)}</span></span><time>${ago2(x.ts)}</time></div>`).join('')}</div>`;}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -1908,7 +1929,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const tiers=(d.full?[['full','Full slate','Every game','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos',null,2,8],['middle','Middle','The core of the mix',null,2,12],['moonshot','Moonshot','Long shots, big payouts',null,2,16]]);
  const mix=`<div class="mixt"><div class="h">Type</div><div class="h">Combos</div><div class="h">Fewest</div><div class="h">Most</div>${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
   return `<div><b>${n}</b><small>${s}${unit?' · '+unit:' · games'}</small></div><div>${stp(t+'_count',0,10)}</div><div>${stp(b+'_min',alt?0:lo,hi)}</div><div>${stp(b+'_max',alt?0:lo,hi)}</div>`;}).join('')}</div>`;
- const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
+ const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
@@ -1928,6 +1949,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
  ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
+ ${d.maker?scard('maker','📌','Standing orders','Buy orders resting under fair, managed by the Mac.',makerCard(d.maker)):''}
  ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
    rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
    +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
@@ -2156,7 +2178,11 @@ def webapp_main():
             ideas = jsonable(A.live_suggestions()) if A.STORE.get("db") else []
         except Exception:
             ideas = []
-        return dict(out, ideas=ideas) if isinstance(out, dict) else out
+        try:
+            orders = jsonable(A.maker_summary()["open"]) if A.STORE.get("db") else []
+        except Exception:
+            orders = []
+        return dict(out, ideas=ideas, orders=orders) if isinstance(out, dict) else out
 
     def side_view(s):
         return {"ticker": s["ticker"], "pick": s["pick"], "abbr": s.get("abbr", ""), "p": s.get("p"),
@@ -2356,6 +2382,9 @@ def webapp_main():
         order = ["2 picks", "3 picks", "4 picks", "5–6 picks", "7+ picks"]
         return [out[k] for k in order if k in out]
 
+    def api_orders():
+        return jsonable(A.maker_summary() if A.STORE.get("db") else {})
+
     def api_combo(t):
         view = (api_live() or {}).get("combos") or []
         v = next((x for x in view if x["t"] == t), None)
@@ -2395,7 +2424,8 @@ def webapp_main():
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
-                "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode")
+                "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
+                "maker_mode")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -2421,7 +2451,7 @@ def webapp_main():
                     if k not in SET_KEYS or k not in A.CFG:
                         continue
                     cur = A.CFG[k]
-                    if k == "killer_mode":
+                    if k in ("killer_mode", "maker_mode"):
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
                         continue
@@ -2448,6 +2478,7 @@ def webapp_main():
                                       "odds": bool(A.CFG.get("odds_key"))},
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
+                             "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -2676,6 +2707,8 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/orders":
+                        out = api_orders()
                     elif path == "/app/api/combo":
                         out = api_combo(q.get("t") or "")
                     elif path == "/app/api/game":
@@ -3201,7 +3234,9 @@ def main():
         E.CFG["auto_sell"] = False
         if E.CFG.get("killer_mode") == "on":
             E.CFG["killer_mode"] = "watch"
-            E.save_json(E.SAVED, E.CFG)
+        if E.CFG.get("maker_mode") == "on":
+            E.CFG["maker_mode"] = "watch"
+        E.save_json(E.SAVED, E.CFG)
     if not E.can_trade():
         push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the watcher.",
              priority="high")
@@ -3281,6 +3316,7 @@ def main():
             if backup:
                 E.CFG["auto_sell"] = False
                 E.CFG["killer_mode"] = "off"
+                E.CFG["maker_mode"] = "off"
                 if t0 - last.get("mac", 0) > 60:
                     last["mac"] = t0
                     quiet = not mac_alive(conf)

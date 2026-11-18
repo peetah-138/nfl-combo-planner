@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.88"
+VERSION = "2026.11.17.89"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -58,6 +58,7 @@ CFG = {
     "mix_window": 0,
     "mix_v2": False,      # (one-time move of Mix to longer combos, if you hadn't changed its mix)      # Mixed sports: 0 same day, 1 through the weekend (Monday), 2 next 7 days
     "killer_mode": "watch",  # Mac buys killer deals by itself: "off", "watch" (only records), "on"
+    "maker_mode": "watch",   # Mac keeps standing buy orders under fair: "off", "watch" (only records), "on"
     "hub_ui": True,       # with the Mac reachable, open Combo Hub's screens inside this app
     "watcher_code": "",   # pairing code for the Raspberry Pi watcher (its ntfy topic + signing secret)
     "picks": {},   # game -> team ticker to lock, or "skip"
@@ -231,7 +232,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "hub_ui")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui")
 
 
 def next_league():
@@ -5002,7 +5003,7 @@ def autosell_pass():
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-                  "killer_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
+                  "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -8759,6 +8760,169 @@ def line_pass(code, alert=None, log=print):
     return did
 
 
+# ---- standing orders: buy orders resting a few cents under fair, managed by the Mac
+MAKER = {"discount": 0.03, "per_order": 10.0, "max_orders": 6, "max_dollars": 40.0, "min_fair": 0.2,
+         "max_fair": 0.85, "cancel_mins": 20, "reprice": 0.01, "horizon_hours": 30}
+
+
+def maker_fee(p):
+    return 0.25 * FEE_RATE * p * (1 - p)             # resting orders pay much less than taking; assume a quarter
+
+
+def maker_open(mode=None):
+    q = "select rowid, * from maker where status in ('posted', 'watching')"
+    return store_rows(q + (" and mode=?" if mode else ""), (mode,) if mode else ())
+
+
+def maker_cancel(row, why, log=print):
+    if row["mode"] == "on" and row.get("order_id"):
+        try:
+            kalshi_send("DELETE", f"/portfolio/orders/{row['order_id']}")
+        except Exception as err:
+            log("standing order cancel failed:", err)
+    store_x("update maker set status=?, why=?, updated=? where rowid=?",    # a part-filled order keeps its fill
+            ("filled" if (row.get("filled") or 0) > 0 else "cancelled", why, time.time(), row["rowid"]))
+
+
+def maker_cancel_all(why="paused", log=print):
+    for row in maker_open():
+        maker_cancel(row, why, log)
+
+
+def _maker_post(ticker, n, price, expire_ts):
+    import uuid
+    body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
+            "yes_price": int(round(price * 100)), "client_order_id": str(uuid.uuid4()),
+            "expiration_ts": int(expire_ts)}                # Kalshi drops it by itself before the game
+    o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
+    return o.get("order_id") or o.get("id")
+
+
+def _maker_status(order_id):
+    o = (kalshi_send("GET", f"/portfolio/orders/{order_id}") or {}).get("order") or {}
+    filled = float(o.get("fill_count_fp") or o.get("fill_count") or 0)
+    return (o.get("status") or "").lower(), filled
+
+
+def maker_pass(games, book_snap, alert=None, log=print):
+    """Keep standing buy orders a few cents under fair for the league on screen: post, re-price when the
+    fair chance moves, cancel near game time or on news, and record fills. Watch mode only simulates."""
+    mode = CFG.get("maker_mode", "watch")
+    now, did = time.time(), []
+    sides = {x["ticker"]: x for sd in games.values() for x in sd}
+    for row in maker_open():                           # switched modes: what the old mode left out there goes
+        if (row["mode"] == "on") != (mode == "on") or mode == "off":
+            maker_cancel(row, f"switched to {mode}", log)
+    # 1) look after what's already out there (this league's)
+    for row in maker_open():
+        x = sides.get(row["ticker"])
+        if x is None:
+            continue
+        kick = row.get("kick") or 0
+        fair_now = x.get("fair") or row["fair"]
+        try:
+            _, fresh = injury_note(LEAGUE["code"], x["pick"], opp_of(games, x), hours=3)
+        except Exception:
+            fresh = False
+        if row["mode"] == "on":
+            try:
+                st, filled = _maker_status(row["order_id"])
+            except Exception:
+                st, filled = "", 0
+            if filled > (row.get("filled") or 0):
+                store_x("update maker set filled=?, updated=? where rowid=?", (filled, now, row["rowid"]))
+                if alert:
+                    _alert(alert, f"✅ Standing order filled: {filled:g} {x['pick']} at {row['price'] * 100:.0f}¢ "
+                                  f"(fair {fair_now:.0%}). Auto standing order.", "cash", "/app")
+                did.append(f"filled {x['pick']}")
+            if st in ("executed", "canceled", "cancelled", "expired"):
+                store_x("update maker set status=?, updated=? where rowid=?",
+                        ("filled" if (filled or 0) > 0 else "cancelled", now, row["rowid"]))
+                continue
+        else:                                          # watch: filled if Kalshi's ask came down to our price
+            ask = x.get("p")
+            if ask is not None and ask <= row["price"] + 1e-9:
+                store_x("update maker set status='filled', filled=n, updated=? where rowid=?", (now, row["rowid"]))
+                did.append(f"would have filled {x['pick']} at {row['price']:.2f}")
+                continue
+        if kick and kick - now < MAKER["cancel_mins"] * 60:
+            maker_cancel(row, "game about to start", log)
+        elif fresh:
+            maker_cancel(row, "injury news", log)
+        elif abs(fair_now - row["fair"]) >= MAKER["reprice"]:
+            maker_cancel(row, f"fair moved {row['fair']:.0%} → {fair_now:.0%}", log)   # re-posted below
+    if mode == "off":
+        return did
+    # 2) post new ones, within the limits
+    live = maker_open(mode="on" if mode == "on" else "watch")
+    held = {r["ticker"] for r in live}
+    recent = store_rows("select ticker from maker where status='filled' and ts > ?", (now - 86400,))
+    held_events = {sides[r["ticker"]]["event"] for r in live + recent if r["ticker"] in sides}   # one per game
+    committed = sum(r["price"] * r["n"] for r in live)
+    spent = week_spend() if (mode == "on" and can_trade()) else 0
+    cands = []
+    for x in sides.values():
+        if x.get("tie") or x.get("src") is None or started(x) or not x.get("fair") or not x.get("p"):
+            continue
+        if not MAKER["min_fair"] <= x["fair"] <= MAKER["max_fair"] or x["ticker"] in held or x["event"] in held_events:
+            continue
+        kick = _kick_ts(x)
+        if not kick or kick - now < (MAKER["cancel_mins"] + 10) * 60 or kick - now > MAKER["horizon_hours"] * 3600:
+            continue
+        price = math.floor((x["fair"] - MAKER["discount"] - maker_fee(x["fair"])) * 100) / 100
+        if price <= 0.02 or price >= x["p"]:
+            continue                                   # at or above the ask: that's a buy idea, not a resting order
+        ok, _ = sources_agree(book_snap, x["pick"], x["fair"])
+        if not ok:
+            continue                                   # one source isn't enough to leave an order sitting
+        cands.append((kick, x, price))
+    cands.sort(key=lambda t: t[0])
+    for kick, x, price in cands:
+        if len(live) >= MAKER["max_orders"] or x["event"] in held_events:
+            continue
+        n = max(1, int(min(MAKER["per_order"], CFG.get("size_max", 10)) / price))
+        cost = n * price
+        if committed + cost > MAKER["max_dollars"] or (mode == "on" and spent + committed + cost > CFG["budget"] + 0.01):
+            break
+        oid, status = None, "watching"
+        if mode == "on":
+            try:
+                oid = _maker_post(x["ticker"], n, price, kick - MAKER["cancel_mins"] * 60)
+                status = "posted"
+            except Exception as err:
+                log("standing order not posted:", err)
+                continue
+        store_x("insert into maker(ts, ticker, pick, mode, price, n, fair, status, order_id, filled, updated, kick) "
+                "values(?,?,?,?,?,?,?,?,?,?,?,?)", (now, x["ticker"], x["pick"], mode, price, n, x["fair"], status, oid, 0,
+                                                    now, kick))
+        live.append({"ticker": x["ticker"], "price": price, "n": n})
+        held_events.add(x["event"])
+        committed += cost
+        did.append(f"{'posted' if mode == 'on' else 'watching'} {x['pick']} {n} at {price:.2f} (fair {x['fair']:.2f})")
+    return did
+
+
+def maker_resolve():
+    rows = store_rows("select rowid, ticker from maker where status='filled' and outcome is null and updated < ?",
+                      (time.time() - 3600,))
+    if not rows:
+        return 0
+    res = fetch_results({r["ticker"] for r in rows})
+    for r in rows:
+        if res.get(r["ticker"]) in ("yes", "no"):
+            store_x("update maker set outcome=? where rowid=?", ("won" if res[r["ticker"]] == "yes" else "lost", r["rowid"]))
+    return len(rows)
+
+
+def maker_summary():
+    rows = store_rows("select * from maker order by ts desc limit 80")
+    done = [r for r in rows if r["status"] == "filled" and r["outcome"]]
+    pl = sum(((1 - r["price"]) if r["outcome"] == "won" else -r["price"]) * (r["filled"] or r["n"]) for r in done)
+    return {"mode": CFG.get("maker_mode", "watch"), "open": [r for r in rows if r["status"] in ("posted", "watching")][:8],
+            "recent": rows[:10], "settled": len(done), "pl": round(pl, 2),
+            "filled": sum(1 for r in rows if r["status"] == "filled"), "rules": MAKER}
+
+
 def single_pass(book_snap, alert=None, log=print):
     """Look for single-game value in the league on screen; each one becomes a buy idea (no quotes needed)."""
     if not STORE["db"]:
@@ -8772,6 +8936,10 @@ def single_pass(book_snap, alert=None, log=print):
         skipped, live = screen_live(games, bf)
         live_ok = set(live) - set(skipped)
     did, now = [], time.time()
+    try:
+        did += maker_pass(games, book_snap, alert, log)
+    except Exception as err:
+        log("standing orders:", type(err).__name__, err)
     for x in single_candidates(games, live_ok)[:8]:              # remember fair chances for the steadiness check
         store_x("insert into fairs values(?,?,?,?)", (now, x["ticker"], x["fair"], x["p"]))
     for x in single_candidates(games, live_ok)[:4]:
@@ -9209,6 +9377,8 @@ create table if not exists events(ts real, kind text, combo text, text text);
 create table if not exists plays(ts real, ticker text, me int, opp int, detail text);
 create table if not exists fairs(ts real, ticker text, fair real, price real);
 create index if not exists fairs_t on fairs(ticker, ts);
+create table if not exists maker(ts real, ticker text, pick text, mode text, price real, n int, fair real,
+  status text, order_id text, filled real, outcome text, updated real, kick real, why text);
 create table if not exists killer(ts real, kind text, legs text, picks text, mode text, status text, stake real,
   pays real, pct real, why text, outcome text);
 create index if not exists plays_t on plays(ticker, ts);
