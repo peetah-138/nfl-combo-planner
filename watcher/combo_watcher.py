@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.105"
+WATCHER_VERSION = "2026.11.18.106"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -296,6 +296,28 @@ def update_if_newer(E, conf):
     conf.pop("waiting", None)
     log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
     return True
+
+
+UPDATED = {}
+
+
+def update_loop(E, conf):
+    """Checks for new versions on its own thread, so nothing else going wrong in the watcher can ever
+    stop an update (a fix) from arriving. After installing, the watcher exits and launchd starts the new one."""
+    time.sleep(30)
+    last = 0.0
+    while True:
+        try:
+            if conf.pop("update_now", False) or time.time() - last > (600 if auto_updates(conf) else 1800):
+                last = time.time()
+                if update_if_newer(E, conf):
+                    UPDATED["now"] = True
+                    time.sleep(20)                  # let the main loop exit cleanly; if it's stuck, exit anyway
+                    log("restarting for the update")
+                    os._exit(0)
+        except Exception as err:
+            log("update check failed:", type(err).__name__, err)
+        time.sleep(15)
 
 
 def estimate_offers(E):
@@ -1737,7 +1759,7 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .trow .numwrap>div{text-align:left!important}.trow .numwrap>div::before{content:attr(data-l);display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
  .bar{margin-left:0}.status span:last-child{display:none}
  h2{flex-wrap:wrap}h2 .r{margin-left:0;width:100%;order:3}
- .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}}
+ .chips{flex-wrap:wrap}}
 /* phone */
 @media (max-width:900px){
  .top{height:auto;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;gap:10px}
@@ -1752,7 +1774,7 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .alert{flex-wrap:wrap}.alert .acts2{width:100%;display:flex;gap:8px}.alert .acts2 .btn{flex:1}
  .mrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"when when" "a b"}.mrow .when{grid-area:when}
  .slip{position:static}
- .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin-left:-14px;margin-right:-14px;padding:0 14px}.chips::-webkit-scrollbar{display:none}
+ .chips{flex-wrap:wrap;gap:6px}.chips .chip{padding:6px 11px;font-size:12.5px}
  h2{flex-wrap:wrap}h2 .r{margin-left:0;width:100%;order:3}
  .pickbtn .full{display:none}.pickbtn .short{display:inline}
  .hrow{grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"p p p" "w n v"}.hrow .hp{grid-area:p}
@@ -1775,6 +1797,11 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .whatif{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wi{padding:10px 12px;border-radius:12px;background:var(--panel2)}.wi span{display:block;font-size:12px;color:var(--sub)}
 .wi b{font-size:20px}.wi.up b{color:var(--yes)}.wi.down b{color:var(--no)}.wi small{display:block;font-size:11.5px;color:var(--mute)}
 @media (prefers-reduced-motion:reduce){.moment-bar{animation:none}.confetti{display:none}}
+.hfilters{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}.hfilters .chips{flex-wrap:wrap;align-items:center}
+.hfilters .chip{flex:none}.hsort{flex:none;margin-left:auto;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:inherit;font-size:13px}
+.hrow2{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}.hrow2:last-child{border-bottom:0}
+.hd2{display:flex;align-items:center;gap:8px;min-width:0}.hd2 .hs{font-size:16px}.hd2 .m{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hn{display:flex;gap:16px;font-size:12.5px;color:var(--sub)}.hn b{color:var(--ink)}
 .panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
  background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
@@ -1848,11 +1875,20 @@ function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic scr
  <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
 function go(v){hap();S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();render();load(v);window.scrollTo(0,0);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();}
-async function load(v,fresh){try{
- if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);}
- if(v==='build'){const [b,p]=await Promise.all([api('/app/api/build?lg='+S.lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+(S.pview||'all')).catch(()=>null)]);S.build=b;S.panel=p;}
- if(v==='results'){S.res=await api('/app/api/results');head(S.res);}
- if(v==='games'){S.games=await api('/app/api/games');}
+function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
+function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
+function warm(v){/* show the last copy straight away while the fresh one loads */
+ if(v==='live'&&!S.live){S.live=cget('live');if(S.live)head(S.live);}
+ if(v==='build'&&(!S.build||S.build.lg!==S.lg)){S.build=cget('build_'+S.lg);S.panel=cget('panel_'+(S.pview||'all'))||S.panel;}
+ if(v==='results'&&!S.res)S.res=cget('results');
+ if(v==='games'&&!S.games)S.games=cget('games');
+ if(S.view===v&&(v!=='build'||S.build))render();}
+async function load(v,fresh){try{warm(v);
+ if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);}
+ if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
+  if(lg!==S.lg)return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
+ if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);}
+ if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);}
  if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
@@ -1993,7 +2029,7 @@ async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r
 // ---------------- BUILD
 function renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
- const pv=S.pview||'all';const chipRow=`<div class="chips" style="margin-bottom:14px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix').map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+skel(7)+'</div><div class="skel" style="height:300px"></div></div>';return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
@@ -2038,7 +2074,10 @@ function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div cl
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
  return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
-  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${btn}</div>${longer}`;}
+  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${longer}`;}
+function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
+ const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
+ return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
@@ -2076,7 +2115,7 @@ function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);if(!legs.length
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
  return `<div class="slipbar"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
 try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
-function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=null;renderBuild();load('build');}
+function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
  if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
 function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
@@ -2144,14 +2183,33 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
    <line x1="0" y1="80" x2="${w.length*60}" y2="80" stroke="var(--line)"/>${w.map((x,i)=>{const h=Math.abs(x.pl)/mx*70;return `<rect x="${i*60+14}" y="${x.pl>=0?80-h:80}" width="32" height="${Math.max(2,h)}" rx="4" fill="${x.pl>=0?'var(--yes)':'var(--no)'}"><title>${x.week}: ${smoney(x.pl)} on ${x.n}</title></rect>`}).join('')}</svg>
    <div style="display:flex">${w.map(x=>`<div style="width:${100/Math.max(1,w.length)}%;text-align:center;font-size:11px" class="m">${(x.week||'').slice(5)}</div>`).join('')}</div></div>
   ${edgeBlock(d)}
-  <h2>History <span class="n">${d.history.length}</span></h2><div class="tbl">${d.history.map(h=>`<div class="hrow"><div class="m" style="font-size:12.5px">${esc(h.week||'')}</div>
-   <div class="hp"><div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div></div>
-   <div class="num">${money(h.cost)}</div><div class="num ${h.back-h.cost>=0?'up':'down'}">${smoney(h.back-h.cost)}</div><span class="verdict ${h.status}">${h.status.toUpperCase()}</span></div>`).join('')||'<div class="empty"><b>No settled combos yet</b></div>'}</div>
+  ${historyBlock(d.history||[])}
  </div><aside class="side">
   <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
    <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>${sh.same_game&&(sh.same_game.n||sh.same_game.open)?`<div class="mini">Same-game test (winner + total)<b class="${sh.same_game.pl>=0?'up':'down'}">${smoney(sh.same_game.pl)} · ${sh.same_game.n} settled, ${sh.same_game.open} open</b></div>`:''}`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
  </aside></div>`;}
+try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
+function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
+const RESN={won:'Rode it and won',cashed:'Cashed out early',lost:'Lost'};
+function historyBlock(all){const f=S.hf;const today=new Date();const iso=d=>d.toISOString().slice(0,10);
+ const since=f.when==='7'?iso(new Date(Date.now()-7*864e5)):f.when==='30'?iso(new Date(Date.now()-30*864e5)):f.when==='month'?iso(new Date(today.getFullYear(),today.getMonth(),1)):'';
+ const sports=[...new Set(all.flatMap(h=>h.sports||[]))].sort();
+ let xs=all.filter(h=>(f.sport==='all'||(h.sports||[]).includes(f.sport))&&(!since||(h.day||'')>=since)
+  &&(f.res==='all'||(f.res==='profit'?h.pl>0:f.res==='loss'?h.pl<=0:h.status===f.res)));
+ xs=xs.slice().sort(f.sort==='old'?(a,b)=>(a.day||'').localeCompare(b.day||''):f.sort==='best'?(a,b)=>b.pl-a.pl:f.sort==='worst'?(a,b)=>a.pl-b.pl:(a,b)=>(b.day||'').localeCompare(a.day||''));
+ const chip=(k,v,l)=>`<button class="chip ${f[k]===v?'on':''}" onclick="hset('${k}','${v}')">${l}</button>`;
+ const pl=xs.reduce((a,h)=>a+h.pl,0),staked=xs.reduce((a,h)=>a+h.cost,0);
+ const dlab=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'})+(x.getFullYear()!==today.getFullYear()?' '+x.getFullYear():'');};
+ return `<h2>History <span class="n">${xs.length}${xs.length!==all.length?' of '+all.length:''}</span></h2>
+  <div class="hfilters"><div class="chips">${chip('sport','all','All sports')}${sports.map(s=>chip('sport',s,(ICON[s]||'')+' '+(SPN[s]||s.toUpperCase()))).join('')}</div>
+   <div class="chips">${chip('res','all','Any result')}${chip('res','won','🏁 Rode it, won')}${chip('res','cashed','💸 Cashed early')}${chip('res','lost','✕ Lost')}${chip('res','profit','Made money')}${chip('res','loss','Lost money')}</div>
+   <div class="chips">${chip('when','all','All time')}${chip('when','7','Last 7 days')}${chip('when','30','Last 30 days')}${chip('when','month','This month')}
+    <select class="hsort" onchange="hset('sort',this.value)">${[['new','Newest first'],['old','Oldest first'],['best','Biggest win'],['worst','Biggest loss']].map(([v,l])=>`<option value="${v}" ${f.sort===v?'selected':''}>${l}</option>`).join('')}</select></div></div>
+  <div class="m" style="font-size:12.5px;margin:2px 2px 10px">${xs.length} combo${xs.length===1?'':'s'} · ${money(staked)} paid · <b class="${pl>=0?'up':'down'}">${smoney(pl)}</b>${staked?` (${pl>=0?'+':''}${Math.round(pl/staked*100)}%)`:''}</div>
+  <div class="tbl">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${dlab(h.day)}</b><span class="m">${(h.sports||[]).map(s=>SPN[s]||s.toUpperCase()).join(' + ')} · ${h.picks.length} pick${h.picks.length===1?'':'s'}</span><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
+   <div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div>
+   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="empty"><b>Nothing matches</b>Try fewer filters.</div>'}</div>`;}
 function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini">${lab}<b>${fmt(c.mean)} <span class="m" style="font-weight:500">(${fmt(c.lo)} to ${fmt(c.hi)}, ${c.n})</span></b></div>`:`<div class="mini">${lab}<b class="m">not enough yet</b></div>`;
  const pc=x=>(x>=0?'+':'−')+Math.abs(x*100).toFixed(1)+'%';
  return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
@@ -2665,7 +2723,18 @@ def webapp_main():
     def jsonable(x):
         return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
 
+    def live_refresh():
+        try:
+            api_live(fresh=True)
+        finally:
+            LIVE["busy"] = False
+
     def api_live(fresh=False):
+        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < 600:
+            if time.time() - LIVE["at"] > 8 and not LIVE.get("busy"):      # stale: answer now, refresh behind it
+                LIVE["busy"] = True
+                threading.Thread(target=live_refresh, daemon=True).start()
+            return live_extras(LIVE["data"])
         with alock:
             if fresh or not LIVE["data"] or time.time() - LIVE["at"] > 8:
                 if not A.MINE.get("all_games"):
@@ -2680,6 +2749,9 @@ def webapp_main():
                 A.mine_page(live=True)
                 LIVE.update(at=time.time(), data=jsonable(A.MINE.get("view") or {}))
             out = LIVE["data"]
+        return live_extras(out)
+
+    def live_extras(out):
         try:
             ideas = jsonable(A.live_suggestions()) if A.STORE.get("db") else []
         except Exception:
@@ -2747,10 +2819,27 @@ def webapp_main():
         out.sort(key=lambda r: -r["edge"])
         return out[:8]
 
-    def api_build(lg, rebuild=True):
+    SNAP = {}                                           # sport -> its last Build, ready to switch to
+
+    def use_snap(lg):
+        s = SNAP.get(lg)
+        if not s or time.time() - s["at"] > 600:
+            return False
+        A.set_league(lg)
+        A.CTX.clear()
+        A.CTX.update(s["ctx"])
+        BUILD.update(lg=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"])
+        return True
+
+    def api_build(lg, rebuild=True, warming=False):
         import random
+        BUILD.setdefault("seen", {})[lg] = time.time()
+        if not warming:
+            BUILD["touched"] = time.time()
         with alock:
-            if rebuild or BUILD["lg"] != lg:
+            if not rebuild and BUILD["lg"] != lg and use_snap(lg):
+                rebuild = False
+            elif rebuild or BUILD["lg"] != lg:
                 A.set_league(lg)
                 games, days, slate = A.week_games(A.fetch_markets())
                 try:
@@ -2784,6 +2873,7 @@ def webapp_main():
                 except Exception as err:
                     print("lines:", err, flush=True)
                     BUILD["lines"] = []
+                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"]}
             games = A.CTX.get("all_games") or {}
             board = []
             for e, sides in games.items():
@@ -2821,14 +2911,23 @@ def webapp_main():
                 w["n"] += 1
                 w["won"] += a["status"] == "won"
             hist = []
-            for a in sorted(done, key=lambda a: a.get("week") or "", reverse=True)[:60]:
+            when = {}
+            if A.STORE.get("db"):                       # the day each combo finished, from the Mac's record
+                for r in A.store_rows("select combo, settled, first_seen from bets"):
+                    when[r["combo"]] = (r["settled"], r["first_seen"])
+            for a in sorted(done, key=lambda a: (when.get(a["ticker"], (0, 0))[0] or 0, a.get("week") or ""), reverse=True)[:400]:
                 names = []
                 for l in a.get("legs") or []:
                     t = l.get("ticker") or ""
                     nm = A.PICK_NAME.get(t) or A.sport_teams(A.ticker_sport(t) or "nfl").get(t.rsplit("-", 1)[-1]) or t.rsplit("-", 1)[-1]
                     names.append(("not " if l.get("side") == "no" else "") + nm)
+                st, fs = when.get(a["ticker"], (None, None))
+                day = time.strftime("%Y-%m-%d", time.localtime(st)) if st else (a.get("week") or "")
+                sports = sorted({A.ticker_sport(l.get("ticker") or "") or "" for l in a.get("legs") or []} - {""}) or (a.get("lgs") or [])
                 hist.append({"t": a["ticker"], "status": a["status"], "cost": a["cost"], "back": round(back(a), 2),
-                             "pays": a["pays"], "week": a.get("week"), "picks": names, "sports": a.get("lgs") or []})
+                             "pl": round(back(a) - a["cost"], 2), "pays": a["pays"], "week": a.get("week"), "day": day,
+                             "bought": time.strftime("%Y-%m-%d", time.localtime(fs)) if fs else None,
+                             "picks": names, "sports": sports})
             staked = sum(a["cost"] for a in done)
             ret = sum(back(a) for a in done)
             shadow = A.hub_call("shadow", timeout=10) if A.hub_conf() else None
@@ -2927,6 +3026,7 @@ def webapp_main():
         p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
+                         "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", ""))})
 
@@ -3034,6 +3134,7 @@ def webapp_main():
                         A.CFG[f"{t}_max"] = A.CFG[f"{t}_min"]
                 A.save_cfg()
                 BUILD["lg"] = None                      # the next Build uses the new settings
+                SNAP.clear()
                 LIVE["at"] = 0
                 if before != {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}:
                     synced = send_synced()
@@ -3334,7 +3435,7 @@ def webapp_main():
                         out = api_live(fresh=q.get("fresh") == "1")
                     elif path == "/app/api/build":
                         lg = q.get("lg") or "nba"
-                        out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1" or BUILD["lg"] != lg)
+                        out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1")
                     elif path == "/app/api/results":
                         out = api_results()
                     elif path == "/app/api/recap":
@@ -3415,6 +3516,42 @@ def webapp_main():
     srv.daemon_threads = True
     log(f"planner app for the browser ready (engine {A.VERSION})")
     threading.Thread(target=lambda: (time.sleep(3), api_live()), daemon=True).start()   # warm up the Live numbers
+
+    def warmer():
+        """Keeps pages ready: Live refreshed every 20s, and the Build for the sports you've looked at in the last
+        day rebuilt every 5 minutes, only while nobody is tapping, so a page opens from what's already there."""
+        time.sleep(20)
+        while True:
+            try:
+                if not LIVE.get("busy") and time.time() - LIVE["at"] > 20:
+                    LIVE["busy"] = True
+                    live_refresh()
+                idle = time.time() - BUILD.get("touched", 0) > 30
+                seen = BUILD.get("seen") or {"nba": 0, "nhl": 0}
+                for lg, at in sorted(seen.items(), key=lambda x: -x[1]):
+                    if not idle or time.time() - at > 86400 and at:
+                        continue
+                    if time.time() - SNAP.get(lg, {}).get("at", 0) < 300:
+                        continue
+                    if lg == BUILD.get("lg") and A.CTX.get("offers"):
+                        continue                                # a price you asked for is still open
+                    with alock:
+                        cur, saved = BUILD.get("lg"), dict(A.CTX)
+                        try:
+                            api_build(lg, rebuild=True, warming=True)
+                        finally:
+                            if cur and cur != lg:              # put back what you were looking at
+                                A.set_league(cur)
+                                A.CTX.clear()
+                                A.CTX.update(saved)
+                                s = SNAP.get(cur)
+                                if s:
+                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                    break                                       # one sport per round
+            except Exception as err:
+                print("warm-up:", type(err).__name__, err, flush=True)
+            time.sleep(15)
+    threading.Thread(target=warmer, daemon=True, name="warmer").start()
     srv.serve_forever()
 
 
@@ -3975,6 +4112,7 @@ def main():
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()
+    threading.Thread(target=update_loop, args=(E, conf), daemon=True, name="updates").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
@@ -4044,10 +4182,8 @@ def main():
                     except Exception:
                         pass
                     push(conf, text, title="Weekly report", priority="low")
-            if conf.pop("update_now", False) or t0 - last["upd"] > (600 if auto_updates(conf) else 1800):
-                last["upd"] = t0
-                if update_if_newer(E, conf):
-                    return 0                      # systemd starts the new version
+            if UPDATED.get("now"):
+                return 0                          # launchd/systemd starts the new version
         except Exception as err:
             log("check failed:", type(err).__name__, err)
             traceback.print_exc()
@@ -4058,6 +4194,8 @@ def main():
                 except Exception:
                     pass
             time.sleep(30)
+        if UPDATED.get("now"):
+            return 0
         playing = any(lv for h in (E.MINE.get("hold") or {}).values() for _, lv, _ in h.get("legs_left") or [])
         every = 5 if playing else int(E.CFG.get("refresh_secs", 15))   # quicker while your games are on
         time.sleep(max(3, every - (time.time() - t0)))

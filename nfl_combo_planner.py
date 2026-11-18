@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.105"
+VERSION = "2026.11.18.106"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8854,12 +8854,11 @@ def line_candidates(code, everything=False):
             continue
         sub = (m.get("yes_sub_title") or m.get("subtitle") or m.get("title") or "")
         strike = m.get("floor_strike")
-        g = None
-        for teams, gg in lines.items():
-            if any(t and t.split()[-1] in sub.lower() for t in teams) or \
-                    (gg["home_abbr"] and gg["home_abbr"] in m.get("event_ticker", "") and gg["away_abbr"] in m.get("event_ticker", "")):
-                g = gg
-                break
+        # the game: its two team codes must make up the event code exactly (last words like "Bears" or
+        # "Eagles" are shared by many college teams, so names alone can't be trusted)
+        tail = re.sub(r"^\d{2}[A-Z]{3}\d{2}", "", (m.get("event_ticker") or "").rsplit("-", 1)[-1])
+        g = next((gg for gg in lines.values() if gg["home_abbr"] and gg["away_abbr"] and
+                  tail in (gg["away_abbr"] + gg["home_abbr"], gg["home_abbr"] + gg["away_abbr"])), None)
         if not g:
             continue
         try:
@@ -8867,8 +8866,17 @@ def line_candidates(code, everything=False):
         except (ValueError, IndexError):
             continue
         if m["kind"] == "spread":
-            home_last = g["home"].lower().split()[-1]
-            team_is_home = home_last in sub.lower()
+            hn, an = g["home"].lower(), g["away"].lower()
+            sl = sub.lower()
+            in_h = hn in sl or any(w in sl for w in hn.split()[:-1] if len(w) > 3)
+            in_a = an in sl or any(w in sl for w in an.split()[:-1] if len(w) > 3)
+            if in_h == in_a:                            # can't tell which team this market is about: skip it
+                tkt = m["ticker"].rsplit("-", 1)[-1].upper()
+                if tkt.startswith(g["home_abbr"].upper()) != tkt.startswith(g["away_abbr"].upper()):
+                    in_h = tkt.startswith(g["home_abbr"].upper())
+                else:
+                    continue
+            team_is_home = in_h
             team = g["home"] if team_is_home else g["away"]
             sd = MARGIN_SD.get(code, 2.0)
             mu = -g["spread_home"] if (g["spread_home"] is not None and team_is_home) else (g["spread_home"] or 0)
@@ -8883,6 +8891,8 @@ def line_candidates(code, everything=False):
             fair = line_fair(code, "total", line, True, g)
             label = f"Over {line:g} ({g['away'].split()[-1]} at {g['home'].split()[-1]})"
         if fair is None:
+            continue
+        if abs(fair - p) > 0.15:                        # the market disagrees wildly: our match or model is wrong
             continue
         edge = fair - p - single_fee(p)
         if everything or (edge >= LINE_MIN_EDGE and edge / p >= 0.06):
@@ -9412,8 +9422,9 @@ def _kick_ts(leg):
 # price again, swapping in a similar bet if one no longer qualifies. A paper copy runs the panel fully
 # automatically alongside, which is the record that decides when it can be handed $300.
 PANEL = {"size": 10, "per_game": 2, "buy_before": 45 * 60, "longer_max": 2, "pool_age": 45 * 60,
-         "fresh_age": 12 * 60, "min_edge": 0.02, "budget": 40.0, "max_bet_share": 0.05, "skim": 0.5}
+         "fresh_age": 12 * 60, "min_edge": 0.02, "line_edge": 0.06, "line_share": 0.3, "budget": 40.0, "max_bet_share": 0.05, "skim": 0.5}
 PANEL_POOL = {}            # code -> (time, [candidates])
+PANEL_GAMES = {}           # code -> games coming up (for showing only the sports that have any)
 CUTOFF_FILE = os.path.join(HERE, "combo_cutoffs.json")
 SIZING_FILE = os.path.join(HERE, "combo_sizing.json")
 SWING = {"nhl": 1.25, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
@@ -9781,6 +9792,7 @@ def panel_collect(book_snap, code, log=print):
     games, _, _ = week_games(fetch_markets())
     attach_fair(games, book)
     games = {e: sd for e, sd in games.items() if not any(started(x) for x in sd)}
+    PANEL_GAMES[code] = len(games)
     try:
         record_closes(games, code)
     except Exception as err:
@@ -9908,6 +9920,8 @@ def choose_panel(cands, budget, base, size=None):
                 continue
             if c["kind"] != "combo" and evs[0] in solo:
                 continue                                       # one straight bet per game: no team + over overlap
+            if c["kind"] == "line" and sum(1 for x in picked if x["kind"] == "line") >= max(2, int(size * PANEL["line_share"])):
+                continue                                       # spreads and totals: at most about a third of the panel
             if spent + c["stake"] > budget + 0.01:
                 continue
             tot = _sim_panel(picked + [c], n=1500)
@@ -9989,6 +10003,11 @@ def build_panel(codes=None, budget=None, now=None):
     for c in today:
         c["prio"] = c.get("prio", 0.0) + (0.03 if (nfl_day and c["code"] == "nfl") else 0.0)
     picked, stats = choose_panel(today, budget, base, size=size)
+    pool = defaultdict(int)
+    for c in today:
+        if _qualifies(c):
+            pool[c["kind"]] += 1
+    stats["pool"] = dict(pool)
     used = {e for c in picked for e in _events_of(c)}
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
@@ -9997,7 +10016,7 @@ def build_panel(codes=None, budget=None, now=None):
         before = lead if c["kind"] == "combo" and lead else PANEL["buy_before"]
         c["buy_at"] = max(now, (c["kick"] or now) - before)
     return {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
-            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL)}
+            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
 
 
 # ---- storage, approval and the Mac's scheduled buying
@@ -10183,6 +10202,9 @@ def _qualifies(x):
         return x.get("pct", 0) >= combo_cutoff(x["code"], len(x["legs"]))
     if x["kind"] == "early":
         return x["ret"] >= 0
+    if x["kind"] == "line":                            # priced by our own score model, not the sharp books:
+        l = x["legs"][0]                               # its errors look like edges, so it needs a bigger one
+        return (l.get("fair") or 0) - (l.get("p") or 1) >= PANEL["line_edge"]
     return x["ret"] >= PANEL["min_edge"]
 
 
