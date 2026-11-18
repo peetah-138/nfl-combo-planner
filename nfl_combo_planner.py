@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.17.80"
+VERSION = "2026.11.17.81"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -8094,6 +8094,10 @@ def shadow_pass(book_snap, log=print, alert=None):
     attach_fair_book = load_book_state(book_snap)
     games_held = {frozenset(l["ticker"] for l in b["legs"]) for b in st["bets"]}
     cands = shadow_candidates_with(attach_fair_book)
+    ck = lambda c: "|".join(sorted(l["ticker"] for l in c["legs"]))
+    due = {k for k, t in (st.get("reask") or {}).items() if t <= time.time()}
+    cands.sort(key=lambda c: ck(c) not in due)   # a near miss from last time gets asked again first
+    st["reask"] = {k: t for k, t in (st.get("reask") or {}).items() if k not in due and time.time() - t < 3600}
     CTX.clear()
     CTX.update(combos=cands, stake=CFG["stake"], offers={}, source="shadow")
     asked = 0
@@ -8126,6 +8130,10 @@ def shadow_pass(book_snap, log=print, alert=None):
             continue
         pct = r["pct"]
         key = "|".join(sorted(l["ticker"] for l in c["legs"]))
+        cut = CFG["accept_pct"] / 100
+        if cut - 0.03 <= pct < cut and key not in st.setdefault("reasked", []):
+            st["reask"][key] = time.time() + 300     # just under the cut-off: a fresh price in a few minutes
+            st["reasked"] = (st["reasked"] + [key])[-200:]
         before = st.setdefault("seen", {}).get(key)
         st["seen"][key] = round(pct, 4)
         if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05):
@@ -8470,6 +8478,188 @@ def killer_summary():
             "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER}
 
 
+# ---- spreads and totals: priced from the sportsbook line with a score model
+# Winning margin and total points are close to normal around the line for football and basketball
+# (spreads of NFL games miss by about 13.5 points on average, the classic result); hockey and soccer
+# goals are Poisson. The line itself comes free from ESPN's sportsbook data.
+MARGIN_SD = {"nfl": 13.5, "ncaaf": 16.0, "nba": 12.0, "ncaamb": 10.5, "ncaawb": 11.0, "euroleague": 11.0}
+TOTAL_SD = {"nfl": 10.0, "ncaaf": 14.0, "nba": 17.0, "ncaamb": 14.0, "ncaawb": 13.0, "euroleague": 14.0}
+LINE_MIN_EDGE = 0.04             # model prices need a wider margin than straight win prices
+
+
+def _phi(z):
+    return 0.5 * math.erfc(-z / math.sqrt(2))
+
+
+def _poisson_cdf(k, lam):
+    if k < 0:
+        return 0.0
+    term = tot = math.exp(-lam)
+    for i in range(1, int(k) + 1):
+        term *= lam / i
+        tot += term
+    return min(1.0, tot)
+
+
+def line_markets(code):
+    """Kalshi's spread and total markets for a league, if it lists them: [market dicts with 'kind']."""
+    base = re.match(r"(KX[A-Z]+?)(GAME|MATCH|FIGHT)$", (LEAGUES.get(code, {}).get("series") or "").split(",")[0] or "")
+    if not base:
+        return []
+    out = []
+    for kind in ("SPREAD", "TOTAL"):
+        try:
+            for m in fetch_series(base.group(1) + kind):
+                out.append(dict(m, kind=kind.lower()))
+        except (requests.RequestException, ValueError):
+            pass
+    return out
+
+
+def espn_lines(code):
+    """{frozenset(team names lower): {'home', 'away', 'spread_home', 'total', 'start'}} from ESPN today and tomorrow."""
+    out = {}
+    for day in (dt.date.today(), dt.date.today() + dt.timedelta(days=1)):
+        for ev in _espn_board(code, day.strftime("%Y%m%d")):
+            comp = (ev.get("competitions") or [{}])[0]
+            teams = {c.get("homeAway"): (c.get("team") or {}) for c in comp.get("competitors") or []}
+            odds = (comp.get("odds") or [{}])[0] if comp.get("odds") else {}
+            if not teams.get("home") or not odds:
+                continue
+            home, away = teams["home"], teams["away"]
+            spread = odds.get("spread")
+            det = odds.get("details") or ""
+            hit = re.match(r"([A-Z]{2,5})\s+([+-]?\d+(?:\.\d+)?)", det)
+            if hit:                                   # "KC -3.5": the favourite and its line
+                line = float(hit.group(2))
+                spread = line if hit.group(1) == home.get("abbreviation") else -line
+            try:
+                spread = float(spread) if spread is not None else None
+                total = float(odds.get("overUnder")) if odds.get("overUnder") is not None else None
+            except (TypeError, ValueError):
+                continue
+            out[frozenset({(home.get("displayName") or "").lower(), (away.get("displayName") or "").lower()})] = {
+                "home": home.get("displayName") or "", "away": away.get("displayName") or "",
+                "home_abbr": home.get("abbreviation") or "", "away_abbr": away.get("abbreviation") or "",
+                "spread_home": spread, "total": total, "start": ev.get("date")}
+    return out
+
+
+def line_fair(code, kind, line, team_is_home, g):
+    """Model chance for 'team wins by more than line' (spread) or 'total over line' (total)."""
+    if kind == "spread":
+        if g.get("spread_home") is None:
+            return None
+        mu = -g["spread_home"] if team_is_home else g["spread_home"]      # expected winning margin
+        if code in MARGIN_SD:
+            return _phi((mu - line) / MARGIN_SD[code])
+        if code in ("nhl", "soccer") and g.get("total"):
+            lam_t = g["total"]
+            lh = max(0.2, (lam_t + mu) / 2)
+            la = max(0.2, lam_t - lh)
+            # Skellam by summation: P(team goals - other goals > line)
+            p = 0.0
+            for a in range(0, 15):
+                pa = math.exp(-la) * la ** a / math.factorial(a)
+                need = math.floor(a + line) + 1             # home goals needed
+                p += pa * (1 - _poisson_cdf(need - 1, lh))
+            return p                                    # lh is this team's goals (mu is its margin)
+        return None
+    if g.get("total") is None:
+        return None
+    if code in TOTAL_SD:
+        return _phi((g["total"] - line) / TOTAL_SD[code])
+    if code in ("nhl", "soccer"):
+        return 1 - _poisson_cdf(math.floor(line), g["total"])
+    return None
+
+
+def line_candidates(code):
+    """Spread and total markets where Kalshi's price is clearly below the model's fair chance."""
+    mk, lines = line_markets(code), espn_lines(code)
+    if not mk or not lines:
+        return []
+    out = []
+    for m in mk:
+        p = price(m)
+        if not p or p >= 0.95 or p <= 0.05:
+            continue
+        sub = (m.get("yes_sub_title") or m.get("subtitle") or m.get("title") or "")
+        strike = m.get("floor_strike")
+        g = None
+        for teams, gg in lines.items():
+            if any(t and t.split()[-1] in sub.lower() for t in teams) or \
+                    (gg["home_abbr"] and gg["home_abbr"] in m.get("event_ticker", "") and gg["away_abbr"] in m.get("event_ticker", "")):
+                g = gg
+                break
+        if not g:
+            continue
+        try:
+            line = float(strike) if strike is not None else float(re.findall(r"(\d+(?:\.\d+)?)", sub)[-1])
+        except (ValueError, IndexError):
+            continue
+        if m["kind"] == "spread":
+            home_last = g["home"].lower().split()[-1]
+            team_is_home = home_last in sub.lower()
+            team = g["home"] if team_is_home else g["away"]
+            sd = MARGIN_SD.get(code, 2.0)
+            mu = -g["spread_home"] if (g["spread_home"] is not None and team_is_home) else (g["spread_home"] or 0)
+            if abs(line - mu) > sd * 0.8:
+                continue                                # far from the line: the model's tails are less reliable
+            fair = line_fair(code, "spread", line, team_is_home, g)
+            label = f"{team} win by {line:g}+" if line > 0 else f"{team} lose by under {abs(line):g}"
+        else:
+            sd = TOTAL_SD.get(code, 1.5)
+            if g["total"] is None or abs(line - g["total"]) > sd * 0.8:
+                continue
+            fair = line_fair(code, "total", line, True, g)
+            label = f"Over {line:g} ({g['away'].split()[-1]} at {g['home'].split()[-1]})"
+        if fair is None:
+            continue
+        edge = fair - p - single_fee(p)
+        if edge >= LINE_MIN_EDGE and edge / p >= 0.06:
+            out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
+                        "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
+                        "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
+                        "start": g.get("start")})
+    return sorted(out, key=lambda x: -x["edge"] / x["p"])
+
+
+def line_pass(code, alert=None, log=print):
+    """Spread and total ideas for one league (single bets: no combo maker). Model-priced, so never
+    killer deals; shown with the line they're priced from."""
+    if not STORE["db"]:
+        return []
+    did, now = [], time.time()
+    for x in line_candidates(code)[:3]:
+        try:
+            if dt.datetime.fromisoformat(str(x["start"]).replace("Z", "+00:00")).timestamp() < now + 300:
+                continue                                # pre-game only: the model knows nothing about the score
+        except ValueError:
+            continue
+        d = book_depth(x["ticker"])
+        if d and d["thin"]:
+            continue
+        prev = store_rows("select pct, ts from suggestions where legs=? and n=1 order by ts desc limit 1",
+                          (json.dumps([x["ticker"]]),))
+        pct = x["fair"] / (x["p"] + single_fee(x["p"]))
+        if prev and now - prev[0]["ts"] < 7200 and pct - prev[0]["pct"] < 0.03:
+            continue
+        stake = edge_stake(1 + (pct - 1) * 0.7, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
+        n = max(1, int(stake / (x["p"] + single_fee(x["p"]))))
+        sid = store_suggestion({"legs": [dict(x, event=x["event"] or "")], "fair": stake / x["fair"]},
+                               {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
+        store_x("update suggestions set note=? where id=?",
+                (f"Priced from the sportsbook {'spread' if x['kind'] == 'spread' else 'total'} of "
+                 f"{x['book_line']:+g}".replace("+", "" if x["kind"] == "total" else "+") + " with a score model", sid))
+        if alert:
+            _alert(alert, f"📐 {x['pick']} at {x['p'] * 100:.0f}¢ on Kalshi; the score model puts it at {x['fair']:.0%} "
+                          f"from the sportsbook line. About {x['edge'] * 100:.1f}¢ a contract in your favour.", "value",
+                   f"/app#s={sid}" if sid else "/app")
+        did.append(f"line idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
+    return did
+
+
 def single_pass(book_snap, alert=None, log=print):
     """Look for single-game value in the league on screen; each one becomes a buy idea (no quotes needed)."""
     if not STORE["db"]:
@@ -8586,6 +8776,8 @@ def store_suggestion(c, r, pct):
             (sid, now, LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
              " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
              r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live)))
+    if len(c["legs"]) == 1 and c["legs"][0].get("fair"):
+        store_x("update suggestions set pfair=? where id=?", (c["legs"][0]["fair"], sid))
     try:                                              # who's out, for the card (from ESPN's injury report)
         picks = [l["pick"] for l in c["legs"]]
         inj, _ = injury_note(LEAGUE["code"], *picks)
@@ -8932,10 +9124,11 @@ def store_open(path=None):
             db.execute("alter table suggestions add column live int")   # added after the first release
         except Exception:
             pass
-        try:
-            db.execute("alter table suggestions add column note text")
-        except Exception:
-            pass
+        for col in ("note text", "pfair real"):
+            try:
+                db.execute(f"alter table suggestions add column {col}")
+            except Exception:
+                pass
         STORE.update(db=db, path=path)
         return db
 

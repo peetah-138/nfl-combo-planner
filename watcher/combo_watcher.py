@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.17.80"
+WATCHER_VERSION = "2026.11.17.81"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -840,6 +840,10 @@ def shadow_loop(odds, notifier=None, every=600):
                         did = (did or []) + odds.engine().single_pass(snap, alert=notifier.add if notifier else None, log=log)
                     except Exception as err:
                         log(f"singles {code} skipped:", type(err).__name__, err)
+                    try:                                  # spreads and totals, priced with the score model
+                        did = (did or []) + odds.engine().line_pass(code, alert=notifier.add if notifier else None, log=log)
+                    except Exception as err:
+                        log(f"lines {code} skipped:", type(err).__name__, err)
                     for m in odds.moves(code, held_teams(odds)) if notifier else []:
                         notifier.add(m, "news")
                 if did:
@@ -2423,9 +2427,10 @@ def webapp_main():
                         api_build(row["lg"], rebuild=True)
                     side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
                     dpt = A.book_depth(tk, max_age=0)
-                    if not side or not dpt or dpt.get("ask") is None:
+                    fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
+                    if not fair or not dpt or dpt.get("ask") is None:
                         return {"ok": False, "msg": "Kalshi isn't listing that game right now."}
-                    ask, fair = dpt["ask"], side.get("fair") or 0
+                    ask = dpt["ask"]
                     fee = A.single_fee(ask)
                     edge = fair - ask - fee
                     pct = fair / (ask + fee) if ask else 0
