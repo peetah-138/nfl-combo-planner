@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -22,10 +22,22 @@ jobs:
       CHECK_WORKERS: 3          # the page tests run in lanes; 3 suits a 4-core runner
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 3.10 matches Pythonista and the older Macs (run_checks.sh compiles both files with python3.10);
+          # 3.12 is listed last so it stays the default python/python3.
+          python-version: |
+            3.10
+            3.12
+
+      - name: Check the Python versions
+        run: |
+          python --version
+          python3.10 --version
+          python --version | grep -q "Python 3.12"
 
       - uses: actions/setup-node@v4
         with:
@@ -34,7 +46,7 @@ jobs:
       - name: Install test tools
         run: |
           python -m pip install --upgrade pip
-          pip install requests pyflakes playwright ruff
+          pip install requests pyflakes playwright ruff==0.17.5
           python -m playwright install --with-deps chromium
 
       - name: Lint (ruff)
