@@ -109,12 +109,26 @@ W.load_engine = load
 URL = f"http://127.0.0.1:{PORT}/app"
 
 
+def seed_pulse(A):
+    """A week of made-up 'worth now' history (every 10 minutes) in the dev home's database, so the Live hero chart and
+    its Day/Week ranges have something to draw. Only ever written to the throwaway dev database."""
+    import math, random
+    if not A.STORE.get("db"):
+        return
+    A.store_x("create table if not exists pulse(ts real, worth real, staked real)")
+    rnd, now, w = random.Random(7), time.time(), 18.0
+    for i in range(7 * 144, -1, -1):
+        w = max(4.0, w + rnd.gauss(0.02, 0.45) + 0.6 * math.sin(i / 23.0) * 0.1)
+        A.store_x("insert into pulse values(?,?,?)", (now - i * 600, round(w, 2), 18.0))
+
+
 def announce():
     time.sleep(3)
     A = ENGINE[0]
     if A.hub_conf() or A.can_trade():      # last check on the two things that must never be true here
         print("DEV SAFETY CHECK FAILED: hub configured or trading possible. Stopping.", file=sys.stderr, flush=True)
         os._exit(3)
+    seed_pulse(A)
     print(f"DEV ENVIRONMENT READY: {URL}  (fake data, trading impossible, no hub, home {HOME})", flush=True)
 
 

@@ -76,14 +76,22 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ## 3. Ready to build (suggested order)
 
-### a. Finish the makeover (Pete: "make it exceptional", like Kalshi's app)
-1. **Games page:** live game cards that pulse when someone scores, with the score, clock and a live chance line;
+### a. Finish the makeover (Pete: "make it exceptional", like Kalshi's app; issue #12)
+Phase 1 shipped (haptics and press feedback on everything, Live polish, push transition, hero chart scrub; see
+`CLAUDE.md`). Kalshi/Novig references and a frame-by-frame motion brief are in issue #12's comments. Next, screen by screen:
+1. **Game page drill-down** (Kalshi live game page): team rows with scores, a live chance chart per side (or both on
+   one chart) with scrub, range switcher (LIVE/1D/1W), outlined pills with payout multipliers, a strip of other live
+   games to hop between, a one-line plain-English summary.
+2. **Games page:** live game cards that pulse when someone scores, with the score, clock and a live chance line;
    include single bets and spreads (today Games only lists games inside combos).
-2. **A "Sold" moment:** cashing out (by tap or by smart sell, when the page is open) gets the same drawn-check sheet
-   as buying, showing profit, not just a toast. Losses get a calm version.
-3. **More celebration moments:** a bigger celebration for a big hit, a streak note in the morning recap.
-4. **Polish pass on every screen** for consistency: spacing, type sizes, empty states, loading skeletons, light mode.
-5. Research Kalshi's own app interactions (the cloud session couldn't open kalshi.com) and borrow what fits.
+3. **A "Sold" moment:** cashing out (by tap or by smart sell, when the page is open) gets the same drawn-check sheet
+   as buying, showing profit, not just a toast. Losses get a calm version (Kalshi's "Position closed" card is the reference).
+4. **More celebration moments:** a bigger celebration for a big hit, a streak note in the morning recap.
+5. **Charts to drill into:** bet value over time, day/week profit bars (tap a bar for its bets), Results analytics.
+6. **Polish pass on Build, Results and Settings** for consistency: spacing, type sizes, empty states, loading
+   skeletons, light mode (Live got its pass in phase 1).
+- Haptics on the Home Screen app still need checking on Pete's iPhone (the `<input switch>` route; ticks while
+  dragging the chart may need a real device to confirm).
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
 ### e. Friends could use it (onboarding)
