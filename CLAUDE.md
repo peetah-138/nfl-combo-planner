@@ -185,8 +185,16 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   at 30+ quotes or when its own record moves it. Only a group's own record can take it below 95% (to the 85% floor).
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
-- Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
-  time), rechecks price, swaps in a similar bet or skips. "Build a fresh panel" (after a Stop) and the empty card's
+- Pete approves once; **the Mac buys each bet right after he approves it** (Pete's decision, issue #51: waiting
+  until ~45 min before the game gave up the price he approved; the old lead-time code, `PANEL["buy_before"]` and
+  `best_combo_lead`, is gone and bets carry no `buy_at`). Approve and Add leave `panel_buy.flag` (`ask_buy`); the
+  watcher's `panel_loop` (`panel_wait`) sees it within ~2 s and runs `panel_exec`, otherwise it runs every minute. Each
+  bet still gets the fresh price recheck first (newest candidates via `_fresh`, then Kalshi's book/quote in
+  `_buy_panel_bet`), swaps in a similar bet (bought on the pass right after) or skips; prices too old to judge wait.
+  A bet whose game is hours or days away is bought now too. Unchanged: Pause, the start rules (`_start_ok`), sizing
+  and budget, claim-before-buy under `panel_tx` (no double buy), unknown outcome = "check". The panel card says
+  "buys when you approve" (or "when you add it") before, "Buying now" once approved, then "Bought". The paper panel
+  buys at once the same way. Price at build, at buy (`bought_at`) and game time are still recorded, so CLV works. "Build a fresh panel" (after a Stop) and the empty card's
   "Look now" start at once: the tap leaves `panel_rebuild.flag`, the watcher's `rebuild_loop` thread sees it within
   ~2 s and runs `panel_rebuild` (collects every shadow sport fresh, then the usual `panel_pass`; drafts only, never
   buys or approves). Progress is noted in `combo_rebuild.json` (`rebuild_status`: asked / running "Looking at NBA…

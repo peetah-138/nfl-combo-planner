@@ -53,13 +53,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ## 2. Waiting on data (decisions with a date)
 
-### Buy timing (≈ early December)
-- **Question:** should the panel buy earlier than ~45 minutes before a game? Pete saw good prices disappear
-  before the buy time.
-- **Data being recorded:** price at build, at buy, and at game time for every panel and paper bet.
-- **Then:** compare how much price is lost or gained by waiting, by league and bet type; move the buy time
-  (per league if it differs) and explain it to Pete before shipping.
-
 ### The combo cut-off, from the combo lab (≈ 2–3 weeks)
 - The lab paper-buys combos at 80–85, 85–90, 90–95, 95–100 and 100+% of fair, and replays smart sell on them.
 - **Then:** if lower bands come out ahead *after* smart-sell exits (Pete's theory: cheap combos are fine if we rarely
