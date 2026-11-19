@@ -10666,7 +10666,7 @@ def panel_rebuild(collect, codes, lock=None, log=print):
     why = ""
     if not found:
         if not games:
-            why = "No games left today that haven't started."
+            why = "No games left today to bet on."
         elif left < 2:
             why = "Today's panel budget is already used."
         else:
