@@ -36,12 +36,15 @@ pattern in a local `.git/hooks/pre-commit`.
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
   Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
   sell, AHL, AHL live scores (the league's feed, faked), settings cleanup (removed `sell_own`; `stop_loss` kept as a
-  labelled manual override), per-league learning
+  labelled manual override), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
+  started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
+  reaches web push, deduped; nothing trades), per-league learning
   (cut-offs, calibration, pay index; checked against the old code).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
-  sideways scrolling on a phone, and the behaviour each test names.
+  sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
+  Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap).
 
 ## Writing tests
 

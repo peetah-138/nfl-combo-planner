@@ -50,15 +50,48 @@ def hub_base(conf):
     return f"http://{ip}:{conf.get('hub_port', 8765)}" if ip else ""
 
 
-def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False, click=None):
+WEB_SYNC = False          # tests set this so the web push runs inline instead of in a thread
+_WEB_SEEN = {}            # (title, body) -> when it last went to web push (so one alert isn't sent twice)
+_WEB_LOCK = threading.Lock()
+
+
+def web_push(title, body, url="/app", tag=None, urgent=False):
+    """Send one notification to the devices signed up for Combo Hub notifications (Web Push), in the
+    background. The same title+text within 2 minutes is sent once. Does nothing when no device is signed up."""
+    key = (title, body)
+    now = time.time()
+    with _WEB_LOCK:
+        for k in [k for k, t in _WEB_SEEN.items() if now - t > 120]:
+            _WEB_SEEN.pop(k, None)
+        if key in _WEB_SEEN:
+            return False
+        _WEB_SEEN[key] = now
+    if WEB_SYNC:
+        PUSH.send(title, body, url=url, tag=tag, urgent=urgent)
+    else:
+        threading.Thread(target=PUSH.send, args=(title, body), kwargs={"url": url, "tag": tag, "urgent": urgent},
+                         daemon=True, name="webpush").start()
+    return True
+
+
+def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False, click=None,
+         web=True, web_title=None, web_msg=None, web_urgent=None, tag=None):
     """A notification on your phone (ntfy app subscribed to your topic). With pause_button, it
     carries a "Pause auto cash-out" button that stops automatic sales until you resume. With click,
-    tapping it opens that Combo Hub page."""
+    tapping it opens that Combo Hub page. Unless it goes to another topic (topic=...) or web=False, it
+    also goes to the phones signed up for Combo Hub notifications (web_title / web_msg / web_urgent:
+    different wording for those, urgent defaults to ntfy's high priority)."""
     headers = {"Title": title, "Priority": priority, "Tags": "moneybag"}
     if click and hub_base(conf):
         headers["Click"] = hub_base(conf) + click
     if pause_button:
         headers["Actions"] = f"http, Pause auto cash-out, {NTFY}/{conf['topic']}-pause, method=POST, body=pause, clear=true"
+    if web and not topic:
+        try:
+            urgent = priority in ("high", "urgent") if web_urgent is None else web_urgent
+            web_push(web_title or title, web_msg or msg, url=click or "/app", tag=tag, urgent=urgent)
+        except Exception as err:
+            log("web push skipped:", type(err).__name__, err)
     try:
         r = requests.post(f"{NTFY}/{topic or conf['topic']}", data=msg.encode("utf-8"), timeout=10, headers=headers)
         if not topic:
@@ -547,9 +580,7 @@ class Notifier:
             now, hour = time.time(), time.localtime().tm_hour
             if 7 <= hour < 22 and now - getattr(self, "last_idea", 0) >= 600:
                 self.last_idea = now
-                push(self.conf, msg, title="Buy idea", priority="default", click=url)
-                threading.Thread(target=PUSH.send, args=("Buy idea", msg), kwargs={"url": url, "tag": "idea"},
-                                 daemon=True).start()
+                push(self.conf, msg, title="Buy idea", priority="default", click=url, tag="idea")
                 return True
             return True                                  # it's waiting in Combo Hub's Do now list
         kind = kind or ("cash" if ("cash" in low or "hedge" in low) else "info")
@@ -558,9 +589,8 @@ class Notifier:
             return False                              # switched off (actions it took are always reported)
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
-                 pause_button=bool(self.E.CFG.get("auto_sell")))
-            threading.Thread(target=PUSH.send, args=("Combo Hub", msg.replace("Open the planner to confirm.", "Tap to decide.")),
-                             kwargs={"urgent": True, "tag": "urgent"}, daemon=True).start()
+                 pause_button=bool(self.E.CFG.get("auto_sell")), web_title="Combo Hub", web_urgent=True, tag="urgent",
+                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."))
             BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
@@ -577,9 +607,7 @@ class Notifier:
             msgs, self.q = self.q, []
         self.last = now
         body = "\n".join("• " + m for m in msgs[:8]) + (f"\n(+{len(msgs) - 8} more)" if len(msgs) > 8 else "")
-        push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low")
-        threading.Thread(target=PUSH.send, args=(f"{len(msgs)} update{'s' * (len(msgs) != 1)}", body),
-                         kwargs={"tag": "digest"}, daemon=True).start()
+        push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low", tag="digest")
         return len(msgs)
 
 
@@ -622,50 +650,87 @@ def is_local(handler):
             and not h.get("Tailscale-User-Login") and not h.get("Forwarded"))
 
 
+def is_https(handler):
+    """The request reached us through Tailscale's https front door (it says so in X-Forwarded-Proto)."""
+    return (handler.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+
 # ---- https through Tailscale (a private address with a real certificate; needed for iPhone notifications)
+# Where the Tailscale command line lives. The wrapper in /usr/local/bin is the safe one under launchd; the app's own
+# binary only acts as a command line when TAILSCALE_BE_CLI=1 is set (otherwise it says "GUI failed to start"), so it is last.
+TS_CLI_PATHS = ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale")
+TS_CLI_PATHS_LATE = ("/usr/bin/tailscale",)
+TS_APP_BIN = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+TS_WAIT = 120             # seconds to wait for the first certificate after `serve` (it can take a minute or two)
+TS_PROBE_SLEEP = 3
+TS_RETRY = 300            # while the secure address isn't on, look again every 5 minutes
+TS_RECHECK = 1800         # once on, make sure it is still serving every 30 minutes
+HTTPS_LOCK = threading.Lock()
+ENABLE_HTTPS_HELP = ("HTTPS certificates are not enabled in Tailscale admin. On the Mac or iPhone open "
+                     "login.tailscale.com/admin/dns, sign in, scroll to HTTPS Certificates, tap Enable HTTPS..., "
+                     "confirm, then tap Try again here.")
+ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns"
+
+
 def tailscale_cli():
     import shutil
-    for p in (shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
-              "/opt/homebrew/bin/tailscale", "/usr/bin/tailscale"):
+    for p in (*TS_CLI_PATHS, shutil.which("tailscale"), *TS_CLI_PATHS_LATE, TS_APP_BIN):
         if p and os.path.exists(p):
             return p
     return None
 
 
+def tailscale_run(cli, args, timeout):
+    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed) and
+    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
+    import subprocess
+    return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                          env={**os.environ, "TAILSCALE_BE_CLI": "1"})
+
+
+def _https_set(conf, state, **kw):
+    conf["https"] = dict({"state": state}, **kw)
+    return None
+
+
 def tailscale_https(conf, port):
     """Ask Tailscale to serve Combo Hub at https://<this-mac>.<tailnet>.ts.net. If the tailnet hasn't
-    allowed https yet, keep the one-time link that turns it on, for Settings > This Mac."""
+    allowed https yet, keep the one-time link that turns it on, for Settings > This Mac.
+    Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
-    cli = tailscale_cli()
-    if not cli:
-        conf["https"] = {"state": "no-cli"}
-        return None
-    try:
-        st = json.loads(subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=15).stdout or "{}")
+    with HTTPS_LOCK:
+        cli = tailscale_cli()
+        if not cli:
+            log("https: no Tailscale command line found")
+            return _https_set(conf, "no-cli")
+        try:
+            p = tailscale_run(cli, ["status", "--json"], 15)
+        except subprocess.TimeoutExpired:
+            log("https: `tailscale status` timed out")
+            return _https_set(conf, "no-status", detail="Tailscale didn't answer in time.")
+        except (OSError, subprocess.SubprocessError) as err:
+            log("https: couldn't run Tailscale:", type(err).__name__, str(err)[:120])
+            return _https_set(conf, "no-status", detail=f"Couldn't run Tailscale: {str(err)[:100]}")
+        raw = (p.stdout or "").strip()
+        try:
+            st = json.loads(raw)
+            if not isinstance(st, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            seen = ((p.stderr or "").strip() or raw)[:120]
+            log(f"https: `tailscale status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
+            return _https_set(conf, "no-status", detail=f"Couldn't read Tailscale's status: {seen or 'no output'}")
+        backend = str(st.get("BackendState") or "")
         name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        name = ""
-    if not name:
-        conf["https"] = {"state": "no-name"}
-        return None
-    url = f"https://{name}"
-    try:
-        r = requests.get(url + "/sw.js", timeout=8)
-        if r.ok and b"Combo Hub" in r.content:
-            conf["https"] = {"state": "on", "url": url}
-            return url
-    except requests.RequestException:
-        pass
-    try:
-        p = subprocess.run([cli, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=25)
-        out = (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired as err:
-        out = ((err.stdout or b"").decode() if isinstance(err.stdout, bytes) else (err.stdout or "")) + \
-              ((err.stderr or b"").decode() if isinstance(err.stderr, bytes) else (err.stderr or ""))
-    except (OSError, subprocess.SubprocessError) as err:
-        out = str(err)
-    link = re.search(r"https://login\.tailscale\.com/\S+", out)
-    for _ in range(6):
+        if backend and backend != "Running" and not name:
+            log("https: Tailscale isn't running:", backend)
+            return _https_set(conf, "signed-out", detail=f"Tailscale says: {backend}")
+        if not name:
+            log("https: Tailscale is running but this Mac has no machine name (is MagicDNS on?)")
+            return _https_set(conf, "no-name", detail="Tailscale gave this Mac no name. Turn MagicDNS on at "
+                                                       "login.tailscale.com/admin/dns.")
+        certs_off = not st.get("CertDomains")
+        url = f"https://{name}"
         try:
             r = requests.get(url + "/sw.js", timeout=8)
             if r.ok and b"Combo Hub" in r.content:
@@ -674,11 +739,56 @@ def tailscale_https(conf, port):
                 return url
         except requests.RequestException:
             pass
-        time.sleep(3)
-    conf["https"] = {"state": "need-enable" if link else "failed", "link": link.group(0) if link else "",
-                     "detail": out.strip()[-300:]}
-    log("https not on yet:", conf["https"]["state"], conf["https"].get("link") or out.strip()[-160:])
-    return None
+        try:
+            p = tailscale_run(cli, ["serve", "--bg", str(port)], 25)
+            out = (p.stdout or "") + (p.stderr or "")
+        except subprocess.TimeoutExpired as err:
+            out = ((err.stdout or b"").decode() if isinstance(err.stdout, bytes) else (err.stdout or "")) + \
+                  ((err.stderr or b"").decode() if isinstance(err.stderr, bytes) else (err.stderr or ""))
+            log("https: `tailscale serve` didn't finish in 25 s:", out.strip()[-120:])
+        except (OSError, subprocess.SubprocessError) as err:
+            out = str(err)
+            log("https: couldn't run `tailscale serve`:", out[:120])
+        link = re.search(r"https://login\.tailscale\.com/\S+", out)
+        tls_seen, deadline = False, time.time() + TS_WAIT
+        while True:
+            try:
+                r = requests.get(url + "/sw.js", timeout=8)
+                if r.ok and b"Combo Hub" in r.content:
+                    conf["https"] = {"state": "on", "url": url}
+                    log("https on:", url)
+                    return url
+            except requests.exceptions.SSLError:
+                tls_seen = True                  # the name answers but its certificate isn't issued yet
+            except requests.RequestException:
+                pass
+            if link or certs_off or time.time() + TS_PROBE_SLEEP >= deadline:
+                break
+            time.sleep(TS_PROBE_SLEEP)
+        tail = out.strip()[-300:]
+        if link:
+            state, extra = "need-enable", {"link": link.group(0), "detail": tail}
+        elif certs_off:
+            state, extra = "need-enable", {"link": "", "admin": ADMIN_DNS_URL, "detail": ENABLE_HTTPS_HELP}
+        elif tls_seen:
+            state, extra = "issuing", {"detail": "Tailscale is still making the certificate. This can take a few minutes."}
+        else:
+            state, extra = "failed", {"link": "", "detail": tail}
+        conf["https"] = dict({"state": state}, **extra)
+        log("https not on yet:", state, extra.get("link") or extra.get("detail", "")[-160:])
+        return None
+
+
+def https_loop(conf, port):
+    """Keep trying: enabling HTTPS in Tailscale's admin, or Tailscale finishing its start at login, is picked up
+    without a tap. Quiet once it is on (a light check every 30 minutes)."""
+    while True:
+        try:
+            tailscale_https(conf, port)
+        except Exception as err:
+            log("https check failed:", type(err).__name__, err)
+            conf["https"] = {"state": "failed", "detail": f"{type(err).__name__}: {str(err)[:100]}"}
+        time.sleep(TS_RECHECK if (conf.get("https") or {}).get("state") == "on" else TS_RETRY)
 
 
 # ---- iPhone notifications (Web Push from the home screen app; needs the https address)
@@ -1028,6 +1138,7 @@ body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,color-mix(in s
 h1{font-size:28px;letter-spacing:-.02em;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 26px;font-size:15px}
 .fid{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:0;border-radius:14px;padding:15px;font-weight:600;font-size:17px;font-family:inherit;
  background:var(--acc);color:#fff;cursor:pointer}.fid svg{width:24px;height:24px}
+.fid.nudge{animation:nud 1.6s ease-in-out infinite}@keyframes nud{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--acc) 28%,transparent)}}@media(prefers-reduced-motion:reduce){.fid.nudge{animation:none}}
 .or{display:flex;align-items:center;gap:12px;color:var(--mute);font-size:13px;margin:20px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
 .field{position:relative}
 input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:var(--ink);padding:15px 52px 15px 16px;
@@ -1043,7 +1154,7 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 </style></head><body><div class="box" id="box">
 <img class="logo" src="data:image/png;base64,__ICON__" alt="">
 <h1>Combo Hub</h1><p class="sub" id="sub">Your Mac's betting desk</p>
-<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span>Unlock with Face ID</span></button>
+<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span id="fidt">Unlock with Face ID</span></button>
 <div class="or">or use your passcode</div></div>
 <form method="post" action="/login" id="f"><div class="field"><input name="pass" id="p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Passcode" required>
 <button class="eye" type="button" aria-label="Show passcode" onclick="var p=document.getElementById('p');p.type=p.type==='password'?'text':'password'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
@@ -1067,9 +1178,12 @@ async function unlock(auto){const btn=document.getElementById('fid');const old=b
   const r=await (await fetch('/auth/finish',{method:'POST',body:JSON.stringify({id:c.id,clientDataJSON:e64(c.response.clientDataJSON),
    authenticatorData:e64(c.response.authenticatorData),signature:e64(c.response.signature)})})).json();
   if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
- }catch(e){if(!auto)msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or try again.':'Face ID isn\'t available here. Use the passcode.';}
- btn.innerHTML=old;}
-document.getElementById('fid').onclick=()=>unlock(false);
+ }catch(e){
+  if(auto){/* iOS often refuses Face ID without a tap: say so and make the button the obvious thing to tap */
+   msg.textContent='';btn.classList.add('nudge');}
+  else msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or tap the button to try again.':'Face ID isn\'t available here. Use the passcode.';}
+ btn.innerHTML=old;if(auto&&btn.classList.contains('nudge'))document.getElementById('fidt').textContent='Tap to unlock with Face ID';}
+document.getElementById('fid').onclick=()=>{document.getElementById('fid').classList.remove('nudge');unlock(false);};
 if(FID&&can&&!msg.textContent.trim())unlock(true);else document.getElementById('p').focus();
 </script></body></html>"""
 
@@ -2415,7 +2529,7 @@ function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"
 function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
  if(LOCAL&&!/\.ts\.net$/.test(location.hostname))return (f.keys||[]).length?`<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${f.keys.map(k=>esc(k.name)).join(', ')}</small></div><button class="btn ghost" onclick="fidRemoveAll()">Remove all</button></div>`:'';
  if(location.protocol!=='https:'||!window.PublicKeyCredential)return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${(S.pk||{}).https?`Works on the secure address. Open <a href="${esc(S.pk.https)}">${esc(S.pk.https.replace('https://',''))}</a> and turn it on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
- return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:'Unlock Combo Hub with Face ID instead of typing the passcode.'}</small></div>
+ return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:((f.keys||[]).length?`Face ID was set up for another address (${esc((f.keys[0]||{}).rp||'')}). Turn it on again here to use it on this one.`:'Unlock Combo Hub with Face ID instead of typing the passcode.')}</small></div>
   ${here.length?`<button class="btn ghost" onclick="fidRemoveAll()">Turn off</button>`:`<button class="btn acc" onclick="fidOn(this)">Turn on</button>`}</div>`;}
 const fb64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
 const fe64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -2450,8 +2564,14 @@ async function pushTest(){const t=await api('/app/push',{a:'test'});toast(t.sent
 async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistration();const sub=reg&&await reg.pushManager.getSubscription();if(sub){await api('/app/push',{a:'off',sub:sub.toJSON()});await sub.unsubscribe();}}catch(e){}S.pushOn=false;toast('Notifications off on this device.');load('settings');}
 function httpsRow(mac){const h=mac.https||{};
  if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
- if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>Tailscale needs you to allow https for your network once. Open the link, approve, then tap Check.</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
- return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.':h.state==='no-name'?'Tailscale isn\'t signed in on this Mac. Open Tailscale, sign in, then Try again.':h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
+ if(h.state==='need-enable'&&h.link)return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin yet. Tap Allow https, approve in the Tailscale page, then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
+ if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin. Open the page, sign in, scroll to <b>HTTPS Certificates</b>, tap <b>Enable HTTPS...</b> and confirm. Then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.admin||'https://login.tailscale.com/admin/dns')}" target="_blank">Open Tailscale admin</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
+ const why={'no-cli':'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.',
+  'no-status':'Couldn\'t read Tailscale\'s status'+(h.detail?': '+esc(h.detail.replace(/^Couldn\'t read Tailscale\'s status: /,'').slice(-140)):'')+'. Is the Tailscale app open on this Mac?',
+  'signed-out':'Tailscale isn\'t signed in or isn\'t running on this Mac ('+esc((h.detail||'').replace('Tailscale says: ','')||'no status')+'). Open Tailscale, sign in, then Try again.',
+  'no-name':'Tailscale is running but gave this Mac no name. Turn MagicDNS on at login.tailscale.com/admin/dns, then Try again.',
+  'issuing':'Tailscale is still making the certificate. This can take a few minutes; it keeps checking.'};
+ return `<div class="srow"><div class="l"><b>Secure address</b><small>${why[h.state]||(h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…')}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
  const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
@@ -2692,7 +2812,7 @@ async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span clas
  if(!r.ok){toast(r.msg||'Couldn\'t reach the Mac.',5000,'bad');load('settings');return;}
  for(let k=0;k<20;k++){await new Promise(z=>setTimeout(z,3000));const m=await api('/app/mac',{a:'status'}).catch(()=>null);
   if(m&&m.ok){const h=m.https||{};if(JSON.stringify(h)!==was||k===19){S.mac=m;renderSettings();
-   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?'One step left: tap Allow https, approve in Tailscale, then Check.':h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
+   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?(h.link?'One step left: tap Allow https, approve in Tailscale, then Check.':'One step left: enable HTTPS Certificates in Tailscale admin, then Check.'):h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':h.state==='issuing'?'Almost there: Tailscale is making the certificate.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
  load('settings');}
 async function macDo(a,b){if(a==='https')return httpsCheck(b);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
  toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
@@ -3720,7 +3840,7 @@ def mac_settings(conf, web, d, tok):
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
     if a == "testpush":
         push(conf, "✅ Test from your Mac. If you see this, ntfy alerts are working.", title="Combo Hub test", priority="high",
-             click="/app")
+             click="/app", web=False)
         sent = PUSH.send("Combo Hub test", "If you see this, Combo Hub notifications are working.", tag="test")
         return {"ok": True, "msg": f"Sent a test to ntfy ({'ok' if PUSHLOG.get('ok') else 'failed'})"
                                    + (f" and to {sent} Combo Hub device{'s' * (sent != 1)}." if sent else
@@ -3880,7 +4000,8 @@ def start_hub(conf, E, odds=None):
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
             if cookie:
-                self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
+                                 + ("; Secure" if is_https(self) else ""))
             if location:
                 self.send_header("Location", location)
             self.send_header("Content-Length", str(len(body)))
@@ -4121,7 +4242,7 @@ def start_hub(conf, E, odds=None):
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True, name="hub").start()
     if web and conf.get("https_auto", True) and sys.platform == "darwin":
-        threading.Thread(target=tailscale_https, args=(conf, port), daemon=True, name="https").start()
+        threading.Thread(target=https_loop, args=(conf, port), daemon=True, name="https").start()
     ip = hub_address()
     log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)")
         + (" · web view on the same address" if web else ""))
@@ -4194,7 +4315,7 @@ def main():
             start_webapp()
     threading.Thread(target=update_loop, args=(E, conf), daemon=True, name="updates").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
-    push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
+    push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low", web=False)
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
     while True:
         t0 = time.time()

@@ -32,7 +32,7 @@ def mac(route):
     body=json.loads(route.request.post_data or "{}")
     if body.get("a")=="https":
         STATE["n"]=1; return route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok":True,"msg":"Checking"}))
-    h={"state":"failed","detail":"x"} if STATE["n"]==0 else {"state":"need-enable","link":"https://login.tailscale.com/f/serve?node=abc"}
+    h={"state":"no-status","detail":"Couldn't read Tailscale's status: boom"} if STATE["n"]==0 else {"state":"need-enable","link":"https://login.tailscale.com/f/serve?node=abc"}
     route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok":True,"up":100,"engine":"v","watcher":"v","ts":"mac","role":"main","pass":"x","auto_update":True,"https":h,"log":[]}))
 with sync_playwright() as pw:
     br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 1280, "height": 900}, color_scheme="dark")
@@ -44,6 +44,7 @@ with sync_playwright() as pw:
         time.sleep(.5)
         if pg.locator("button", has_text="Try again").count(): break
     b = pg.locator("button", has_text="Try again"); print("try again button:", b.count())
+    if not pg.locator("text=Couldn't read Tailscale's status").count() or pg.locator("text=isn't signed in").count(): print("PROBLEMS: a status read failure is not described as what it is")
     if not b.count(): print("PROBLEMS: no secure address row")
     else:
         pg.evaluate("window.__t=[];new MutationObserver(()=>__t.push(document.querySelector('#toast').textContent)).observe(document.querySelector('#toast'),{childList:true,characterData:true,subtree:true})")
