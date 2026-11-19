@@ -3,7 +3,7 @@ answered from memory, patched over `requests`. Same shapes as the fakes in macsm
 Nothing here ever opens a real connection: any URL it does not know gets an empty answer, any non-GET Kalshi call
 is refused, and any local address except the dev web app's own port is refused (so the real hub on 8765 and the
 real app on 8766 can't be reached)."""
-import json, datetime as dt, requests
+import json, time, datetime as dt, requests
 from urllib.parse import urlsplit
 
 GAMES = {   # series -> [(away abbr, away name, home abbr, home name, chance away wins)]
@@ -11,6 +11,7 @@ GAMES = {   # series -> [(away abbr, away name, home abbr, home name, chance awa
                   ("MIL", "Milwaukee Bucks", "CHI", "Chicago Bulls", .58), ("PHX", "Phoenix Suns", "GSW", "Golden State Warriors", .55)],
     "KXNHLGAME": [("COL", "Colorado Avalanche", "SJ", "San Jose Sharks", .66), ("VGK", "Vegas Golden Knights", "DAL", "Dallas Stars", .52)],
 }
+STARTED = time.time()
 ESPN_PATH = {"KXNBAGAME": "basketball/nba", "KXNHLGAME": "hockey/nhl"}
 
 
@@ -45,10 +46,12 @@ def event_ticker(series, a, b, day=None):
 
 def markets(hours=6):
     """Two markets (one per team) for every fake game, ending in a few hours."""
-    exp = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=hours)).isoformat() + "Z"
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     out = []
     for series, games in GAMES.items():
-        for a, an, b, bn, pa in games:
+        for gi, (a, an, b, bn, pa) in enumerate(games):
+            # the first game of each league is under way (it started about an hour ago), so the live screens have something to show
+            exp = (now + dt.timedelta(hours=2 if gi == 0 else hours)).isoformat() + "Z"
             ev = event_ticker(series, a, b)
             for t, n, p in ((a, an, pa), (b, bn, 1 - pa)):
                 out.append({"ticker": f"{ev}-{t}", "event_ticker": ev, "yes_sub_title": n, "yes_ask_dollars": f"{p + .02:.2f}",
@@ -66,7 +69,13 @@ def espn_events(path):
         state, name = (("in", "STATUS_IN_PROGRESS"), ("post", "STATUS_FINAL"))[i] if i < 2 else ("pre", "STATUS_SCHEDULED")
         start = now - dt.timedelta(hours=1 if i == 0 else 4) if i < 2 else now + dt.timedelta(hours=3 + i)
         sc = {0: (54, 49), 1: (112, 104)}.get(i, (0, 0))
-        st = {"period": 2 if i == 0 else 4, "displayClock": "5:42", "type": {"state": state, "name": name, "shortDetail": "7:00 PM"}}
+        clock = "5:42"
+        if i == 0:                      # the live game plays on: the clock runs down and baskets drop as time passes
+            el = int(time.time() - STARTED)
+            left = max(5, 342 - el)
+            clock = f"{left // 60}:{left % 60:02d}"
+            sc = (54 + 2 * (el // 20), 49 + 3 * (el // 35))
+        st = {"period": 2 if i == 0 else 4, "displayClock": clock, "type": {"state": state, "name": name, "shortDetail": "7:00 PM"}}
         evs.append({"id": f"{series}{i}", "date": start.strftime("%Y-%m-%dT%H:%MZ"), "status": st,
                     "competitions": [{"status": st,
                                       "competitors": [{"id": x, "homeAway": ha, "score": str(s),
