@@ -38,7 +38,8 @@ pattern in a local `.git/hooks/pre-commit`.
   sell, AHL, AHL live scores (the league's feed, faked), settings cleanup (removed `sell_own`; `stop_loss` kept as a
   labelled manual override), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
-  reaches web push, deduped; nothing trades).
+  reaches web push, deduped; nothing trades), per-league learning
+  (cut-offs, calibration, pay index; checked against the old code).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no

@@ -9991,21 +9991,65 @@ def _nfl_week_end(now=None):
     return (t + dt.timedelta(days=days)).replace(hour=4, minute=0, second=0, microsecond=0).timestamp()
 
 
-# ---- the self-adjusting combo cut-off, per sport and size
+# ---- the self-adjusting combo cut-off, per league and size: a league short on data uses its sport's level
+# (exactly what it used before leagues had their own), and a sport with no record yet borrows everyone's.
+CUT_MIN_N = 30            # quotes a league (or everyone together) needs before its own cut-off is used
+
+
 def _cut_key(code, n):
     return f"{code}:{'2' if n <= 2 else '3-4' if n <= 4 else '5-7' if n <= 7 else '8+'}"
 
 
-def combo_cutoff(code, n):
-    """The share of fair a combo must be priced at for the panel. Starts at 95%; never below 85%."""
-    d = load_json(CUTOFF_FILE, {})
-    return float((d.get(_cut_key(code, n)) or {}).get("level", 95)) / 100
+def _tickers_of(legs):
+    out = []
+    for x in legs or ():
+        t = x.get("ticker") if isinstance(x, dict) else x[0] if isinstance(x, (list, tuple)) and x else x
+        out.append(t if isinstance(t, str) else "")
+    return out
+
+
+def _combo_league(code, legs):
+    """The league a combo's cut-off is learned in when it's narrower than its sport (each soccer league),
+    else None (a league that is its own sport, or a combo across leagues)."""
+    tks = [t for t in _tickers_of(legs) if t]
+    k = bet_key(tks) if tks else None
+    return k if k and k not in ("mix", "other", code) and ticker_sport(tks[0]) == code else None
+
+
+def _cut_own(e):
+    """A league's (or everyone's) own cut-off counts once it has solid data, or once it has moved."""
+    return bool(e) and (e.get("n", 0) >= CUT_MIN_N or bool(e.get("why")))
+
+
+def _cut_level(d, code, n, legs=None):
+    """(level in %, the group it came from): the league's own once it has enough quotes, else the sport's
+    (unchanged from before), else everyone's once that has enough, else the 95% start."""
+    lg = _combo_league(code, legs)
+    if lg:
+        e = d.get(_cut_key(lg, n))
+        if _cut_own(e):
+            return float(e.get("level", 95)), _cut_key(lg, n)
+    e = d.get(_cut_key(code, n))
+    if e:
+        return float(e.get("level", 95)), _cut_key(code, n)
+    e = d.get(_cut_key("all", n))
+    if _cut_own(e):
+        return float(e.get("level", 95)), _cut_key("all", n)
+    return 95.0, None
+
+
+def combo_cutoff(code, n, legs=None):
+    """The share of fair a combo must be priced at for the panel. Starts at 95%; never below 85%.
+    legs (tickers or leg dicts) lets a league with its own record (e.g. the Premier League) use its own level."""
+    return _cut_level(load_json(CUTOFF_FILE, {}), code, n, legs)[0] / 100
 
 
 def adjust_cutoffs(force=False):
     """Once a week: move each group's cut-off a step from its own evidence. Up if combos bought just above
     the bar have been returning well under what they cost; down (never below 85%) if the ones it would have
-    skipped, just under the bar, are returning more than they cost. Needs 30+ settled quotes in a band."""
+    skipped, just under the bar, are returning more than they cost. Needs 30+ settled quotes in a band.
+    Groups: everyone together, each sport (as always), and each league inside a sport (soccer's). A group
+    new to the file starts from the level it was borrowing, so its first step is from there."""
     d = load_json(CUTOFF_FILE, {})
     if not force and time.time() - d.get("_at", 0) < 7 * 86400:
         return []
@@ -10015,6 +10059,7 @@ def adjust_cutoffs(force=False):
                       (time.time() - 60 * 86400,))
     trip = exit_factor()
     groups = defaultdict(list)
+    kind = {}                                          # key -> (0 everyone | 1 sport | 2 league, sport, n)
     for r in rows:
         legs = json.loads(r["legs"] or "[]")
         cl = close_prices([x[0] for x in legs])
@@ -10026,11 +10071,28 @@ def adjust_cutoffs(force=False):
             r["val"] = (r["pays"] / r["stake"] if r["outcome"] == "won" else 0) * trip
         else:
             continue
-        for sp in (r["sport"] or "").split(","):
-            groups[_cut_key(sp, r["n"] or 2)].append(r)
+        n = r["n"] or 2
+        sps = (r["sport"] or "").split(",")
+        for sp in sps:
+            groups[_cut_key(sp, n)].append(r)
+            kind[_cut_key(sp, n)] = (1, sp, n)
+            lg = _combo_league(sp, legs) if len(sps) == 1 else None
+            if lg:
+                groups[_cut_key(lg, n)].append(r)
+                kind[_cut_key(lg, n)] = (2, sp, n)
+        groups[_cut_key("all", n)].append(r)
+        kind[_cut_key("all", n)] = (0, "all", n)
     moved = []
-    for key, rs in groups.items():
-        cur = float((d.get(key) or {}).get("level", 95))
+    for key in sorted(groups, key=lambda k: kind[k][0]):     # everyone, then sports, then leagues (they borrow up)
+        rs = groups[key]
+        e = d.get(key)
+        g, sp, n = kind[key]
+        if g == 1 and e:
+            cur = float(e.get("level", 95))            # a sport already in the file: exactly as before
+        elif g == 1 or (g == 2 and not _cut_own(e)):
+            cur = _cut_level(d, sp, n)[0]              # new sport / thin league: the level it was borrowing
+        else:
+            cur = float((e or {}).get("level", 95))
         L = cur / 100
         above = [r["val"] for r in rs if L <= r["pct"] < L + 0.05]
         below = [r["val"] for r in rs if L - 0.05 <= r["pct"] < L]
@@ -10045,6 +10107,8 @@ def adjust_cutoffs(force=False):
         if new != cur:
             d[key] = {"level": new, "why": why, "at": int(time.time()), "n": len(rs)}
             moved.append(f"{key} {cur:.0f}% → {new:.0f}% ({why})")
+        elif g == 2 and not _cut_own(e):
+            d[key] = {"level": cur, "why": "", "n": len(rs)}   # still on its sport's level (or now its own, from there)
         else:
             d.setdefault(key, {"level": cur, "why": "", "n": len(rs)})["n"] = len(rs)
     d["_at"] = time.time()
@@ -10053,8 +10117,11 @@ def adjust_cutoffs(force=False):
 
 
 def cutoff_summary():
+    """The cut-offs for Settings: every sport's, and a league's or everyone's once it has its own."""
     d = load_json(CUTOFF_FILE, {})
-    return [{"group": k, **v} for k, v in sorted(d.items()) if not k.startswith("_")]
+    return [{"group": k, **v} for k, v in sorted(d.items())
+            if not k.startswith("_") and (k.split(":")[0] in SPORTS or _cut_own(v))]
+
 
 
 # ---- sizing that grows (slowly) with the bankroll, shrinks fast, and sets half of each month's profit aside
@@ -10289,14 +10356,19 @@ CALIB = {"at": 0, "m": {}}
 
 def calibration():
     """For each sport and chance band: how often teams the books gave that chance actually won, from your own
-    record of games. {sport: [(lo, hi, mean fair, win rate, n)]}. Refreshed hourly."""
+    record of games. {sport: [(lo, hi, mean fair, win rate, n)]}, plus each league inside a sport (each soccer
+    league, by its own key). Refreshed hourly."""
     if time.time() - CALIB["at"] < 3600 or not STORE["db"]:
         return CALIB["m"]
     _close_table()
-    rows = store_rows("select sport, fair, outcome from closes where outcome in ('yes','no')")
+    rows = store_rows("select ticker, sport, fair, outcome from closes where outcome in ('yes','no')")
     by = defaultdict(list)
     for r in rows:
-        by[r["sport"]].append((r["fair"], r["outcome"] == "yes"))
+        x = (r["fair"], r["outcome"] == "yes")
+        by[r["sport"]].append(x)
+        lg = league_key(r["ticker"])
+        if lg not in ("other", "mix", r["sport"]) and ticker_sport(r["ticker"]) == r["sport"]:
+            by[lg].append(x)
     out = {}
     for sp, xs in by.items():
         bands = []
@@ -10310,14 +10382,26 @@ def calibration():
     return out
 
 
-def calib_fair(code, fair):
+def calib_fair(code, fair, ticker=None):
     """The books' chance, nudged toward what actually happened in your record for this sport and band.
-    Shrunk hard: with n games in the band, it moves n/(n+300) of the way. 300 games = halfway."""
-    for lo, hi, mf, wr, n in calibration().get(code, []):
-        if lo <= fair < hi:
-            k = n / (n + 300)
-            return min(max(fair + k * (wr - mf), 0.01), 0.99)
-    return fair
+    Shrunk hard: with n games in the band, it moves n/(n+300) of the way. 300 games = halfway.
+    A league inside the sport (ticker given, e.g. the Premier League) starts from its sport's nudge and moves
+    from there toward its own record by the same n/(n+300), so with no games of its own it gets exactly the
+    sport's. (Everyone's record isn't mixed in: a sport's own nudge stays exactly what it was, and a sport with
+    no games in a band keeps the books' chance rather than jumping to everyone's.)"""
+    m = calibration()
+
+    def band(key):
+        return next(((mf, wr, n) for lo, hi, mf, wr, n in m.get(key, []) if lo <= fair < hi), None)
+    b = band(code)
+    lg = league_key(ticker) if ticker else None
+    bl = band(lg) if lg and lg not in ("other", "mix", code) and ticker_sport(ticker) == code else None
+    if not b and not bl:
+        return fair
+    adj = b[2] / (b[2] + 300) * (b[1] - b[0]) if b else 0.0
+    if bl:
+        adj += bl[2] / (bl[2] + 300) * ((bl[1] - bl[0]) - adj)
+    return min(max(fair + adj, 0.01), 0.99)
 
 
 def favorite_win_rate(code):
@@ -10347,7 +10431,7 @@ def panel_collect(book_snap, code, log=print):
         two = [x for x in sd if x.get("fair") and not x.get("tie")]
         for x in two:
             x["fair_book"] = x["fair"]
-            x["fair"] = calib_fair(code, x["fair"])
+            x["fair"] = calib_fair(code, x["fair"], x.get("ticker"))
         if len(two) == 2:                              # both sides still add up to what the books gave them
             k = sum(x["fair_book"] for x in two) / max(sum(x["fair"] for x in two), 1e-6)
             for x in two:
@@ -10375,13 +10459,13 @@ def panel_collect(book_snap, code, log=print):
         n = len(c["legs"])
         pq = predict_quote(c)
         pct = pq["pct"] if pq else c.get("value_pct")
-        if pct and pct >= combo_cutoff(code, n):
+        if pct and pct >= combo_cutoff(code, n, c["legs"]):
             cands.append(_cand("combo", code, c["legs"], math.prod(l["fair"] for l in c["legs"]), pct - 1,
                                "Every pick is priced under its real chance, so the combo should pay more than it's worth.",
                                pct=round(pct, 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3)))
     if code == "nfl":
         for pct, chance, legs, ups in slate_combos(games, code):
-            if pct >= combo_cutoff(code, len(legs)):
+            if pct >= combo_cutoff(code, len(legs), legs):
                 cands.append(_cand("combo", code, legs, chance, pct - 1,
                                    f"Spread across the day's time slots with {ups} upset{'s' if ups != 1 else ''} built in "
                                    f"(a Sunday usually has that many), so early wins give a chance to cash out.",
@@ -10397,7 +10481,7 @@ def panel_collect(book_snap, code, log=print):
                     wk = {weeks[l["event"]] for l in c["legs"]}
                     pq = predict_quote(c)
                     pct = pq["pct"] if pq else c.get("value_pct")
-                    if len(wk) >= 2 and pct and pct >= combo_cutoff(code, len(c["legs"])) + 0.05:
+                    if len(wk) >= 2 and pct and pct >= combo_cutoff(code, len(c["legs"]), c["legs"]) + 0.05:
                         cands.append(_cand("combo", code, c["legs"], math.prod(l["fair"] for l in c["legs"]), pct - 1,
                                            "Two NFL weekends: the first is a checkpoint to cash out early.",
                                            pct=round(pct, 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3),
@@ -10507,18 +10591,35 @@ def choose_panel(cands, budget, base, size=None):
 
 
 def sport_pay_index():
-    """How close to fair Kalshi pays on combos in each sport, relative to all sports (from your quotes)."""
+    """How close to fair Kalshi pays on combos in each sport, relative to all sports (from your quotes); also
+    each league inside a sport (each soccer league, by its own key) once it has 10+ quotes of its own."""
     if not STORE["db"]:
         return {}
-    rows = store_rows("select sport, pct from quotes where pct is not null and ts > ?", (time.time() - 45 * 86400,))
-    by = defaultdict(list)
+    rows = store_rows("select sport, pct, legs from quotes where pct is not null and ts > ?", (time.time() - 45 * 86400,))
+    by, lgs = defaultdict(list), defaultdict(list)
     for r in rows:
         by[r["sport"] or ""].append(r["pct"])
+        sp = r["sport"] or ""
+        if sp and "," not in sp:
+            try:
+                lg = _combo_league(sp, json.loads(r["legs"] or "[]"))
+            except ValueError:
+                lg = None
+            if lg:
+                lgs[lg].append(r["pct"])
     allv = [p for v in by.values() for p in v]
     if len(allv) < 20:
         return {}
     mid = statistics.median(allv)
-    return {k: round(statistics.median(v) / mid, 3) for k, v in by.items() if len(v) >= 10 and "," not in k}
+    out = {k: round(statistics.median(v) / mid, 3) for k, v in by.items() if len(v) >= 10 and "," not in k}
+    out.update({k: round(statistics.median(v) / mid, 3) for k, v in lgs.items() if len(v) >= 10 and k not in out})
+    return out
+
+
+def pay_index_of(idx, code, legs=None):
+    """A combo's pay index: its league's own once it has enough quotes, else its sport's, else neutral (1.0)."""
+    lg = _combo_league(code, legs)
+    return idx[lg] if lg and lg in idx else idx.get(code, 1.0)
 
 
 def build_panel(codes=None, budget=None, now=None, exclude=()):
@@ -10538,7 +10639,7 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
                 continue
             c = dict(c)
             if c["kind"] == "combo":                       # lean toward the sports that pay closest to fair (tie-break only)
-                c["prio"] = max(-0.01, min(0.01, 0.1 * (idx.get(code, 1.0) - 1.0)))
+                c["prio"] = max(-0.01, min(0.01, 0.1 * (pay_index_of(idx, code, c["legs"]) - 1.0)))
             end = nfl_end if code == "nfl" else day_end
             if c["last"] <= end:
                 today.append(c)
@@ -10816,7 +10917,7 @@ def _qualifies(x):
     """The panel's bar for one bet: combos at or over their cut-off; sell-early favorites at fair or better;
     singles, spreads and totals at least 2% better than fair."""
     if x["kind"] == "combo":
-        return x.get("pct", 0) >= combo_cutoff(x["code"], len(x["legs"]))
+        return x.get("pct", 0) >= combo_cutoff(x["code"], len(x["legs"]), x["legs"])
     if x["kind"] == "early":
         return x["ret"] >= 0
     if x["kind"] == "line":                            # priced by our own score model, not the sharp books:
@@ -10888,7 +10989,7 @@ def _buy_panel_bet(c):
             e = post_sell(l["ticker"], filled, c["exit"])
             d["exit_order"] = "placed" if not e else f"failed: {e}"
         return True, f"bought {filled:g} at {ask * 100:.0f}¢", d
-    cut = combo_cutoff(c["code"], len(c["legs"]))
+    cut = combo_cutoff(c["code"], len(c["legs"]), c["legs"])
 
     def go():
         _panel_combo(c, cut)
@@ -11023,7 +11124,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                     except Exception:
                         pays, pct = None, None
                     if pays and pct is not None:
-                        if pct < combo_cutoff(c["code"], len(c["legs"])):
+                        if pct < combo_cutoff(c["code"], len(c["legs"]), c["legs"]):
                             upd.update(state="skipped", note=f"Kalshi offered {pct:.0%} of fair, under the cut-off")
                         else:
                             upd.update(pays=round(pays, 2), pct=round(pct, 4))
