@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.113"
+WATCHER_VERSION = "2026.11.18.114"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1991,8 +1991,8 @@ function renderLive(){const d=S.live;const m=$('#main');
  <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
- ${singlesLive(d)}
  ${pend.some(c=>c.legs.some(l=>l.state==='live'&&!l.res))?`<div class="legend"><span class="leg up"><i class="pd"></i>Winning now</span><span class="leg down"><i class="pd"></i>Losing now</span><span class="leg live"><i class="pd"></i>Tied</span><span class="leg won">✓ Won</span><span class="leg lost">✕ Lost</span></div>`:''}
+ ${singlesLive(d)}
  </div><aside class="side">${sideLive(d)}</aside></div>`;}
 function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const items=[];
@@ -2065,8 +2065,8 @@ async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singl
 function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':'';
  const line=x.how||x.score||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
- return `<div class="trow srow1"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${x.game?' · '+esc(x.game.replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'')):''}</span></div>
-  <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank">game ↗</a>`:''}</div>
+ return `<div class="trow srow1" onclick="openGame('${x.t}')"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
+  <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
   <div class="num" data-l="Chance">${x.chance!=null?pct(x.chance):'—'}${x.chance!=null?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
   <div class="num" data-l="Worth now">${x.worth!=null?money(x.worth):'—'}</div></div><div class="verdict"></div></div>`;}
@@ -2517,11 +2517,11 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div><button class="btn ghost" onclick="closeModal()">Close</button></div>
   <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.starts||'Not started')}</div></div>`}</div>
-  <div class="dkpis"><div><span>${esc(short(l.name))} to win</span><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b></div><div><span>Your combos on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
+  <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
-   <div><h2 style="margin:0 0 6px">Your combos on this game</h2>${r.combos.map(c=>`<div class="moment" style="cursor:pointer" onclick="openCombo('${c.t}')"><span class="k">🎯</span><span><b>${esc(c.label)}</b> <span class="m">${c.legs} picks · ${pct(c.p)} to hit</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}
+   <div><h2 style="margin:0 0 6px">Your bets on this game</h2>${r.combos.map(c=>`<div class="moment" ${c.single?'':`style="cursor:pointer" onclick="openCombo('${c.t}')"`}><span class="k">${c.single?'📏':'🎯'}</span><span><b>${esc(c.label)}</b> <span class="m">${c.single?(c.how?esc(c.how)+' · ':'')+pct(c.p)+' chance':c.legs+' picks · '+pct(c.p)+' to hit'}</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}
    ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
@@ -3158,16 +3158,24 @@ def webapp_main():
     def api_game(t):
         d = api_live() or {}
         leg, combos = None, []
+        game = (t.split("-") + ["", ""])[1]                # the game's date+teams code, shared by its spread/total/winner
+        for x in d.get("singles") or []:
+            if x.get("t") == t:
+                leg = x
         for v in d.get("combos") or []:
             for lg in v.get("legs") or []:
-                if lg["ticker"] == t:
+                if lg["ticker"] == t or (game and (lg["ticker"].split("-") + ["", ""])[1] == game):
                     leg = leg or lg
-                    if v["group"] == "pending":
+                    if v["group"] == "pending" and not any(c["t"] == v["t"] for c in combos):
                         combos.append({"t": v["t"], "label": v["label"], "p": v.get("p"), "pays": v["pays"],
                                        "cost": v["cost"], "legs": len(v["legs"])})
+        for x in d.get("singles") or []:                    # your single bets and spreads on this game
+            if game and (x["t"].split("-") + ["", ""])[1] == game and x.get("state") in ("live", "pre"):
+                combos.append({"t": x["t"], "label": x["label"], "p": x.get("chance"), "pays": x["pays"],
+                               "cost": x["cost"], "legs": 1, "single": True, "worth": x.get("worth"), "how": x.get("how")})
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
         wi = None
-        if leg and leg.get("state") == "live":
+        if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
             ch = leg.get("live") if leg.get("live") is not None else leg.get("chance")
             try:
                 wi = A.what_if(t, ch, leg.get("side", "yes"))
@@ -3176,7 +3184,7 @@ def webapp_main():
             if wi and ch:
                 disc = A.kalshi_discount(True)
                 for c in combos:
-                    if c.get("p"):
+                    if c.get("p") and not c.get("single"):
                         c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
                         c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
                         c["now"] = round(c["pays"] * c["p"] * disc, 2)
