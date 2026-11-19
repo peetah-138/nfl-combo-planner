@@ -109,7 +109,8 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   exists. (2) How fast Kalshi's live data updates during play is unmeasured; log it on a live match before tuning
   the 8 s cache. (3) **Waiting on Pete:** these scores feed nothing that sells or decides a result (smart sell, early
   results, the started-game rules still use ESPN/the AHL feed only). Letting smart sell use them (per sport) is a
-  separate opt-in. (4) Kalshi also covers the AHL (as a backup to the league feed) and cricket, darts, volleyball etc.;
+  separate opt-in; so is pricing EuroLeague, UFC and tennis games under way for the daily panel (they stay out once
+  started until a trusted live score with a clock exists). (4) Kalshi also covers the AHL (as a backup to the league feed) and cricket, darts, volleyball etc.;
   not wired in since the AHL feed works and we don't bet those.
 
 ### e. Friends could use it (onboarding)
