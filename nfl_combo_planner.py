@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.111"
+VERSION = "2026.11.18.112"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4141,6 +4141,10 @@ def auto_sell_now(plan):
             out.append(lead + msg)
             if msg.startswith("✅"):
                 MINE.get("peak", {}).pop(t, None)
+        try:
+            out += smart_sell_singles()
+        except Exception as err:
+            print("smart sell (singles):", type(err).__name__, err)
     finally:
         MINE["busy"] = False
     return out
@@ -4323,9 +4327,139 @@ def is_own(t):
     return bool(got) and "__seeded__" in got and bool(t) and t not in got
 
 
+SELF_SELL = os.path.join(HERE, "combo_selfsell.json")
+
+
+def self_sell_set():
+    """Bets you've switched to "I'll sell it" on Live: smart sell leaves those alone."""
+    return set(load_json(SELF_SELL, {}))
+
+
+def set_self_sell(t, mine):
+    """mine=True: you'll sell this one yourself. False: smart sell watches it (the default for every bet)."""
+    d = load_json(SELF_SELL, {})
+    if mine:
+        d[t] = time.time()
+    else:
+        d.pop(t, None)
+    save_json(SELF_SELL, d)
+
+
 def hands_off(t):
-    """Automatic selling, hedging and take-profit orders leave your own Kalshi bets alone unless you allow it."""
-    return not CFG.get("sell_own") and is_own(t)
+    """Smart sell (and hedging and take-profit orders) skip a bet you've set to "I'll sell it"."""
+    return bool(t) and t in self_sell_set()
+
+
+def single_sell_reason(x, bid, ask, track=True):
+    """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book.
+    Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
+    n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
+    if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
+        return None, 0.0
+    net = n * (bid - single_fee(bid))
+    t = x["t"]
+    peak = MINE.setdefault("peak", {})
+    if track:
+        peak[t] = max(peak.get(t, 0.0), net)
+    hits = []
+    tp = float(CFG.get("take_profit") or 0) / 100
+    if tp:
+        f = max(tp * n, TP_MIN_GAIN * cost)
+        if net >= f:
+            hits.append(("take profit", f))
+    floor2 = 0.0
+    if CFG.get("smart_sell", True):
+        leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
+        lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
+        floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), 1.5 * cost)
+        if q >= 0.5 and net >= floor2:
+            hits.append(("smart", floor2))
+    if hits:
+        return min(hits, key=lambda h: h[1])
+    pk = peak.get(t, 0.0)
+    if CFG.get("lock_trail", True) and pk >= max(TRAIL_ARM * n, 1.5 * cost) and net <= (1 - TRAIL_DROP) * pk \
+            and net >= 1.1 * cost:
+        return "lock in", 1.1 * cost
+    return None, floor2
+
+
+SINGLE_RESTING = {"at": 0, "t": set()}
+
+
+def resting_single_sells():
+    """Singles with a sell order already waiting on Kalshi (a sell-early favorite's exit, or one you placed)."""
+    if time.time() - SINGLE_RESTING["at"] > 60:
+        try:
+            data = kalshi_send("GET", "/portfolio/orders", params={"status": "resting", "limit": 200}) or {}
+            SINGLE_RESTING.update(at=time.time(), t={o.get("ticker") for o in data.get("orders", [])
+                                                      if o.get("action") == "sell" and not is_combo(o.get("ticker"))})
+        except Exception:
+            return None
+    return SINGLE_RESTING["t"]
+
+
+def sell_single_now(t, side, n, price):
+    """Sell n contracts of a single bet at `price` or better, now or not at all. Returns (sold, error)."""
+    import uuid
+    body = {"ticker": t, "action": "sell", "side": side, "type": "limit", "count": int(n),
+            f"{side}_price": max(1, int(math.floor(price * 100 + 1e-6))), "time_in_force": "immediate_or_cancel",
+            "reduce_only": True, "client_order_id": str(uuid.uuid4())}
+    if body["count"] < 1:
+        return 0, "under one contract"
+    try:
+        o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
+    except PermissionError:
+        return 0, "Kalshi refused. The key needs write (trading) access."
+    except RuntimeError as err:
+        return 0, f"Kalshi didn't take the order: {err}"
+    filled = float(o.get("fill_count_fp") or o.get("fill_count") or
+                   (body["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
+    ACCT_CACHE["at"] = 0
+    SINGLES["at"] = 0
+    ACCT_POS["at"] = 0
+    return filled, None
+
+
+def smart_sell_singles():
+    """Auto cash-out for single bets, spreads and totals (yours or the app's): sells into Kalshi's order book when
+    smart sell, take profit or lock-in says so. Skips ones set to "I'll sell it", ones with a sell order already
+    waiting, and thin markets where the bid is far below the ask. Returns the messages to send."""
+    out = []
+    if time.time() - SINGLES["at"] > 180:
+        return out                                   # Live hasn't refreshed lately: don't act on old prices
+    resting = None
+    for x in list(SINGLES["items"]):
+        if hands_off(x["t"]) or x.get("state") not in ("live", "pre"):
+            continue
+        m = SINGLES["mk"].get(x["t"]) or {}
+        side = x["side"]
+        bid = dollars(m, f"{side}_bid")
+        ask = dollars(m, f"{side}_ask")
+        why, floor = single_sell_reason(x, bid, ask)
+        if not why:
+            continue
+        if ask and bid and ask - bid > LIVE_SPREAD:
+            continue                                  # too thin to sell at a fair price right now
+        if resting is None:
+            resting = resting_single_sells()
+            if resting is None:
+                return out
+        if x["t"] in resting:
+            continue
+        rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
+               "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"]}
+        if sold_today() >= int(CFG.get("auto_cap", 5)):
+            log_decision(dict(rec, result="skipped", why="daily cap reached"))
+            continue
+        sold, err = sell_single_now(x["t"], side, x["n"], bid)
+        log_decision(dict(rec, result="sold" if sold else "failed", note=(err or f"{sold:g} sold")[:140]))
+        if sold:
+            MINE.get("peak", {}).pop(x["t"], None)
+            got = sold * (bid - single_fee(bid))
+            lead = {"take profit": "🤖 Take profit", "lock in": "🤖 Locked in a profit",
+                    "smart": "🤖 Smart sell"}.get(why, "🤖 Smart sell")
+            out.append(f"{lead}: sold {x['label']} for about {money(got)} (paid {money(x['cost'])}).")
+    return out
 
 
 def game_event(ev):
@@ -4457,6 +4591,15 @@ def open_singles(max_age=30):
                     "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
+    mine = self_sell_set()
+    for x in out:
+        x["self"] = x["t"] in mine
+        m = mk.get(x["t"]) or {}
+        try:
+            why, fl = single_sell_reason(x, dollars(m, f"{x['side']}_bid"), None, track=False)
+            x["sell_at"] = round(fl, 2) if fl and (x.get("chance") or 0) >= 0.5 else None
+        except Exception:
+            x["sell_at"] = None
     out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))
     SINGLES.update(at=time.time(), items=out, mk=mk)
     return out
@@ -4531,10 +4674,13 @@ def live_view(mine, views, plan, chance_one, balance):
         singles = []
     try:
         seed_origins([v["t"] for v in views if v["group"] == "pending"] + [x["t"] for x in singles])
+        mine_sell = self_sell_set()
         for v in views:
             v["own"] = v["group"] == "pending" and is_own(v["t"])
+            v["self"] = v["t"] in mine_sell
         for x in singles:
             x["own"] = is_own(x["t"])
+            x["self"] = x["t"] in mine_sell
         note_held({game_event(l.get("event") or "") for a in mine if a.get("status") == "pending" and is_own(a["ticker"])
                    for l in a["legs"]} | {game_event(x["event"]) for x in singles if x["own"]})
     except Exception as err:
@@ -4545,7 +4691,7 @@ def live_view(mine, views, plan, chance_one, balance):
                   for a in settled)
     today = day_money(MINE.get("acct") or mine)
     return {"at": time.time(), "balance": balance, "combos": views, "today": today, "singles": singles,
-            "sell_own": bool(CFG.get("sell_own")),
+            "auto_sell": bool(CFG.get("auto_sell")),
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
             "chance_one": chance_one, "best": max((v["pays"] for v in alive), default=0),

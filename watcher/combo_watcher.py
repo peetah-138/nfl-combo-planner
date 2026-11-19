@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.111"
+WATCHER_VERSION = "2026.11.18.112"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1631,6 +1631,7 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
 .own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
 .legs .up{color:var(--yes)}.legs .down{color:var(--no)}
+.ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}
 .tbl{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .thead,.trow{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(200px,2fr) 82px 82px 110px 130px 92px;align-items:center;gap:12px;padding:0 16px}
 .thead{height:40px;background:var(--panel2);color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
@@ -2042,18 +2043,23 @@ function singlesLive(d){const all=d.singles||[];
  return `<h2 style="margin-top:22px">Single bets &amp; spreads <span class="n">${all.length}</span></h2>
  <div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
  ${ss.map(rowSingle).join('')||'<div class="empty"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
- ${all.some(x=>x.own)&&!d.sell_own?'<div class="m" style="margin:8px 2px">Bets marked <span class="own">You, on Kalshi</span> are ones you placed yourself. Auto cash-out and hedging leave them alone (Settings › Cash out &amp; hedging).</div>':''}`;}
+ `;}
+function ssChip(x){const off=S.live&&S.live.auto_sell===false;
+ const hint=!x.self&&!off&&x.sell_at?` · sells at ${money(x.sell_at)}+`:'';
+ return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
+async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
+ const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
 function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':'';
  const line=x.how||x.score||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
- return `<div class="trow srow1"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b><span>${esc(SKIND[x.kind]||'')}${x.game?' · '+esc(x.game.replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'')):''}</span></div>
+ return `<div class="trow srow1"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${x.game?' · '+esc(x.game.replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'')):''}</span></div>
   <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank">game ↗</a>`:''}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
   <div class="num" data-l="Chance">${x.chance!=null?pct(x.chance):'—'}${x.chance!=null?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
   <div class="num" data-l="Worth now">${x.worth!=null?money(x.worth):'—'}</div></div><div class="verdict"></div></div>`;}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
- return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b><span>${esc(nextLine(c))}</span></div>
+ return `<div class="trow ${c.moment?'hot':''}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
@@ -2585,7 +2591,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    +tgl('smart_sell','Smart profit-taking','Sells when locking in beats the risk of holding, by sport: a one-goal hockey lead is fragile, an early NBA lead isn\'t',!v.auto_sell)
    +rng('take_profit','Take profit at','Sell once Kalshi offers this much of the payout, if it\'s at least 25% more than you paid',!v.auto_sell)
    +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
-   +tgl('stop_loss','Sell at a loss when a game turns','Off: never sells below what you paid',!v.auto_sell)+tgl('sell_own','Include bets I place on Kalshi myself','Off: auto cash-out, hedging and take-profit leave those alone',!v.auto_sell&&!v.tp_auto)
+   +tgl('stop_loss','Sell at a loss when a game turns','Off: never sells below what you paid',!v.auto_sell)
    +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
    +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
@@ -3231,6 +3237,13 @@ def webapp_main():
 
     def api_act(d):
         a, t = str(d.get("a", "")), str(d.get("t", ""))
+        if a == "selfsell":
+            if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                return {"ok": False, "msg": "That bet isn't recognized."}
+            A.set_self_sell(t, bool(d.get("on")))
+            LIVE["at"] = 0
+            return {"ok": True, "msg": "Got it. This one waits for you to sell it." if d.get("on") else
+                    "Smart sell is watching this one now."}
         with alock:
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
