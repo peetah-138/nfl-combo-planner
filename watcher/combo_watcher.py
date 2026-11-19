@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.117"
+WATCHER_VERSION = "2026.11.18.118"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1727,6 +1727,9 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .livedot{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block;animation:pulse 1.6s infinite}
 @media (max-width:760px){.kpis.hero{grid-template-columns:1fr;border-radius:20px}.hs{border-left:0;border-top:1px solid var(--line)}.hv .big{font-size:44px}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+.sech{cursor:pointer;user-select:none;-webkit-user-select:none}.sech .chev{display:inline-block;width:16px;color:var(--mute);transition:transform .2s var(--ease)}
+.secfold{font-size:12px;margin:-4px 2px 14px;cursor:pointer}
+.btn.warn{background:#f5b544;color:#1c1405;border-color:transparent}.btn.warn:hover{filter:brightness(1.05)}
 .tbl{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .thead,.trow{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(200px,2fr) 82px 82px 110px 130px 92px;align-items:center;gap:12px;padding:0 16px}
 .thead{height:40px;background:var(--panel2);color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
@@ -2275,15 +2278,15 @@ function renderBuild(){const d=S.build;const m=$('#main');
  m.innerHTML=chipRow+`<div class="grid"><div>
   ${panelBlock(S.panel)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
-  ${adv?`<h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
-  <div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
+  ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
+  ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
     return `<button class="pickbtn ${on?'on':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
-    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
+    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
   ${linesBlock(d)}
-  <h2>More combo ideas <span class="n">${d.combos.length}</span><span class="r"><button class="btn" id="rebuildb" onclick="rebuild(this)">Rebuild</button></span></h2>
-  <div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
-  <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}
+  ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
+  ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
+  <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
  </div><aside>${adv?slip(d)+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
@@ -2362,7 +2365,7 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
   <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
   <div class="why">Every leg is priced below the sharp books' chance, so the combo should pay more than it's worth. Get the real price before buying.</div>
   ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>
-   <button class="btn yes" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">Buy ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
+   <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
 function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);if(!legs.length)return '';
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
@@ -2378,12 +2381,12 @@ function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.sta
   ${legs.length?legs.map(l=>`<div class="pick"><span>${esc(l.pick)} <span class="m">${l.fair!=null?pct(l.fair):''}</span></span><button onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):'<div class="m" style="padding:6px 0 10px">Tap teams on the board to build your own combo, or use a suggestion below.</div>'}
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
-   ${c&&c.offer?`<div class="sum">Kalshi offers<b class="up">${money(c.offer.pays)}</b></div>`:''}
-   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn yes" style="flex:1" onclick="buy(${c.i},true)">Buy ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
+   ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
+   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
   <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
 async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
  if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i,legs:S.slip.slice()});
- if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct}};renderBuild();
+ if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct,clears:q.clears}};hap(q.clears?'success':'warning');renderBuild();
  toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)} (${pct(q.pct)} of fair). Buy within 20 seconds.`,6000);}
 async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Rebuilding…';}
  const before=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));S.quotes={};
@@ -2409,7 +2412,7 @@ function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000
   <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
   ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
-  <div style="display:flex;gap:8px">${fresh?`<button class="btn yes" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">Buy ${money(o.stake)} → ${money(o.pays)}</button>`:
+  <div style="display:flex;gap:8px">${fresh?`<button class="btn ${o.clears?'yes':'warn'}" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}<button class="btn ghost" title="Not this one: show a different combo" onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
 async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const shown=((S.build&&S.build.combos||[]).find(c=>c.i===i)||{}).legs;
@@ -2617,12 +2620,16 @@ function dayBar(d){const v=d.days;if(!v)return '';const b=(on,lab,js)=>`<button 
 async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild();
  const r=await api('/app/api/settings',{lg:S.lg,values:vals}).catch(()=>({ok:false}));if(!r.ok){toast('Couldn\'t change the days.');return;}
  S.build=null;renderBuild();load('build',true);}
+try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
+function secOpen(k){return S.bsec[k]!==false;}
+function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}renderBuild();}
+function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" onclick="secTog('${k}')"><span class="chev">${o?'▾':'▸'}</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
 function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games={};ls.forEach(x=>{(games[x.game]=games[x.game]||[]).push(x);});
- return `<h2>Spreads &amp; totals <span class="n">${ls.length}</span><span class="r m" style="font-size:12px">Kalshi price · model chance from the sportsbook line</span></h2>
+ return secHead('lines','Spreads &amp; totals',ls.length,'Kalshi price · model chance from the sportsbook line')+(!secOpen('lines')?'':`
   <div class="tbl lines"><div class="lrow2 m" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:10px"><span></span><span class="num">Kalshi</span><span class="num">Chance</span><span class="num" style="text-align:center">Edge</span></div>${Object.entries(games).map(([g,xs])=>`<div class="lhd">${esc(g)} <span class="m">· book ${xs.find(x=>x.kind==='spread')?'spread '+xs.find(x=>x.kind==='spread').book_line:''}${xs.find(x=>x.kind==='total')?' · total '+xs.find(x=>x.kind==='total').book_line:''}</span></div>
    ${xs.sort((a,b)=>a.kind.localeCompare(b.kind)||a.line-b.line).map(x=>`<div class="lrow2"><span>${x.kind==='spread'?'📏':'➕'} ${esc(x.pick.replace(/ \(.*\)$/,''))}</span><span class="num">${Math.round(x.p*100)}¢</span><span class="num m">${pct(x.fair)}</span>
     <button class="btn ${x.edge>=0.04?'acc':'ghost'}" onclick="lineFromBoard('${x.ticker}',this)">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</button></div>`).join('')}`).join('')}</div>
-  <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`;}
+  <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`);}
 async function lineFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'lineidea',t}).catch(()=>({ok:false}));
  if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
  const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
