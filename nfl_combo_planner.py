@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.106"
+VERSION = "2026.11.18.107"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -3967,8 +3967,8 @@ def recap(day=None):
     """Yesterday in one card: the panel's bets, combos that finished, and the streak of days up."""
     day = day or (dt.datetime.now(PACIFIC) - dt.timedelta(days=1)).date().isoformat()
     out = {"day": day, "bets": [], "pl": 0.0, "won": 0, "lost": 0}
-    p = panel_get("real", day)
-    for c in (p or {}).get("items", []):
+    p = {"items": day_items(day)}
+    for c in p["items"]:
         if c.get("result"):
             out["bets"].append({"what": " + ".join(short_name(l["pick"]) for l in c["legs"]), "kind": c["kind"],
                                 "pl": c["pl"], "chance": c["chance"]})
@@ -3994,8 +3994,8 @@ def recap(day=None):
                        if sure else "A long shot came in: " + long_[0]["what"] + "." if long_ else "")
     streak, d = 0, dt.date.fromisoformat(day)
     for _ in range(30):                                # days up in a row, ending yesterday
-        q = panel_get("real", d.isoformat())
-        pl = sum(c.get("pl") or 0 for c in (q or {}).get("items", []) if c.get("result"))
+        q = day_items(d.isoformat())
+        pl = sum(c.get("pl") or 0 for c in q if c.get("result"))
         if not q or pl <= 0:
             break
         streak += 1
@@ -9527,7 +9527,7 @@ def month_profit(month):
         got = r["back"] if r["status"] == "cashed" else r["pays"] if r["status"] == "won" else 0
         pl += (got or 0) - (r["cost"] or 0)
     _panel_table()
-    for r in store_rows("select body from panel where mode='real' and day like ?", (month + "%",)):
+    for r in store_rows("select body from panel where (mode='real' or mode like 'real#%') and day like ?", (month + "%",)):
         pl += sum(c.get("pl") or 0 for c in json.loads(r["body"]).get("items", [])
                   if c.get("result") and c["kind"] != "combo")    # panel combos are already in your Kalshi record
     return round(pl, 2)
@@ -9978,7 +9978,7 @@ def sport_pay_index():
 def build_panel(codes=None, budget=None, now=None):
     """Today's panel (and a couple of longer plays) from the latest candidates of each league."""
     now = now or time.time()
-    budget = float(budget or CFG.get("panel_budget", PANEL["budget"]))
+    budget = float(budget or CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today(now)
     base, _ = sizing_base()
     day_end, nfl_end = _local_day_end(now), _nfl_week_end(now)
     idx = sport_pay_index()
@@ -9997,6 +9997,8 @@ def build_panel(codes=None, budget=None, now=None):
                 today.append(c)
             elif c["kind"] == "combo" and (c["last"] <= now + 3 * 86400 or c.get("weeks")) and c["ret"] >= 0.10:
                 longer.append(c)
+    held = {e for c in day_items(_panel_day(now)) if c.get("state") in ("bought", "buying", "check") for e in _events_of(c)}
+    today = [c for c in today if not held & set(_events_of(c))]     # games an earlier panel today already bet on
     games_today = len({e for c in today for e in _events_of(c)})
     size = min(14, max(6, 4 + games_today // 3))       # heavy hockey/NBA nights get a bigger panel
     nfl_day = any(c["code"] == "nfl" and c["kick"] <= day_end for c in today)
@@ -10171,6 +10173,48 @@ def panel_add(ids, view):
     if not a:
         return False, "Nothing added: " + ("those games already have a bet, or it's over today's panel budget." if k else "nothing selected.")
     return True, (f"Added {len(a)} to today's panel." + (f" Left out {len(k)}: already a bet on that game, or over the budget." if k else ""))
+
+
+def day_items(day, prefix="real"):
+    """Every panel bet of a day, including panels that were restarted (kept as 'real#1', 'real#2'...)."""
+    if not STORE["db"]:
+        return []
+    _panel_table()
+    rows = store_rows("select body from panel where day=? and (mode=? or mode like ?)", (day, prefix, prefix + "#%"))
+    return [c for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def spent_earlier_today(now=None):
+    """Money already used today by panels that were stopped and restarted."""
+    if not STORE["db"]:
+        return 0.0
+    _panel_table()
+    rows = store_rows("select body from panel where day=? and mode like 'real#%'", (_panel_day(now),))
+    return round(sum(c["stake"] for r in rows for c in json.loads(r["body"]).get("items", [])
+                     if c.get("state") in ("bought", "buying", "check")), 2)
+
+
+def panel_restart():
+    """After a Stop: put today's stopped panel aside (its bought bets stay on the record) so the Mac builds a
+    fresh panel from today's remaining games at its next check, with whatever budget is left."""
+    day = _panel_day()
+    _panel_table()
+    n = len(store_rows("select 1 from panel where day=? and mode like 'real#%'", (day,))) + 1
+
+    def fn(cur, st):
+        if st != "cancelled":
+            return None
+        db = STORE["db"]                                # inside panel_tx's transaction: one atomic move
+        db.execute("insert or replace into panel values(?,?,?,?,?)", (day, f"real#{n}", cur.get("at", time.time()), "closed",
+                                                                     json.dumps({k: v for k, v in cur.items() if k != "status"})))
+        db.execute("delete from panel where day=? and mode='real'", (day,))
+        return None
+    if not store_rows("select 1 from panel where day=? and mode='real' and status='cancelled'", (day,)):
+        return False, "Today's panel isn't stopped."
+    panel_tx(day, "real", fn)
+    left = float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today()
+    return True, (f"Building a fresh panel from today's remaining games, with {money(max(left, 0))} of today's budget left. "
+                  f"It shows up here within about 10 minutes, ready to approve.")
 
 
 def panel_cancel():
@@ -10446,7 +10490,7 @@ def panel_settle():
     _panel_table()
     since = (dt.datetime.now(PACIFIC).date() - dt.timedelta(days=10)).isoformat()
     for mode in ("real", "paper"):
-        for r in store_rows("select * from panel where mode=? and day >= ?", (mode, since)):
+        for r in store_rows("select * from panel where (mode=? or mode like ?) and day >= ?", (mode, mode + "#%", since)):
             p = json.loads(r["body"])
             changes = {}
             for c in p["items"]:
@@ -10489,7 +10533,7 @@ def panel_settle():
                 if ch:
                     changes[c["id"]] = ch
             if changes:
-                _set_items(r["day"], mode, changes)
+                _set_items(r["day"], r["mode"], changes)
     return []
 
 
@@ -10498,7 +10542,7 @@ def panel_record():
     out = {}
     _panel_table()
     for mode in ("real", "paper"):
-        rows = store_rows("select body from panel where mode=?", (mode,)) if STORE["db"] else []
+        rows = store_rows("select body from panel where mode=? or mode like ?", (mode, mode + "#%")) if STORE["db"] else []
         bodies = [json.loads(r["body"]) for r in rows]
         bets = [c for b in bodies for c in b.get("items", []) if c.get("result")]
         days = defaultdict(float)
