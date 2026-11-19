@@ -84,16 +84,30 @@ Real money is involved. Pete uses it daily.
   orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
+- **Decisions Pete made on 2026-11-18:**
+  - At most **3 subagents** at once.
+  - **Rebuild `Combo-Watcher.zip` in the release PR** whenever `install_mac.sh`, `setup_wizard.py`,
+    `wizard_window.js` or `install_pi.sh` changed.
+  - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
+  - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
+    (`develop` → `main`) is merged.
+  - **Release PRs** are opened by Claude and merged only on Pete's explicit go-ahead.
+  - **When Pete gives feedback, open a GitHub issue** to track it.
+  - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
 ## Releasing
 
-1. Branch is `develop`, fully merged and green. Bump the version in all three places (see above).
-2. Run code review and security review on the release diff; fix every finding.
-3. Run `bash tests/run_checks.sh`. All must pass. Add a test for every change (see `tests/README.md`).
-4. Commit (no `__pycache__`) on `develop` and push it. Wait for CI (`checks`) to go green.
-5. Open the `develop` → `main` PR (merge commit). Merge it only after Pete says go. The Macs then update within
-   ~10 minutes; Pete can also tap "Check for an update now". An update restarts the watcher (launchd brings it
-   back).
+1. Feature PRs squash-merge into `develop` once CI (`checks`) is green; nobody pushes to `develop` or `main`
+   directly. `develop` must be fully merged and green.
+2. Bump the version in all three places (see above) on a short `chore/release-…` branch, PR into `develop`,
+   squash-merge once `checks` is green. If any installer file changed (see the decisions above), rebuild
+   `Combo-Watcher.zip` in the same PR.
+3. Run code review and security review on the release diff; fix every finding.
+4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
+   `tests/README.md`).
+5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
+   screenshots or a clip first. Merge it only after Pete says go. The Macs then update within ~10 minutes; Pete can
+   also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
 
