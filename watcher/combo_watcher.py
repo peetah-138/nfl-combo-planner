@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.116"
+WATCHER_VERSION = "2026.11.18.117"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1741,6 +1741,8 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.35}}
 .bar{height:5px;border-radius:9px;background:var(--panel2);overflow:hidden;width:84px;margin:6px 0 0 auto}.bar i{display:block;height:100%;background:var(--acc)}
 .verdict{font-size:11px;font-weight:800;padding:4px 8px;border-radius:6px;letter-spacing:.03em;justify-self:end}
+.verdict.pl{text-align:right;padding:5px 9px;line-height:1.15}.verdict.pl b{display:block;font-size:14px;letter-spacing:-.01em}.verdict.pl small{display:block;font-size:10px;font-weight:700;opacity:.8;letter-spacing:.04em;text-transform:uppercase}
+.sbar{display:flex;flex-direction:column;gap:8px;margin:-2px 0 12px}.snet{font-size:13px;color:var(--sub)}
 .verdict.hold{background:var(--accbg);color:var(--acc)}.verdict.sell,.verdict.won{background:var(--yesbg);color:var(--yes)}.verdict.out,.verdict.lost{background:var(--nobg);color:var(--no)}.verdict.cashed{background:var(--panel2);color:var(--sub)}
 .offer b{display:block}.offer small{color:var(--mute);font-size:11.5px;font-weight:500}
 .exp{background:var(--panel2);border-bottom:1px solid var(--line);padding:6px 16px 14px}
@@ -2091,6 +2093,18 @@ const PLACE_END=new Set(['City','Orleans','York','Bay','Angeles','Vegas','Franci
 function short(n){n=String(n||'');const p=n.split(' ');if(p.length<2||n.length<=14)return n;const last=p[p.length-1];
  if(PLACE_END.has(last))return p.slice(0,-1).map(w=>w[0]+'.').join('')+' '+last;   // "San Francisco" -> "S. Francisco", never just "City"
  return last;}
+function plOf(c){return c.group==='won'?(c.pays||0)-c.cost:c.group==='cashed'?(c.back||0)-c.cost:c.group==='lost'?-c.cost:0;}
+function plPill(c){const v=plOf(c);return `<div class="verdict pl ${v>0.004?'won':v<-0.004?'lost':'cashed'}"><b>${v>=0?'+':'−'}${money(Math.abs(v))}</b><small>${c.group==='won'?'Won':c.group==='cashed'?'Cashed out':'Lost'}</small></div>`;}
+try{S.sf=JSON.parse(localStorage.getItem('cw_sf')||'null')||{o:'all',sp:'all',sort:'new'}}catch(e){S.sf={o:'all',sp:'all',sort:'new'}}
+function setSf(k,v){hap('selection');S.sf[k]=v;try{localStorage.setItem('cw_sf',JSON.stringify(S.sf))}catch(e){}renderLive();}
+function settledBar(cs){const done=cs.filter(c=>c.group!=='pending');const f=S.sf;const sps=[...new Set(done.flatMap(c=>c.sports))].filter(s=>SPN[s]);
+ const net=done.filter(c=>settledOk(c)).reduce((a,c)=>a+plOf(c),0),n=done.filter(c=>settledOk(c)).length;
+ const ch=(k,v,l)=>`<button class="chip ${f[k]===v?'on':''}" onclick="setSf('${k}','${v}')">${l}</button>`;
+ return `<div class="sbar"><div class="chips">${ch('o','all','All')}${ch('o','profit','Profit')}${ch('o','loss','Loss')}${ch('o','won','Won')}${ch('o','cashed','Cashed early')}${ch('o','lost','Lost')}</div>
+  ${sps.length>1?`<div class="chips">${ch('sp','all','All sports')}${sps.map(s=>ch('sp',s,(ICON[s]||'')+' '+SPN[s])).join('')}</div>`:''}
+  <div class="chips">${ch('sort','new','Newest')}${ch('sort','best','Biggest profit')}${ch('sort','worst','Biggest loss')}${ch('sort','pay','Biggest payout')}</div>
+  <div class="snet">${n} settled · net <b class="${net>=0?'up':'down'}">${net>=0?'+':'−'}${money(Math.abs(net))}</b></div></div>`;}
+function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit'&&v>0)||(f.o==='loss'&&v<0)||f.o===c.group)&&(f.sp==='all'||c.sports.includes(f.sp));}
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
  if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
@@ -2101,15 +2115,17 @@ function _renderLive(){const d=S.live;const m=$('#main');
  if(d.error){m.innerHTML=`<div class="card empty"><b>Couldn't load your combos</b>${esc(d.error)}</div>`;return;}
  const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
- const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending':c.group==='pending'&&c.sports.includes(S.filter))
-   .sort((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort);
+ const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
+   .sort(S.filter==='done'?((a,b)=>S.sf.sort==='best'?plOf(b)-plOf(a):S.sf.sort==='worst'?plOf(a)-plOf(b):S.sf.sort==='pay'?(b.full||b.pays)-(a.full||a.pays):(String(b.week||'')).localeCompare(String(a.week||''))||b.sort-a.sort)
+     :((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort));
  const todo=cs.filter(c=>(d.todo||[]).includes(c.t));
  const sumW=(d.cash_now||0)+sOpen.reduce((a,x)=>a+(x.worth||0),0),sumS=d.staked+sOpen.reduce((a,x)=>a+(x.cost||0),0),dl=sumW-sumS;
  m.innerHTML=`<div class="grid"><div>
  ${heroLive(d,pend,sOpen,sumW,sumS,dl)}
 
  ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
- <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
+ <h2>Your combos <span class="n">${S.filter==='done'?shown.length:pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
+ ${S.filter==='done'?settledBar(cs):''}
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
  ${pend.some(c=>c.legs.some(l=>l.state==='live'&&!l.res))?`<div class="legend"><span class="leg up"><i class="pd"></i>Winning now</span><span class="leg down"><i class="pd"></i>Losing now</span><span class="leg live"><i class="pd"></i>Tied</span><span class="leg won">✓ Won</span><span class="leg lost">✕ Lost</span></div>`:''}
@@ -2183,7 +2199,7 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
    ${sparkSvg(d.pulse||[],cls)}</div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
-   <div><span class="hk">Chance one pays</span><b>${ring(ch)}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${pct(ch)}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
+   <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
    <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
 function sparkSvg(pts,cls){if(!pts||pts.length<3)return `<div class="m" style="font-size:12px;margin-top:10px">The day's line fills in as the Mac watches your bets.</div>`;
  const W=600,H=64,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01);
@@ -2216,9 +2232,9 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
-  <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="Pays">${money(c.pays)}</div>
+  <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
-  <div class="num offer" data-l="Offer">${offer}</div></div><div class="verdict ${vc}">${vt}</div></div>
+  <div class="num offer" data-l="Offer">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
    <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
@@ -2556,7 +2572,7 @@ async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistra
 function httpsRow(mac){const h=mac.https||{};
  if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
  if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>Tailscale needs you to allow https for your network once. Open the link, approve, then tap Check.</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
- return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac.':h.state?'Not on yet ('+esc(h.state)+').':'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
+ return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.':h.state==='no-name'?'Tailscale isn\'t signed in on this Mac. Open Tailscale, sign in, then Try again.':h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
  const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
@@ -2787,7 +2803,14 @@ async function macCheck(b){b.disabled=true;b.innerHTML='<span class="spin"></spa
  const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){b.disabled=false;b.textContent='Check for an update now';return;}
  for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
   if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
-async function macDo(a,b){if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
+async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking Tailscale…';}
+ const was=JSON.stringify((S.mac||{}).https||{});const r=await api('/app/mac',{a:'https'}).catch(()=>({ok:false}));
+ if(!r.ok){toast(r.msg||'Couldn\'t reach the Mac.',5000,'bad');load('settings');return;}
+ for(let k=0;k<20;k++){await new Promise(z=>setTimeout(z,3000));const m=await api('/app/mac',{a:'status'}).catch(()=>null);
+  if(m&&m.ok){const h=m.https||{};if(JSON.stringify(h)!==was||k===19){S.mac=m;renderSettings();
+   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?'One step left: tap Allow https, approve in Tailscale, then Check.':h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
+ load('settings');}
+async function macDo(a,b){if(a==='https')return httpsCheck(b);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
  toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
 async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
  <div class="code" id="pc">${esc(r.code||'')}</div><p class="m" style="font-size:12.5px">Hub: ${esc(r.hub||'Tailscale not signed in: the phone can only use the Mac at home.')}</p>
