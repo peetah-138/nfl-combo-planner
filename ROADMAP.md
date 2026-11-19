@@ -77,18 +77,22 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ## 3. Ready to build (suggested order)
 
 ### a. Finish the makeover (Pete: "make it exceptional", like Kalshi's app; issue #12)
-Phases 1 and 2 shipped (phase 1: haptics and press feedback on everything, Live polish, push transition, hero chart
-scrub; phase 2: live Games cards with singles and spreads, score pulse, scrubbable game chart, the Sold moment, the
-big-hit celebration, Results profit bars by day/week with tap-for-bets, skeletons; see `CLAUDE.md`). Kalshi/Novig
-references and a frame-by-frame motion brief are in issue #12's comments. Still to do, screen by screen:
+Phases 1, 2 and 3 shipped (phase 1: haptics and press feedback on everything, Live polish, push transition, hero
+chart scrub; phase 2: live Games cards, score pulse, scrubbable game chart, the Sold moment, the big hit, Results
+profit bars, skeletons; phase 3: every remaining screen (Build, Settings, Results, login, sheets) in the same motion
+system, the reconnecting banner, error cards, pull to refresh everywhere, header collapse, safe areas, keyboard-aware
+sheets, Let it ride detents, light mode, the recap streak note, panel sparklines; see `CLAUDE.md`). Kalshi/Novig
+references and a frame-by-frame motion brief are in issue #12's comments. Still to do:
 1. **Game page drill-down** (Kalshi live game page): team rows with scores, a live chance chart per side (or both on
    one chart; scrub is in), range switcher (LIVE/1D/1W), outlined pills with payout multipliers, a strip of other live
    games to hop between, a one-line plain-English summary. Coordinate with the faster-live work on the game page's refresh.
-2. **More celebration moments:** a streak note in the morning recap; a shareable result card (copy image) for Sold/Won.
-3. **Charts to drill into:** bet value over time with scrub (combo page), Results analytics ("What's working") charts.
-4. **Polish pass on Settings**, and light mode across the app.
+2. **A shareable result card** (copy image / share) for Sold and Won, like Kalshi's "Position closed" card.
+3. **Charts to drill into:** bet value over time with scrub (combo page), charts for Results › What's working.
+   Panel cards' price line is from what the phone has seen; a server-side price history per panel bet would make it
+   complete (needs an API field, so it was left out of the UI-only phase).
 - Haptics on the Home Screen app still need checking on Pete's iPhone (the `<input switch>` route; ticks while
-  dragging the chart may need a real device to confirm).
+  dragging the chart or the Let it ride slider may need a real device to confirm), and the safe-area / keyboard
+  handling wants a look on the real Home Screen app.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
 ### c. Faster live numbers, the rest (GitHub #21; first slice shipped)

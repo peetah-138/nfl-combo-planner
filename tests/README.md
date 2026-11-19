@@ -55,6 +55,12 @@ pattern in a local `.git/hooks/pre-commit`.
   `test_makeover2.py` covers phase 2: live Games cards with singles/spreads (API and page), the score pulse and its
   haptic, scrubbing the game chart, the Sold moment (tap, failed sale, smart sell's calm card from a fake sell log),
   small win vs big hit, Results profit bars (scrub ticks, tap for bets, Day/Week) and the loading skeletons.
+  `test_makeover3.py` covers phase 3 at phone (dark and light) and desktop: the press/haptic audit on every screen
+  (Build's full board and panel and an open sheet included), the reconnecting banner and Back online, the error card
+  with Try again, header collapse, pull to refresh on every tab, the keyboard-aware sheet, Let it ride's detents,
+  Mac buttons reporting back (and Update now asking first), Build's rolling prices, pick pop, slip bar, quote
+  countdown and Buy anyway, folds, panel sparklines and the arming Approve, Results' skeleton and tabs, the recap
+  streak note, light mode, the login page's motion and haptics, and reduced motion. Every action call is faked.
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.
