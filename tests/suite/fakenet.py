@@ -4,6 +4,7 @@ Nothing here ever opens a real connection: any URL it does not know gets an empt
 is refused, and any local address except the dev web app's own port is refused (so the real hub on 8765 and the
 real app on 8766 can't be reached)."""
 import json, datetime as dt, requests
+from urllib.parse import urlsplit
 
 GAMES = {   # series -> [(away abbr, away name, home abbr, home name, chance away wins)]
     "KXNBAGAME": [("BOS", "Boston Celtics", "NYK", "New York Knicks", .62), ("DEN", "Denver Nuggets", "LAL", "Los Angeles Lakers", .70),
@@ -17,12 +18,25 @@ class R:
     """Just enough of requests.Response."""
     def __init__(s, o, code=200, raw=None):
         s._o, s.status_code, s.ok = o, code, code < 400
-        s.content = raw if raw is not None else json.dumps(o).encode(); s.text = s.content.decode(); s.headers = {}
-    def json(s): return s._o
-    def raise_for_status(s): pass
-    def iter_lines(s, *a, **k): return iter(())
-    def __enter__(s): return s
-    def __exit__(s, *a): return False
+        s.content = raw if raw is not None else json.dumps(o).encode()
+        s.text = s.content.decode()
+        s.headers = {}
+
+    def json(s):
+        return s._o
+
+    def raise_for_status(s):
+        if s.status_code >= 400:
+            raise requests.HTTPError(f"{s.status_code} Error (fake)", response=s)
+
+    def iter_lines(s, *a, **k):
+        return iter(())
+
+    def __enter__(s):
+        return s
+
+    def __exit__(s, *a):
+        return False
 
 
 def event_ticker(series, a, b, day=None):
@@ -31,7 +45,7 @@ def event_ticker(series, a, b, day=None):
 
 def markets(hours=6):
     """Two markets (one per team) for every fake game, ending in a few hours."""
-    exp = (dt.datetime.utcnow() + dt.timedelta(hours=hours)).isoformat() + "Z"
+    exp = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + dt.timedelta(hours=hours)).isoformat() + "Z"
     out = []
     for series, games in GAMES.items():
         for a, an, b, bn, pa in games:
@@ -46,7 +60,7 @@ def markets(hours=6):
 def espn_events(path):
     """Scoreboard events: the first game of each sport is live, the second is over, the rest haven't started."""
     series = next(s for s, p in ESPN_PATH.items() if p == path)
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     evs = []
     for i, (a, an, b, bn, pa) in enumerate(GAMES[series]):
         state, name = (("in", "STATUS_IN_PROGRESS"), ("post", "STATUS_FINAL"))[i] if i < 2 else ("pre", "STATUS_SCHEDULED")
@@ -64,8 +78,13 @@ def espn_events(path):
 
 def fake(method, url, params=None, port=18800):
     """The answer for one call, or None for the dev app's own address (the caller makes that one for real)."""
-    if url.startswith(("http://127.0.0.1", "http://localhost", "https://127.0.0.1")):
-        if url.split("/")[2].endswith(f":{port}"):
+    try:
+        parts = urlsplit(url)
+        host, uport = parts.hostname, parts.port
+    except ValueError:                      # unparseable (bad port etc.): never pass it through
+        host, uport = None, None
+    if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0") or (host or "").startswith("127."):
+        if host in ("127.0.0.1", "localhost") and uport == port:
             return None
         raise requests.ConnectionError(f"dev environment: refused local address {url.split('?')[0]}")
     if "kalshi" in url:
@@ -79,15 +98,20 @@ def fake(method, url, params=None, port=18800):
                 return R({"market": m} if m else {}, 200 if m else 404)
             st = (params or {}).get("series_ticker", "")
             return R({"markets": [m for m in mk if st and m["ticker"].startswith(st)], "cursor": ""})
-        if path == "/portfolio/balance": return R({"balance": 21103})
-        if path.startswith("/portfolio"): return R({"fills": [], "settlements": [], "positions": [], "market_positions": [], "event_positions": [], "orders": [], "cursor": ""})
-        if path.startswith("/communications"): return R({"rfqs": [], "quotes": []})
+        if path == "/portfolio/balance":
+            return R({"balance": 21103})
+        if path.startswith("/portfolio"):
+            return R({"fills": [], "settlements": [], "positions": [], "market_positions": [], "event_positions": [], "orders": [], "cursor": ""})
+        if path.startswith("/communications"):
+            return R({"rfqs": [], "quotes": []})
         return R({"multivariate_contracts": [], "series": [], "events": [], "cursor": ""})
     if "espn.com" in url:
         p = next((p for p in ESPN_PATH.values() if f"/{p}/" in url), None)
         return R({"events": espn_events(p) if p else []})
-    if "github" in url: return R({}, 404)
-    if "ntfy" in url: return R({"id": "x", "event": "message"})
+    if "github" in url:
+        return R({}, 404)
+    if "ntfy" in url:
+        return R({"id": "x", "event": "message"})
     return R({"events": [], "markets": []})
 
 
