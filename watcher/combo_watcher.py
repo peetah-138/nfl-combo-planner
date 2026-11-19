@@ -785,20 +785,111 @@ ENABLE_HTTPS_HELP = ("HTTPS certificates are not enabled in Tailscale admin. On 
 ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns"
 
 
-def tailscale_cli():
+TS_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def tailscale_clis():
+    """Every Tailscale command line on this Mac, best first (no duplicates): the wrapper script and Homebrew, then
+    whatever is on PATH, the app's own binary last. Each is tried in turn until one answers."""
     import shutil
+    out = []
     for p in (*TS_CLI_PATHS, shutil.which("tailscale"), *TS_CLI_PATHS_LATE, TS_APP_BIN):
-        if p and os.path.exists(p):
-            return p
-    return None
+        if p and p not in out and os.path.exists(p):
+            out.append(p)
+    return out
+
+
+def tailscale_cli():
+    clis = tailscale_clis()
+    return clis[0] if clis else None
+
+
+def tailscale_env():
+    """launchd gives the watcher a bare environment (PATH /usr/bin:/bin:/usr/sbin:/sbin, maybe no HOME). Add the
+    usual places, keep HOME and set TAILSCALE_BE_CLI=1 so the app's binary acts as a command line."""
+    env = dict(os.environ)
+    parts = [x for x in (env.get("PATH") or "").split(":") if x]
+    parts += [x for x in TS_PATH.split(":") if x not in parts]
+    env["PATH"] = ":".join(parts)
+    env.setdefault("HOME", os.path.expanduser("~"))
+    env["TAILSCALE_BE_CLI"] = "1"
+    return env
 
 
 def tailscale_run(cli, args, timeout):
-    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed) and
+    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
     TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
     import subprocess
     return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                          env={**os.environ, "TAILSCALE_BE_CLI": "1"})
+                          env=tailscale_env())
+
+
+# What the command line prints when it can't reach the Tailscale app (as opposed to failing to start itself).
+TS_NO_DAEMON = ("failed to connect to local tailscale", "is tailscale running", "connection refused",
+                "tailscaled", "localapi", "local api", "socket")
+TS_CLI_BROKEN = ("gui failed to start", "clierror", "cli failed to start", "system extension")
+# What `tailscale serve` prints when the tailnet hasn't turned on HTTPS certificates.
+TS_HTTPS_OFF = re.compile(r"serve is not enabled|https (?:certificates )?(?:is |are )?not enabled|enable https|"
+                          r"certificates? (?:is |are )?not enabled|https is disabled", re.I)
+# The real reason and the next step for each BackendState that isn't Running.
+TS_BACKEND = {
+    "NeedsLogin": ("signed-out", "Tailscale says this Mac is signed out (NeedsLogin). Open the Tailscale app on the "
+                                 "Mac, sign in, then tap Try again."),
+    "NeedsMachineAuth": ("needs-approval", "This Mac is signed in to Tailscale but waits for approval "
+                                           "(NeedsMachineAuth). Approve it at login.tailscale.com/admin/machines, "
+                                           "then tap Try again."),
+    "Stopped": ("ts-off", "Tailscale is signed in but switched off on this Mac (Stopped). Open the Tailscale app, "
+                          "turn it on (Connect), then tap Try again."),
+}
+
+
+def tailscale_status():
+    """Ask each Tailscale command line for `status --json` until one gives a JSON object.
+    Returns (cli, status, None), or (None, None, (state, detail)) with the real reason it couldn't."""
+    import subprocess
+    clis = tailscale_clis()
+    if not clis:
+        log("https: no Tailscale command line found")
+        return None, None, ("no-cli", "No Tailscale command line on this Mac (looked in /usr/local/bin, "
+                                      "/opt/homebrew/bin, PATH and the Tailscale app). Install the Tailscale app, "
+                                      "open it once, then tap Try again.")
+    fails = []
+    for cli in clis:
+        try:
+            p = tailscale_run(cli, ["status", "--json"], 15)
+        except subprocess.TimeoutExpired:
+            log("https: `tailscale status` timed out:", cli)
+            fails.append(("timeout", "no answer in 15 s"))
+            continue
+        except (OSError, subprocess.SubprocessError) as err:
+            log("https: couldn't run", cli, type(err).__name__, str(err)[:120])
+            fails.append(("oserror", str(err)[:120]))
+            continue
+        raw = (p.stdout or "").strip()
+        try:
+            st = json.loads(raw)
+            if not isinstance(st, dict):
+                raise ValueError("not an object")
+            return cli, st, None
+        except ValueError:
+            seen = " ".join(((p.stderr or "").strip() + " " + raw).split())[:160]
+            log(f"https: `{cli} status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
+            fails.append(("output", seen))
+    said = " | ".join(s for _, s in fails if s)
+    low = said.lower()
+    if any(k in low for k in TS_NO_DAEMON):
+        return None, None, ("no-daemon", f"Couldn't read Tailscale's status: the command line can't talk to the "
+                                         f"Tailscale app ({said[:120]}). Open the Tailscale app on the Mac, check it "
+                                         "says Connected, then tap Try again.")
+    if any(k in low for k in TS_CLI_BROKEN):
+        return None, None, ("cli-broken", f"Couldn't read Tailscale's status: its command line wouldn't start from "
+                                          f"the watcher ({said[:120]}). On the Mac open Tailscale's settings, install "
+                                          "the command line (CLI integration), then tap Try again.")
+    if all(k == "timeout" for k, _ in fails):
+        return None, None, ("no-status", "Couldn't read Tailscale's status: Tailscale didn't answer in time. "
+                                         "It checks again by itself in a few minutes.")
+    return None, None, ("no-status", f"Couldn't read Tailscale's status: {said[:140] or 'no output'}. "
+                                     "Open the Tailscale app on the Mac, then tap Try again.")
 
 
 def _https_set(conf, state, **kw):
@@ -812,32 +903,21 @@ def tailscale_https(conf, port):
     Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
     with HTTPS_LOCK:
-        cli = tailscale_cli()
-        if not cli:
-            log("https: no Tailscale command line found")
-            return _https_set(conf, "no-cli")
-        try:
-            p = tailscale_run(cli, ["status", "--json"], 15)
-        except subprocess.TimeoutExpired:
-            log("https: `tailscale status` timed out")
-            return _https_set(conf, "no-status", detail="Tailscale didn't answer in time.")
-        except (OSError, subprocess.SubprocessError) as err:
-            log("https: couldn't run Tailscale:", type(err).__name__, str(err)[:120])
-            return _https_set(conf, "no-status", detail=f"Couldn't run Tailscale: {str(err)[:100]}")
-        raw = (p.stdout or "").strip()
-        try:
-            st = json.loads(raw)
-            if not isinstance(st, dict):
-                raise ValueError("not an object")
-        except ValueError:
-            seen = ((p.stderr or "").strip() or raw)[:120]
-            log(f"https: `tailscale status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
-            return _https_set(conf, "no-status", detail=f"Couldn't read Tailscale's status: {seen or 'no output'}")
+        cli, st, why = tailscale_status()
+        if why:
+            log("https not on yet:", why[0], why[1][:160])
+            return _https_set(conf, why[0], detail=why[1])
         backend = str(st.get("BackendState") or "")
         name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
-        if backend and backend != "Running" and not name:
+        if backend and backend != "Running":      # only BackendState itself may say signed out
+            state, detail = TS_BACKEND.get(backend, ("starting", f"Tailscale is still starting on this Mac ({backend}). "
+                                                                 "It checks again by itself in a few minutes."))
             log("https: Tailscale isn't running:", backend)
-            return _https_set(conf, "signed-out", detail=f"Tailscale says: {backend}")
+            return _https_set(conf, state, detail=detail)
+        if not backend and not name:
+            log("https: Tailscale's status had no BackendState and no name")
+            return _https_set(conf, "no-status", detail="Couldn't read Tailscale's status: it answered without a "
+                                                        "state. Open the Tailscale app on the Mac, then tap Try again.")
         if not name:
             log("https: Tailscale is running but this Mac has no machine name (is MagicDNS on?)")
             return _https_set(conf, "no-name", detail="Tailscale gave this Mac no name. Turn MagicDNS on at "
@@ -863,6 +943,7 @@ def tailscale_https(conf, port):
             out = str(err)
             log("https: couldn't run `tailscale serve`:", out[:120])
         link = re.search(r"https://login\.tailscale\.com/\S+", out)
+        certs_off = certs_off or bool(TS_HTTPS_OFF.search(out))
         tls_seen, deadline = False, time.time() + TS_WAIT
         while True:
             try:
@@ -3055,10 +3136,16 @@ function httpsRow(mac){const h=mac.https||{};
  if(h.state==='need-enable'&&h.link)return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin yet. Tap Allow https, approve in the Tailscale page, then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
  if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin. Open the page, sign in, scroll to <b>HTTPS Certificates</b>, tap <b>Enable HTTPS...</b> and confirm. Then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.admin||'https://login.tailscale.com/admin/dns')}" target="_blank">Open Tailscale admin</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
  const why={'no-cli':'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.',
-  'no-status':'Couldn\'t read Tailscale\'s status'+(h.detail?': '+esc(h.detail.replace(/^Couldn\'t read Tailscale\'s status: /,'').slice(-140)):'')+'. Is the Tailscale app open on this Mac?',
-  'signed-out':'Tailscale isn\'t signed in or isn\'t running on this Mac ('+esc((h.detail||'').replace('Tailscale says: ','')||'no status')+'). Open Tailscale, sign in, then Try again.',
+  'no-status':'Couldn\'t read Tailscale\'s status. Open the Tailscale app on this Mac, then Try again.',
+  'no-daemon':'Couldn\'t read Tailscale\'s status: the command line can\'t talk to the Tailscale app. Open Tailscale on this Mac, check it says Connected, then Try again.',
+  'cli-broken':'Couldn\'t read Tailscale\'s status: its command line wouldn\'t start from the watcher. Install the command line from Tailscale\'s settings, then Try again.',
+  'signed-out':'Tailscale says this Mac is signed out. Open Tailscale, sign in, then Try again.',
+  'needs-approval':'This Mac waits for approval in Tailscale admin (login.tailscale.com/admin/machines). Approve it, then Try again.',
+  'ts-off':'Tailscale is switched off on this Mac. Open Tailscale, turn it on, then Try again.',
+  'starting':'Tailscale is still starting on this Mac. It checks again by itself in a few minutes.',
   'no-name':'Tailscale is running but gave this Mac no name. Turn MagicDNS on at login.tailscale.com/admin/dns, then Try again.',
   'issuing':'Tailscale is still making the certificate. This can take a few minutes; it keeps checking.'};
+ if(h.detail&&['no-cli','no-status','no-daemon','cli-broken','signed-out','needs-approval','ts-off','starting'].includes(h.state))why[h.state]=esc(h.detail.slice(0,300));
  return `<div class="srow"><div class="l"><b>Secure address</b><small>${why[h.state]||(h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…')}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
  const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');

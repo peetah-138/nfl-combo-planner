@@ -26,7 +26,10 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   where it's stuck. If it says "one step left", Pete taps **Allow https**, approves in Tailscale, then **Check**.
 - Code fixes are in (PR for issue #5, not yet confirmed on Pete's Mac): the watcher can now read Tailscale under launchd
   (prefers `/usr/local/bin/tailscale`, `TAILSCALE_BE_CLI=1`, stdin closed), every failure says what is wrong, it retries
-  every 5 minutes, and all alerts (panel buys, extras, recap) also reach web push.
+  every 5 minutes, and all alerts (panel buys, extras, recap) also reach web push. Issue #46 (Pete saw "isn't signed in"
+  while Tailscale was Running; his Mac runs main, which predates the fix): it now tries every Tailscale command line in
+  turn with a full PATH/HOME, and says the real reason (command line won't start / can't talk to the app / signed out
+  only on NeedsLogin / waits for approval / switched off / starting / HTTPS certificates off) with the next step.
 - **Waiting on Pete (stays until he confirms it works):** in Tailscale admin (login.tailscale.com/admin/dns) scroll to
   **HTTPS Certificates**, tap **Enable HTTPS...**, confirm. Then in Combo Hub on the Mac: Settings › This Mac › Secure address
   (Check if needed). Then on the iPhone open the ts.net address in Safari, Add to Home Screen (delete the old icon: a
