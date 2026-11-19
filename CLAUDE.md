@@ -49,7 +49,7 @@ Real money is involved. Pete uses it daily.
 
 - **Check thoroughly before pushing.** He was fed up with bugs reaching him. Every release goes through the full
   check list (see Testing). If a check fails, fix it and rerun everything; never push on a partial pass.
-- **Code reviews:** report findings first; change or push nothing until he picks which to fix.
+- **Code and security reviews:** run both before every PR and every release, and fix every finding and warning.
 - **No rigid never/always rules.** Start from sensible defaults and let the data tune them over time,
   **per league, not just per sport** (college basketball ≠ NBA, college football ≠ NFL, each soccer league apart,
   AHL ≠ NHL). Leagues short on data borrow from their sport, then from everything.
@@ -59,21 +59,43 @@ Real money is involved. Pete uses it daily.
 - He uses the app on his phone and is often away from the Mac. Remote-friendly controls matter
   (e.g. Settings › The Mac › "Check for an update now").
 
+## Git workflow (Git Flow)
+
+- **`main` is what Pete's real Mac and phone run.** A commit on `main` auto-updates them within ~10 minutes (they
+  read the newest commit by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back), and the
+  app can place real Kalshi orders. Never push to `main` directly.
+- **`develop` is the integration branch.** Work on a short-lived branch from `develop`: `feat/…`, `fix/…`,
+  `chore/…`. Commit at logical points with clear messages, and open a PR into `develop` at logical points without
+  being asked. Squash-merge once the CI check `checks` is green.
+- **Every PR must pass lint (`ruff check .`) and the full `bash tests/run_checks.sh`.** CI runs both
+  (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
+  silence them. Run code review and security review before opening the PR and fix everything they raise.
+- **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
+  version bump (below). Open it, but **never merge it without Pete's explicit go-ahead in that conversation.**
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.18.118`. Each release bumps N (N keeps
+  counting up, it isn't reset) in all three places, which must match: `VERSION` in
+  `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
+  bumps it; feature PRs don't.
+- **Housekeeping:** `git pull` `develop` and `main` at the start of every session and after every merge. The
+  orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
+  deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
+  changed.
+
 ## Releasing
 
-1. Bump `VERSION` in `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`
-   to the **same** value (format `YYYY.MM.DD.N`; N keeps counting up — last was `2026.11.18.118`).
-2. Run `bash tests/run_checks.sh`. All must pass. Add a test for every change (see `tests/README.md`).
-3. Commit (no `__pycache__`), push to `main`. The Macs auto-update within ~10 minutes (they read the newest commit
-   by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back). Pete can also tap
-   "Check for an update now". An update restarts the watcher (launchd brings it back).
-4. **Two Claude sessions may push to this repo** (this Mac session and a cloud session). Always `git pull` before
-   starting and before bumping the version, and keep this file current so the other session knows what changed.
+1. Branch is `develop`, fully merged and green. Bump the version in all three places (see above).
+2. Run code review and security review on the release diff; fix every finding.
+3. Run `bash tests/run_checks.sh`. All must pass. Add a test for every change (see `tests/README.md`).
+4. Commit (no `__pycache__`) on `develop` and push it. Wait for CI (`checks`) to go green.
+5. Open the `develop` → `main` PR (merge commit). Merge it only after Pete says go. The Macs then update within
+   ~10 minutes; Pete can also tap "Check for an update now". An update restarts the watcher (launchd brings it
+   back).
 
 ## Testing (the check list)
 
-Run `bash tests/run_checks.sh` before every push; it must end with `ALL CHECKS PASSED`. See `tests/README.md` for the
-one-time Mac setup (node, pyflakes, playwright + chromium). It runs in a temp folder with fake services and a fake
+Run `ruff check .` (config in `ruff.toml`: correctness rules only, no style rules) and `bash tests/run_checks.sh`
+before every push; the latter must end with `ALL CHECKS PASSED`. CI runs both on every PR. See `tests/README.md`
+for the one-time Mac setup (node, pyflakes, ruff, playwright + chromium). It runs in a temp folder with fake services and a fake
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money. What it covers:
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
@@ -161,10 +183,8 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 
 ## Open items
 
-- **Novig** (another exchange): blocked until Pete provides a read-only API key from the Novig app.
-- **Buy timing**: decide after 1–2 weeks of build/buy/game-time price data (being recorded).
-- More makeover ideas Pete liked: live game cards that pulse on a score (Games page), more celebration moments,
-  onboarding so friends could use it.
+All planned work that isn't built yet (what it's waiting on, and the suggested order) is in **`ROADMAP.md`**.
+Read it before starting new work, and keep it current: when something ships, describe it here and remove it there.
 
 ## Code map (where to look)
 

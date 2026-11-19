@@ -22,7 +22,7 @@ It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0
 
 ```
 brew install node                       # checks the web app's JavaScript
-pip3 install requests pyflakes playwright
+pip3 install requests pyflakes playwright ruff   # ruff is the lint step: `ruff check .` (CI runs it too)
 python3 -m playwright install chromium  # the browser the page tests drive
 ```
 

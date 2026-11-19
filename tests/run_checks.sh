@@ -2,7 +2,7 @@
 # The full check list. Everything must pass before any push (Pete's rule). Run from anywhere:
 #   bash tests/run_checks.sh
 # It copies the suite to a temporary folder, so it never touches your real ~/combowatch or the repo's files.
-# One PASS/FAIL line per check, then ALL CHECKS PASSED or SOME CHECKS FAILED. Takes about 10 minutes.
+# One PASS/FAIL line per check, then ALL CHECKS PASSED or SOME CHECKS FAILED. Takes about 4 minutes.
 R="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/combochecks.XXXXXX")"
 trap 'pkill -f "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT

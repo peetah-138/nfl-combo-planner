@@ -1,0 +1,25 @@
+# Lint config (CI runs `ruff check .`). Correctness rules only: no style or line-length rules.
+target-version = "py39"
+
+[lint]
+select = [
+  "F",       # pyflakes: undefined names, unused imports/variables, redefinitions
+  "E7",      # statement problems (bare except, ambiguous names, ...)
+  "E9",      # syntax and I/O errors
+  "B006",    # mutable default argument
+  "B015",    # useless comparison
+  "B018",    # useless expression
+  "PLE",     # pylint errors
+  "W605",    # invalid escape sequence
+  "RUF006",  # dangling asyncio task
+]
+ignore = [
+  "E701", "E702",  # one-line compound statements: the code's style, hundreds of cosmetic hits
+  "E731",          # lambda assignment: same
+  "E741",          # short names like l: same
+]
+
+[lint.per-file-ignores]
+# Page tests start with `exec(open("test_webapp_pw.py")...)`, which defines the shared names (mk, ...) and
+# supplies imports the file itself doesn't use; ruff can't see through exec.
+"tests/suite/test_*.py" = ["F401", "F821"]
