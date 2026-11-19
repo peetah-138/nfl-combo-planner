@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.110"
+WATCHER_VERSION = "2026.11.18.111"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -247,12 +247,27 @@ def auto_updates(conf):
     return bool(conf.get("auto_update", sys.platform == "darwin"))
 
 
+def repo_now():
+    """The repo at its newest commit. Plain raw links to main can be up to 5 minutes stale right after a
+    publish, so this asks GitHub for the latest commit and reads the files at exactly that commit."""
+    try:
+        r = requests.get("https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main", timeout=10,
+                         headers={"Accept": "application/vnd.github.sha"})
+        sha = r.text.strip()
+        if r.ok and re.fullmatch(r"[0-9a-f]{40}", sha):
+            return REPO.replace("/main/", f"/{sha}/")
+    except requests.RequestException:
+        pass
+    return REPO
+
+
 def update_if_newer(E, conf):
     """Install a newer engine and watcher from GitHub. With automatic updates on, any new version
     whose two files agree on it; otherwise only the exact files your phone installed (it sends
     their SHA-256, signed). Returns True if the watcher should restart."""
+    base = repo_now()
     try:
-        latest = requests.get(REPO + "version.txt", params={"t": int(time.time())}, timeout=15,
+        latest = requests.get(base + "version.txt", params={"t": int(time.time())}, timeout=15,
                               headers={"Cache-Control": "no-cache"}).text.strip()
     except requests.RequestException:
         return False
@@ -269,8 +284,8 @@ def update_if_newer(E, conf):
             log(f"version {latest} is out; waiting until your phone updates to it")
         return False
     try:
-        sb = requests.get(REPO + "nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30).content
-        wb = requests.get(REPO + "watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=30).content
+        sb = requests.get(base + "nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30).content
+        wb = requests.get(base + "watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=30).content
         if not auto and (hashlib.sha256(sb).hexdigest() != ok.get("engine") or
                          hashlib.sha256(wb).hexdigest() != ok.get("watcher")):
             log(f"update {latest} skipped: the files don't match what your phone approved")
@@ -2550,8 +2565,8 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :!LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
-   <div><span>Newest</span><b>${mac.latest?(mac.latest===mac.engine?'<span class="up">Up to date</span>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
-   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code, passcode and update controls are on the Mac itself.</small></div></div>`
+   <div><span>Newest</span><b style="display:block;word-break:normal">${mac.latest?(mac.latest===mac.engine?'<i style="font-style:normal;color:var(--yes)">Up to date</i>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}${mac.checked?`<i class="m" style="display:block;font-style:normal;font-size:12px;font-weight:500;margin-top:2px">${Date.now()/1000-mac.checked<60?'checked just now':'checked '+ago(Math.round(Date.now()/1000-mac.checked))+' ago'}</i>`:''}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
+   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><button class="btn" onclick="macCheck(this)">Check for an update now</button></div>`
   :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div></div>`;
  m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
@@ -2579,6 +2594,10 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
  </div></div>`;}
+async function macCheck(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking…';const was=S.mac&&S.mac.engine;
+ const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){b.disabled=false;b.textContent='Check for an update now';return;}
+ for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
+  if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
 async function macDo(a,b){if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
  toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
 async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
@@ -3912,8 +3931,17 @@ def start_hub(conf, E, odds=None):
                 info = {"ok": True, "watcher": WATCHER_VERSION, "engine": getattr(eng, "VERSION", ""),
                         "up": int(time.time() - STARTED), "role": conf.get("role") or "main",
                         "paused": bool(conf.get("paused")), "auto_update": auto_updates(conf),
-                        "waiting": conf.get("waiting") or "", "latest": LATEST_SEEN.get("v", "")}
+                        "waiting": conf.get("waiting") or "", "latest": LATEST_SEEN.get("v", ""),
+                        "checked": LATEST_SEEN.get("at") or 0}
                 return self._send(200, json.dumps(info).encode())
+            if web and self.path == "/app/mac-check":       # any signed-in device: look for an update right now
+                tok = web.session(self)
+                if not tok or self.headers.get("X-CW") != tok:
+                    return self._send(403, b"")
+                conf["update_now"] = True
+                log("update check asked for from Combo Hub")
+                return self._send(200, json.dumps({"ok": True, "msg": "The Mac is checking now. If there's a newer version, "
+                                                   "it installs and restarts within about a minute."}).encode())
             if web and self.path == "/app/mac":             # This Mac (Settings): only from the Mac itself
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok or not is_local(self) or not 0 <= n < 10_000:
