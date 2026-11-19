@@ -4015,12 +4015,30 @@ def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
     return True, ""
 
 
-def stop_loss_check(t, h, now=None):
-    """The stop-loss switch's guard for one combo, called once per auto cash-out check: (ready, why not).
-    Every pick already playing must have a fresh feed; one of them must pass every guard; and that must have
-    held on SL_CHECKS checks in a row spanning SL_SPAN seconds. Any miss starts the count again."""
-    now = now or time.time()
+def _sl_confirm(key, hit, why, now):
+    """The 'held on SL_CHECKS checks in a row spanning SL_SPAN seconds, none more than SL_GAP apart' part of the
+    loss guards, counted under `key` (one count per bet and per kind of loss sale). Any miss starts it again."""
     streak = MINE.setdefault("sl_streak", {})
+    seen = streak.get(key) or []
+    if not hit:
+        streak.pop(key, None)
+        return False, why
+    if seen and now - seen[-1] > SL_GAP:
+        seen = []
+    seen = (seen + [now])[-20:]
+    streak[key] = seen
+    if len(seen) < SL_CHECKS or now - seen[0] < SL_SPAN:
+        return False, "waiting to confirm the drop"
+    return True, ""
+
+
+def stop_loss_check(t, h, now=None, also=True, key=None):
+    """The guard for selling a combo at a loss (the stop-loss switch, and the learned loss cut), called once per
+    auto cash-out check: (ready, why not). Every pick already playing must have a fresh feed; one of them must pass
+    every guard; `also` (the caller's own trigger, e.g. 'the combo is under the learned cut-off') must hold too; and
+    all that must have held on SL_CHECKS checks in a row spanning SL_SPAN seconds (counted under `key`, default
+    the combo). Any miss starts the count again."""
+    now = now or time.time()
     need = [(side, tk) for (side, tk), _ in h.get("need") or []]
     pr = stoploss_params([tk for _, tk in need])
     hit, why = False, "no pick playing"
@@ -4040,17 +4058,45 @@ def stop_loss_check(t, h, now=None):
             hit = True
         elif not hit:
             why = w
-    seen = streak.get(t) or []
-    if not hit:
-        streak.pop(t, None)
-        return False, why
-    if seen and now - seen[-1] > SL_GAP:
-        seen = []
-    seen = (seen + [now])[-20:]
-    streak[t] = seen
-    if len(seen) < SL_CHECKS or now - seen[0] < SL_SPAN:
-        return False, "waiting to confirm the drop"
-    return True, ""
+    if hit and not also:
+        hit, why = False, "not under the cut-off"
+    return _sl_confirm(key or t, hit, why, now)
+
+
+def single_pre(x):
+    """A single bet's chance before its game: the last one seen before it started (kept while the app runs), else,
+    for a game-winner, the saved pregame chance. None when unknown, and then a loss cut never fires."""
+    v = (MINE.get("pre_single") or {}).get(x.get("t"))
+    if v is None and x.get("kind") == "win":
+        p = load_json(PREGAME, {}).get(x.get("t"))
+        if p is not None:
+            v = p if (x.get("side") or "yes") == "yes" else 1 - p
+    return v
+
+
+def cut_loss_single_check(x, loss, now=None):
+    """The learned loss cut's guard for a single bet, spread or total, called once per auto cash-out check: the same
+    guards as the stop-loss switch (late in the game by the league's learned share, a fresh score, not at a break, at
+    least the league's learned fall below the pregame chance, under 50%) plus 'under the cut-off', all held on 3+
+    checks over 3+ minutes. Returns (ready, why not)."""
+    now = now or time.time()
+    leg = _score_leg(x["t"], x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
+    q = x.get("chance")
+    ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now)
+    if ok and not (loss and q is not None and q <= loss):
+        ok, why = False, "not under the cut-off"
+    return _sl_confirm("cut:" + x["t"], ok, why, now)
+
+
+def note_cut_held(t, label, why, guard):
+    """A learned loss cut that the guards held back: logged once per bet and reason (for Results › Selling)."""
+    if len(MINE.setdefault("cut_told", {})) > 500:
+        MINE["cut_told"].clear()
+    told = MINE["cut_told"].setdefault(t, set())
+    if not guard or guard in told:
+        return
+    told.add(guard)
+    log_decision({"combo": label, "ticker": t, "why": why, "result": "held", "guard": guard})
 
 
 def swing_lambda(h):
@@ -4137,10 +4183,11 @@ TP_MIN_GAIN = 1.25       # take profit only with at least 25% over what you paid
 TRAIL_ARM, TRAIL_DROP = 0.60, 0.20   # lock in: armed once the offer reached 60% of the payout (and 1.5x cost)
 
 
-def take_profit_reason(t, h):
+def take_profit_reason(t, h, cut_ok=False):
     """Whether Pete's profit rules say sell this combo now: "take profit" when the offer reaches his
     take-profit % of the payout, or "lock in" when, after a big run-up, it has fallen 20% from its
-    high but is still a clear profit. Tracked on a steady estimate (live chance x payout x Kalshi's
+    high but is still a clear profit. A learned "cut loss" also needs `cut_ok`: the loss guards held
+    (stop_loss_check under "cut:<ticker>", run once per check by auto_sell_now); without it, never. Tracked on a steady estimate (live chance x payout x Kalshi's
     usual discount) so a one-off quote can't fake a high or a drop; the real offer is checked before
     any sale. Returns (reason, the least whole-combo offer to accept) or (None, 0)."""
     if not h or h.get("left", 1) <= 0 or not h.get("pays"):
@@ -4167,7 +4214,7 @@ def take_profit_reason(t, h):
         floor2 = max(hold_risky, pr["floor"] * h["cost"])
         if q >= 0.5 and max(est / 0.95, real) >= floor2:
             hits.append(("checkpoint" if why_note else "smart", floor2))
-        if pr["loss"] and live and h["p"] <= pr["loss"]:  # learned for this league: a falling bet is worth more sold
+        if pr["loss"] and live and h["p"] <= pr["loss"] and cut_ok:  # learned for this league, and every loss guard held
             hits.append(("cut loss", 0.02 * h["cost"]))
     if hits:
         return min(hits, key=lambda x: x[1])
@@ -4195,10 +4242,20 @@ def auto_sell_now(plan):
         if CFG.get("stop_loss"):
             for t, h in list(MINE["hold"].items()):
                 sl_ready[t] = stop_loss_check(t, h)[0]
+        cut_ready = {}                                    # the learned loss cut: the same guards, counted apart
+        if CFG.get("smart_sell", True) and ride_lam() is not None:
+            for t, h in list(MINE["hold"].items()):
+                loss = smart_params([tk for (_, tk), _ in h.get("need") or []])["loss"]
+                if not loss:
+                    continue
+                trig = any(lv for _, lv, _ in h.get("legs_left") or []) and h["p"] <= loss
+                cut_ready[t], gw = stop_loss_check(t, h, also=trig, key="cut:" + t)
+                if trig and not cut_ready[t]:
+                    note_cut_held(t, h.get("label", t), "cut loss", gw)
         for t, h in list(MINE["hold"].items()):          # Pete's profit rules, on every live combo
             if any(c[0] == t for c in cands) or hands_off(t):
                 continue
-            why, floor = take_profit_reason(t, h)
+            why, floor = take_profit_reason(t, h, cut_ready.get(t, False))
             if why and time.time() - asked.get(t, 0) >= 90:
                 asked[t] = time.time()
                 cands.append((t, 1.0, why))
@@ -4212,7 +4269,7 @@ def auto_sell_now(plan):
                     continue
                 thr = wait_threshold(t)
             else:
-                thr = take_profit_reason(t, h)[1]
+                thr = take_profit_reason(t, h, cut_ready.get(t, False))[1]
                 if not thr:
                     continue
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
@@ -4490,8 +4547,9 @@ def hands_off(t):
     return bool(t) and t in self_sell_set()
 
 
-def single_sell_reason(x, bid, ask, track=True):
-    """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book.
+def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
+    """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book. A learned
+    "cut loss" also needs `cut_ok` (cut_loss_single_check: every loss guard held); without it, never.
     Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
     n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
     if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
@@ -4517,7 +4575,7 @@ def single_sell_reason(x, bid, ask, track=True):
         floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
         if q >= 0.5 and net >= floor2:
             hits.append(("smart", floor2))
-        if pr["loss"] and x.get("state") == "live" and q <= pr["loss"] and net > 0:
+        if pr["loss"] and x.get("state") == "live" and q <= pr["loss"] and net > 0 and cut_ok:
             hits.append(("cut loss", 0.0))
     if hits:
         return min(hits, key=lambda h: h[1])
@@ -4580,7 +4638,13 @@ def smart_sell_singles():
         side = x["side"]
         bid = dollars(m, f"{side}_bid")
         ask = dollars(m, f"{side}_ask")
-        why, floor = single_sell_reason(x, bid, ask)
+        cut_ok = False                                # the learned loss cut: only once every loss guard held
+        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None else None
+        if loss:
+            cut_ok, gw = cut_loss_single_check(x, loss)
+            if not cut_ok and x.get("state") == "live" and x.get("chance") is not None and x["chance"] <= loss:
+                note_cut_held(x["t"], x.get("label", x["t"]), "cut loss", gw)
+        why, floor = single_sell_reason(x, bid, ask, cut_ok=cut_ok)
         if not why:
             continue
         if ask and bid and ask - bid > LIVE_SPREAD:
@@ -4764,6 +4828,12 @@ def open_singles(max_age=30):
                     if dsc and not sc and dsc["state"] in ("in", "post") and (code != "tennis" or kind == "win") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
+    pre = MINE.setdefault("pre_single", {})          # each single's last chance before its game (loss-cut guard)
+    for x in out:
+        if x["state"] == "pre" and x.get("chance") is not None:
+            pre[x["t"]] = x["chance"]
+    for t in [t for t in pre if t not in {x["t"] for x in out}]:
+        pre.pop(t, None)
     mine = self_sell_set()
     for x in out:
         x["self"] = x["t"] in mine
@@ -12080,7 +12150,7 @@ def analytics(max_age=600):
         e["back"] += (r["back"] if r["status"] == "cashed" else r["pays"] if r["status"] == "won" else 0) or 0
     out["exits"] = [{"what": k, "n": e["n"], "pl": round(e["back"] - e["cost"], 2), "roi": _roi(e["back"] - e["cost"], e["cost"])}
                     for k, e in ex.items()]
-    auto = defaultdict(int)
+    auto, held = defaultdict(int), defaultdict(int)
     try:
         cut = time.time() - 30 * 86400
         with open(SELL_LOG, encoding="utf-8") as f:
@@ -12089,11 +12159,16 @@ def analytics(max_age=600):
                     d = json.loads(line)
                 except ValueError:
                     continue
-                if d.get("at", 0) >= cut and d.get("result") in ("sold", "hedged"):
+                if not isinstance(d, dict) or d.get("at", 0) < cut:
+                    continue
+                if d.get("result") in ("sold", "hedged"):
                     auto[d.get("why") or d.get("result")] += 1
+                elif d.get("result") == "held" and d.get("guard"):
+                    held[d["guard"]] += 1                # a learned loss cut the guards held back, and why
     except OSError:
         pass
     out["auto"] = dict(auto)
+    out["cut_held"] = dict(held)
     real = [c for m, c in items if m == "real"]
     out["notes"] = _analytics_notes(rows, out["types"], len(real))
     try:
@@ -12167,14 +12242,19 @@ def smart_table():
 
 def smart_params(tickers):
     """The smart-sell settings for a bet: its league's own once it has enough results, else its sport's,
-    else everyone's, else the starting point (1.5x floor, standard risk, no selling at a loss)."""
+    else everyone's, else the starting point (1.5x floor, standard risk, no selling at a loss). The learned loss
+    cut is never borrowed (borrowing may only make selling at a loss stricter): only a league's own record turns
+    it on."""
     d = smart_table()
     k = bet_key(tickers)
     sport = ticker_sport(next(iter(tickers), "") or "") if k not in ("mix",) else None
     for key in (k, sport, "all"):
         e = d.get(key) if key else None
         if e and e.get("n", 0) >= SMART_MIN_N:
-            return {**SMART_DEFAULT, **{x: e.get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}, "key": key}
+            out = {**SMART_DEFAULT, **{x: e.get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}, "key": key}
+            if key != k:
+                out["loss"] = None
+            return out
     return dict(SMART_DEFAULT, key=None)
 
 
@@ -12201,9 +12281,10 @@ def _paths(c):
     return out
 
 
-def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True):
+def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None):
     """Replays smart sell on a bet's path with the given settings. Returns (profit, why) when it would have
-    sold, else None (it rides to the end)."""
+    sold, else None (it rides to the end). A loss cut happens only at the times in `cut_at` (when the live loss
+    guards would have held: _cut_guard_ts); with none given, never."""
     stake = c["stake"]
     if c["kind"] == "combo":
         P = c.get("pays") or 0
@@ -12228,7 +12309,7 @@ def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True):
         floor = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), fl * stake)
         if q >= 0.5 and est >= floor:
             return round(est - stake, 2), "smart"
-        if loss and q <= loss and est > 0.02 * stake:
+        if loss and q <= loss and est > 0.02 * stake and round(ts) in (cut_at or ()):
             return round(est - stake, 2), "cut loss"
         peak = max(peak, est)
         if trail and peak >= max(TRAIL_ARM * P, fl * stake) and est <= (1 - TRAIL_DROP) * peak and est >= 1.1 * stake:
@@ -12242,7 +12323,8 @@ def sim_exit(c):
     if not STORE["db"] or c.get("kind") == "early" or not c.get("kick"):
         return None
     pr = smart_params([l["ticker"] for l in c["legs"]])
-    return _replay(c, _paths(c), pr["floor"], pr["lam"], pr["loss"])
+    cut_at = _cut_guard_ts(c, _sl_paths(c), pr["loss"]) if pr["loss"] else None
+    return _replay(c, _paths(c), pr["floor"], pr["lam"], pr["loss"], cut_at=cut_at)
 
 
 def _tune_items(days=60):
@@ -12302,19 +12384,16 @@ def _sl_paths(c):
     return out
 
 
-def _sl_replay(c, path, prog, drop):
-    """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
-    far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
-    it would have sold, None when it would have held."""
-    P, stake = c.get("pays") or 0, c["stake"]
+def _sl_held(c, path, prog, drop, also=None):
+    """Walks a bet's recorded prices and score lines with the live loss guards (a pick late enough, not at a break,
+    under 50% and far enough below its pregame chance, plus `also(cur)` if given, held 3+ checks over 3+ minutes)
+    and yields (time, prices) at each check where all of them held. Stops once every pick is decided."""
     tks = [l["ticker"] for l in c["legs"]]
-    if not P or len(path) < SL_CHECKS:
-        return None
     pre = {l["ticker"]: l.get("p") for l in c["legs"]}
     seen = []
     for ts, cur in path:
         if not any(0.02 < cur[t][0] < 0.98 for t in tks):
-            return None
+            return
         hit = False
         for t in tks:
             ch, txt = cur[t]
@@ -12325,6 +12404,8 @@ def _sl_replay(c, path, prog, drop):
                 continue
             if not brk and played >= prog and pre[t] is not None and ch < 0.5 and pre[t] - ch >= drop:
                 hit = True
+        if hit and also is not None and not also(cur):
+            hit = False
         if not hit:
             seen = []
             continue
@@ -12332,9 +12413,35 @@ def _sl_replay(c, path, prog, drop):
             seen = []
         seen.append(ts)
         if len(seen) >= SL_CHECKS and ts - seen[0] >= SL_SPAN:
-            est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P
-            return round(est - stake, 2) if est < stake else None
+            yield ts, cur
+
+
+def _sl_replay(c, path, prog, drop):
+    """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
+    far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
+    it would have sold, None when it would have held."""
+    P, stake = c.get("pays") or 0, c["stake"]
+    tks = [l["ticker"] for l in c["legs"]]
+    if not P or len(path) < SL_CHECKS:
+        return None
+    for ts, cur in _sl_held(c, path, prog, drop):
+        est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P
+        return round(est - stake, 2) if est < stake else None
     return None
+
+
+def _cut_guard_ts(c, slp, loss, prog=None, drop=None):
+    """The times at which the learned loss cut's guards held for this bet (the same as live: under the cut-off and
+    every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
+    prog/drop given, the league's current stop-loss settings."""
+    if not loss or not slp or len(slp) < SL_CHECKS:
+        return set()
+    tks = [l["ticker"] for l in c["legs"]]
+    if prog is None or drop is None:
+        pr = stoploss_params(tks)
+        prog, drop = pr["prog"], pr["drop"]
+    return {round(ts) for ts, _ in _sl_held(c, slp, prog, drop,
+                                            also=lambda cur: math.prod(cur[t][0] for t in tks) <= loss)}
 
 
 def _sl_tune(e, rows):
@@ -12408,11 +12515,12 @@ def smart_tune(force=False):
         if len(path) < 3:
             continue
         k = bet_key(tks)
-        slp = _sl_paths(c) if c.get("kind") == "combo" else None
+        slp = _sl_paths(c)
+        c = dict(c, _slp=slp)                            # the score lines, for the loss cut's guards in the replay
         for key in {k, ticker_sport(tks[0]) if k != "mix" else None, "all"}:
             if key:
                 groups[key].append((c, path))
-                if slp and len(slp) >= SL_CHECKS:
+                if c.get("kind") == "combo" and slp and len(slp) >= SL_CHECKS:
                     sl_groups[key].append((c, slp))
     moved = []
     for key, rows in groups.items():
@@ -12420,10 +12528,14 @@ def smart_tune(force=False):
         n = len(rows)
         staked = sum(c["stake"] for c, _ in rows) or 1
 
+        guards = {}                                      # the loss cut only where the live guards would have let it
+
         def score(fl, lm, loss):
             tot = 0.0
-            for c, path in rows:
-                r = _replay(c, path, fl, lm, loss)
+            for i, (c, path) in enumerate(rows):
+                if loss and (i, loss) not in guards:
+                    guards[(i, loss)] = _cut_guard_ts(c, c.get("_slp"), loss)
+                r = _replay(c, path, fl, lm, loss, cut_at=guards.get((i, loss)))
                 tot += r[0] if r else c["pl"]
             return tot / staked
         base = score(cur["floor"], cur["lam"], cur["loss"])
