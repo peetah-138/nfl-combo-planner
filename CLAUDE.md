@@ -1,0 +1,180 @@
+# Brief for Claude: the Kalshi combo planner
+
+You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
+earlier sessions (up to version 2026.11.18.118). Read it all before changing anything. When something here
+conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
+
+## What this is
+
+A betting planner for Kalshi (prediction markets): it finds sports bets priced better than their real chance,
+builds combos (Kalshi "multivariate" parlays), buys on Pete's approval, and sells smartly during games.
+Real money is involved. Pete uses it daily.
+
+- `nfl_combo_planner.py` — the engine (one big file). It runs in three places:
+  - **Pythonista on Pete's iPhone** (the original app; still works as a backup, talks to the Mac when it can).
+  - **The Mac watcher** loads it as `E` (main loop: live combos, auto cash-out, smart sell) and as `H`
+    (`odds.engine()`, the "shadow": quotes combos to learn, builds the daily panel, buys panel bets, the lab).
+  - **The Combo Hub web app** (`--webapp`, 127.0.0.1:8766) loads it as `A`. The hub on :8765 proxies to it with a
+    session cookie plus the `X-CW` token. Pete opens Combo Hub on his phone over Tailscale (and the
+    `https://<mac>.<tailnet>.ts.net` secure address for Face ID passkeys and push notifications).
+- `watcher/combo_watcher.py` — the Mac watcher, the hub, the web app, and the whole web UI: the single-page app is
+  the raw string `SPA = r"""..."""` (HTML/CSS/JS in one string), the login page is `LOGIN_HTML`.
+- `watcher/install_mac.sh`, `setup_wizard.py`, `wizard_window.js`, `install_pi.sh` — installers.
+  The Raspberry Pi is an **alerts-only backup; it never trades**.
+- `version.txt` — what the Macs update to.
+- History lives in SQLite `~/combowatch/combo_history.db` (WAL; many processes; use `store_x`/`store_rows`,
+  and `panel_tx` for read-modify-write of panel rows). Settings and state are JSON files next to the engine
+  (`combo_*.json`, `held_events.json`). **None of these are ever committed.**
+
+## Hard rules (never break these)
+
+1. **The repo is public.** Never commit keys, key IDs, ntfy topics, emails, settings, history or session files.
+   `.gitignore` covers `*.db*`, `*.pem`, `*.key`, `combo_*.json`, `combowatch*.json`, `hub_sessions.json`,
+   `watcher_conf.json`, `held_events.json`. Before every commit, grep the staged diff for secrets. The cloud
+   session used a local `.git/hooks/pre-commit` that refuses known secret strings; set one up on this machine too.
+   Ask Pete for the strings it should block, and **never write them into any tracked file** (including this one).
+2. **No new automatic money movement** without Pete explicitly opting in. Existing opt-ins: auto cash-out (with
+   smart sell, take profit, lock-in, learned loss-cutting), auto-hedge (≤ $100 a hedge), killer deals,
+   standing orders, approving the daily panel, and "Add to today's panel". Everything else buys or sells only on
+   his tap. The Pause switch must always be respected. The Pi never trades.
+3. **Each device has its own revocable Kalshi key.** The Pi never accepts keys over sync.
+4. Don't touch the Vercel project "cynserus" (unrelated business). Repo write access stays with Pete.
+5. Latency arbitrage is not pursued.
+6. **Full auto with $300** (it picks, times, buys, sells alone) only after the paper panel clears the gate:
+   50+ settled bets, ahead overall, most days up (≥ 55%), CLV ≥ 0. Pete chose 50.
+7. Never price or buy a combo other than the one on Pete's screen (the quote API checks the leg tickers the page sends).
+8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
+
+## How Pete wants work done
+
+- **Check thoroughly before pushing.** He was fed up with bugs reaching him. Every release goes through the full
+  check list (see Testing). If a check fails, fix it and rerun everything; never push on a partial pass.
+- **Code reviews:** report findings first; change or push nothing until he picks which to fix.
+- **No rigid never/always rules.** Start from sensible defaults and let the data tune them over time,
+  **per league, not just per sport** (college basketball ≠ NBA, college football ≠ NFL, each soccer league apart,
+  AHL ≠ NHL). Leagues short on data borrow from their sport, then from everything.
+- **Delight matters.** He wants the app to feel as good as Kalshi's own (haptics, animation, transitions) so friends
+  would want to use it. For visual changes, send screenshots/a short clip before shipping when practical.
+- Plain English in the app and in replies. Keep screens simple: filter out noise, surface statistically good bets.
+- He uses the app on his phone and is often away from the Mac. Remote-friendly controls matter
+  (e.g. Settings › The Mac › "Check for an update now").
+
+## Releasing
+
+1. Bump `VERSION` in `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`
+   to the **same** value (format `YYYY.MM.DD.N`; N keeps counting up — last was `2026.11.18.118`).
+2. Run the full check list. All must pass.
+3. Commit (no `__pycache__`), push to `main`. The Macs auto-update within ~10 minutes (they read the newest commit
+   by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back). Pete can also tap
+   "Check for an update now". An update restarts the watcher (launchd brings it back).
+4. **Two Claude sessions may push to this repo** (this Mac session and a cloud session). Always `git pull` before
+   starting and before bumping the version, and keep this file current so the other session knows what changed.
+
+## Testing (the check list)
+
+The cloud session ran this before every push (it lives in that session's scratchpad, not yet in the repo; ask Pete
+whether to port it into `tests/`):
+- Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
+  pyflakes for undefined names, secret grep.
+- Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
+  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL.
+- A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
+  temp home; must never touch the repo files).
+- Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
+  phone, and the specific behaviour (taps, filters, toggles, numbers). Beware timing: numbers animate (~0.65 s),
+  view transitions render on the next frame, and the page auto-refreshes; wait for state rather than fixed sleeps.
+
+## The product, by area (decisions and current behaviour)
+
+### Fair prices and data
+- "Fair" = sharp sportsbooks de-vigged (free sources; The Odds API free plan; no paid odds). Calibrated by Pete's own
+  record per sport and chance band (`calib_fair`, shrink n/(n+300)). Leagues marked `require_line` need a
+  sportsbook line (Kalshi alone isn't trusted there).
+- Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis, AHL).
+- Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
+  (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
+- AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
+  require_line, hockey shapes, no live scores.
+
+### The daily panel (Build page, top)
+- Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
+  sell-early favorites, chosen together to **maximize the chance the whole day finishes ahead** (bigger profit is a
+  tie-breaker). Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
+  days), NBA/NHL daily, bigger panels on heavy nights. Overlap rules: both sides of one game only when both are
+  fairly priced, ≤ 2 bets per game, one straight bet per game, spreads/totals ≤ 30% of the panel.
+- Combos need a predicted price ≥ the cut-off: **starts at 95% of fair, self-adjusts weekly per sport and size,
+  floor 85%, no ceiling**, counting the whole trip (value at game time × exit factor), learning from skipped quotes,
+  moving only on solid data. Pete considered 80% and agreed 95% start; the combo lab tests lower levels on paper.
+- Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
+  time), rechecks price, swaps in a similar bet or skips. Never buys or approves a game that has started; drafts
+  drop started games. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
+  (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
+  notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+- Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
+  immediately; half of each month's profit is set aside (reminder until Pete says he moved it).
+- Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
+  (80–85, 85–90, 90–95, 95–100, 100+% of fair) from real quotes, $5 each, separate from the gate.
+
+### Selling: smart sell everywhere
+- Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
+  himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
+  It only acts while Auto cash-out is on; daily cap applies; singles sell into the order book (IOC at the bid,
+  reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
+- Rule: sell when the offer beats the risk-adjusted value of holding,
+  `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5; λ from the sport's swing and time left (×1.3 at a slate
+  checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
+  migrated off). There is **no 80% floor** (removed at Pete's request).
+- **Self-tuning, per league** (weekly, `smart_tune`): replays settled bets on their recorded game prices with
+  nearby settings and moves one small step toward what clearly did better (≥ 2% of stake, 30+ bets): profit floor
+  (starts 1.5×, 0.1 steps, 1.2–2.0), risk weight, and a learned loss cut (off until a league's record shows
+  selling a sliding bet beats holding). On a tie, the smallest change wins. Results › Selling shows each league's
+  settings and why they last changed.
+- The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
+  It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
+- Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
+  held when tracking began counts as the app's). The panel avoids games he already bet himself.
+
+### Live page
+- Hero card: worth now if sold (rolling number), change vs what's in, a sparkline of the day (`pulse` table),
+  riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
+- Combos table, "Single bets & spreads" section (tap opens the game sheet: score, chance it covers, your bets on
+  that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total.
+- Pull to refresh, score-change row flashes, celebrations when a bet wins.
+
+### Build page
+- Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
+  games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
+- Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+
+### Results page
+- P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
+  levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
+  bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
+  per-league smart-sell tuning).
+
+### Look and feel (the makeover)
+- One motion system: rolling numbers with green/red flashes, staggered entrances, page fades (View Transitions),
+  swipe left/right between tabs, sliding tab and segmented indicators, spring bottom sheets with drag-to-close,
+  press feedback, a drawn-check "Bought" moment, haptics everywhere (`hap()`: in-app via `combo://haptic`, iOS 18
+  Safari via the `<input switch>` trick), and `prefers-reduced-motion` respected.
+
+## Open items
+
+- **Novig** (another exchange): blocked until Pete provides a read-only API key from the Novig app.
+- **Buy timing**: decide after 1–2 weeks of build/buy/game-time price data (being recorded).
+- More makeover ideas Pete liked: live game cards that pulse on a score (Games page), more celebration moments,
+  onboarding so friends could use it.
+- Port the check list into the repo (`tests/`) so any session can run it.
+
+## Code map (where to look)
+
+Engine: `panel_collect`, `build_panel`, `choose_panel`, `panel_pass`, `panel_exec`, `panel_approve`, `panel_add`,
+`prune_drafts`, `panel_settle`, `panel_record`, `adjust_cutoffs`, `combo_cutoff`, `lab_pass`, `lab_ticks`,
+`_replay`/`sim_exit`, `smart_tune`/`smart_params`, `analytics`, `take_profit_reason`, `auto_sell_now`,
+`single_sell_reason`, `smart_sell_singles`, `open_singles`, `live_view`, `record_view`, `mine_page`,
+`fetch_account`/`_fetch_account`, `kalshi_send` (records app buys via `note_app_order`), `get_offer`,
+`accept_offer`, `add_own_combo`, `set_league`, `LEAGUES`/`SPORTS`/`SPORT_PREFIX`.
+Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
+`webapp_main` (`api_live`, `api_build`, `api_act`, `api_panel`, `api_results`, `api_game`), `mac_settings`,
+`tailscale_https`. SPA: `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
+`afterPaint` (number rolls, stagger, indicators), `go`, `modal`, `okSheet`, `toast`, `hap`.
