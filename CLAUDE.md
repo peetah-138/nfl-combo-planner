@@ -131,11 +131,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 
 ### Fair prices and data
 - "Fair" = sharp sportsbooks de-vigged (free sources; The Odds API free plan; no paid odds). Calibrated by Pete's own
-  record per league and chance band (`calib_fair`, shrink n/(n+300)): the sport's nudge as before, and a league
-  inside a sport (each soccer league) moves from its sport's nudge toward its own record by the same n/(n+300), so
-  a league with no games gets exactly its sport's. A sport with no games in a band keeps the books' chance (no
-  "everyone" level here yet; see ROADMAP). Leagues marked `require_line` need a sportsbook line (Kalshi alone
-  isn't trusted there).
+  record per league and chance band (`calib_fair`, shrink n/(n+300)), borrowing everyone -> sport -> league (Pete,
+  #37): the other sports' record (`calibration()["all"]` minus this sport's own games, so none count twice) nudges
+  the books' chance by n/(n+300); the sport moves from that nudge toward its own record by its n/(n+300); a league
+  inside a sport (each soccer league) moves from its sport's the same way. A level with no games gets exactly the one
+  above; a sport alone in a band is exactly as before; a band nobody has played keeps the books' chance.
+  Leagues marked `require_line` need a sportsbook line (Kalshi alone isn't trusted there).
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
@@ -177,8 +178,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   moving only on solid data. Pete considered 80% and agreed 95% start; the combo lab tests lower levels on paper.
   Borrowing (`_cut_level`, `combo_cutoff(code, n, legs)`, file `combo_cutoffs.json`): a league inside a sport
   (e.g. `epl:2`) uses its own level once it has 30+ quotes or has moved, starting from its sport's; until then it
-  follows its sport's live (`soccer:2`, the old keys, read exactly as before). A sport with no entry borrows
-  everyone's (`all:2`) once that has 30+ quotes, and a sport new to the file starts from that level.
+  follows its sport's live (`soccer:2`, the old keys, read exactly as before). A sport with no level of its own
+  borrows everyone's (`all:2`, once that has 30+ quotes) **only upward: max(everyone's, 95%)** (Pete, #37 M2;
+  `CUT_START`). `adjust_cutoffs` saves such a sport marked `"borrowed": true` (ignored by `_cut_level`, hidden in
+  Settings) until it has 30+ quotes of its own, so a borrowed level is never kept as its own; it becomes its own
+  at 30+ quotes or when its own record moves it. Only a group's own record can take it below 95% (to the 85% floor).
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
@@ -208,6 +212,17 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. `stop_loss` stays as a
   labelled **manual override** ("Manual override: sell at a loss when a game turns", off by default, separate from the
   learned per-league loss cut). Pete to confirm whether to keep or remove it.
+- **Stop-loss guards (issue #27):** with `stop_loss` on, auto cash-out may sell a combo below cost only when
+  `stop_loss_check` passes: a pick on a **fresh** score feed (`leg_score`, never Kalshi's display-only data; scores
+  older than 150 s or missing = never, and any other pick whose game has started must have a fresh score too), game
+  in play and **not at halftime/a break/end of a period** (`at_break`), **game played ≥ the league's `prog`** (start
+  50%, bounds 35–90%), pick under 50% and **≥ `drop` points below its pregame chance** (start 20 points, bounds
+  10–45; `pre_of` on each held combo), all held on **3+ checks in a row spanning ≥ 3 min** (none > 5 min apart).
+  `prog`/`drop` are learned weekly in `smart_tune` (`_sl_tune`/`_sl_replay` on recorded ticks + score lines, 50+
+  combos, ≥ 2% gain, 0.05 steps, smallest change on ties), stored as `sl_*` in `combo_smart.json`, shown in
+  Results › Selling. `stoploss_params` borrows league → sport → all, but borrowed values can only be **stricter**
+  than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
+  notifies "Stop-loss (your switch)". The learned "cut loss" paths (combos and singles) are unchanged.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything

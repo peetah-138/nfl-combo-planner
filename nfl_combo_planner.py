@@ -3938,6 +3938,121 @@ def turning_against(h):
     return any(live and c < 0.5 for c, live, _ in h.get("legs_left") or [])
 
 
+# ---------------------------------------------------------------- the stop-loss switch, guarded (issue #27)
+# The manual "sell at a loss" switch (off by default) only lifts auto cash-out's "never below what you paid" guard
+# once ALL of these hold for a pick in the combo: its game is really under way on a fresh score feed (no feed or a
+# stale one: never), late enough in the game, not at halftime or a break, the pick has fallen a long way from its
+# chance before the game (and is now under 50%), and that has held on 3+ checks in a row over at least 3 minutes.
+# How late and how big a fall are learned league by league (smart_tune); they start conservative and only a
+# league's own record can loosen them below the start.
+SL_DEFAULT = {"prog": 0.50, "drop": 0.20}      # at least half the game played; at least 20 points under its pregame chance
+SL_BOUNDS = {"prog": (0.35, 0.90), "drop": (0.10, 0.45)}
+SL_STEP = 0.05
+SL_MIN_N, SL_MIN_GAIN = 50, 0.02               # combos with recorded game prices before a league's own settings move
+SL_CHECKS, SL_SPAN, SL_GAP = 3, 180, 300       # 3+ checks in a row, spanning 3+ minutes, none more than 5 minutes apart
+SL_FEED_AGE = 150                              # a score older than this (seconds) is stale: no loss sale
+
+
+def stoploss_params(tickers):
+    """How late in the game, and how big a fall from the pregame chance, the stop-loss switch needs for this bet:
+    its league's own learned settings once it has enough results, else its sport's, else everyone's, else the
+    conservative start. Borrowed settings can only make it stricter, never looser than the start."""
+    d = smart_table()
+    k = bet_key(tickers)
+    sport = ticker_sport(next(iter(tickers), "") or "") if k != "mix" else None
+    for key in (k, sport, "all"):
+        e = d.get(key) if key else None
+        if e and e.get("sl_n", 0) >= SL_MIN_N and e.get("sl_prog") is not None:
+            out = {"prog": float(e["sl_prog"]), "drop": float(e.get("sl_drop", SL_DEFAULT["drop"])), "key": key}
+            if key != k:
+                out.update(prog=max(out["prog"], SL_DEFAULT["prog"]), drop=max(out["drop"], SL_DEFAULT["drop"]))
+            return out
+    return dict(SL_DEFAULT, key=None)
+
+
+def score_age(code, now=None):
+    """Seconds since this league's scores were last fetched successfully (a failed fetch keeps the old copy)."""
+    now = now or time.time()
+    at = (SCORES_BY.get(code) or {}).get("at", 0)
+    if code == LEAGUE["code"]:
+        at = max(at, SCORES.get("at", 0))
+    return now - at if at else 1e9
+
+
+def at_break(sc):
+    """Halftime, an intermission or the end of a period (the book thins and prices wander)."""
+    det = str(sc.get("detail") or "")
+    return bool(sc.get("brk")) or det == "Half" or det.startswith("End") or \
+        bool(re.search(r"\b0:00$", det)) or bool(re.search(r"\b(Q|P|H)\d+ 0\.0$", det))
+
+
+def game_played(sc):
+    """Share of the game played (0..1) from the score feed's period and clock, or None when it can't say."""
+    if not sc or sc.get("state") != "in" or sc.get("frac") is None:
+        return None
+    return round(1 - float(sc["frac"]), 3)
+
+
+def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
+    """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
+    code = ticker_sport(ticker) or ""
+    sc = leg_score({"ticker": ticker, "side": side})   # never Kalshi's live data (display only)
+    if not sc:
+        return False, "no score feed"
+    if score_age(code, now) > SL_FEED_AGE:
+        return False, "score feed stale"
+    if sc.get("state") != "in":
+        return False, "game not under way"
+    if pre is None or now_ch is None:
+        return False, "no pregame chance"
+    if at_break(sc):
+        return False, "halftime or a break"
+    played = game_played(sc)
+    if played is None or played < pr["prog"]:
+        return False, "too early in the game"
+    if now_ch >= 0.5 or pre - now_ch < pr["drop"]:
+        return False, "not far enough below its pregame chance"
+    return True, ""
+
+
+def stop_loss_check(t, h, now=None):
+    """The stop-loss switch's guard for one combo, called once per auto cash-out check: (ready, why not).
+    Every pick already playing must have a fresh feed; one of them must pass every guard; and that must have
+    held on SL_CHECKS checks in a row spanning SL_SPAN seconds. Any miss starts the count again."""
+    now = now or time.time()
+    streak = MINE.setdefault("sl_streak", {})
+    need = [(side, tk) for (side, tk), _ in h.get("need") or []]
+    pr = stoploss_params([tk for _, tk in need])
+    hit, why = False, "no pick playing"
+    for side, tk in need:
+        pre = (h.get("pre_of") or {}).get(tk)
+        ch = (h.get("ch_of") or {}).get(tk)
+        ok, w = stop_loss_leg(tk, side, pre, ch, pr, now)
+        if w in ("no score feed", "score feed stale"):
+            try:
+                st = leg_start({"ticker": tk, "side": side}, {})
+            except Exception:
+                st = None
+            if st is None or st.timestamp() <= now:
+                hit, why = False, w                     # a game on (or maybe on) with no fresh score: never
+                break
+        if ok:
+            hit = True
+        elif not hit:
+            why = w
+    seen = streak.get(t) or []
+    if not hit:
+        streak.pop(t, None)
+        return False, why
+    if seen and now - seen[-1] > SL_GAP:
+        seen = []
+    seen = (seen + [now])[-20:]
+    streak[t] = seen
+    if len(seen) < SL_CHECKS or now - seen[0] < SL_SPAN:
+        return False, "waiting to confirm the drop"
+    return True, ""
+
+
 def swing_lambda(h):
     """How much the risk of holding counts, from the picks still to play: swingier sports (a one-goal hockey
     lead) count more; a game that's mostly played counts less (time left, square-rooted: half the game left
@@ -4076,6 +4191,10 @@ def auto_sell_now(plan):
         cands = [(t, f, "plan") for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]) if f]
         asked = MINE.setdefault("tp_asked", {})
         cands = [c for c in cands if not hands_off(c[0])]
+        sl_ready = {}                                     # the stop-loss switch: only once every guard holds
+        if CFG.get("stop_loss"):
+            for t, h in list(MINE["hold"].items()):
+                sl_ready[t] = stop_loss_check(t, h)[0]
         for t, h in list(MINE["hold"].items()):          # Pete's profit rules, on every live combo
             if any(c[0] == t for c in cands) or hands_off(t):
                 continue
@@ -4123,9 +4242,12 @@ def auto_sell_now(plan):
                     out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
-            if o["offer"] < h["cost"] * o.get("frac", 1.0) and why != "cut loss" and not (CFG.get("stop_loss") and turning_against(h)):
+            below = o["offer"] < h["cost"] * o.get("frac", 1.0)
+            if below and why != "cut loss" and not (CFG.get("stop_loss") and sl_ready.get(t)):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
+            if below and why != "cut loss":
+                rec["stop_loss"] = True
             hg = hedge_for(t) if CFG.get("auto_hedge") else None
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             better = hg["locked"] >= whole * (0.95 if CFG.get("prefer_hedge", True) else 1.0) + (0 if CFG.get("prefer_hedge", True) else 0.5) \
@@ -4153,6 +4275,9 @@ def auto_sell_now(plan):
                     "checkpoint": "🤖 Checkpoint: the early games came through, so it took the profit before the next ones. ",
                     "cut loss": "🤖 Cut a loss: in this league, selling a bet this far behind has done better than holding. "}.get(
                 why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
+            if rec.get("stop_loss"):
+                lead = ("🤖 Stop-loss (your switch): late in the game a pick fell well below its pregame chance "
+                        "and stayed there, so it sold for less than you paid. ")
             out.append(lead + msg)
             if msg.startswith("✅"):
                 MINE.get("peak", {}).pop(t, None)
@@ -5142,7 +5267,8 @@ def fetch_scores(max_age=None, code=None):
                         "ball": str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
                         "redzone": bool(sit.get("isRedZone")), "sport": code,
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
-                        "wp": _wp(prob, me.get("homeAway")) if state == "in" else None}
+                        "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
+                        "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
                             norm_team(tm.get("location") or ""),
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
@@ -5242,7 +5368,8 @@ def _fetch_feed_scores(code, sp, got):
                 info = {"frac": _frac_left(code, st, n_per, state), "me": goals, "opp": ogoals,
                         "abbr": abbr, "opp_abbr": oabbr, "opp_name": oname, "state": state, "detail": detail,
                         "start": start, "ball": False, "redzone": False, "sport": code,
-                        "game": g.get("ID"), "day": day, "wp": None}
+                        "game": g.get("ID"), "day": day, "wp": None,
+                        "brk": state == "in" and str(g.get("Intermission") or "0") == "1"}
                 keys = {name, norm_team(name), norm_team(g.get(pre + "City") or ""),
                         norm_team(g.get(pre + "Nickname") or ""), "@" + abbr.upper()}
                 keys |= {"@" + x for x in AHL_ALIAS.get(abbr.upper(), ())}
@@ -7115,6 +7242,15 @@ def mine_page(live=False):
             # "Earned" = a pick has won, or (for games played at the same time, where nothing is won
             # until the end) the games are on and the combo's chance is well above what you paid.
             progressed = any(lv for _, lv, _ in ll) and p >= PROGRESS_MULT * paid
+            pre_of = {}                                  # each pick's chance before its game (stop-loss guard)
+            for l, (_, _, _, r) in zip(a["legs"], inf):
+                t0 = l["ticker"]
+                if l.get("side", "yes") == "no":
+                    s0 = side_of.get(t0)
+                    o0 = other_side(all_games[s0["event"]], s0) if s0 else None
+                    t0 = o0["ticker"] if o0 else None
+                if not r and t0 and pregame.get(t0):
+                    pre_of[l["ticker"]] = pregame[t0]
             MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
                                          "won_some": any(r == "yes" for *_, r in inf) or progressed,
@@ -7122,7 +7258,8 @@ def mine_page(live=False):
                                          "need": [((l.get("side", "yes"), l["ticker"]), nm)
                                                   for l, (nm, _, _, r) in zip(a["legs"], inf) if not r],
                                          "worth": left <= 3 and p * a["pays"] >= 2 * a["cost"],
-                                         "legs_left": ll}
+                                         "legs_left": ll, "pre_of": pre_of,
+                                         "ch_of": {l["ticker"]: ch for l, (_, _, ch, r) in zip(a["legs"], inf) if not r}}
         if st == "cashed":
             gain = a["back"] - a["cost"]
             status = f"<span class='tag {'good' if gain >= 0 else 'bad'}'>Cashed out</span>"
@@ -10399,8 +10536,10 @@ def _nfl_week_end(now=None):
 
 
 # ---- the self-adjusting combo cut-off, per league and size: a league short on data uses its sport's level
-# (exactly what it used before leagues had their own), and a sport with no record yet borrows everyone's.
+# (exactly what it used before leagues had their own), and a sport with no record yet borrows everyone's, but
+# only upward: a borrowed level is never under the 95% start (only a group's own record can take it toward 85%).
 CUT_MIN_N = 30            # quotes a league (or everyone together) needs before its own cut-off is used
+CUT_START = 95.0          # where every group starts; the floor for a level borrowed from everyone's
 
 
 def _cut_key(code, n):
@@ -10437,12 +10576,12 @@ def _cut_level(d, code, n, legs=None):
         if _cut_own(e):
             return float(e.get("level", 95)), _cut_key(lg, n)
     e = d.get(_cut_key(code, n))
-    if e:
+    if e and (not e.get("borrowed") or _cut_own(e)):
         return float(e.get("level", 95)), _cut_key(code, n)
     e = d.get(_cut_key("all", n))
-    if _cut_own(e):
-        return float(e.get("level", 95)), _cut_key("all", n)
-    return 95.0, None
+    if _cut_own(e):                                # everyone's mixes every sport: borrowed only upward
+        return max(float(e.get("level", 95)), CUT_START), _cut_key("all", n)
+    return CUT_START, None
 
 
 def combo_cutoff(code, n, legs=None):
@@ -10456,7 +10595,9 @@ def adjust_cutoffs(force=False):
     the bar have been returning well under what they cost; down (never below 85%) if the ones it would have
     skipped, just under the bar, are returning more than they cost. Needs 30+ settled quotes in a band.
     Groups: everyone together, each sport (as always), and each league inside a sport (soccer's). A group
-    new to the file starts from the level it was borrowing, so its first step is from there."""
+    new to the file starts from the level it was borrowing, so its first step is from there. A sport still
+    borrowing (never at or under 95%) is saved marked "borrowed" until it has 30+ quotes of its own, so a
+    borrowed level is never kept as if the sport had learned it."""
     d = load_json(CUTOFF_FILE, {})
     if not force and time.time() - d.get("_at", 0) < 7 * 86400:
         return []
@@ -10494,7 +10635,8 @@ def adjust_cutoffs(force=False):
         rs = groups[key]
         e = d.get(key)
         g, sp, n = kind[key]
-        if g == 1 and e:
+        borrowing = g == 1 and (not e or (e.get("borrowed") and not _cut_own(e)))
+        if g == 1 and not borrowing:
             cur = float(e.get("level", 95))            # a sport already in the file: exactly as before
         elif g == 1 or (g == 2 and not _cut_own(e)):
             cur = _cut_level(d, sp, n)[0]              # new sport / thin league: the level it was borrowing
@@ -10516,6 +10658,8 @@ def adjust_cutoffs(force=False):
             moved.append(f"{key} {cur:.0f}% → {new:.0f}% ({why})")
         elif g == 2 and not _cut_own(e):
             d[key] = {"level": cur, "why": "", "n": len(rs)}   # still on its sport's level (or now its own, from there)
+        elif borrowing:                                # still on a borrowed level (95%+); its own from there at 30+
+            d[key] = {"level": cur, "why": "", "n": len(rs), **({"borrowed": True} if len(rs) < CUT_MIN_N else {})}
         else:
             d.setdefault(key, {"level": cur, "why": "", "n": len(rs)})["n"] = len(rs)
     d["_at"] = time.time()
@@ -10526,7 +10670,7 @@ def adjust_cutoffs(force=False):
 def cutoff_summary():
     """The cut-offs for Settings: every sport's, and a league's or everyone's once it has its own."""
     d = load_json(CUTOFF_FILE, {})
-    return [{"group": k, **v} for k, v in sorted(d.items())
+    return [{"group": k, **{a: b for a, b in v.items() if a != "borrowed"}} for k, v in sorted(d.items())
             if not k.startswith("_") and (k.split(":")[0] in SPORTS or _cut_own(v))]
 
 
@@ -10764,7 +10908,7 @@ CALIB = {"at": 0, "m": {}}
 def calibration():
     """For each sport and chance band: how often teams the books gave that chance actually won, from your own
     record of games. {sport: [(lo, hi, mean fair, win rate, n)]}, plus each league inside a sport (each soccer
-    league, by its own key). Refreshed hourly."""
+    league, by its own key) and everyone's record together ("all"). Refreshed hourly."""
     if time.time() - CALIB["at"] < 3600 or not STORE["db"]:
         return CALIB["m"]
     _close_table()
@@ -10773,6 +10917,7 @@ def calibration():
     for r in rows:
         x = (r["fair"], r["outcome"] == "yes")
         by[r["sport"]].append(x)
+        by["all"].append(x)
         lg = league_key(r["ticker"])
         if lg not in ("other", "mix", r["sport"]) and ticker_sport(r["ticker"]) == r["sport"]:
             by[lg].append(x)
@@ -10790,24 +10935,29 @@ def calibration():
 
 
 def calib_fair(code, fair, ticker=None):
-    """The books' chance, nudged toward what actually happened in your record for this sport and band.
-    Shrunk hard: with n games in the band, it moves n/(n+300) of the way. 300 games = halfway.
-    A league inside the sport (ticker given, e.g. the Premier League) starts from its sport's nudge and moves
-    from there toward its own record by the same n/(n+300), so with no games of its own it gets exactly the
-    sport's. (Everyone's record isn't mixed in: a sport's own nudge stays exactly what it was, and a sport with
-    no games in a band keeps the books' chance rather than jumping to everyone's.)"""
+    """The books' chance, nudged toward what actually happened in your record for this band, borrowing
+    everyone -> sport -> league. Each level starts from the nudge above it and moves toward its own record by
+    n/(n+300) of the gap (n = its games in the band; 300 games = halfway): every other sport's record from the
+    books' chance (everyone's minus this sport's own games, so none count twice), the sport from that nudge,
+    and a league inside the sport (ticker given, e.g. the Premier League) from its sport's. So a level with no
+    games of its own gets exactly the one above, and a sport alone in a band is exactly what it was before."""
     m = calibration()
 
     def band(key):
         return next(((mf, wr, n) for lo, hi, mf, wr, n in m.get(key, []) if lo <= fair < hi), None)
-    b = band(code)
+    a, s = band("all"), band(code)
+    if a and s:                                    # everyone else's: everyone's band minus this sport's games
+        k = a[2] - s[2]
+        a = ((a[0] * a[2] - s[0] * s[2]) / k, (a[1] * a[2] - s[1] * s[2]) / k, k) if k > 0 else None
     lg = league_key(ticker) if ticker else None
-    bl = band(lg) if lg and lg not in ("other", "mix", code) and ticker_sport(ticker) == code else None
-    if not b and not bl:
+    bl = band(lg) if lg and lg not in ("other", "mix", code, "all") and ticker_sport(ticker) == code else None
+    adj, hit = 0.0, False
+    for b in (a, s, bl):
+        if b:
+            adj += b[2] / (b[2] + 300) * ((b[1] - b[0]) - adj)
+            hit = True
+    if not hit:
         return fair
-    adj = b[2] / (b[2] + 300) * (b[1] - b[0]) if b else 0.0
-    if bl:
-        adj += bl[2] / (bl[2] + 300) * ((bl[1] - bl[0]) - adj)
     return min(max(fair + adj, 0.01), 0.99)
 
 
@@ -12027,6 +12177,121 @@ def _tune_items(days=60):
     return out
 
 
+def _sl_played(code, text):
+    """(share of the game played or None, at a break?) from a recorded score line like 'NYK 54–60 BOS Q3 5:42'."""
+    t = (text or "").strip()
+    n_per = (SPORTS.get(code) or {}).get("periods") or 4
+    if not t or t.startswith("Final") or t.endswith("Final") or "Final" in t.split()[-2:]:
+        return None, False
+    if t.endswith("Half"):
+        return 0.5, True
+    m = re.search(r"\bEnd (?:Q|P|H)(\d+)$", t)
+    if m:
+        return min(int(m.group(1)) / n_per, 1.0), True
+    if re.search(r"\b(OT|SO)\b", t):
+        return 0.96, False
+    m = re.search(r"\b(?:Q|P|H)(\d+) ([\d:.']+)\S*$", t)
+    if not m:
+        return None, False
+    frac = _frac_left(code, {"period": int(m.group(1)), "displayClock": m.group(2)}, n_per, "in")
+    return round(1 - frac, 3), bool(re.fullmatch(r"0:00|0\.0", m.group(2)))
+
+
+def _sl_paths(c):
+    """A combo's recorded game prices with their score lines: [(time, {ticker: (chance, score line)})]."""
+    tks = [l["ticker"] for l in c["legs"]]
+    q_ = ",".join("?" * len(tks))
+    rows = store_rows(f"select ts, ticker, chance, score from ticks where ticker in ({q_}) and ts >= ? and chance is not null "
+                      f"order by ts", (*tks, (c.get("kick") or 0) - 3600))
+    cur = {l["ticker"]: (l.get("p") or 0.5, "") for l in c["legs"]}
+    out, by = [], defaultdict(list)
+    for r in rows:
+        by[round(r["ts"])].append(r)
+    for ts in sorted(by):
+        for r in by[ts]:
+            cur[r["ticker"]] = (r["chance"], r["score"] or "")
+        out.append((ts, dict(cur)))
+    return out
+
+
+def _sl_replay(c, path, prog, drop):
+    """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
+    far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
+    it would have sold, None when it would have held."""
+    P, stake = c.get("pays") or 0, c["stake"]
+    tks = [l["ticker"] for l in c["legs"]]
+    if not P or len(path) < SL_CHECKS:
+        return None
+    pre = {l["ticker"]: l.get("p") for l in c["legs"]}
+    seen = []
+    for ts, cur in path:
+        if not any(0.02 < cur[t][0] < 0.98 for t in tks):
+            return None
+        hit = False
+        for t in tks:
+            ch, txt = cur[t]
+            played, brk = _sl_played(ticker_sport(t) or "", txt)
+            if played is None:
+                if not txt:
+                    pre[t] = ch                           # before the game: the latest pregame chance
+                continue
+            if not brk and played >= prog and pre[t] is not None and ch < 0.5 and pre[t] - ch >= drop:
+                hit = True
+        if not hit:
+            seen = []
+            continue
+        if seen and ts - seen[-1] > SL_GAP:
+            seen = []
+        seen.append(ts)
+        if len(seen) >= SL_CHECKS and ts - seen[0] >= SL_SPAN:
+            est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P
+            return round(est - stake, 2) if est < stake else None
+    return None
+
+
+def _sl_tune(e, rows):
+    """One league's stop-loss settings: replay its combos with nearby settings and move one small step toward what
+    clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Updates `e`, returns why or ''."""
+    cur = {"prog": float(e.get("sl_prog", SL_DEFAULT["prog"])), "drop": float(e.get("sl_drop", SL_DEFAULT["drop"]))}
+    n = len(rows)
+    e["sl_n"] = n
+    e.setdefault("sl_prog", cur["prog"])
+    e.setdefault("sl_drop", cur["drop"])
+    if n < SL_MIN_N:
+        return ""
+    staked = sum(c["stake"] for c, _ in rows) or 1
+
+    def score(prog, drop):
+        tot = 0.0
+        for c, path in rows:
+            r = _sl_replay(c, path, prog, drop)
+            tot += r if r is not None else c["pl"]
+        return tot / staked
+    here = (cur["prog"], cur["drop"])
+    base = score(*here)
+    best, best_v = here, base
+
+    def clamp(v, k):
+        return round(min(max(v, SL_BOUNDS[k][0]), SL_BOUNDS[k][1]), 2)
+    for a in sorted({clamp(cur["prog"] + d, "prog") for d in (-SL_STEP, 0, SL_STEP)}):
+        for b in sorted({clamp(cur["drop"] + d, "drop") for d in (-SL_STEP, 0, SL_STEP)}):
+            v = score(a, b)
+            moves = sum(1 for x, y in zip((a, b), here) if x != y)
+            if v > best_v + 1e-9 or (abs(v - best_v) <= 1e-9 and moves < sum(1 for x, y in zip(best, here) if x != y)):
+                best, best_v = (a, b), v
+    if best == here or best_v - base < SL_MIN_GAIN:
+        return ""
+    parts = []
+    if best[0] != here[0]:
+        parts.append(f"waits until {best[0]:.0%} of the game is played (was {here[0]:.0%})")
+    if best[1] != here[1]:
+        parts.append(f"needs a {best[1] * 100:.0f}-point fall from the pregame chance (was {here[1] * 100:.0f})")
+    why = (f"Stop-loss {' and '.join(parts)}: in {n} recent combos that would have returned {best_v:+.0%} on what "
+           f"was staked, vs {base:+.0%} with the old settings")
+    e.update(sl_prog=best[0], sl_drop=best[1], sl_why=why, sl_at=int(time.time()))
+    return why
+
+
 def _grid(cur):
     f, l, s = cur["floor"], cur["lam"], cur["loss"]
     lo_f, hi_f = SMART_BOUNDS["floor"]
@@ -12048,16 +12313,19 @@ def smart_tune(force=False):
     if not STORE["db"]:
         return []
     items = _tune_items()
-    groups = defaultdict(list)
+    groups, sl_groups = defaultdict(list), defaultdict(list)
     for c in items:
         tks = [l["ticker"] for l in c["legs"]]
         path = _paths(c)
         if len(path) < 3:
             continue
         k = bet_key(tks)
+        slp = _sl_paths(c) if c.get("kind") == "combo" else None
         for key in {k, ticker_sport(tks[0]) if k != "mix" else None, "all"}:
             if key:
                 groups[key].append((c, path))
+                if slp and len(slp) >= SL_CHECKS:
+                    sl_groups[key].append((c, slp))
     moved = []
     for key, rows in groups.items():
         cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
@@ -12096,6 +12364,12 @@ def smart_tune(force=False):
         else:
             e.update({x: cur[x] for x in SMART_DEFAULT})
         d[key] = e
+    for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
+        e = dict(d.get(key) or {})
+        why = _sl_tune(e, rows)
+        if why:
+            moved.append(f"{league_label(key)}: {why}")
+        d[key] = e
     d["_at"] = time.time()
     save_json(SMART_FILE, d)
     SMART_CACHE["at"] = 0
@@ -12111,7 +12385,9 @@ def smart_summary():
             continue
         out.append({"key": k, "name": league_label(k), "floor": e.get("floor", 1.5), "lam": e.get("lam", 1.0),
                     "loss": e.get("loss"), "n": e.get("n", 0), "ret": e.get("ret"), "why": e.get("why", ""),
-                    "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N})
+                    "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N,
+                    "sl_prog": e.get("sl_prog", SL_DEFAULT["prog"]), "sl_drop": e.get("sl_drop", SL_DEFAULT["drop"]),
+                    "sl_n": e.get("sl_n", 0), "sl_own": e.get("sl_n", 0) >= SL_MIN_N, "sl_why": e.get("sl_why", "")})
     return out
 
 

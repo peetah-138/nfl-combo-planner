@@ -164,8 +164,13 @@ ok("...while La Liga, Serie A and a cross-league soccer combo keep soccer's 90%"
 ok("...and other sports are untouched", all(same_cut(c, n, l) for c, l in SHAPES if c != "soccer" for n in (2, 3, 5, 8)))
 d["all:2"] = {"level": 93, "why": "", "n": 300}
 E.save_json(E.CUTOFF_FILE, d)
-ok("a sport with no cut-off of its own borrows everyone's once that has enough (NFL pairs: 93%)",
-   E.combo_cutoff("nfl", 2, ["KXNFLGAME-1-A"] * 2) == 0.93 and E.combo_cutoff("ahl", 2, AHL) == 0.93)
+ok("a sport with no cut-off of its own never borrows everyone's below 95% (everyone's 93% -> NFL/AHL pairs 95%)",
+   E.combo_cutoff("nfl", 2, ["KXNFLGAME-1-A"] * 2) == 0.95 and E.combo_cutoff("ahl", 2, AHL) == 0.95)
+d["all:2"] = {"level": 98, "why": "raised: ...", "n": 300}
+E.save_json(E.CUTOFF_FILE, d)
+ok("...but borrows it upward (everyone's raised to 98% -> NFL pairs 98%)", E.combo_cutoff("nfl", 2, ["KXNFLGAME-1-A"] * 2) == 0.98)
+d["all:2"] = {"level": 93, "why": "", "n": 300}
+E.save_json(E.CUTOFF_FILE, d)
 ok("...but a sport with its own keeps it (NBA 92%), and a league with its own keeps that (EPL 87%)",
    E.combo_cutoff("nba", 2, NBA) == 0.92 and E.combo_cutoff("soccer", 2, EPL) == 0.87)
 d["all:2"] = {"level": 93, "why": "", "n": 12}
@@ -220,8 +225,11 @@ ok("everyone's group is tracked (146 quotes in pairs)", new_d["all:2"]["n"] == 1
 ok("thin leagues and sports already in the file match the old code's answer after the adjustment",
    all(E.combo_cutoff(c, n, l) == O["combo_cutoff"](c, n) for c, l in SHAPES
        if (c, l) not in (("soccer", EPL),) and c in ("soccer", "nba") for n in (2, 3, 5)))
-ok("a sport new to the file (NHL pairs) starts from everyone's level, not 95% (the one change for sports)",
-   new_d["nhl:2"]["level"] == new_d["all:2"]["level"] == 92 and old_d["nhl:2"]["level"] == 95)
+ok("a sport new to the file (NHL pairs, 6 quotes) borrows everyone's only upward: 95%, not everyone's 92%",
+   new_d["all:2"]["level"] == 92 and new_d["nhl:2"]["level"] == 95 and E.combo_cutoff("nhl", 2, NHL * 2) == 0.95)
+ok("...and that borrowed level is marked borrowed, not saved as NHL's own", new_d["nhl:2"].get("borrowed") is True
+   and not E._cut_own(new_d["nhl:2"]))
+ok("Settings doesn't show the borrowed marker", all("borrowed" not in r for r in E.cutoff_summary()))
 ok("Settings lists the leagues with their own record", {"epl:2", "laliga:2"} <= {r["group"] for r in E.cutoff_summary()}
    and "seriea:2" not in {r["group"] for r in E.cutoff_summary()})
 ok("not again until next week", E.adjust_cutoffs() == [])
@@ -231,6 +239,38 @@ nd["soccer:2"]["level"] = 88
 E.save_json(E.CUTOFF_FILE, nd)
 ok("a thin league follows its sport's level when the sport moves (no frozen copy)", E.combo_cutoff("soccer", 2, SERIEA) == 0.88
    and E.combo_cutoff("soccer", 2, EPL) == 0.93)
+
+# a borrowed sport level follows everyone's live (upward only) and is never frozen; with its own 30+ quotes
+# it becomes the sport's own, and only then can its own record take it down (to the 85% floor)
+nd = E.load_json(E.CUTOFF_FILE, {})
+nd["all:2"] = {"level": 99, "why": "raised: ...", "n": 300}
+E.save_json(E.CUTOFF_FILE, nd)
+ok("a borrowed sport (NHL pairs) follows everyone's when it rises (99%), no frozen copy", E.combo_cutoff("nhl", 2, NHL * 2) == 0.99)
+nd["all:2"] = {"level": 85, "why": "lowered: ...", "n": 300}
+E.save_json(E.CUTOFF_FILE, nd)
+ok("...and stays at 95% when everyone's drops to the 85% floor", E.combo_cutoff("nhl", 2, NHL * 2) == 0.95)
+nd["_at"] = 0
+E.save_json(E.CUTOFF_FILE, nd)
+E.adjust_cutoffs(force=True)
+nd = E.load_json(E.CUTOFF_FILE, {})
+ok("a second weekly pass keeps it borrowed at 95% (not everyone's 85%)", nd["nhl:2"]["level"] == 95 and nd["nhl:2"].get("borrowed"))
+for i in range(40):                    # NHL pairs of its own, just under 95%, that would have done well
+    quote("nhl", [f"KXNHLGAME-26NOV{10 + i % 9:02d}H{i:03d}-A", f"KXNHLGAME-26NOV{10 + i % 9:02d}I{i:03d}-B"], 0.93, i % 3 != 0)
+E.adjust_cutoffs(force=True)
+nd = E.load_json(E.CUTOFF_FILE, {})
+ok(f"with 30+ quotes of its own, NHL learns from 95% and its own record can lower it ({nd['nhl:2']['level']:.0f}%)",
+   nd["nhl:2"]["level"] < 95 and "lowered" in nd["nhl:2"]["why"] and not nd["nhl:2"].get("borrowed")
+   and E.combo_cutoff("nhl", 2, NHL * 2) == nd["nhl:2"]["level"] / 100)
+E.store_x("delete from quotes where sport='nhl'")
+nd["nhl:2"] = {"level": 95, "why": "", "n": 3, "borrowed": True}
+nd["_at"] = 0
+E.save_json(E.CUTOFF_FILE, nd)
+for i in range(31):                    # 31 quotes of its own, all well over the bar: no move, but now its own record
+    quote("nhl", [f"KXNHLGAME-26NOV{10 + i % 9:02d}J{i:03d}-A", f"KXNHLGAME-26NOV{10 + i % 9:02d}K{i:03d}-B"], 1.2, True)
+E.adjust_cutoffs(force=True)
+nd = E.load_json(E.CUTOFF_FILE, {})
+ok("at 30+ quotes without a move, the sport keeps 95% as its own starting level (no longer borrowed)",
+   nd["nhl:2"]["level"] == 95 and "borrowed" not in nd["nhl:2"] and E._cut_own(nd["nhl:2"]))
 
 # ---- 4. calibration: per league, borrowing soccer's nudge when short on games
 def close(sport, ticker, fair, won):
@@ -246,21 +286,38 @@ for i in range(300):                   # La Liga favorites win as the books said
 for i in range(500):                   # NBA: favorites win a bit more than the books say
     close("nba", f"KXNBAGAME-26OCT{i % 28 + 1:02d}F{i:04d}-A", 0.75, i % 100 < 80)
 fresh_calib()
-ok("without a ticker, every sport's nudge is exactly as before",
-   all(E.calib_fair(c, f) == O["calib_fair"](c, f) for c in ("soccer", "nba") for f in FAIRS))
-ok("NBA (league = sport) is exactly as before", all(E.calib_fair("nba", f, NBA[0]) == O["calib_fair"]("nba", f) for f in FAIRS))
+sh = lambda n: n / (n + 300)
+# everyone's record by band: 55-70% = EPL 400 (won 200) + La Liga 300 (won 195); 70-85% = NBA 500 (won 80%)
+dev65 = (200 + 195) / 700 - 0.65
+all65 = sh(700) * dev65
+all75 = sh(500) * (0.80 - 0.75)
+ok("a sport alone in its band is exactly as before (its own games aren't counted twice via everyone's)",
+   all(E.calib_fair("soccer", f) == O["calib_fair"]("soccer", f) for f in (0.6, 0.69))
+   and all(E.calib_fair("nba", f, NBA[0]) == E.calib_fair("nba", f) == O["calib_fair"]("nba", f) for f in (0.72, 0.8)))
+ok("a sport with no games in a band borrows the others' nudge (soccer 72% favorites get NBA's)",
+   abs(E.calib_fair("soccer", 0.72) - (0.72 + all75)) < 1e-9 and abs(E.calib_fair("nba", 0.6) - (0.6 + all65)) < 1e-9)
+soc = O["calib_fair"]("soccer", 0.65)
 ok("Serie A (no games of its own) gets exactly soccer's nudge",
-   all(E.calib_fair("soccer", f, SERIEA[0]) == O["calib_fair"]("soccer", f) for f in FAIRS))
-epl, liga, soc = E.calib_fair("soccer", 0.65, EPL[0]), E.calib_fair("soccer", 0.65, LIGA[0]), O["calib_fair"]("soccer", 0.65)
+   all(E.calib_fair("soccer", f, SERIEA[0]) == E.calib_fair("soccer", f) for f in FAIRS))
+epl, liga = E.calib_fair("soccer", 0.65, EPL[0]), E.calib_fair("soccer", 0.65, LIGA[0])
 ok(f"the Premier League's own record pulls its favorites lower than soccer's ({epl:.3f} < {soc:.3f})", epl < soc < 0.65)
 ok(f"La Liga's record pulls its favorites back toward the books ({liga:.3f} > {soc:.3f})", soc < liga <= 0.65)
-soc_adj = soc - 0.65
-want = 0.65 + soc_adj + 400 / 700 * ((0.5 - 0.65) - soc_adj)
+want = soc + sh(400) * ((0.5 - 0.65) - (soc - 0.65))
 ok("the league moves from soccer's nudge by n/(n+300) of the gap (same shrink as before)", abs(epl - want) < 1e-9)
-ok("bands without any league games use soccer's (or pass through)",
-   E.calib_fair("soccer", 0.2, EPL[0]) == O["calib_fair"]("soccer", 0.2))
-ok("a sport with no games in a band keeps the books' chance, as before (no jump to everyone's)",
-   E.calib_fair("nhl", 0.75, NHL[0]) == 0.75 and E.calib_fair("nba", 0.6, NBA[0]) == 0.6)
+ok("a sport with no games of its own (NHL, AHL) gets exactly everyone's nudge (league -> sport -> everyone)",
+   abs(E.calib_fair("nhl", 0.75, NHL[0]) - (0.75 + all75)) < 1e-9 and abs(E.calib_fair("ahl", 0.65, AHL[0]) - (0.65 + all65)) < 1e-9
+   and E.calib_fair("nhl", 0.75, NHL[0]) > 0.75)
+ok("a band nobody has games in still passes the books' chance straight through",
+   all(E.calib_fair(c, f, l[0]) == f for c, l in SHAPES for f in (0.05, 0.2, 0.31, 0.44, 0.5, 0.52, 0.86, 0.95)))
+for i in range(60):                    # a few NHL favorites (70-85%) that won only 70%: NHL now shares NBA's band
+    close("nhl", f"KXNHLGAME-26OCT{i % 28 + 1:02d}F{i:04d}-A", 0.75, i % 10 < 7)
+fresh_calib()
+nhl = 0.75 + all75 + sh(60) * (-0.05 - all75)
+ok(f"a sport short on data (NHL, 60 games) starts from the other sports' nudge and moves toward its own ({E.calib_fair('nhl', 0.75, NHL[0]):.4f})",
+   abs(E.calib_fair("nhl", 0.75, NHL[0]) - nhl) < 1e-9)
+nba = 0.75 + sh(60) * -0.05 + sh(500) * (0.05 - sh(60) * -0.05)
+ok(f"a sport with plenty (NBA, 500) is ruled by its own record, barely moved by NHL's ({E.calib_fair('nba', 0.75):.4f})",
+   abs(E.calib_fair("nba", 0.75) - nba) < 1e-9 and abs(E.calib_fair("nba", 0.75) - O["calib_fair"]("nba", 0.75)) < 0.01)
 
 # ---- 5. the panel's pay index (its sport priorities) by league
 E.store_x("delete from quotes")

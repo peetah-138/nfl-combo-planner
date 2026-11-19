@@ -37,8 +37,9 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   strings Pete gives it. They must never be written into a tracked file.
 
 ### The old "Sell at a loss" switch (`stop_loss`)
-- Kept for now as a labelled manual override in Settings (behaviour unchanged). Decide: keep it, or remove it now that
-  the learned per-league loss cut exists.
+- Kept as a labelled manual override in Settings (off). It is now guarded (issue #27: late in the game, fresh score,
+  no break, big fall from pregame, confirmed 3+ min; learned per league). Decide: keep it, or remove it. Still open
+  from #27: the same guards for the learned "cut loss" paths (combo and singles) and for auto-hedge.
 
 ### The $300 full-auto experiment
 - The Mac picks, times, buys and sells on its own with $300. **Only after** the paper panel clears the gate
@@ -68,9 +69,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
-- **Question for Pete:** calibration learns per league (borrowing its sport's) but, unlike the cut-off, a sport
-  with no games in a chance band keeps the books' chance rather than borrowing everyone's record (borrowing would
-  change today's numbers and jump once the sport's first game lands). Mix everyone's in as a third level?
 
 ---
 
