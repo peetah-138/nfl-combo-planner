@@ -222,7 +222,19 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   combos, ≥ 2% gain, 0.05 steps, smallest change on ties), stored as `sl_*` in `combo_smart.json`, shown in
   Results › Selling. `stoploss_params` borrows league → sport → all, but borrowed values can only be **stricter**
   than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
-  notifies "Stop-loss (your switch)". The learned "cut loss" paths (combos and singles) are unchanged.
+  notifies "Stop-loss (your switch)".
+- **Loss-cut guards (issue #27, Pete's decision):** the learned per-league "cut loss" (combos in `take_profit_reason`,
+  singles/spreads/totals in `single_sell_reason`) now needs the **same guards**, reusing the helpers: combos run
+  `stop_loss_check(t, h, also=<under the cut-off>, key="cut:<ticker>")` once per `auto_sell_now` pass and pass
+  `cut_ok`; singles run `cut_loss_single_check` (`stop_loss_leg` on the game's score + `_sl_confirm`), with the
+  pregame chance from `single_pre` (last chance seen before the game in `MINE["pre_single"]`, else the saved
+  `PREGAME` for game-winners; unknown = never). Same league `prog`/`drop` as the switch (`stoploss_params`).
+  Without `cut_ok` both functions never cut (Live display included). The cut is **never borrowed**: `smart_params`
+  drops `loss` unless it is the league's own. The weekly replay only cuts where the live guards would have held
+  (`_sl_held` → `_cut_guard_ts`, `_replay(..., cut_at=)`), so the tuner learns what live can actually do. A cut the
+  guards hold back is logged once per bet and reason (`note_cut_held`, `result: "held"`); `analytics()["cut_held"]`
+  counts them for Results › Selling, which also shows the guard settings per league. Pause / Auto cash-out off /
+  Ride it out still stop it (it runs only inside `auto_sell_now`).
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything

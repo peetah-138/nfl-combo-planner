@@ -39,7 +39,8 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ### The old "Sell at a loss" switch (`stop_loss`)
 - Kept as a labelled manual override in Settings (off). It is now guarded (issue #27: late in the game, fresh score,
   no break, big fall from pregame, confirmed 3+ min; learned per league). Decide: keep it, or remove it. Still open
-  from #27: the same guards for the learned "cut loss" paths (combo and singles) and for auto-hedge.
+  from #27: guards for auto-hedge (audit in the loss-cut PR; Pete to decide). The learned "cut loss" paths now have
+  the same guards.
 
 ### The $300 full-auto experiment
 - The Mac picks, times, buys and sells on its own with $300. **Only after** the paper panel clears the gate
