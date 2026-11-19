@@ -24,6 +24,13 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ### Secure address (https) on the Mac
 - Needed for Face ID sign-in and iPhone notifications. Settings › This Mac › Secure address now shows exactly
   where it's stuck. If it says "one step left", Pete taps **Allow https**, approves in Tailscale, then **Check**.
+- Code fixes are in (PR for issue #5, not yet confirmed on Pete's Mac): the watcher can now read Tailscale under launchd
+  (prefers `/usr/local/bin/tailscale`, `TAILSCALE_BE_CLI=1`, stdin closed), every failure says what is wrong, it retries
+  every 5 minutes, and all alerts (panel buys, extras, recap) also reach web push.
+- **Waiting on Pete (stays until he confirms it works):** in Tailscale admin (login.tailscale.com/admin/dns) scroll to
+  **HTTPS Certificates**, tap **Enable HTTPS...**, confirm. Then in Combo Hub on the Mac: Settings › This Mac › Secure address
+  (Check if needed). Then on the iPhone open the ts.net address in Safari, Add to Home Screen (delete the old icon: a
+  different address is separate storage), and turn on **Face ID sign-in** and **Notifications on this device** (each needs a tap).
 
 ### Secret guard on the Mac
 - The Mac session should set up a local `.git/hooks/pre-commit` (and `SECRET_PATTERN` for the check list) with the
