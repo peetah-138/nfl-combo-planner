@@ -134,6 +134,86 @@ scenario(json.dumps({"BackendState": "Running", "Self": {}}))
 r, h, lg = run()
 ok("no name: MagicDNS hint", h.get("state") == "no-name" and "MagicDNS" in h.get("detail", "") and any("no machine name" in x for x in lg))
 
+# ---- every BackendState gets its own real reason; only NeedsLogin may say "signed out" (issue #46)
+for bs, want in (("NeedsMachineAuth", "needs-approval"), ("Stopped", "ts-off"), ("Starting", "starting"), ("NoState", "starting")):
+    scenario(json.dumps({"BackendState": bs, "Self": {"DNSName": NAME}}))
+    r, h, lg = run()
+    ok(f"backend {bs}: state {want}, says {bs}, not 'signed out'",
+       h.get("state") == want and bs in h.get("detail", "") and "signed out" not in h.get("detail", "") and ("Try again" in h["detail"] or "checks again" in h["detail"]))
+scenario(json.dumps({"BackendState": "NeedsLogin", "Self": {"DNSName": NAME}}))
+r, h, lg = run()
+ok("NeedsLogin with a stale name is still signed-out, with the next step", h.get("state") == "signed-out" and "sign in" in h.get("detail", ""))
+scenario(json.dumps({"Self": {}}))
+r, h, lg = run()
+ok("no BackendState and no name: can't read, not signed out", h.get("state") == "no-status" and "signed" not in h.get("detail", ""))
+GET["mode"] = "up"
+scenario(RUNNING)
+r, h, lg = run()
+ok("Running is signed in (goes on)", h.get("state") == "on")
+
+
+# ---- several command lines: the first that answers wins; failures say the real reason
+def fake_cli(name, body):
+    path = os.path.join(TMP, name)
+    open(path, "w").write(body)
+    os.chmod(path, 0o755)
+    return path
+
+
+GUI = fake_cli("gui_tailscale", "#!/bin/sh\necho 'The Tailscale GUI failed to start: The operation couldn’t be completed. (Tailscale.CLIError error 3.)'\nexit 1\n")
+NODAEMON = fake_cli("nod_tailscale", "#!/bin/sh\necho 'failed to connect to local Tailscale service; is Tailscale running?' >&2\nexit 1\n")
+EMPTY = fake_cli("empty_tailscale", "#!/bin/sh\nexit 1\n")
+W.TS_CLI_PATHS, W.TS_CLI_PATHS_LATE, W.TS_APP_BIN = (GUI,), (), CLI
+ok("clis: every existing one in order, no duplicates", W.tailscale_clis() == [GUI, CLI])
+scenario(RUNNING)
+r, h, lg = run()
+ok("first CLI fails (GUI failed to start), the next one answers: on", h.get("state") == "on" and any("GUI failed" in x for x in lg))
+scenario(RUNNING_NOCERT, "")
+GET["mode"] = "down"
+run()
+ok("serve runs with the CLI that answered", os.path.exists(os.path.join(FAKE, "served")))
+W.TS_CLI_PATHS, W.TS_APP_BIN = (GUI, EMPTY), os.path.join(TMP, "nope")
+r, h, lg = run()
+ok("only GUI failures: cli-broken with the next step, never 'signed out'",
+   h.get("state") == "cli-broken" and "GUI failed to start" in h.get("detail", "") and "command line" in h["detail"] and "signed" not in h["detail"])
+W.TS_CLI_PATHS = (NODAEMON, GUI)
+r, h, lg = run()
+ok("can't reach the app: no-daemon says open Tailscale", h.get("state") == "no-daemon" and "Connected" in h.get("detail", "") and "signed" not in h["detail"])
+real_run = W.tailscale_run
+def slow(cli, args, timeout):
+    raise subprocess.TimeoutExpired(cli, timeout)
+W.tailscale_run = slow
+r, h, lg = run()
+ok("every CLI times out: no-status 'didn't answer in time'", h.get("state") == "no-status" and "didn't answer in time" in h.get("detail", ""))
+W.tailscale_run = real_run
+
+# ---- launchd-like bare environment: PATH has no /usr/local/bin and there is no HOME. The real wrapper is a
+# /bin/sh script that runs the app's binary, which needs TAILSCALE_BE_CLI=1 and (in this fake) HOME and a full PATH.
+WRAP = fake_cli("wrap_tailscale", '#!/bin/sh\ncase ":$PATH:" in *:/usr/local/bin:*) ;; *) echo "The Tailscale GUI failed to start"; exit 1;; esac\n'
+                '[ -n "$HOME" ] || { echo "failed to connect to local Tailscale service"; exit 1; }\n'
+                f'exec "{CLI}" "$@"\n')
+W.TS_CLI_PATHS, W.TS_APP_BIN = (WRAP,), os.path.join(TMP, "nope")
+saved_env = dict(os.environ)
+os.environ.clear()
+os.environ.update({"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "COMBOWATCH_HOME": saved_env["COMBOWATCH_HOME"]})
+env = W.tailscale_env()
+ok("launchd env: PATH gains /usr/local/bin and Homebrew, HOME is set, TAILSCALE_BE_CLI=1",
+   "/usr/local/bin" in env["PATH"].split(":") and "/opt/homebrew/bin" in env["PATH"].split(":") and env.get("HOME") and env["TAILSCALE_BE_CLI"] == "1"
+   and env["PATH"].startswith("/usr/bin:/bin"))
+scenario(RUNNING)
+GET["mode"] = "up"
+r, h, lg = run()
+os.environ.clear()
+os.environ.update(saved_env)
+ok("launchd env: the wrapper answers and the address goes on", h.get("state") == "on")
+W.TS_CLI_PATHS = (CLI,)
+
+# ---- `serve` saying HTTPS is off (no link, even with CertDomains) is need-enable with the admin click path
+scenario(RUNNING, "error: HTTPS is not enabled for your tailnet; enable HTTPS in the admin panel\n")
+GET["mode"] = "down"
+r, h, lg = run()
+ok("serve 'HTTPS not enabled' cue: need-enable with admin link", h.get("state") == "need-enable" and h.get("admin", "").endswith("/admin/dns"))
+
 LINK = "https://login.tailscale.com/f/serve?node=abc123"
 scenario(RUNNING_NOCERT, f"\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         {LINK}\n")
 GET["mode"] = "down"
