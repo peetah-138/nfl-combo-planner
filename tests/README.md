@@ -1,0 +1,53 @@
+# The check list
+
+Everything here must pass before any push (Pete's rule). From the repo:
+
+```
+bash tests/run_checks.sh
+```
+
+It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0) or `SOME CHECKS FAILED`
+(exit 1). It takes about 4 minutes: the page tests run in 4 lanes side by side, each with its own copy of everything and its own port (18766–18769); set `CHECK_WORKERS` to change the number of lanes.
+
+## Safe on the Mac that runs the real app
+
+- It copies the suite to a temporary folder and runs there. It never reads or writes `~/combowatch`, the real
+  history database, settings, or your Kalshi key. The engine under test gets a throwaway fake key.
+- The page tests start their own web apps on ports **18766–18769** (the real Combo Hub uses 8765/8766), so a test can
+  never reach the real app. If any of those ports is busy, the run fails instead of guessing.
+- Kalshi, ESPN and GitHub are faked; anything that slips past the fakes carries a throwaway key Kalshi rejects.
+  Nothing is bought or sold.
+
+## One-time setup on a Mac
+
+```
+brew install node                       # checks the web app's JavaScript
+pip3 install requests pyflakes playwright
+python3 -m playwright install chromium  # the browser the page tests drive
+```
+
+Optional: put the strings that must never be committed in `SECRET_PATTERN` (an extended-regex alternation) in
+your shell profile, not in any file in this repo. With it set, the run also greps the repo for them. Use the same
+pattern in a local `.git/hooks/pre-commit`.
+
+## What's in it
+
+- **compile, JavaScript syntax, undefined names, secret grep.**
+- **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
+  Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
+  sell, AHL.
+- **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
+  clean; and an update install into a temp home.
+- **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
+  sideways scrolling on a phone, and the behaviour each test names.
+
+## Writing tests
+
+- Engine tests print `PASS ...`/`FAIL ...` lines. Page tests print `PROBLEMS: ...` on any failure and their JS
+  errors as `errs: [...]`; the runner fails on either, or on any traceback other than a dropped connection.
+- Page tests share `test_settings.py`'s setup (everything before `with sync_playwright() as pw:`), which starts the
+  web app against `test_webapp_pw.py`'s fake Kalshi.
+- Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
+  for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
+  `window.load=async()=>{}` after the page has loaded.
+- Add every new test to the lists in `run_checks.sh`.

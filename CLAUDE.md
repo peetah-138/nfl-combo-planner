@@ -63,7 +63,7 @@ Real money is involved. Pete uses it daily.
 
 1. Bump `VERSION` in `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`
    to the **same** value (format `YYYY.MM.DD.N`; N keeps counting up — last was `2026.11.18.118`).
-2. Run the full check list. All must pass.
+2. Run `bash tests/run_checks.sh`. All must pass. Add a test for every change (see `tests/README.md`).
 3. Commit (no `__pycache__`), push to `main`. The Macs auto-update within ~10 minutes (they read the newest commit
    by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back). Pete can also tap
    "Check for an update now". An update restarts the watcher (launchd brings it back).
@@ -72,8 +72,9 @@ Real money is involved. Pete uses it daily.
 
 ## Testing (the check list)
 
-The cloud session ran this before every push (it lives in that session's scratchpad, not yet in the repo; ask Pete
-whether to port it into `tests/`):
+Run `bash tests/run_checks.sh` before every push; it must end with `ALL CHECKS PASSED`. See `tests/README.md` for the
+one-time Mac setup (node, pyflakes, playwright + chromium). It runs in a temp folder with fake services and a fake
+key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money. What it covers:
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
@@ -164,7 +165,6 @@ whether to port it into `tests/`):
 - **Buy timing**: decide after 1–2 weeks of build/buy/game-time price data (being recorded).
 - More makeover ideas Pete liked: live game cards that pulse on a score (Games page), more celebration moments,
   onboarding so friends could use it.
-- Port the check list into the repo (`tests/`) so any session can run it.
 
 ## Code map (where to look)
 

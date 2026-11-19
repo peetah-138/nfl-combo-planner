@@ -1456,7 +1456,7 @@ class WebBuild:
 # a stand-in "ui" module turns its window into a bridge. Pages it shows go to your browser; taps in
 # the browser go back to it, exactly as on the phone. The hub (port 8765) signs you in and passes
 # requests through to it on this Mac only (port 8766).
-WEBAPP_PORT = 8766
+WEBAPP_PORT = int(os.environ.get("CW_WEBAPP_PORT") or 8766)   # the check suite moves it, so tests never reach the real app
 
 BRIDGE_JS = r"""<script>
 (function(){
