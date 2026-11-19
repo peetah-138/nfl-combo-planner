@@ -243,9 +243,10 @@ with sync_playwright() as pw:
                 n0 = pg.evaluate("__haps.length")
                 cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 6, "y": y0}]})
                 for dy in range(0, 300, 25): cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": 6, "y": y0 + dy}]}); time.sleep(.02)
-                mid = pg.evaluate("({ring:+(document.querySelector('#ptr circle')||{style:{}}).style.strokeDashoffset,main:getComputedStyle(document.querySelector('main')).transform,op:+getComputedStyle(document.querySelector('#ptr')).opacity})")
+                mid = pg.evaluate("""(()=>{window.__done=0;const p=document.querySelector('#ptr');if(p)new MutationObserver(()=>{if(p.classList.contains('done'))window.__done=1;}).observe(p,{attributes:true});
+                  return {ring:+(document.querySelector('#ptr circle')||{style:{}}).style.strokeDashoffset,main:getComputedStyle(document.querySelector('main')).transform,op:+getComputedStyle(p).opacity};})()""")
                 cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-                done = wait(pg, "!!document.querySelector('#ptr.done')", 10)
+                done = wait(pg, "window.__done===1", 15)          # the check shows for half a second; record it rather than race it
                 h = pg.evaluate(f"__haps.slice({n0})"); lv = pg.evaluate("__lv")
                 print(tag, view, "pull:", mid, "loaded:", lv, "haps:", h, "check:", done)
                 if mid["main"] == "none" or mid["ring"] > 30 or mid["op"] < .5: bad(f"{tag} {view}: pulling doesn't move the page / fill the ring: {mid}")
