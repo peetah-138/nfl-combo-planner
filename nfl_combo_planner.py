@@ -10536,8 +10536,10 @@ def _nfl_week_end(now=None):
 
 
 # ---- the self-adjusting combo cut-off, per league and size: a league short on data uses its sport's level
-# (exactly what it used before leagues had their own), and a sport with no record yet borrows everyone's.
+# (exactly what it used before leagues had their own), and a sport with no record yet borrows everyone's, but
+# only upward: a borrowed level is never under the 95% start (only a group's own record can take it toward 85%).
 CUT_MIN_N = 30            # quotes a league (or everyone together) needs before its own cut-off is used
+CUT_START = 95.0          # where every group starts; the floor for a level borrowed from everyone's
 
 
 def _cut_key(code, n):
@@ -10574,12 +10576,12 @@ def _cut_level(d, code, n, legs=None):
         if _cut_own(e):
             return float(e.get("level", 95)), _cut_key(lg, n)
     e = d.get(_cut_key(code, n))
-    if e:
+    if e and (not e.get("borrowed") or _cut_own(e)):
         return float(e.get("level", 95)), _cut_key(code, n)
     e = d.get(_cut_key("all", n))
-    if _cut_own(e):
-        return float(e.get("level", 95)), _cut_key("all", n)
-    return 95.0, None
+    if _cut_own(e):                                # everyone's mixes every sport: borrowed only upward
+        return max(float(e.get("level", 95)), CUT_START), _cut_key("all", n)
+    return CUT_START, None
 
 
 def combo_cutoff(code, n, legs=None):
@@ -10593,7 +10595,9 @@ def adjust_cutoffs(force=False):
     the bar have been returning well under what they cost; down (never below 85%) if the ones it would have
     skipped, just under the bar, are returning more than they cost. Needs 30+ settled quotes in a band.
     Groups: everyone together, each sport (as always), and each league inside a sport (soccer's). A group
-    new to the file starts from the level it was borrowing, so its first step is from there."""
+    new to the file starts from the level it was borrowing, so its first step is from there. A sport still
+    borrowing (never at or under 95%) is saved marked "borrowed" until it has 30+ quotes of its own, so a
+    borrowed level is never kept as if the sport had learned it."""
     d = load_json(CUTOFF_FILE, {})
     if not force and time.time() - d.get("_at", 0) < 7 * 86400:
         return []
@@ -10631,7 +10635,8 @@ def adjust_cutoffs(force=False):
         rs = groups[key]
         e = d.get(key)
         g, sp, n = kind[key]
-        if g == 1 and e:
+        borrowing = g == 1 and (not e or (e.get("borrowed") and not _cut_own(e)))
+        if g == 1 and not borrowing:
             cur = float(e.get("level", 95))            # a sport already in the file: exactly as before
         elif g == 1 or (g == 2 and not _cut_own(e)):
             cur = _cut_level(d, sp, n)[0]              # new sport / thin league: the level it was borrowing
@@ -10653,6 +10658,8 @@ def adjust_cutoffs(force=False):
             moved.append(f"{key} {cur:.0f}% → {new:.0f}% ({why})")
         elif g == 2 and not _cut_own(e):
             d[key] = {"level": cur, "why": "", "n": len(rs)}   # still on its sport's level (or now its own, from there)
+        elif borrowing:                                # still on a borrowed level (95%+); its own from there at 30+
+            d[key] = {"level": cur, "why": "", "n": len(rs), **({"borrowed": True} if len(rs) < CUT_MIN_N else {})}
         else:
             d.setdefault(key, {"level": cur, "why": "", "n": len(rs)})["n"] = len(rs)
     d["_at"] = time.time()
@@ -10663,7 +10670,7 @@ def adjust_cutoffs(force=False):
 def cutoff_summary():
     """The cut-offs for Settings: every sport's, and a league's or everyone's once it has its own."""
     d = load_json(CUTOFF_FILE, {})
-    return [{"group": k, **v} for k, v in sorted(d.items())
+    return [{"group": k, **{a: b for a, b in v.items() if a != "borrowed"}} for k, v in sorted(d.items())
             if not k.startswith("_") and (k.split(":")[0] in SPORTS or _cut_own(v))]
 
 
@@ -10901,7 +10908,7 @@ CALIB = {"at": 0, "m": {}}
 def calibration():
     """For each sport and chance band: how often teams the books gave that chance actually won, from your own
     record of games. {sport: [(lo, hi, mean fair, win rate, n)]}, plus each league inside a sport (each soccer
-    league, by its own key). Refreshed hourly."""
+    league, by its own key) and everyone's record together ("all"). Refreshed hourly."""
     if time.time() - CALIB["at"] < 3600 or not STORE["db"]:
         return CALIB["m"]
     _close_table()
@@ -10910,6 +10917,7 @@ def calibration():
     for r in rows:
         x = (r["fair"], r["outcome"] == "yes")
         by[r["sport"]].append(x)
+        by["all"].append(x)
         lg = league_key(r["ticker"])
         if lg not in ("other", "mix", r["sport"]) and ticker_sport(r["ticker"]) == r["sport"]:
             by[lg].append(x)
@@ -10927,24 +10935,29 @@ def calibration():
 
 
 def calib_fair(code, fair, ticker=None):
-    """The books' chance, nudged toward what actually happened in your record for this sport and band.
-    Shrunk hard: with n games in the band, it moves n/(n+300) of the way. 300 games = halfway.
-    A league inside the sport (ticker given, e.g. the Premier League) starts from its sport's nudge and moves
-    from there toward its own record by the same n/(n+300), so with no games of its own it gets exactly the
-    sport's. (Everyone's record isn't mixed in: a sport's own nudge stays exactly what it was, and a sport with
-    no games in a band keeps the books' chance rather than jumping to everyone's.)"""
+    """The books' chance, nudged toward what actually happened in your record for this band, borrowing
+    everyone -> sport -> league. Each level starts from the nudge above it and moves toward its own record by
+    n/(n+300) of the gap (n = its games in the band; 300 games = halfway): every other sport's record from the
+    books' chance (everyone's minus this sport's own games, so none count twice), the sport from that nudge,
+    and a league inside the sport (ticker given, e.g. the Premier League) from its sport's. So a level with no
+    games of its own gets exactly the one above, and a sport alone in a band is exactly what it was before."""
     m = calibration()
 
     def band(key):
         return next(((mf, wr, n) for lo, hi, mf, wr, n in m.get(key, []) if lo <= fair < hi), None)
-    b = band(code)
+    a, s = band("all"), band(code)
+    if a and s:                                    # everyone else's: everyone's band minus this sport's games
+        k = a[2] - s[2]
+        a = ((a[0] * a[2] - s[0] * s[2]) / k, (a[1] * a[2] - s[1] * s[2]) / k, k) if k > 0 else None
     lg = league_key(ticker) if ticker else None
-    bl = band(lg) if lg and lg not in ("other", "mix", code) and ticker_sport(ticker) == code else None
-    if not b and not bl:
+    bl = band(lg) if lg and lg not in ("other", "mix", code, "all") and ticker_sport(ticker) == code else None
+    adj, hit = 0.0, False
+    for b in (a, s, bl):
+        if b:
+            adj += b[2] / (b[2] + 300) * ((b[1] - b[0]) - adj)
+            hit = True
+    if not hit:
         return fair
-    adj = b[2] / (b[2] + 300) * (b[1] - b[0]) if b else 0.0
-    if bl:
-        adj += bl[2] / (bl[2] + 300) * ((bl[1] - bl[0]) - adj)
     return min(max(fair + adj, 0.01), 0.99)
 
 

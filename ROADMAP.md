@@ -69,9 +69,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
-- **Question for Pete:** calibration learns per league (borrowing its sport's) but, unlike the cut-off, a sport
-  with no games in a chance band keeps the books' chance rather than borrowing everyone's record (borrowing would
-  change today's numbers and jump once the sport's first game lands). Mix everyone's in as a third level?
 
 ---
 
