@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.115"
+WATCHER_VERSION = "2026.11.18.116"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -906,7 +906,7 @@ def history_loop(E, every=900):
         time.sleep(every)
 
 
-SHADOW_LEAGUES = ("nfl", "nba", "nhl", "ncaaf", "ncaamb")
+SHADOW_LEAGUES = ("nfl", "nba", "nhl", "ncaaf", "ncaamb", "ahl")
 
 
 def held_teams(odds):
@@ -955,7 +955,8 @@ def shadow_loop(odds, notifier=None, every=600):
         try:                                              # rebuild today's panel; settle; weekly cut-off review
             with odds.lock:
                 H = odds.engine()
-                did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()]
+                did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()] \
+                    + [f"smart sell {m}" for m in H.smart_tune()]
                 n_lab = H.lab_pass()
             if n_lab:
                 log(f"combo lab: paper-bought {n_lab} at different price levels")
@@ -1669,6 +1670,42 @@ main.enter{animation:pgin .32s var(--ease)}
  display:grid;place-items:center;z-index:25;opacity:0;transform:translateY(-40px);pointer-events:none;box-shadow:0 6px 20px rgba(0,0,0,.3)}
 #ptr i{width:16px;height:16px;border-radius:50%;border:2px solid var(--acc);border-top-color:transparent}
 #ptr.go i{animation:sp .7s linear infinite}
+/* ---- stage 2: every screen ---- */
+.stag>*{animation:rise .42s var(--ease) both;animation-delay:calc(var(--i,0)*38ms)}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
+@keyframes swl{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
+@keyframes swr{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
+.chip.on{animation:chipon .32s var(--spring)}@keyframes chipon{0%{transform:scale(.92)}100%{transform:none}}
+.seg,.ant{position:relative}.segind{position:absolute;border-radius:8px;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .32s var(--spring),width .32s var(--spring),top .32s var(--spring);z-index:0;pointer-events:none}
+.seg.hasind button,.ant.hasind button{position:relative;z-index:1}.seg.hasind button.on,.ant.hasind button.on{background:transparent!important;box-shadow:none!important}
+.tabbar{position:fixed}.tabind{position:absolute;top:4px;height:3px;border-radius:3px;background:var(--acc);transition:left .36s var(--spring),width .36s var(--spring);pointer-events:none}
+/* live scores on Build */
+.lvsc{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--live);font-size:11.5px;letter-spacing:.02em;white-space:nowrap}
+.pickbtn .scr{font-weight:800;font-size:15px;margin-right:8px;min-width:22px;display:inline-block;font-variant-numeric:tabular-nums}
+.pickbtn.lead .scr{color:var(--yes)}.pickbtn.trail .scr{color:var(--no)}
+.mrow.livegame{box-shadow:inset 3px 0 0 var(--live)}
+.legsc{display:block;font-size:10.5px;font-weight:700;margin-top:2px;letter-spacing:.01em}
+.legsc.up{color:var(--yes)}.legsc.down{color:var(--no)}.legsc.even{color:var(--live)}
+/* the moment: bought, sold, approved */
+.okcard{text-align:center;padding:10px 4px 4px}
+.okcard svg{width:84px;height:84px;display:block;margin:4px auto 10px}
+.okcard circle{stroke:var(--yes);stroke-width:4;fill:var(--yesbg);stroke-dasharray:240;stroke-dashoffset:240;animation:okc .6s var(--ease) forwards}
+.okcard path{stroke:var(--yes);stroke-width:5;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:60;stroke-dashoffset:60;animation:okc .38s .42s var(--ease) forwards}
+@keyframes okc{to{stroke-dashoffset:0}}
+.okcard h3{font-size:22px!important;margin:0 0 4px!important;animation:rise .4s .3s both}
+.okcard .amt{font-size:34px;font-weight:800;letter-spacing:-.04em;color:var(--yes);animation:rise .4s .45s both}
+.okcard p{animation:rise .4s .55s both}
+.okcard.bad circle{stroke:var(--no);fill:var(--nobg)}.okcard.bad path{stroke:var(--no)}.okcard.bad .amt{color:var(--no)}
+/* Results */
+.chart rect{transform-box:fill-box;transform-origin:center bottom;animation:barup .6s var(--spring) both}
+.chart rect:nth-child(n){animation-delay:calc(var(--i,0)*45ms)}
+@keyframes barup{from{transform:scaleY(0)}to{transform:none}}
+.gt.live{animation:none}.gt.scored{animation:rowpop 1.4s var(--ease)}
+.stp button{transition:transform .12s var(--ease),background-color .15s}.stp button:active{transform:scale(.86)}
+.tg{transition:background-color .2s}.tg:active{transform:scale(.94)}
+.empty b{display:block}.empty:before{content:"";display:block;width:44px;height:44px;margin:0 auto 10px;border-radius:14px;background:linear-gradient(145deg,var(--accbg),transparent);animation:floaty 3s ease-in-out infinite}
+@keyframes floaty{50%{transform:translateY(-4px)}}
 /* ---- the hero on Live ---- */
 .kpis.hero{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:0;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:14px;position:relative}
 .kpis.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 0% 0%,var(--hglow,transparent),transparent 60%);pointer-events:none}
@@ -1956,8 +1993,8 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
 const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
-const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
-const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
+const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
+const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
  build:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
  results:'<svg viewBox="0 0 24 24"><path d="M5 19v-7M12 19V6M19 19v-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
@@ -1976,6 +2013,11 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
  sh.addEventListener('touchstart',e=>{if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=e.touches[0].clientY;dy=0;},{passive:true});
  sh.addEventListener('touchmove',e=>{if(y0==null)return;dy=Math.max(0,e.touches[0].clientY-y0);if(dy>4){sh.classList.add('drag');sh.style.transform=`translateY(${dy}px)`;}},{passive:true});
  sh.addEventListener('touchend',()=>{if(y0==null)return;sh.classList.remove('drag');sh.style.transform='';if(dy>110){hap('light');closeModal();}y0=null;dy=0;});})();
+/* swipe left or right anywhere on a page to move between tabs */
+(()=>{let x0=null,y0=0,t0=0,ok=true;
+ addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
+ addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
+  if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
 /* pull down on Live to refresh */
 (()=>{let y0=null,dy=0,el=null;const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<i></i>'}),document.body.appendChild(el),el);
  addEventListener('touchstart',e=>{y0=(S.view==='live'&&scrollY<=0&&!$('#modal').classList.contains('on'))?e.touches[0].clientY:null;dy=0;},{passive:true});
@@ -1988,15 +2030,28 @@ function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'
 }
 function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
  <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
-function go(v){hap('selection');const same=S.view===v;S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
+const TABS=['live','games','build','results','settings'];
+function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=true;const from=TABS.indexOf(S.view);S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
  const paint=()=>{render();window.scrollTo(0,0);};
- if(!same&&document.startViewTransition&&!matchMedia('(prefers-reduced-motion: reduce)').matches){document.startViewTransition(paint);}
- else{paint();const m=$('#main');if(m&&!same){m.classList.remove('enter');void m.offsetWidth;m.classList.add('enter');}}
+ if(!same&&!dir&&document.startViewTransition&&!matchMedia('(prefers-reduced-motion: reduce)').matches){document.startViewTransition(paint);}
+ else{paint();const m=$('#main');if(m&&!same){const c=dir?(dir>0?'sw-l':'sw-r'):'enter';m.classList.remove('enter','sw-l','sw-r');void m.offsetWidth;m.classList.add(c);}}
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};
 function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):money(v);}
-function afterPaint(){const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function stagger(){if(!S.entered)return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
+ const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
+ document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
+function segInd(){document.querySelectorAll('.seg,.ant').forEach((sg,k)=>{const on=sg.querySelector('button.on');let ind=sg.querySelector(':scope>.segind');
+  if(!on){if(ind)ind.remove();return;}if(!ind){ind=document.createElement('i');ind.className='segind';sg.prepend(ind);sg.classList.add('hasind');}
+  const key=sg.dataset.k||(sg.className+':'+k);const prev=S.segs&&S.segs[key];S.segs=S.segs||{};
+  const to={left:on.offsetLeft,top:on.offsetTop,width:on.offsetWidth,height:on.offsetHeight};
+  if(prev&&(prev.left!==to.left||prev.top!==to.top)){ind.style.transition='none';Object.assign(ind.style,{left:prev.left+'px',top:prev.top+'px',width:prev.width+'px',height:prev.height+'px'});void ind.offsetWidth;ind.style.transition='';}
+  Object.assign(ind.style,{left:to.left+'px',top:to.top+'px',width:to.width+'px',height:to.height+'px'});S.segs[key]=to;});
+ const tb=document.querySelector('.tabbar');const on=tb&&tb.querySelector('button.on');if(on){let ti=tb.querySelector('.tabind');if(!ti){ti=document.createElement('i');ti.className='tabind';tb.appendChild(ti);}
+  ti.style.left=(on.offsetLeft+on.offsetWidth/2-14)+'px';ti.style.width='28px';}}
+function afterPaint(){stagger();segInd();const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  document.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
   if(old==null||Math.abs(old-v)<(f==='pct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
   const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});
@@ -2205,14 +2260,16 @@ function renderBuild(){const d=S.build;const m=$('#main');
   ${panelBlock(S.panel)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`<h2>${esc(d.icon)} ${esc(d.name)} games <span class="n">${d.board.length}</span><span class="r m" style="font-size:12px">Kalshi price · fair chance from the sportsbooks</span></h2>
-  <div class="board">${d.board.map(g=>`<div class="mrow"><div class="when">${g.started?'<span class="tag">LIVE</span>':esc(g.label||'')}</div>
-   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);return `<button class="pickbtn ${on?'on':''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm"><span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
-    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
+  <div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
+   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
+    return `<button class="pickbtn ${on?'on':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>
   ${linesBlock(d)}
   <h2>More combo ideas <span class="n">${d.combos.length}</span><span class="r"><button class="btn" id="rebuildb" onclick="rebuild(this)">Rebuild</button></span></h2>
   <div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}
  </div><aside>${adv?slip(d)+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
+setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
 S.lg=S.pview==='all'?'mix':S.pview;
@@ -2324,12 +2381,14 @@ async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
  const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
  S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');renderBuild();}
+function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
+ const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];
  if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
   <div style="display:flex;gap:8px"><button class="btn ghost" style="flex:1" onclick="go('live')">See it on Live</button><button class="btn ghost" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
  return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
-  <div class="legs">${c.legs.map(l=>`<span class="leg flip" title="Tap to flip to the other team" onclick="flipLeg(${c.i},'${l.ticker}')">${esc(short(l.pick))} ${pct(l.fair)} ⇄</span>`).join('')}</div>
+  <div class="legs">${c.legs.map(l=>`<span class="leg flip" title="Tap to flip to the other team" onclick="flipLeg(${c.i},'${l.ticker}')">${esc(short(l.pick))} ${pct(l.fair)} ⇄${legLive(l)}</span>`).join('')}</div>
   ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
   <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
@@ -2344,7 +2403,7 @@ async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTM
  clearInterval(S.qT);S.qT=setInterval(()=>{if(S.view!=='build'||S.buying)return;const any=Object.values(S.quotes||{}).some(q=>q&&Date.now()/1000-q.at<21);renderBuild();if(!any)clearInterval(S.qT);},1000);}
 async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
  let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
- S.buying=false;hap(r.ok?'success':'error');toast(r.ok?`Bought: ${money(r.pays||0)} if it hits. It shows on Live within a minute.`:(r.msg||'Didn\'t go through.'),7000,r.ok?'good':'bad');
+ S.buying=false;if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
 function hap(k){try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+(k||'light');document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
@@ -2424,7 +2483,9 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
  else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
   const au=a.auto||{};const an=Object.keys(au);
   body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
-   +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`;}
+   +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`
+   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays. Leagues without enough results use their sport's settings, then everyone's.</div>`
+   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss):'never',x.n]));}
  const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
  return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)} ago</span></div>${tb}
   ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>`;}
@@ -2633,6 +2694,9 @@ function recapCard(){const r=S.recap;if(!r||!r.bets||!r.bets.length)return '';
   <button class="x" onclick="try{localStorage.setItem('cw_recap',new Date().toDateString())}catch(e){};S.recap=null;renderLive()">✕</button></div>
   ${r.best&&r.best.pl>0?`<div class="mini">Best<b class="up">${esc(r.best.what)} ${smoney(r.best.pl)}</b></div>`:''}${r.worst&&r.worst.pl<0?`<div class="mini">Worst<b class="down">${esc(r.worst.what)} ${smoney(r.worst.pl)}</b></div>`:''}
   ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}</div>`;}
+function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
+ <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p><div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
+ clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard'))closeModal();},5200);}
 function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
  for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
  document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
@@ -2662,7 +2726,7 @@ function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d)
  const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
 function scard(id,ic,title,sub,inner){return `<section class="scard" id="s-${id}"><header><span class="ic">${ic}</span><div><h3>${title}</h3>${sub?`<p>${sub}</p>`:''}</div></header>${inner}</section>`;}
 const PEND={};let saveT=null;
-function setv(k,v){S.set.values[k]=v;PEND[k]=v;saved('Saving…');clearTimeout(saveT);saveT=setTimeout(flush,450);
+function setv(k,v){hap('selection');S.set.values[k]=v;PEND[k]=v;saved('Saving…');clearTimeout(saveT);saveT=setTimeout(flush,450);
  if(['auto_sell','auto_hedge','include_live','auto_cash','size_auto'].includes(k))renderSettings();}
 async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)delete PEND[k];
  const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
@@ -3084,10 +3148,24 @@ def webapp_main():
                 SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"]}
             games = A.CTX.get("all_games") or {}
             board = []
+            on = {e for e, sides in games.items() if any(A.started(x) for x in sides)}
+            for code in {A.ticker_sport(games[e][0]["ticker"]) for e in on if games[e]}:
+                try:                                    # live scores for the games under way (cached ~45 s)
+                    A.fetch_scores(code=code)
+                except Exception:
+                    pass
             for e, sides in games.items():
                 teams = [x for x in sides if not x.get("tie")]
-                board.append({"event": e, "start": A.KICKOFF.get(e), "label": A.start_label(e),
-                              "started": any(A.started(x) for x in sides),
+                sc = None
+                if e in on and teams:
+                    try:
+                        x = A.leg_score({"ticker": teams[0]["ticker"], "side": "yes"})
+                        sc = {k: x.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail", "state")} if x else None
+                    except Exception:
+                        sc = None
+                board.append({"event": e, "start": A.KICKOFF.get(e), "label": A.start_label(e), "sc": sc,
+                              "first": teams[0]["ticker"] if teams else None,
+                              "started": e in on,
                               "sides": [side_view(x) for x in sides], "tie": any(x.get("tie") for x in sides),
                               "value": max((x.get("edge") or -1) for x in teams) if teams else None})
             board.sort(key=lambda g: (g["started"], str(g["start"])))
@@ -3102,7 +3180,7 @@ def webapp_main():
                                       "windows": A.MIX_WINDOWS},
                              "leagues": [["mix", "Mix sports", A.LEAGUES.get("mix", {}).get("icon", "🎲")]]
                                         + [[k, A.SPORTS.get(k, {}).get("name", k.upper()), A.SPORTS.get(k, {}).get("icon", "")]
-                                           for k in ("nfl", "nba", "nhl", "ncaaf", "ncaamb", "ncaawb", "soccer", "ufc", "tennis", "euroleague")
+                                           for k in ("nfl", "nba", "nhl", "ahl", "ncaaf", "ncaamb", "ncaawb", "soccer", "ufc", "tennis", "euroleague")
                                            if k in A.SPORTS]})
 
     def api_results():

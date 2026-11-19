@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.115"
+VERSION = "2026.11.18.116"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -156,6 +156,15 @@ LEAGUES = {
                          "safer_count": 4, "safer_min": 2, "safer_max": 2,
                          "middle_count": 3, "middle_min": 3, "middle_max": 4,
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
+    # AHL: the NHL's top minor league. Hockey shapes (short combos, a one-goal game swings), its own tuning;
+    # a sportsbook line is required, and there's no free live scoreboard, so live play runs on Kalshi's prices.
+    "ahl": {"name": "AHL", "short": "AHL", "icon": "🏒", "series": "KXAHLGAME", "odds": "icehockey_ahl",
+            "espn": None, "espn_q": {}, "slate": "day", "game_hours": 2.75, "periods": 3, "full": False,
+            "teams": None, "require_line": True,
+            "settings": "combo_settings_ahl.json", "latest": "combos_latest_ahl.html",
+            "defaults": {"budget": 25, "full_count": 0, "mix_v3": True, "upsets_min": 1, "upsets_max": 2,
+                         "safer_count": 2, "safer_min": 2, "safer_max": 2, "middle_count": 2, "middle_min": 3,
+                         "middle_max": 3, "moonshot_count": 1, "moonshot_min": 4, "moonshot_max": 5}},
     # College football: big Saturday slates, many lopsided games. Kalshi's names are used for teams.
     "ncaaf": {"name": "College football", "short": "CFB", "icon": "🎓", "series": "KXNCAAFGAME",
               "odds": "americanfootball_ncaaf", "espn": "football/college-football", "espn_q": {"groups": "80"},
@@ -1592,7 +1601,7 @@ def combo_league(legs):
     return "other"
 
 
-WINNER_SERIES = ("KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAAWBGAME",
+WINNER_SERIES = ("KXAHLGAME", "KXNFLGAME", "KXNCAAMBGAME", "KXNBAGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAAWBGAME",
                  "KXEUROLEAGUEGAME", "KXUFCFIGHT", "KXATPMATCH") + tuple(['KXEPLGAME', 'KXLALIGAGAME', 'KXSERIEAGAME', 'KXBUNDESLIGAGAME', 'KXLIGUE1GAME', 'KXMLSGAME', 'KXLIGAMXGAME'])
 
 
@@ -1604,7 +1613,7 @@ def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
-    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL", "KXNCAAWB", "KXEUROLEAGUE", "KXATP")):
+    if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL", "KXAHL", "KXNCAAWB", "KXEUROLEAGUE", "KXATP")):
         return d                                  # daily leagues: the game's own day
     return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
 
@@ -3946,8 +3955,8 @@ def swing_lambda(h):
     return (lam * 1.3, "checkpoint") if checkpoint else (lam, "")
 
 
-GAME_SD = {"nhl": 2.4, "soccer": 1.9, "mls": 1.9, "epl": 1.9}      # final-margin spread (goals) for low scorers
-SCORE_UNIT = {"nhl": (1, "goal"), "soccer": (1, "goal"), "mls": (1, "goal"), "epl": (1, "goal"), "nfl": (7, "touchdown"),
+GAME_SD = {"nhl": 2.4, "ahl": 2.5, "soccer": 1.9, "mls": 1.9, "epl": 1.9}      # final-margin spread (goals) for low scorers
+SCORE_UNIT = {"nhl": (1, "goal"), "ahl": (1, "goal"), "soccer": (1, "goal"), "mls": (1, "goal"), "epl": (1, "goal"), "nfl": (7, "touchdown"),
               "ncaaf": (7, "touchdown"), "nba": (6, "6-0 run"), "ncaamb": (6, "6-0 run"), "ncaawb": (6, "6-0 run")}
 
 
@@ -4033,13 +4042,18 @@ def take_profit_reason(t, h):
     hits = []
     if tp and max(est / 0.9, real) >= floor:
         hits.append(("take profit", floor))
-    if CFG.get("smart_sell", True):                    # nimble: lock in when that beats the risk of holding
+    pr = smart_params([tk for (_, tk), _ in h.get("need") or []])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:  # nimble: lock in when that beats the risk of holding
         q, P = h["p"], h["pays"]
         lam, why_note = swing_lambda(h)
+        lam *= pr["lam"] * rl
         hold_risky = q * P - lam * P * math.sqrt(max(q * (1 - q), 0))
-        floor2 = max(hold_risky, 1.5 * h["cost"])
+        floor2 = max(hold_risky, pr["floor"] * h["cost"])
         if q >= 0.5 and max(est / 0.95, real) >= floor2:
             hits.append(("checkpoint" if why_note else "smart", floor2))
+        if pr["loss"] and live and h["p"] <= pr["loss"]:  # learned for this league: a falling bet is worth more sold
+            hits.append(("cut loss", 0.02 * h["cost"]))
     if hits:
         return min(hits, key=lambda x: x[1])
     if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
@@ -4109,7 +4123,7 @@ def auto_sell_now(plan):
                     out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
-            if o["offer"] < h["cost"] * o.get("frac", 1.0) and not (CFG.get("stop_loss") and turning_against(h)):
+            if o["offer"] < h["cost"] * o.get("frac", 1.0) and why != "cut loss" and not (CFG.get("stop_loss") and turning_against(h)):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             hg = hedge_for(t) if CFG.get("auto_hedge") else None
@@ -4136,7 +4150,8 @@ def auto_sell_now(plan):
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
                     "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. ",
                     "smart": "🤖 Took the profit: locking it in now beats the risk of holding. ",
-                    "checkpoint": "🤖 Checkpoint: the early games came through, so it took the profit before the next ones. "}.get(
+                    "checkpoint": "🤖 Checkpoint: the early games came through, so it took the profit before the next ones. ",
+                    "cut loss": "🤖 Cut a loss: in this league, selling a bet this far behind has done better than holding. "}.get(
                 why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
             out.append(lead + msg)
             if msg.startswith("✅"):
@@ -4368,12 +4383,17 @@ def single_sell_reason(x, bid, ask, track=True):
         if net >= f:
             hits.append(("take profit", f))
     floor2 = 0.0
-    if CFG.get("smart_sell", True):
+    pr = smart_params([t])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:
         leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
         lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
-        floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), 1.5 * cost)
+        lam *= pr["lam"] * rl
+        floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
         if q >= 0.5 and net >= floor2:
             hits.append(("smart", floor2))
+        if pr["loss"] and x.get("state") == "live" and q <= pr["loss"] and net > 0:
+            hits.append(("cut loss", 0.0))
     if hits:
         return min(hits, key=lambda h: h[1])
     pk = peak.get(t, 0.0)
@@ -4457,7 +4477,7 @@ def smart_sell_singles():
             MINE.get("peak", {}).pop(x["t"], None)
             got = sold * (bid - single_fee(bid))
             lead = {"take profit": "🤖 Take profit", "lock in": "🤖 Locked in a profit",
-                    "smart": "🤖 Smart sell"}.get(why, "🤖 Smart sell")
+                    "smart": "🤖 Smart sell", "cut loss": "🤖 Cut a loss"}.get(why, "🤖 Smart sell")
             out.append(f"{lead}: sold {x['label']} for about {money(got)} (paid {money(x['cost'])}).")
     return out
 
@@ -5005,6 +5025,7 @@ SPORTS = {
     "nfl": {"icon": "🏈", "name": "NFL", "espn": "football/nfl", "q": {}, "periods": 4, "day": False, "hours": 3.5},
     "nba": {"icon": "🏀", "name": "NBA", "espn": "basketball/nba", "q": {}, "periods": 4, "day": True, "hours": 2.5},
     "nhl": {"icon": "🏒", "name": "NHL", "espn": "hockey/nhl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
+    "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "q": {}, "periods": 3, "day": True, "hours": 2.75},
     "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
     "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
@@ -5019,7 +5040,7 @@ SPORTS = {
     "tennis": {"icon": "🎾", "name": "Tennis", "espn": None, "q": {}, "periods": 3, "day": True, "hours": 2.5},
 }
 SPORT_PREFIX = (("ncaamb", "KXNCAAMB"), ("ncaawb", "KXNCAAWB"), ("ncaaf", "KXNCAAF"), ("nba", "KXNBA"),
-                ("nhl", "KXNHL"), ("nfl", "KXNFL"), ("euroleague", "KXEUROLEAGUE"), ("ufc", "KXUFC"),
+                ("nhl", "KXNHL"), ("ahl", "KXAHL"), ("nfl", "KXNFL"), ("euroleague", "KXEUROLEAGUE"), ("ufc", "KXUFC"),
                 ("tennis", "KXATP")) + tuple(("soccer", x[:-4]) for x in ['KXEPLGAME', 'KXLALIGAGAME', 'KXSERIEAGAME', 'KXBUNDESLIGAGAME', 'KXLIGUE1GAME', 'KXMLSGAME', 'KXLIGAMXGAME'])
 
 
@@ -5146,7 +5167,7 @@ def pick_game(games, day):
     return next((g for g in games if g["day"] == day), None)
 
 
-PERIOD_MIN = {"nfl": 15, "ncaaf": 15, "nba": 12, "wnba": 10, "ncaamb": 20, "ncaawb": 10, "nhl": 20,
+PERIOD_MIN = {"nfl": 15, "ncaaf": 15, "nba": 12, "wnba": 10, "ncaamb": 20, "ncaawb": 10, "nhl": 20, "ahl": 20,
               "soccer": 45, "mls": 45, "epl": 45}
 
 
@@ -9193,7 +9214,7 @@ def line_fair(code, kind, line, team_is_home, g):
         mu = -g["spread_home"] if team_is_home else g["spread_home"]      # expected winning margin
         if code in MARGIN_SD:
             return _phi((mu - line) / MARGIN_SD[code])
-        if code in ("nhl", "soccer") and g.get("total"):
+        if code in ("nhl", "ahl", "soccer") and g.get("total"):
             lam_t = g["total"]
             lh = max(0.2, (lam_t + mu) / 2)
             la = max(0.2, lam_t - lh)
@@ -9209,7 +9230,7 @@ def line_fair(code, kind, line, team_is_home, g):
         return None
     if code in TOTAL_SD:
         return _phi((g["total"] - line) / TOTAL_SD[code])
-    if code in ("nhl", "soccer"):
+    if code in ("nhl", "ahl", "soccer"):
         return 1 - _poisson_cdf(math.floor(line), g["total"])
     return None
 
@@ -9817,7 +9838,7 @@ def rebuild_asked():
         return False
 CUTOFF_FILE = os.path.join(HERE, "combo_cutoffs.json")
 SIZING_FILE = os.path.join(HERE, "combo_sizing.json")
-SWING = {"nhl": 1.25, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
+SWING = {"nhl": 1.25, "ahl": 1.3, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
          "ncaamb": 0.9, "ncaawb": 0.9, "wnba": 0.85, "mlb": 1.05, "tennis": 1.0}   # how fast a lead can vanish
 
 
@@ -11085,50 +11106,7 @@ def lab_ticks(now=None):
     return saved
 
 
-def sim_exit(c):
-    """What smart sell (or lock-in) would have done with this bet, replayed on its recorded game prices.
-    Returns (profit or loss, "smart"/"lock in") if it would have sold, or None if it would have ridden."""
-    if not STORE["db"] or c.get("kind") == "early" or not c.get("kick"):
-        return None
-    tks = [l["ticker"] for l in c["legs"]]
-    q_ = ",".join("?" * len(tks))
-    rows = store_rows(f"select ts, ticker, chance from ticks where state='sim' and ticker in ({q_}) and ts >= ? order by ts",
-                      (*tks, c["kick"] - 300))
-    if len(rows) < 3:
-        return None
-    cur = {l["ticker"]: (l.get("p") or 0.5) for l in c["legs"]}
-    stake = c["stake"]
-    if c["kind"] == "combo":
-        P = c.get("pays") or 0
-    else:
-        p0 = c.get("paid") or c.get("price") or c["legs"][0].get("p") or 0.5
-        P = stake / (p0 + single_fee(p0))
-    if not P:
-        return None
-    peak = 0.0
-    by_ts = defaultdict(list)
-    for r in rows:
-        by_ts[r["ts"]].append(r)
-    for ts in sorted(by_ts):
-        for r in by_ts[ts]:
-            cur[r["ticker"]] = r["chance"]
-        q = math.prod(cur.values())
-        open_ = [t for t in tks if 0.02 < cur[t] < 0.98]
-        if not open_:
-            break                                  # decided: it rode to the end
-        if c["kind"] == "combo":
-            est = kalshi_discount(True) * q * P
-        else:
-            x = cur[tks[0]]
-            est = P * max(x - single_fee(x) - 0.01, 0)
-        lam = 0.35 * sum(SWING.get(ticker_sport(t) or "", 1.0) for t in open_) / len(open_)
-        floor = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), 1.5 * stake)
-        if q >= 0.5 and est >= floor:
-            return round(est - stake, 2), "smart"
-        peak = max(peak, est)
-        if peak >= max(TRAIL_ARM * P, 1.5 * stake) and est <= (1 - TRAIL_DROP) * peak and est >= 1.1 * stake:
-            return round(est - stake, 2), "lock in"
-    return None
+# (sim_exit lives with the self-tuning smart sell below)
 
 
 ANALYTICS = {"at": 0, "v": None}
@@ -11239,6 +11217,10 @@ def analytics(max_age=600):
     out["auto"] = dict(auto)
     real = [c for m, c in items if m == "real"]
     out["notes"] = _analytics_notes(rows, out["types"], len(real))
+    try:
+        out["tuning"] = smart_summary()
+    except Exception:
+        out["tuning"] = []
     ANALYTICS.update(at=now, v=out)
     return out
 
@@ -11262,6 +11244,234 @@ def _analytics_notes(levels, types, n_real):
     if not n_real:
         notes.append("No real panel bets have settled yet.")
     return notes
+
+
+# ---------------------------------------------------------------- smart sell that tunes itself, league by league
+# Pete: no hard "never/always" lines; every rule starts somewhere sensible and the data moves it, league by
+# league (college basketball isn't the NBA). Once a week the Mac replays settled bets on their recorded game
+# prices with slightly different settings and keeps whatever has really done better, in small steps, only
+# with enough results. Leagues short on data borrow their sport's settings, then everyone's.
+SMART_FILE = os.path.join(HERE, "combo_smart.json")
+SMART_DEFAULT = {"floor": 1.5, "lam": 1.0, "loss": None}
+SMART_BOUNDS = {"floor": (1.2, 2.0), "lam": (0.5, 2.0), "loss": (0.10, 0.30)}
+SMART_MIN_N, SMART_MIN_GAIN = 30, 0.02
+SOCCER_LEAGUE = {"KXEPL": "epl", "KXLALIGA": "laliga", "KXSERIEA": "seriea", "KXBUNDESLIGA": "bundesliga",
+                 "KXLIGUE1": "ligue1", "KXMLS": "mls", "KXLIGAMX": "ligamx"}
+LEAGUE_NAME = {"epl": "Premier League", "laliga": "La Liga", "seriea": "Serie A", "bundesliga": "Bundesliga",
+               "ligue1": "Ligue 1", "mls": "MLS", "ligamx": "Liga MX", "mix": "Mixed", "all": "Everything"}
+SMART_CACHE = {"at": 0, "d": {}}
+RIDE_LAM = {0: 1.4, 1: 1.2, 2: 1.0, 3: 0.75}          # Let it ride: Cautious sells sooner, Bold holds longer
+
+
+def league_key(t):
+    u = (t or "").upper()
+    for pre, k in SOCCER_LEAGUE.items():
+        if u.startswith(pre):
+            return k
+    return ticker_sport(t) or "other"
+
+
+def bet_key(tickers):
+    ks = {league_key(t) for t in tickers if t}
+    return ks.pop() if len(ks) == 1 else "mix"
+
+
+def league_label(k):
+    return LEAGUE_NAME.get(k) or (SPORTS.get(k) or {}).get("name") or k.upper()
+
+
+def smart_table():
+    if time.time() - SMART_CACHE["at"] > 60:
+        SMART_CACHE.update(at=time.time(), d=load_json(SMART_FILE, {}))
+    return SMART_CACHE["d"]
+
+
+def smart_params(tickers):
+    """The smart-sell settings for a bet: its league's own once it has enough results, else its sport's,
+    else everyone's, else the starting point (1.5x floor, standard risk, no selling at a loss)."""
+    d = smart_table()
+    k = bet_key(tickers)
+    sport = ticker_sport(next(iter(tickers), "") or "") if k not in ("mix",) else None
+    for key in (k, sport, "all"):
+        e = d.get(key) if key else None
+        if e and e.get("n", 0) >= SMART_MIN_N:
+            return {**SMART_DEFAULT, **{x: e.get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}, "key": key}
+    return dict(SMART_DEFAULT, key=None)
+
+
+def ride_lam():
+    """How the Let it ride setting scales smart sell (None: Ride it out turns smart sell off)."""
+    i = min(max(int(CFG.get("ride", 2)), 0), len(RIDE) - 1)
+    return RIDE_LAM.get(i)
+
+
+def _paths(c):
+    """A bet's recorded game prices as [(time, {ticker: chance})], oldest first (any source of ticks)."""
+    tks = [l["ticker"] for l in c["legs"]]
+    q_ = ",".join("?" * len(tks))
+    rows = store_rows(f"select ts, ticker, chance from ticks where ticker in ({q_}) and ts >= ? and chance is not null "
+                      f"order by ts", (*tks, (c.get("kick") or 0) - 300))
+    cur = {l["ticker"]: (l.get("p") or 0.5) for l in c["legs"]}
+    out, by = [], defaultdict(list)
+    for r in rows:
+        by[round(r["ts"])].append(r)
+    for ts in sorted(by):
+        for r in by[ts]:
+            cur[r["ticker"]] = r["chance"]
+        out.append((ts, dict(cur)))
+    return out
+
+
+def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True):
+    """Replays smart sell on a bet's path with the given settings. Returns (profit, why) when it would have
+    sold, else None (it rides to the end)."""
+    stake = c["stake"]
+    if c["kind"] == "combo":
+        P = c.get("pays") or 0
+    else:
+        p0 = c.get("paid") or c.get("price") or c["legs"][0].get("p") or 0.5
+        P = stake / (p0 + single_fee(p0))
+    if not P or len(path) < 3:
+        return None
+    tks = [l["ticker"] for l in c["legs"]]
+    peak = 0.0
+    for ts, cur in path:
+        q = math.prod(cur[t] for t in tks)
+        open_ = [t for t in tks if 0.02 < cur[t] < 0.98]
+        if not open_:
+            return None
+        if c["kind"] == "combo":
+            est = kalshi_discount(True) * q * P
+        else:
+            x = cur[tks[0]]
+            est = P * max(x - single_fee(x) - 0.01, 0)
+        lam = 0.35 * lm * sum(SWING.get(ticker_sport(t) or "", 1.0) for t in open_) / len(open_)
+        floor = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), fl * stake)
+        if q >= 0.5 and est >= floor:
+            return round(est - stake, 2), "smart"
+        if loss and q <= loss and est > 0.02 * stake:
+            return round(est - stake, 2), "cut loss"
+        peak = max(peak, est)
+        if trail and peak >= max(TRAIL_ARM * P, fl * stake) and est <= (1 - TRAIL_DROP) * peak and est >= 1.1 * stake:
+            return round(est - stake, 2), "lock in"
+    return None
+
+
+def sim_exit(c):
+    """What smart sell (with today's settings for that league) would have done with this bet, on its recorded
+    game prices: (profit or loss, why) if it would have sold, None if it would have ridden."""
+    if not STORE["db"] or c.get("kind") == "early" or not c.get("kick"):
+        return None
+    pr = smart_params([l["ticker"] for l in c["legs"]])
+    return _replay(c, _paths(c), pr["floor"], pr["lam"], pr["loss"])
+
+
+def _tune_items(days=60):
+    """Settled bets with recorded game prices: panel, paper and lab bets, and your real combos."""
+    cut = time.time() - days * 86400
+    out = []
+    _panel_table()
+    for r in store_rows("select body from panel where (mode in ('real','paper','lab') or mode like 'real#%') and ts > ?", (cut,)):
+        for c in json.loads(r["body"]).get("items", []):
+            if c.get("result") and c.get("kind") != "early" and c.get("kick") and c.get("pl") is not None:
+                out.append(c)
+    for r in store_rows("select combo, cost, pays, legs, status, first_seen from bets where status in ('won','lost') and settled > ?", (cut,)):
+        try:
+            tks = json.loads(r["legs"] or "[]")
+        except ValueError:
+            continue
+        if tks and r["cost"]:
+            out.append({"id": r["combo"], "kind": "combo", "stake": r["cost"], "pays": r["pays"], "kick": r["first_seen"],
+                        "legs": [{"ticker": t} for t in tks], "pl": (r["pays"] if r["status"] == "won" else 0) - r["cost"]})
+    return out
+
+
+def _grid(cur):
+    f, l, s = cur["floor"], cur["lam"], cur["loss"]
+    lo_f, hi_f = SMART_BOUNDS["floor"]
+    lo_l, hi_l = SMART_BOUNDS["lam"]
+    floors = sorted({round(min(max(x, lo_f), hi_f), 2) for x in (f - 0.1, f, f + 0.1)})
+    lams = sorted({round(min(max(x, lo_l), hi_l), 3) for x in (l * 0.85, l, l * 1.15)})
+    losses = [None, 0.15] if s is None else sorted({x for x in (None if s - 0.05 < SMART_BOUNDS["loss"][0] else round(s - 0.05, 2),
+                                                                s, round(min(s + 0.05, SMART_BOUNDS["loss"][1]), 2))},
+                                                     key=lambda v: -1 if v is None else v)
+    return [(a, b, c) for a in floors for b in lams for c in losses]
+
+
+def smart_tune(force=False):
+    """Once a week: for each league (then each sport, then everything), replay its settled bets with nearby
+    settings and move one small step toward whatever did clearly better. Returns what changed, in words."""
+    d = load_json(SMART_FILE, {})
+    if not force and time.time() - d.get("_at", 0) < 7 * 86400:
+        return []
+    if not STORE["db"]:
+        return []
+    items = _tune_items()
+    groups = defaultdict(list)
+    for c in items:
+        tks = [l["ticker"] for l in c["legs"]]
+        path = _paths(c)
+        if len(path) < 3:
+            continue
+        k = bet_key(tks)
+        for key in {k, ticker_sport(tks[0]) if k != "mix" else None, "all"}:
+            if key:
+                groups[key].append((c, path))
+    moved = []
+    for key, rows in groups.items():
+        cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
+        n = len(rows)
+        staked = sum(c["stake"] for c, _ in rows) or 1
+
+        def score(fl, lm, loss):
+            tot = 0.0
+            for c, path in rows:
+                r = _replay(c, path, fl, lm, loss)
+                tot += r[0] if r else c["pl"]
+            return tot / staked
+        base = score(cur["floor"], cur["lam"], cur["loss"])
+        best, best_v = (cur["floor"], cur["lam"], cur["loss"]), base
+        here = (cur["floor"], cur["lam"], cur["loss"])
+        moves = lambda g: sum(1 for a, b in zip(g, here) if a != b)
+        if n >= SMART_MIN_N:
+            for g in _grid(cur):
+                v = score(*g)
+                if v > best_v + 1e-9 or (abs(v - best_v) <= 1e-9 and moves(g) < moves(best)):
+                    best, best_v = g, v       # on a tie, the smallest change wins
+        e = dict(d.get(key) or {}, n=n, ret=round(base, 4))
+        if n >= SMART_MIN_N and best_v - base >= SMART_MIN_GAIN and best != (cur["floor"], cur["lam"], cur["loss"]):
+            parts = []
+            if best[0] != cur["floor"]:
+                parts.append(f"profit floor {cur['floor']:g}× → {best[0]:g}×")
+            if best[1] != cur["lam"]:
+                parts.append("holds a bit longer" if best[1] < cur["lam"] else "takes profits a bit sooner")
+            if best[2] != cur["loss"]:
+                parts.append("may now cut a loss once the chance falls under " + f"{best[2]:.0%}" if best[2] and not cur["loss"]
+                             else "stops cutting losses" if not best[2] else f"cuts losses under {best[2]:.0%}")
+            why = (f"{', '.join(parts)}: in {n} recent bets that would have returned {best_v:+.0%} on what was staked, "
+                   f"vs {base:+.0%} with the old settings")
+            e.update(floor=best[0], lam=best[1], loss=best[2], why=why, at=int(time.time()))
+            moved.append(f"{league_label(key)}: {why}")
+        else:
+            e.update({x: cur[x] for x in SMART_DEFAULT})
+        d[key] = e
+    d["_at"] = time.time()
+    save_json(SMART_FILE, d)
+    SMART_CACHE["at"] = 0
+    return moved
+
+
+def smart_summary():
+    """Each league's smart-sell settings for the Results page."""
+    d = load_json(SMART_FILE, {})
+    out = []
+    for k, e in sorted(d.items()):
+        if k.startswith("_"):
+            continue
+        out.append({"key": k, "name": league_label(k), "floor": e.get("floor", 1.5), "lam": e.get("lam", 1.0),
+                    "loss": e.get("loss"), "n": e.get("n", 0), "ret": e.get("ret"), "why": e.get("why", ""),
+                    "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N})
+    return out
 
 
 def prune_drafts(now=None):
@@ -11889,7 +12099,7 @@ def record_view(view):
     return ev
 
 
-SPORT_SCORE_WORD = {"nhl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
+SPORT_SCORE_WORD = {"nhl": "Goal", "ahl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
 
 
 def short_name(name):
