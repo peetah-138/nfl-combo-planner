@@ -227,7 +227,28 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
-- Planned next phases (game page drill-down, Games cards, Sold moment, charts): `ROADMAP.md` and issue #12.
+- **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
+  - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
+    (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and
+    clock (red live dot), your side ("YOURS") and theirs with the score, the chance (rolling, with a bar) and a chance
+    line with a glowing end dot (the Mac's `ticks`, plus what the page saw itself in `S.gh`), and chips for the bets
+    riding on it. When someone scores the card pulses green (your side) or red (theirs), the number bumps and the
+    phone ticks (`scoreWatch`). Tap pushes the game page. Skeleton cards while loading.
+  - **Charts you can scrub** (`wireScrubs` + a spec in `S.scr[name]`): the game page's chance chart (readout of time
+    and chance) and the Results profit bars; a haptic tick per point, refreshes wait while a finger is down
+    (`S.scrub`), a short tap can open the point.
+  - **The Sold moment** (`soldSheet`): a successful cash-out tap (the reply starts with ✅) gets the drawn-check sheet
+    with what came back, the profit and %, a "You paid / Got back" stub. A loss gets a calm grey version (dash
+    instead of a check, light haptic). While the page is open, sales smart sell / auto cash-out made by themselves
+    show the same card stamped "SOLD BY SMART SELL" (`api_live` now returns `sales`, read-only from the sell log;
+    only sales made after the page opened; each once). If a sheet is already open it's a toast instead.
+  - **Wins** (`liveMoments`, diffing two Live loads): a small win = confetti + toast; a **big hit** (profit ≥ $50, or
+    ≥ $15 at 5×+) = a full-screen moment (`bigWin`): the payout rolls up, rings pulse, two confetti waves, a double
+    success haptic; tap to close. Each win once (`S.momSeen`).
+  - **Results**: "Profit by day / week" bars (Day = last 14 days with results, Week = last 12 weeks; remembered),
+    drag across for a readout, tap a bar for that day's or week's bets in a sheet. Skeletons for Results and the
+    Build panel; empty states point to Build. `test_makeover2.py` covers all of this.
+- Next makeover phases (Kalshi-style game page, settings polish, light mode): `ROADMAP.md` and issue #12.
 
 ## Open items
 
