@@ -29,6 +29,10 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 - The Mac session should set up a local `.git/hooks/pre-commit` (and `SECRET_PATTERN` for the check list) with the
   strings Pete gives it. They must never be written into a tracked file.
 
+### The old "Sell at a loss" switch (`stop_loss`)
+- Kept for now as a labelled manual override in Settings (behaviour unchanged). Decide: keep it, or remove it now that
+  the learned per-league loss cut exists.
+
 ### The $300 full-auto experiment
 - The Mac picks, times, buys and sells on its own with $300. **Only after** the paper panel clears the gate
   (50+ settled bets, ahead overall, ≥ 55% of days up, CLV ≥ 0), and only when Pete then says go. Results › the
@@ -74,15 +78,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 4. **Polish pass on every screen** for consistency: spacing, type sizes, empty states, loading skeletons, light mode.
 5. Research Kalshi's own app interactions (the cloud session couldn't open kalshi.com) and borrow what fits.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
-
-### c. Live scores for the AHL
-- ESPN's free scoreboard doesn't cover it, so AHL bets show prices but no score or clock. Find a free, reliable
-  AHL score source (e.g. the league's own public feed), with the same caching and fallbacks as ESPN.
-
-### d. Clean up settings that the learning replaced
-- The old "Sell at a loss when a game turns" switch (`stop_loss`) overlaps the learned per-league loss cut. Decide
-  with Pete: remove it, or keep it as a manual override, and say so in Settings.
-- "Include bets I place on Kalshi myself" (`sell_own`) was replaced by the per-bet switch; remove the dead setting.
 
 ### e. Friends could use it (onboarding)
 - Pete wants an app friends would want to use. Today it's one person, one Mac, one Kalshi key. A friend-ready

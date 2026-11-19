@@ -47,8 +47,8 @@ CFG = {
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
-    "stop_loss": False,   # auto cash-out: may sell below what you paid when a game turns against you
-    "sell_own": False,    # auto cash-out/hedge/take-profit also act on bets you placed on Kalshi yourself
+    "stop_loss": False,   # manual override: auto cash-out may sell below what you paid when a game turns against you
+                          # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
@@ -157,7 +157,7 @@ LEAGUES = {
                          "middle_count": 3, "middle_min": 3, "middle_max": 4,
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
     # AHL: the NHL's top minor league. Hockey shapes (short combos, a one-goal game swings), its own tuning;
-    # a sportsbook line is required, and there's no free live scoreboard, so live play runs on Kalshi's prices.
+    # a sportsbook line is required; ESPN has no AHL scoreboard, so live scores come from the league's own feed.
     "ahl": {"name": "AHL", "short": "AHL", "icon": "🏒", "series": "KXAHLGAME", "odds": "icehockey_ahl",
             "espn": None, "espn_q": {}, "slate": "day", "game_hours": 2.75, "periods": 3, "full": False,
             "teams": None, "require_line": True,
@@ -248,7 +248,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "tp_v2", "sell_own")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "tp_v2")
 
 
 def next_league():
@@ -4593,7 +4593,7 @@ def open_singles(max_age=30):
         status = (m.get("status") or "").lower()
         sc = None
         try:
-            if code in SPORTS and SPORTS[code].get("espn"):
+            if code in SPORTS and (SPORTS[code].get("espn") or SPORTS[code].get("feed")):
                 fetch_scores(code=code)
             sc = leg_score(_score_leg(t, kind, side, code))
         except Exception:
@@ -4601,6 +4601,10 @@ def open_singles(max_age=30):
         live = bool(sc) and str(sc.get("state") or "") in ("in", "live")
         state = "done" if res else "over" if status in ("closed", "settled", "finalized", "determined") else \
             "live" if live else "pre"
+        rs = None                                   # started, nothing settled it, no live score: say so honestly
+        if state == "pre":
+            rs = run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
+                            score_state=(sc or {}).get("state"))
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
                     "opp": (sc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
@@ -4611,7 +4615,9 @@ def open_singles(max_age=30):
                     "worth": round(n * bid, 2) if bid is not None else None,
                     "chance": round(chance, 4) if chance is not None else None, "state": state, "res": res,
                     "score": re.sub(r"<[^>]+>", "", score_line(sc)) if sc and state != "pre" else "",
-                    "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" else "",
+                    "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" and not rs else "",
+                    "note": (rs or {}).get("text", ""), "phase": (rs or {}).get("phase", ""),
+                    "short": (rs or {}).get("short", ""),
                     "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
@@ -4687,6 +4693,7 @@ def live_view(mine, views, plan, chance_one, balance):
             x = need.setdefault(k, {"name": lg["name"], "opp": lg["opp"], "sport": lg["sport"], "combos": 0, "pays": 0.0,
                                     "ticker": lg["ticker"],
                                     "state": lg["state"], "score": lg["score"], "sc": lg["sc"], "starts": lg["starts"],
+                                    "phase": lg.get("phase", ""), "note": lg.get("note", ""), "short": lg.get("short", ""),
                                     "chance": lg["live"] if lg["live"] is not None else lg["chance"]})
             x["combos"] += 1
             x["pays"] += v["pays"]
@@ -5024,7 +5031,7 @@ SPORTS = {
     "nfl": {"icon": "🏈", "name": "NFL", "espn": "football/nfl", "q": {}, "periods": 4, "day": False, "hours": 3.5},
     "nba": {"icon": "🏀", "name": "NBA", "espn": "basketball/nba", "q": {}, "periods": 4, "day": True, "hours": 2.5},
     "nhl": {"icon": "🏒", "name": "NHL", "espn": "hockey/nhl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
-    "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "q": {}, "periods": 3, "day": True, "hours": 2.75},
+    "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "feed": "ahl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
     "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
     "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
@@ -5063,8 +5070,10 @@ def fetch_scores(max_age=None, code=None):
     max_age = SCORES_MAX_AGE if max_age is None else max_age
     sp = SPORTS.get(code)
     got = SCORES_BY.get(code) or {"at": 0, "by": {}}
-    if not sp or not sp.get("espn") or time.time() - got["at"] < max_age:
+    if not sp or not (sp.get("espn") or sp.get("feed")) or time.time() - got["at"] < max_age:
         return got["by"]
+    if sp.get("feed"):
+        return _fetch_feed_scores(code, sp, got)
     by = {}
     try:
         events = []
@@ -5121,6 +5130,107 @@ def fetch_scores(max_age=None, code=None):
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
                     by.setdefault(alt, []).append(info)
     except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return got["by"]
+    SCORES_BY[code] = {"at": time.time(), "by": by}
+    if code == LEAGUE["code"]:
+        SCORES.update(at=time.time(), by_team=by)
+    return by
+
+
+# The AHL's own public score feed (the JSON its website's score widgets read, run by HockeyTech): ESPN has no
+# AHL scoreboard. Free, no login. The client key below is the public one baked into theahl.com's pages, not a
+# secret; the AHL_FEED_KEY environment variable replaces it if the league ever rotates it.
+AHL_FEED_URL = "https://lscluster.hockeytech.com/feed/index.php"
+AHL_FEED_KEY = os.environ.get("AHL_FEED_KEY") or "ccb91f29d6744675"
+AHL_ALIAS = {"CLT": ("CHA",)}      # Kalshi's tickers spell a few teams differently from the league's feed
+try:
+    from zoneinfo import ZoneInfo as _ZI
+    FEED_TZ = _ZI("America/Toronto")                 # the feed's own clock (Eastern, daylight saving included)
+except Exception:                                    # no time-zone data (some iOS builds)
+    FEED_TZ = None
+
+
+def _feed_start(g):
+    """(UTC start as ISO text, US-Eastern game date) of one feed game. The feed's 'Ord' is the start in Eastern
+    time and is the reliable one (its ISO text has a wrong offset for some western arenas), so it wins when
+    time-zone data exists; otherwise the ISO text is used."""
+    day = None
+    try:
+        day = dt.date.fromisoformat(str(g.get("Ord") or g.get("Date") or "")[:10])
+        if FEED_TZ:
+            t = dt.datetime.strptime(str(g["Ord"])[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=FEED_TZ)
+            return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), day
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        t = dt.datetime.fromisoformat(str(g.get("GameDateISO8601") or ""))
+        return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), day or (t - dt.timedelta(hours=5)).date()
+    except ValueError:
+        return "", day
+
+
+def _feed_state(g):
+    """'pre' / 'in' / 'post' from the feed's game status (1 not started, 2 in progress, 3 and 4 final)."""
+    stt = str(g.get("GameStatus") or "")
+    if stt in ("3", "4") or str(g.get("GameStatusString") or "").lower().startswith("final"):
+        return "post"
+    return "in" if stt == "2" else "pre"
+
+
+def _fetch_feed_scores(code, sp, got):
+    """Live scores for a league whose games ESPN doesn't carry, in the shape fetch_scores builds from ESPN: the
+    same cache, and the same last-good-copy fallback when the feed can't be reached or sends something odd."""
+    import time
+    n_per = sp["periods"]
+    try:
+        r = requests.get(AHL_FEED_URL, params={
+            "feed": "modulekit", "view": "scorebar", "numberofdaysback": 1, "numberofdaysahead": 3,
+            "key": AHL_FEED_KEY, "client_code": sp["feed"], "fmt": "json", "lang": "en"}, timeout=8)
+        games = r.json()["SiteKit"]["Scorebar"] if r.ok else None
+        if not isinstance(games, list):
+            return got["by"]                                 # keep the last good copy, never cache a blank
+        by = {}
+        for g in games:
+            state = _feed_state(g)
+            try:
+                per = int(g.get("Period") or 0)
+            except ValueError:
+                per = 0
+            clock = str(g.get("GameClock") or "").lstrip("0")
+            clock = ("0" + clock) if clock.startswith(":") else (clock or "0:00")
+            if state == "post":
+                detail = str(g.get("GameStatusStringLong") or "").strip()
+                if not detail.startswith("Final"):
+                    detail = "Final"
+            elif state == "in":
+                if str(g.get("PeriodNameShort") or "").upper() == "SO":
+                    detail = "SO"
+                elif str(g.get("Intermission") or "0") == "1":
+                    detail = f"End P{per}" if per <= n_per else "End OT"
+                else:
+                    detail = f"{'OT' if per > n_per else 'P' + str(per)} {clock}"
+            else:
+                detail = str(g.get("GameStatusStringLong") or g.get("GameStatusString") or "")
+            start, day = _feed_start(g)
+            st = {"period": per, "displayClock": clock}
+            sides = []
+            for pre in ("Home", "Visitor"):
+                nm = g.get(pre + "LongName") or f"{g.get(pre + 'City', '')} {g.get(pre + 'Nickname', '')}".strip()
+                sides.append((nm, g.get(pre + "Code") or "", int(float(g.get(pre + "Goals") or 0)), pre))
+            for i, (name, abbr, goals, pre) in enumerate(sides):
+                oname, oabbr, ogoals, _ = sides[1 - i]
+                if not name:
+                    continue
+                info = {"frac": _frac_left(code, st, n_per, state), "me": goals, "opp": ogoals,
+                        "abbr": abbr, "opp_abbr": oabbr, "opp_name": oname, "state": state, "detail": detail,
+                        "start": start, "ball": False, "redzone": False, "sport": code,
+                        "game": g.get("ID"), "day": day, "wp": None}
+                keys = {name, norm_team(name), norm_team(g.get(pre + "City") or ""),
+                        norm_team(g.get(pre + "Nickname") or ""), "@" + abbr.upper()}
+                keys |= {"@" + x for x in AHL_ALIAS.get(abbr.upper(), ())}
+                for alt in keys - {"", "@"}:
+                    by.setdefault(alt, []).append(info)
+    except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
         return got["by"]
     SCORES_BY[code] = {"at": time.time(), "by": by}
     if code == LEAGUE["code"]:
@@ -5236,6 +5346,10 @@ def leg_start(l, side_of):
         t = start_dt(s["event"])
         if t:
             return t
+    else:                                      # a game outside the sport on screen (tennis in an NBA view)
+        t = start_dt(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
+        if t:
+            return t
     sc = leg_score(l)
     try:
         if sc and sc.get("start"):
@@ -5249,14 +5363,55 @@ def leg_start(l, side_of):
     return None
 
 
+# Hours after the start when we stop calling a game "on" if nothing says it is: sports with no live score source
+# (tennis, UFC, EuroLeague, AHL) otherwise look live for ever. Sport-typical lengths, a little generous.
+DONE_HOURS = {"nfl": 4.25, "nba": 3.25, "nhl": 3.5, "ahl": 3.5, "ncaamb": 2.75, "ncaawb": 2.75, "ncaaf": 4.5,
+              "euroleague": 2.75, "ufc": 3.0, "soccer": 2.75, "tennis": 4.0}
+
+
+def ago_text(secs):
+    """'25 min', '3h 10m', '5h', '2 days' for how long ago something began."""
+    m = max(int(secs // 60), 0)
+    if m < 60:
+        return f"{max(m, 1)} min"
+    if m < 24 * 60:
+        h, r = divmod(m, 60)
+        return f"{h}h {r}m" if r >= 10 else f"{h}h"
+    d = m // (24 * 60)
+    return f"{d} day{'s' if d != 1 else ''}"
+
+
+def run_status(sport, started_at, now=None, score_state=None):
+    """Honest status for a game that has started but that Kalshi hasn't settled.
+    None if it hasn't started. Otherwise {"phase": "on" | "probably_over" | "over", "text": ...}:
+    "on" while a score says so or while it is within a sport-typical length; "probably_over" after that when
+    there is no score to say otherwise (the pick stays open until Kalshi settles it); "over" when the score
+    source says it finished."""
+    if not started_at:
+        return None
+    now = now or dt.datetime.now(dt.timezone.utc)
+    secs = (now - started_at).total_seconds()
+    if secs < 0:
+        return None
+    if score_state == "in":
+        return {"phase": "on", "text": "", "short": ""}
+    if score_state == "post":
+        return {"phase": "over", "text": "Game over · waiting on Kalshi to settle", "short": "Game over"}
+    ago = ago_text(secs)
+    if secs / 3600.0 < DONE_HOURS.get(sport, 3.5):
+        return {"phase": "on", "text": f"Started {ago} ago · no live score", "short": f"Started {ago} ago"}
+    return {"phase": "probably_over", "text": f"Probably finished · started {ago} ago, waiting on Kalshi",
+            "short": "Probably over"}
+
+
 def when_label(t):
-    """'Live', 'Tonight 7:10 PM', 'Tue 4:00 PM', 'Nov 29' for a start time."""
+    """'Started 25 min ago', 'Tonight 7:10 PM', 'Tue 4:00 PM', 'Nov 29' for a start time."""
     if not t:
         return ""
     t = t.astimezone()
     now = dt.datetime.now().astimezone()
     if t <= now:
-        return "Live now"
+        return "Started " + ago_text((now - t).total_seconds()) + " ago"
     days = (t.date() - now.date()).days
     clock = t.strftime("%-I:%M %p").replace(":00 ", " ")
     if days == 0:
@@ -5636,7 +5791,7 @@ NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
-                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "sell_own")
+                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -5664,7 +5819,7 @@ _requests = requests
 HUB = {"up": None, "at": 0.0, "info": {}, "ms": None, "why": "", "armed": 0.0}
 HUB_PORT = 8765
 HUB_RECHECK_UP, HUB_RECHECK_DOWN = 30, 45
-HUB_GET_HOSTS = (KALSHI + "/", "https://site.api.espn.com/")
+HUB_GET_HOSTS = (KALSHI + "/", "https://site.api.espn.com/", "https://lscluster.hockeytech.com/")
 AUTO = _threading.local()          # set while an automatic cash-out/hedge runs (no confirm prompt)
 
 
@@ -5762,7 +5917,7 @@ class _HubResp:
 
 
 class _HubRequests:
-    """The planner's `requests`: public Kalshi and ESPN reads come from the Mac when it's up."""
+    """The planner's `requests`: public Kalshi, ESPN and AHL-feed reads come from the Mac when it's up."""
     def __init__(self, real):
         self._r = real
 
@@ -6635,8 +6790,11 @@ def mine_page(live=False):
             if _lp is not None and l.get("side", "yes") == "no":
                 _lp = 1 - _lp
             _sc = leg_score(l) if not res else None
+            _rs = (run_status(ticker_sport(l["ticker"]), leg_start(l, side_of),
+                              score_state=(_sc or {}).get("state")) if _st == "live" else None)
             vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
-                          "state": _st, "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
+                          "state": _st, "phase": (_rs or {}).get("phase", ""), "note": (_rs or {}).get("text", ""),
+                          "short": (_rs or {}).get("short", ""), "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
                           "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
                           "starts": start_label(l.get("event") or "") if not res else "",
                           "sport": ticker_sport(l["ticker"]) or "other", "side": l.get("side", "yes"),
@@ -6655,10 +6813,14 @@ def mine_page(live=False):
         upcoming = [x for x in (leg_start(l, side_of) for l, (_, _, _, r) in legs_sorted if not r) if x]
         nxt = min(upcoming) if upcoming else None
         any_live = any(pick_state(l, side_of) == "live" for l, (_, _, _, r) in legs_sorted if not r)
-        when = ("Live now" if any_live else when_label(nxt)) if group == "pending" else ""
+        # games on with no score for longer than a game takes: say so, don't claim "Live now" for ever
+        gone_live = any_live and all(v["phase"] in ("probably_over", "over") for v in vlegs
+                                     if v["state"] == "live" and not v["res"])
+        when = (("Probably finished" if gone_live else "Live now") if any_live else when_label(nxt)) \
+            if group == "pending" else ""
         dots = "".join({"yes": "<i class='d w'></i>", "no": "<i class='d l'></i>"}.get(r, "<i class='d o'></i>")
                        for _, (_, _, _, r) in legs_sorted)
-        sort_t = 0 if any_live else (nxt.timestamp() if nxt else 9e12)
+        sort_t = 0 if any_live and not gone_live else (nxt.timestamp() if nxt else 9e12)
         need_names = [nm for _, (nm, _, _, r) in legs_sorted if not r]
         lost_names = [nm for _, (nm, _, _, r) in legs_sorted if r == "no"]
         if lost_names:
@@ -6697,10 +6859,10 @@ def mine_page(live=False):
             n1, n2 = f"<b class='neg'>−{money(a['cost'])}</b>", "<span>lost</span>"
         games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
                                     for l, (_, _, _, r) in legs_sorted if not r}))
-        kind = ("playing" if any_live else "quiet") if group == "pending" else group
+        kind = ("playing" if any_live and not gone_live else "quiet") if group == "pending" else group
         views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
                       "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
-                      "full": a.get("full_pays") or 0, "when": when, "live": any_live, "sort": sort_t,
+                      "full": a.get("full_pays") or 0, "when": when, "live": any_live and not gone_live, "sort": sort_t,
                       "preview": preview, "legs": vlegs, "week": a.get("week")})
         cards.append((group, f"<details class='crow' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "

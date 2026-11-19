@@ -17,6 +17,10 @@ Real money is involved. Pete uses it daily.
   - **The Combo Hub web app** (`--webapp`, 127.0.0.1:8766) loads it as `A`. The hub on :8765 proxies to it with a
     session cookie plus the `X-CW` token. Pete opens Combo Hub on his phone over Tailscale (and the
     `https://<mac>.<tailnet>.ts.net` secure address for Face ID passkeys and push notifications).
+    The SPA is the only UI there: the old "Classic screens" (the phone UI drawn in the browser through a bridge) and the
+    header "⋯" menu are gone. Settings is a tab, "Reload the page" is a button in Settings › The Mac, and pull-to-refresh
+    reloads data. The web-app copy of the engine keeps no-op stand-ins for Pythonista's modules so it still imports as
+    "on the phone"; the real Pythonista app is untouched.
 - `watcher/combo_watcher.py` — the Mac watcher, the hub, the web app, and the whole web UI: the single-page app is
   the raw string `SPA = r"""..."""` (HTML/CSS/JS in one string), the login page is `LOGIN_HTML`.
 - `watcher/install_mac.sh`, `setup_wizard.py`, `wizard_window.js`, `install_pi.sh` — installers.
@@ -100,7 +104,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, per-league learning.
+  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, per-league learning.
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
@@ -116,11 +120,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   a league with no games gets exactly its sport's. A sport with no games in a band keeps the books' chance (no
   "everyone" level here yet; see ROADMAP). Leagues marked `require_line` need a sportsbook line (Kalshi alone
   isn't trusted there).
-- Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis, AHL).
+- Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
+  periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
+  no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
-  require_line, hockey shapes, no live scores.
+  require_line, hockey shapes, live scores from the league feed (Kalshi's team codes can differ from the feed's,
+  e.g. CHA/CLT, so `AHL_ALIAS` maps them; names are matched too).
 
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
@@ -161,6 +168,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (starts 1.5×, 0.1 steps, 1.2–2.0), risk weight, and a learned loss cut (off until a league's record shows
   selling a sliding bet beats holding). On a tie, the smallest change wins. Results › Selling shows each league's
   settings and why they last changed.
+- Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. `stop_loss` stays as a
+  labelled **manual override** ("Manual override: sell at a loss when a game turns", off by default, separate from the
+  learned per-league loss cut). Pete to confirm whether to keep or remove it.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
@@ -172,6 +182,15 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Combos table, "Single bets & spreads" section (tap opens the game sheet: score, chance it covers, your bets on
   that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
+  says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
+  finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
+  them under "Probably finished"). Display only: `pick_state` and all money logic are unchanged, the pick stays open
+  until Kalshi settles it. Live scoring for those sports is a separate roadmap item (GitHub #25).
+- The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
+  states currently on screen.
+- Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
+  dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
 
 ### Build page
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
