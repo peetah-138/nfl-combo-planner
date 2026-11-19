@@ -49,8 +49,7 @@ Real money is involved. Pete uses it daily.
 
 - **Check thoroughly before pushing.** He was fed up with bugs reaching him. Every release goes through the full
   check list (see Testing). If a check fails, fix it and rerun everything; never push on a partial pass.
-- **Code and security reviews:** run both before every PR and every release, and fix every finding and warning
-  (this replaces the old "report first, he picks which to fix").
+- **Code and security reviews:** run both before every PR and every release, and fix every finding and warning.
 - **No rigid never/always rules.** Start from sensible defaults and let the data tune them over time,
   **per league, not just per sport** (college basketball ≠ NBA, college football ≠ NFL, each soccer league apart,
   AHL ≠ NHL). Leagues short on data borrow from their sport, then from everything.
@@ -87,7 +86,8 @@ Real money is involved. Pete uses it daily.
 1. Branch is `develop`, fully merged and green. Bump the version in all three places (see above).
 2. Run code review and security review on the release diff; fix every finding.
 3. Run `bash tests/run_checks.sh`. All must pass. Add a test for every change (see `tests/README.md`).
-4. Open the `develop` → `main` PR (merge commit). Merge it only after Pete says go. The Macs then update within
+4. Commit (no `__pycache__`) on `develop` and push it. Wait for CI (`checks`) to go green.
+5. Open the `develop` → `main` PR (merge commit). Merge it only after Pete says go. The Macs then update within
    ~10 minutes; Pete can also tap "Check for an update now". An update restarts the watcher (launchd brings it
    back).
 
