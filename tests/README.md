@@ -48,6 +48,9 @@ pattern in a local `.git/hooks/pre-commit`.
   layer: every visible clickable element on every screen has press feedback and a haptic, the haptic patterns are
   distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
   ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
+  `test_makeover2.py` covers phase 2: live Games cards with singles/spreads (API and page), the score pulse and its
+  haptic, scrubbing the game chart, the Sold moment (tap, failed sale, smart sell's calm card from a fake sell log),
+  small win vs big hit, Results profit bars (scrub ticks, tap for bets, Day/Week) and the loading skeletons.
 
 ## Writing tests
 
