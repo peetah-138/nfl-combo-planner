@@ -61,6 +61,9 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
+- **Question for Pete:** calibration learns per league (borrowing its sport's) but, unlike the cut-off, a sport
+  with no games in a chance band keeps the books' chance rather than borrowing everyone's record (borrowing would
+  change today's numbers and jump once the sport's first game lands). Mix everyone's in as a third level?
 
 ---
 
@@ -75,12 +78,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 4. **Polish pass on every screen** for consistency: spacing, type sizes, empty states, loading skeletons, light mode.
 5. Research Kalshi's own app interactions (the cloud session couldn't open kalshi.com) and borrow what fits.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
-
-### b. Everything learns per league, not just per sport (Pete's rule)
-- **Combo cut-offs** are keyed by sport and combo size (`_cut_key`); soccer's leagues share one. Move to league keys
-  with the same borrowing (league → sport → everything) the smart-sell tuning uses.
-- **Fair-price calibration** (`calib_fair`) is per sport; make it per league.
-- **Sizing and the panel's sport priorities** should read league-level results too.
 
 ### e. Friends could use it (onboarding)
 - Pete wants an app friends would want to use. Today it's one person, one Mac, one Kalshi key. A friend-ready
