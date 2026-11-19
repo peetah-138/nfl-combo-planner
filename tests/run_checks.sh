@@ -65,13 +65,13 @@ print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss; do
+for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_rebuild; do
   o=$($PY $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
 # each worker with its own copy of everything and its own port (18766, 18767, ...), so nothing is shared.
 N=${CHECK_WORKERS:-4}
-PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3"
+PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui"
 for w in $(seq 0 $((N-1))); do
   p=$((18766 + w))
   $PY -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
@@ -86,7 +86,7 @@ for w in $(seq 0 $((N-1))); do
       $PY reset.py; timeout 400 $PY $t.py > "$WORK/out_$t.txt" 2>&1; done ) &
 done
 wait
-o=$(cat out_macsmoke.txt); echo "$o" | grep -q "no problems in the log" && echo "$o" | grep -q "started: True" && ok "simulated Mac runs clean" || bad "simulated Mac" "$o"
+o=$(cat out_macsmoke.txt); echo "$o" | grep -q "no problems in the log" && echo "$o" | grep -q "started: True" && ! echo "$o" | grep -q "PROBLEMS" && ok "simulated Mac runs clean" || bad "simulated Mac" "$o"
 o=$(cat out_macupd.txt); echo "$o" | grep -q "update installed: True" && ! echo "$o" | grep -q "PROBLEMS: update check" && ok "simulated Mac installs an update" || bad "simulated Mac update" "$o"
 for t in $PAGE; do
   o=$(grep -v Deprecation "out_$t.txt" 2>/dev/null)

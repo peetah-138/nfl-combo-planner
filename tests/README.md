@@ -44,9 +44,11 @@ pattern in a local `.git/hooks/pre-commit`.
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
   reaches web push, deduped; nothing trades), per-league learning
   (cut-offs, calibration, pay index; checked against the old code), the hub's read cache (`t_hubcache.py`: short
-  score ttl, last-good copy, per-host backoff, warming that never keeps an entry alive on its own).
+  score ttl, last-good copy, per-host backoff, warming that never keeps an entry alive on its own), the panel rebuild on
+  request (`t_rebuild.py`: flag, per-sport progress notes, done/why, drafts only, no started game, the watcher's
+  `rebuild_loop` picks a request up within seconds).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
-  clean; and an update install into a temp home.
+  clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_motion.py` covers the makeover's motion
@@ -62,6 +64,8 @@ pattern in a local `.git/hooks/pre-commit`.
   Mac buttons reporting back (and Update now asking first), Build's rolling prices, pick pop, slip bar, quote
   countdown and Buy anyway, folds, panel sparklines and the arming Approve, Results' skeleton and tabs, the recap
   streak note, light mode, the login page's motion and haptics, and reduced motion. Every action call is faked.
+  `test_rebuild_ui.py`: the empty panel card (no 10-minute promise, Look now), live rebuild progress redrawn in place,
+  the new panel dropping in by itself, and the "nothing found, here's why" card.
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.

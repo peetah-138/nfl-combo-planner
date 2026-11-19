@@ -187,7 +187,13 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
   time), rechecks price, swaps in a similar bet or skips. Never buys or approves a game that has started; drafts
-  drop started games. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
+  drop started games. "Build a fresh panel" (after a Stop) and the empty card's "Look now" start at once: the tap
+  leaves `panel_rebuild.flag`, the watcher's `rebuild_loop` thread sees it within ~2 s and runs `panel_rebuild`
+  (collects every shadow sport fresh, then the usual `panel_pass`; drafts only, never buys or approves). Progress is
+  noted in `combo_rebuild.json` (`rebuild_status`: asked / running "Looking at NBA… 2 of 6 sports" / done with a
+  count, or why none). The Build page polls it every 2 s, redraws the card in place, and swaps in the new panel by
+  itself. No screen promises a 10-minute wait (the old "check back shortly" card waited for the shadow's next
+  round, and a rebuild from a stale pool silently found nothing). After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
   notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
@@ -360,12 +366,12 @@ Read it before starting new work, and keep it current: when something ships, des
 ## Code map (where to look)
 
 Engine: `panel_collect`, `build_panel`, `choose_panel`, `panel_pass`, `panel_exec`, `panel_approve`, `panel_add`,
-`prune_drafts`, `panel_settle`, `panel_record`, `adjust_cutoffs`, `combo_cutoff`, `lab_pass`, `lab_ticks`,
+`prune_drafts`, `panel_rebuild`/`rebuild_status`/`panel_look_now`, `panel_settle`, `panel_record`, `adjust_cutoffs`, `combo_cutoff`, `lab_pass`, `lab_ticks`,
 `_replay`/`sim_exit`, `smart_tune`/`smart_params`, `analytics`, `take_profit_reason`, `auto_sell_now`,
 `single_sell_reason`, `smart_sell_singles`, `open_singles`, `live_view`, `record_view`, `mine_page`,
 `fetch_account`/`_fetch_account`, `kalshi_send` (records app buys via `note_app_order`), `get_offer`,
 `accept_offer`, `add_own_combo`, `set_league`, `LEAGUES`/`SPORTS`/`SPORT_PREFIX`.
-Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
+Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `rebuild_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
 `webapp_main` (`api_live`, `api_build`, `api_act`, `api_panel`, `api_results`, `api_game`), `mac_settings`,
 `tailscale_cli`/`tailscale_run`/`tailscale_https`/`https_loop` (secure address; retries every 5 min until on), `push`/`web_push`
 (every ntfy alert also goes to web push unless `web=False` or a topic is given; the Pi has no subscribers so it stays alerts-only). SPA: `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
