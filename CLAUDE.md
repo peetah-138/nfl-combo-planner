@@ -121,6 +121,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
+- **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
+  `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
+  folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do
+  nothing (state `off-in-tests`). Only `t_https_push` runs a fake script from a temp folder (`TS_FAKE_OK`). `t_tailscale_safe`
+  uses a shim `tailscale` that records calls. `COMBOWATCH_NTFY` points at `ntfy.invalid` in the checks. New harnesses that boot
+  the watcher must set the flag too.
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a

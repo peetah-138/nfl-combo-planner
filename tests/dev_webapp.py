@@ -46,6 +46,7 @@ if _settings.get("watcher_code"):
 sys.path.insert(0, os.path.join(HERE, "suite"))
 import fakenet
 fakenet.install(PORT)
+os.environ["COMBO_NO_TAILSCALE"] = "1"                  # the dev app never runs the Tailscale command line
 os.environ["COMBOWATCH_NTFY"] = "http://127.0.0.1:9"      # notifications go nowhere (and the fake refuses it anyway)
 
 shutil.copy(os.path.join(REPO, "watcher", "combo_watcher.py"), os.path.join(HOME, "combo_watcher.py"))   # never run from the repo path

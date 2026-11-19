@@ -11,6 +11,8 @@ W = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(W)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 
+os.environ.pop("COMBO_NO_TAILSCALE", None)       # this test runs only its own fake command line (a script in a temp folder)
+W.TS_FAKE_OK = True
 SHIPPED = (W.TS_CLI_PATHS, W.TS_CLI_PATHS_LATE, W.TS_APP_BIN, W.TS_WAIT)
 LOGS = []
 W.log = lambda *a: LOGS.append(" ".join(str(x) for x in a))

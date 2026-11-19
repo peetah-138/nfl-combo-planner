@@ -6,6 +6,8 @@ SP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.environ.get("REPO") or os.path.dirname(os.path.dirname(SP))
 home = tempfile.mkdtemp(prefix="macsim")
 os.environ["COMBOWATCH_HOME"] = home
+os.environ["COMBO_NO_TAILSCALE"] = "1"      # never `tailscale serve` the real secure address
+os.environ.setdefault("COMBOWATCH_NTFY", "http://ntfy.invalid")
 shutil.copy(f"{REPO}/nfl_combo_planner.py", f"{home}/engine.py")
 for f in ("combo_settings.json", "kalshi_private_key.pem"):
     if os.path.exists(f"{SP}/run/{f}"):
