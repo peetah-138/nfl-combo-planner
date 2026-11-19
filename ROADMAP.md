@@ -94,6 +94,14 @@ Phase 1 shipped (haptics and press feedback on everything, Live polish, push tra
   dragging the chart may need a real device to confirm).
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
+### c. Faster live numbers, the rest (GitHub #21; first slice shipped)
+- Shipped: 8 s score cache and Live snapshot while a game is on, the fresh snapshot served, a game sheet that redraws
+  itself with a ticking clock, "Updated Ns ago" stamps, polite caching with backoff. See CLAUDE.md, Live page.
+- Next, in order: (1) the watcher pushes every score change over the live link (today only basketball lead changes
+  produce an event; other sports rely on the 8 s poll); (2) one shared scoreboard read for the Mac and the web app, so
+  ESPN is asked once per 6 s however many screens are open; (3) a faster Kalshi price read for the games on screen.
+  Measure with the `fresh` block on `/app/api/live` (`built`, `scores`) before changing anything else.
+
 ### e. Friends could use it (onboarding)
 - Pete wants an app friends would want to use. Today it's one person, one Mac, one Kalshi key. A friend-ready
   version needs: a guided first-run (connect Kalshi with their own key, pick sports, set a budget), plain

@@ -199,6 +199,22 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
   them under "Probably finished"). Display only: `pick_state` and all money logic are unchanged, the pick stays open
   until Kalshi settles it. Live scoring for those sports is a separate roadmap item (GitHub #25).
+- **Fast live numbers (display only, GitHub #21).** The web app keeps a league's scores for 8 s while any game is
+  live (30 s when none; `A.SCORES_MAX_AGE` in `webapp_main`, the old default was 45 s) and rebuilds the Live snapshot
+  when it is older than 8 s (30 s idle) and serves the **fresh** one, not the one-refresh-behind copy; if a build
+  fails or is stuck behind another job it serves the last good copy and retries in ~5 s. The warmer keeps it ready
+  (~6 s while a page has asked in the last 90 s). The hub's read cache (`HubCache`) keeps ESPN scores 6 s, prices
+  12 s, series 120 s, warms only what was asked for recently (quick) and drops entries nobody has asked for in 30
+  min; a host answering 429/5xx or timing out is backed off per host (Retry-After honoured, doubling to 60 s) while
+  the last good copy is served. **None of this touches trading:** the watcher's `E`/`H` loops, smart sell, auto
+  cash-out, the panel and every buy/sell decision read their own data on their own timing.
+  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores,
+  `fast`); the page shows a small "Updated Ns ago" stamp (Live hero, Games tab, game sheet) that counts on its own
+  and goes red after a minute. The open **game sheet redraws itself**: on every Mac tick, and on a 2 s timer when the
+  link is down; it repaints only when something changed and keeps its scroll place. Between updates the clock counts
+  down by itself, only for NBA/college basketball/NHL/AHL, and only once two polls showed it running (a clock that
+  hasn't moved for 25 s is treated as stopped); football and soccer show the last value. Tests: `t_hubcache.py`,
+  `test_livefresh.py`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
