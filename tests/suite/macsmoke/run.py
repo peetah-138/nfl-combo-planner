@@ -104,6 +104,8 @@ def run():
     except Exception:
         RET["crash"] = traceback.format_exc()
 th = threading.Thread(target=run, daemon=True); th.start()
+if not os.environ.get("UPD"):                       # a "Build a fresh panel" tap: the rebuild thread starts it at once
+    real_sleep(8); open(f"{home}/panel_rebuild.flag", "w").close(); ASKED = T.time()
 real_sleep(int(os.environ.get("SECS", 45)))
 for _ in range(60):
     if not th.is_alive() or EXITS: break
@@ -115,6 +117,10 @@ print("panel/shadow ran:", any("panel" in l.lower() for l in LOG) or "quiet (no 
 print("update installed:", any("updated to" in l for l in LOG), "| exited for restart:", bool(EXITS) or RET.get("code"))
 print("watcher file now:", re.search(r'^WATCHER_VERSION = "([^"]+)"', open(f"{home}/combo_watcher.py").read(), re.M).group(1))
 print("engine file now:", re.search(r'^VERSION = "([^"]+)"', open(f"{home}/engine.py").read(), re.M).group(1))
+if not os.environ.get("UPD"):
+    rb = [l for l in LOG if l.startswith("panel rebuild:")]
+    print("rebuild on request:", rb[:1] or "never ran", "| flag cleared:", not os.path.exists(f"{home}/panel_rebuild.flag"))
+    if not rb: print("PROBLEMS: a requested rebuild never ran")
 if RET.get("crash"): print("CRASH:\n" + RET["crash"])
 print("PROBLEMS:" if bad else "no problems in the log", *bad[:15], sep="\n  ")
 if os.environ.get("UPD"):

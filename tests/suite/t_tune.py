@@ -20,16 +20,19 @@ E.CFG["ride"] = 0; a = E.ride_lam(); E.CFG["ride"] = 3; b = E.ride_lam(); E.CFG[
 ok("Let it ride sets the boldness: Cautious sells sooner, Bold later, Ride it out switches smart sell off", a > 1 and b < 1 and c is None)
 
 # 40 NBA singles that ran up to 78c then lost: a 1.4x floor would have banked them
-def add_item(mode, i, code, path, won):
+def add_item(mode, i, code, path, won, scores=None):
     t = f"KX{code.upper()}GAME-26NOV{10 + i % 9:02d}T{i:03d}-AAA"
     kick = now - 86400 * 3 - i * 600
     for k, ch in enumerate(path):
-        E.store_x("insert into ticks values(?,?,?,?,?)", (kick + 60 * (k + 1), t, ch, "sim", "active"))
+        E.store_x("insert into ticks values(?,?,?,?,?)", (kick + 60 * (k + 1), t, ch, "sim", scores[k] if scores else "active"))
     return {"id": f"{mode}:{t}", "kind": "single", "code": code, "legs": [{"ticker": t, "p": .5, "pick": t}], "stake": 5.0,
             "price": .5, "paid": .5, "kick": kick, "state": "paper", "result": "won" if won else "lost",
             "pl": round(5 / (.5 + E.single_fee(.5)) - 5, 2) if won else -5.0}
 items = [add_item("paper", i, "nba", [.52, .6, .7, .78, .6, .4, .2, 0.0], False) for i in range(40)]
-items += [add_item("paper", 100 + i, "nhl", [.5, .4, .25, .12, .06, 0.0], False) for i in range(40)]
+# 40 NHL singles that slid all game, late in the game and for minutes on end (the loss cut's guards would let it cut)
+NHL_SC = ["", "AAA 0–1 BBB P2 10:00", "AAA 0–2 BBB P2 2:00", "AAA 0–3 BBB P3 15:00", "AAA 0–3 BBB P3 14:00",
+          "AAA 0–3 BBB P3 13:00", "AAA 0–3 BBB P3 12:00", "AAA 0–3 BBB P3 11:00", "AAA 0–4 BBB Final"]
+items += [add_item("paper", 100 + i, "nhl", [.5, .4, .25, .12, .1, .08, .07, .06, 0.0], False, NHL_SC) for i in range(40)]
 E._panel_table()
 E.store_x("insert or replace into panel values(?,?,?,?,?)", ("2026-11-15", "paper", now - 86400 * 3, "paper", json.dumps({"at": now - 86400 * 3, "items": items})))
 moved = E.smart_tune(force=True)
@@ -45,9 +48,11 @@ why, fl = E.single_sell_reason(x, .76, .78, track=False)
 ok("live: an NBA single at 76c now sells (learned 1.4x floor)", why == "smart" and abs(fl - 7.0) < .01)
 y = {"t": items[45]["legs"][0]["ticker"], "kind": "win", "sport": "nhl", "side": "yes", "n": 9.6, "cost": 5.0, "chance": .12, "state": "live"}
 why, fl = E.single_sell_reason(y, .11, .13, track=False)
-ok("live: an NHL single sliding under 15% is cut (learned)", why == "cut loss")
+ok("live: an NHL single under 15% is not cut until the loss guards have held (issue #27)", why is None)
+why, fl = E.single_sell_reason(y, .11, .13, track=False, cut_ok=True)
+ok("live: ...and once they have, it is cut (learned)", why == "cut loss")
 z = dict(y, t="KXNBAGAME-26NOV18ZZZYYY-ZZZ")
-why, fl = E.single_sell_reason(z, .11, .13, track=False)
+why, fl = E.single_sell_reason(z, .11, .13, track=False, cut_ok=True)
 ok("...but not in the NBA, whose record never showed it paying", why is None)
 E.CFG["ride"] = 4
 why, fl = E.single_sell_reason(x, .76, .78, track=False)

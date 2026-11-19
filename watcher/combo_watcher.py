@@ -26,7 +26,7 @@ WATCHER_VERSION = "2026.11.19.119"
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
+          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live")
 
 
 def log(*a):
@@ -785,20 +785,111 @@ ENABLE_HTTPS_HELP = ("HTTPS certificates are not enabled in Tailscale admin. On 
 ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns"
 
 
-def tailscale_cli():
+TS_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def tailscale_clis():
+    """Every Tailscale command line on this Mac, best first (no duplicates): the wrapper script and Homebrew, then
+    whatever is on PATH, the app's own binary last. Each is tried in turn until one answers."""
     import shutil
+    out = []
     for p in (*TS_CLI_PATHS, shutil.which("tailscale"), *TS_CLI_PATHS_LATE, TS_APP_BIN):
-        if p and os.path.exists(p):
-            return p
-    return None
+        if p and p not in out and os.path.exists(p):
+            out.append(p)
+    return out
+
+
+def tailscale_cli():
+    clis = tailscale_clis()
+    return clis[0] if clis else None
+
+
+def tailscale_env():
+    """launchd gives the watcher a bare environment (PATH /usr/bin:/bin:/usr/sbin:/sbin, maybe no HOME). Add the
+    usual places, keep HOME and set TAILSCALE_BE_CLI=1 so the app's binary acts as a command line."""
+    env = dict(os.environ)
+    parts = [x for x in (env.get("PATH") or "").split(":") if x]
+    parts += [x for x in TS_PATH.split(":") if x not in parts]
+    env["PATH"] = ":".join(parts)
+    env.setdefault("HOME", os.path.expanduser("~"))
+    env["TAILSCALE_BE_CLI"] = "1"
+    return env
 
 
 def tailscale_run(cli, args, timeout):
-    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed) and
+    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
     TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
     import subprocess
     return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                          env={**os.environ, "TAILSCALE_BE_CLI": "1"})
+                          env=tailscale_env())
+
+
+# What the command line prints when it can't reach the Tailscale app (as opposed to failing to start itself).
+TS_NO_DAEMON = ("failed to connect to local tailscale", "is tailscale running", "connection refused",
+                "tailscaled", "localapi", "local api", "socket")
+TS_CLI_BROKEN = ("gui failed to start", "clierror", "cli failed to start", "system extension")
+# What `tailscale serve` prints when the tailnet hasn't turned on HTTPS certificates.
+TS_HTTPS_OFF = re.compile(r"serve is not enabled|https (?:certificates )?(?:is |are )?not enabled|enable https|"
+                          r"certificates? (?:is |are )?not enabled|https is disabled", re.I)
+# The real reason and the next step for each BackendState that isn't Running.
+TS_BACKEND = {
+    "NeedsLogin": ("signed-out", "Tailscale says this Mac is signed out (NeedsLogin). Open the Tailscale app on the "
+                                 "Mac, sign in, then tap Try again."),
+    "NeedsMachineAuth": ("needs-approval", "This Mac is signed in to Tailscale but waits for approval "
+                                           "(NeedsMachineAuth). Approve it at login.tailscale.com/admin/machines, "
+                                           "then tap Try again."),
+    "Stopped": ("ts-off", "Tailscale is signed in but switched off on this Mac (Stopped). Open the Tailscale app, "
+                          "turn it on (Connect), then tap Try again."),
+}
+
+
+def tailscale_status():
+    """Ask each Tailscale command line for `status --json` until one gives a JSON object.
+    Returns (cli, status, None), or (None, None, (state, detail)) with the real reason it couldn't."""
+    import subprocess
+    clis = tailscale_clis()
+    if not clis:
+        log("https: no Tailscale command line found")
+        return None, None, ("no-cli", "No Tailscale command line on this Mac (looked in /usr/local/bin, "
+                                      "/opt/homebrew/bin, PATH and the Tailscale app). Install the Tailscale app, "
+                                      "open it once, then tap Try again.")
+    fails = []
+    for cli in clis:
+        try:
+            p = tailscale_run(cli, ["status", "--json"], 15)
+        except subprocess.TimeoutExpired:
+            log("https: `tailscale status` timed out:", cli)
+            fails.append(("timeout", "no answer in 15 s"))
+            continue
+        except (OSError, subprocess.SubprocessError) as err:
+            log("https: couldn't run", cli, type(err).__name__, str(err)[:120])
+            fails.append(("oserror", str(err)[:120]))
+            continue
+        raw = (p.stdout or "").strip()
+        try:
+            st = json.loads(raw)
+            if not isinstance(st, dict):
+                raise ValueError("not an object")
+            return cli, st, None
+        except ValueError:
+            seen = " ".join(((p.stderr or "").strip() + " " + raw).split())[:160]
+            log(f"https: `{cli} status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
+            fails.append(("output", seen))
+    said = " | ".join(s for _, s in fails if s)
+    low = said.lower()
+    if any(k in low for k in TS_NO_DAEMON):
+        return None, None, ("no-daemon", f"Couldn't read Tailscale's status: the command line can't talk to the "
+                                         f"Tailscale app ({said[:120]}). Open the Tailscale app on the Mac, check it "
+                                         "says Connected, then tap Try again.")
+    if any(k in low for k in TS_CLI_BROKEN):
+        return None, None, ("cli-broken", f"Couldn't read Tailscale's status: its command line wouldn't start from "
+                                          f"the watcher ({said[:120]}). On the Mac open Tailscale's settings, install "
+                                          "the command line (CLI integration), then tap Try again.")
+    if all(k == "timeout" for k, _ in fails):
+        return None, None, ("no-status", "Couldn't read Tailscale's status: Tailscale didn't answer in time. "
+                                         "It checks again by itself in a few minutes.")
+    return None, None, ("no-status", f"Couldn't read Tailscale's status: {said[:140] or 'no output'}. "
+                                     "Open the Tailscale app on the Mac, then tap Try again.")
 
 
 def _https_set(conf, state, **kw):
@@ -812,32 +903,21 @@ def tailscale_https(conf, port):
     Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
     with HTTPS_LOCK:
-        cli = tailscale_cli()
-        if not cli:
-            log("https: no Tailscale command line found")
-            return _https_set(conf, "no-cli")
-        try:
-            p = tailscale_run(cli, ["status", "--json"], 15)
-        except subprocess.TimeoutExpired:
-            log("https: `tailscale status` timed out")
-            return _https_set(conf, "no-status", detail="Tailscale didn't answer in time.")
-        except (OSError, subprocess.SubprocessError) as err:
-            log("https: couldn't run Tailscale:", type(err).__name__, str(err)[:120])
-            return _https_set(conf, "no-status", detail=f"Couldn't run Tailscale: {str(err)[:100]}")
-        raw = (p.stdout or "").strip()
-        try:
-            st = json.loads(raw)
-            if not isinstance(st, dict):
-                raise ValueError("not an object")
-        except ValueError:
-            seen = ((p.stderr or "").strip() or raw)[:120]
-            log(f"https: `tailscale status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
-            return _https_set(conf, "no-status", detail=f"Couldn't read Tailscale's status: {seen or 'no output'}")
+        cli, st, why = tailscale_status()
+        if why:
+            log("https not on yet:", why[0], why[1][:160])
+            return _https_set(conf, why[0], detail=why[1])
         backend = str(st.get("BackendState") or "")
         name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
-        if backend and backend != "Running" and not name:
+        if backend and backend != "Running":      # only BackendState itself may say signed out
+            state, detail = TS_BACKEND.get(backend, ("starting", f"Tailscale is still starting on this Mac ({backend}). "
+                                                                 "It checks again by itself in a few minutes."))
             log("https: Tailscale isn't running:", backend)
-            return _https_set(conf, "signed-out", detail=f"Tailscale says: {backend}")
+            return _https_set(conf, state, detail=detail)
+        if not backend and not name:
+            log("https: Tailscale's status had no BackendState and no name")
+            return _https_set(conf, "no-status", detail="Couldn't read Tailscale's status: it answered without a "
+                                                        "state. Open the Tailscale app on the Mac, then tap Try again.")
         if not name:
             log("https: Tailscale is running but this Mac has no machine name (is MagicDNS on?)")
             return _https_set(conf, "no-name", detail="Tailscale gave this Mac no name. Turn MagicDNS on at "
@@ -863,6 +943,7 @@ def tailscale_https(conf, port):
             out = str(err)
             log("https: couldn't run `tailscale serve`:", out[:120])
         link = re.search(r"https://login\.tailscale\.com/\S+", out)
+        certs_off = certs_off or bool(TS_HTTPS_OFF.search(out))
         tls_seen, deadline = False, time.time() + TS_WAIT
         while True:
             try:
@@ -1090,8 +1171,6 @@ def panel_loop(odds, conf, every=60):
                 n += 1
                 if n % 5 == 0:                            # results, exits and game-time prices
                     H.panel_settle()
-                if H.rebuild_asked():                     # "Build a fresh panel" was tapped: do it now
-                    H.panel_pass(log=log)
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
                     conf["recap_day"] = time.strftime("%Y-%m-%d")
@@ -1106,6 +1185,28 @@ def panel_loop(odds, conf, every=60):
         except Exception as err:
             log("panel buying skipped:", type(err).__name__, err)
         time.sleep(every)
+
+
+def rebuild_loop(odds, notifier=None, every=2):
+    """'Build a fresh panel' / 'Look now' starts at once: the tap leaves a flag, this sees it within a couple of
+    seconds and looks at every sport right away (not at the shadow's next 10-minute round), noting progress for the
+    Build page. It only makes drafts; buying stays with panel_loop (Pause, started games and all)."""
+    while True:
+        time.sleep(every)
+        try:
+            with odds.lock:
+                H = odds.engine()
+                if not H.rebuild_pending():
+                    continue
+            did = H.panel_rebuild(lambda code: H.panel_collect(odds.get(code, ""), code, log=log), SHADOW_LEAGUES,
+                                  lock=odds.lock, log=log)
+            if did:
+                log("panel:", "; ".join(did))
+            for m in did if notifier else []:
+                if m.startswith("🆕"):
+                    notifier.add(m, "idea")
+        except Exception as err:
+            log("panel rebuild skipped:", type(err).__name__, err)
 
 
 def history_loop(E, every=900):
@@ -2058,12 +2159,14 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .hrow2{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}.hrow2:last-child{border-bottom:0}
 .hd2{display:flex;align-items:center;gap:8px;min-width:0}.hd2 .hs{font-size:16px}.hd2 .m{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hn{display:flex;gap:16px;font-size:12.5px;color:var(--sub)}.hn b{color:var(--ink)}
+.rbtrack{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;margin:12px 0 8px}.rbtrack i{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.rbstrip{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--sub);margin:0 2px 10px}
 .panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
  background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
 .pring b{font-size:18px;line-height:1}.pring small{font-size:9.5px;color:var(--mute);font-weight:600}
 .plist{display:flex;flex-direction:column;gap:8px}.pitem{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:12px;background:var(--panel2)}
-.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+.pitem .pliv{color:var(--live)}.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
 .pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
 .pitem .ps{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}.pitem .ps b{font-size:15px}.pitem .x{border:0;background:none;color:var(--mute);font-size:15px;cursor:pointer;padding:2px 4px}
 .bets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
@@ -2690,14 +2793,14 @@ async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r
 function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
  return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
-function renderBuild(){_renderBuild();rollNums($('#main'));}
+function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
 function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
  const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
-  ${panelBlock(S.panel)}
+  <div id="pblock">${panelBlock(S.panel)}</div>
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
@@ -2715,14 +2818,14 @@ try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
 S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
-const started=c=>c.kick&&c.kick*1000<Date.now()+5*60e3;
+const started=c=>!c.live&&c.kick&&c.kick*1000<Date.now()+5*60e3;
 function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
  const state=c.state||'';const chip={scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${esc(pTime(c.kick))}</div><b>${title}</b>
+ return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
   <div class="ps"><b data-num="ps:${esc(c.id)}" data-v="${(+c.stake||0).toFixed(2)}">${money(c.stake)}</b>${pxSpark(c)}${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
 function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
@@ -2738,9 +2841,24 @@ function pxSpark(c){const a=pxNote(c);if(a.length<2)return '';const vs=a.map(p=>
  const d=a.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*64).toFixed(1)} ${(19-(p[1]-lo)/rg*16).toFixed(1)}`).join('');const col=vs[vs.length-1]>=vs[0]?'var(--yes)':'var(--no)';
  const f=c.kind==='combo'?pct:(x=>Math.round(x*100)+'¢');
  return `<svg class="psp" viewBox="0 0 64 22" preserveAspectRatio="none" aria-label="Price ${f(vs[0])} then ${f(vs[vs.length-1])}"><title>Kalshi price since this phone first saw it: ${f(vs[0])} → ${f(vs[vs.length-1])}</title><path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>`;}
-function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
-  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac checks every 10 minutes. You can still build your own below.</div></div>`:`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
+function rbOn(r){return !!(r&&(r.state==='asked'||r.state==='running'));}
+/* A requested rebuild, from the Mac's own notes: waiting to start, which sport it's on, or picking the mix. */
+function rbText(r){if(r.state==='asked')return r.wait>=90?'Waiting for the Mac to start. It hasn\'t picked this up yet: is it on and awake?':'Starting…';
+ if(r.step==='choosing')return 'Picking the best mix for today…';return `Looking at ${esc(SPN[r.sport]||String(r.sport||'').toUpperCase())}… ${Math.min((r.i||0)+1,r.n||1)} of ${r.n||1} sports`;}
+function rbFrac(r){if(r.state==='asked')return .04;const n=(r.n||1)+1;return Math.min(.97,r.step==='choosing'?(n-.5)/n:((r.i||0)+.5)/n);}
+function rbCard(r){return `<div class="card rbcard" style="text-align:center;padding:22px 18px"><div style="font-size:30px">🔎</div><b style="display:block;margin:6px 0 4px;font-size:17px">Putting together a fresh panel</b>
+  <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
+  <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
+function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
+function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
+ if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
+  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
+ const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
+ if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
+  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
+ return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
+function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
@@ -2754,7 +2872,7 @@ function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div cl
    <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
- return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
+ return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
@@ -2774,7 +2892,20 @@ async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.p
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');await load('build');}
+ hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
+async function panelLook(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking the Mac…';}
+ const r=await api('/app/api/act',{a:'panel_look'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!r.ok){hap('error');toast(r.msg,6000,'bad');}else{S.rbWas=true;if(S.panel){S.panel.rebuild=r.rebuild||{state:'asked',wait:0};}}
+ await load('build');}
+/* While the Mac rebuilds, ask it every 2 s how far it's got and redraw just the panel card; when it's done, the
+   new panel (or the reason there isn't one) drops in by itself. */
+function rbWatch(){const on=S.view==='build'&&rbOn((S.panel||{}).rebuild);if(on){S.rbWas=true;if(!S.rbT)S.rbT=setInterval(rbPoll,2000);}else if(S.rbT){clearInterval(S.rbT);S.rbT=null;}}
+async function rbPoll(){if(S.view!=='build'){rbWatch();return;}if(document.hidden||S.rbBusy)return;S.rbBusy=true;const pv=S.pview||'all';
+ try{const p=await api('/app/api/panel?v='+pv);if(!p||pv!==(S.pview||'all'))return;S.panel=p;cput('panel_'+pv,p);
+  if(rbOn(p.rebuild)){const el=$('#pblock');const t=el&&el.querySelector('.rbtxt'),bar=el&&el.querySelector('.rbtrack i');
+   if(t&&!!bar===!p.panel){t.innerHTML=(p.panel?'':'<span class="spin"></span> ')+rbText(p.rebuild);if(bar)bar.style.width=Math.round(rbFrac(p.rebuild)*100)+'%';}else renderBuild();return;}
+  const r=p.rebuild;if(S.rbWas&&r&&r.state==='done'){if(r.found){hap('success');toast(r.kind==='extra'?`Found ${r.found} new bet${r.found===1?'':'s'} since you approved.`:`Your fresh panel is ready: ${r.found} bet${r.found===1?'':'s'}.`,5000,'good');}else hap('warning');}
+  S.rbWas=false;renderBuild();}catch(e){}finally{S.rbBusy=false;rbWatch();}}
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open){S.slip=[];S.custom=null;}try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){}renderBuild();
  if(S.adv)setTimeout(()=>{const h=document.querySelector('.board');if(h)h.scrollIntoView({behavior:'smooth',block:'start'});},60);}
@@ -2970,13 +3101,17 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
  if(tab==='levels'){expl='Every combo Kalshi has quoted (last 90 days), as if bought at that price. "% of fair" is what Kalshi pays compared to the fair payout. The lab paper-buys 3 a day in each band from 80% up, and replays smart sell on their game prices.';
   body=table(['% of fair','Quotes','Hit vs expected','Riding to end','Worth at game time','Lab: ride · smart sell'],(a.levels||[]).map(x=>[`<b>${esc(x.band)}</b>`,x.n,x.hit==null?'—':pct(x.hit)+' <span class="m">vs '+pct(x.exp)+'</span>',r(x.ride),r(x.gt)+(x.gt_n?` <span class="m">(${x.gt_n})</span>`:''),x.lab_n?`${r(x.lab_ride)} · ${r(x.lab_smart)} <span class="m">(${x.lab_n})</span>`:'<span class="m">—</span>']));}
  else if(tab==='types'||tab==='sports'){expl=tab==='types'?'Every settled panel bet, real and paper (the paper panel and the combo lab). Return is profit over what was staked. Smart sell is the replay on recorded game prices, where there are enough of them. CLV: how the price you got compares with Kalshi\'s price right before the game. Positive means the market moved your way.':'The same bets, by sport.';
-  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));}
+  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));
+  if(tab==='types')body+=`<h3 class="an-live" style="margin:18px 0 4px;font-size:15px">Bought during the game, by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Panel bets on games already under way, priced live from a fresh score and clock. Kept apart so each league's record can show whether they pay. ${esc(a.live_excluded||'')}</div>`
+   +table(['League','Bets','Won','Return','Smart sell'],(a.live||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>']));}
  else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
-  const au=a.auto||{};const an=Object.keys(au);
+  const au=a.auto||{};const an=Object.keys(au);const ch=a.cut_held||{};const cn=Object.keys(ch);const hh=a.hedge_held||{};const hn=Object.keys(hh);
   body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
    +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`
-   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays. Leagues without enough results use their sport's settings, then everyone's.</div>`
-   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}<div class="m sl-row" style="font-size:11.5px;margin-top:2px">Stop-loss switch (if on): after ${pct(x.sl_prog==null?0.5:x.sl_prog)} of the game, a ${Math.round((x.sl_drop==null?0.2:x.sl_drop)*100)}-point fall${x.sl_own?'':' (starting point)'}</div>${x.sl_why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.sl_why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss):'never',x.n]));}
+   +`<div class="m cut-held" style="margin-top:6px;font-size:13px">${cn.length?'Loss cuts the guards held back, last 30 days: '+cn.map(k=>`<b>${ch[k]}</b> ${esc(k)}`).join(' · '):'No loss cut has been held back by the guards in the last 30 days.'}</div>`
+   +`<div class="m hedge-held" style="margin-top:6px;font-size:13px">${hn.length?'Auto-hedges the guards held back, last 30 days: <b>'+hn.reduce((s,k)=>s+hh[k],0)+'</b> ('+hn.map(k=>`${hh[k]} ${esc(k)}`).join(' · ')+')':'No auto-hedge has been held back by the guards in the last 30 days.'} <span style="opacity:.8">Auto-hedge only buys on a fresh live score, never at a break, when it locks in at least what you paid, after 3+ minutes, at a re-checked price.</span></div>`
+   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays, and even then only late in a game, on a fresh score, not at a break, after a big fall that held 3+ minutes. Leagues without enough results use their sport's settings, then everyone's (but never borrow a loss cut).</div>`
+   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}<div class="m sl-row" style="font-size:11.5px;margin-top:2px">Selling at a loss (a learned cut, or the stop-loss switch if on): only after ${pct(x.sl_prog==null?0.5:x.sl_prog)} of the game, a ${Math.round((x.sl_drop==null?0.2:x.sl_drop)*100)}-point fall from before the game, held 3+ min, on a fresh score, never at a break${x.sl_own?'':' (starting point)'}</div>${x.sl_why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.sl_why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss)+'<div class="m" style="font-size:11px">late, confirmed</div>':'never',x.n]));}
  const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
  return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)==='now'?'just now':ago2(a.at)+' ago'}</span></div>${tb}
   ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div></div>`;}
@@ -3051,10 +3186,16 @@ function httpsRow(mac){const h=mac.https||{};
  if(h.state==='need-enable'&&h.link)return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin yet. Tap Allow https, approve in the Tailscale page, then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
  if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin. Open the page, sign in, scroll to <b>HTTPS Certificates</b>, tap <b>Enable HTTPS...</b> and confirm. Then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.admin||'https://login.tailscale.com/admin/dns')}" target="_blank">Open Tailscale admin</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
  const why={'no-cli':'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.',
-  'no-status':'Couldn\'t read Tailscale\'s status'+(h.detail?': '+esc(h.detail.replace(/^Couldn\'t read Tailscale\'s status: /,'').slice(-140)):'')+'. Is the Tailscale app open on this Mac?',
-  'signed-out':'Tailscale isn\'t signed in or isn\'t running on this Mac ('+esc((h.detail||'').replace('Tailscale says: ','')||'no status')+'). Open Tailscale, sign in, then Try again.',
+  'no-status':'Couldn\'t read Tailscale\'s status. Open the Tailscale app on this Mac, then Try again.',
+  'no-daemon':'Couldn\'t read Tailscale\'s status: the command line can\'t talk to the Tailscale app. Open Tailscale on this Mac, check it says Connected, then Try again.',
+  'cli-broken':'Couldn\'t read Tailscale\'s status: its command line wouldn\'t start from the watcher. Install the command line from Tailscale\'s settings, then Try again.',
+  'signed-out':'Tailscale says this Mac is signed out. Open Tailscale, sign in, then Try again.',
+  'needs-approval':'This Mac waits for approval in Tailscale admin (login.tailscale.com/admin/machines). Approve it, then Try again.',
+  'ts-off':'Tailscale is switched off on this Mac. Open Tailscale, turn it on, then Try again.',
+  'starting':'Tailscale is still starting on this Mac. It checks again by itself in a few minutes.',
   'no-name':'Tailscale is running but gave this Mac no name. Turn MagicDNS on at login.tailscale.com/admin/dns, then Try again.',
   'issuing':'Tailscale is still making the certificate. This can take a few minutes; it keeps checking.'};
+ if(h.detail&&['no-cli','no-status','no-daemon','cli-broken','signed-out','needs-approval','ts-off','starting'].includes(h.state))why[h.state]=esc(h.detail.slice(0,300));
  return `<div class="srow"><div class="l"><b>Secure address</b><small>${why[h.state]||(h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…')}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
  const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
@@ -3386,7 +3527,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -3401,7 +3542,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
    +tgl('stop_loss','Manual override: sell at a loss when a game turns','Off by default. When on, auto cash-out may sell a combo for less than you paid, but only late in a game (from about halfway), when a pick has fallen well below its chance before the game, and only after that has held for 3+ minutes. It never does it at halftime or a break, early in a game, or when the live score is missing or out of date. How late and how big a fall are learned league by league (see Results › Selling). Separately, the app learns when cutting a loss beats holding.',!v.auto_sell)
    +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
-   +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
+   +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
@@ -3967,6 +4108,7 @@ def webapp_main():
         p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
+                         "rebuild": A.rebuild_status(),
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
@@ -4060,7 +4202,7 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -4294,6 +4436,9 @@ def webapp_main():
             if a == "panel_add":
                 ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
                 return {"ok": ok, "msg": msg}
+            if a == "panel_look":
+                ok, msg = A.panel_look_now()
+                return {"ok": ok, "msg": msg, "rebuild": A.rebuild_status()}
             if a == "panel_restart":
                 ok, msg = A.panel_restart()
                 return {"ok": ok, "msg": msg}
@@ -5057,6 +5202,7 @@ def main():
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
             if not backup:
                 threading.Thread(target=panel_loop, args=(odds, conf), daemon=True, name="panel").start()
+                threading.Thread(target=rebuild_loop, args=(odds, notifier), daemon=True, name="rebuild").start()
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()

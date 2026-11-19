@@ -26,7 +26,10 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   where it's stuck. If it says "one step left", Pete taps **Allow https**, approves in Tailscale, then **Check**.
 - Code fixes are in (PR for issue #5, not yet confirmed on Pete's Mac): the watcher can now read Tailscale under launchd
   (prefers `/usr/local/bin/tailscale`, `TAILSCALE_BE_CLI=1`, stdin closed), every failure says what is wrong, it retries
-  every 5 minutes, and all alerts (panel buys, extras, recap) also reach web push.
+  every 5 minutes, and all alerts (panel buys, extras, recap) also reach web push. Issue #46 (Pete saw "isn't signed in"
+  while Tailscale was Running; his Mac runs main, which predates the fix): it now tries every Tailscale command line in
+  turn with a full PATH/HOME, and says the real reason (command line won't start / can't talk to the app / signed out
+  only on NeedsLogin / waits for approval / switched off / starting / HTTPS certificates off) with the next step.
 - **Waiting on Pete (stays until he confirms it works):** in Tailscale admin (login.tailscale.com/admin/dns) scroll to
   **HTTPS Certificates**, tap **Enable HTTPS...**, confirm. Then in Combo Hub on the Mac: Settings › This Mac › Secure address
   (Check if needed). Then on the iPhone open the ts.net address in Safari, Add to Home Screen (delete the old icon: a
@@ -38,8 +41,8 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### The old "Sell at a loss" switch (`stop_loss`)
 - Kept as a labelled manual override in Settings (off). It is now guarded (issue #27: late in the game, fresh score,
-  no break, big fall from pregame, confirmed 3+ min; learned per league). Decide: keep it, or remove it. Still open
-  from #27: the same guards for the learned "cut loss" paths (combo and singles) and for auto-hedge.
+  no break, big fall from pregame, confirmed 3+ min; learned per league). Decide: keep it, or remove it. The learned
+  "cut loss" paths and auto-hedge now have the same guards.
 
 ### The $300 full-auto experiment
 - The Mac picks, times, buys and sells on its own with $300. **Only after** the paper panel clears the gate
@@ -108,7 +111,8 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   exists. (2) How fast Kalshi's live data updates during play is unmeasured; log it on a live match before tuning
   the 8 s cache. (3) **Waiting on Pete:** these scores feed nothing that sells or decides a result (smart sell, early
   results, the started-game rules still use ESPN/the AHL feed only). Letting smart sell use them (per sport) is a
-  separate opt-in. (4) Kalshi also covers the AHL (as a backup to the league feed) and cricket, darts, volleyball etc.;
+  separate opt-in; so is pricing EuroLeague, UFC and tennis games under way for the daily panel (they stay out once
+  started until a trusted live score with a clock exists). (4) Kalshi also covers the AHL (as a backup to the league feed) and cricket, darts, volleyball etc.;
   not wired in since the AHL feed works and we don't bet those.
 
 ### e. Friends could use it (onboarding)

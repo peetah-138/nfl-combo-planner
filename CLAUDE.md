@@ -118,7 +118,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
+  own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
@@ -186,10 +186,37 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
-  time), rechecks price, swaps in a similar bet or skips. Never buys or approves a game that has started; drafts
-  drop started games. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
+  time), rechecks price, swaps in a similar bet or skips. "Build a fresh panel" (after a Stop) and the empty card's
+  "Look now" start at once: the tap leaves `panel_rebuild.flag`, the watcher's `rebuild_loop` thread sees it within
+  ~2 s and runs `panel_rebuild` (collects every shadow sport fresh, then the usual `panel_pass`; drafts only, never
+  buys or approves). Progress is noted in `combo_rebuild.json` (`rebuild_status`: asked / running "Looking at NBA…
+  2 of 6 sports" / done with a count, or why none). The Build page polls it every 2 s, redraws the card in place,
+  and swaps in the new panel by itself. No screen promises a 10-minute wait (the old "check back shortly" card
+  waited for the shadow's next round, and a rebuild from a stale pool silently found nothing). After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
   notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+- **Games already under way (Pete's decision, replaces the old "never buys or approves a game that has started"):**
+  the panel picks on the chance of a profit, not on whether a game has started. Settings › Money › **Include games
+  already under way** (`panel_live`, shared setting, **on** by default; `live_panel_on()` reads the shared settings
+  file) lets `panel_collect` add started games via `panel_live_games`. A game under way **never uses its pre-game
+  fair price**: it gets a fresh live sportsbook line (odds-service line read after the start, ≤ `LIVE_LINE_AGE` 180 s:
+  `line_live`/`line_at` from `attach_fair`) or else the **live model** (`live_model_chance`: points sports = normal
+  margin, hockey/soccer = Poisson goals, on the closing line from `closes` as the prior, ESPN's football win chance
+  averaged in), calibrated per league by its own record of live chances (`live_fairs` table, `calib_fair(...,
+  table="live_fairs")`, resolved in `resolve_closes`). Eligible only with a **fresh score** (`score_age` ≤
+  `LIVE_SCORE_AGE` 120 s; missing/stale = out), the game **in play** (never finished), Kalshi bid/ask gap ≤ 6¢, not
+  nearly decided (≥ 95%), and Kalshi's mid within 8 points of the live chance (a wider gap is treated as something the
+  score doesn't show, not a bargain). **EuroLeague, UFC and tennis stay out once started** (only Kalshi's display-only
+  live data, no clock); spreads/totals and sell-early favorites stay pre-game only. Live candidates carry `live`,
+  `kick_pre` and per-leg `live`/`pre`; `_start_ok` replaces the old start-time checks in `build_panel`,
+  `panel_approve`, `panel_add`, `panel_exec`, `prune_drafts` and `_replacement` (pre-game-priced bets still need
+  20 min/5 min before the start). Live prices older than `LIVE_POOL_AGE` (6 min) are never offered or bought; sports
+  with a live-priced game are re-checked every 2.5 min (`LIVE_NOW` in `sports_near`). Buying: bought straight away;
+  `_buy_panel_bet` re-prices every live leg on a fresh score (`live_recheck`) and still rechecks Kalshi's price; any
+  refusal before an order (stale score, finished game, price moved, Kalshi won't price the combo: `get_offer` errors
+  are caught) is **skipped**, never "check"; rule 8 unchanged. Pause still wins; the switch turned off after approval
+  skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
+  predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it).
 - Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
@@ -222,7 +249,31 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   combos, ≥ 2% gain, 0.05 steps, smallest change on ties), stored as `sl_*` in `combo_smart.json`, shown in
   Results › Selling. `stoploss_params` borrows league → sport → all, but borrowed values can only be **stricter**
   than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
-  notifies "Stop-loss (your switch)". The learned "cut loss" paths (combos and singles) are unchanged.
+  notifies "Stop-loss (your switch)".
+- **Auto-hedge guards (issue #27, Pete approved):** auto-hedge (with Auto cash-out on, replaces an already-chosen
+  sale when the combo has one pick left and the hedge locks in ≥ 95% of the cash-out, ≤ `hedge_cap`, default $100)
+  now buys only when `hedge_guard` passes: the last game **in play on a fresh score** (`fresh_live_score`, shared with
+  the loss guards; missing/stale = no hedge), **not at a break** (`at_break`), the hedge **locks in at least the
+  combo's cost** (`locked = contracts − hedge cost ≥ h["cost"]`), all held on **3+ checks over ≥ 3 min** (`_sl_confirm`
+  under `hedge:<ticker>`). Then `hedge_fresh` re-reads the hedge side's order book (`book_depth(max_age=0)`; no ask or
+  a gap > 6¢ = no hedge) and redoes the sums on the fresh ask (still beats the cash-out, within the cap, ≥ cost); the
+  IOC order goes at that ask. While confirming, the sale waits; any other failed guard = it cashes out as if
+  auto-hedge were off. A hedge order with an unknown outcome (timeout, lost Mac, 5xx) is marked `check` in
+  `combo_hedges.json` (`hedge_unsure`): never retried, no sale on top, and auto cash-out leaves that combo alone. Holds
+  are logged (`result: "held"`, `hedge: true`) and Results › Selling shows the count by reason (`hedge_held`). The
+  manual Hedge tap has no guards (Pete's own tap, board price), but an unknown outcome there is also marked `check`.
+- **Loss-cut guards (issue #27, Pete's decision):** the learned per-league "cut loss" (combos in `take_profit_reason`,
+  singles/spreads/totals in `single_sell_reason`) now needs the **same guards**, reusing the helpers: combos run
+  `stop_loss_check(t, h, also=<under the cut-off>, key="cut:<ticker>")` once per `auto_sell_now` pass and pass
+  `cut_ok`; singles run `cut_loss_single_check` (`stop_loss_leg` on the game's score + `_sl_confirm`), with the
+  pregame chance from `single_pre` (last chance seen before the game in `MINE["pre_single"]`, else the saved
+  `PREGAME` for game-winners; unknown = never). Same league `prog`/`drop` as the switch (`stoploss_params`).
+  Without `cut_ok` both functions never cut (Live display included). The cut is **never borrowed**: `smart_params`
+  drops `loss` unless it is the league's own. The weekly replay only cuts where the live guards would have held
+  (`_sl_held` → `_cut_guard_ts`, `_replay(..., cut_at=)`), so the tuner learns what live can actually do. A cut the
+  guards hold back is logged once per bet and reason (`note_cut_held`, `result: "held"`); `analytics()["cut_held"]`
+  counts them for Results › Selling, which also shows the guard settings per league. Pause / Auto cash-out off /
+  Ride it out still stop it (it runs only inside `auto_sell_now`).
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
@@ -360,13 +411,14 @@ Read it before starting new work, and keep it current: when something ships, des
 ## Code map (where to look)
 
 Engine: `panel_collect`, `build_panel`, `choose_panel`, `panel_pass`, `panel_exec`, `panel_approve`, `panel_add`,
-`prune_drafts`, `panel_settle`, `panel_record`, `adjust_cutoffs`, `combo_cutoff`, `lab_pass`, `lab_ticks`,
+`prune_drafts`, `panel_rebuild`/`rebuild_status`/`panel_look_now`, `panel_settle`, `panel_record`, `adjust_cutoffs`, `combo_cutoff`, `lab_pass`, `lab_ticks`,
 `_replay`/`sim_exit`, `smart_tune`/`smart_params`, `analytics`, `take_profit_reason`, `auto_sell_now`,
 `single_sell_reason`, `smart_sell_singles`, `open_singles`, `live_view`, `record_view`, `mine_page`,
 `fetch_account`/`_fetch_account`, `kalshi_send` (records app buys via `note_app_order`), `get_offer`,
 `accept_offer`, `add_own_combo`, `set_league`, `LEAGUES`/`SPORTS`/`SPORT_PREFIX`.
-Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
+Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `rebuild_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
 `webapp_main` (`api_live`, `api_build`, `api_act`, `api_panel`, `api_results`, `api_game`), `mac_settings`,
-`tailscale_cli`/`tailscale_run`/`tailscale_https`/`https_loop` (secure address; retries every 5 min until on), `push`/`web_push`
+`tailscale_clis`/`tailscale_env`/`tailscale_run`/`tailscale_status`/`tailscale_https`/`https_loop` (secure address: tries
+every Tailscale CLI with a launchd-safe env; "signed out" only when BackendState is NeedsLogin; retries every 5 min until on), `push`/`web_push`
 (every ntfy alert also goes to web push unless `web=False` or a topic is given; the Pi has no subscribers so it stays alerts-only). SPA: `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
 `afterPaint` (number rolls, stagger, indicators), `go`, `modal`, `okSheet`, `toast`, `hap`.
