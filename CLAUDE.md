@@ -100,7 +100,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL.
+  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, per-league learning.
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
@@ -111,8 +111,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 
 ### Fair prices and data
 - "Fair" = sharp sportsbooks de-vigged (free sources; The Odds API free plan; no paid odds). Calibrated by Pete's own
-  record per sport and chance band (`calib_fair`, shrink n/(n+300)). Leagues marked `require_line` need a
-  sportsbook line (Kalshi alone isn't trusted there).
+  record per league and chance band (`calib_fair`, shrink n/(n+300)): the sport's nudge as before, and a league
+  inside a sport (each soccer league) moves from its sport's nudge toward its own record by the same n/(n+300), so
+  a league with no games gets exactly its sport's. A sport with no games in a band keeps the books' chance (no
+  "everyone" level here yet; see ROADMAP). Leagues marked `require_line` need a sportsbook line (Kalshi alone
+  isn't trusted there).
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis, AHL).
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
@@ -125,9 +128,15 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   tie-breaker). Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
   days), NBA/NHL daily, bigger panels on heavy nights. Overlap rules: both sides of one game only when both are
   fairly priced, ≤ 2 bets per game, one straight bet per game, spreads/totals ≤ 30% of the panel.
-- Combos need a predicted price ≥ the cut-off: **starts at 95% of fair, self-adjusts weekly per sport and size,
+- Combos need a predicted price ≥ the cut-off: **starts at 95% of fair, self-adjusts weekly per league and size,
   floor 85%, no ceiling**, counting the whole trip (value at game time × exit factor), learning from skipped quotes,
   moving only on solid data. Pete considered 80% and agreed 95% start; the combo lab tests lower levels on paper.
+  Borrowing (`_cut_level`, `combo_cutoff(code, n, legs)`, file `combo_cutoffs.json`): a league inside a sport
+  (e.g. `epl:2`) uses its own level once it has 30+ quotes or has moved, starting from its sport's; until then it
+  follows its sport's live (`soccer:2`, the old keys, read exactly as before). A sport with no entry borrows
+  everyone's (`all:2`) once that has 30+ quotes, and a sport new to the file starts from that level.
+- The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
+  quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
   time), rechecks price, swaps in a similar bet or skips. Never buys or approves a game that has started; drafts
   drop started games. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
