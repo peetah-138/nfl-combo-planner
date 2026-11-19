@@ -30,6 +30,7 @@ VW, VH = int(os.environ.get("VW", 1440)), int(os.environ.get("VH", 900)); TAG = 
 AN={"at":time.time()-120,"levels":[{"band":"80–85%","n":12,"hit":0.2,"exp":0.25,"ride":-0.21,"gt":-0.15,"gt_n":10,"lab_n":3,"lab_ride":-0.4,"lab_smart":0.1},
  {"band":"95–100%","n":44,"hit":0.3,"exp":0.29,"ride":0.03,"gt":None,"gt_n":0,"lab_n":0,"lab_ride":None,"lab_smart":None}],
  "types":[{"mode":"real","what":"Spreads & totals","n":6,"won":4,"pl":3.2,"roi":0.12,"clv":0.02,"smart":0.14,"sim_n":4},{"mode":"paper","what":"Combos","n":9,"won":2,"pl":-8,"roi":-0.18,"clv":None,"smart":-0.05,"sim_n":6}],
+ "live":[{"mode":"real","what":"NBA","n":3,"won":2,"pl":1.4,"roi":0.09,"clv":None,"smart":0.05,"sim_n":2}],"live_excluded":"EuroLeague, UFC and tennis games stay out once they've started.",
  "sports":[{"mode":"real","what":"NHL","n":6,"won":4,"pl":3.2,"roi":0.12,"clv":0.02,"smart":0.1,"sim_n":2}],
  "exits":[{"what":"Rode to the end","n":10,"pl":-12,"roi":-0.2},{"what":"Cashed out early","n":7,"pl":9,"roi":0.25}],"auto":{"smart":3,"lock in":1},"cut_held":{"too early in the game":2,"halftime or a break":1},"hedge_held":{"score feed stale":2,"wouldn't lock in what you paid":1},
  "tuning":[{"key":"nhl","name":"NHL","floor":1.5,"lam":1,"loss":0.15,"n":40,"own":True,"sl_prog":0.5,"sl_drop":0.2,"sl_n":0,"sl_own":False,"sl_why":""}],
@@ -45,6 +46,12 @@ with sync_playwright() as pw:
     for tab, want in (("Bet types", "Spreads & totals"), ("Sports", "NHL"), ("Selling", "Cashed out early")):
         pg.locator(".ant button", has_text=tab).click(); time.sleep(.3)
         if pg.locator(".an", has_text=want).count() != 1: print("PROBLEMS: tab", tab, "didn't show", want)
+    pg.locator(".ant button", has_text="Bet types").click(); time.sleep(.3)
+    lt = pg.locator(".an").inner_text()
+    if "Bought during the game, by league" not in lt or "NBA" not in lt or "EuroLeague, UFC and tennis" not in lt:
+        print("PROBLEMS: bets bought during games aren't their own group by league in What's working:", lt[-300:])
+    if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Bet types tab scrolls sideways on a phone")
+    pg.locator(".ant button", has_text="Selling").click(); time.sleep(.3)
     if pg.locator(".an", has_text="3 smart").count() != 1: print("PROBLEMS: auto-sale counts missing")
     ch = pg.locator(".an .cut-held").inner_text()
     if "2 too early in the game" not in ch or "1 halftime or a break" not in ch: print("PROBLEMS: loss cuts held back by the guards missing:", ch)
@@ -56,8 +63,25 @@ with sync_playwright() as pw:
     pg.locator(".ant button", has_text="Combo price levels").click(); time.sleep(.3)
     pg.locator(".an").scroll_into_view_if_needed(); pg.locator(".an").screenshot(path="an_phone.png")
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Results scrolls sideways on a phone")
+    pg.evaluate("go('settings')"); time.sleep(4)
+    row = pg.locator("label.srow", has_text="Include games already under way")
+    if row.count() != 1 or not row.locator("input").is_checked() or "EuroLeague" not in row.inner_text():
+        print("PROBLEMS: Settings › Money has no 'Include games already under way' switch (on by default, naming the leagues left out)")
+    else:
+        row.locator("input").click(); time.sleep(1.5)
+        v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get("panel_live")
+        if v is not False: print("PROBLEMS: turning off 'Include games already under way' didn't save:", v)
+        row.locator("input").click(); time.sleep(1.5)
+    if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
     pg.evaluate("go('live')"); time.sleep(6); pg.evaluate("window.load=async()=>{}")
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); time.sleep(1.2)
     k = pg.locator(".kpis").inner_text().replace("\n"," | "); print("kpis:", k)
     if "2 bets" not in k or "$8.20" not in k or "$9.94" not in k or "$29" not in k: print("PROBLEMS: Live top numbers don't include singles")
+    item = {"id": "single:X", "kind": "single", "live": True, "kick": time.time() - 1800, "buy_at": time.time(), "stake": 4,
+            "chance": .7, "price": .66, "ret": .05, "legs": [{"pick": "Boston", "ticker": "X"}], "why": "w", "state": "scheduled"}
+    h = pg.evaluate("c=>panelItem(c,'scheduled',true)", item)
+    if "Under way" not in h or "won't buy" in h:
+        print("PROBLEMS: a panel bet priced live on a game under way shows as 'Game started · won't buy':", h[:200])
+    h = pg.evaluate("c=>panelItem(c,'scheduled',true)", dict(item, live=False))
+    if "won't buy" not in h: print("PROBLEMS: a pre-game-priced bet on a started game no longer says it won't be bought")
     print("errs:", errs)

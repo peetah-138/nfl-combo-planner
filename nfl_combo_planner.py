@@ -51,6 +51,7 @@ CFG = {
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
+    "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -248,7 +249,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "tp_v2")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "tp_v2")
 
 
 def next_league():
@@ -1002,6 +1003,8 @@ def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
     fair = {}
     if not keep:
         BOOK_GAMES.clear()
+    fetched = time.time()                         # when this line was read: a game already under way has a live line
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(fetched))
     for ev in sorted(r.json(), key=lambda ev: ev.get("commence_time") or "~"):
         home, away = ev.get("home_team"), ev.get("away_team")
         if home and away:
@@ -1034,7 +1037,8 @@ def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
             fair.setdefault(team, f)              # the soonest game, for anything that only knows the team
             BOOK_GAMES.setdefault(team, []).append({   # every game, so a pick can be matched by date
                 "fair": f, "start": ev.get("commence_time") or "",
-                "day": espn_day(ev.get("commence_time")), "opp": away if team == home else home})
+                "day": espn_day(ev.get("commence_time")), "opp": away if team == home else home,
+                "at": fetched, "inplay": bool(ev.get("commence_time")) and ev["commence_time"] <= now_iso})
     left = r.headers.get("x-requests-remaining")
     note = "Chances and fair payouts use sportsbook lines (Pinnacle when available)."
     if left:
@@ -1135,8 +1139,10 @@ def attach_fair(games, book):
                 s["fair"] = r / sum(raw)
                 s["src"] = src
                 s["edge"] = s["fair"] - s["p"] if src else None
-        for s, n in zip(sides, names):
+        for i, (s, n) in enumerate(zip(sides, names)):
             s["book_name"] = n if src else None
+            g = bg[i] if src and BOOK_GAMES and all(bg) else None   # a line read after the start is a live line
+            s["line_at"], s["line_live"] = (g.get("at"), bool(g.get("inplay"))) if g else (None, False)
         news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
@@ -6492,7 +6498,7 @@ NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
-                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget")
+                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -10682,13 +10688,17 @@ PANEL = {"size": 10, "per_game": 2, "buy_before": 45 * 60, "longer_max": 2, "poo
 PANEL_POOL = {}            # code -> (time, [candidates])
 PANEL_GAMES = {}           # code -> games coming up (for showing only the sports that have any)
 NEXT_KICK = {}             # code -> the next start time (checked every few minutes when it's close)
+LIVE_NOW = {}              # code -> True while it has a game under way priced live for the panel (checked often)
+LIVE_WHY = {}              # code -> {game: why a game under way was left out}
 REBUILD_FLAG = os.path.join(HERE, "panel_rebuild.flag")
 
 
 def sports_near(within=2 * 3600):
-    """Sports with a game starting in the next two hours: checked every few minutes, not every ten."""
+    """Sports with a game starting in the next two hours, or a game under way priced live for the panel: checked
+    every few minutes, not every ten (live prices go stale fast)."""
     now = time.time()
-    return [c for c, k in NEXT_KICK.items() if k and now < k <= now + within]
+    return [c for c, k in NEXT_KICK.items() if (k and now < k <= now + within) or LIVE_NOW.get(c)] + \
+        [c for c, on in LIVE_NOW.items() if on and c not in NEXT_KICK]
 
 
 def rebuild_asked():
@@ -10948,11 +10958,20 @@ def _cand(kind, code, legs, chance, ret, why, **extra):
                 kicks.append(dt.datetime.fromisoformat(str(l.get("start")).replace("Z", "+00:00")).timestamp())
             except ValueError:
                 pass
-    return dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
-                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
-                 "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair")} for l in legs],
-                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
-                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
+    live = [l for l in legs if l.get("live")]          # picks priced live, on games already under way
+    pre = [k for k in (_kick_ts(l) for l in legs if not l.get("live")) if k]
+    out = dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
+                "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
+                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair")} for l in legs],
+                "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
+                "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
+    if live:
+        out["live"] = True
+        out["kick_pre"] = min(pre) if pre else None
+        for nl, l in zip(out["legs"], legs):
+            if l.get("live"):
+                nl.update(live=True, pre=l.get("pre"), how=l.get("live_how"))
+    return out
 
 
 def sell_early_candidates(games):
@@ -11047,10 +11066,14 @@ def record_closes(games, code):
 
 
 def resolve_closes(limit=150):
-    """Fill in results for finished games (in the history loop)."""
+    """Fill in results for finished games (in the history loop), for the pre-game lines and the live chances."""
     if not STORE["db"]:
         return 0
     _close_table()
+    try:
+        resolve_live_fairs(limit)
+    except Exception:
+        pass
     rows = store_rows("select ticker from closes where outcome is null and kick < ? limit ?", (time.time() - 4 * 3600, limit))
     if not rows:
         return 0
@@ -11088,16 +11111,21 @@ def exit_factor():
 
 
 CALIB = {"at": 0, "m": {}}
+CALIB_LIVE = {"at": 0, "m": {}}
 
 
-def calibration():
+def calibration(table="closes"):
     """For each sport and chance band: how often teams the books gave that chance actually won, from your own
     record of games. {sport: [(lo, hi, mean fair, win rate, n)]}, plus each league inside a sport (each soccer
-    league, by its own key) and everyone's record together ("all"). Refreshed hourly."""
-    if time.time() - CALIB["at"] < 3600 or not STORE["db"]:
-        return CALIB["m"]
+    league, by its own key) and everyone's record together ("all"). Refreshed hourly. table="live_fairs": the
+    same for chances worked out during games (the live model), which learn on their own."""
+    cache = CALIB_LIVE if table == "live_fairs" else CALIB
+    if time.time() - cache["at"] < 3600 or not STORE["db"]:
+        return cache["m"]
     _close_table()
-    rows = store_rows("select ticker, sport, fair, outcome from closes where outcome in ('yes','no')")
+    _live_fair_table()
+    rows = store_rows(f"select ticker, sport, fair, outcome from {'live_fairs' if table == 'live_fairs' else 'closes'} "
+                      "where outcome in ('yes','no')")
     by = defaultdict(list)
     for r in rows:
         x = (r["fair"], r["outcome"] == "yes")
@@ -11115,18 +11143,18 @@ def calibration():
             if b:
                 bands.append((lo, hi, sum(f for f, _ in b) / len(b), sum(w for _, w in b) / len(b), len(b)))
         out[sp] = bands
-    CALIB.update(at=time.time(), m=out)
+    cache.update(at=time.time(), m=out)
     return out
 
 
-def calib_fair(code, fair, ticker=None):
+def calib_fair(code, fair, ticker=None, table="closes"):
     """The books' chance, nudged toward what actually happened in your record for this band, borrowing
     everyone -> sport -> league. Each level starts from the nudge above it and moves toward its own record by
     n/(n+300) of the gap (n = its games in the band; 300 games = halfway): every other sport's record from the
     books' chance (everyone's minus this sport's own games, so none count twice), the sport from that nudge,
     and a league inside the sport (ticker given, e.g. the Premier League) from its sport's. So a level with no
     games of its own gets exactly the one above, and a sport alone in a band is exactly what it was before."""
-    m = calibration()
+    m = calibration(table)
 
     def band(key):
         return next(((mf, wr, n) for lo, hi, mf, wr, n in m.get(key, []) if lo <= fair < hi), None)
@@ -11156,20 +11184,241 @@ def favorite_win_rate(code):
     return sum(r["outcome"] == "yes" for r in rows) / len(rows), sum(r["fair"] for r in rows) / len(rows), len(rows)
 
 
+# ---- games already under way (Pete's call: the panel judges a game by its chance of a profit, not by whether
+# it has started). A game in progress gets a real, current fair chance or it stays out:
+#  1. a live sportsbook line (the odds service's line, fetched after the start and no older than LIVE_LINE_AGE), or
+#  2. the live model: the score and the clock (ESPN, or the AHL's own feed) on top of the last line before the
+#     game (what the books thought of the two teams), then calibrated by this league's own record of live chances.
+# Either way it needs a fresh score (LIVE_SCORE_AGE), the game still in play (never a finished one), a fresh Kalshi
+# price with a tight buy/sell gap, and Kalshi's price within LIVE_DISAGREE of it (a wider gap is far more often
+# something the score doesn't show, like an injury or a power play, than a real bargain). The pre-game fair price
+# is never used for a game under way. Sports without a score feed we trust stay out and say so.
+LIVE_SCORE_AGE = 120     # seconds: an older score (or none) = the game is not eligible
+LIVE_LINE_AGE = 180      # seconds: a live sportsbook line older than this isn't used
+LIVE_POOL_AGE = 6 * 60   # seconds: a live-priced panel bet older than this is re-checked before it's offered or bought
+LIVE_MODEL = {"nfl": ("pts", 13.5), "ncaaf": ("pts", 16.0), "nba": ("pts", 12.0), "ncaamb": ("pts", 10.5),
+              "ncaawb": ("pts", 11.0), "nhl": ("goals", 6.0), "ahl": ("goals", 6.2), "soccer": ("goals3", 2.7)}
+LIVE_EXCLUDED = {"euroleague": "EuroLeague", "ufc": "UFC", "tennis": "tennis"}   # no score feed we trust to price on
+LIVE_EXCLUDED_WHY = ("EuroLeague, UFC and tennis games stay out once they've started: their only live scores are "
+                     "Kalshi's display data, with no clock to price on, so there's no fresh score we trust.")
+
+
+def live_panel_on():
+    """The Settings switch 'Include games already under way' (on unless Pete turned it off). Read from the shared
+    settings file too, so the Mac's engines and the web app agree without waiting for a reload."""
+    v = load_json(MAIN_SAVED, {}).get("panel_live") if os.path.exists(MAIN_SAVED) else None
+    return bool(CFG.get("panel_live", True) if v is None else v)
+
+
+def _live_fair_table():
+    store_x("create table if not exists live_fairs(ticker text, ts real, sport text, fair real, how text, outcome text)")
+
+
+def note_live_fair(ticker, sport, fair, how, now=None):
+    """Keep one live chance per pick per half hour, so its league's live record can calibrate the model."""
+    if not STORE["db"]:
+        return
+    now = now or time.time()
+    _live_fair_table()
+    if store_rows("select 1 from live_fairs where ticker=? and ts > ?", (ticker, now - 1800)):
+        return
+    store_x("insert into live_fairs(ticker, ts, sport, fair, how, outcome) values(?,?,?,?,?,null)",
+            (ticker, now, sport, round(fair, 4), how))
+
+
+def resolve_live_fairs(limit=150):
+    _live_fair_table()
+    rows = store_rows("select distinct ticker from live_fairs where outcome is null and ts < ? limit ?",
+                      (time.time() - 3600, limit))
+    res = fetch_results([r["ticker"] for r in rows]) if rows else {}
+    for r in rows:
+        if res.get(r["ticker"]) in ("yes", "no"):
+            store_x("update live_fairs set outcome=? where ticker=?", (res[r["ticker"]], r["ticker"]))
+
+
+def pregame_fair(ticker):
+    """The last sportsbook chance recorded before this pick's game started (its closing line), or None."""
+    if not STORE["db"]:
+        return None
+    _close_table()
+    rows = store_rows("select fair, kick from closes where ticker=?", (ticker,))
+    return rows[0]["fair"] if rows and rows[0]["fair"] and rows[0]["kick"] and rows[0]["kick"] <= time.time() + 300 else None
+
+
+def _pois(k, lam):
+    return math.exp(-lam) * lam ** k / math.factorial(k) if k >= 0 else 0.0
+
+
+def _goal_chances(lead, la, lb):
+    """(P this team ends ahead, P level) with the rest of the game's goals Poisson: la for it, lb for the other."""
+    win = tie = 0.0
+    for b in range(0, 16):
+        pb = _pois(b, lb)
+        win += pb * (1 - _poisson_cdf(b - lead, la))
+        tie += pb * _pois(b - lead, la)
+    return win, tie
+
+
+def live_model_chance(sport, pre, lead, frac, wp=None):
+    """This team's chance to win from here: `pre` its chance before the game (the closing line), `lead` its score
+    lead now, `frac` the share of regulation left. Points sports: the final margin is normal around the lead plus
+    the pre-game edge still to come. Hockey and soccer: the goals still to come are Poisson, split so the pre-game
+    chance comes out right; hockey ties go to overtime. ESPN's own football win chance, when it has one, is averaged in."""
+    kind, k = LIVE_MODEL[sport]
+    pre = min(max(pre, 0.02), 0.98)
+    f = min(max(frac, 0.005), 1.0)
+    if kind == "pts":
+        mu = k * statistics.NormalDist().inv_cdf(pre)
+        out = _phi((lead + mu * f) / (k * math.sqrt(f)))
+        if wp is not None:
+            out = (out + wp) / 2
+        return out
+
+    def whole(sh, fr, ld):
+        w, t = _goal_chances(ld, k * sh * fr, k * (1 - sh) * fr)
+        return w + (t * (0.5 + 0.5 * (sh - 0.5)) if kind == "goals" else 0)
+    lo, hi = 0.02, 0.98                                 # this team's share of the goals, from its pre-game chance
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if whole(mid, 1.0, 0) < pre:
+            lo = mid
+        else:
+            hi = mid
+    return whole((lo + hi) / 2, f, lead)
+
+
+def live_side_fair(x, now=None, refresh=True):
+    """A current fair chance for one side of a game under way: (chance, how, None) or (None, None, why not).
+    Never the pre-game price: a fresh live sportsbook line, or the live model on a fresh score."""
+    now = now or time.time()
+    sport = ticker_sport(x.get("ticker")) or ""
+    if sport in LIVE_EXCLUDED or sport not in LIVE_MODEL:
+        return None, None, f"no live score feed we trust for {LIVE_EXCLUDED.get(sport, sport or 'this sport')}"
+    if refresh:
+        try:
+            fetch_scores(max_age=min(30, LIVE_SCORE_AGE // 3), code=sport)
+        except Exception:
+            pass
+    if score_age(sport, now) > LIVE_SCORE_AGE:
+        return None, None, "no fresh live score"
+    sc = leg_score({"ticker": x["ticker"], "side": "yes"})
+    if not sc:
+        return None, None, "no live score for this game"
+    if sc.get("state") == "post":
+        return None, None, "the game is over"
+    if sc.get("state") != "in" or sc.get("frac") is None:
+        return None, None, "the score feed doesn't show it in play"
+    if x.get("line_live") and x.get("src") and now - (x.get("line_at") or 0) <= LIVE_LINE_AGE and x.get("fair"):
+        return float(x["fair"]), "live sportsbook line", None
+    pre = x.get("pre") or pregame_fair(x["ticker"])
+    if not pre:
+        return None, None, "no pre-game line to start from"
+    raw = live_model_chance(sport, calib_fair(sport, pre, x["ticker"]), sc["me"] - sc["opp"], sc["frac"], sc.get("wp"))
+    return calib_fair(sport, raw, x["ticker"], table="live_fairs"), "live model", None
+
+
+def panel_live_games(games, now=None):
+    """The games under way that can go in the panel, priced live: ({game: sides}, {game: why not}). Each side
+    gets fair (current), edge, live=True, pre (its closing line) and live_how; anything short of the bar is left out."""
+    now = now or time.time()
+    ok, why = {}, {}
+    for e, sides in games.items():
+        if not any(started(x) for x in sides):
+            continue
+        two = [x for x in sides if not x.get("tie")]
+        if any(x.get("p") is None or x.get("bid") is None for x in two):
+            why[e] = "no live buyers or sellers on Kalshi"
+            continue
+        gap = max(x["p"] - x["bid"] for x in two)
+        if gap > LIVE_SPREAD:
+            why[e] = f"the live price is jumpy ({gap * 100:.0f}¢ between buy and sell)"
+            continue
+        got, bad = [], None
+        for x in two:
+            x["pre"] = pregame_fair(x["ticker"])
+            f, how, w = live_side_fair(x, now)
+            if f is None:
+                bad = w
+                break
+            got.append((x, f, how))
+        if bad:
+            why[e] = bad
+            continue
+        if len(got) == 2 and len(two) == len(sides):    # two-way: the two chances add up to 100%
+            t = got[0][1] + got[1][1]
+            got = [(x, f / t, how) for x, f, how in got]
+        if max(f for _, f, _ in got) >= LIVE_DECIDED:
+            why[e] = "nearly decided"
+            continue
+        mids = {x["ticker"]: (x["p"] + x["bid"]) / 2 for x in two}
+        if any(abs(f - mids[x["ticker"]]) >= LIVE_DISAGREE for x, f, _ in got):
+            why[e] = "Kalshi's live price and the live chance disagree too much (something the score doesn't show)"
+            continue
+        for x, f, how in got:
+            x.update(fair=round(f, 4), edge=round(f - x["p"], 4), live=True, live_how=how, src=x.get("src") or how)
+            try:
+                note_live_fair(x["ticker"], ticker_sport(x["ticker"]), f, how, now)
+            except Exception:
+                pass
+        ok[e] = sides
+    return ok, why
+
+
+def live_recheck(legs, now=None):
+    """Right before buying: every leg on a game under way is priced again on a fresh score. Returns (legs with
+    fresh chances, None) or (None, why not)."""
+    out = []
+    for l in legs:
+        if not l.get("live"):
+            out.append(l)
+            continue
+        f, how, w = live_side_fair(dict(l, line_live=False), now)
+        if f is None:
+            return None, w
+        if f >= LIVE_DECIDED or f < 0.05:
+            return None, "the game is nearly decided"
+        out.append(dict(l, fair=round(f, 4), live_how=how))
+    return out, None
+
+
+def _start_ok(c, now, margin):
+    """May this panel bet still be shown, approved or bought? A bet on games not started yet: only while its
+    first game is `margin` seconds or more away. A bet priced live on a game under way: while that's switched on
+    (and any other games in it are still `margin` away)."""
+    if c.get("live"):
+        if not live_panel_on():
+            return False
+        k = c.get("kick_pre")
+        return k is None or k >= now + margin
+    return (c.get("kick") or 0) >= now + margin
+
+
 def panel_collect(book_snap, code, log=print):
-    """Gather this league's panel candidates (pre-game only). Called for each league by the Mac."""
+    """Gather this league's panel candidates. Called for each league by the Mac. Games not started yet use the
+    sportsbooks' chances; games already under way (when switched on) only with a fresh live chance
+    (panel_live_games), never the pre-game one."""
     book = load_book_state(book_snap)
     games, _, _ = week_games(fetch_markets())
     attach_fair(games, book)
-    games = {e: sd for e, sd in games.items() if not any(started(x) for x in sd)}
-    PANEL_GAMES[code] = len(games)
+    every = games
+    games = {e: sd for e, sd in every.items() if not any(started(x) for x in sd)}
+    live, LIVE_WHY[code] = ({}, {})
+    if live_panel_on():
+        try:
+            live, LIVE_WHY[code] = panel_live_games(every)
+        except Exception as err:
+            log(f"live games {code}:", type(err).__name__, err)
+    LIVE_NOW[code] = bool(live)
+    PANEL_GAMES[code] = len(games) + len(live)
     kicks = [k for sd in games.values() for k in [_kick_ts(sd[0])] if k and k > time.time()]
     NEXT_KICK[code] = min(kicks) if kicks else None
     try:
         record_closes(games, code)
     except Exception as err:
         log("closing prices:", type(err).__name__, err)
-    for sd in games.values():                          # the books' chances, corrected by your own record
+    pre_games = games
+    games = dict(pre_games, **live)
+    for sd in pre_games.values():                      # the books' chances, corrected by your own record
         two = [x for x in sd if x.get("fair") and not x.get("tie")]
         for x in two:
             x["fair_book"] = x["fair"]
@@ -11179,9 +11428,11 @@ def panel_collect(book_snap, code, log=print):
             for x in two:
                 x["fair"] = round(x["fair"] * k, 4)
     cands = []
-    for x in single_candidates(games):
+    for x in single_candidates(games, live_ok=set(live)):
         cands.append(_cand("single", code, [x], x["fair"], x["edge"] / (x["p"] + single_fee(x["p"])),
-                           f"Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance.", price=x["p"],
+                           (f"Game under way: Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance now "
+                            f"({x.get('live_how')}, on a fresh score)." if x.get("live") else
+                            f"Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance."), price=x["p"],
                            opp=opp_of(games, x)))
     for x in sell_early_candidates(games):
         if any(c["id"] == "single:" + x["ticker"] for c in cands):
@@ -11197,7 +11448,7 @@ def panel_collect(book_snap, code, log=print):
                                    game=x.get("game"), line_kind=x.get("kind")))
     except Exception as err:
         log(f"panel lines {code}:", type(err).__name__, err)
-    for c in value_combos(games, k=6):
+    for c in value_combos(games, k=6, live_ok=set(live)):
         n = len(c["legs"])
         pq = predict_quote(c)
         pct = pq["pct"] if pq else c.get("value_pct")
@@ -11206,7 +11457,7 @@ def panel_collect(book_snap, code, log=print):
                                "Every pick is priced under its real chance, so the combo should pay more than it's worth.",
                                pct=round(pct, 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3)))
     if code == "nfl":
-        for pct, chance, legs, ups in slate_combos(games, code):
+        for pct, chance, legs, ups in slate_combos(pre_games, code):
             if pct >= combo_cutoff(code, len(legs), legs):
                 cands.append(_cand("combo", code, legs, chance, pct - 1,
                                    f"Spread across the day's time slots with {ups} upset{'s' if ups != 1 else ''} built in "
@@ -11377,8 +11628,10 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
         if now - at > PANEL["pool_age"] or (codes and code not in codes):
             continue
         for c in cands:
-            if not c.get("kick") or c["kick"] < now + 20 * 60:
+            if not c.get("kick") or not _start_ok(c, now, 20 * 60):
                 continue
+            if c.get("live") and now - at > LIVE_POOL_AGE:
+                continue                                   # a live price this old is no longer a price
             c = dict(c)
             if c["kind"] == "combo":                       # lean toward the sports that pay closest to fair (tie-break only)
                 c["prio"] = max(-0.01, min(0.01, 0.1 * (pay_index_of(idx, code, c["legs"]) - 1.0)))
@@ -11407,7 +11660,7 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     lead = best_combo_lead()
     for c in picked:
         before = lead if c["kind"] == "combo" and lead else PANEL["buy_before"]
-        c["buy_at"] = max(now, (c["kick"] or now) - before)
+        c["buy_at"] = now if c.get("live") else max(now, (c["kick"] or now) - before)
     return {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
             "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
 
@@ -11512,12 +11765,12 @@ def panel_approve(ids=None, view="all", at=None):
             p = cur                                     # re-approve after a cancel: same panel
         else:
             p = {k: v for k, v in src.items() if k != "status"}
-        late = time.time() + 5 * 60
         for c in p["items"]:
             if c.get("state") in ("bought", "buying", "check", "swapped", "skipped", "failed"):
                 continue
-            if (ids is None or c["id"] in ids) and (c.get("kick") or 0) < late:
-                c["state"], c["note"] = "skipped", "its game had already started when you approved"
+            if (ids is None or c["id"] in ids) and not _start_ok(c, time.time(), 5 * 60):
+                c["state"], c["note"] = "skipped", ("games under way are switched off in Settings" if c.get("live") else
+                                                    "its game had already started when you approved")
                 msg["late"] = msg.get("late", 0) + 1
                 continue
             c["state"] = "scheduled" if (ids is None or c["id"] in ids) else "left out"
@@ -11561,7 +11814,7 @@ def panel_add(ids, view):
             old = _item(cur, c["id"])
             if c["id"] not in ids or (old and old.get("state") in ("scheduled", "buying", "bought", "check")):
                 continue
-            if (c.get("kick") or 0) < time.time() + 5 * 60:
+            if not _start_ok(c, time.time(), 5 * 60):
                 skipped.append(c["legs"][0]["pick"])
                 continue
             if used & set(_events_of(c)):
@@ -11650,7 +11903,7 @@ def _fresh(c):
     """The same bet in the newest candidates, or None if it no longer qualifies; 'wait' when the candidates
     are too old to judge (right after a restart, or a slow round)."""
     at, cands = PANEL_POOL.get(c["code"], (0, []))
-    if time.time() - at > PANEL["fresh_age"]:
+    if time.time() - at > (LIVE_POOL_AGE if c.get("live") else PANEL["fresh_age"]):
         return "wait"
     return next((x for x in cands if x["id"] == c["id"] and _qualifies(x)), None)
 
@@ -11677,7 +11930,9 @@ def _replacement(c, p):
         if time.time() - at > PANEL["fresh_age"]:
             continue
         for x in cands:
-            if not _qualifies(x) or not x.get("kick") or x["kick"] < time.time() + 15 * 60:
+            if not _qualifies(x) or not x.get("kick") or not _start_ok(x, time.time(), 15 * 60):
+                continue
+            if x.get("live") and time.time() - at > LIVE_POOL_AGE:
                 continue
             if abs(x["chance"] - c["chance"]) > 0.12 or abs((x["kick"] or 0) - (c["kick"] or 0)) > 2 * 3600:
                 continue
@@ -11710,13 +11965,22 @@ def _panel_combo(c, cutoff):
 
 
 def _buy_panel_bet(c):
-    """Place one panel bet for real. Returns (ok, note, details)."""
+    """Place one panel bet for real. Returns (ok, note, details): ok False = nothing was bought (never retried),
+    None (an exception from the order itself) = unknown, so it's marked "check". A bet on a game under way is
+    priced again on a fresh score first, and anything the checks or Kalshi turn down before an order is a skip."""
+    if c.get("live"):
+        legs, why = live_recheck(c["legs"])
+        if legs is None:
+            return False, f"its game is under way and {why}", {}
+        c = dict(c, legs=legs, fair_mult=round(1 / math.prod(x["fair"] for x in legs), 3))
     l = c["legs"][0]
     if c["kind"] in ("single", "early", "line"):
         book = book_depth(l["ticker"], max_age=5) or {}
         ask = book.get("ask")
         if not ask:
             return False, "no price on Kalshi right now", {}
+        if c.get("live") and (book.get("bid") is None or ask - book["bid"] > LIVE_SPREAD):
+            return False, "its game is under way and the live price is too jumpy to buy", {}
         edge_needed = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask
         if ask + single_fee(ask) + edge_needed > l["fair"] + 1e-9:
             return False, f"the price moved to {ask * 100:.0f}¢, no longer good enough against its {l['fair']:.0%} chance", {}
@@ -11735,7 +11999,10 @@ def _buy_panel_bet(c):
 
     def go():
         _panel_combo(c, cut)
-        q = get_offer(1, c["stake"], check_cap=False)
+        try:                                             # nothing is bought until accept_offer: a refusal here is a skip
+            q = get_offer(1, c["stake"], check_cap=False)
+        except (RuntimeError, PermissionError, requests.RequestException) as err:
+            return False, f"Kalshi wouldn't price it ({str(err)[:120]})", {}
         if q.get("error"):
             return False, q["error"], {}
         if not q.get("ok"):
@@ -11832,11 +12099,19 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             if c.get("state") != "scheduled" or c.get("buy_at", 0) > now:
                 continue
             picks = " + ".join(l["pick"] for l in c["legs"])
-            if (c.get("kick") or 0) < now + 5 * 60:
-                _set_items(day, mode, {c["id"]: {"state": "skipped", "note": "its game was about to start before the price could be checked"}})
-                if mode == "real":
-                    out.append(f"⏭️ Panel: skipped {picks}: its game starts too soon to buy safely.")
-                continue
+            if not _start_ok(c, now, 5 * 60):
+                f0 = _fresh(c) if live_panel_on() and not c.get("live") else None
+                if isinstance(f0, dict) and f0.get("live") and _start_ok(f0, now, 5 * 60):
+                    c = dict(c, live=True, kick_pre=f0.get("kick_pre"))   # under way now, and still good priced live
+                    _set_items(day, mode, {c["id"]: {"live": True, "kick_pre": f0.get("kick_pre")}})
+                else:
+                    _set_items(day, mode, {c["id"]: {"state": "skipped", "note": (
+                        "games under way are switched off in Settings" if c.get("live") else
+                        "its game was about to start before the price could be checked")}})
+                    if mode == "real":
+                        out.append(f"⏭️ Panel: skipped {picks}: " + ("games under way are switched off." if c.get("live")
+                                                                     else "its game starts too soon to buy safely."))
+                    continue
             if mode == "real" and (paused or not may_trade):
                 continue
             f = _fresh(c)
@@ -11857,9 +12132,9 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                     if mode == "real":
                         out.append(f"⏭️ Panel: skipped {picks}: its price moved and nothing similar qualified.")
                 continue
-            upd = {k: f[k] for k in ("legs", "chance", "ret", "price", "pct", "exit", "fair_mult") if k in f}
+            upd = {k: f[k] for k in ("legs", "chance", "ret", "price", "pct", "exit", "fair_mult", "live", "kick_pre") if k in f}
             if mode == "paper":
-                upd.update(state="paper", paid=f.get("price"))
+                upd.update(state="paper", paid=f.get("price"), bought_at=int(now))
                 if c["kind"] == "combo" and may_trade:      # a real price, so the paper record is honest
                     try:
                         pays, pct = _quote_only(dict(c, **upd))
@@ -11889,7 +12164,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                 ok, note, d = _buy_panel_bet(dict(c, **upd))
             except Exception as err:
                 ok, note, d = None, f"{type(err).__name__}: {err}", {}
-            state = "bought" if ok else "failed" if ok is False else "check"
+            state = "bought" if ok else ("skipped" if c.get("live") else "failed") if ok is False else "check"
             try:
                 _set_items(day, mode, {c["id"]: dict(d, state=state, note=note, at=int(time.time()))})
             except Exception as err:                       # leave it "buying": never re-bought; flagged after 5 min
@@ -11911,7 +12186,8 @@ def panel_settle():
             changes = {}
             for c in p["items"]:
                 ch = {}
-                if c.get("state") in ("bought", "paper") and c.get("clv") is None and (c.get("kick") or 9e12) < time.time():
+                if c.get("state") in ("bought", "paper") and c.get("clv") is None and (c.get("kick") or 9e12) < time.time() \
+                        and not c.get("live"):                 # bought during the game: the closing price came before it
                     cl = close_prices([l["ticker"] for l in c["legs"]])
                     if len(cl) == len(c["legs"]) and all(l.get("p") for l in c["legs"]):
                         ch["clv"] = round(math.prod(cl[l["ticker"]] for l in c["legs"]) /
@@ -12146,9 +12422,9 @@ def analytics(max_age=600):
     # 2. bet types and 3. sports: the real panel, the paper panel and the lab
     names = {"single": "Single games", "early": "Sell-early favorites", "line": "Spreads & totals", "combo": "Combos"}
 
-    def roll(key):
+    def roll(key, its=None):
         g = defaultdict(lambda: {"n": 0, "won": 0, "staked": 0.0, "pl": 0.0, "clv": [], "sim": 0.0, "sim_n": 0})
-        for m, c in items:
+        for m, c in (items if its is None else its):
             k = (m if m != "lab" else "paper", key(c))
             x = g[k]
             x["n"] += 1
@@ -12166,6 +12442,10 @@ def analytics(max_age=600):
                 for (m, w), x in sorted(g.items(), key=lambda kv: (kv[0][0] != "real", -kv[1]["n"]))]
     out["types"] = roll(lambda c: names.get(c["kind"], c["kind"]))
     out["sports"] = roll(lambda c: (SPORTS.get(c.get("code") or "", {}).get("name") or (c.get("code") or "other").upper()))
+    # bets bought on games already under way, as their own group by league, so their record is judged on its own
+    out["live"] = roll(lambda c: league_label(bet_key([l["ticker"] for l in c["legs"]])),
+                       [(m, c) for m, c in items if c.get("live")])
+    out["live_excluded"] = LIVE_EXCLUDED_WHY
     # 4. exits: your real combos (Kalshi record) ridden vs cashed, and what automatic selling did
     ex = defaultdict(lambda: {"n": 0, "cost": 0.0, "back": 0.0})
     for r in store_rows("select cost, pays, back, status from bets where status in ('won','lost','cashed') and settled > ?",
@@ -12296,8 +12576,9 @@ def _paths(c):
     """A bet's recorded game prices as [(time, {ticker: chance})], oldest first (any source of ticks)."""
     tks = [l["ticker"] for l in c["legs"]]
     q_ = ",".join("?" * len(tks))
+    since = (c.get("bought_at") or c.get("at") or c.get("kick") or 0) if c.get("live") else (c.get("kick") or 0) - 300
     rows = store_rows(f"select ts, ticker, chance from ticks where ticker in ({q_}) and ts >= ? and chance is not null "
-                      f"order by ts", (*tks, (c.get("kick") or 0) - 300))
+                      f"order by ts", (*tks, since))
     cur = {l["ticker"]: (l.get("p") or 0.5) for l in c["legs"]}
     out, by = [], defaultdict(list)
     for r in rows:
@@ -12621,7 +12902,8 @@ def smart_summary():
 
 def prune_drafts(now=None):
     """Unapproved panels (today's, each sport's, and the New-since-you-approved extras) lose any bet whose game
-    starts within 20 minutes, so you're never shown or asked to approve a game that's under way."""
+    starts within 20 minutes (it can come back priced live once it's under way), any bet priced live when games
+    under way are switched off, and any live-priced bet whose price is older than LIVE_POOL_AGE."""
     if not STORE["db"]:
         return
     now = now or time.time()
@@ -12633,7 +12915,8 @@ def prune_drafts(now=None):
         def fn(cur, st):
             if st != "draft" or not cur:
                 return None
-            keep = [c for c in cur["items"] if (c.get("kick") or 0) >= now + 20 * 60]
+            keep = [c for c in cur["items"] if _start_ok(c, now, 20 * 60)
+                    and not (c.get("live") and now - (cur.get("at") or 0) > LIVE_POOL_AGE)]
             if len(keep) == len(cur["items"]):
                 return None
             return dict(cur, items=keep), "draft"

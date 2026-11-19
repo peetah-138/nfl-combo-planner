@@ -34,7 +34,7 @@ pattern in a local `.git/hooks/pre-commit`.
 
 - **compile, JavaScript syntax, undefined names, secret grep.**
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
-  Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
+  Kalshi bets, started games (pre-game-priced bets never bought once a game starts; `t_live_panel.py`: games under way only when priced live on a fresh score, the switch, recheck before buying, refusals are skips), smart sell for singles, the combo lab and analytics, self-tuning smart
   sell, AHL, AHL live scores (the league's feed, faked), tennis/EuroLeague/UFC scores from Kalshi's public live data
   (`t_kalshi_live.py`: real response shapes in `fixtures/kalshi_live.json`, sides, caching, backoff, and a source check
   that no buy/sell function reads it), display-code robustness (`t_robust.py`: a malformed or slow live feed never stops or delays auto
