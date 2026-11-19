@@ -105,7 +105,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
   own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
-  (`t_kalshi_live`; page test `test_klive`), per-league learning, the secure address and web
+  (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
@@ -140,6 +140,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   and their order, smart sell and every buy/sell/panel path never do (`t_kalshi_live` checks the sources). Tick
   sampling ignores a Kalshi score so smart-sell tuning's replays are unchanged. Fixtures of the real shapes:
   `tests/suite/fixtures/kalshi_live.json`.
+  **Robustness (review #37):** the display code can never stop or slow the trading loop. `kalshi_score`,
+  `display_score` and `safe_run_status` never raise (a bad feed field = no score for that game, logged once per game);
+  `mine_page`/`open_singles` refresh through `kalshi_live_kick` (a background thread, waiting at most `KLIVE_BUDGET`
+  = 1.5 s, last good copy otherwise); `klive_prune` drops old cache entries. Web app taps (`api_act`) take the lock
+  through `TapLock` (wait ≤ `ACT_WAIT` = 20 s, then "busy", nothing done; Live rebuilds stand aside while a tap
+  waits); the hub's reads share one `RateLimit` (~6/s, bursts of 20). Tested by `t_robust`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,

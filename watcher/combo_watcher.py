@@ -418,6 +418,68 @@ def hub_address():
     return ""
 
 
+ACT_WAIT = 20                    # most seconds a tap (sell, hedge, buy) waits for the web app's lock before "busy"
+
+
+class ActBusy(Exception):
+    """A tap gave up waiting for the web app's lock; nothing was done."""
+
+
+class TapLock:
+    """How a tap takes the web app's lock: the wait is capped at ACT_WAIT seconds (nothing is done when it runs
+    out, so a timed-out sell is never sent twice), and while a tap waits, background Live rebuilds stand aside."""
+
+    def __init__(self, lock):
+        self.lock, self.count, self.waiting = lock, threading.Lock(), 0
+
+    def hold(self, timeout=None):
+        return _TapHold(self, ACT_WAIT if timeout is None else timeout)
+
+
+class _TapHold:
+    def __init__(self, tl, timeout):
+        self.tl, self.timeout = tl, timeout
+
+    def __enter__(self):
+        with self.tl.count:
+            self.tl.waiting += 1
+        try:
+            got = self.tl.lock.acquire(timeout=self.timeout)
+        finally:
+            with self.tl.count:
+                self.tl.waiting -= 1
+        if not got:
+            raise ActBusy()
+        return self
+
+    def __exit__(self, *exc):
+        self.tl.lock.release()
+        return False
+
+
+class RateLimit:
+    """A shared token bucket: at most `rate` requests a second on average, bursts up to `burst`."""
+
+    def __init__(self, rate, burst):
+        self.rate, self.burst, self.lock = float(rate), float(burst), threading.Lock()
+        self.tokens, self.at = float(burst), time.monotonic()
+
+    def take(self, wait=True):
+        """Take one token; with wait=True sleep until there is one, else False when there isn't."""
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                self.tokens = min(self.burst, self.tokens + (now - self.at) * self.rate)
+                self.at = now
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return True
+                need = (1 - self.tokens) / self.rate
+            if not wait:
+                return False
+            time.sleep(need)
+
+
 class HubCache:
     """Recent public reads, kept fresh in the background for whatever the phone asked for lately.
     Display only: nothing that trades reads through here. Polite by design: an entry is only kept warm while
@@ -425,9 +487,11 @@ class HubCache:
     quickly only while the phone is actually looking and slowly otherwise, a host that answers 429 or 5xx is
     backed off, and the last good copy is served while a host is struggling."""
     FAST, SLOW, STALE_OK = 3, 60, 300            # warm loop beat; idle refresh period; oldest last-good copy served
+    RATE, BURST = 6, 20                          # all outbound reads together: ~6 a second on average (the old pace)
 
     def __init__(self, E):
         self.E, self.lock = E, threading.Lock()
+        self.limit = RateLimit(self.RATE, self.BURST)
         self.data, self.wanted, self.cool = {}, {}, {}
 
     @staticmethod
@@ -457,6 +521,7 @@ class HubCache:
             if hit and now - hit[0] < self.STALE_OK:
                 return hit[1]
             raise requests.ConnectionError(f"backing off {host}")
+        self.limit.take()                           # shared with the warm loop: caps the total request rate
         try:
             r = requests.get(url, params=params, timeout=20)
         except requests.RequestException:
@@ -503,8 +568,8 @@ class HubCache:
                     age = now - (self.data.get(k) or (0,))[0]
                     # asked for in the last minute: keep it as fresh as its ttl; otherwise only a slow refresh
                     if age > (self.ttl(u) - self.FAST if now - t < 60 else self.SLOW):
-                        todo.append((u, p))
-                todo = todo[:60]
+                        todo.append((-age, u, p))
+                todo = [(u, p) for _, u, p in sorted(todo, key=lambda x: x[0])[:60]]   # the stalest first
             for u, p in todo:
                 try:
                     self.get(u, p, fresh=True, touch=False)
@@ -3150,6 +3215,8 @@ def webapp_main():
     # ---- Combo Hub's own screens: plain data in, actions out (same engine, same rules as the phone)
     alock = threading.RLock()
     LIVE = {"at": 0.0, "data": None}
+    ACT = TapLock(alock)                     # taps take the lock through this: capped wait, rebuilds stand aside
+    act_lock = ACT.hold
     BUILD = {"lg": None}
 
     def jsonable(x):
@@ -3187,6 +3254,8 @@ def webapp_main():
 
     def live_refresh():
         try:
+            if ACT.waiting:                      # a tap is waiting for the lock: it goes first
+                return
             api_live(warm=True)
         finally:
             LIVE["busy"] = False
@@ -3678,10 +3747,18 @@ def webapp_main():
                                          for k, v in A.LEAGUES.items()]})
 
     def api_act(d):
+        try:
+            return _api_act(d)
+        except ActBusy:
+            msg = "The app is busy updating. Nothing was done; try again in a moment."
+            log("tap waited too long for the app lock:", str(d.get("a", ""))[:20])
+            return {"ok": False, "msg": msg, "error": msg, "busy": True}
+
+    def _api_act(d):
         a, t = str(d.get("a", "")), str(d.get("t", ""))
         was = BUILD.get("lg") or BUILD.get("last")
         if a in ("custom", "quote", "buy", "swap", "flip") and not A.CTX.get("all_games") and was:
-            with alock:                                     # the build's games were cleared (e.g. by Settings for another sport)
+            with act_lock():                                # the build's games were cleared (e.g. by Settings for another sport)
                 if not use_snap(was):                       # the exact board you were looking at, if it's recent
                     if a != "custom":                       # never price or buy a different combo than the one shown
                         return {"ok": False, "msg": "The board was refreshed. Pull down to reload Build, then try again."}
@@ -3696,7 +3773,7 @@ def webapp_main():
             LIVE["at"] = 0
             return {"ok": True, "msg": "Got it. This one waits for you to sell it." if d.get("on") else
                     "Smart sell is watching this one now."}
-        with alock:
+        with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}

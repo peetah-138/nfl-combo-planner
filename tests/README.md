@@ -37,7 +37,8 @@ pattern in a local `.git/hooks/pre-commit`.
   Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
   sell, AHL, AHL live scores (the league's feed, faked), tennis/EuroLeague/UFC scores from Kalshi's public live data
   (`t_kalshi_live.py`: real response shapes in `fixtures/kalshi_live.json`, sides, caching, backoff, and a source check
-  that no buy/sell function reads it), settings cleanup (removed `sell_own`; `stop_loss` kept as a
+  that no buy/sell function reads it), display-code robustness (`t_robust.py`: a malformed or slow live feed never stops or delays auto
+  cash-out, caches pruned, the web app's capped tap lock and shared request limit), settings cleanup (removed `sell_own`; `stop_loss` kept as a
   labelled manual override), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
   reaches web push, deduped; nothing trades), per-league learning
