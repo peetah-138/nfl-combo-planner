@@ -35,7 +35,7 @@ pattern in a local `.git/hooks/pre-commit`.
 - **compile, JavaScript syntax, undefined names, secret grep.**
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
   Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
-  sell, AHL.
+  sell, AHL, settings cleanup (removed `sell_own`; `stop_loss` kept as a labelled manual override).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
