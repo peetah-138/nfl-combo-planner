@@ -67,6 +67,9 @@ pattern in a local `.git/hooks/pre-commit`.
   streak note, light mode, the login page's motion and haptics, and reduced motion. Every action call is faked.
   `test_rebuild_ui.py`: the empty panel card (no 10-minute promise, Look now), live rebuild progress redrawn in place,
   the new panel dropping in by itself, and the "nothing found, here's why" card.
+  `test_loadwidth.py`: a frame-by-frame sampler on a phone for 2.4 s after every tab switch and a game page push (dark and light): no
+  element past the screen's right edge, no line past its card, `<main>` keeps normal wrapping and text size (the `arrived` class on
+  `<main>` once reused the name `fresh`, the "Updated Ns ago" stamp, and every new screen drew too wide for 1.6 s).
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.

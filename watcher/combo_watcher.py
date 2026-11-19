@@ -2331,8 +2331,9 @@ main.ptrd{transition:none!important}
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
 .psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
 .ccard.flash{animation:fl 1.2s ease}
-/* Results: bars grow in, the What's working tabs crossfade */
-main.fresh .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
+/* Results: bars grow in, the What's working tabs crossfade. (<main> is marked `arrived` for 1.6 s after a screen change; it must never be
+   called `fresh`: that is the small "Updated Ns ago" stamp's class, and its nowrap/small-grey rules made every new screen draw too wide.) */
+main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
 .bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
 .antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
@@ -2491,7 +2492,7 @@ function render(){({live:renderLive,games:renderGames,build:renderBuild,results:
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
 function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const mn=$('#main');if(mn){mn.classList.add('fresh');clearTimeout(S.freshT);S.freshT=setTimeout(()=>mn.classList.remove('fresh'),1600);}
+ const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
  const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
  document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}

@@ -338,6 +338,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   per-league smart-sell tuning).
 
 ### Look and feel (the makeover)
+- CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
+  "Updated Ns ago" stamp: nowrap, small grey text). Reusing it made every new screen draw too wide for a moment (GitHub #52);
+  `test_loadwidth.py` samples every frame after each tab switch.
 - One motion system: rolling numbers with green/red flashes, staggered entrances, page fades (View Transitions),
   swipe left/right between tabs, sliding tab and segmented indicators, spring bottom sheets with drag-to-close,
   press feedback, a drawn-check "Bought" moment, haptics everywhere (`hap()`: in-app via `combo://haptic`, iOS 18
