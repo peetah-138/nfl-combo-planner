@@ -1264,6 +1264,14 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 .msg{color:var(--bad);font-size:14px;min-height:20px;margin-top:12px}.hint{color:var(--mute);font-size:13px;margin-top:22px}.hint a{color:var(--acc)}
 .shake{animation:sh .4s}@keyframes sh{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
 .spin{width:18px;height:18px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:r .7s linear infinite;display:inline-block}@keyframes r{to{transform:rotate(1turn)}}
+/* the same motion as the app: a soft entrance, press feedback, a haptic tick on every tap */
+:root{color-scheme:dark;--spring:cubic-bezier(.2,.9,.25,1.12);--ease:cubic-bezier(.2,.8,.2,1)}@media (prefers-color-scheme:light){:root{color-scheme:light}}
+.box>*{animation:rise .5s var(--ease) both}.box>*:nth-child(2){animation-delay:.06s}.box>*:nth-child(3){animation-delay:.12s}.box>*:nth-child(4){animation-delay:.18s}.box>*:nth-child(5){animation-delay:.24s}.box>*:nth-child(n+6){animation-delay:.3s}
+.logo{animation:pop .6s var(--spring) both!important}@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.fid,.go,.eye{transition:transform .14s var(--ease),filter .15s,background-color .15s;-webkit-tap-highlight-color:transparent}.fid:active,.go:active{transform:scale(.97)}.eye:active{transform:translateY(-50%) scale(.88)}
+.fid:hover,.solo .go:hover{filter:brightness(1.07)}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head><body><div class="box" id="box">
 <img class="logo" src="data:image/png;base64,__ICON__" alt="">
 <h1>Combo Hub</h1><p class="sub" id="sub">Your Mac's betting desk</p>
@@ -1276,6 +1284,11 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 <div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
 </div><script>
 const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
+/* haptics, the same way as the app (iOS: a hidden switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
+function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
+ let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
+ (k==='error'?[0,80,160]:[0]).forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
+addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('button,a');if(b&&!b.closest('#hapl'))hap('light');},true);
 if(msg.textContent.trim())box.classList.add('shake');
 document.getElementById('f').addEventListener('submit',()=>{document.getElementById('go').innerHTML='<span class="spin"></span>';});
 const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
@@ -1290,7 +1303,7 @@ async function unlock(auto){const btn=document.getElementById('fid');const old=b
    allowCredentials:o.ids.map(id=>({type:'public-key',id:b64(id)}))}});
   const r=await (await fetch('/auth/finish',{method:'POST',body:JSON.stringify({id:c.id,clientDataJSON:e64(c.response.clientDataJSON),
    authenticatorData:e64(c.response.authenticatorData),signature:e64(c.response.signature)})})).json();
-  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
+  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';hap('error');box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
  }catch(e){
   if(auto){/* iOS often refuses Face ID without a tap: say so and make the button the obvious thing to tap */
    msg.textContent='';btn.classList.add('nudge');}
@@ -1685,7 +1698,7 @@ SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#0b0d12"><title>Combo Hub</title>
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)"><meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)"><title>Combo Hub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#6b7488;
@@ -1983,7 +1996,7 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .stp button{border:0;background:none;width:30px;height:30px;color:var(--sub);font-size:16px;font-weight:600}.stp button:hover{color:var(--ink);background:var(--hover)}
 .stp span{min-width:28px;text-align:center;font-weight:700}
 .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));border-top:1px solid var(--line);overflow:hidden}
-.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv>div>span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .kv b{font-size:14.5px;display:flex;align-items:center;gap:7px;margin-top:2px;word-break:break-all}
 .sact{display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-top:1px solid var(--line)}
 .code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
@@ -2156,6 +2169,80 @@ body.pushed main,body.pushed .top{filter:brightness(.5)}
 .bigwin .ring2.b{animation-delay:.45s}@keyframes ring2{from{transform:scale(1);opacity:.9}to{transform:scale(14);opacity:0}}
 .bigwin .btn{margin-top:22px}
 @media (prefers-reduced-motion:reduce){.bigwin .ring2{display:none}.bigwin .bw{animation:none}.gc.scored{animation:none}}
+/* ---- makeover phase 3: every remaining screen in the same motion system ---- */
+:root{color-scheme:dark;--fs-xs:11px;--fs-s:12.5px;--fs-m:14px;--fs-l:17px;--sp:16px}
+@media (prefers-color-scheme:light){:root{color-scheme:light}
+ .own{background:rgba(217,119,6,.13);color:#a85a06}.ss.me{background:rgba(217,119,6,.11);border-color:rgba(217,119,6,.38);color:#a85a06}
+ .sheet{box-shadow:0 24px 60px rgba(16,24,40,.18)}.modal:not(.push){background:rgba(15,20,32,.32)}
+ .segind,.seg button.on{box-shadow:0 1px 3px rgba(16,24,40,.16)}.tg{background:#e2e6ee}.tg::after{box-shadow:0 1px 3px rgba(16,24,40,.28)}
+ .btn.warn{background:#f2a531}.slipbar{box-shadow:0 8px 28px rgba(36,104,255,.28)}#ptr,.netbar{box-shadow:0 6px 20px rgba(16,24,40,.12)}
+ .flipnote.mid b.v{color:#b26b00}.kpis.hero:before{opacity:.8}}
+/* safe areas for the Home Screen app (notch, rounded corners, home indicator) */
+@media (max-width:900px){main{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
+ .top{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+ .modal:not(.push) .sheet{border-radius:22px 22px 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
+/* keyboard-aware sheets: the sheet rides up above the on-screen keyboard */
+.modal:not(.push){padding-bottom:var(--kb,0px);transition:opacity .22s var(--ease),padding-bottom .25s var(--out)}
+@media (max-width:900px){.modal:not(.push){padding-bottom:var(--kb,0px)}}
+.modal.on:not(.push){-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+/* the scroll-linked header: it tucks itself in once you scroll */
+.ts span{transition:opacity .2s,max-height .3s var(--ease);max-height:16px;overflow:hidden}
+.top{transition:transform .27s var(--out),filter .27s var(--out),padding .3s var(--ease),box-shadow .3s,height .3s var(--ease)}
+.brand{transition:transform .3s var(--ease);transform-origin:left center}
+body.hc .top{box-shadow:0 8px 24px rgba(0,0,0,.16)}
+@media (max-width:900px){body.hc .top{padding-top:calc(5px + env(safe-area-inset-top));padding-bottom:5px}body.hc .brand{transform:scale(.84)}body.hc .ts span{opacity:0;max-height:0}}
+/* the calm reconnecting banner */
+.netbar{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 68px);z-index:26;transform:translate(-50%,-16px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;
+ padding:8px 14px;border-radius:999px;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:12.5px;font-weight:650;color:var(--ink);
+ -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);transition:transform .4s var(--spring),opacity .25s;white-space:nowrap;max-width:calc(100vw - 32px)}
+.netbar.on{opacity:1;transform:translate(-50%,0)}.netbar i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse2 1.4s infinite;flex:none}
+.netbar small{color:var(--mute);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
+/* pull to refresh, on every tab: rubber band, a ring that fills, a spin, a check */
+#ptr svg{width:20px;height:20px;overflow:visible}#ptr circle{fill:none;stroke:var(--acc);stroke-width:2.4;stroke-linecap:round;transform:rotate(-90deg);transform-origin:10px 10px;transition:stroke-dashoffset .05s}
+#ptr path{fill:none;stroke:var(--yes);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;opacity:0}
+#ptr.go svg{animation:sp .7s linear infinite}#ptr.go circle{stroke-dashoffset:12!important}
+#ptr.done circle{stroke:var(--yes);stroke-dashoffset:0!important}#ptr.done path{opacity:1;animation:okc .3s var(--ease) forwards}
+#ptr{transition:transform .35s var(--spring),opacity .25s}#ptr.drag{transition:none}
+main.ptrd{transition:none!important}
+/* switches and sliders */
+.tg::after{transition:transform .34s var(--spring),width .18s var(--ease)}.tg:active::after{width:25px}.tg:checked:active::after{transform:translateX(13px)}
+.tg:checked{box-shadow:0 0 0 3px color-mix(in srgb,var(--yes) 10%,transparent)}
+.rng output{transition:color .2s}.rng output.bump,.saved.bump{animation:obump .32s var(--spring)}@keyframes obump{40%{transform:scale(1.14)}}
+.rdet{flex-wrap:wrap;row-gap:6px}.rdet .tks{flex-basis:100%;display:flex;justify-content:space-between;padding:0 8px;margin-right:98px}
+.rdet .tks i{width:5px;height:5px;border-radius:50%;background:var(--line);transition:background .25s,transform .3s var(--spring)}.rdet .tks i.on{background:var(--acc)}.rdet .tks i.at{transform:scale(1.7)}
+.rdet output{min-width:84px}
+/* buttons that report back: working, done, didn't work */
+.btn.st-ok{background:var(--yesbg)!important;color:var(--yes)!important;border-color:color-mix(in srgb,var(--yes) 40%,transparent)!important;animation:obump .4s var(--spring)}
+.btn.st-bad{background:var(--nobg)!important;color:var(--no)!important;border-color:color-mix(in srgb,var(--no) 40%,transparent)!important;animation:sh3 .4s}
+@keyframes sh3{25%,75%{transform:translateX(-4px)}50%{transform:translateX(4px)}}
+.btn.arm{position:relative;overflow:hidden;background:var(--live)!important;color:#1b1203!important}
+.btn.arm:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.75);transform-origin:left;animation:qdrain 4s linear forwards}
+@keyframes qdrain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+/* Build: the quote countdown, picks, the slip bar, folding sections, panel cards */
+.qline,.btn.qb{position:relative;overflow:hidden}.qt{position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.45;transform-origin:left;animation:qdrain 20s linear forwards}
+.qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
+.pickbtn.pop{animation:chipon .34s var(--spring)}
+.slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
+.sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
+.unfold{animation:rise .38s var(--ease)}
+.pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
+.psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
+.ccard.flash{animation:fl 1.2s ease}
+/* Results: bars grow in, the What's working tabs crossfade */
+main.fresh .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
+.bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
+.antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
+/* the morning recap's streak */
+.streak{display:flex;align-items:center;gap:10px;margin:10px 0 2px;padding:9px 12px;border-radius:12px;background:var(--panel2);font-size:13px;color:var(--sub)}
+.streak b{color:var(--ink);font-size:15px}.streak.hot{background:linear-gradient(100deg,color-mix(in srgb,var(--live) 18%,var(--panel2)),var(--panel2) 75%)}
+.streak .fl{font-size:18px;display:inline-block;animation:flick 1.8s ease-in-out infinite;transform-origin:50% 90%}@keyframes flick{0%,100%{transform:rotate(-4deg) scale(1)}50%{transform:rotate(4deg) scale(1.08)}}
+.streak .dots{margin-left:auto;display:flex;gap:4px}.streak .dots i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:dotin .4s var(--spring) both;animation-delay:calc(var(--i)*70ms + .2s)}
+@keyframes dotin{from{transform:scale(0)}to{transform:none}}
+/* errors and empty states */
+.card.err{border-color:color-mix(in srgb,var(--no) 35%,var(--line))}.card.err:before{background:linear-gradient(145deg,var(--nobg),transparent)}
+.setsk{display:grid;gap:14px}.setsk>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;display:grid;gap:12px}.setsk i{display:block;background:var(--panel2);border-radius:9px}
+@media (prefers-reduced-motion:reduce){.streak .fl,.netbar i{animation:none}#ptr{transition:none}}
 </style></head><body>
 <header class="top">
  <div class="brand"><div class="mk"><svg width="16" height="16" viewBox="0 0 24 24"><path d="M4 15.5l4.2-4.2 3.3 3.3L20 6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>Combo Hub</div>
@@ -2174,7 +2261,27 @@ body.pushed main,body.pushed .top{filter:brightness(.5)}
 <script>
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
 const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}return r.json();});
+const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json();},e=>{netUp(false);throw e;});
+/* Offline/reconnecting: a calm pill under the header ("Reconnecting to your Mac · Updated 40s ago") that appears when
+   requests fail or the live link drops for more than a moment, and says "Back online" briefly when it returns. */
+function netUp(ok){if(ok){S.okAt=Date.now();if(S.netDown){S.netDown=false;netBanner();}}else if(!S.netDown){S.netDown=true;S.netSince=Date.now();netBanner();}}
+function netIsDown(){return !!S.netDown||(S.live_ok===false&&!!S.esEver)||navigator.onLine===false;}   // a live link that never opened (no event stream here) isn't an outage: the page polls instead
+function netTxt(){const a=S.okAt?Math.round((Date.now()-S.okAt)/1000):null;return a==null?'':a<3?'Updated just now':a<90?'Updated '+a+'s ago':'Updated '+Math.round(a/60)+' min ago';}
+function netBanner(){let el=document.getElementById('netbar');if(!el){el=document.createElement('div');el.id='netbar';el.className='netbar';el.setAttribute('role','status');document.body.appendChild(el);}
+ const tb=document.querySelector('.top');if(tb)el.style.top=(tb.getBoundingClientRect().bottom+8)+'px';
+ if(netIsDown()){if(S.netShown){const sm=el.querySelector('small');if(sm)sm.textContent=netTxt();return;}
+  if(!S.netPend)S.netPend=setTimeout(()=>{S.netPend=0;if(!netIsDown())return;clearTimeout(S.netT);el.className='netbar on';
+   el.innerHTML=`<i></i><span>${navigator.onLine===false?'You\'re offline':'Reconnecting to your Mac'}</span><small>${netTxt()}</small>`;S.netShown=true;},S.netNow?0:1200);return;}
+ if(S.netPend){clearTimeout(S.netPend);S.netPend=0;}
+ if(S.netShown){S.netShown=false;el.className='netbar on ok';el.innerHTML='<i></i><span>Back online</span>';clearTimeout(S.netT);S.netT=setTimeout(()=>{el.classList.remove('on');},1600);}}
+addEventListener('online',()=>netBanner());addEventListener('offline',()=>{S.netNow=1;netBanner();S.netNow=0;});
+/* the header tucks in once you scroll (with a little hysteresis so it never flickers) */
+(()=>{let on=false,raf=0;const f=()=>{raf=0;const y=scrollY,want=on?y>8:y>40;if(want!==on){on=want;document.body.classList.toggle('hc',on);}};
+ addEventListener('scroll',()=>{if(!raf)raf=requestAnimationFrame(f);},{passive:true});})();
+/* keyboard-aware sheets: when the on-screen keyboard opens, the bottom sheet rises above it and the field stays in view */
+function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.style.setProperty('--kb',px+'px');S.kb=px;
+ if(px){const f=document.activeElement;if(f&&f.closest&&f.closest('#sheet'))setTimeout(()=>f.scrollIntoView({block:'center',behavior:'smooth'}),60);}}
+(()=>{const vv=window.visualViewport;if(!vv)return;const f=()=>kbSet(innerHeight-vv.height-vv.offsetTop>80?innerHeight-vv.height-vv.offsetTop:0);vv.addEventListener('resize',f);vv.addEventListener('scroll',f);})();
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
@@ -2204,7 +2311,9 @@ addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contai
    edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
 function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
  sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
-function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;$('#sheet').classList.remove('wide');$('#sheet').innerHTML='<i class="grab"></i>'+h;$('#modal').classList.add('on');hap('light');}
+function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
+ if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
+ $('#modal').classList.add('on');hap('light');}
 function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
  clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
 const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -2250,12 +2359,21 @@ function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('
  addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
  addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
   if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
-/* pull down on Live to refresh */
-(()=>{let y0=null,dy=0,el=null;const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<i></i>'}),document.body.appendChild(el),el);
- addEventListener('touchstart',e=>{y0=(S.view==='live'&&scrollY<=0&&!$('#modal').classList.contains('on'))?e.touches[0].clientY:null;dy=0;},{passive:true});
- addEventListener('touchmove',e=>{if(y0==null)return;dy=Math.max(0,e.touches[0].clientY-y0);const p=ptr(),k=Math.min(1,dy/90);p.style.opacity=k;p.style.transform=`translateY(${-40+k*50}px) rotate(${dy*3}deg)`;if(dy>=90&&!p._hit){p._hit=1;hap('light');}},{passive:true});
- addEventListener('touchend',async()=>{if(y0==null)return;const p=ptr();y0=null;if(dy>=90){p.classList.add('go');p.style.transform='translateY(10px)';await load('live',true).catch(()=>{});hap('success');}
-  p.classList.remove('go');p._hit=0;p.style.opacity=0;p.style.transform='translateY(-40px)';dy=0;});})();
+/* Pull down at the top of any tab to refresh it: the page follows the finger with a rubber band, a ring fills as you
+   pull, it ticks once at the point where letting go refreshes, spins while loading and ends on a small check. */
+(()=>{let y0=null,dy=0,el=null,busy=false;const C=2*Math.PI*8,TH=64;
+ const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke-dasharray="'+C.toFixed(1)+'" stroke-dashoffset="'+C.toFixed(1)+'"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>'}),document.body.appendChild(el),el);
+ const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input,select,textarea,.chips,.seg,.ant,.sidx'));
+ const main=()=>$('#main'),reduce=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+ addEventListener('touchstart',e=>{y0=(!busy&&scrollY<=0&&!$('#modal').classList.contains('on')&&!skip(e.target))?e.touches[0].clientY:null;dy=0;},{passive:true});
+ addEventListener('touchmove',e=>{if(y0==null)return;const raw=e.touches[0].clientY-y0;if(raw<=0||scrollY>0){if(dy){dy=0;const p=ptr();p.style.opacity=0;const m=main();if(m){m.style.transform='';}}return;}
+  dy=110*(1-Math.exp(-raw/150));const p=ptr(),k=Math.min(1,dy/TH);p.classList.add('drag');p.style.opacity=Math.min(1,k*1.4);p.style.transform=`translateY(${-40+k*50}px)`;
+  p.querySelector('circle').style.strokeDashoffset=(C*(1-k)).toFixed(1);const m=main();if(m&&!reduce()){m.classList.add('ptrd');m.style.transform=`translateY(${(dy*.45).toFixed(1)}px)`;}
+  if(dy>=TH&&!p._hit){p._hit=1;hap('selection');}else if(dy<TH&&p._hit){p._hit=0;}},{passive:true});
+ addEventListener('touchend',async()=>{if(y0==null)return;const p=ptr(),m=main();y0=null;p.classList.remove('drag');if(m){m.classList.remove('ptrd');m.style.transform='';}
+  if(dy>=TH){busy=true;p.classList.add('go');p.style.transform='translateY(10px)';const v=S.view;await load(v,true).catch(()=>{});
+   p.classList.remove('go');p.classList.add('done');hap('success');await new Promise(z=>setTimeout(z,520));busy=false;}
+  p.classList.remove('go','done');p._hit=0;p.style.opacity=0;p.style.transform='translateY(-40px)';dy=0;});})();
 function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'],['results','Results'],['settings','Settings']];
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
  $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
@@ -2268,8 +2386,9 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):money(v);}
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const mn=$('#main');if(mn){mn.classList.add('fresh');clearTimeout(S.freshT);S.freshT=setTimeout(()=>mn.classList.remove('fresh'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
  const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
  document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
@@ -2289,7 +2408,7 @@ function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce
  root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
   if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
  root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
-  if(old==null||Math.abs(old-v)<(f==='pct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
+  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
   const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
 function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
 function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
@@ -2305,7 +2424,7 @@ function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
 function frAge(k){const o=S.fr[k];if(!o)return null;const f=o.f;const at=Math.min(f.built,f.scores!=null?f.now-f.scores:f.built);return Math.max(0,f.now-at+(Date.now()-o.recv)/1000);}
 function frTxt(k){const a=frAge(k);if(a==null)return '';return a<3?'Updated just now':a<90?'Updated '+Math.round(a)+'s ago':'Updated '+Math.round(a/60)+' min ago';}
 function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frAge(k)||0)>60);});}
-setInterval(()=>{frTick();clkTick();},1000);
+setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
 setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
 async function load(v,fresh){try{warm(v);
  if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
@@ -2316,7 +2435,19 @@ async function load(v,fresh){try{warm(v);
  if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);frSet('N',S.games.fresh);}
  if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
- if(S.view===v)render();}catch(e){if(e)console.log(e);}}
+ if(S.lerr)delete S.lerr[v];if(S.view===v)render();}catch(e){if(e)console.log(e);
+  const have={live:S.live,games:S.games,build:S.build,results:S.res,settings:S.set}[v];   // nothing to show yet: say so, with a retry, instead of a skeleton forever
+  if(e!==0&&!have){S.lerr=S.lerr||{};S.lerr[v]=navigator.onLine===false?'You\'re offline.':'Couldn\'t reach your Mac. It may be asleep or restarting.';if(S.view===v)render();}}}
+/* the error card for a screen that couldn't load: calm, says why, and a Try again that spins while it retries */
+function errCard(v){return `<div class="card empty err"><b>Couldn't load this screen</b>${esc((S.lerr||{})[v]||'')}<br><button class="btn acc" onclick="retry('${v}',this)">Try again</button></div>`;}
+async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
+ if((S.lerr||{})[v]&&b&&b.isConnected){btnState(b,false,'Still no answer');setTimeout(()=>{if(b.isConnected){b.className='btn acc';b.textContent='Try again';}},2200);}}
+/* A button that reports back: spins while working, then a check and "Done" (green) or a cross (red, a small shake),
+   then its old self. */
+function btnState(b,ok,label,ms){if(!b||!b.isConnected)return;hap(ok?'success':'error');b.disabled=false;b.classList.remove('st-ok','st-bad');void b.offsetWidth;b.classList.add(ok?'st-ok':'st-bad');
+ b.innerHTML=(ok?'✓ ':'✕ ')+esc(label||(ok?'Done':'Didn\'t work'));b.dataset.st=ok?'ok':'bad';
+ if(ms!==0){const old=b._old;clearTimeout(b._st);b._st=setTimeout(()=>{if(b.isConnected){b.classList.remove('st-ok','st-bad');delete b.dataset.st;if(old!=null)b.innerHTML=old;b._old=null;}},ms||2200);}}
+function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
@@ -2360,8 +2491,8 @@ function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPa
 function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i><i style="height:76px"></i></div>
  <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
 function _renderLive(){const d=S.live;const m=$('#main');
- if(!d){m.innerHTML=liveSkel();return;}
- if(d.error){m.innerHTML=`<div class="card empty"><b>Couldn't load your combos</b>${esc(d.error)}</div>`;return;}
+ if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
+ if(d.error){m.innerHTML=`<div class="card empty err"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
  const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
  const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
@@ -2412,12 +2543,12 @@ function ideaBlock(ideas){S.ideaq=S.ideaq||{};
    <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    <div class="dnums">${fresh?`<div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div>`:`<div>Value<b>${pct(x.pct)} of fair</b></div>`}</div></div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">Buy · ${left}s</button>`:
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;
   return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" onclick="buyIdea('${x.id}')">Buy · ${left}s</button>`:
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" onclick="buyIdea('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
@@ -2558,10 +2689,12 @@ async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r
 // ---------------- BUILD
 function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
  return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
-function renderBuild(){const d=S.build;const m=$('#main');
+/* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
+function renderBuild(){_renderBuild();rollNums($('#main'));}
+function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
  const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
- if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>';return;}
+ if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
   ${panelBlock(S.panel)}
@@ -2569,8 +2702,8 @@ function renderBuild(){const d=S.build;const m=$('#main');
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
-    return `<button class="pickbtn ${on?'on':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
-    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
+    return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+    <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
   ${linesBlock(d)}
   ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
   ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
@@ -2589,10 +2722,22 @@ function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${esc(pTime(c.kick))}</div><b>${title}</b>
+ return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${esc(pTime(c.kick))}</div><b>${title}</b>
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
-  <div class="ps"><b>${money(c.stake)}</b>${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
-function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);renderBuild();}
+  <div class="ps"><b data-num="ps:${esc(c.id)}" data-v="${(+c.stake||0).toFixed(2)}">${money(c.stake)}</b>${pxSpark(c)}${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
+function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
+/* A tiny line on each panel card: the bet's Kalshi price (a combo's share of fair) over the times this phone has seen
+   it, kept for 36 hours. It only shows once there are two or more readings, so it never makes data up. */
+function pxVal(c){const v=c.kind==='combo'?c.pct:(c.price!=null?c.price:((c.legs||[])[0]||{}).p);return v==null||isNaN(v)?null:+v;}
+function pxHist(){if(!S.pxh){try{S.pxh=JSON.parse(localStorage.getItem('cw_pxh')||'{}')||{}}catch(e){S.pxh={}}}return S.pxh;}
+function pxNote(c){const v=pxVal(c);if(v==null||!c.id)return [];const h=pxHist(),now=Date.now()/1000;let a=(h[c.id]||[]).filter(p=>now-p[0]<36*3600);const last=a[a.length-1];
+ if(!last||Math.abs(last[1]-v)>1e-4||now-last[0]>600){a=a.concat([[Math.round(now),+v.toFixed(4)]]).slice(-48);h[c.id]=a;clearTimeout(S.pxT);
+  S.pxT=setTimeout(()=>{try{const hh=pxHist();for(const k in hh)if(!(hh[k]||[]).some(p=>Date.now()/1000-p[0]<36*3600))delete hh[k];localStorage.setItem('cw_pxh',JSON.stringify(hh))}catch(e){}},400);}
+ return a;}
+function pxSpark(c){const a=pxNote(c);if(a.length<2)return '';const vs=a.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01),t0=a[0][0],t1=a[a.length-1][0];
+ const d=a.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*64).toFixed(1)} ${(19-(p[1]-lo)/rg*16).toFixed(1)}`).join('');const col=vs[vs.length-1]>=vs[0]?'var(--yes)':'var(--no)';
+ const f=c.kind==='combo'?pct:(x=>Math.round(x*100)+'¢');
+ return `<svg class="psp" viewBox="0 0 64 22" preserveAspectRatio="none" aria-label="Price ${f(vs[0])} then ${f(vs[vs.length-1])}"><title>Kalshi price since this phone first saw it: ${f(vs[0])} → ${f(vs[vs.length-1])}</title><path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>`;}
 function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
   <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac checks every 10 minutes. You can still build your own below.</div></div>`:`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
   <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
@@ -2620,12 +2765,12 @@ function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
  return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
@@ -2652,16 +2797,16 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
  return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
   <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
   <div class="why">Every leg is priced below the sharp books' chance, so the combo should pay more than it's worth. Get the real price before buying.</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>
+  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>
    <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
-function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);if(!legs.length)return '';
+function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);const was=S.slipWas;S.slipWas=legs.length;if(!legs.length)return '';
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
- return `<div class="slipbar"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
+ return `<div class="slipbar ${was?'':'in'}"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
 try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
- if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
+ if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
 function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
 function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
  const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
@@ -2670,7 +2815,7 @@ function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.sta
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
    ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
-   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
+   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn qb ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${qBar(c.offer)}${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
   <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
 async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
  if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i,legs:S.slip.slice()});
@@ -2683,23 +2828,26 @@ async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="
 async function swapCombo(i,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}
  const r=await api('/app/api/act',{a:'swap',i}).catch(()=>({ok:false}));if(S.quotes)delete S.quotes[i];if(S.flips)delete S.flips[i];
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t find another one.');renderBuild();return;}
- const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;renderBuild();hap('success');}
+ const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;S.ccJust=i;renderBuild();S.ccJust=null;hap('success');}
 async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
  const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
- S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');renderBuild();}
+ S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');S.ccJust=i;renderBuild();S.ccJust=null;}
 function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
  const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}
+/* a fresh Kalshi quote: it rises in once, and a thin bar under it drains over the 20 seconds the price lasts */
+function qNew(o){return o&&Date.now()/1000-o.at<1.2?'new':'';}
+function qBar(o){return o?`<i class="qt" style="animation-delay:-${Math.max(0,Date.now()/1000-o.at).toFixed(2)}s"></i>`:'';}
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];
  if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
   <div style="display:flex;gap:8px"><button class="btn ghost" style="flex:1" onclick="go('live')">See it on Live</button><button class="btn ghost" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
- return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+ return `<div class="ccard ${S.ccJust===c.i?'flash':''}"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b data-num="cf:${c.i}" data-v="${(+c.fair||0).toFixed(2)}">${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold" data-num="cc:${c.i}" data-v="${c.chance}" data-f="pct">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg flip" title="Tap to flip to the other team" onclick="flipLeg(${c.i},'${l.ticker}')">${esc(short(l.pick))} ${pct(l.fair)} ⇄${legLive(l)}</span>`).join('')}</div>
   ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
   <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
+  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
   <div style="display:flex;gap:8px">${fresh?`<button class="btn ${o.clears?'yes':'warn'}" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}<button class="btn ghost" title="Not this one: show a different combo" onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
 async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
@@ -2727,15 +2875,15 @@ function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<
  seq.forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
 // ---------------- RESULTS
 function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
-function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=resultsSkel();return;}
+function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
  if(S.scrub){S.resDirty=true;return;}
  const sh=d.shadow;
  m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}<div class="kpis">
   <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
-  <div class="kpi"><span>Return on stake</span><b>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
-  <div class="kpi"><span>Settled</span><b>${d.settled} <small>combos</small></b></div>
+  <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
+  <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>
   <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
-  <div class="kpi"><span>Best result</span><b class="up">${smoney(d.best)}</b></div></div>
+  <div class="kpi"><span>Best result</span><b class="up" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}"`:''}>${smoney(d.best)}</b></div></div>
   ${plChart(d)}
   ${anBlock(S.an)}${edgeBlock(d)}
   ${historyBlock(d.history||[])}
@@ -2812,10 +2960,10 @@ function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const ne
   <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
   <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
   <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
-function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div><div class="m" style="padding:6px 0 4px">${a?'Nothing to measure yet. Results show up as bets settle.':'Loading…'}</div></div>`;
+function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div>${a?'<div class="m" style="padding:6px 0 4px">Nothing to measure yet. Results show up as bets settle.</div>':'<div class="ansk" aria-label="Loading"><i style="height:34px;border-radius:10px"></i><i style="width:84%"></i><i></i><i style="width:92%"></i><i style="width:70%"></i></div>'}</div>`;
  const tab=S.anTab||'levels';const r=x=>x==null?'—':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(Math.round(x*100))}%</b>`;
  const tabs=[['levels','Combo price levels'],['types','Bet types'],['sports','Sports'],['exits','Selling']];
- const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="S.anTab='${k}';renderResults()">${l}</button>`).join('')}</div>`;
+ const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="anTab('${k}')">${l}</button>`).join('')}</div>`;
  const table=(head,rows)=>`<div class="antbl"><div class="anrow h">${head.map(h=>`<div>${h}</div>`).join('')}</div>${rows.map(cs=>`<div class="anrow">${cs.map((c,i)=>`<div data-l="${i?esc(head[i]):''}">${c}</div>`).join('')}</div>`).join('')||'<div class="m" style="padding:10px 0">No settled bets here yet.</div>'}</div>`;
  const mode=m=>m==='real'?'<span class="tag good">Real</span>':'<span class="tag">Paper</span>';
  let body='',expl='';
@@ -2830,8 +2978,10 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
    +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays. Leagues without enough results use their sport's settings, then everyone's.</div>`
    +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss):'never',x.n]));}
  const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
- return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)} ago</span></div>${tb}
-  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>`;}
+ return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)==='now'?'just now':ago2(a.at)+' ago'}</span></div>${tb}
+  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div></div>`;}
+function anTab(k){if(S.anTab===k)return;S.anTab=k;S.anJust=true;renderResults();S.anJust=false;
+ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.an .antbl .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,12)*30}ms both`;});}
 function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
@@ -2857,7 +3007,7 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
-function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);load('settings')})">I moved it</button></div>`;}
+function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
  return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
 function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
@@ -2883,7 +3033,7 @@ function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'Pu
  if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
  if(!can)return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>On iPhone: open Combo Hub from its Home Screen icon (Share › Add to Home Screen), then turn them on here.</small></div></div>`;
  return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${S.pushOn?'On. Alerts from the Mac open the right screen when tapped.':'Get the Mac\'s alerts here, straight from Combo Hub.'}${pk.n?` · ${pk.n} device${pk.n>1?'s':''} signed up`:''}</small></div>
-  ${S.pushOn?`<button class="btn" onclick="pushTest()">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
+  ${S.pushOn?`<button class="btn" onclick="pushTest(this)">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
 function urlB64(s){const p='='.repeat((4-s.length%4)%4);const b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)));}
 async function pushOn(btn){try{const perm=await Notification.requestPermission();
   if(perm!=='granted'){toast('Notifications are blocked. Allow them in Settings › Notifications › Combo Hub.',6000);return;}
@@ -2894,7 +3044,7 @@ async function pushOn(btn){try{const perm=await Notification.requestPermission()
   await api('/app/push',{a:'sub',sub:sub.toJSON(),label:/iPhone/.test(navigator.userAgent)?'iPhone':'Browser'});
   const t=await api('/app/push',{a:'test'});S.pushOn=true;toast(t.sent?'Notifications are on. A test is on its way.':'Signed up. The test didn\'t go through yet.',5000);load('settings');
  }catch(e){toast('Couldn\'t turn them on: '+(e&&e.message||e),6000);load('settings');}}
-async function pushTest(){const t=await api('/app/push',{a:'test'});toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
+async function pushTest(b){btnBusy(b,'Sending…');const t=await api('/app/push',{a:'test'}).catch(()=>({}));btnState(b,!!t.sent,t.sent?'Sent':'Not sent');toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
 async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistration();const sub=reg&&await reg.pushManager.getSubscription();if(sub){await api('/app/push',{a:'off',sub:sub.toJSON()});await sub.unsubscribe();}}catch(e){}S.pushOn=false;toast('Notifications off on this device.');load('settings');}
 function httpsRow(mac){const h=mac.https||{};
  if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
@@ -2952,8 +3102,12 @@ async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild(
  S.build=null;renderBuild();load('build',true);}
 try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
 function secOpen(k){return S.bsec[k]!==false;}
-function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}renderBuild();}
-function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" onclick="secTog('${k}')"><span class="chev">${o?'▾':'▸'}</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
+/* folding a Build section: the chevron turns and the section rises in, instead of jumping */
+function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}S.secJust=k;renderBuild();S.secJust=null;
+ const h=document.querySelector(`.sech[data-k="${k}"]`);if(!h)return;const c=h.querySelector('.chev');
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{if(c)c.classList.remove('from-open','from-shut');}));
+ if(secOpen(k)){let n=h.nextElementSibling;for(let i=0;i<2&&n&&!n.classList.contains('sech');i++,n=n.nextElementSibling)n.classList.add('unfold');}}
+function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" data-k="${k}" onclick="secTog('${k}')"><span class="chev ${S.secJust===k?(o?'from-shut':'from-open'):''}">▾</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
 function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games={};ls.forEach(x=>{(games[x.game]=games[x.game]||[]).push(x);});
  return secHead('lines','Spreads &amp; totals',ls.length,'Kalshi price · model chance from the sportsbook line')+(!secOpen('lines')?'':`
   <div class="tbl lines"><div class="lrow2 m" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:10px"><span></span><span class="num">Kalshi</span><span class="num">Chance</span><span class="num" style="text-align:center">Edge</span></div>${Object.entries(games).map(([g,xs])=>`<div class="lhd">${esc(g)} <span class="m">· book ${xs.find(x=>x.kind==='spread')?'spread '+xs.find(x=>x.kind==='spread').book_line:''}${xs.find(x=>x.kind==='total')?' · total '+xs.find(x=>x.kind==='total').book_line:''}</span></div>
@@ -3032,7 +3186,7 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
   if(o&&(o[0]!==sc.me||o[1]!==sc.opp)){const good=sc.me>o[0];S.gscore[k]=good?'good':'bad';any=any||S.gscore[k];}});
  if(any&&S.view==='games')hap(any==='good'?'success':'warning');
  clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
-function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=gamesSkel();return;}
+function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
@@ -3146,10 +3300,15 @@ async function loadRecap(){const h=new Date().getHours();const day=new Date().to
  if(h<5||h>=14||seen===day){S.recap=null;return;}S.recap=await api('/app/api/recap').catch(()=>null);if(S.view==='live')renderLive();}
 function recapCard(){const r=S.recap;if(!r||!r.bets||!r.bets.length)return '';
  return `<div class="card recap"><div class="rh"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Yesterday</div>
-  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down${r.streak>1?` · 🔥 ${r.streak} days up in a row`:''}</span></div>
+  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}" data-num="rc:pl" data-v="${Math.abs(r.pl||0).toFixed(2)}" data-pre="${(r.pl||0)>=0?'+':'−'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down</span></div>
   <button class="x" onclick="try{localStorage.setItem('cw_recap',new Date().toDateString())}catch(e){};S.recap=null;renderLive()">✕</button></div>
   ${r.best&&r.best.pl>0?`<div class="mini">Best<b class="up">${esc(r.best.what)} ${smoney(r.best.pl)}</b></div>`:''}${r.worst&&r.worst.pl<0?`<div class="mini">Worst<b class="down">${esc(r.worst.what)} ${smoney(r.worst.pl)}</b></div>`:''}
-  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}</div>`;}
+  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}${streakNote(r)}</div>`;}
+/* The streak note in the morning recap: days in a row the panel finished up, a flame and a dot per day (up to a week).
+   One good day says what starts a streak; a down day says nothing (no guilt trip). */
+function streakNote(r){const s=+r.streak||0;if(s<1)return '';
+ if(s===1)return `<div class="streak"><span class="fl">🔥</span><span><b>1 day up.</b> Another good day today starts a streak.</span></div>`;
+ return `<div class="streak hot"><span class="fl">🔥</span><span><b>${s} days up</b> in a row${s>=7?'. A whole week.':s>=3?'. Keep it going.':''}</span><span class="dots">${Array.from({length:Math.min(s,7)},(_,i)=>`<i style="--i:${i}"></i>`).join('')}</span></div>`;}
 function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
  <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p><div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
  clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard'))closeModal();},5200);}
@@ -3157,7 +3316,7 @@ function celebrate(){hap('success');const box=document.createElement('div');box.
  for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
  document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
 function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
- es.onopen=()=>{S.live_ok=true;stat();};
+ es.onopen=()=>{S.live_ok=true;S.esEver=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
   if(ev.kind==='tick'){if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
@@ -3167,16 +3326,24 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
   if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
-function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
+function stat(){netBanner();const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
 // ---------------- settings
 const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
 const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
 function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
 function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
-  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');this.nextElementSibling.textContent=fmtv('${k}',this.value)" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
+  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
 function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
 function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
+/* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
+function rideRow(names){names=names||[];const n=Math.max(2,names.length),v=Math.max(0,Math.min(n-1,+S.set.values.ride||0));
+ return `<div class="srow"><div class="l"><b>Let it ride</b><small>How long to hold before cashing out. Cautious sells sooner, Bold later, Ride it out turns smart sell off.</small></div>
+  <div class="rng rdet"><input type="range" id="ride" aria-label="Let it ride" min="0" max="${n-1}" step="1" value="${v}" style="--p:${Math.round(v/(n-1)*100)}%" oninput="rideIn(this)" onchange="setv('ride',+this.value);renderSettings()"><output>${esc(names[v]||'')}</output>
+  <div class="tks">${names.map((_,i)=>`<i class="${i<=v?'on':''} ${i===v?'at':''}"></i>`).join('')}</div></div></div>`;}
+function rideIn(el){const names=(S.set&&S.set.ride)||[],n=Math.max(2,names.length),v=+el.value;el.style.setProperty('--p',Math.round(v/(n-1)*100)+'%');
+ const o=el.parentNode.querySelector('output');if(o){o.textContent=names[v]||'';o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump');}
+ el.parentNode.querySelectorAll('.tks i').forEach((t,i)=>{t.classList.toggle('on',i<=v);t.classList.toggle('at',i===v);});}
 function stp(k,lo,hi){const v=S.set.values[k];return `<div class="stp"><button onclick="bump('${k}',-1,${lo},${hi})">−</button><span>${v}</span><button onclick="bump('${k}',1,${lo},${hi})">＋</button></div>`;}
 function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d));if(v===S.set.values[k])return;setv(k,v);
  const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
@@ -3188,9 +3355,11 @@ async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)del
  const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
  if(r.ok){S.build=null;saved('Saved','ok');if(r.synced===true)toast('Saved · the Mac watcher has it now.');else if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
  else{saved('Not saved');toast(r.msg||'Couldn\'t save. Check the connection.');}}
-function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
+function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'')+(c==='ok'?' bump':'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
 function sport(lg){S.slg=lg;S.set=null;renderSettings();load('settings');}
-function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<div class="set"><div></div><div>${skel(8)}</div></div>`;return;}
+function settingsSkel(){const row='<div style="display:grid;grid-template-columns:1fr 46px;gap:14px;align-items:center"><div style="display:grid;gap:6px"><i style="height:13px;width:52%"></i><i style="height:10px;width:78%"></i></div><i style="height:26px;border-radius:99px"></i></div>';
+ return `<div class="set"><div></div><div><div class="hsk" style="padding:2px 0 18px"><i style="height:24px;width:34%"></i><i style="height:12px;width:60%"></i></div><div class="setsk">${[3,4,2].map(n=>`<div><i style="height:15px;width:40%"></i>${row.repeat(n)}</div>`).join('')}</div></div></div>`;}
+function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S.lerr||{}).settings?`<div class="set"><div></div><div>${errCard('settings')}</div></div>`:settingsSkel();return;}
  const v=d.values,mode=d.mode,mac=S.mac;
  const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekend cap';
  const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
@@ -3204,7 +3373,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
-   <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
+   <div class="sact"><button class="btn acc" onclick="macUpdate(this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
    <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
@@ -3224,7 +3393,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
  ${d.maker?scard('maker','📌','Standing orders','Buy orders resting under fair, managed by the Mac.',makerCard(d.maker)):''}
  ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
-   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
+   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+rideRow(d.ride)
    +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
    +tgl('auto_sell','Auto cash-out','The Mac sells by itself, logged and capped')
    +tgl('smart_sell','Smart profit-taking','Sells when locking in beats the risk of holding, by sport: a one-goal hockey lead is fragile, an early NBA lead isn\'t',!v.auto_sell)
@@ -3239,8 +3408,8 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
  </div></div>`;}
-async function macCheck(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking…';const was=S.mac&&S.mac.engine;
- const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){b.disabled=false;b.textContent='Check for an update now';return;}
+async function macCheck(b){btnBusy(b,'Checking…');const was=S.mac&&S.mac.engine;
+ const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){btnState(b,false,'Couldn\'t reach the Mac');return;}
  for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
   if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
 async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking Tailscale…';}
@@ -3250,8 +3419,14 @@ async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span clas
   if(m&&m.ok){const h=m.https||{};if(JSON.stringify(h)!==was||k===19){S.mac=m;renderSettings();
    toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?(h.link?'One step left: tap Allow https, approve in Tailscale, then Check.':'One step left: enable HTTPS Certificates in Tailscale admin, then Check.'):h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':h.state==='issuing'?'Almost there: Tailscale is making the certificate.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
  load('settings');}
-async function macDo(a,b){if(a==='https')return httpsCheck(b);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
- toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
+/* Mac buttons: spin while working, then a check (or a cross) on the button itself before the card refreshes. */
+async function macDo(a,b){if(a==='https')return httpsCheck(b);btnBusy(b);const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
+ toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);
+ if(a==='update'&&r.ok){btnState(b,true,'Updating · back in about a minute',0);setTimeout(()=>location.reload(),70000);return;}
+ btnState(b,!!r.ok,r.ok?(a==='testpush'?'Sent':'Done'):'Didn\'t work');setTimeout(()=>{if(S.view==='settings')load('settings');},1500);}
+/* updating restarts the watcher, so it asks first */
+function macUpdate(b){S.updBtn=b;modal(`<h3>Update the Mac now?</h3><p>It installs the newest version and restarts the watcher. Bets and settings stay as they are, and this page reloads by itself in about a minute.</p>
+ <div class="row"><button class="btn" onclick="closeModal()">Not now</button><button class="btn acc" onclick="closeModal();macDo('update',S.updBtn)">Update now</button></div>`);}
 async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
  <div class="code" id="pc">${esc(r.code||'')}</div><p class="m" style="font-size:12.5px">Hub: ${esc(r.hub||'Tailscale not signed in: the phone can only use the Mac at home.')}</p>
  <div class="row"><button class="btn" onclick="closeModal()">Close</button><button class="btn acc" onclick="navigator.clipboard.writeText($('#pc').textContent).then(()=>toast('Copied'))">Copy</button></div>`);}

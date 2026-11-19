@@ -304,7 +304,38 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   - **Results**: "Profit by day / week" bars (Day = last 14 days with results, Week = last 12 weeks; remembered),
     drag across for a readout, tap a bar for that day's or week's bets in a sheet. Skeletons for Results and the
     Build panel; empty states point to Build. `test_makeover2.py` covers all of this.
-- Next makeover phases (Kalshi-style game page, settings polish, light mode): `ROADMAP.md` and issue #12.
+- **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
+  motion system.
+  - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link
+    (`S.live_ok===false`, or the phone offline) for more than ~1.2 s brings up a calm pill under the header,
+    "Reconnecting to your Mac · Updated 40s ago" (the stamp counts from the last good answer, `S.okAt`), which says
+    "Back online" briefly when it returns. A screen with nothing to show yet gets an error card with **Try again**
+    (`errCard`/`retry`) instead of an endless skeleton. Settings and What's working have their own skeletons.
+  - **Header** tucks in once you scroll on a phone (`body.hc`, with hysteresis). **Pull to refresh** works on every
+    tab: rubber band, a ring that fills, a tick at the threshold, a spin, then a check (`load(view, true)`).
+  - **Safe areas** for the Home Screen app (side insets, bottom sheets clear the home indicator), **keyboard-aware
+    sheets** (`visualViewport` → `--kb`, `kbSet()`; the sheet rides above the keyboard and the field stays in view),
+    sheet content staggers in, a light backdrop blur.
+  - **Settings**: Let it ride is a slider with five detents (a haptic tick per step, the name pops, dots follow;
+    same `ride` value 0–4). Every slider's value pops as it moves; switches have a springier knob; "Saved" pops.
+    Buttons that do something on the Mac report back on the button itself (`btnBusy`/`btnState`: spinner, then
+    "✓ Done"/"✓ Sent" or "✕ Didn't work"), and **Update now asks first** (it restarts the watcher).
+  - **Build**: board prices, panel stakes and combo chances roll with green/red flashes (`data-num`, `cent` format);
+    picking a team pops; the slip bar slides in once; a fresh quote rises in with a bar draining over its 20 s (also
+    on Live's idea Buy buttons and the slip's Buy); Buy anyway stays the yellow button; fold chevrons turn and
+    sections rise in; leaving a panel bet out animates; the first Approve/Add tap arms the button (orange, "Tap again",
+    a 4 s draining bar). Panel cards show a **tiny price line** (Kalshi price, or a combo's share of fair) from what
+    this phone has seen in the last 36 h (`cw_pxh` in localStorage); it appears only with 2+ readings.
+  - **Results**: KPIs roll, the edge bars grow in on arrival, What's working tabs crossfade (rows stagger) and it
+    says "updated just now" (not "now ago").
+  - **Morning recap streak** (`streakNote`): 2+ days up = a flame, "N days up in a row" and a dot per day (up to 7);
+    one day up = a gentle "another good day starts a streak"; a down day shows nothing.
+  - **Login page**: soft entrance (logo pops), press feedback, a haptic on every tap and on a Face ID failure.
+  - **Light mode** fixes (`color-scheme`, a theme colour per scheme, warmer "You, on Kalshi" tag, softer shadows,
+    visible switch track), and a fix for Settings › Accounts showing "Not connected" as a label.
+  - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
+    reduced-motion run.
+- Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
 ## Open items
 
