@@ -1,4 +1,4 @@
-import os,sys,json,time,tempfile,random,types
+import os,json,time,tempfile,random
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 import importlib.util
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)
@@ -20,7 +20,6 @@ ok("#3 combo at cut-off qualifies", E._qualifies(C))
 # 7: sim exclusivity
 tot=E._sim_panel([dict(A,stake=5),dict(C,stake=5)],n=4000)
 both=sum(1 for t in tot if t>(5*(1/(.5+E.single_fee(.5)))-5)-0.01 and t>5)  # rough
-import itertools
 rng=random.Random(3)
 u_wins=[(E._sim_panel([dict(A,stake=1)],n=1,seed=s)[0]>0, E._sim_panel([dict(A,stake=1),dict(C,stake=1)],n=1,seed=s)[0]) for s in range(300)]
 # direct check: A (first side) and B can't both win

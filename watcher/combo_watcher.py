@@ -21,12 +21,12 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.118"
+WATCHER_VERSION = "2026.11.19.119"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min")
+          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live")
 
 
 def log(*a):
@@ -50,15 +50,48 @@ def hub_base(conf):
     return f"http://{ip}:{conf.get('hub_port', 8765)}" if ip else ""
 
 
-def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False, click=None):
+WEB_SYNC = False          # tests set this so the web push runs inline instead of in a thread
+_WEB_SEEN = {}            # (title, body) -> when it last went to web push (so one alert isn't sent twice)
+_WEB_LOCK = threading.Lock()
+
+
+def web_push(title, body, url="/app", tag=None, urgent=False):
+    """Send one notification to the devices signed up for Combo Hub notifications (Web Push), in the
+    background. The same title+text within 2 minutes is sent once. Does nothing when no device is signed up."""
+    key = (title, body)
+    now = time.time()
+    with _WEB_LOCK:
+        for k in [k for k, t in _WEB_SEEN.items() if now - t > 120]:
+            _WEB_SEEN.pop(k, None)
+        if key in _WEB_SEEN:
+            return False
+        _WEB_SEEN[key] = now
+    if WEB_SYNC:
+        PUSH.send(title, body, url=url, tag=tag, urgent=urgent)
+    else:
+        threading.Thread(target=PUSH.send, args=(title, body), kwargs={"url": url, "tag": tag, "urgent": urgent},
+                         daemon=True, name="webpush").start()
+    return True
+
+
+def push(conf, msg, title="Combo planner", priority="default", topic=None, pause_button=False, click=None,
+         web=True, web_title=None, web_msg=None, web_urgent=None, tag=None):
     """A notification on your phone (ntfy app subscribed to your topic). With pause_button, it
     carries a "Pause auto cash-out" button that stops automatic sales until you resume. With click,
-    tapping it opens that Combo Hub page."""
+    tapping it opens that Combo Hub page. Unless it goes to another topic (topic=...) or web=False, it
+    also goes to the phones signed up for Combo Hub notifications (web_title / web_msg / web_urgent:
+    different wording for those, urgent defaults to ntfy's high priority)."""
     headers = {"Title": title, "Priority": priority, "Tags": "moneybag"}
     if click and hub_base(conf):
         headers["Click"] = hub_base(conf) + click
     if pause_button:
         headers["Actions"] = f"http, Pause auto cash-out, {NTFY}/{conf['topic']}-pause, method=POST, body=pause, clear=true"
+    if web and not topic:
+        try:
+            urgent = priority in ("high", "urgent") if web_urgent is None else web_urgent
+            web_push(web_title or title, web_msg or msg, url=click or "/app", tag=tag, urgent=urgent)
+        except Exception as err:
+            log("web push skipped:", type(err).__name__, err)
     try:
         r = requests.post(f"{NTFY}/{topic or conf['topic']}", data=msg.encode("utf-8"), timeout=10, headers=headers)
         if not topic:
@@ -385,48 +418,161 @@ def hub_address():
     return ""
 
 
+ACT_WAIT = 20                    # most seconds a tap (sell, hedge, buy) waits for the web app's lock before "busy"
+
+
+class ActBusy(Exception):
+    """A tap gave up waiting for the web app's lock; nothing was done."""
+
+
+class TapLock:
+    """How a tap takes the web app's lock: the wait is capped at ACT_WAIT seconds (nothing is done when it runs
+    out, so a timed-out sell is never sent twice), and while a tap waits, background Live rebuilds stand aside."""
+
+    def __init__(self, lock):
+        self.lock, self.count, self.waiting = lock, threading.Lock(), 0
+
+    def hold(self, timeout=None):
+        return _TapHold(self, ACT_WAIT if timeout is None else timeout)
+
+
+class _TapHold:
+    def __init__(self, tl, timeout):
+        self.tl, self.timeout = tl, timeout
+
+    def __enter__(self):
+        with self.tl.count:
+            self.tl.waiting += 1
+        try:
+            got = self.tl.lock.acquire(timeout=self.timeout)
+        finally:
+            with self.tl.count:
+                self.tl.waiting -= 1
+        if not got:
+            raise ActBusy()
+        return self
+
+    def __exit__(self, *exc):
+        self.tl.lock.release()
+        return False
+
+
+class RateLimit:
+    """A shared token bucket: at most `rate` requests a second on average, bursts up to `burst`."""
+
+    def __init__(self, rate, burst):
+        self.rate, self.burst, self.lock = float(rate), float(burst), threading.Lock()
+        self.tokens, self.at = float(burst), time.monotonic()
+
+    def take(self, wait=True):
+        """Take one token; with wait=True sleep until there is one, else False when there isn't."""
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                self.tokens = min(self.burst, self.tokens + (now - self.at) * self.rate)
+                self.at = now
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return True
+                need = (1 - self.tokens) / self.rate
+            if not wait:
+                return False
+            time.sleep(need)
+
+
 class HubCache:
-    """Recent public reads, kept fresh in the background for whatever the phone asked for lately."""
+    """Recent public reads, kept fresh in the background for whatever the phone asked for lately.
+    Display only: nothing that trades reads through here. Polite by design: an entry is only kept warm while
+    somebody has asked for it in the last 30 minutes (warming itself never counts as asking), it is warmed
+    quickly only while the phone is actually looking and slowly otherwise, a host that answers 429 or 5xx is
+    backed off, and the last good copy is served while a host is struggling."""
+    FAST, SLOW, STALE_OK = 3, 60, 300            # warm loop beat; idle refresh period; oldest last-good copy served
+    RATE, BURST = 6, 20                          # all outbound reads together: ~6 a second on average (the old pace)
+
     def __init__(self, E):
         self.E, self.lock = E, threading.Lock()
-        self.data, self.wanted = {}, {}
+        self.limit = RateLimit(self.RATE, self.BURST)
+        self.data, self.wanted, self.cool = {}, {}, {}
 
     @staticmethod
     def ttl(url):
-        if "espn.com" in url:
-            return 8
+        if "espn.com" in url or "hockeytech.com" in url:
+            return 6                                # live scores: the phone's view is at most ~6s behind the feed
         if "/multivariate_event_collections" in url or "/series" in url:
             return 120
         return 12
 
-    def get(self, url, params, fresh=False):
+    @staticmethod
+    def host(url):
+        return url.split("//", 1)[-1].split("/", 1)[0] or url
+
+    def get(self, url, params, fresh=False, touch=True):
         key = url + "?" + json.dumps(params, sort_keys=True)
         now = time.time()
+        host = self.host(url)
         with self.lock:
-            self.wanted[key] = (now, url, params)
+            if touch:
+                self.wanted[key] = (now, url, params)
             hit = self.data.get(key)
+            cool = self.cool.get(host)
         if hit and not fresh and now - hit[0] < self.ttl(url):
             return hit[1]
-        r = requests.get(url, params=params, timeout=20)
+        if cool and now < cool[1]:                  # this host said slow down: last good copy, or nothing
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+            raise requests.ConnectionError(f"backing off {host}")
+        self.limit.take()                           # shared with the warm loop: caps the total request rate
+        try:
+            r = requests.get(url, params=params, timeout=20)
+        except requests.RequestException:
+            self.note(host, False)
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+            raise
+        if r.status_code == 429 or r.status_code >= 500:
+            self.note(host, False, r.headers.get("Retry-After"))
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+        else:
+            self.note(host, True)
         val = {"status": r.status_code, "text": r.text}
         if r.ok:
             with self.lock:
                 self.data[key] = (time.time(), val)
         return val
 
+    def note(self, host, good, retry_after=None):
+        """Count a host's failures in a row: back off 5s, 10s, 20s ... up to a minute (or its Retry-After)."""
+        with self.lock:
+            if good:
+                self.cool.pop(host, None)
+                return
+            n = (self.cool.get(host) or (0, 0))[0] + 1
+            wait = min(60, 5 * 2 ** (n - 1))
+            try:
+                wait = max(wait, min(120, float(retry_after)))
+            except (TypeError, ValueError):
+                pass
+            self.cool[host] = (n, time.time() + wait)
+
     def warm(self):
         while True:
-            time.sleep(8)
+            time.sleep(self.FAST)
             now = time.time()
             with self.lock:
                 for k in [k for k, (t, _, _) in self.wanted.items() if now - t > 1800]:
                     self.wanted.pop(k, None)
                     self.data.pop(k, None)
-                todo = [(u, p) for k, (t, u, p) in self.wanted.items()
-                        if now - (self.data.get(k) or (0,))[0] > self.ttl(u) - 6][:60]
+                todo = []
+                for k, (t, u, p) in self.wanted.items():
+                    age = now - (self.data.get(k) or (0,))[0]
+                    # asked for in the last minute: keep it as fresh as its ttl; otherwise only a slow refresh
+                    if age > (self.ttl(u) - self.FAST if now - t < 60 else self.SLOW):
+                        todo.append((-age, u, p))
+                todo = [(u, p) for _, u, p in sorted(todo, key=lambda x: x[0])[:60]]   # the stalest first
             for u, p in todo:
                 try:
-                    self.get(u, p, fresh=True)
+                    self.get(u, p, fresh=True, touch=False)
                 except Exception as err:          # one bad read doesn't stop the rest
                     log("hub warm skipped:", type(err).__name__, err)
 
@@ -547,9 +693,7 @@ class Notifier:
             now, hour = time.time(), time.localtime().tm_hour
             if 7 <= hour < 22 and now - getattr(self, "last_idea", 0) >= 600:
                 self.last_idea = now
-                push(self.conf, msg, title="Buy idea", priority="default", click=url)
-                threading.Thread(target=PUSH.send, args=("Buy idea", msg), kwargs={"url": url, "tag": "idea"},
-                                 daemon=True).start()
+                push(self.conf, msg, title="Buy idea", priority="default", click=url, tag="idea")
                 return True
             return True                                  # it's waiting in Combo Hub's Do now list
         kind = kind or ("cash" if ("cash" in low or "hedge" in low) else "info")
@@ -558,9 +702,8 @@ class Notifier:
             return False                              # switched off (actions it took are always reported)
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
-                 pause_button=bool(self.E.CFG.get("auto_sell")))
-            threading.Thread(target=PUSH.send, args=("Combo Hub", msg.replace("Open the planner to confirm.", "Tap to decide.")),
-                             kwargs={"urgent": True, "tag": "urgent"}, daemon=True).start()
+                 pause_button=bool(self.E.CFG.get("auto_sell")), web_title="Combo Hub", web_urgent=True, tag="urgent",
+                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."))
             BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
@@ -577,9 +720,7 @@ class Notifier:
             msgs, self.q = self.q, []
         self.last = now
         body = "\n".join("• " + m for m in msgs[:8]) + (f"\n(+{len(msgs) - 8} more)" if len(msgs) > 8 else "")
-        push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low")
-        threading.Thread(target=PUSH.send, args=(f"{len(msgs)} update{'s' * (len(msgs) != 1)}", body),
-                         kwargs={"tag": "digest"}, daemon=True).start()
+        push(self.conf, body, title=f"{len(msgs)} update{'s' * (len(msgs) != 1)}", priority="low", tag="digest")
         return len(msgs)
 
 
@@ -622,50 +763,167 @@ def is_local(handler):
             and not h.get("Tailscale-User-Login") and not h.get("Forwarded"))
 
 
+def is_https(handler):
+    """The request reached us through Tailscale's https front door (it says so in X-Forwarded-Proto)."""
+    return (handler.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+
 # ---- https through Tailscale (a private address with a real certificate; needed for iPhone notifications)
-def tailscale_cli():
+# Where the Tailscale command line lives. The wrapper in /usr/local/bin is the safe one under launchd; the app's own
+# binary only acts as a command line when TAILSCALE_BE_CLI=1 is set (otherwise it says "GUI failed to start"), so it is last.
+TS_CLI_PATHS = ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale")
+TS_CLI_PATHS_LATE = ("/usr/bin/tailscale",)
+TS_APP_BIN = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+TS_WAIT = 120             # seconds to wait for the first certificate after `serve` (it can take a minute or two)
+TS_PROBE_SLEEP = 3
+TS_RETRY = 300            # while the secure address isn't on, look again every 5 minutes
+TS_RECHECK = 1800         # once on, make sure it is still serving every 30 minutes
+HTTPS_LOCK = threading.Lock()
+ENABLE_HTTPS_HELP = ("HTTPS certificates are not enabled in Tailscale admin. On the Mac or iPhone open "
+                     "login.tailscale.com/admin/dns, sign in, scroll to HTTPS Certificates, tap Enable HTTPS..., "
+                     "confirm, then tap Try again here.")
+ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns"
+
+
+TS_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def tailscale_clis():
+    """Every Tailscale command line on this Mac, best first (no duplicates): the wrapper script and Homebrew, then
+    whatever is on PATH, the app's own binary last. Each is tried in turn until one answers."""
     import shutil
-    for p in (shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
-              "/opt/homebrew/bin/tailscale", "/usr/bin/tailscale"):
-        if p and os.path.exists(p):
-            return p
+    out = []
+    for p in (*TS_CLI_PATHS, shutil.which("tailscale"), *TS_CLI_PATHS_LATE, TS_APP_BIN):
+        if p and p not in out and os.path.exists(p):
+            out.append(p)
+    return out
+
+
+def tailscale_cli():
+    clis = tailscale_clis()
+    return clis[0] if clis else None
+
+
+def tailscale_env():
+    """launchd gives the watcher a bare environment (PATH /usr/bin:/bin:/usr/sbin:/sbin, maybe no HOME). Add the
+    usual places, keep HOME and set TAILSCALE_BE_CLI=1 so the app's binary acts as a command line."""
+    env = dict(os.environ)
+    parts = [x for x in (env.get("PATH") or "").split(":") if x]
+    parts += [x for x in TS_PATH.split(":") if x not in parts]
+    env["PATH"] = ":".join(parts)
+    env.setdefault("HOME", os.path.expanduser("~"))
+    env["TAILSCALE_BE_CLI"] = "1"
+    return env
+
+
+def tailscale_run(cli, args, timeout):
+    """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
+    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
+    import subprocess
+    return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                          env=tailscale_env())
+
+
+# What the command line prints when it can't reach the Tailscale app (as opposed to failing to start itself).
+TS_NO_DAEMON = ("failed to connect to local tailscale", "is tailscale running", "connection refused",
+                "tailscaled", "localapi", "local api", "socket")
+TS_CLI_BROKEN = ("gui failed to start", "clierror", "cli failed to start", "system extension")
+# What `tailscale serve` prints when the tailnet hasn't turned on HTTPS certificates.
+TS_HTTPS_OFF = re.compile(r"serve is not enabled|https (?:certificates )?(?:is |are )?not enabled|enable https|"
+                          r"certificates? (?:is |are )?not enabled|https is disabled", re.I)
+# The real reason and the next step for each BackendState that isn't Running.
+TS_BACKEND = {
+    "NeedsLogin": ("signed-out", "Tailscale says this Mac is signed out (NeedsLogin). Open the Tailscale app on the "
+                                 "Mac, sign in, then tap Try again."),
+    "NeedsMachineAuth": ("needs-approval", "This Mac is signed in to Tailscale but waits for approval "
+                                           "(NeedsMachineAuth). Approve it at login.tailscale.com/admin/machines, "
+                                           "then tap Try again."),
+    "Stopped": ("ts-off", "Tailscale is signed in but switched off on this Mac (Stopped). Open the Tailscale app, "
+                          "turn it on (Connect), then tap Try again."),
+}
+
+
+def tailscale_status():
+    """Ask each Tailscale command line for `status --json` until one gives a JSON object.
+    Returns (cli, status, None), or (None, None, (state, detail)) with the real reason it couldn't."""
+    import subprocess
+    clis = tailscale_clis()
+    if not clis:
+        log("https: no Tailscale command line found")
+        return None, None, ("no-cli", "No Tailscale command line on this Mac (looked in /usr/local/bin, "
+                                      "/opt/homebrew/bin, PATH and the Tailscale app). Install the Tailscale app, "
+                                      "open it once, then tap Try again.")
+    fails = []
+    for cli in clis:
+        try:
+            p = tailscale_run(cli, ["status", "--json"], 15)
+        except subprocess.TimeoutExpired:
+            log("https: `tailscale status` timed out:", cli)
+            fails.append(("timeout", "no answer in 15 s"))
+            continue
+        except (OSError, subprocess.SubprocessError) as err:
+            log("https: couldn't run", cli, type(err).__name__, str(err)[:120])
+            fails.append(("oserror", str(err)[:120]))
+            continue
+        raw = (p.stdout or "").strip()
+        try:
+            st = json.loads(raw)
+            if not isinstance(st, dict):
+                raise ValueError("not an object")
+            return cli, st, None
+        except ValueError:
+            seen = " ".join(((p.stderr or "").strip() + " " + raw).split())[:160]
+            log(f"https: `{cli} status --json` gave nothing usable (exit {p.returncode}): {seen!r}")
+            fails.append(("output", seen))
+    said = " | ".join(s for _, s in fails if s)
+    low = said.lower()
+    if any(k in low for k in TS_NO_DAEMON):
+        return None, None, ("no-daemon", f"Couldn't read Tailscale's status: the command line can't talk to the "
+                                         f"Tailscale app ({said[:120]}). Open the Tailscale app on the Mac, check it "
+                                         "says Connected, then tap Try again.")
+    if any(k in low for k in TS_CLI_BROKEN):
+        return None, None, ("cli-broken", f"Couldn't read Tailscale's status: its command line wouldn't start from "
+                                          f"the watcher ({said[:120]}). On the Mac open Tailscale's settings, install "
+                                          "the command line (CLI integration), then tap Try again.")
+    if all(k == "timeout" for k, _ in fails):
+        return None, None, ("no-status", "Couldn't read Tailscale's status: Tailscale didn't answer in time. "
+                                         "It checks again by itself in a few minutes.")
+    return None, None, ("no-status", f"Couldn't read Tailscale's status: {said[:140] or 'no output'}. "
+                                     "Open the Tailscale app on the Mac, then tap Try again.")
+
+
+def _https_set(conf, state, **kw):
+    conf["https"] = dict({"state": state}, **kw)
     return None
 
 
 def tailscale_https(conf, port):
     """Ask Tailscale to serve Combo Hub at https://<this-mac>.<tailnet>.ts.net. If the tailnet hasn't
-    allowed https yet, keep the one-time link that turns it on, for Settings > This Mac."""
+    allowed https yet, keep the one-time link that turns it on, for Settings > This Mac.
+    Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
-    cli = tailscale_cli()
-    if not cli:
-        conf["https"] = {"state": "no-cli"}
-        return None
-    try:
-        st = json.loads(subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=15).stdout or "{}")
+    with HTTPS_LOCK:
+        cli, st, why = tailscale_status()
+        if why:
+            log("https not on yet:", why[0], why[1][:160])
+            return _https_set(conf, why[0], detail=why[1])
+        backend = str(st.get("BackendState") or "")
         name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        name = ""
-    if not name:
-        conf["https"] = {"state": "no-name"}
-        return None
-    url = f"https://{name}"
-    try:
-        r = requests.get(url + "/sw.js", timeout=8)
-        if r.ok and b"Combo Hub" in r.content:
-            conf["https"] = {"state": "on", "url": url}
-            return url
-    except requests.RequestException:
-        pass
-    try:
-        p = subprocess.run([cli, "serve", "--bg", str(port)], capture_output=True, text=True, timeout=25)
-        out = (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired as err:
-        out = ((err.stdout or b"").decode() if isinstance(err.stdout, bytes) else (err.stdout or "")) + \
-              ((err.stderr or b"").decode() if isinstance(err.stderr, bytes) else (err.stderr or ""))
-    except (OSError, subprocess.SubprocessError) as err:
-        out = str(err)
-    link = re.search(r"https://login\.tailscale\.com/\S+", out)
-    for _ in range(6):
+        if backend and backend != "Running":      # only BackendState itself may say signed out
+            state, detail = TS_BACKEND.get(backend, ("starting", f"Tailscale is still starting on this Mac ({backend}). "
+                                                                 "It checks again by itself in a few minutes."))
+            log("https: Tailscale isn't running:", backend)
+            return _https_set(conf, state, detail=detail)
+        if not backend and not name:
+            log("https: Tailscale's status had no BackendState and no name")
+            return _https_set(conf, "no-status", detail="Couldn't read Tailscale's status: it answered without a "
+                                                        "state. Open the Tailscale app on the Mac, then tap Try again.")
+        if not name:
+            log("https: Tailscale is running but this Mac has no machine name (is MagicDNS on?)")
+            return _https_set(conf, "no-name", detail="Tailscale gave this Mac no name. Turn MagicDNS on at "
+                                                       "login.tailscale.com/admin/dns.")
+        certs_off = not st.get("CertDomains")
+        url = f"https://{name}"
         try:
             r = requests.get(url + "/sw.js", timeout=8)
             if r.ok and b"Combo Hub" in r.content:
@@ -674,21 +932,65 @@ def tailscale_https(conf, port):
                 return url
         except requests.RequestException:
             pass
-        time.sleep(3)
-    conf["https"] = {"state": "need-enable" if link else "failed", "link": link.group(0) if link else "",
-                     "detail": out.strip()[-300:]}
-    log("https not on yet:", conf["https"]["state"], conf["https"].get("link") or out.strip()[-160:])
-    return None
+        try:
+            p = tailscale_run(cli, ["serve", "--bg", str(port)], 25)
+            out = (p.stdout or "") + (p.stderr or "")
+        except subprocess.TimeoutExpired as err:
+            out = ((err.stdout or b"").decode() if isinstance(err.stdout, bytes) else (err.stdout or "")) + \
+                  ((err.stderr or b"").decode() if isinstance(err.stderr, bytes) else (err.stderr or ""))
+            log("https: `tailscale serve` didn't finish in 25 s:", out.strip()[-120:])
+        except (OSError, subprocess.SubprocessError) as err:
+            out = str(err)
+            log("https: couldn't run `tailscale serve`:", out[:120])
+        link = re.search(r"https://login\.tailscale\.com/\S+", out)
+        certs_off = certs_off or bool(TS_HTTPS_OFF.search(out))
+        tls_seen, deadline = False, time.time() + TS_WAIT
+        while True:
+            try:
+                r = requests.get(url + "/sw.js", timeout=8)
+                if r.ok and b"Combo Hub" in r.content:
+                    conf["https"] = {"state": "on", "url": url}
+                    log("https on:", url)
+                    return url
+            except requests.exceptions.SSLError:
+                tls_seen = True                  # the name answers but its certificate isn't issued yet
+            except requests.RequestException:
+                pass
+            if link or certs_off or time.time() + TS_PROBE_SLEEP >= deadline:
+                break
+            time.sleep(TS_PROBE_SLEEP)
+        tail = out.strip()[-300:]
+        if link:
+            state, extra = "need-enable", {"link": link.group(0), "detail": tail}
+        elif certs_off:
+            state, extra = "need-enable", {"link": "", "admin": ADMIN_DNS_URL, "detail": ENABLE_HTTPS_HELP}
+        elif tls_seen:
+            state, extra = "issuing", {"detail": "Tailscale is still making the certificate. This can take a few minutes."}
+        else:
+            state, extra = "failed", {"link": "", "detail": tail}
+        conf["https"] = dict({"state": state}, **extra)
+        log("https not on yet:", state, extra.get("link") or extra.get("detail", "")[-160:])
+        return None
+
+
+def https_loop(conf, port):
+    """Keep trying: enabling HTTPS in Tailscale's admin, or Tailscale finishing its start at login, is picked up
+    without a tap. Quiet once it is on (a light check every 30 minutes)."""
+    while True:
+        try:
+            tailscale_https(conf, port)
+        except Exception as err:
+            log("https check failed:", type(err).__name__, err)
+            conf["https"] = {"state": "failed", "detail": f"{type(err).__name__}: {str(err)[:100]}"}
+        time.sleep(TS_RECHECK if (conf.get("https") or {}).get("state") == "on" else TS_RETRY)
 
 
 # ---- iPhone notifications (Web Push from the home screen app; needs the https address)
 def _b64u(b):
-    import base64
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
 
 
 def _b64u_dec(s):
-    import base64
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
@@ -869,8 +1171,6 @@ def panel_loop(odds, conf, every=60):
                 n += 1
                 if n % 5 == 0:                            # results, exits and game-time prices
                     H.panel_settle()
-                if H.rebuild_asked():                     # "Build a fresh panel" was tapped: do it now
-                    H.panel_pass(log=log)
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
                     conf["recap_day"] = time.strftime("%Y-%m-%d")
@@ -885,6 +1185,28 @@ def panel_loop(odds, conf, every=60):
         except Exception as err:
             log("panel buying skipped:", type(err).__name__, err)
         time.sleep(every)
+
+
+def rebuild_loop(odds, notifier=None, every=2):
+    """'Build a fresh panel' / 'Look now' starts at once: the tap leaves a flag, this sees it within a couple of
+    seconds and looks at every sport right away (not at the shadow's next 10-minute round), noting progress for the
+    Build page. It only makes drafts; buying stays with panel_loop (Pause, started games and all)."""
+    while True:
+        time.sleep(every)
+        try:
+            with odds.lock:
+                H = odds.engine()
+                if not H.rebuild_pending():
+                    continue
+            did = H.panel_rebuild(lambda code: H.panel_collect(odds.get(code, ""), code, log=log), SHADOW_LEAGUES,
+                                  lock=odds.lock, log=log)
+            if did:
+                log("panel:", "; ".join(did))
+            for m in did if notifier else []:
+                if m.startswith("🆕"):
+                    notifier.add(m, "idea")
+        except Exception as err:
+            log("panel rebuild skipped:", type(err).__name__, err)
 
 
 def history_loop(E, every=900):
@@ -1030,6 +1352,7 @@ body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,color-mix(in s
 h1{font-size:28px;letter-spacing:-.02em;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 26px;font-size:15px}
 .fid{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:0;border-radius:14px;padding:15px;font-weight:600;font-size:17px;font-family:inherit;
  background:var(--acc);color:#fff;cursor:pointer}.fid svg{width:24px;height:24px}
+.fid.nudge{animation:nud 1.6s ease-in-out infinite}@keyframes nud{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--acc) 28%,transparent)}}@media(prefers-reduced-motion:reduce){.fid.nudge{animation:none}}
 .or{display:flex;align-items:center;gap:12px;color:var(--mute);font-size:13px;margin:20px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
 .field{position:relative}
 input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:var(--ink);padding:15px 52px 15px 16px;
@@ -1042,10 +1365,18 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 .msg{color:var(--bad);font-size:14px;min-height:20px;margin-top:12px}.hint{color:var(--mute);font-size:13px;margin-top:22px}.hint a{color:var(--acc)}
 .shake{animation:sh .4s}@keyframes sh{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
 .spin{width:18px;height:18px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:r .7s linear infinite;display:inline-block}@keyframes r{to{transform:rotate(1turn)}}
+/* the same motion as the app: a soft entrance, press feedback, a haptic tick on every tap */
+:root{color-scheme:dark;--spring:cubic-bezier(.2,.9,.25,1.12);--ease:cubic-bezier(.2,.8,.2,1)}@media (prefers-color-scheme:light){:root{color-scheme:light}}
+.box>*{animation:rise .5s var(--ease) both}.box>*:nth-child(2){animation-delay:.06s}.box>*:nth-child(3){animation-delay:.12s}.box>*:nth-child(4){animation-delay:.18s}.box>*:nth-child(5){animation-delay:.24s}.box>*:nth-child(n+6){animation-delay:.3s}
+.logo{animation:pop .6s var(--spring) both!important}@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.fid,.go,.eye{transition:transform .14s var(--ease),filter .15s,background-color .15s;-webkit-tap-highlight-color:transparent}.fid:active,.go:active{transform:scale(.97)}.eye:active{transform:translateY(-50%) scale(.88)}
+.fid:hover,.solo .go:hover{filter:brightness(1.07)}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head><body><div class="box" id="box">
 <img class="logo" src="data:image/png;base64,__ICON__" alt="">
 <h1>Combo Hub</h1><p class="sub" id="sub">Your Mac's betting desk</p>
-<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span>Unlock with Face ID</span></button>
+<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span id="fidt">Unlock with Face ID</span></button>
 <div class="or">or use your passcode</div></div>
 <form method="post" action="/login" id="f"><div class="field"><input name="pass" id="p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Passcode" required>
 <button class="eye" type="button" aria-label="Show passcode" onclick="var p=document.getElementById('p');p.type=p.type==='password'?'text':'password'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
@@ -1054,6 +1385,11 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 <div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
 </div><script>
 const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
+/* haptics, the same way as the app (iOS: a hidden switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
+function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
+ let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
+ (k==='error'?[0,80,160]:[0]).forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
+addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('button,a');if(b&&!b.closest('#hapl'))hap('light');},true);
 if(msg.textContent.trim())box.classList.add('shake');
 document.getElementById('f').addEventListener('submit',()=>{document.getElementById('go').innerHTML='<span class="spin"></span>';});
 const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
@@ -1068,10 +1404,13 @@ async function unlock(auto){const btn=document.getElementById('fid');const old=b
    allowCredentials:o.ids.map(id=>({type:'public-key',id:b64(id)}))}});
   const r=await (await fetch('/auth/finish',{method:'POST',body:JSON.stringify({id:c.id,clientDataJSON:e64(c.response.clientDataJSON),
    authenticatorData:e64(c.response.authenticatorData),signature:e64(c.response.signature)})})).json();
-  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
- }catch(e){if(!auto)msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or try again.':'Face ID isn\'t available here. Use the passcode.';}
- btn.innerHTML=old;}
-document.getElementById('fid').onclick=()=>unlock(false);
+  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';hap('error');box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
+ }catch(e){
+  if(auto){/* iOS often refuses Face ID without a tap: say so and make the button the obvious thing to tap */
+   msg.textContent='';btn.classList.add('nudge');}
+  else msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or tap the button to try again.':'Face ID isn\'t available here. Use the passcode.';}
+ btn.innerHTML=old;if(auto&&btn.classList.contains('nudge'))document.getElementById('fidt').textContent='Tap to unlock with Face ID';}
+document.getElementById('fid').onclick=()=>{document.getElementById('fid').classList.remove('nudge');unlock(false);};
 if(FID&&can&&!msg.textContent.trim())unlock(true);else document.getElementById('p').focus();
 </script></body></html>"""
 
@@ -1118,7 +1457,6 @@ def _cbor(b, i=0):
 
 
 def _b64d(s):
-    import base64
     s = str(s or "")
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
@@ -1221,7 +1559,6 @@ class Web:
         key, _ = _cbor(ad, 55 + ln)
         if key.get(1) != 2 or key.get(3) != -7 or key.get(-1) != 1:
             raise ValueError("Only Face ID / Touch ID keys (ES256) are supported.")
-        import base64
         b = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
         pk = {"id": b(cid), "x": b(key[-2]), "y": b(key[-3]), "rp": rp, "name": name[:40] or "Device",
               "added": int(time.time())}
@@ -1256,7 +1593,7 @@ class Web:
         return self.new_session(), ""
 
     def login(self, form):
-        import secrets, hmac as _h
+        import hmac as _h
         now = time.time()
         self.fails = [t for t in self.fails if now - t < 600]
         if len(self.fails) >= 5:
@@ -1452,143 +1789,17 @@ class WebBuild:
 
 
 # ---------------------------------------------------------------- the planner app, in a browser
-# The Mac runs a separate copy of the planner (its own process) that believes it is on the phone:
-# a stand-in "ui" module turns its window into a bridge. Pages it shows go to your browser; taps in
-# the browser go back to it, exactly as on the phone. The hub (port 8765) signs you in and passes
-# requests through to it on this Mac only (port 8766).
+# The Mac runs a separate copy of the planner (its own process) for Combo Hub's screens (the SPA below). It keeps
+# stand-ins for Pythonista's modules (`ui` and friends) so the engine imports and behaves as it does on the phone.
+# The old "Classic screens" (the phone UI drawn in the browser through a bridge) are gone: the SPA is the only UI.
+# The hub (port 8765) signs you in and passes requests through to it on this Mac only (port 8766).
 WEBAPP_PORT = int(os.environ.get("CW_WEBAPP_PORT") or 8766)   # the check suite moves it, so tests never reach the real app
-
-BRIDGE_JS = r"""<script>
-(function(){
-var TOK="__CWTOK__", V=__CWV__, wrap=document.getElementById('cwwrap');
-function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
-  headers:{'Content-Type':'application/json','X-CW':TOK},body:JSON.stringify(b)});}
-function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
-window.__cwgo=go;
-window.__cw={set href(u){go(u);},get href(){return location.href;}};
-window.__cwadmin=function(b){b.textContent='Opening…';post('/app/admin',{}).then(function(){setTimeout(function(){b.textContent='⚙︎ Mac settings';},3000);});};
-window.__cwtab=function(t){if(t!=='refresh')mark(t);else{var r=document.getElementById('cwref');if(r){r.classList.add('spin');setTimeout(function(){r.classList.remove('spin')},400);}}post('/app/tab',{t:t});};
-function mark(t){if(!t)return;document.querySelectorAll('#cwbar button,#cwside nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
-document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
-  var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
-async function newPage(v){              /* swap the page in place: no white flash, no reload */
-  var r=await fetch('/app/classic?frag=1',{credentials:'same-origin',headers:{'X-CW':TOK}});
-  var h=await r.text();V=v;
-  if(window.__load){window.__load(h);}else{document.open();document.write(h);document.close();}
-  if(!wrap.isConnected)document.body.appendChild(wrap);
-  mark(r.headers.get('X-CW-Where')||'');}
-async function poll(){for(;;){try{
-  var r=await fetch('/app/poll?v='+V,{credentials:'same-origin',headers:{'X-CW':TOK}});
-  if(r.status==403){location.href='/';return;}
-  var d=await r.json();
-  if(d.v!==V){await newPage(d.v);}
-  if(d.where)mark(d.where);
-  for(const j of d.js){var out='';try{out=(0,eval)(j.code);}catch(err){out='';}
-    if(!wrap.isConnected)document.body.appendChild(wrap);
-    if(j.w)post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
-}catch(err){await new Promise(function(r){setTimeout(r,1500);});}}}
-poll();
-})();
-</script>"""
-
-ICONS = {
-    "mine": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='5' fill='currentColor'/><circle cx='12' cy='12' r='9.5' fill='none' stroke='currentColor' stroke-width='1.6' opacity='.45'/></svg>",
-    "build": "<svg viewBox='0 0 24 24'><path d='M12 4.5v15M4.5 12h15' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'/></svg>",
-    "results": "<svg viewBox='0 0 24 24'><path d='M5 19V11M12 19V5M19 19v-6' stroke='currentColor' stroke-width='2.4' stroke-linecap='round'/></svg>",
-    "settings": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='3.2' fill='none' stroke='currentColor' stroke-width='1.9'/><path d='M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8' stroke='currentColor' stroke-width='1.9' stroke-linecap='round'/></svg>",
-}
-
-SHELL_CSS = """<style>
-/* ---------- Combo Hub: the planner's screens, dressed for the browser ---------- */
-html{-webkit-text-size-adjust:100%}
-body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"tnum" 1,"ss01" 1;
- padding-bottom:calc(76px + env(safe-area-inset-bottom))!important;-webkit-tap-highlight-color:transparent}
-@media (display-mode:standalone){body{padding-top:env(safe-area-inset-top)!important}}
-h1{letter-spacing:-.025em}
-.card,.game,.stat,details.lostbox,.quote{transition:transform .18s cubic-bezier(.2,.7,.3,1),box-shadow .18s,background-color .18s}
-.stat b{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.btn,button,.tabs button,summary,label.row,.pickrow .seg button{transition:background-color .15s,color .15s,transform .1s,opacity .15s}
-.btn:active,.tabs button:active{transform:scale(.97)}
-:focus-visible{outline:2px solid var(--accent,#0a84ff);outline-offset:2px;border-radius:10px}
-
-/* bottom tab bar (phone) */
-#cwbar{position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;justify-content:space-around;
- padding:7px 6px calc(5px + env(safe-area-inset-bottom));
- background:color-mix(in srgb,var(--bg,#000) 72%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);
- backdrop-filter:saturate(180%) blur(24px);border-top:.5px solid var(--line,rgba(84,84,88,.6))}
-#cwbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;
- color:var(--muted,#98989f);font:600 10.5px -apple-system,system-ui;letter-spacing:.01em;padding:3px 0;cursor:pointer}
-#cwbar button svg{width:26px;height:26px;transition:transform .2s cubic-bezier(.2,.7,.3,1.4)}
-#cwbar button.on{color:var(--accent,#0a84ff)}
-#cwbar button.on svg{transform:scale(1.06)}
-#cwref{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;z-index:9999;width:38px;height:38px;border-radius:50%;
- display:flex;align-items:center;justify-content:center;border:.5px solid var(--line,rgba(84,84,88,.6));
- background:color-mix(in srgb,var(--card,#1c1c1e) 82%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
- color:var(--accent,#0a84ff);cursor:pointer;transition:transform .35s cubic-bezier(.2,.7,.3,1)}
-#cwref:active,#cwref.spin{transform:rotate(200deg)}
-#cwside{display:none}
-
-/* ---------- laptop & desktop: sidebar, centred content, cards in a grid ---------- */
-@media (min-width:900px){
- body{padding:0 40px 56px 292px!important;font-size:16px}
- #cwbar{display:none}
- #cwside{display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;width:252px;z-index:9999;padding:26px 14px 18px;
-  background:color-mix(in srgb,var(--card,#1c1c1e) 55%,var(--bg,#000));border-right:.5px solid var(--line,rgba(84,84,88,.6));
-  -webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px)}
- #cwside .brand{display:flex;align-items:center;gap:11px;padding:0 10px 26px;font:700 19px -apple-system,system-ui;
-  letter-spacing:-.02em;color:var(--ink,#fff)}
- #cwside .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
-  background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff);box-shadow:0 4px 14px rgba(80,90,255,.35)}
- #cwside .mark svg{width:20px;height:20px}
- #cwside nav{display:flex;flex-direction:column;gap:3px}
- #cwside nav button{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border:0;border-radius:10px;
-  background:none;color:var(--ink,#fff);font:500 15px -apple-system,system-ui;cursor:pointer;text-align:left;opacity:.82}
- #cwside nav button svg{width:21px;height:21px;color:var(--muted,#98989f)}
- #cwside nav button:hover{background:var(--card2,#2c2c2e);opacity:1}
- #cwside nav button.on{background:var(--accentbg,rgba(10,132,255,.18));color:var(--accent,#0a84ff);opacity:1;font-weight:600}
- #cwside nav button.on svg{color:var(--accent,#0a84ff)}
- #cwside .foot{margin-top:auto;padding:12px 12px 0;border-top:.5px solid var(--line,rgba(84,84,88,.6));
-  font:500 12px -apple-system,system-ui;color:var(--muted,#98989f);line-height:1.5}
- #cwside .foot button{margin-top:10px;display:flex;align-items:center;gap:8px;border:0;background:var(--card2,#2c2c2e);
-  color:var(--ink,#fff);font:600 13px -apple-system;padding:8px 12px;border-radius:9px;cursor:pointer}
- #cwside .foot button:hover{background:var(--press,#3a3a3c)}
- #cwref{display:none}
- body>*:not(#cwwrap):not(script):not(.ptr){max-width:1040px;margin-left:auto!important;margin-right:auto!important}
- body:has(#budgetline)>*:not(#cwwrap):not(script):not(.ptr){max-width:760px}
- header{padding-top:38px!important}
- h1{font-size:40px!important}
- .tabs,.seg{max-width:560px}
- .stats{gap:16px!important}
- .stat{padding:20px 22px!important;border-radius:18px!important}
- .stat b{font-size:30px!important}
- section#combos:has(>.card~.card),section:has(>.card~.card~.card){display:grid!important;
-  grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px;align-items:start}
- section:has(>.card~.card)>:not(.card){grid-column:1/-1}
- section:has(>.card~.card)>.card{margin:0!important}
- .card,.game,.stat{border:.5px solid var(--line,rgba(84,84,88,.45))}
- .card:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,.28)}
- .row:hover,label.row:hover,summary:hover{background:color-mix(in srgb,var(--card2,#2c2c2e) 60%,transparent)}
- a,button,summary,label,.btn{cursor:pointer}
- ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:var(--track,#444);border-radius:10px;border:3px solid var(--bg,#000)}
-}
-@media (min-width:1500px){body>*:not(#cwwrap):not(script):not(.ptr){max-width:1240px}}
-</style>"""
-
-MARK = ("<svg viewBox='0 0 24 24'><path d='M4 15.5l4.2-4.2 3.3 3.3L20 6' fill='none' stroke='#fff' stroke-width='2.6' "
-        "stroke-linecap='round' stroke-linejoin='round'/><circle cx='20' cy='6' r='1.6' fill='#fff'/></svg>")
-
-
-PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name='mobile-web-app-capable' content='yes'>"
-            "<meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>"
-            "<meta name='apple-mobile-web-app-title' content='Combos'><meta name='theme-color' content='#000000'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>")
-
 
 SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#0b0d12"><title>Combo Hub</title>
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)"><meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)"><title>Combo Hub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#6b7488;
@@ -1611,10 +1822,6 @@ button{font:inherit;color:inherit;cursor:pointer}a{color:var(--acc);text-decorat
 .dot{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg)}.dot.off{background:var(--no);box-shadow:0 0 0 4px var(--nobg)}
 .cta{border:0;background:var(--acc);color:#fff;border-radius:10px;padding:9px 14px;font-weight:700;white-space:nowrap}
 .cta:hover{filter:brightness(1.08)}
-.menu{position:relative}.menu>button{border:1px solid var(--line);background:var(--panel);border-radius:10px;width:38px;height:38px;color:var(--sub)}
-.dd{position:absolute;right:0;top:46px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:200px;box-shadow:0 12px 40px rgba(0,0,0,.35);display:none}
-.dd.open{display:block}.dd button,.dd a{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 12px;border-radius:8px;color:var(--ink);font-weight:500}
-.dd button:hover,.dd a:hover{background:var(--hover)}
 main{max-width:1520px;margin:0 auto;padding:22px 24px 60px;overflow-x:clip}
 .grid>*,.trow>*,.kpi,.name,.legs{min-width:0}.name span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px}
@@ -1788,7 +1995,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
  padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}.toast.good{background:var(--yes);color:#04130c}.toast.bad{background:var(--no);color:#fff}
-.toast.on{opacity:1;transform:translateX(-50%)}
+.toast.on{opacity:1;transform:translateX(-50%)}.toast[hidden]{display:none!important}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
 .modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .sheet h3{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}.sheet p{color:var(--sub);margin:0 0 18px}.sheet .row{display:flex;gap:10px;justify-content:flex-end}
@@ -1799,6 +2006,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .doit{display:grid;gap:10px;margin:4px 0 18px}
 .dcard{background:linear-gradient(100deg,var(--yesbg),transparent 70%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);border-radius:var(--r);padding:16px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
 .dcard.idea{background:linear-gradient(100deg,var(--accbg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.dcard.gone{opacity:.6;filter:saturate(.4);animation:goneout .5s ease 3.8s forwards}@keyframes goneout{to{opacity:0;transform:scale(.97)}}
 .dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
 .dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
@@ -1824,7 +2032,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .board2{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;background:var(--panel2);border-radius:14px;padding:16px 18px;margin-bottom:14px;box-shadow:inset 0 0 0 1.5px var(--line)}
 .board2.up{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--yes) 60%,transparent)}.board2.down{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--no) 60%,transparent)}
 .tm2{display:flex;align-items:center;gap:12px}.tm2.r{justify-content:flex-end}.tm2 span{font-weight:700;color:var(--sub)}.tm2 b{font-size:38px;letter-spacing:-.03em;line-height:1}
-.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px}
+.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+.fresh{font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--mute);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
+.fresh.old{color:var(--no)}
 .sheet.wide{max-width:880px;max-height:calc(100vh - 40px);overflow:auto;padding:24px}
 .dhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
 .dkpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}
@@ -1887,7 +2097,7 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .stp button{border:0;background:none;width:30px;height:30px;color:var(--sub);font-size:16px;font-weight:600}.stp button:hover{color:var(--ink);background:var(--hover)}
 .stp span{min-width:28px;text-align:center;font-weight:700}
 .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));border-top:1px solid var(--line);overflow:hidden}
-.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv>div>span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .kv b{font-size:14.5px;display:flex;align-items:center;gap:7px;margin-top:2px;word-break:break-all}
 .sact{display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-top:1px solid var(--line)}
 .code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
@@ -1949,12 +2159,14 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .hrow2{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}.hrow2:last-child{border-bottom:0}
 .hd2{display:flex;align-items:center;gap:8px;min-width:0}.hd2 .hs{font-size:16px}.hd2 .m{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hn{display:flex;gap:16px;font-size:12.5px;color:var(--sub)}.hn b{color:var(--ink)}
+.rbtrack{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;margin:12px 0 8px}.rbtrack i{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.rbstrip{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--sub);margin:0 2px 10px}
 .panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
  background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
 .pring b{font-size:18px;line-height:1}.pring small{font-size:9.5px;color:var(--mute);font-weight:600}
 .plist{display:flex;flex-direction:column;gap:8px}.pitem{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:12px;background:var(--panel2)}
-.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+.pitem .pliv{color:var(--live)}.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
 .pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
 .pitem .ps{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}.pitem .ps b{font-size:15px}.pitem .x{border:0;background:none;color:var(--mute);font-size:15px;cursor:pointer;padding:2px 4px}
 .bets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
@@ -1972,6 +2184,168 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
  .slipbar span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.slipbar button{border:0;border-radius:9px;padding:8px 12px;font-weight:800;background:#fff;color:var(--acc)}
  .slipbar .x{background:transparent;color:#fff;padding:8px 6px}}
 @media (min-width:1361px){.numwrap{display:contents}}
+/* ---- makeover 1: press feedback on everything, push sheets, the hero chart ---- */
+:root{--out:cubic-bezier(.22,.8,.24,1)}
+.prs{transform:scale(.965)!important;transition:transform .08s var(--ease)!important}
+.trow.prs,.pitem.prs,.gt.prs,.dcard.prs,.ccard.prs,.bet.prs,.mrow.prs{transform:scale(.985)!important}
+.srow.prs,.moment.prs,.g.prs,.lrow.prs,.sech.prs,.mixr.prs,.hrow2.prs{transform:none!important;background:var(--hover)}
+a.prs{opacity:.6}.tabbar button.prs,.nav button.prs{transform:scale(.88)!important}
+.bar i{transition:width .65s var(--ease)}
+.modal.push{opacity:1;padding:0;align-items:stretch;justify-content:flex-end;background:rgba(0,0,0,0);transition:background-color .27s var(--out);overflow:hidden}
+.modal.push.on{background:rgba(0,0,0,.5)}
+.modal.push .sheet{width:min(880px,100%);max-width:none;height:100%;max-height:none;border-radius:0;border:0;border-left:1px solid var(--line);padding:0 0 calc(28px + env(safe-area-inset-bottom));
+ overflow-y:auto;overscroll-behavior:contain;transform:translateX(100%);transition:transform .27s var(--out);box-shadow:-24px 0 60px rgba(0,0,0,.35)}
+.modal.push.on .sheet{transform:none}.modal.push .sheet.drag{transition:none}.modal.push .sheet .grab{display:none}
+.pbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:6px;padding:calc(8px + env(safe-area-inset-top)) 10px 8px;
+ background:color-mix(in srgb,var(--panel) 86%,transparent);-webkit-backdrop-filter:saturate(180%) blur(16px);backdrop-filter:saturate(180%) blur(16px);border-bottom:1px solid var(--line)}
+.pbar .back{border:0;background:none;color:var(--acc);font-weight:700;font-size:16px;padding:6px 8px 6px 2px;display:inline-flex;align-items:center;gap:1px;flex:none}
+.pbar .back svg{width:22px;height:22px}.pbar .pt{font-weight:700;font-size:14px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pbody{padding:16px 22px 0}
+main,.top{transition:transform .27s var(--out),filter .27s var(--out)}
+body.pushed main,body.pushed .top{filter:brightness(.5)}
+@media (max-width:900px){body.pushed main,body.pushed .top{transform:translateX(-30%)}.pbody{padding:14px 16px 0}}
+.psk{display:grid;gap:12px}.psk i{display:block;background:var(--panel2);border-radius:12px}
+.fadein{animation:fadein .2s var(--ease)}@keyframes fadein{from{opacity:0}to{opacity:1}}
+.hv .big.scrub{color:var(--ink)}
+.sparkw{touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
+.hv .spark{height:76px}
+.spark.draw{animation:reveal .75s var(--out)}@keyframes reveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.sparkw .sdot.draw{animation:fadein .3s .6s both,sdot 1.8s .9s infinite}
+.sdot{z-index:1;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 28%,transparent),0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}
+@keyframes sdot{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent),0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}100%{box-shadow:0 0 0 12px transparent,0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}}
+.scrl{position:absolute;top:0;bottom:0;width:1.5px;margin-left:-.75px;background:var(--sub);opacity:0;pointer-events:none;transition:opacity .15s}
+.scrd{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid var(--panel);opacity:0;pointer-events:none;transition:opacity .15s;z-index:2}
+.sparkw.on .scrl,.sparkw.on .scrd{opacity:1}.sparkw.on .sdot{opacity:.25}
+.sbase{position:absolute;left:0;right:0;border-top:1px dashed var(--line);pointer-events:none}
+.saxis{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--mute);font-weight:600}
+.rng2{display:flex;gap:2px}.rng2 button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;padding:4px 8px;border-radius:7px}
+.rng2 button.on{color:var(--ink)}
+.sread{position:absolute;top:-2px;transform:translateX(-50%);font-size:11px;font-weight:700;color:var(--sub);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s}
+.sparkw.on .sread{opacity:1}
+.hsk{display:grid;gap:10px;padding:18px 20px}.hsk i{display:block;background:var(--panel2);border-radius:10px}
+.empty .btn{margin-top:14px}
+@media (prefers-reduced-motion:reduce){.prs{transform:none!important;opacity:.7;transition:none!important}main,.top{transform:none!important}}
+/* ---- makeover phase 2: live game cards, the Sold moment, the big hit, Results charts you can scrub */
+.gc{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px 12px;display:grid;gap:10px;cursor:pointer;position:relative;overflow:hidden;transition:border-color .3s}
+.gc.live{border-color:color-mix(in srgb,var(--live) 45%,transparent)}.gc.live.lup{border-color:color-mix(in srgb,var(--yes) 50%,transparent)}.gc.live.ldown{border-color:color-mix(in srgb,var(--no) 50%,transparent)}
+.gc .gh{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
+.gc .gh .lv{color:var(--live);display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:12px}
+.gc .gh .lv i{width:7px;height:7px;border-radius:50%;background:var(--no);animation:pulse2 1.4s infinite}
+.gc .tms{display:grid;gap:4px}.gc .gtr{display:flex;align-items:center;gap:10px;font-size:16px}.gc .gtr .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.gc .gtr.them .nm{font-weight:500;color:var(--sub)}.gc .gtr .pts{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;min-width:30px;text-align:right}
+.gc .gtr.them .pts{color:var(--sub)}.gc .gtr .mine{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:var(--acc);background:var(--accbg);padding:2px 6px;border-radius:6px}
+.gc .gl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center}
+.gc .gl .ch b{display:block;font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1}.gc .gl .ch small{color:var(--mute);font-size:11.5px}
+.gc .gl .gbar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.gc .gl .gbar i{display:block;height:100%;border-radius:2px;transition:width .6s var(--ease)}
+.mline{position:relative;height:46px}.mline svg{width:100%;height:46px;display:block;overflow:visible}
+.mline .sdot{width:8px;height:8px;margin:-4px 0 0 -4px}
+.gc .bets{display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--line);padding-top:10px;align-items:center}
+.gc .bets .bt{font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;background:var(--panel2);color:var(--sub);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gc .bets .bt.s{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}.gc .bets .rd{margin-left:auto;font-weight:700;font-size:12.5px;color:var(--ink)}
+.gc.scored{animation:scored 1.6s var(--ease)}.gc.scored.good{--sg:var(--yes)}.gc.scored.bad{--sg:var(--no)}
+@keyframes scored{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--sg,var(--live)) 70%,transparent);background:color-mix(in srgb,var(--sg,var(--live)) 16%,var(--panel))}40%{box-shadow:0 0 0 10px transparent}100%{}}
+.gc .pts.bump{animation:bump .7s var(--spring)}@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.45);color:var(--sg,var(--live))}100%{transform:none}}
+.gc.done{opacity:.72}
+.gsk{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:grid;gap:12px}.gsk i{display:block;background:var(--panel2);border-radius:8px}
+.scrub{position:relative;touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
+.scrub .scrl,.scrub .scrd,.scrub .sread{position:absolute}.scrub.on .scrl,.scrub.on .scrd,.scrub.on .sread{opacity:1}
+.scrub .sread{top:-4px}
+.plc .plh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}
+.plc .plh b{font-size:26px;font-weight:800;letter-spacing:-.03em;display:block;line-height:1.1}.plc .plh small{color:var(--mute);font-size:12px;display:block;min-height:15px}
+.plc svg{width:100%;height:150px;display:block}.plc rect.brc{transition:opacity .15s}.plc.on rect.brc{opacity:.35}.plc.on rect.brc.sel{opacity:1}
+.plc .xl{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin-top:6px}
+.plc .rng2{flex:none}.plc .hint{font-size:11.5px;color:var(--mute);margin-top:6px}
+.blist .hrow2{margin-bottom:8px}
+.okcard .stamp{display:inline-block;font:700 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;color:var(--sub);border:1px dashed var(--line);border-radius:6px;padding:3px 8px;margin-bottom:8px;animation:rise .4s .25s both}
+.okcard .plp{display:inline-block;margin-top:4px;font-weight:800;font-size:14px;padding:4px 12px;border-radius:999px;background:var(--yesbg);color:var(--yes);animation:rise .4s .5s both}
+.okcard .tkt{display:flex;justify-content:center;gap:0;margin:14px auto 4px;max-width:300px;border-top:1px dashed var(--line);padding-top:12px;animation:rise .4s .6s both}
+.okcard .tkt div{flex:1;font-size:12px;color:var(--mute)}.okcard .tkt b{display:block;font-size:16px;color:var(--ink)}
+.okcard.okloss circle{stroke:var(--sub);fill:var(--panel2)}.okcard.okloss path{stroke:var(--sub)}.okcard.okloss .amt{color:var(--ink)}.okcard.okloss .plp{background:var(--nobg);color:var(--no)}
+.bigwin{position:fixed;inset:0;z-index:98;display:grid;place-items:center;background:radial-gradient(circle at 50% 42%,color-mix(in srgb,var(--yes) 26%,rgba(6,9,14,.9)),rgba(6,9,14,.94) 60%);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:fadein .3s var(--ease);padding:16px}
+.bigwin.out{opacity:0;transition:opacity .35s}
+.bigwin .bw{text-align:center;max-width:360px;animation:bwin .7s var(--spring) both}
+@keyframes bwin{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.bigwin .ey{font-size:12px;font-weight:800;letter-spacing:.24em;color:var(--yes);text-transform:uppercase}
+.bigwin .amt{font-size:58px;font-weight:900;letter-spacing:-.05em;color:#fff;text-shadow:0 0 34px color-mix(in srgb,var(--yes) 80%,transparent);line-height:1.05;margin:8px 0 4px;font-variant-numeric:tabular-nums}
+.bigwin .lb{font-size:16px;font-weight:700;color:#fff}.bigwin .mx{display:inline-block;margin-top:10px;font-weight:800;color:var(--yes);background:rgba(0,0,0,.35);padding:5px 12px;border-radius:999px}
+.bigwin .ring2{position:absolute;left:50%;top:42%;width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;border:3px solid var(--yes);animation:ring2 1.4s var(--out) infinite;pointer-events:none}
+.bigwin .ring2.b{animation-delay:.45s}@keyframes ring2{from{transform:scale(1);opacity:.9}to{transform:scale(14);opacity:0}}
+.bigwin .btn{margin-top:22px}
+@media (prefers-reduced-motion:reduce){.bigwin .ring2{display:none}.bigwin .bw{animation:none}.gc.scored{animation:none}}
+/* ---- makeover phase 3: every remaining screen in the same motion system ---- */
+:root{color-scheme:dark;--fs-xs:11px;--fs-s:12.5px;--fs-m:14px;--fs-l:17px;--sp:16px}
+@media (prefers-color-scheme:light){:root{color-scheme:light}
+ .own{background:rgba(217,119,6,.13);color:#a85a06}.ss.me{background:rgba(217,119,6,.11);border-color:rgba(217,119,6,.38);color:#a85a06}
+ .sheet{box-shadow:0 24px 60px rgba(16,24,40,.18)}.modal:not(.push){background:rgba(15,20,32,.32)}
+ .segind,.seg button.on{box-shadow:0 1px 3px rgba(16,24,40,.16)}.tg{background:#e2e6ee}.tg::after{box-shadow:0 1px 3px rgba(16,24,40,.28)}
+ .btn.warn{background:#f2a531}.slipbar{box-shadow:0 8px 28px rgba(36,104,255,.28)}#ptr,.netbar{box-shadow:0 6px 20px rgba(16,24,40,.12)}
+ .flipnote.mid b.v{color:#b26b00}.kpis.hero:before{opacity:.8}}
+/* safe areas for the Home Screen app (notch, rounded corners, home indicator) */
+@media (max-width:900px){main{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
+ .top{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+ .modal:not(.push) .sheet{border-radius:22px 22px 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
+/* keyboard-aware sheets: the sheet rides up above the on-screen keyboard */
+.modal:not(.push){padding-bottom:var(--kb,0px);transition:opacity .22s var(--ease),padding-bottom .25s var(--out)}
+@media (max-width:900px){.modal:not(.push){padding-bottom:var(--kb,0px)}}
+.modal.on:not(.push){-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+/* the scroll-linked header: it tucks itself in once you scroll */
+.ts span{transition:opacity .2s,max-height .3s var(--ease);max-height:16px;overflow:hidden}
+.top{transition:transform .27s var(--out),filter .27s var(--out),padding .3s var(--ease),box-shadow .3s,height .3s var(--ease)}
+.brand{transition:transform .3s var(--ease);transform-origin:left center}
+body.hc .top{box-shadow:0 8px 24px rgba(0,0,0,.16)}
+@media (max-width:900px){body.hc .top{padding-top:calc(5px + env(safe-area-inset-top));padding-bottom:5px}body.hc .brand{transform:scale(.84)}body.hc .ts span{opacity:0;max-height:0}}
+/* the calm reconnecting banner */
+.netbar{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 68px);z-index:26;transform:translate(-50%,-16px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;
+ padding:8px 14px;border-radius:999px;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:12.5px;font-weight:650;color:var(--ink);
+ -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);transition:transform .4s var(--spring),opacity .25s;white-space:nowrap;max-width:calc(100vw - 32px)}
+.netbar.on{opacity:1;transform:translate(-50%,0)}.netbar i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse2 1.4s infinite;flex:none}
+.netbar small{color:var(--mute);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
+/* pull to refresh, on every tab: rubber band, a ring that fills, a spin, a check */
+#ptr svg{width:20px;height:20px;overflow:visible}#ptr circle{fill:none;stroke:var(--acc);stroke-width:2.4;stroke-linecap:round;transform:rotate(-90deg);transform-origin:10px 10px;transition:stroke-dashoffset .05s}
+#ptr path{fill:none;stroke:var(--yes);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;opacity:0}
+#ptr.go svg{animation:sp .7s linear infinite}#ptr.go circle{stroke-dashoffset:12!important}
+#ptr.done circle{stroke:var(--yes);stroke-dashoffset:0!important}#ptr.done path{opacity:1;animation:okc .3s var(--ease) forwards}
+#ptr{transition:transform .35s var(--spring),opacity .25s}#ptr.drag{transition:none}
+main.ptrd{transition:none!important}
+/* switches and sliders */
+.tg::after{transition:transform .34s var(--spring),width .18s var(--ease)}.tg:active::after{width:25px}.tg:checked:active::after{transform:translateX(13px)}
+.tg:checked{box-shadow:0 0 0 3px color-mix(in srgb,var(--yes) 10%,transparent)}
+.rng output{transition:color .2s}.rng output.bump,.saved.bump{animation:obump .32s var(--spring)}@keyframes obump{40%{transform:scale(1.14)}}
+.rdet{flex-wrap:wrap;row-gap:6px}.rdet .tks{flex-basis:100%;display:flex;justify-content:space-between;padding:0 8px;margin-right:98px}
+.rdet .tks i{width:5px;height:5px;border-radius:50%;background:var(--line);transition:background .25s,transform .3s var(--spring)}.rdet .tks i.on{background:var(--acc)}.rdet .tks i.at{transform:scale(1.7)}
+.rdet output{min-width:84px}
+/* buttons that report back: working, done, didn't work */
+.btn.st-ok{background:var(--yesbg)!important;color:var(--yes)!important;border-color:color-mix(in srgb,var(--yes) 40%,transparent)!important;animation:obump .4s var(--spring)}
+.btn.st-bad{background:var(--nobg)!important;color:var(--no)!important;border-color:color-mix(in srgb,var(--no) 40%,transparent)!important;animation:sh3 .4s}
+@keyframes sh3{25%,75%{transform:translateX(-4px)}50%{transform:translateX(4px)}}
+.btn.arm{position:relative;overflow:hidden;background:var(--live)!important;color:#1b1203!important}
+.btn.arm:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.75);transform-origin:left;animation:qdrain 4s linear forwards}
+@keyframes qdrain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+/* Build: the quote countdown, picks, the slip bar, folding sections, panel cards */
+.qline,.btn.qb{position:relative;overflow:hidden}.qt{position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.45;transform-origin:left;animation:qdrain 20s linear forwards}
+.qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
+.pickbtn.pop{animation:chipon .34s var(--spring)}
+.slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
+.sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
+.unfold{animation:rise .38s var(--ease)}
+.pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
+.psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
+.ccard.flash{animation:fl 1.2s ease}
+/* Results: bars grow in, the What's working tabs crossfade */
+main.fresh .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
+.bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
+.antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
+/* the morning recap's streak */
+.streak{display:flex;align-items:center;gap:10px;margin:10px 0 2px;padding:9px 12px;border-radius:12px;background:var(--panel2);font-size:13px;color:var(--sub)}
+.streak b{color:var(--ink);font-size:15px}.streak.hot{background:linear-gradient(100deg,color-mix(in srgb,var(--live) 18%,var(--panel2)),var(--panel2) 75%)}
+.streak .fl{font-size:18px;display:inline-block;animation:flick 1.8s ease-in-out infinite;transform-origin:50% 90%}@keyframes flick{0%,100%{transform:rotate(-4deg) scale(1)}50%{transform:rotate(4deg) scale(1.08)}}
+.streak .dots{margin-left:auto;display:flex;gap:4px}.streak .dots i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:dotin .4s var(--spring) both;animation-delay:calc(var(--i)*70ms + .2s)}
+@keyframes dotin{from{transform:scale(0)}to{transform:none}}
+/* errors and empty states */
+.card.err{border-color:color-mix(in srgb,var(--no) 35%,var(--line))}.card.err:before{background:linear-gradient(145deg,var(--nobg),transparent)}
+.setsk{display:grid;gap:14px}.setsk>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;display:grid;gap:12px}.setsk i{display:block;background:var(--panel2);border-radius:9px}
+@media (prefers-reduced-motion:reduce){.streak .fl,.netbar i{animation:none}#ptr{transition:none}}
 </style></head><body>
 <header class="top">
  <div class="brand"><div class="mk"><svg width="16" height="16" viewBox="0 0 24 24"><path d="M4 15.5l4.2-4.2 3.3 3.3L20 6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>Combo Hub</div>
@@ -1981,9 +2355,6 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
   <div class="ts wk"><span>Last 7 days</span><b id="wk">—</b></div>
   <div class="status" id="st"><span class="dot"></span>Mac · live</div>
   <button class="cta" onclick="go('build')">＋ Build combos</button>
-  <div class="menu"><button onclick="menu()" aria-label="More">⋯</button><div class="dd" id="dd">
-   <button onclick="go('settings')">Settings</button><a href="/app/classic">Classic screens</a>
-   <button onclick="location.reload()">Reload</button></div></div>
  </div>
 </header>
 <main id="main"></main>
@@ -1993,7 +2364,27 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 <script>
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
 const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}return r.json();});
+const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json();},e=>{netUp(false);throw e;});
+/* Offline/reconnecting: a calm pill under the header ("Reconnecting to your Mac · Updated 40s ago") that appears when
+   requests fail or the live link drops for more than a moment, and says "Back online" briefly when it returns. */
+function netUp(ok){if(ok){S.okAt=Date.now();if(S.netDown){S.netDown=false;netBanner();}}else if(!S.netDown){S.netDown=true;S.netSince=Date.now();netBanner();}}
+function netIsDown(){return !!S.netDown||(S.live_ok===false&&!!S.esEver)||navigator.onLine===false;}   // a live link that never opened (no event stream here) isn't an outage: the page polls instead
+function netTxt(){const a=S.okAt?Math.round((Date.now()-S.okAt)/1000):null;return a==null?'':a<3?'Updated just now':a<90?'Updated '+a+'s ago':'Updated '+Math.round(a/60)+' min ago';}
+function netBanner(){let el=document.getElementById('netbar');if(!el){el=document.createElement('div');el.id='netbar';el.className='netbar';el.setAttribute('role','status');document.body.appendChild(el);}
+ const tb=document.querySelector('.top');if(tb)el.style.top=(tb.getBoundingClientRect().bottom+8)+'px';
+ if(netIsDown()){if(S.netShown){const sm=el.querySelector('small');if(sm)sm.textContent=netTxt();return;}
+  if(!S.netPend)S.netPend=setTimeout(()=>{S.netPend=0;if(!netIsDown())return;clearTimeout(S.netT);el.className='netbar on';
+   el.innerHTML=`<i></i><span>${navigator.onLine===false?'You\'re offline':'Reconnecting to your Mac'}</span><small>${netTxt()}</small>`;S.netShown=true;},S.netNow?0:1200);return;}
+ if(S.netPend){clearTimeout(S.netPend);S.netPend=0;}
+ if(S.netShown){S.netShown=false;el.className='netbar on ok';el.innerHTML='<i></i><span>Back online</span>';clearTimeout(S.netT);S.netT=setTimeout(()=>{el.classList.remove('on');},1600);}}
+addEventListener('online',()=>netBanner());addEventListener('offline',()=>{S.netNow=1;netBanner();S.netNow=0;});
+/* the header tucks in once you scroll (with a little hysteresis so it never flickers) */
+(()=>{let on=false,raf=0;const f=()=>{raf=0;const y=scrollY,want=on?y>8:y>40;if(want!==on){on=want;document.body.classList.toggle('hc',on);}};
+ addEventListener('scroll',()=>{if(!raf)raf=requestAnimationFrame(f);},{passive:true});})();
+/* keyboard-aware sheets: when the on-screen keyboard opens, the bottom sheet rises above it and the field stays in view */
+function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.style.setProperty('--kb',px+'px');S.kb=px;
+ if(px){const f=document.activeElement;if(f&&f.closest&&f.closest('#sheet'))setTimeout(()=>f.scrollIntoView({block:'center',behavior:'smooth'}),60);}}
+(()=>{const vv=window.visualViewport;if(!vv)return;const f=()=>kbSet(innerHeight-vv.height-vv.offsetTop>80?innerHeight-vv.height-vv.offsetTop:0);vv.addEventListener('resize',f);vv.addEventListener('scroll',f);})();
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
@@ -2007,34 +2398,89 @@ const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="
  settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
 const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
-function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
-function menu(){$('#dd').classList.toggle('open');}
-document.addEventListener('click',e=>{if(!e.target.closest('.menu'))$('#dd').classList.remove('open');});
-function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'));}
-function modal(h){$('#sheet').innerHTML='<i class="grab"></i>'+h;$('#modal').classList.add('on');hap('light');}
-function closeModal(){$('#modal').classList.remove('on');$('#sheet').classList.remove('wide');S.gameOpen=null;}
+/* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
+   every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
+   Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
+function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
+function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
+function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+ clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
+setInterval(toastCheck,1000);
+['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
+addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
+/* Sheets. modal() is the bottom sheet (confirmations, small things). pushOpen()/pushFill() is the Kalshi-style push for
+   detail pages (a game, a combo): the page slides in from the right in ~270 ms (ease-out) while the page behind slides a
+   third of the way left and dims; flat skeleton blocks show until the content swaps in. Back, a tap on the dimmed
+   edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
+function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
+ sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
+function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
+ if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
+ $('#modal').classList.add('on');hap('light');}
+function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
+ clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
+const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
+ <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><i style="height:62px"></i><i style="height:62px"></i><i style="height:62px"></i><i style="height:62px"></i></div><i style="height:170px"></i><i style="height:16px;width:40%"></i><i style="height:44px"></i><i style="height:44px"></i></div>`;}
+function pushOpen(title){const m=$('#modal'),sh=$('#sheet');const was=m.classList.contains('on')&&m.classList.contains('push');
+ if(!was){m.classList.remove('on');sheetMode(true);}
+ pushFill(pushSkel(),title,true);sh.scrollTop=0;S.pushAt=performance.now();
+ if(!was){m.classList.add('on');document.body.classList.add('pushed');hap('light');}}
+/* the content waits for the slide to finish, so the swap never janks the motion */
+function pushWait(){const left=(S.pushAt||0)+290-performance.now();return left>0?new Promise(z=>setTimeout(z,left)):Promise.resolve();}
+function pushFill(h,title,sk){const sh=$('#sheet');const first=sh.dataset.sk==='1'&&!sk;
+ sh.innerHTML=`<div class="pbar"><button class="back" onclick="closeModal()" aria-label="Back">${BACK}Back</button><span class="pt">${esc(title||'')}</span></div><div class="pbody ${first?'fadein':''}">${h}</div>`;
+ sh.dataset.sk=sk?'1':'';rollNums(sh);wireScrubs(sh);
+ if(first&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const b=sh.querySelector('.pbody');b.classList.add('stag');[...b.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>b.classList.remove('stag'),1200);}}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
-(()=>{const sh=$('#sheet');let y0=null,dy=0;
- sh.addEventListener('touchstart',e=>{if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=e.touches[0].clientY;dy=0;},{passive:true});
- sh.addEventListener('touchmove',e=>{if(y0==null)return;dy=Math.max(0,e.touches[0].clientY-y0);if(dy>4){sh.classList.add('drag');sh.style.transform=`translateY(${dy}px)`;}},{passive:true});
- sh.addEventListener('touchend',()=>{if(y0==null)return;sh.classList.remove('drag');sh.style.transform='';if(dy>110){hap('light');closeModal();}y0=null;dy=0;});})();
+(()=>{const sh=$('#sheet');let x0=null,y0=null,dx=0,dy=0,ax=null,past=false;
+ const cross=v=>{if(v!==past){past=v;hap(v?'light':'selection');}};
+ sh.addEventListener('touchstart',e=>{const t=e.touches[0];dx=dy=0;ax=null;past=false;
+  if($('#modal').classList.contains('push')){x0=t.clientX;y0=t.clientY;return;}x0=null;
+  if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=t.clientY;},{passive:true});
+ sh.addEventListener('touchmove',e=>{const t=e.touches[0];
+  if(x0!=null){const mx=t.clientX-x0,my=t.clientY-y0;if(ax==null&&(Math.abs(mx)>8||Math.abs(my)>8))ax=mx>0&&Math.abs(mx)>Math.abs(my)*1.2?'x':'y';
+   if(ax!=='x')return;dx=Math.max(0,mx);sh.classList.add('drag');sh.style.transform=`translateX(${dx}px)`;cross(dx>100);return;}
+  if(y0==null)return;dy=Math.max(0,t.clientY-y0);if(dy>4){sh.classList.add('drag');sh.style.transform=`translateY(${dy}px)`;cross(dy>110);}},{passive:true});
+ sh.addEventListener('touchend',()=>{sh.classList.remove('drag');sh.style.transform='';
+  if(x0!=null){x0=null;if(ax==='x'&&dx>100)closeModal();return;}
+  if(y0==null)return;if(dy>110)closeModal();y0=null;dy=0;});})();
+/* Press feedback and a haptic tick on every interactive thing, in one place, so nothing can be missed: anything
+   matching TAP shrinks a touch while pressed (rows and settings lines highlight instead) and ticks when tapped.
+   Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
+   folded into the same tick; success/warning/error always play their own pattern. */
+const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
+function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('#hapl')&&!el.disabled?el:null;}
+(()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
+ addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
+ ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
+ addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]'))return;
+  hap(el.matches('.tabbar button,.nav button,.seg button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
+ addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
- addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
+ addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
  addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
   if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
-/* pull down on Live to refresh */
-(()=>{let y0=null,dy=0,el=null;const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<i></i>'}),document.body.appendChild(el),el);
- addEventListener('touchstart',e=>{y0=(S.view==='live'&&scrollY<=0&&!$('#modal').classList.contains('on'))?e.touches[0].clientY:null;dy=0;},{passive:true});
- addEventListener('touchmove',e=>{if(y0==null)return;dy=Math.max(0,e.touches[0].clientY-y0);const p=ptr(),k=Math.min(1,dy/90);p.style.opacity=k;p.style.transform=`translateY(${-40+k*50}px) rotate(${dy*3}deg)`;if(dy>=90&&!p._hit){p._hit=1;hap('light');}},{passive:true});
- addEventListener('touchend',async()=>{if(y0==null)return;const p=ptr();y0=null;if(dy>=90){p.classList.add('go');p.style.transform='translateY(10px)';await load('live',true).catch(()=>{});hap('success');}
-  p.classList.remove('go');p._hit=0;p.style.opacity=0;p.style.transform='translateY(-40px)';dy=0;});})();
+/* Pull down at the top of any tab to refresh it: the page follows the finger with a rubber band, a ring fills as you
+   pull, it ticks once at the point where letting go refreshes, spins while loading and ends on a small check. */
+(()=>{let y0=null,dy=0,el=null,busy=false;const C=2*Math.PI*8,TH=64;
+ const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke-dasharray="'+C.toFixed(1)+'" stroke-dashoffset="'+C.toFixed(1)+'"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>'}),document.body.appendChild(el),el);
+ const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input,select,textarea,.chips,.seg,.ant,.sidx'));
+ const main=()=>$('#main'),reduce=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+ addEventListener('touchstart',e=>{y0=(!busy&&scrollY<=0&&!$('#modal').classList.contains('on')&&!skip(e.target))?e.touches[0].clientY:null;dy=0;},{passive:true});
+ addEventListener('touchmove',e=>{if(y0==null)return;const raw=e.touches[0].clientY-y0;if(raw<=0||scrollY>0){if(dy){dy=0;const p=ptr();p.style.opacity=0;const m=main();if(m){m.style.transform='';}}return;}
+  dy=110*(1-Math.exp(-raw/150));const p=ptr(),k=Math.min(1,dy/TH);p.classList.add('drag');p.style.opacity=Math.min(1,k*1.4);p.style.transform=`translateY(${-40+k*50}px)`;
+  p.querySelector('circle').style.strokeDashoffset=(C*(1-k)).toFixed(1);const m=main();if(m&&!reduce()){m.classList.add('ptrd');m.style.transform=`translateY(${(dy*.45).toFixed(1)}px)`;}
+  if(dy>=TH&&!p._hit){p._hit=1;hap('selection');}else if(dy<TH&&p._hit){p._hit=0;}},{passive:true});
+ addEventListener('touchend',async()=>{if(y0==null)return;const p=ptr(),m=main();y0=null;p.classList.remove('drag');if(m){m.classList.remove('ptrd');m.style.transform='';}
+  if(dy>=TH){busy=true;p.classList.add('go');p.style.transform='translateY(10px)';const v=S.view;await load(v,true).catch(()=>{});
+   p.classList.remove('go');p.classList.add('done');hap('success');await new Promise(z=>setTimeout(z,520));busy=false;}
+  p.classList.remove('go','done');p._hit=0;p.style.opacity=0;p.style.transform='translateY(-40px)';dy=0;});})();
 function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'],['results','Results'],['settings','Settings']];
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
  $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
 }
-function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
- <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
 const TABS=['live','games','build','results','settings'];
 function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=true;const from=TABS.indexOf(S.view);S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
  const paint=()=>{render();window.scrollTo(0,0);};
@@ -2042,10 +2488,11 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
  else{paint();const m=$('#main');if(m&&!same){const c=dir?(dir>0?'sw-l':'sw-r'):'enter';m.classList.remove('enter','sw-l','sw-r');void m.offsetWidth;m.classList.add(c);}}
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
-S.nums=S.nums||{};S.sigs=S.sigs||{};
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):money(v);}
-function stagger(){if(!S.entered)return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
+S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const mn=$('#main');if(mn){mn.classList.add('fresh');clearTimeout(S.freshT);S.freshT=setTimeout(()=>mn.classList.remove('fresh'),1600);}
+ document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
  const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
  document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
 function segInd(){document.querySelectorAll('.seg,.ant').forEach((sg,k)=>{const on=sg.querySelector('button.on');let ind=sg.querySelector(':scope>.segind');
@@ -2056,11 +2503,16 @@ function segInd(){document.querySelectorAll('.seg,.ant').forEach((sg,k)=>{const 
   Object.assign(ind.style,{left:to.left+'px',top:to.top+'px',width:to.width+'px',height:to.height+'px'});S.segs[key]=to;});
  const tb=document.querySelector('.tabbar');const on=tb&&tb.querySelector('button.on');if(on){let ti=tb.querySelector('.tabind');if(!ti){ti=document.createElement('i');ti.className='tabind';tb.appendChild(ti);}
   ti.style.left=(on.offsetLeft+on.offsetWidth/2-14)+'px';ti.style.width='28px';}}
-function afterPaint(){stagger();segInd();const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
- document.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
-  if(old==null||Math.abs(old-v)<(f==='pct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
-  const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});
+function afterPaint(){stagger();segInd();rollNums(document);wireChart();wireScrubs(document);
+ const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  document.querySelectorAll('[data-sig]').forEach(el=>{const k=el.dataset.key,sg=el.dataset.sig;const old=S.sigs[k];S.sigs[k]=sg;if(old!=null&&old!==sg&&!reduce){el.classList.add('rowpop');setTimeout(()=>el.classList.remove('rowpop'),1300);}});}
+/* Numbers roll to their new value frame by frame (~0.65 s, ease-out) with a green/red flash; chance bars slide. */
+function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;S.bars=S.bars||{};
+ root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
+  if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
+ root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
+  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
+  const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
 function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
 function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
 function warm(v){/* show the last copy straight away while the fresh one loads */
@@ -2069,26 +2521,46 @@ function warm(v){/* show the last copy straight away while the fresh one loads *
  if(v==='results'&&!S.res)S.res=cget('results');if(v==='results'&&!S.an)S.an=cget('analytics');
  if(v==='games'&&!S.games)S.games=cget('games');
  if(S.view===v&&(v!=='build'||S.build))render();}
+// ---- freshness: how old the numbers on screen are ("Updated 4s ago"), counted on the phone between loads
+S.fr={};
+function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
+function frAge(k){const o=S.fr[k];if(!o)return null;const f=o.f;const at=Math.min(f.built,f.scores!=null?f.now-f.scores:f.built);return Math.max(0,f.now-at+(Date.now()-o.recv)/1000);}
+function frTxt(k){const a=frAge(k);if(a==null)return '';return a<3?'Updated just now':a<90?'Updated '+Math.round(a)+'s ago':'Updated '+Math.round(a/60)+' min ago';}
+function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frAge(k)||0)>60);});}
+setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
+setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
 async function load(v,fresh){try{warm(v);
- if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);}
+ if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
  if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
   if(lg!==S.lg||pv!==(S.pview||'all'))return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);
   api('/app/api/analytics').then(a=>{S.an=a;cput('analytics',a);if(S.view==='results')renderResults();}).catch(()=>{});}
- if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);}
+ if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);frSet('N',S.games.fresh);}
  if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
- if(S.view===v)render();}catch(e){if(e)console.log(e);}}
+ if(S.lerr)delete S.lerr[v];if(S.view===v)render();}catch(e){if(e)console.log(e);
+  const have={live:S.live,games:S.games,build:S.build,results:S.res,settings:S.set}[v];   // nothing to show yet: say so, with a retry, instead of a skeleton forever
+  if(e!==0&&!have){S.lerr=S.lerr||{};S.lerr[v]=navigator.onLine===false?'You\'re offline.':'Couldn\'t reach your Mac. It may be asleep or restarting.';if(S.view===v)render();}}}
+/* the error card for a screen that couldn't load: calm, says why, and a Try again that spins while it retries */
+function errCard(v){return `<div class="card empty err"><b>Couldn't load this screen</b>${esc((S.lerr||{})[v]||'')}<br><button class="btn acc" onclick="retry('${v}',this)">Try again</button></div>`;}
+async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
+ if((S.lerr||{})[v]&&b&&b.isConnected){btnState(b,false,'Still no answer');setTimeout(()=>{if(b.isConnected){b.className='btn acc';b.textContent='Try again';}},2200);}}
+/* A button that reports back: spins while working, then a check and "Done" (green) or a cross (red, a small shake),
+   then its old self. */
+function btnState(b,ok,label,ms){if(!b||!b.isConnected)return;hap(ok?'success':'error');b.disabled=false;b.classList.remove('st-ok','st-bad');void b.offsetWidth;b.classList.add(ok?'st-ok':'st-bad');
+ b.innerHTML=(ok?'✓ ':'✕ ')+esc(label||(ok?'Done':'Didn\'t work'));b.dataset.st=ok?'ok':'bad';
+ if(ms!==0){const old=b._old;clearTimeout(b._st);b._st=setTimeout(()=>{if(b.isConnected){b.classList.remove('st-ok','st-bad');delete b.dataset.st;if(old!=null)b.innerHTML=old;b._old=null;}},ms||2200);}}
+function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
 // ---------------- LIVE
-function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live')return '';
+function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over'||l.phase==='waiting')return '';
  const lead=l.sc?(l.sc.me-l.sc.opp):0;const ch=l.live!=null?l.live:l.chance;
  if(lead>0||(!lead&&ch!=null&&ch>=.6))return 'up';if(lead<0||(!lead&&ch!=null&&ch<=.4))return 'down';return 'live';}
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
- const tip=c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
+ const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
  return `<span class="leg ${c}" title="${tip}">${pre}${esc(short(l.name))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
@@ -2111,11 +2583,19 @@ function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
  if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
- const up=c.legs.find(l=>!l.res&&l.starts);return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
-function renderLive(){_renderLive();afterPaint();}
+ const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
+ if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
+ const up=c.legs.find(l=>!l.res&&l.starts&&l.state!=='live');return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
+function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{const k=legCls(l);if(k)on.add(k);}));if(!on.size)return '';
+ const it=[['up','<i class="pd"></i>Winning now'],['down','<i class="pd"></i>Losing now'],['live','<i class="pd"></i>Tied'],['won','✓ Won'],['lost','✕ Lost']].filter(x=>on.has(x[0]));
+ return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
+/* while a finger is on the chart the page holds still; the refresh that came in meanwhile paints on release */
+function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();}
+function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i><i style="height:76px"></i></div>
+ <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
 function _renderLive(){const d=S.live;const m=$('#main');
- if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
- if(d.error){m.innerHTML=`<div class="card empty"><b>Couldn't load your combos</b>${esc(d.error)}</div>`;return;}
+ if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
+ if(d.error){m.innerHTML=`<div class="card empty err"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
  const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
  const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
@@ -2129,9 +2609,9 @@ function _renderLive(){const d=S.live;const m=$('#main');
  ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
  <h2>Your combos <span class="n">${S.filter==='done'?shown.length:pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  ${S.filter==='done'?settledBar(cs):''}
+ ${S.filter!=='done'?legendFor(pend):''}
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
- ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
- ${pend.some(c=>c.legs.some(l=>l.state==='live'&&!l.res))?`<div class="legend"><span class="leg up"><i class="pd"></i>Winning now</span><span class="leg down"><i class="pd"></i>Losing now</span><span class="leg live"><i class="pd"></i>Tied</span><span class="leg won">✓ Won</span><span class="leg lost">✕ Lost</span></div>`:''}
+ ${shown.map(rowLive).join('')||(S.filter==='all'&&!pend.length?'<div class="empty"><b>Nothing riding right now</b>Bets you place, here or on Kalshi, show up with live scores and cash-out offers.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>':'<div class="empty"><b>Nothing here</b>Try another filter. Combos show up here with live scores and cash-out offers.</div>')}</div>
  ${singlesLive(d)}
  </div><aside class="side">${sideLive(d)}</aside></div>`;}
 function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
@@ -2161,26 +2641,29 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
 function ideaBlock(ideas){S.ideaq=S.ideaq||{};
  return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
   const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
+  if(S.ideaGone&&S.ideaGone[x.id])return `<div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div>`;
   if(x.n===1)return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>🎯 ${esc(x.picks)} <span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4>
    <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    <div class="dnums">${fresh?`<div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div>`:`<div>Value<b>${pct(x.pct)} of fair</b></div>`}</div></div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">Buy · ${left}s</button>`:
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;
   return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes" onclick="buyIdea('${x.id}')">Buy · ${left}s</button>`:
+   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" onclick="buyIdea('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
+ if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
  S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
  clearInterval(S.ideaT);S.ideaT=setInterval(()=>{if(S.view==='live'&&!$('#modal').classList.contains('on'))renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
  toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
 async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
+function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
+ setTimeout(()=>{delete S.ideaGone[id];hideIdea(id);},4500);}
 function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
 function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
  const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
@@ -2196,21 +2679,56 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const cls=Math.abs(dl)<.005?'flat':dl>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
- return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold</span>
+ return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
    <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} <span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>${St?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/St*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
-   ${sparkSvg(d.pulse||[],cls)}</div>
+   ${heroChart(d,cls)}</div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
    <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
-function sparkSvg(pts,cls){if(!pts||pts.length<3)return `<div class="m" style="font-size:12px;margin-top:10px">The day's line fills in as the Mac watches your bets.</div>`;
- const W=600,H=64,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01);
- const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>H-4-(v-lo)/rg*(H-10);const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
- const col=cls==='down'?'var(--no)':cls==='up'?'var(--yes)':'var(--acc)';const lx=X(t1),ly=Y(vs[vs.length-1]);
- return `<div class="sparkw"><svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-  <path d="${d} L${W} ${H} L0 ${H}Z" fill="url(#sg)"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
-  </svg><i class="sdot" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i></div>`;}
+/* The hero chart: what the open bets were worth over the Day (16 h) or Week, gradient area, glowing end dot, the
+   staked line dashed. Press and drag on it to scrub: a line and dot follow the finger, the big number and the change
+   pill show the value at that moment, and every point crossed ticks a haptic. Release puts the live numbers back. */
+try{S.rng=localStorage.getItem('cw_rng')==='week'?'week':'day'}catch(e){S.rng='day'}
+S.chartDraw=true;
+function setRng(k){if(S.rng===k)return;S.rng=k;try{localStorage.setItem('cw_rng',k)}catch(e){}S.chartDraw=true;renderLive();}
+function pulseWeek(){const w=S.pulseWeek;if(S.pwBusy||(w&&Date.now()-w.at<120e3))return;S.pwBusy=true;
+ api('/app/api/pulse?h=168').then(r=>{S.pulseWeek={at:Date.now(),pts:(r&&r.pulse)||[]};}).catch(()=>{S.pulseWeek={at:Date.now(),pts:[]};})
+  .finally(()=>{S.pwBusy=false;S.chartDraw=true;if(S.view==='live'&&S.rng==='week')renderLive();});}
+function heroChart(d,cls){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';const pts=wk?(S.pulseWeek||{}).pts:(d.pulse||[]);S.chart=null;
+ const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.rng===k?'on':''}" onclick="setRng('${k}')">${l}</button>`).join('')}</div>`;
+ if(!pts)return `<div class="sparkw"><div class="hsk" style="padding:0"><i style="height:76px"></i></div></div><div class="saxis"><span>Loading the week…</span>${sw}</div>`;
+ if(pts.length<3)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line x1="0" x2="600" y1="52" y2="52" stroke="var(--line)" stroke-width="2" stroke-dasharray="4 6" vector-effect="non-scaling-stroke"/></svg></div>
+  <div class="saxis"><span>${wk?'Not enough history for a week yet.':'The day\'s line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
+ const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01);
+ const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>H-6-(v-lo)/rg*(H-14);const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
+ const col=cls==='down'?'var(--no)':cls==='up'?'var(--yes)':'var(--acc)';const lx=X(t1),ly=Y(vs[vs.length-1]);const st=pts[pts.length-1][2];
+ const lab=t=>{const x=new Date(t*1000);return wk?x.toLocaleDateString([], {weekday:'short'})+' '+x.toLocaleTimeString([], {hour:'numeric'}):x.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});};
+ const draw=S.chartDraw?'draw':'';S.chartDraw=false;S.chart={pts,W,X,Y,lab};
+ return `<div class="sparkw" data-chart="1"><span class="sread"></span>${st!=null&&st>=lo&&st<=hi?`<i class="sbase" style="top:${Y(st).toFixed(1)}px"></i>`:''}
+  <svg class="spark ${draw}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".32"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+  <path d="${path} L${W} ${H} L0 ${H}Z" fill="url(#sg)"/><path d="${path}" fill="none" stroke="${col}" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg><i class="sdot ${draw}" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i><i class="scrl"></i><i class="scrd" style="background:${col}"></i></div>
+  <div class="saxis"><span>${esc(lab(t0))}</span>${sw}<span>Now</span></div>`;}
+function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.chart;if(!w||!c||w._wired)return;w._wired=1;
+ const big=document.querySelector('.hv .big'),dlt=document.querySelector('.hv .delta');let idx=-1,saved=null;
+ const at=x=>{const r=w.getBoundingClientRect(),f=Math.max(0,Math.min(1,(x-r.left)/Math.max(1,r.width))),t=c.pts[0][0]+f*(c.pts[c.pts.length-1][0]-c.pts[0][0]);
+  let i=0,b=Infinity;c.pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;};
+ const show=i=>{if(i===idx)return;idx=i;const p=c.pts[i],fx=c.X(p[0])/c.W*100;
+  w.querySelector('.scrl').style.left=fx+'%';const dot=w.querySelector('.scrd');dot.style.left=fx+'%';dot.style.top=c.Y(p[1])+'px';
+  const rd=w.querySelector('.sread');rd.textContent=c.lab(p[0]);rd.style.left=Math.max(10,Math.min(90,fx))+'%';
+  if(big){big.textContent=money(p[1]);big.classList.add('scrub');}
+  if(dlt&&p[2]!=null){const dl=p[1]-p[2],k=Math.abs(dl)<.005?'flat':dl>0?'up':'down';dlt.className='delta '+k;
+   dlt.innerHTML=`${k==='up'?'▲':k==='down'?'▼':'•'} ${money(Math.abs(dl))}${p[2]?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/p[2]*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(p[2])} in</span>`;}
+  hap('selection');};
+ const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;
+  if(saved){if(big){big.innerHTML=saved.b;big.className=saved.bc;}if(dlt){dlt.innerHTML=saved.d;dlt.className=saved.dc;}saved=null;}
+  if(S.liveDirty){S.liveDirty=false;renderLive();}};
+ w.addEventListener('pointerdown',e=>{if(e.button)return;S.scrub=true;saved={b:big&&big.innerHTML,bc:big&&big.className,d:dlt&&dlt.innerHTML,dc:dlt&&dlt.className};
+  w.classList.add('on');idx=-1;show(at(e.clientX));try{w.setPointerCapture(e.pointerId)}catch(x){}});
+ w.addEventListener('pointermove',e=>{if(S.scrub)show(at(e.clientX));});
+ ['pointerup','pointercancel','lostpointercapture'].forEach(k=>w.addEventListener(k,end));}
 function singlesLive(d){const all=d.singles||[];
  const ss=all.filter(x=>S.filter==='all'||S.filter==='done'?true:S.filter==='live'?x.state==='live':x.sport===S.filter);
  if(!all.length)return '';
@@ -2223,23 +2741,23 @@ function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
-function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':'';
- const line=x.how||x.score||(x.starts?'starts '+x.starts:'');
+function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
+ const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
  return `<div class="trow srow1" data-key="s:${x.t}" data-sig="${esc(x.score||'')}" onclick="openGame('${x.t}')"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
   <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
-  <div class="num" data-l="Chance">${x.chance!=null?pct(x.chance):'—'}${x.chance!=null?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
+  <div class="num" data-l="Chance">${x.chance!=null?`<span data-num="sc:${x.t}" data-v="${x.chance}" data-f="pct">${pct(x.chance)}</span>`:'—'}${x.chance!=null?`<div class="bar"><i data-bar="sb:${x.t}" style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
   <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>`:'—'}</div></div><div class="verdict"></div></div>`;}
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
- const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
+ const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${c.offer}" data-pre="${c.offer_real?'':'≈ '}">${c.offer_real?'':'≈ '}${money(c.offer)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
-  <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
+  <div class="num" data-l="To hit">${c.group==='pending'?`<span data-num="p:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}${c.group==='pending'?`<div class="bar"><i data-bar="pb:${c.t}" style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
   <div class="num offer" data-l="Offer">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
-   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
+   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
    ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
    ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
@@ -2253,8 +2771,8 @@ function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse(
  return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
-  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
+ return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>
+  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.short||g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
  ${todayCard(d)}`;}
@@ -2262,27 +2780,33 @@ function todayCard(d){const t=d.today;if(!t)return `<div class="card"><h3>Finish
  const n=t.won+t.cashed+t.lost;const bits=[t.won?`${t.won} won`:'',t.cashed?`${t.cashed} cashed`:'',t.lost?`${t.lost} lost`:''].filter(Boolean).join(' · ');
  return `<div class="card"><h3>Today <span>${n?bits:'nothing finished yet'}</span></h3>${n?`<div class="mini">Paid back<b>${money(t.back)}</b></div><div class="mini">They cost<b>${money(t.cost)}</b></div><div class="mini">Profit today<b class="${t.pl>=0?'up':'down'}">${smoney(t.pl)}</b></div>`:''}${d.week_pl!=null?`<div class="mini">Last 7 days<b class="${d.week_pl>=0?'up':'down'}">${smoney(d.week_pl)}</b></div>`:''}<div class="mini">Still riding is worth<b>${money(d.hold_value)}</b></div></div>`;}
 async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
- if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
+ hap(r.ok?'success':'error');if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
 function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
  modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" onclick="doSell('${t}')">Cash out</button></div>`);}
-async function doSell(t){hap();$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);load('live',true);}
+async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();
+ if(r.ok&&/^✅/.test(r.msg||'')){S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;setTimeout(()=>soldSheet({label:c.label,back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}   // the Sold moment
+ else{hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);}load('live',true);}
 async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();api('/app/api/act',{a:'hedgego',t:'${t}'}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
 // ---------------- BUILD
-function renderBuild(){const d=S.build;const m=$('#main');
+function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
+ return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
+/* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
+function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
+function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
  const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
- if(!d||d.lg!==S.lg){m.innerHTML=chipRow+'<div class="grid"><div>'+skel(7)+'</div><div class="skel" style="height:300px"></div></div>';return;}
+ if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
-  ${panelBlock(S.panel)}
+  <div id="pblock">${panelBlock(S.panel)}</div>
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
-    return `<button class="pickbtn ${on?'on':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
-    <span class="pr"><b>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
+    return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+    <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
   ${linesBlock(d)}
   ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
   ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
@@ -2294,20 +2818,47 @@ try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
 S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
-const started=c=>c.kick&&c.kick*1000<Date.now()+5*60e3;
+const started=c=>!c.live&&c.kick&&c.kick*1000<Date.now()+5*60e3;
 function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
  const state=c.state||'';const chip={scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${esc(pTime(c.kick))}</div><b>${title}</b>
+ return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
-  <div class="ps"><b>${money(c.stake)}</b>${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
-function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);renderBuild();}
-function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
-  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac checks every 10 minutes. You can still build your own below.</div></div>`:`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
+  <div class="ps"><b data-num="ps:${esc(c.id)}" data-v="${(+c.stake||0).toFixed(2)}">${money(c.stake)}</b>${pxSpark(c)}${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
+function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
+/* A tiny line on each panel card: the bet's Kalshi price (a combo's share of fair) over the times this phone has seen
+   it, kept for 36 hours. It only shows once there are two or more readings, so it never makes data up. */
+function pxVal(c){const v=c.kind==='combo'?c.pct:(c.price!=null?c.price:((c.legs||[])[0]||{}).p);return v==null||isNaN(v)?null:+v;}
+function pxHist(){if(!S.pxh){try{S.pxh=JSON.parse(localStorage.getItem('cw_pxh')||'{}')||{}}catch(e){S.pxh={}}}return S.pxh;}
+function pxNote(c){const v=pxVal(c);if(v==null||!c.id)return [];const h=pxHist(),now=Date.now()/1000;let a=(h[c.id]||[]).filter(p=>now-p[0]<36*3600);const last=a[a.length-1];
+ if(!last||Math.abs(last[1]-v)>1e-4||now-last[0]>600){a=a.concat([[Math.round(now),+v.toFixed(4)]]).slice(-48);h[c.id]=a;clearTimeout(S.pxT);
+  S.pxT=setTimeout(()=>{try{const hh=pxHist();for(const k in hh)if(!(hh[k]||[]).some(p=>Date.now()/1000-p[0]<36*3600))delete hh[k];localStorage.setItem('cw_pxh',JSON.stringify(hh))}catch(e){}},400);}
+ return a;}
+function pxSpark(c){const a=pxNote(c);if(a.length<2)return '';const vs=a.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01),t0=a[0][0],t1=a[a.length-1][0];
+ const d=a.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*64).toFixed(1)} ${(19-(p[1]-lo)/rg*16).toFixed(1)}`).join('');const col=vs[vs.length-1]>=vs[0]?'var(--yes)':'var(--no)';
+ const f=c.kind==='combo'?pct:(x=>Math.round(x*100)+'¢');
+ return `<svg class="psp" viewBox="0 0 64 22" preserveAspectRatio="none" aria-label="Price ${f(vs[0])} then ${f(vs[vs.length-1])}"><title>Kalshi price since this phone first saw it: ${f(vs[0])} → ${f(vs[vs.length-1])}</title><path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>`;}
+function rbOn(r){return !!(r&&(r.state==='asked'||r.state==='running'));}
+/* A requested rebuild, from the Mac's own notes: waiting to start, which sport it's on, or picking the mix. */
+function rbText(r){if(r.state==='asked')return r.wait>=90?'Waiting for the Mac to start. It hasn\'t picked this up yet: is it on and awake?':'Starting…';
+ if(r.step==='choosing')return 'Picking the best mix for today…';return `Looking at ${esc(SPN[r.sport]||String(r.sport||'').toUpperCase())}… ${Math.min((r.i||0)+1,r.n||1)} of ${r.n||1} sports`;}
+function rbFrac(r){if(r.state==='asked')return .04;const n=(r.n||1)+1;return Math.min(.97,r.step==='choosing'?(n-.5)/n:((r.i||0)+.5)/n);}
+function rbCard(r){return `<div class="card rbcard" style="text-align:center;padding:22px 18px"><div style="font-size:30px">🔎</div><b style="display:block;margin:6px 0 4px;font-size:17px">Putting together a fresh panel</b>
+  <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
+  <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
+function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
+function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
+ if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
+  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
+ const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
+ if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
+  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
+ return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
+function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
@@ -2321,7 +2872,7 @@ function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div cl
    <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
- return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
+ return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
@@ -2332,16 +2883,29 @@ function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
  return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
+ b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');await load('build');}
+ hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
+async function panelLook(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking the Mac…';}
+ const r=await api('/app/api/act',{a:'panel_look'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!r.ok){hap('error');toast(r.msg,6000,'bad');}else{S.rbWas=true;if(S.panel){S.panel.rebuild=r.rebuild||{state:'asked',wait:0};}}
+ await load('build');}
+/* While the Mac rebuilds, ask it every 2 s how far it's got and redraw just the panel card; when it's done, the
+   new panel (or the reason there isn't one) drops in by itself. */
+function rbWatch(){const on=S.view==='build'&&rbOn((S.panel||{}).rebuild);if(on){S.rbWas=true;if(!S.rbT)S.rbT=setInterval(rbPoll,2000);}else if(S.rbT){clearInterval(S.rbT);S.rbT=null;}}
+async function rbPoll(){if(S.view!=='build'){rbWatch();return;}if(document.hidden||S.rbBusy)return;S.rbBusy=true;const pv=S.pview||'all';
+ try{const p=await api('/app/api/panel?v='+pv);if(!p||pv!==(S.pview||'all'))return;S.panel=p;cput('panel_'+pv,p);
+  if(rbOn(p.rebuild)){const el=$('#pblock');const t=el&&el.querySelector('.rbtxt'),bar=el&&el.querySelector('.rbtrack i');
+   if(t&&!!bar===!p.panel){t.innerHTML=(p.panel?'':'<span class="spin"></span> ')+rbText(p.rebuild);if(bar)bar.style.width=Math.round(rbFrac(p.rebuild)*100)+'%';}else renderBuild();return;}
+  const r=p.rebuild;if(S.rbWas&&r&&r.state==='done'){if(r.found){hap('success');toast(r.kind==='extra'?`Found ${r.found} new bet${r.found===1?'':'s'} since you approved.`:`Your fresh panel is ready: ${r.found} bet${r.found===1?'':'s'}.`,5000,'good');}else hap('warning');}
+  S.rbWas=false;renderBuild();}catch(e){}finally{S.rbBusy=false;rbWatch();}}
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open){S.slip=[];S.custom=null;}try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){}renderBuild();
  if(S.adv)setTimeout(()=>{const h=document.querySelector('.board');if(h)h.scrollIntoView({behavior:'smooth',block:'start'});},60);}
@@ -2364,16 +2928,16 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
  return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
   <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
   <div class="why">Every leg is priced below the sharp books' chance, so the combo should pay more than it's worth. Get the real price before buying.</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>
+  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>
    <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
-function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);if(!legs.length)return '';
+function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);const was=S.slipWas;S.slipWas=legs.length;if(!legs.length)return '';
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
- return `<div class="slipbar"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
+ return `<div class="slipbar ${was?'':'in'}"><span>${legs.length<2?`${esc(short(legs[0].pick))} picked · tap 1 more team`:`Your combo · ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
 try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
- if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);}S.custom=null;renderBuild();}
+ if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
 function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
 function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
  const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
@@ -2382,7 +2946,7 @@ function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.sta
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
    ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
-   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
+   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn qb ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${qBar(c.offer)}${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
   <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
 async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
  if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i,legs:S.slip.slice()});
@@ -2395,23 +2959,26 @@ async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="
 async function swapCombo(i,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}
  const r=await api('/app/api/act',{a:'swap',i}).catch(()=>({ok:false}));if(S.quotes)delete S.quotes[i];if(S.flips)delete S.flips[i];
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t find another one.');renderBuild();return;}
- const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;renderBuild();hap('success');}
+ const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;S.ccJust=i;renderBuild();S.ccJust=null;hap('success');}
 async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
  const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
- S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');renderBuild();}
+ S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');S.ccJust=i;renderBuild();S.ccJust=null;}
 function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
  const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}
+/* a fresh Kalshi quote: it rises in once, and a thin bar under it drains over the 20 seconds the price lasts */
+function qNew(o){return o&&Date.now()/1000-o.at<1.2?'new':'';}
+function qBar(o){return o?`<i class="qt" style="animation-delay:-${Math.max(0,Date.now()/1000-o.at).toFixed(2)}s"></i>`:'';}
 function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];
  if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg">${esc(short(l.pick))} ${pct(l.fair)}</span>`).join('')}</div>
   <div style="display:flex;gap:8px"><button class="btn ghost" style="flex:1" onclick="go('live')">See it on Live</button><button class="btn ghost" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
- return `<div class="ccard"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
+ return `<div class="ccard ${S.ccJust===c.i?'flash':''}"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b data-num="cf:${c.i}" data-v="${(+c.fair||0).toFixed(2)}">${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold" data-num="cc:${c.i}" data-v="${c.chance}" data-f="pct">${pct(c.chance)}</span></div>
   <div class="legs">${c.legs.map(l=>`<span class="leg flip" title="Tap to flip to the other team" onclick="flipLeg(${c.i},'${l.ticker}')">${esc(short(l.pick))} ${pct(l.fair)} ⇄${legLive(l)}</span>`).join('')}</div>
   ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
   <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'}"><b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
+  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · ${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}s left</span></div>`:''}
   <div style="display:flex;gap:8px">${fresh?`<button class="btn ${o.clears?'yes':'warn'}" style="flex:1" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn" style="flex:1" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}<button class="btn ghost" title="Not this one: show a different combo" onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
 async function quote(i){hap();const b=$('#q'+i);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
@@ -2425,29 +2992,65 @@ async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();if(btn){
  S.buying=false;if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
-function hap(k){try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+(k||'light');document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
- if(navigator.vibrate){navigator.vibrate(k==='success'?[10,50,10]:k==='error'?[30,50,30]:k==='warning'?[20]:8);return;}
+/* Haptics. light/selection = one tick; success = two quick ticks; warning = two slower; error = three.
+   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS 18+: toggling a hidden <input switch>
+   ticks the Taptic Engine (it has to happen inside the tap, which the global tap listener guarantees).
+   Elsewhere navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests. */
+const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
+function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
+ if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
+ const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
+ try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
+ if(navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
  let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
- l.click();if(k==='success'||k==='error')setTimeout(()=>l.click(),90);}catch(e){}}
+ seq.forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
 // ---------------- RESULTS
-function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
- const w=d.weeks||[];const mx=Math.max(1,...w.map(x=>Math.abs(x.pl)));const sh=d.shadow;
- m.innerHTML=`<div class="grid"><div><div class="kpis">
-  <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}">${smoney(d.pl)}</b></div>
-  <div class="kpi"><span>Return on stake</span><b>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
-  <div class="kpi"><span>Settled</span><b>${d.settled} <small>combos</small></b></div>
+function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
+function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
+ if(S.scrub){S.resDirty=true;return;}
+ const sh=d.shadow;
+ m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}<div class="kpis">
+  <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
+  <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
+  <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>
   <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
-  <div class="kpi"><span>Best result</span><b class="up">${smoney(d.best)}</b></div></div>
-  <h2>By week</h2><div class="chart"><svg viewBox="0 0 ${Math.max(1,w.length)*60} 160" width="100%" height="170" preserveAspectRatio="none">
-   <line x1="0" y1="80" x2="${w.length*60}" y2="80" stroke="var(--line)"/>${w.map((x,i)=>{const h=Math.abs(x.pl)/mx*70;return `<rect x="${i*60+14}" y="${x.pl>=0?80-h:80}" width="32" height="${Math.max(2,h)}" rx="4" fill="${x.pl>=0?'var(--yes)':'var(--no)'}"><title>${x.week}: ${smoney(x.pl)} on ${x.n}</title></rect>`}).join('')}</svg>
-   <div style="display:flex">${w.map(x=>`<div style="width:${100/Math.max(1,w.length)}%;text-align:center;font-size:11px" class="m">${(x.week||'').slice(5)}</div>`).join('')}</div></div>
+  <div class="kpi"><span>Best result</span><b class="up" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}"`:''}>${smoney(d.best)}</b></div></div>
+  ${plChart(d)}
   ${anBlock(S.an)}${edgeBlock(d)}
   ${historyBlock(d.history||[])}
  </div><aside class="side">
   <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
    <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>${sh.same_game&&(sh.same_game.n||sh.same_game.open)?`<div class="mini">Same-game test (winner + total)<b class="${sh.same_game.pl>=0?'up':'down'}">${smoney(sh.same_game.pl)} · ${sh.same_game.n} settled, ${sh.same_game.open} open</b></div>`:''}`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
   <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
- </aside></div>`;}
+ </aside></div>`;wireScrubs(m);}
+/* Profit by day or by week: bars you can drag a finger across (the readout and a haptic tick follow it) and tap to see
+   that day's or week's bets in a sheet. Day = the last 14 days that had a result; Week = the last 12 weeks. */
+try{S.plr=localStorage.getItem('cw_plr')==='day'?'day':'week'}catch(e){S.plr='week'}
+function setPlr(k){if(S.plr===k)return;S.plr=k;try{localStorage.setItem('cw_plr',k)}catch(e){}renderResults();}
+function plBars(d){const hist=d.history||[];
+ if(S.plr==='day'){const by={};hist.forEach(h=>{if(!h.day)return;const b=by[h.day]||(by[h.day]={k:h.day,pl:0,n:0});b.pl+=h.pl;b.n++;});
+  return Object.values(by).sort((a,b)=>a.k.localeCompare(b.k)).slice(-14).map(b=>Object.assign(b,{lab:new Date(b.k+'T12:00:00').toLocaleDateString([], {month:'short',day:'numeric'}),items:hist.filter(h=>h.day===b.k)}));}
+ return (d.weeks||[]).map(w=>({k:w.week,pl:w.pl,n:w.n,lab:'Week of '+(w.week&&/^\d{4}-/.test(w.week)?new Date(w.week+'T12:00:00').toLocaleDateString([], {month:'short',day:'numeric'}):w.week),items:hist.filter(h=>h.week===w.week)}));}
+function plChart(d){const bars=plBars(d),n=bars.length,tot=bars.reduce((a,b)=>a+b.pl,0),cnt=bars.reduce((a,b)=>a+b.n,0);
+ const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.plr===k?'on':''}" onclick="setPlr('${k}')">${l}</button>`).join('')}</div>`;
+ const sum=`${S.plr==='day'?'Last '+n+' day'+(n===1?'':'s')+' with results':'Last '+n+' week'+(n===1?'':'s')} · ${cnt} bet${cnt===1?'':'s'}`;
+ if(!n)return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b>$0</b><small>Nothing settled yet</small></div>${sw}</div><div class="empty" style="padding:22px 10px">Bars show up here as your bets settle.</div></div>`;
+ const W=Math.max(300,n*44),H=150,mid=H/2,mx=Math.max(1,...bars.map(b=>Math.abs(b.pl))),bw=Math.min(30,W/n*.62);
+ S.scr=S.scr||{};S.scr.pl={n,at:f=>Math.min(n-1,Math.floor(f*n)),
+  show:(i,el)=>{const b=bars[i];el.closest('.plc').classList.add('on');el.querySelectorAll('rect.brc').forEach((r,j)=>r.classList.toggle('sel',j===i));
+   const h=el.closest('.plc').querySelector('.plh');h.querySelector('b').textContent=smoney(b.pl);h.querySelector('b').className=b.pl>=0?'up':'down';h.querySelector('small').textContent=`${b.lab} · ${b.n} bet${b.n===1?'':'s'} · tap for the bets`;},
+  end:el=>{const c=el.closest('.plc');c.classList.remove('on');el.querySelectorAll('rect.brc').forEach(r=>r.classList.remove('sel'));const h=c.querySelector('.plh');
+   h.querySelector('b').textContent=smoney(tot);h.querySelector('b').className=tot>=0?'up':'down';h.querySelector('small').textContent=sum;},
+  tap:i=>barSheet(bars[i])};
+ return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b class="${tot>=0?'up':'down'}">${smoney(tot)}</b><small>${sum}</small></div>${sw}</div>
+  <div class="scrub" data-scrub="pl"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="var(--line)" vector-effect="non-scaling-stroke"/>
+  ${bars.map((b,i)=>{const h=Math.max(2,Math.abs(b.pl)/mx*(mid-8));return `<rect class="brc" x="${(i+.5)*W/n-bw/2}" y="${b.pl>=0?mid-h:mid}" width="${bw}" height="${h}" rx="4" fill="${b.pl>=0?'var(--yes)':'var(--no)'}"/>`;}).join('')}</svg></div>
+  <div class="xl"><span>${esc(bars[0].lab)}</span><span>${n>1?esc(bars[n-1].lab):''}</span></div><div class="hint">Drag across the bars, or tap one to see its bets.</div></div>`;}
+function barSheet(b){if(!b)return;const xs=b.items||[];
+ modal(`<h3>${esc(b.lab)}</h3><p><b class="${b.pl>=0?'up':'down'}">${smoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
+  <div class="blist">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${esc((h.picks||[]).map(short).slice(0,3).join(' + '))}${(h.picks||[]).length>3?' +'+((h.picks||[]).length-3):''}</b><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
+   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
+  <div class="row"><button class="btn acc" onclick="closeModal()">Done</button></div>`);}
 try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
 function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
 const RESN={won:'Rode it and won',cashed:'Cashed out early',lost:'Lost'};
@@ -2488,26 +3091,32 @@ function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const ne
   <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
   <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
   <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
-function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div><div class="m" style="padding:6px 0 4px">${a?'Nothing to measure yet. Results show up as bets settle.':'Loading…'}</div></div>`;
+function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div>${a?'<div class="m" style="padding:6px 0 4px">Nothing to measure yet. Results show up as bets settle.</div>':'<div class="ansk" aria-label="Loading"><i style="height:34px;border-radius:10px"></i><i style="width:84%"></i><i></i><i style="width:92%"></i><i style="width:70%"></i></div>'}</div>`;
  const tab=S.anTab||'levels';const r=x=>x==null?'—':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(Math.round(x*100))}%</b>`;
  const tabs=[['levels','Combo price levels'],['types','Bet types'],['sports','Sports'],['exits','Selling']];
- const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="S.anTab='${k}';renderResults()">${l}</button>`).join('')}</div>`;
+ const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="anTab('${k}')">${l}</button>`).join('')}</div>`;
  const table=(head,rows)=>`<div class="antbl"><div class="anrow h">${head.map(h=>`<div>${h}</div>`).join('')}</div>${rows.map(cs=>`<div class="anrow">${cs.map((c,i)=>`<div data-l="${i?esc(head[i]):''}">${c}</div>`).join('')}</div>`).join('')||'<div class="m" style="padding:10px 0">No settled bets here yet.</div>'}</div>`;
  const mode=m=>m==='real'?'<span class="tag good">Real</span>':'<span class="tag">Paper</span>';
  let body='',expl='';
  if(tab==='levels'){expl='Every combo Kalshi has quoted (last 90 days), as if bought at that price. "% of fair" is what Kalshi pays compared to the fair payout. The lab paper-buys 3 a day in each band from 80% up, and replays smart sell on their game prices.';
   body=table(['% of fair','Quotes','Hit vs expected','Riding to end','Worth at game time','Lab: ride · smart sell'],(a.levels||[]).map(x=>[`<b>${esc(x.band)}</b>`,x.n,x.hit==null?'—':pct(x.hit)+' <span class="m">vs '+pct(x.exp)+'</span>',r(x.ride),r(x.gt)+(x.gt_n?` <span class="m">(${x.gt_n})</span>`:''),x.lab_n?`${r(x.lab_ride)} · ${r(x.lab_smart)} <span class="m">(${x.lab_n})</span>`:'<span class="m">—</span>']));}
  else if(tab==='types'||tab==='sports'){expl=tab==='types'?'Every settled panel bet, real and paper (the paper panel and the combo lab). Return is profit over what was staked. Smart sell is the replay on recorded game prices, where there are enough of them. CLV: how the price you got compares with Kalshi\'s price right before the game. Positive means the market moved your way.':'The same bets, by sport.';
-  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));}
+  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));
+  if(tab==='types')body+=`<h3 class="an-live" style="margin:18px 0 4px;font-size:15px">Bought during the game, by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Panel bets on games already under way, priced live from a fresh score and clock. Kept apart so each league's record can show whether they pay. ${esc(a.live_excluded||'')}</div>`
+   +table(['League','Bets','Won','Return','Smart sell'],(a.live||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>']));}
  else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
-  const au=a.auto||{};const an=Object.keys(au);
+  const au=a.auto||{};const an=Object.keys(au);const ch=a.cut_held||{};const cn=Object.keys(ch);const hh=a.hedge_held||{};const hn=Object.keys(hh);
   body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
    +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`
-   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays. Leagues without enough results use their sport's settings, then everyone's.</div>`
-   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss):'never',x.n]));}
+   +`<div class="m cut-held" style="margin-top:6px;font-size:13px">${cn.length?'Loss cuts the guards held back, last 30 days: '+cn.map(k=>`<b>${ch[k]}</b> ${esc(k)}`).join(' · '):'No loss cut has been held back by the guards in the last 30 days.'}</div>`
+   +`<div class="m hedge-held" style="margin-top:6px;font-size:13px">${hn.length?'Auto-hedges the guards held back, last 30 days: <b>'+hn.reduce((s,k)=>s+hh[k],0)+'</b> ('+hn.map(k=>`${hh[k]} ${esc(k)}`).join(' · ')+')':'No auto-hedge has been held back by the guards in the last 30 days.'} <span style="opacity:.8">Auto-hedge only buys on a fresh live score, never at a break, when it locks in at least what you paid, after 3+ minutes, at a re-checked price.</span></div>`
+   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays, and even then only late in a game, on a fresh score, not at a break, after a big fall that held 3+ minutes. Leagues without enough results use their sport's settings, then everyone's (but never borrow a loss cut).</div>`
+   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}<div class="m sl-row" style="font-size:11.5px;margin-top:2px">Selling at a loss (a learned cut, or the stop-loss switch if on): only after ${pct(x.sl_prog==null?0.5:x.sl_prog)} of the game, a ${Math.round((x.sl_drop==null?0.2:x.sl_drop)*100)}-point fall from before the game, held 3+ min, on a fresh score, never at a break${x.sl_own?'':' (starting point)'}</div>${x.sl_why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.sl_why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss)+'<div class="m" style="font-size:11px">late, confirmed</div>':'never',x.n]));}
  const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
- return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)} ago</span></div>${tb}
-  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>`;}
+ return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)==='now'?'just now':ago2(a.at)+' ago'}</span></div>${tb}
+  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div></div>`;}
+function anTab(k){if(S.anTab===k)return;S.anTab=k;S.anJust=true;renderResults();S.anJust=false;
+ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.an .antbl .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,12)*30}ms both`;});}
 function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
@@ -2533,13 +3142,13 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
-function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);load('settings')})">I moved it</button></div>`;}
+function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
  return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
 function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
  if(LOCAL&&!/\.ts\.net$/.test(location.hostname))return (f.keys||[]).length?`<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${f.keys.map(k=>esc(k.name)).join(', ')}</small></div><button class="btn ghost" onclick="fidRemoveAll()">Remove all</button></div>`:'';
  if(location.protocol!=='https:'||!window.PublicKeyCredential)return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${(S.pk||{}).https?`Works on the secure address. Open <a href="${esc(S.pk.https)}">${esc(S.pk.https.replace('https://',''))}</a> and turn it on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
- return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:'Unlock Combo Hub with Face ID instead of typing the passcode.'}</small></div>
+ return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:((f.keys||[]).length?`Face ID was set up for another address (${esc((f.keys[0]||{}).rp||'')}). Turn it on again here to use it on this one.`:'Unlock Combo Hub with Face ID instead of typing the passcode.')}</small></div>
   ${here.length?`<button class="btn ghost" onclick="fidRemoveAll()">Turn off</button>`:`<button class="btn acc" onclick="fidOn(this)">Turn on</button>`}</div>`;}
 const fb64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
 const fe64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -2559,7 +3168,7 @@ function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'Pu
  if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
  if(!can)return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>On iPhone: open Combo Hub from its Home Screen icon (Share › Add to Home Screen), then turn them on here.</small></div></div>`;
  return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${S.pushOn?'On. Alerts from the Mac open the right screen when tapped.':'Get the Mac\'s alerts here, straight from Combo Hub.'}${pk.n?` · ${pk.n} device${pk.n>1?'s':''} signed up`:''}</small></div>
-  ${S.pushOn?`<button class="btn" onclick="pushTest()">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
+  ${S.pushOn?`<button class="btn" onclick="pushTest(this)">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
 function urlB64(s){const p='='.repeat((4-s.length%4)%4);const b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)));}
 async function pushOn(btn){try{const perm=await Notification.requestPermission();
   if(perm!=='granted'){toast('Notifications are blocked. Allow them in Settings › Notifications › Combo Hub.',6000);return;}
@@ -2570,12 +3179,24 @@ async function pushOn(btn){try{const perm=await Notification.requestPermission()
   await api('/app/push',{a:'sub',sub:sub.toJSON(),label:/iPhone/.test(navigator.userAgent)?'iPhone':'Browser'});
   const t=await api('/app/push',{a:'test'});S.pushOn=true;toast(t.sent?'Notifications are on. A test is on its way.':'Signed up. The test didn\'t go through yet.',5000);load('settings');
  }catch(e){toast('Couldn\'t turn them on: '+(e&&e.message||e),6000);load('settings');}}
-async function pushTest(){const t=await api('/app/push',{a:'test'});toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
+async function pushTest(b){btnBusy(b,'Sending…');const t=await api('/app/push',{a:'test'}).catch(()=>({}));btnState(b,!!t.sent,t.sent?'Sent':'Not sent');toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
 async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistration();const sub=reg&&await reg.pushManager.getSubscription();if(sub){await api('/app/push',{a:'off',sub:sub.toJSON()});await sub.unsubscribe();}}catch(e){}S.pushOn=false;toast('Notifications off on this device.');load('settings');}
 function httpsRow(mac){const h=mac.https||{};
  if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
- if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>Tailscale needs you to allow https for your network once. Open the link, approve, then tap Check.</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
- return `<div class="srow"><div class="l"><b>Secure address</b><small>${h.state==='no-cli'?'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.':h.state==='no-name'?'Tailscale isn\'t signed in on this Mac. Open Tailscale, sign in, then Try again.':h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…'}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
+ if(h.state==='need-enable'&&h.link)return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin yet. Tap Allow https, approve in the Tailscale page, then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
+ if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin. Open the page, sign in, scroll to <b>HTTPS Certificates</b>, tap <b>Enable HTTPS...</b> and confirm. Then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.admin||'https://login.tailscale.com/admin/dns')}" target="_blank">Open Tailscale admin</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
+ const why={'no-cli':'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.',
+  'no-status':'Couldn\'t read Tailscale\'s status. Open the Tailscale app on this Mac, then Try again.',
+  'no-daemon':'Couldn\'t read Tailscale\'s status: the command line can\'t talk to the Tailscale app. Open Tailscale on this Mac, check it says Connected, then Try again.',
+  'cli-broken':'Couldn\'t read Tailscale\'s status: its command line wouldn\'t start from the watcher. Install the command line from Tailscale\'s settings, then Try again.',
+  'signed-out':'Tailscale says this Mac is signed out. Open Tailscale, sign in, then Try again.',
+  'needs-approval':'This Mac waits for approval in Tailscale admin (login.tailscale.com/admin/machines). Approve it, then Try again.',
+  'ts-off':'Tailscale is switched off on this Mac. Open Tailscale, turn it on, then Try again.',
+  'starting':'Tailscale is still starting on this Mac. It checks again by itself in a few minutes.',
+  'no-name':'Tailscale is running but gave this Mac no name. Turn MagicDNS on at login.tailscale.com/admin/dns, then Try again.',
+  'issuing':'Tailscale is still making the certificate. This can take a few minutes; it keeps checking.'};
+ if(h.detail&&['no-cli','no-status','no-daemon','cli-broken','signed-out','needs-approval','ts-off','starting'].includes(h.state))why[h.state]=esc(h.detail.slice(0,300));
+ return `<div class="srow"><div class="l"><b>Secure address</b><small>${why[h.state]||(h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…')}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
  const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
@@ -2622,8 +3243,12 @@ async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild(
  S.build=null;renderBuild();load('build',true);}
 try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
 function secOpen(k){return S.bsec[k]!==false;}
-function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}renderBuild();}
-function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" onclick="secTog('${k}')"><span class="chev">${o?'▾':'▸'}</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
+/* folding a Build section: the chevron turns and the section rises in, instead of jumping */
+function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}S.secJust=k;renderBuild();S.secJust=null;
+ const h=document.querySelector(`.sech[data-k="${k}"]`);if(!h)return;const c=h.querySelector('.chev');
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{if(c)c.classList.remove('from-open','from-shut');}));
+ if(secOpen(k)){let n=h.nextElementSibling;for(let i=0;i<2&&n&&!n.classList.contains('sech');i++,n=n.nextElementSibling)n.classList.add('unfold');}}
+function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" data-k="${k}" onclick="secTog('${k}')"><span class="chev ${S.secJust===k?(o?'from-shut':'from-open'):''}">▾</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
 function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games={};ls.forEach(x=>{(games[x.game]=games[x.game]||[]).push(x);});
  return secHead('lines','Spreads &amp; totals',ls.length,'Kalshi price · model chance from the sportsbook line')+(!secOpen('lines')?'':`
   <div class="tbl lines"><div class="lrow2 m" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:10px"><span></span><span class="num">Kalshi</span><span class="num">Chance</span><span class="num" style="text-align:center">Edge</span></div>${Object.entries(games).map(([g,xs])=>`<div class="lhd">${esc(g)} <span class="m">· book ${xs.find(x=>x.kind==='spread')?'spread '+xs.find(x=>x.kind==='spread').book_line:''}${xs.find(x=>x.kind==='total')?' · total '+xs.find(x=>x.kind==='total').book_line:''}</span></div>
@@ -2654,42 +3279,93 @@ function valueChart(off,cost,pays){if(!off||off.length<2)return '<div class="m" 
   ${off.filter(o=>o.real_offer&&o.offer!=null).map(o=>`<circle cx="${X(o.ts)}" cy="${Y(o.offer)}" r="3.5" fill="var(--yes)"/>`).join('')}
   <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
 // ---------------- combo detail
-async function openCombo(t){modal(`<div class="m" style="padding:30px;text-align:center"><span class="spin"></span></div>`);$('#sheet').classList.add('wide');
- const r=await api('/app/api/combo?t='+encodeURIComponent(t)).catch(()=>null);const c=r&&r.combo;
- if(!c){$('#sheet').innerHTML='<h3>Not found</h3><p>That combo isn\'t live any more.</p><div class="row"><button class="btn" onclick="closeModal()">Close</button></div>';return;}
+async function openCombo(t){S.gameOpen=null;S.comboOpen=t;pushOpen('Combo');
+ const [r]=await Promise.all([api('/app/api/combo?t='+encodeURIComponent(t)).catch(()=>null),pushWait()]);if(S.comboOpen!==t)return;const c=r&&r.combo;
+ if(!c){pushFill('<h3>Not found</h3><p>That combo isn\'t live any more.</p>','Combo');return;}
  const h=r.history||{offers:[],ticks:{}};const [vc,vt]=verdictOf(c);
- $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${(c.sports||[]).map(s=>SPN[s]||s).join(' · ')}</div><h3 style="font-size:22px">${esc(c.label)}</h3><div class="m">${esc(nextLine(c))}</div></div>
-  <div style="display:flex;gap:8px;align-items:center"><span class="verdict ${vc}">${vt}</span><button class="btn ghost" onclick="closeModal()">Close</button></div></div>
-  <div class="dkpis"><div><span>Paid</span><b>${money(c.cost)}</b></div><div><span>Pays</span><b>${money(c.pays)}</b></div><div><span>Chance</span><b>${c.group==='pending'?pct(c.p):'—'}</b></div><div><span>${c.offer_real?'Offer':'Likely offer'}</span><b>${c.offer!=null?(c.offer_real?'':'≈ ')+money(c.offer):'—'}</b></div></div>
+ pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${(c.sports||[]).map(s=>SPN[s]||s).join(' · ')}</div><h3 style="font-size:22px">${esc(c.label)}</h3><div class="m">${esc(nextLine(c))}</div></div>
+  <div style="display:flex;gap:8px;align-items:center"><span class="verdict ${vc}">${vt}</span></div></div>
+  <div class="dkpis"><div><span>Paid</span><b>${money(c.cost)}</b></div><div><span>Pays</span><b>${money(c.pays)}</b></div><div><span>Chance</span><b>${c.group==='pending'?`<span data-num="dp:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}</b></div><div><span>${c.offer_real?'Offer':'Likely offer'}</span><b>${c.offer!=null?`<span data-num="do:${c.t}" data-v="${c.offer}" data-pre="${c.offer_real?'':'≈ '}">${(c.offer_real?'':'≈ ')+money(c.offer)}</span>`:'—'}</b></div></div>
   ${c.why?`<p style="margin:-4px 0 14px">${esc(c.why)}</p>`:''}
   <div class="chartbox">${valueChart(h.offers,c.cost,c.pays)}</div>
   <h2 style="margin:4px 0 6px">Picks <span class="n">${c.legs.length}</span></h2><div class="dlegs">${c.legs.map(l=>{const tk=(h.ticks||{})[l.ticker]||[];const pts=tk.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
-   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
+   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
     ${l.res?`<span class="m" style="text-align:center">${l.res==='yes'?'✓ won':'✕ lost'}</span>`:spark(pts,120,28)}<b style="text-align:right">${l.res?'':pct(l.live!=null?l.live:l.chance)}</b></div>`;}).join('')}</div>
   ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" onclick="closeModal();hedge('${c.t}')">Hedge · ${money(c.hedge.cost)}</button>`:''}
-   <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`;}
+   <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`,c.label);}
 // ---------------- games
-function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=`<div class="games">${'<div class="gt skel" style="height:190px"></div>'.repeat(6)}</div>`;return;}
- const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you need show up here with live scores and win chances.</div>';return;}
- const live=gs.filter(g=>g.state==='live'),rest=gs.filter(g=>g.state!=='live');
- const tile=g=>{const ch=g.chance;const sc=g.sc;const lc=g.state==='live'?legCls({state:'live',sc,live:ch}):'';return `<div class="gt ${g.state==='live'?'live '+lc:''}" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${g.state!=='live'&&g.starts?' · '+esc(g.starts):''}</div></div>
-   ${g.state==='live'&&sc?`<div class="sc">${sc.me}–${sc.opp}<small>${esc(sc.detail||'')}</small></div>`:'<span class="tag" style="background:var(--panel2);color:var(--sub)">'+(g.state==='live'?'LIVE':'UPCOMING')+'</span>'}</div>
-   <div class="ch"><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b><span>${g.state==='live'?'to win right now':'to win'}</span></div>${spark(g.spark,300,56)}
-   <div class="ft"><span>In ${g.combos} combo${g.combos>1?'s':''}</span><b>${money(g.pays)} riding</b></div></div>`;};
- m.innerHTML=(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(tile).join('')}</div>`:'')
-  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(tile).join('')}</div>`:'');}
+/* Games: one live card per game you have money on (combos, single bets, spreads and totals). Team rows with the score,
+   the clock, the chance line over the game with a glowing end dot, and the bets riding on it. When someone scores the
+   card pulses (green when it's your side, red when it's theirs), the number bumps and the phone ticks. Tap to push
+   into the game page. */
+function gamesSkel(){return `<div class="games">${Array.from({length:4},()=>`<div class="gsk"><i style="height:11px;width:38%"></i><i style="height:20px;width:70%"></i><i style="height:20px;width:55%"></i><i style="height:46px"></i><i style="height:22px;width:60%"></i></div>`).join('')}</div>`;}
+function miniLine(pts,col){if(!pts||pts.length<2)return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><line x1="0" x2="300" y1="23" y2="23" stroke="var(--line)" stroke-width="2" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/></svg></div>`;
+ const t0=pts[0][0],t1=pts[pts.length-1][0],X=t=>(t-t0)/Math.max(1,t1-t0)*300,Y=v=>42-Math.max(0,Math.min(1,v))*38;
+ const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');const ly=Y(pts[pts.length-1][1]);const id='mg'+Math.random().toString(36).slice(2,7);
+ return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+  <line x1="0" x2="300" y1="${Y(.5)}" y2="${Y(.5)}" stroke="var(--line)" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/><path d="${d} L300 46 L0 46Z" fill="url(#${id})"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>
+  <i class="sdot" style="left:100%;top:${(ly/46*100).toFixed(1)}%;background:${col};color:${col}"></i></div>`;}
+function gameLine(g){S.gh=S.gh||{};const k=g.ticker||g.name;let h=S.gh[k]||[];const now=Date.now()/1000;   // the page keeps its own line too, for bets the Mac hasn't charted yet
+ if(g.chance!=null&&(!h.length||h[h.length-1][1]!==g.chance))h=h.concat([[now,g.chance]]).slice(-240);S.gh[k]=h;
+ const sp=(g.spark||[]).filter(p=>p[1]!=null);return sp.length>=2?sp.concat(h.filter(p=>p[0]>sp[sp.length-1][0])):h;}
+const GLIVE=g=>g.state==='live'&&!['probably_over','waiting','over'].includes(g.phase);
+function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
+ const col=ch==null?'var(--acc)':ch>=.5?'var(--yes)':'var(--no)';const sg=S.gscore&&S.gscore[g.ticker||g.name];
+ const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
+ const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.label||'')}</span>`)].join('');
+ const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
+ return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" onclick="openGame('${esc(g.ticker||'')}')">
+  <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
+  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.name)}</span><span class="mine">YOURS</span>${sc&&(live||fin)?`<b class="pts ${sg?'bump':''}">${sc.me}</b>`:''}</div>
+   ${g.opp?`<div class="gtr them"><span class="nm">${esc(g.opp)}</span>${sc&&(live||fin)?`<b class="pts">${sc.opp}</b>`:''}</div>`:''}</div>
+  <div class="gl"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
+   <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
+  <div class="bets">${bets}<span class="rd">${money(g.pays)} riding</span></div></div>`;}
+function scoreWatch(gs){/* who scored since the last paint: your side, or theirs */
+ S.gsc=S.gsc||{};S.gscore={};let any=null;
+ gs.forEach(g=>{const k=g.ticker||g.name,sc=g.sc;if(!sc||g.state!=='live')return;const o=S.gsc[k];S.gsc[k]=[sc.me,sc.opp];
+  if(o&&(o[0]!==sc.me||o[1]!==sc.opp)){const good=sc.me>o[0];S.gscore[k]=good?'good':'bad';any=any||S.gscore[k];}});
+ if(any&&S.view==='games')hap(any==='good'?'success':'warning');
+ clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
+function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
+ const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
+ scoreWatch(gs);
+ const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
+ m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
+  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
+  +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
+  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.gameOpen=t;modal(`<div class="m" style="padding:30px;text-align:center"><span class="spin"></span></div>`);$('#sheet').classList.add('wide');await drawGame();}
-async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
- const r=await api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null);if(!r||!r.leg){$('#sheet').innerHTML='<h3>Game not found</h3><p>It may have finished and settled.</p><div class="row"><button class="btn" onclick="closeModal()">Close</button></div>';return;}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;pushOpen('Game');await drawGame();}
+// The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
+// live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
+// down between updates while it is running. Only the first draw waits for the slide-in to finish.
+async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on')||S.gameBusy||S.scrub)return;   // a finger on the chart holds the page still
+ const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
+ try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
+  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
+  frSet('G',r.fresh);clkNote(t,r.leg);
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif]);
+  if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
+  S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
+ }finally{S.gameBusy=false;}}
+const CLK_SPORTS=['nba','ncaamb','ncaawb','nhl','ahl','euroleague'];
+function clkNote(t,l){S.clk=S.clk||{};const sc=l.sc,m=sc&&l.state==='live'&&CLK_SPORTS.includes(l.sport)?/^(.*?)\s*(\d{1,2}):(\d{2})$/.exec(sc.detail||''):null;
+ if(!m){delete S.clk[t];return;}
+ const lab=m[1].trim(),secs=+m[2]*60+ +m[3],p=S.clk[t],now=Date.now();
+ if(p&&p.lab===lab&&secs===p.srv){if(p.run&&now-p.recv<25000)return;S.clk[t]={lab,srv:secs,secs,recv:now,run:false};return;}
+ S.clk[t]={lab,srv:secs,secs,recv:now,run:!!(p&&p.lab===lab&&secs<p.srv)};}
+function clkTick(){document.querySelectorAll('[data-clk]').forEach(e=>{const c=(S.clk||{})[e.dataset.clk];if(!c)return;const v=c.run?Math.max(0,c.secs-Math.floor((Date.now()-c.recv)/1000)):c.secs;
+ const t=c.lab+' '+Math.floor(v/60)+':'+String(v%60).padStart(2,'0');if(e.textContent!==t)e.textContent=t;});}
+function paintGame(r){const t=S.gameOpen;
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
  const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
  const plays=st.plays.slice().reverse();
- $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'?' · <span style="color:var(--live)">LIVE</span>':''}</div>
-   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div><button class="btn ghost" onclick="closeModal()">Close</button></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
-   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.starts||'Not started')}</div></div>`}</div>
-  <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
+ pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
+   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
+  <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
@@ -2697,26 +3373,83 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
    ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
-  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;}
+  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
  const last=pts[pts.length-1][1];const col=last>=.5?'var(--yes)':'var(--no)';const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
- return `<div class="key"><span><i style="background:${col}"></i>Chance to win</span><span><i style="background:var(--sub);height:8px;width:2px"></i>Score change</span></div><svg viewBox="0 0 ${W} ${H}">
+ S.scr=S.scr||{};S.scr.win={n:pts.length,at:f=>{const t=t0+(f*W-pl)/iw*(t1-t0);let i=0,b=Infinity;pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;},
+  x:i=>X(pts[i][0])/W*100,y:i=>Y(pts[i][1])/H*100,lab:i=>tl(pts[i][0])+' · '+pct(pts[i][1])};
+ return `<div class="key"><span><i style="background:${col}"></i>Chance to win</span><span><i style="background:var(--sub);height:8px;width:2px"></i>Score change</span><span class="m">Drag to look back</span></div><div class="scrub" data-scrub="win"><span class="sread"></span><i class="scrl"></i><i class="scrd" style="background:${col}"></i><svg viewBox="0 0 ${W} ${H}">
   ${[0,.25,.5,.75,1].map(v=>`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" ${v===.5?'stroke-dasharray="4 4"':''}/><text x="${pl-6}" y="${Y(v)+4}" font-size="11" text-anchor="end" fill="var(--mute)">${v*100}%</text>`).join('')}
   ${(plays||[]).slice(1).filter(p=>p.ts>=t0).map(p=>`<line x1="${X(p.ts)}" x2="${X(p.ts)}" y1="8" y2="${8+ih}" stroke="var(--sub)" stroke-width="1" opacity=".35"/>`).join('')}
   <path d="${d} L${X(t1)} ${8+ih} L${pl} ${8+ih}Z" fill="${col}" opacity=".08"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>
-  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
+  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg></div>`;}
+/* Any chart you can drag a finger along (the game's chance line, the Results profit bars): same feel as the Live hero
+   chart. A spec in S.scr[name] says how many points there are, which one is under the finger, and where to draw the
+   line, dot and readout; every new point ticks a haptic. A short tap (no drag) can open the point (o.tap). Refreshes
+   wait while a finger is down (S.scrub). */
+function wireScrubs(root){(root||document).querySelectorAll('[data-scrub]').forEach(el=>{if(el._wired)return;el._wired=1;let idx=-1,on=false,x0=0,moved=false;
+ const spec=()=>(S.scr||{})[el.dataset.scrub];
+ const pick=e=>{const o=spec(),r=el.getBoundingClientRect();return o?o.at(Math.max(0,Math.min(.9999,(e.clientX-r.left)/Math.max(1,r.width)))):-1;};
+ const show=i=>{const o=spec();if(!o||i===idx||i<0||i>=o.n)return;idx=i;
+  if(o.x){const fx=o.x(i),l=el.querySelector('.scrl'),d=el.querySelector('.scrd'),rd=el.querySelector('.sread');if(l)l.style.left=fx+'%';if(d){d.style.left=fx+'%';d.style.top=o.y(i)+'%';}
+   if(rd){rd.textContent=o.lab(i);rd.style.left=Math.max(14,Math.min(86,fx))+'%';}}
+  if(o.show)o.show(i,el);hap('selection');};
+ el.addEventListener('pointerdown',e=>{if(e.button)return;on=true;moved=false;x0=e.clientX;S.scrub=true;el.classList.add('on');idx=-1;show(pick(e));try{el.setPointerCapture(e.pointerId)}catch(x){}});
+ el.addEventListener('pointermove',e=>{if(!on)return;if(Math.abs(e.clientX-x0)>6)moved=true;show(pick(e));});
+ const end=e=>{if(!on)return;on=false;S.scrub=false;el.classList.remove('on');const i=idx,o=spec();idx=-1;if(o&&o.end)o.end(el);
+  if(e.type==='pointerup'&&!moved&&o&&o.tap&&i>=0)o.tap(i);if(S.liveDirty){S.liveDirty=false;if(S.view==='live')renderLive();}if(S.resDirty){S.resDirty=false;if(S.view==='results')renderResults();}};
+ ['pointerup','pointercancel','lostpointercapture'].forEach(k=>el.addEventListener(k,end));});}
+// ---------------- the Sold moment, wins and the big hit
+/* Cashing out gets the same drawn-check sheet as buying: what came back, the profit and a ticket stub. A loss gets a
+   calm grey version (no alarm), like Kalshi's "Position closed" card. Shown for your own taps and, while the page is
+   open, for sales smart sell or auto cash-out made by themselves. */
+function soldSheet(o){const back=+o.back||0,cost=+o.cost||0,pl=back-cost,up=pl>=-0.004;hap(up?'success':'light');
+ const id='sold:'+Date.now();S.nums[id]=0;
+ modal(`<div class="okcard sold ${up?'':'okloss'}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${up?'<path d="M27 43 L37 53 L58 32"/>':'<path d="M28 42 L56 42"/>'}</svg>
+  <div class="stamp">${o.auto?'SOLD BY SMART SELL':'POSITION CLOSED'}</div><h3>${up?'Sold':'Closed'} · ${esc(o.label||'')}</h3>
+  <div class="amt" data-num="${id}" data-v="${back.toFixed(2)}">${money(back)}</div>
+  <div class="plp">${pl>=0?'+':'−'}${money(Math.abs(pl))} ${pl>=0?'profit':'loss'}${cost?` · ${pl>=0?'+':'−'}${Math.abs(Math.round(pl/cost*100))}%`:''}</div>
+  <div class="tkt"><div>You paid<b>${money(cost)}</b></div><div>Got back<b>${money(back)}</b></div></div>
+  <p>${up?(o.auto?'Smart sell took the offer because it beat holding.':'Locked in. The money is back in your balance.'):(o.auto?'Smart sell cut this one before it slid further.':'Some of it came back. On to the next one.')}</p>
+  <div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
+ rollNums($('#sheet'));clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard.sold'))closeModal();},7000);}
+function bigWin(c){const pays=+c.pays||0,cost=+c.cost||0,reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+ document.querySelectorAll('.bigwin').forEach(e=>e.remove());const box=document.createElement('div');box.className='bigwin';
+ box.innerHTML=`<i class="ring2"></i><i class="ring2 b"></i><div class="bw"><div class="ey">Big hit</div><div class="amt">${money(reduce?pays:0)}</div><div class="lb">${esc(c.label||'')}</div>
+  <div class="mx">+${money(pays-cost)}${cost?` · ${(pays/cost).toFixed(1)}× your money`:''}</div><br><button class="btn acc">Nice</button></div>`;
+ const close=()=>{box.classList.add('out');setTimeout(()=>box.remove(),380);};box.addEventListener('click',close);document.body.appendChild(box);
+ hap('success');setTimeout(()=>hap('success'),650);if(!reduce){celebrate();setTimeout(celebrate,700);
+  const a=box.querySelector('.amt'),t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/1400),e=1-Math.pow(1-k,4);a.textContent=money(pays*e);if(k<1)requestAnimationFrame(step);};requestAnimationFrame(step);}
+ setTimeout(()=>{if(box.isConnected)close();},9000);}
+function isBig(c){const p=(+c.pays||0)-(+c.cost||0);return p>=50||(p>=15&&c.cost>0&&c.pays/c.cost>=5);}
+function winMoment(c){S.momSeen=S.momSeen||{};if(S.momSeen['w:'+c.t])return;S.momSeen['w:'+c.t]=1;
+ if(isBig(c))bigWin(c);else{celebrate();toast(`${c.label} won · +${money((c.pays||0)-(c.cost||0))}`,5000,'good');}}
+/* What changed between two loads of Live while the page was open: a combo that won, one that was cashed out, and
+   any sale smart sell made by itself (singles included, from its log). */
+function liveMoments(prev,d){if(!d||d.error)return;S.momSeen=S.momSeen||{};const was={};((prev&&prev.combos)||[]).forEach(c=>was[c.t]=c.group);
+ if(prev&&!prev.error)(d.combos||[]).forEach(c=>{if(was[c.t]!=='pending')return;
+  if(c.group==='won')winMoment(c);
+  else if(c.group==='cashed'&&!S.momSeen['s:'+c.t]){S.momSeen['s:'+c.t]=1;const auto=(d.sales||[]).some(x=>x.ticker===c.t);soldShow({label:c.label,back:c.back,cost:c.cost,auto});}});
+ (d.sales||[]).forEach(x=>{if((x.at||0)<S.t0||S.momSeen['s:'+x.ticker])return;S.momSeen['s:'+x.ticker]=1;soldShow({label:x.combo,back:x.offer,cost:x.cost,auto:true});});}
+function soldShow(o){if($('#modal').classList.contains('on')){const pl=(+o.back||0)-(+o.cost||0);toast(`Sold ${o.label} for ${money(o.back)} (${pl>=0?'+':'−'}${money(Math.abs(pl))})`,6000,pl>=0?'good':null);return;}soldSheet(o);}
+S.t0=Date.now()/1000;
 // ---------------- live events from the Mac
 async function loadRecap(){const h=new Date().getHours();const day=new Date().toDateString();
  let seen='';try{seen=localStorage.getItem('cw_recap')||''}catch(e){}
  if(h<5||h>=14||seen===day){S.recap=null;return;}S.recap=await api('/app/api/recap').catch(()=>null);if(S.view==='live')renderLive();}
 function recapCard(){const r=S.recap;if(!r||!r.bets||!r.bets.length)return '';
  return `<div class="card recap"><div class="rh"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Yesterday</div>
-  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down${r.streak>1?` · 🔥 ${r.streak} days up in a row`:''}</span></div>
+  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}" data-num="rc:pl" data-v="${Math.abs(r.pl||0).toFixed(2)}" data-pre="${(r.pl||0)>=0?'+':'−'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down</span></div>
   <button class="x" onclick="try{localStorage.setItem('cw_recap',new Date().toDateString())}catch(e){};S.recap=null;renderLive()">✕</button></div>
   ${r.best&&r.best.pl>0?`<div class="mini">Best<b class="up">${esc(r.best.what)} ${smoney(r.best.pl)}</b></div>`:''}${r.worst&&r.worst.pl<0?`<div class="mini">Worst<b class="down">${esc(r.worst.what)} ${smoney(r.worst.pl)}</b></div>`:''}
-  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}</div>`;}
+  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}${streakNote(r)}</div>`;}
+/* The streak note in the morning recap: days in a row the panel finished up, a flame and a dot per day (up to a week).
+   One good day says what starts a streak; a down day says nothing (no guilt trip). */
+function streakNote(r){const s=+r.streak||0;if(s<1)return '';
+ if(s===1)return `<div class="streak"><span class="fl">🔥</span><span><b>1 day up.</b> Another good day today starts a streak.</span></div>`;
+ return `<div class="streak hot"><span class="fl">🔥</span><span><b>${s} days up</b> in a row${s>=7?'. A whole week.':s>=3?'. Keep it going.':''}</span><span class="dots">${Array.from({length:Math.min(s,7)},(_,i)=>`<i style="--i:${i}"></i>`).join('')}</span></div>`;}
 function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
  <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p><div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
  clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard'))closeModal();},5200);}
@@ -2724,26 +3457,34 @@ function celebrate(){hap('success');const box=document.createElement('div');box.
  for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
  document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
 function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
- es.onopen=()=>{S.live_ok=true;stat();};
+ es.onopen=()=>{S.live_ok=true;S.esEver=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
-  if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
+  if(ev.kind==='tick'){if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
-  if(ev.kind==='settled'&&/ won$/.test(ev.text||''))celebrate();
+  if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
   if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
   if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
-function stat(){const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
+function stat(){netBanner();const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
 // ---------------- settings
 const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
 const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
 function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
 function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
-  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');this.nextElementSibling.textContent=fmtv('${k}',this.value)" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
+  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
 function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
 function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
+/* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
+function rideRow(names){names=names||[];const n=Math.max(2,names.length),v=Math.max(0,Math.min(n-1,+S.set.values.ride||0));
+ return `<div class="srow"><div class="l"><b>Let it ride</b><small>How long to hold before cashing out. Cautious sells sooner, Bold later, Ride it out turns smart sell off.</small></div>
+  <div class="rng rdet"><input type="range" id="ride" aria-label="Let it ride" min="0" max="${n-1}" step="1" value="${v}" style="--p:${Math.round(v/(n-1)*100)}%" oninput="rideIn(this)" onchange="setv('ride',+this.value);renderSettings()"><output>${esc(names[v]||'')}</output>
+  <div class="tks">${names.map((_,i)=>`<i class="${i<=v?'on':''} ${i===v?'at':''}"></i>`).join('')}</div></div></div>`;}
+function rideIn(el){const names=(S.set&&S.set.ride)||[],n=Math.max(2,names.length),v=+el.value;el.style.setProperty('--p',Math.round(v/(n-1)*100)+'%');
+ const o=el.parentNode.querySelector('output');if(o){o.textContent=names[v]||'';o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump');}
+ el.parentNode.querySelectorAll('.tks i').forEach((t,i)=>{t.classList.toggle('on',i<=v);t.classList.toggle('at',i===v);});}
 function stp(k,lo,hi){const v=S.set.values[k];return `<div class="stp"><button onclick="bump('${k}',-1,${lo},${hi})">−</button><span>${v}</span><button onclick="bump('${k}',1,${lo},${hi})">＋</button></div>`;}
 function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d));if(v===S.set.values[k])return;setv(k,v);
  const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
@@ -2755,9 +3496,11 @@ async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)del
  const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
  if(r.ok){S.build=null;saved('Saved','ok');if(r.synced===true)toast('Saved · the Mac watcher has it now.');else if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
  else{saved('Not saved');toast(r.msg||'Couldn\'t save. Check the connection.');}}
-function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
+function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'')+(c==='ok'?' bump':'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
 function sport(lg){S.slg=lg;S.set=null;renderSettings();load('settings');}
-function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<div class="set"><div></div><div>${skel(8)}</div></div>`;return;}
+function settingsSkel(){const row='<div style="display:grid;grid-template-columns:1fr 46px;gap:14px;align-items:center"><div style="display:grid;gap:6px"><i style="height:13px;width:52%"></i><i style="height:10px;width:78%"></i></div><i style="height:26px;border-radius:99px"></i></div>';
+ return `<div class="set"><div></div><div><div class="hsk" style="padding:2px 0 18px"><i style="height:24px;width:34%"></i><i style="height:12px;width:60%"></i></div><div class="setsk">${[3,4,2].map(n=>`<div><i style="height:15px;width:40%"></i>${row.repeat(n)}</div>`).join('')}</div></div></div>`;}
+function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S.lerr||{}).settings?`<div class="set"><div></div><div>${errCard('settings')}</div></div>`:settingsSkel();return;}
  const v=d.values,mode=d.mode,mac=S.mac;
  const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekend cap';
  const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
@@ -2771,43 +3514,43 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
-   <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
+   <div class="sact"><button class="btn acc" onclick="macUpdate(this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
    <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :!LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Newest</span><b style="display:block;word-break:normal">${mac.latest?(mac.latest===mac.engine?'<i style="font-style:normal;color:var(--yes)">Up to date</i>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}${mac.checked?`<i class="m" style="display:block;font-style:normal;font-size:12px;font-weight:500;margin-top:2px">${Date.now()/1000-mac.checked<60?'checked just now':'checked '+ago(Math.round(Date.now()/1000-mac.checked))+' ago'}</i>`:''}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
-   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><button class="btn" onclick="macCheck(this)">Check for an update now</button></div>`
-  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div></div>`;
+   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><div class="sact" style="margin:0"><button class="btn" onclick="macCheck(this)">Check for an update now</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div></div>`
+  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>`;
  m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
  ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
  ${d.maker?scard('maker','📌','Standing orders','Buy orders resting under fair, managed by the Mac.',makerCard(d.maker)):''}
  ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
-   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+seg('ride','Let it ride','How long to hold before cashing out',d.ride)
+   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+rideRow(d.ride)
    +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
    +tgl('auto_sell','Auto cash-out','The Mac sells by itself, logged and capped')
    +tgl('smart_sell','Smart profit-taking','Sells when locking in beats the risk of holding, by sport: a one-goal hockey lead is fragile, an early NBA lead isn\'t',!v.auto_sell)
    +rng('take_profit','Take profit at','Sell once Kalshi offers this much of the payout, if it\'s at least 25% more than you paid',!v.auto_sell)
    +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
-   +tgl('stop_loss','Sell at a loss when a game turns','Off: never sells below what you paid',!v.auto_sell)
+   +tgl('stop_loss','Manual override: sell at a loss when a game turns','Off by default. When on, auto cash-out may sell a combo for less than you paid, but only late in a game (from about halfway), when a pick has fallen well below its chance before the game, and only after that has held for 3+ minutes. It never does it at halftime or a break, early in a game, or when the live score is missing or out of date. How late and how big a fall are learned league by league (see Results › Selling). Separately, the app learns when cutting a loss beats holding.',!v.auto_sell)
    +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
-   +tgl('auto_hedge','Hedge instead when it locks in more','A small purchase of the other side',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
+   +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
-   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
+   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
  </div></div>`;}
-async function macCheck(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking…';const was=S.mac&&S.mac.engine;
- const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){b.disabled=false;b.textContent='Check for an update now';return;}
+async function macCheck(b){btnBusy(b,'Checking…');const was=S.mac&&S.mac.engine;
+ const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){btnState(b,false,'Couldn\'t reach the Mac');return;}
  for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
   if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
 async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking Tailscale…';}
@@ -2815,10 +3558,16 @@ async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span clas
  if(!r.ok){toast(r.msg||'Couldn\'t reach the Mac.',5000,'bad');load('settings');return;}
  for(let k=0;k<20;k++){await new Promise(z=>setTimeout(z,3000));const m=await api('/app/mac',{a:'status'}).catch(()=>null);
   if(m&&m.ok){const h=m.https||{};if(JSON.stringify(h)!==was||k===19){S.mac=m;renderSettings();
-   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?'One step left: tap Allow https, approve in Tailscale, then Check.':h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
+   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?(h.link?'One step left: tap Allow https, approve in Tailscale, then Check.':'One step left: enable HTTPS Certificates in Tailscale admin, then Check.'):h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':h.state==='issuing'?'Almost there: Tailscale is making the certificate.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
  load('settings');}
-async function macDo(a,b){if(a==='https')return httpsCheck(b);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> '+b.textContent;}const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
- toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);if(a==='update'&&r.ok)setTimeout(()=>location.reload(),70000);else load('settings');}
+/* Mac buttons: spin while working, then a check (or a cross) on the button itself before the card refreshes. */
+async function macDo(a,b){if(a==='https')return httpsCheck(b);btnBusy(b);const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
+ toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);
+ if(a==='update'&&r.ok){btnState(b,true,'Updating · back in about a minute',0);setTimeout(()=>location.reload(),70000);return;}
+ btnState(b,!!r.ok,r.ok?(a==='testpush'?'Sent':'Done'):'Didn\'t work');setTimeout(()=>{if(S.view==='settings')load('settings');},1500);}
+/* updating restarts the watcher, so it asks first */
+function macUpdate(b){S.updBtn=b;modal(`<h3>Update the Mac now?</h3><p>It installs the newest version and restarts the watcher. Bets and settings stay as they are, and this page reloads by itself in about a minute.</p>
+ <div class="row"><button class="btn" onclick="closeModal()">Not now</button><button class="btn acc" onclick="closeModal();macDo('update',S.updBtn)">Update now</button></div>`);}
 async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
  <div class="code" id="pc">${esc(r.code||'')}</div><p class="m" style="font-size:12.5px">Hub: ${esc(r.hub||'Tailscale not signed in: the phone can only use the Mac at home.')}</p>
  <div class="row"><button class="btn" onclick="closeModal()">Close</button><button class="btn acc" onclick="navigator.clipboard.writeText($('#pc').textContent).then(()=>toast('Copied'))">Copy</button></div>`);}
@@ -2827,7 +3576,7 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
-window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
+window.__inapp=function(){S.inapp=true;if(S.view==='settings')renderSettings();};
 if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
 chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
@@ -2843,59 +3592,8 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view===
 
 def webapp_main():
     """Run the planner app for the browser (started by the watcher as its own process)."""
-    import threading, types, itertools
+    import threading, types
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    class Bridge:
-        def __init__(self):
-            self.cv = threading.Condition()
-            self.html, self.v, self.q, self.res, self.seen = "", 0, [], {}, 0.0
-            self.ids = itertools.count(1)
-
-        def active(self):
-            return time.time() - self.seen < 120
-
-        def load(self, h):
-            with self.cv:
-                self.html, self.v, self.q = h, self.v + 1, []
-                self.cv.notify_all()
-
-        def quiet(self, h):
-            """The page changed in place (already sent to the browser): remember it for a reload."""
-            with self.cv:
-                self.html = h
-
-        def js(self, code, timeout=4.0, wait=False):
-            if not self.active():
-                return ""
-            with self.cv:
-                i = next(self.ids)
-                self.q.append({"id": i, "code": code, "w": wait})
-                self.cv.notify_all()
-                if not wait:
-                    return ""                       # the planner never needs these answers: don't wait
-                end = time.time() + timeout
-                while i not in self.res and time.time() < end:
-                    self.cv.wait(end - time.time())
-                return self.res.pop(i, "")
-
-        def poll(self, v):
-            self.seen = time.time()
-            with self.cv:
-                end = time.time() + 20
-                while v == self.v and not self.q and time.time() < end:
-                    self.cv.wait(end - time.time())
-                out, self.q = self.q, []
-                return {"v": self.v, "js": out}
-
-        def result(self, i, value):
-            with self.cv:
-                self.res[i] = value
-                self.cv.notify_all()
-                if len(self.res) > 200:
-                    self.res.clear()
-
-    B = Bridge()
 
     # ---- stand-ins for Pythonista's modules, so the planner runs its phone code here
     ui = types.ModuleType("ui")
@@ -2927,27 +3625,10 @@ def webapp_main():
         delegate = None
 
         def load_html(self, h):
-            B.load(h)
+            pass
 
         def evaluate_javascript(self, js):
-            # whole-page swaps become a fresh page in the browser (so a reload shows the same thing)
-            if js.startswith("typeof window.__load") or js.startswith("typeof window.__swap"):
-                return "function"
-            if js.startswith("window.__load(") and js.endswith(")"):
-                try:
-                    B.load(json.loads(js[len("window.__load("):-1]))
-                    return ""
-                except ValueError:
-                    pass
-            if js.startswith("window.__swap(") and js.endswith(")"):
-                try:                                # a refresh of the same page: update it in place
-                    body = json.loads(js[len("window.__swap("):-1])
-                    head = B.html.split("<body", 1)[0] if "<body" in B.html else "<html><head></head>"
-                    B.quiet(head + "<body>" + body + "</body></html>")
-                except ValueError:
-                    pass
-                return B.js(js.replace("location.href=", "__cw.href="))
-            return B.js(js)
+            return ""
 
     class ButtonItem:
         def __init__(self, **kw):
@@ -2965,10 +3646,7 @@ def webapp_main():
     console = types.ModuleType("console")
 
     def alert(title, message="", button1="OK", *a, **k):
-        got = B.js("confirm(%s)?'1':''" % json.dumps(f"{title}\n\n{message}".strip()), timeout=120, wait=True)
-        if got != "1":
-            raise KeyboardInterrupt
-        return 1
+        raise KeyboardInterrupt                     # no phone screen to ask: treat it as Cancel, never as a yes
     console.alert = alert
     console.set_idle_timer_disabled = lambda on: None
     console.hud_alert = lambda *a, **k: None
@@ -2993,8 +3671,8 @@ def webapp_main():
     A.schedule_buy_nudge = lambda *a, **k: None
     A.watcher_alive = lambda *a, **k: True          # the watcher does the automatic cash-outs, never this copy
     A.start_autosell_keeper = lambda *a, **k: None
-    A.window_open = lambda: A.APP.get("web") is not None and B.active()   # live updates pause with no browser
-    A.open_outside = lambda url: B.js("window.open(%s,'_blank');''" % json.dumps(url))
+    A.window_open = lambda: False                   # there is no phone window in this copy
+    A.open_outside = lambda url: None
     A.tap_haptic = lambda *a, **k: None
     try:                                            # get data, odds and trades through the hub like the phone
         c = json.load(open(CONF))                   # does: one shared cache, one set of odds credits
@@ -3010,43 +3688,106 @@ def webapp_main():
         A.CFG["built_once"] = True                  # you're not new: no first-time tips
     A.set_league = set_league
     set_league(A.LEAGUE["code"])
-    started = {"run": False}
 
     # ---- Combo Hub's own screens: plain data in, actions out (same engine, same rules as the phone)
     alock = threading.RLock()
     LIVE = {"at": 0.0, "data": None}
+    ACT = TapLock(alock)                     # taps take the lock through this: capped wait, rebuilds stand aside
+    act_lock = ACT.hold
     BUILD = {"lg": None}
 
     def jsonable(x):
         return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
 
+    # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
+    # every buy/sell decision read their own data and are untouched by any of this).
+    LIVE_FAST, LIVE_SLOW = 8, 30             # seconds a Live snapshot is served before a new one is built
+    SCORES_FAST, SCORES_SLOW = 8, 30         # seconds this app keeps a league's scores (default was 45)
+    A.SCORES_MAX_AGE = SCORES_FAST
+
+    def games_live():
+        """Is any game under way in the scores this app last read?"""
+        now = time.time()
+        for got in list(A.SCORES_BY.values()):
+            if now - (got.get("at") or 0) > 300:
+                continue
+            for infos in list((got.get("by") or {}).values()):
+                for i in infos if isinstance(infos, list) else [infos]:
+                    if isinstance(i, dict) and str(i.get("state") or "") in ("in", "live"):
+                        return True
+        try:                                     # tennis, EuroLeague, UFC (Kalshi's live data, display only)
+            return bool(A.kalshi_live_on())
+        except Exception:
+            return False
+
+    def live_limit():
+        return LIVE_FAST if LIVE.get("fast") else LIVE_SLOW
+
+    def set_pace():
+        """Quick score and snapshot refreshes only while a game is live; relaxed otherwise."""
+        fast = games_live()
+        LIVE["fast"] = fast
+        A.SCORES_MAX_AGE = SCORES_FAST if fast else SCORES_SLOW
+
     def live_refresh():
         try:
-            api_live(fresh=True)
+            if ACT.waiting:                      # a tap is waiting for the lock: it goes first
+                return
+            api_live(warm=True)
         finally:
             LIVE["busy"] = False
 
-    def api_live(fresh=False):
-        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < 600:
-            if time.time() - LIVE["at"] > 8 and not LIVE.get("busy"):      # stale: answer now, refresh behind it
-                LIVE["busy"] = True
-                threading.Thread(target=live_refresh, daemon=True).start()
+    def api_live(fresh=False, warm=False):
+        """The Live numbers. A snapshot younger than the limit is served as is; an older one is rebuilt first and
+        the fresh one is served (waiting a few seconds at most), so the page isn't one refresh behind. If the
+        build is stuck behind another job or fails, the last good copy is served."""
+        if not fresh and not warm:
+            LIVE["asked"] = time.time()
+        limit = live_limit() - (2 if warm else 0)
+        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < limit:
             return live_extras(LIVE["data"])
-        with alock:
-            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > 8:
-                if not A.MINE.get("all_games"):
-                    games, days, sunday = A.week_games(A.fetch_markets())
-                    A.MINE.update(all_games=games, days=days, sunday=sunday, notes=[], book={}, live=True)
-                    try:
-                        book, _ = A.fetch_book_odds(A.CFG.get("odds_key", ""))
-                        A.MINE["book"] = book
-                    except Exception:
-                        pass
-                A.MINE["live"] = True
-                A.mine_page(live=True)
-                LIVE.update(at=time.time(), data=jsonable(A.MINE.get("view") or {}))
+        patient = not fresh and LIVE["data"] is not None and time.time() - LIVE["at"] < 600
+        if not alock.acquire(timeout=6 if patient else -1):
+            return live_extras(LIVE["data"])                    # busy elsewhere (e.g. pricing a combo): last good copy
+        try:
+            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > limit:
+                try:
+                    if not A.MINE.get("all_games"):
+                        games, days, sunday = A.week_games(A.fetch_markets())
+                        A.MINE.update(all_games=games, days=days, sunday=sunday, notes=[], book={}, live=True)
+                        try:
+                            book, _ = A.fetch_book_odds(A.CFG.get("odds_key", ""))
+                            A.MINE["book"] = book
+                        except Exception:
+                            pass
+                    A.MINE["live"] = True
+                    A.mine_page(live=True)
+                    LIVE.update(at=time.time(), built=time.time(), data=jsonable(A.MINE.get("view") or {}))
+                    set_pace()
+                except Exception as err:
+                    if not LIVE["data"]:
+                        raise
+                    log("live refresh failed, serving the last good copy:", type(err).__name__, err)
+                    LIVE["at"] = time.time() - max(0, live_limit() - 5)       # try again in ~5s
             out = LIVE["data"]
+        finally:
+            alock.release()
         return live_extras(out)
+
+    def freshness():
+        """How old each stage of the numbers on screen is, so the page can say so and we can see where time goes."""
+        now = time.time()
+        ages, on = [], []                  # the age of each league's scores; leagues with a game under way are the ones that matter
+        for got in list(A.SCORES_BY.values()):
+            if not got.get("at") or now - got["at"] > 600:
+                continue
+            ages.append(now - got["at"])
+            if any(isinstance(i, dict) and str(i.get("state") or "") in ("in", "live")
+                   for infos in list((got.get("by") or {}).values()) for i in (infos if isinstance(infos, list) else [infos])):
+                on.append(now - got["at"])
+        scores = max(on) if on else (min(ages) if ages else None)
+        return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
+                "fast": bool(LIVE.get("fast"))}
 
     def live_extras(out):
         try:
@@ -3061,7 +3802,26 @@ def webapp_main():
             pulse = A.pulse_series() if A.STORE.get("db") else []
         except Exception:
             pulse = []
-        return dict(out, ideas=ideas, orders=orders, pulse=pulse, auto_sell=bool(A.CFG.get("auto_sell"))) if isinstance(out, dict) else out
+        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(),
+                    auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
+
+    def recent_sales(hours=3):
+        """Read-only: what auto cash-out / smart sell sold lately (from its own log), so an open page can show the
+        "Sold" moment for a sale it didn't make itself."""
+        try:
+            with open(A.SELL_LOG, encoding="utf-8") as f:
+                tail = f.readlines()[-60:]
+        except (OSError, AttributeError):
+            return []
+        out, cut = [], time.time() - hours * 3600
+        for line in tail:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("result") == "sold" and (r.get("at") or 0) >= cut:
+                out.append({k: r.get(k) for k in ("at", "combo", "ticker", "offer", "cost", "pays", "kind", "why")})
+        return out[-10:]
 
     def side_view(s):
         return {"ticker": s["ticker"], "pick": s["pick"], "abbr": s.get("abbr", ""), "p": s.get("p"),
@@ -3184,13 +3944,19 @@ def webapp_main():
                     A.fetch_scores(code=code)
                 except Exception:
                     pass
+            try:                                        # tennis, EuroLeague, UFC: Kalshi's live data (display only)
+                A.kalshi_live_refresh({e for e in on if A.ticker_sport(e) in A.KLIVE_SPORTS})
+            except Exception:
+                pass
             for e, sides in games.items():
                 teams = [x for x in sides if not x.get("tie")]
                 sc = None
                 if e in on and teams:
                     try:
-                        x = A.leg_score({"ticker": teams[0]["ticker"], "side": "yes"})
+                        x = A.display_score({"ticker": teams[0]["ticker"], "side": "yes"}, pre=True)
                         sc = {k: x.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail", "state")} if x else None
+                        if sc and x.get("src") == "kalshi" and x.get("state") == "pre":   # due, but not begun yet
+                            sc.update(me=None, opp=None, detail="Not started yet")
                     except Exception:
                         sc = None
                 board.append({"event": e, "start": A.KICKOFF.get(e), "label": A.start_label(e), "sc": sc,
@@ -3342,6 +4108,7 @@ def webapp_main():
         p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
+                         "rebuild": A.rebuild_status(),
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
@@ -3389,7 +4156,7 @@ def webapp_main():
                         c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
                         c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
                         c["now"] = round(c["pays"] * c["p"] * disc, 2)
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi})
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "fresh": freshness()})
 
     def api_games():
         d = api_live() or {}
@@ -3399,12 +4166,35 @@ def webapp_main():
         for v in d.get("combos") or []:
             for lg in v.get("legs") or []:
                 tick_of[(lg["name"], lg.get("opp"))] = lg["ticker"]
+        def code(t):                                     # the game's date+teams code, shared by its winner/spread/total
+            return (str(t or "").split("-") + ["", ""])[1]
         for g in games:
             tk = g.get("ticker") or tick_of.get((g["name"], g.get("opp")))
+            out.append(dict(g, ticker=tk, singles=[]))
+        # single bets, spreads and totals ride on a game card too: on the game they belong to, or a card of their own
+        for x in d.get("singles") or []:
+            if x.get("state") not in ("live", "pre", "over"):
+                continue
+            bet = {"t": x["t"], "label": x.get("label"), "kind": x.get("kind"), "cost": x.get("cost"),
+                   "pays": x.get("pays"), "worth": x.get("worth"), "chance": x.get("chance"), "how": x.get("how")}
+            g = next((g for g in out if code(x["t"]) and code(g.get("ticker")) == code(x["t"])), None)
+            if g:
+                g["singles"].append(bet)
+                g["pays"] = round((g.get("pays") or 0) + (x.get("pays") or 0), 2)
+                continue
+            ch = x["live"] if x.get("live") is not None else x.get("chance")
+            out.append({"name": x.get("name") or x.get("label"), "opp": x.get("opp") or "", "sport": x.get("sport"),
+                        "combos": 0, "pays": x.get("pays") or 0, "ticker": x["t"], "kind": x.get("kind"),
+                        "state": x["state"], "score": x.get("score"), "sc": x.get("sc"), "starts": x.get("starts"),
+                        "phase": x.get("phase", ""), "note": x.get("note", ""), "short": x.get("short", ""),
+                        "chance": ch, "singles": [bet]})
+        for g in out:                                    # the chance line: what the Mac recorded for this pick lately
+            tk = g.get("ticker")
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
-            out.append(dict(g, ticker=tk, spark=[[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]))
-        return jsonable({"games": out, "at": d.get("at")})
+            g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
+        out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
+        return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
@@ -3412,7 +4202,7 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "sell_own")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3476,10 +4266,18 @@ def webapp_main():
                                          for k, v in A.LEAGUES.items()]})
 
     def api_act(d):
+        try:
+            return _api_act(d)
+        except ActBusy:
+            msg = "The app is busy updating. Nothing was done; try again in a moment."
+            log("tap waited too long for the app lock:", str(d.get("a", ""))[:20])
+            return {"ok": False, "msg": msg, "error": msg, "busy": True}
+
+    def _api_act(d):
         a, t = str(d.get("a", "")), str(d.get("t", ""))
         was = BUILD.get("lg") or BUILD.get("last")
         if a in ("custom", "quote", "buy", "swap", "flip") and not A.CTX.get("all_games") and was:
-            with alock:                                     # the build's games were cleared (e.g. by Settings for another sport)
+            with act_lock():                                # the build's games were cleared (e.g. by Settings for another sport)
                 if not use_snap(was):                       # the exact board you were looking at, if it's recent
                     if a != "custom":                       # never price or buy a different combo than the one shown
                         return {"ok": False, "msg": "The board was refreshed. Pull down to reload Build, then try again."}
@@ -3494,7 +4292,7 @@ def webapp_main():
             LIVE["at"] = 0
             return {"ok": True, "msg": "Got it. This one waits for you to sell it." if d.get("on") else
                     "Smart sell is watching this one now."}
-        with alock:
+        with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
@@ -3526,7 +4324,7 @@ def webapp_main():
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
-                    return {"ok": False, "msg": "That idea has expired."}
+                    return {"ok": False, "gone": True, "msg": "That idea has expired."}
                 row = rows[0]
                 if row["n"] == 1:                           # a single game: today's price, straight from the book
                     tk = json.loads(row["legs"])[0]
@@ -3536,7 +4334,7 @@ def webapp_main():
                     dpt = A.book_depth(tk, max_age=0)
                     fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
                     if not fair or not dpt or dpt.get("ask") is None:
-                        return {"ok": False, "msg": "Kalshi isn't listing that game right now."}
+                        return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
                     edge = fair - ask - fee
@@ -3551,14 +4349,14 @@ def webapp_main():
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
                                      "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
                 if row["kick"] and row["kick"] < time.time() + 60:
-                    return {"ok": False, "msg": "A game in it is starting, so this one's off the table."}
+                    return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
                 if row.get("live") and row["ts"] < time.time() - 600:
-                    return {"ok": False, "msg": "That idea had a game in progress and is more than 10 minutes old."}
+                    return {"ok": False, "gone": True, "msg": "That idea had a game in progress and is more than 10 minutes old."}
                 if BUILD.get("lg") != row["lg"]:
                     api_build(row["lg"], rebuild=True)
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
-                    return {"ok": False, "msg": why or "Kalshi isn't listing those games any more."}
+                    return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
                 try:
                     r = A.get_offer(k)
                     c = A.CTX["combos"][k - 1]
@@ -3638,6 +4436,9 @@ def webapp_main():
             if a == "panel_add":
                 ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
                 return {"ok": ok, "msg": msg}
+            if a == "panel_look":
+                ok, msg = A.panel_look_now()
+                return {"ok": ok, "msg": msg, "rebuild": A.rebuild_status()}
             if a == "panel_restart":
                 ok, msg = A.panel_restart()
                 return {"ok": ok, "msg": msg}
@@ -3692,50 +4493,6 @@ def webapp_main():
         return {"ok": False, "msg": "Unknown action."}
 
 
-    def page(frag=False, local=False):
-        h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
-                       "<body style='background:#000;color:#8e8e93;font:600 17px -apple-system;display:flex;"
-                       "align-items:center;justify-content:center;height:90vh'>Starting the planner…</body></html>")
-        h = h.replace("location.href=", "__cw.href=")
-        if frag:
-            return h
-        where = A.APP.get("where") or "mine"
-        tabs = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
-                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
-        side = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
-                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
-        side = (f"<aside id='cwside'><div class='brand'><div class='mark'>{MARK}</div>Combo Hub</div><nav>{side}</nav>"
-                f"<div class='foot'>Running on your Mac · v{A.VERSION}<br>Live data refreshes by itself"
-                "<button onclick=\"__cwtab('refresh')\">↻ Refresh now</button>"
-                + ("<button onclick=\"__cwadmin(this)\">⚙︎ Mac settings</button>" if local else "")
-                + "</div></aside>")
-        wrap = (f"<div id='cwwrap'>{SHELL_CSS}{side}<div id='cwbar'>{tabs}</div>"
-                "<button id='cwref' aria-label='Refresh' onclick=\"__cwtab('refresh')\"><svg viewBox='0 0 24 24' width='18' height='18'>"
-                "<path d='M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5' fill='none' stroke='currentColor' stroke-width='2.2' "
-                "stroke-linecap='round' stroke-linejoin='round'/></svg></button>"
-                + BRIDGE_JS.replace("__CWV__", str(B.v)) + "</div>")
-        h = h.replace("</body>", wrap + "</body>") if "</body>" in h else h + wrap
-        h = h.replace("<head>", "<head>" + PWA_HEAD, 1) if "<head>" in h else PWA_HEAD + h
-        return h
-
-    def start():
-        if not started["run"]:
-            started["run"] = True
-            A.RUN_OPTS["goto"] = "mine" if A.can_trade() else "build"
-            threading.Thread(target=A.run, daemon=True, name="app").start()
-            if A.can_trade():                       # open on Live, like the phone
-                def to_live():
-                    for _ in range(120):
-                        if started.get("user"):             # you've tapped something: leave you there
-                            return
-                        if "id='budgetline'" in B.html and A.APP.get("settings_wait"):
-                            time.sleep(1)
-                            return A.native_nav("mine")
-                        if A.APP.get("where") == "mine":
-                            return
-                        time.sleep(0.5)
-                threading.Thread(target=to_live, daemon=True).start()
-
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -3759,19 +4516,6 @@ def webapp_main():
                 return {}
 
         def do_GET(self):
-            if self.path.startswith("/app/poll"):
-                was_idle = not B.active()
-                try:
-                    v = int(self.path.split("v=", 1)[1].split("&")[0])
-                except (IndexError, ValueError):
-                    v = -1
-                if was_idle and started["run"]:
-                    if not started.get("shown") and A.can_trade() and A.APP.get("where") != "mine":
-                        threading.Timer(1.0, A.native_nav, ("mine",)).start()   # very first visit: open on Live
-                    elif A.APP.get("where") == "mine" and not A.APP.get("settings_wait"):
-                        threading.Timer(1.0, A.native_nav, ("refresh",)).start()   # back on Live: fresh numbers
-                started["shown"] = True                     # after that, never move you off the screen you're on
-                return self._send(200, json.dumps(dict(B.poll(v), where=A.APP.get("where") or "")))
             path, _, query = self.path.partition("?")
             local = self.headers.get("X-CW-Local") == "1"
             if path in ("/app", "/app/"):
@@ -3801,6 +4545,12 @@ def webapp_main():
                         out = api_game(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
+                    elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
+                        try:
+                            h = max(1, min(720, int(q.get("h") or 16)))
+                        except ValueError:
+                            h = 16
+                        out = {"h": h, "pulse": A.pulse_series(hours=h, points=200) if A.STORE.get("db") else []}
                     elif path == "/app/api/settings":
                         out = api_settings(q.get("lg") or "")
                     else:
@@ -3810,12 +4560,6 @@ def webapp_main():
                     traceback.print_exc()
                     out = {"error": f"{type(err).__name__}: {err}"}
                 return self._send(200, json.dumps(out))
-            if path == "/app/classic":
-                B.seen = time.time()
-                start()
-                frag = "frag=1" in self.path
-                return self._send(200, page(frag, local), "text/html; charset=utf-8",
-                                  {"X-CW-Where": A.APP.get("where") or ""})
             self._send(404, "{}")
 
         def do_POST(self):
@@ -3836,23 +4580,6 @@ def webapp_main():
                     traceback.print_exc()
                     out = {"ok": False, "msg": f"That didn't work: {type(err).__name__}: {err}"}
                 return self._send(200, json.dumps(out, default=str))
-            if self.path == "/app/result":
-                B.result(d.get("id"), str(d.get("value", "")))
-                return self._send(200, "{}")
-            if self.path in ("/app/nav", "/app/tab"):
-                started["user"] = started["shown"] = True
-            if self.path == "/app/nav":
-                u = str(d.get("u", ""))
-                web = A.APP.get("web")
-                dg = getattr(web, "delegate", None)
-                if u.startswith("combo://") and dg is not None:
-                    threading.Thread(target=dg.webview_should_start_load, args=(web, u, 0), daemon=True).start()
-                return self._send(200, "{}")
-            if self.path == "/app/tab":
-                t = str(d.get("t", ""))
-                if t in ("mine", "build", "results", "settings", "refresh"):
-                    threading.Thread(target=A.native_nav, args=(t,), daemon=True).start()
-                return self._send(200, "{}")
             self._send(404, "{}")
 
     parent = os.getppid()
@@ -3869,14 +4596,19 @@ def webapp_main():
     threading.Thread(target=lambda: (time.sleep(3), api_live()), daemon=True).start()   # warm up the Live numbers
 
     def warmer():
-        """Keeps pages ready: Live refreshed every 20s, and the Build for the sports you've looked at in the last
-        day rebuilt every 5 minutes, only while nobody is tapping, so a page opens from what's already there."""
+        """Keeps pages ready: Live rebuilt a little ahead of its limit while a page is open and a game is on (every
+        ~6s), every 20s otherwise, and the Build for the sports you've looked at in the last day rebuilt every 5
+        minutes, only while nobody is tapping, so a page opens from what's already there."""
+        def live_beat():
+            asked = time.time() - LIVE.get("asked", 0) < 90          # a page has asked for Live lately
+            pace = live_limit() - 2 if asked else 20
+            if not LIVE.get("busy") and time.time() - LIVE["at"] > pace:
+                LIVE["busy"] = True
+                live_refresh()
         time.sleep(20)
         while True:
             try:
-                if not LIVE.get("busy") and time.time() - LIVE["at"] > 20:
-                    LIVE["busy"] = True
-                    live_refresh()
+                live_beat()
                 idle = time.time() - BUILD.get("touched", 0) > 30
                 seen = BUILD.get("seen") or {"nba": 0, "nhl": 0}
                 for lg, at in sorted(seen.items(), key=lambda x: -x[1]):
@@ -3901,7 +4633,12 @@ def webapp_main():
                     break                                       # one sport per round
             except Exception as err:
                 print("warm-up:", type(err).__name__, err, flush=True)
-            time.sleep(15)
+            for _ in range(5):                                  # 15s between Build rounds, Live checked every 3s
+                time.sleep(3)
+                try:
+                    live_beat()
+                except Exception as err:
+                    print("warm-up (live):", type(err).__name__, err, flush=True)
     threading.Thread(target=warmer, daemon=True, name="warmer").start()
     srv.serve_forever()
 
@@ -3940,7 +4677,7 @@ LATEST_SEEN = {}
 
 def mac_settings(conf, web, d, tok):
     """Combo Hub's This Mac section: status, pairing code, passcode, update. Only from the Mac itself."""
-    import base64, subprocess
+    import subprocess
     a = str(d.get("a", ""))
     E = WATCHER.get("E")
     if a == "status":
@@ -3995,7 +4732,7 @@ def mac_settings(conf, web, d, tok):
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
     if a == "testpush":
         push(conf, "✅ Test from your Mac. If you see this, ntfy alerts are working.", title="Combo Hub test", priority="high",
-             click="/app")
+             click="/app", web=False)
         sent = PUSH.send("Combo Hub test", "If you see this, Combo Hub notifications are working.", tag="test")
         return {"ok": True, "msg": f"Sent a test to ntfy ({'ok' if PUSHLOG.get('ok') else 'failed'})"
                                    + (f" and to {sent} Combo Hub device{'s' * (sent != 1)}." if sent else
@@ -4155,7 +4892,8 @@ def start_hub(conf, E, odds=None):
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
             if cookie:
-                self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
+                                 + ("; Secure" if is_https(self) else ""))
             if location:
                 self.send_header("Location", location)
             self.send_header("Content-Length", str(len(body)))
@@ -4355,11 +5093,6 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
-            if web and u.path == "/app/classic" and "frag=1" not in u.query:
-                tok = web.session(self)
-                if not tok:
-                    return self._html(200, web.login_page("", web.rp_of(self)))
-                return webapp_proxy(self, tok, "GET", self.path)
             if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok:
@@ -4401,7 +5134,7 @@ def start_hub(conf, E, odds=None):
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True, name="hub").start()
     if web and conf.get("https_auto", True) and sys.platform == "darwin":
-        threading.Thread(target=tailscale_https, args=(conf, port), daemon=True, name="https").start()
+        threading.Thread(target=https_loop, args=(conf, port), daemon=True, name="https").start()
     ip = hub_address()
     log(f"hub serving the phone on port {port}" + (f" at http://{ip}:{port}" if ip else " (no Tailscale address found)")
         + (" · web view on the same address" if web else ""))
@@ -4469,12 +5202,13 @@ def main():
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
             if not backup:
                 threading.Thread(target=panel_loop, args=(odds, conf), daemon=True, name="panel").start()
+                threading.Thread(target=rebuild_loop, args=(odds, notifier), daemon=True, name="rebuild").start()
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()
     threading.Thread(target=update_loop, args=(E, conf), daemon=True, name="updates").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
-    push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low")
+    push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low", web=False)
     last = {"hb": 0, "cfg": 0, "upd": time.time(), "sell": 0, "init": 0, "rep": 0}
     while True:
         t0 = time.time()

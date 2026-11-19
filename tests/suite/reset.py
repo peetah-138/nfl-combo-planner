@@ -17,3 +17,7 @@ if os.path.isdir("wahome"):
             os.remove("wahome/" + f)
     if os.path.exists("fixtures/home_settings.json"):
         shutil.copy("fixtures/home_settings.json", "wahome/combo_settings.json")
+# a requested panel rebuild (flag and progress note) never carries into the next test
+for f in ("wahome/panel_rebuild.flag", "wahome/combo_rebuild.json"):
+    try: os.remove(f)
+    except FileNotFoundError: pass

@@ -12,3 +12,5 @@ hub_sessions.json
 watcher_conf.json
 .DS_Store
 held_events.json
+# Claude Code worktrees and local settings
+.claude/

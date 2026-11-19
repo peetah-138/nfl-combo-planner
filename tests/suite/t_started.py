@@ -1,8 +1,9 @@
 import os, time, tempfile, importlib.util, json
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))  # midday "Pacific" whenever it runs, so the fake games (2.5 h out) are in today's panel day
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp(); E.SIZING_FILE = os.path.join(E.HERE, "s.json"); E.CUTOFF_FILE = os.path.join(E.HERE, "c.json")
-E.REBUILD_FLAG = os.path.join(E.HERE, "flag"); E.HELD_FILE = os.path.join(E.HERE, "held.json")
+E.REBUILD_FLAG = os.path.join(E.HERE, "flag"); E.HELD_FILE = os.path.join(E.HERE, "held.json"); E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
 E.fetch_account = lambda **k: ([], 300.0, None)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 now = time.time()
@@ -22,7 +23,7 @@ E.store_x("update panel set body=? where mode='real'", (json.dumps(body),))
 okA, msg = E.panel_approve(None, "all")
 p = E.panel_get("real"); st = {c["id"][:9]: c["state"] for c in p["items"]}
 h1 = next(c for c in p["items"] if "H1" in c["id"]); h2 = next(c for c in p["items"] if "H2" in c["id"])
-ok("approving never schedules a game that already started", h1["state"] == "skipped" and "started" in h1.get("note", "") and h2["state"] == "scheduled")
+ok("approving never schedules a pre-game-priced bet whose game already started", h1["state"] == "skipped" and "started" in h1.get("note", "") and h2["state"] == "scheduled")
 
 # all started: nothing approved, and the Mac is asked for a fresh panel
 E.store_x("delete from panel")
@@ -41,7 +42,7 @@ E.panel_pass(); E.panel_approve(None, "all")
 p = E.panel_get("real"); [c.update(kick=now - 60, buy_at=now - 3000) for c in p["items"]]
 E.store_x("update panel set body=? where mode='real'", (json.dumps(p),))
 E.panel_exec(paused=True)
-ok("started game is skipped even when paused", E.panel_get("real")["items"][0]["state"] == "skipped")
+ok("a pre-game-priced bet whose game started is skipped even when paused", E.panel_get("real")["items"][0]["state"] == "skipped")
 
 # a skipped spread comes back as a New-since-you-approved bet when it's good again, and can be added
 E.store_x("delete from panel")
@@ -64,4 +65,16 @@ E.panel_pass(); v = E.panel_get("view:nhl"); [c.update(kick=now - 60) for c in v
 E.store_x("update panel set body=? where mode='view:nhl'", (json.dumps(v),))
 E.PANEL_POOL = {}
 E.prune_drafts()
-ok("sport drafts drop started games", E.panel_get("view:nhl") is None)
+ok("sport drafts drop pre-game-priced bets on started games", E.panel_get("view:nhl") is None)
+
+# Pete's call: a game under way may be in the panel, but only priced live on a fresh score (see t_live_panel.py)
+E.save_json(E.MAIN_SAVED, {"panel_live": True})
+E.store_x("delete from panel")
+lv = mk("H8", "KXNHLGAME-8", .62, .52, now - 600)
+lv.update(live=True, kick_pre=None)
+lv["legs"][0]["live"] = True
+E.PANEL_POOL = {"nhl": (now, [lv])}
+E.panel_pass()
+ok("a live-priced bet on a game under way stays in the draft", any(c["id"] == lv["id"] for c in (E.panel_get("view:nhl") or {}).get("items", [])))
+okA, msg = E.panel_approve(None, "all")
+ok("...and approving schedules it", okA and E.panel_get("real")["items"][0]["state"] == "scheduled")

@@ -1,4 +1,4 @@
-import os,sys,json,time,tempfile,random,types
+import os,sys,time,tempfile,random,types
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 import importlib.util
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)
@@ -31,8 +31,7 @@ ok("#16 passcode change removes Face ID", conf["passkeys"]==[])
 pool=[dict(c, stake=E._size(c, 300)) for c in cands if E._qualifies(c)]
 print("qualifying:",len(pool), "stakes:", sorted({c["stake"] for c in pool})[:6])
 order=[]
-P=E.PANEL; 
-import itertools
+P=E.PANEL 
 # replicate greedy order quickly via choose with tolerance huge
 E_choose=E.choose_panel
 src=open("wahome/engine.py").read()
