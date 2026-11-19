@@ -4575,7 +4575,7 @@ def open_singles(max_age=30):
         except (requests.RequestException, ValueError):
             mk.update({t: SINGLES["mk"][t] for t in chunk if t in SINGLES["mk"]})
     try:                                             # display only: scores for tennis, EuroLeague, UFC
-        kalshi_live_refresh(klive_events([{"ticker": t, "event": game_event((mk.get(t) or {}).get("event_ticker") or "")}
+        kalshi_live_kick(klive_events([{"ticker": t, "event": game_event((mk.get(t) or {}).get("event_ticker") or "")}
                                           for t, _, _ in held if not (mk.get(t) or {}).get("result")]))
     except Exception as err:
         print("kalshi live data:", type(err).__name__, err)
@@ -4615,7 +4615,7 @@ def open_singles(max_age=30):
                 ksc = None
         if state == "pre":
             ks_detail = (ksc or {}).get("detail", "") if ksc and (ksc.get("me") is None or ksc["state"] == "post") else ""
-            rs = run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
+            rs = safe_run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
                             score_state=(sc or ksc or {}).get("state"), detail=ks_detail)
         dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
@@ -5542,7 +5542,70 @@ def kalshi_live_refresh(events, max_age=None):
         for i in set(stale[k:k + 100]) - seen:          # no live block yet (not begun): note it, ask again next time
             if not (KLIVE["live"].get(i) or {}).get("d"):
                 KLIVE["live"][i] = {"at": time.time(), "d": None, "type": ""}
+    klive_prune(now)
     return len(stale)
+
+
+def klive_prune(now=None):
+    """Forget old live-score lookups so the caches don't grow for the life of the process: a game's milestone after
+    twice its keep time (a "none found" after twice its miss window), a live block after an hour (nothing older
+    than 15 minutes is ever shown)."""
+    import time
+    now = now or time.time()
+    for e, v in list(KLIVE["ms"].items()):
+        if now - (v.get("at") or 0) > 2 * (KLIVE_MS_TTL if v.get("id") else KLIVE_MS_MISS):
+            KLIVE["ms"].pop(e, None)
+    for i, v in list(KLIVE["live"].items()):
+        if now - (v.get("at") or 0) > KLIVE_LIVE_KEEP:
+            KLIVE["live"].pop(i, None)
+
+
+KLIVE_LIVE_KEEP = 3600            # seconds a live block is kept
+KLIVE_BUDGET = 1.5                # most seconds a page build (and so the watcher's loop) waits for these scores
+KLIVE_JOB = {"t": None, "lock": threading.Lock()}
+KLIVE_LOGGED = set()
+
+
+def klive_log_once(what, key, err):
+    """Note a bad live-score field once per game (not every loop)."""
+    k = (what, str(key), type(err).__name__)
+    if k in KLIVE_LOGGED:
+        return
+    if len(KLIVE_LOGGED) > 500:
+        KLIVE_LOGGED.clear()
+    KLIVE_LOGGED.add(k)
+    print(f"live score skipped ({what} {key}):", type(err).__name__, err)
+
+
+def kalshi_live_kick(events, budget=None):
+    """Refresh Kalshi's live data (display only) in a background thread and wait at most `budget` seconds for it,
+    so a slow Kalshi never holds up the watcher's loop (auto cash-out, smart sell) or a Live rebuild. Pages show
+    the last good copy until it lands. One refresh runs at a time. True if it finished within the budget."""
+    evs = {e for e in events if e}
+    if not evs:
+        return True
+    with KLIVE_JOB["lock"]:
+        th = KLIVE_JOB["t"]
+        if th is None or not th.is_alive():
+            def run():
+                try:
+                    kalshi_live_refresh(evs)
+                except Exception as err:
+                    print("kalshi live data:", type(err).__name__, err)
+            th = threading.Thread(target=run, daemon=True, name="klive")
+            KLIVE_JOB["t"] = th
+            th.start()
+    th.join(KLIVE_BUDGET if budget is None else budget)
+    return not th.is_alive()
+
+
+def safe_run_status(*a, **k):
+    """run_status for display, never raising into the page build (and so the trading loop)."""
+    try:
+        return run_status(*a, **k)
+    except Exception as err:
+        klive_log_once("status", a[0] if a else "", err)
+        return None
 
 
 def _kclock(t):
@@ -5622,6 +5685,16 @@ def _kfight(d, rounds):
 
 
 def kalshi_score(l, max_age=900):
+    """_kalshi_score, but a bad field in Kalshi's feed means "no score" for that game only (logged once), never an
+    error that could stop the page build and the auto cash-out that follows it."""
+    try:
+        return _kalshi_score(l, max_age)
+    except Exception as err:
+        klive_log_once("kalshi", (l or {}).get("ticker") if isinstance(l, dict) else l, err)
+        return None
+
+
+def _kalshi_score(l, max_age=900):
     """The score of the game this pick is on, from Kalshi's live data, shaped like leg_score's (from the side the pick
     needs), or None. Only for sports ESPN lacks; None when the data is missing, older than `max_age` seconds, or the
     pick can't be matched to a side for sure. Points are None for a fight (no score to show, only its round)."""
@@ -5702,12 +5775,16 @@ def display_score(l, points=True, pre=False):
     """The score to SHOW for a pick: the usual source (ESPN / the AHL feed) first, then Kalshi's live data for the
     sports ESPN lacks. Display only: anything that buys, sells or decides a result calls leg_score instead.
     With points=True a record with no points (a UFC fight) is left out; with pre=False so is a Kalshi record for a
-    game that hasn't begun (it has nothing to show but that)."""
-    sc = leg_score(l)
-    if sc:
-        return sc
-    sc = kalshi_score(l)
-    return sc if sc and (not points or sc.get("me") is not None) and (pre or sc["state"] != "pre") else None
+    game that hasn't begun (it has nothing to show but that). Never raises: a bad field means no score for that game."""
+    try:
+        sc = leg_score(l)
+        if sc:
+            return sc
+        sc = kalshi_score(l)
+        return sc if sc and (not points or sc.get("me") is not None) and (pre or sc.get("state") != "pre") else None
+    except Exception as err:
+        klive_log_once("display", (l or {}).get("ticker") if isinstance(l, dict) else l, err)
+        return None
 
 
 def kalshi_live_on():
@@ -6907,7 +6984,7 @@ def mine_page(live=False):
         if code:
             fetch_scores(code=code)
     try:                                       # tennis, EuroLeague, UFC: Kalshi's live data, for display only
-        kalshi_live_refresh(klive_events([l for a in mine if a["status"] == "pending" for l in a["legs"]
+        kalshi_live_kick(klive_events([l for a in mine if a["status"] == "pending" for l in a["legs"]
                                           if not results.get(l["ticker"])], side_of))
     except Exception as err:
         print("kalshi live data:", type(err).__name__, err)
@@ -7109,9 +7186,13 @@ def mine_page(live=False):
                 _lp = 1 - _lp
             _sc = display_score(l, points=False, pre=True) if not res else None   # display only (Kalshi's data for tennis etc.)
             _ks = bool(_sc and _sc.get("src") == "kalshi")
-            _rs = (run_status(ticker_sport(l["ticker"]), leg_start(l, side_of), score_state=(_sc or {}).get("state"),
-                              detail=_sc["detail"] if _ks and (_sc.get("me") is None or _sc["state"] == "post") else "")
-                   if _st == "live" else None)
+            try:                                       # display only: a bad field never stops the build
+                _rs = (safe_run_status(ticker_sport(l["ticker"]), leg_start(l, side_of), score_state=(_sc or {}).get("state"),
+                                       detail=_sc.get("detail") or "" if _ks and (_sc.get("me") is None or _sc.get("state") == "post") else "")
+                       if _st == "live" else None)
+            except Exception as err:
+                klive_log_once("status", l.get("ticker"), err)
+                _rs = None
             if _ks and (_sc.get("me") is None or _sc["state"] == "pre"):   # a fight (its round is in the note) or not begun
                 _sc = None
             vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
