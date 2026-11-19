@@ -161,10 +161,8 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 
 ## Open items
 
-- **Novig** (another exchange): blocked until Pete provides a read-only API key from the Novig app.
-- **Buy timing**: decide after 1–2 weeks of build/buy/game-time price data (being recorded).
-- More makeover ideas Pete liked: live game cards that pulse on a score (Games page), more celebration moments,
-  onboarding so friends could use it.
+All planned work that isn't built yet (what it's waiting on, and the suggested order) is in **`ROADMAP.md`**.
+Read it before starting new work, and keep it current: when something ships, describe it here and remove it there.
 
 ## Code map (where to look)
 
