@@ -39,7 +39,8 @@ pattern in a local `.git/hooks/pre-commit`.
   labelled manual override), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
   reaches web push, deduped; nothing trades), per-league learning
-  (cut-offs, calibration, pay index; checked against the old code).
+  (cut-offs, calibration, pay index; checked against the old code), the hub's read cache (`t_hubcache.py`: short
+  score ttl, last-good copy, per-host backoff, warming that never keeps an entry alive on its own).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
@@ -51,6 +52,8 @@ pattern in a local `.git/hooks/pre-commit`.
   `test_makeover2.py` covers phase 2: live Games cards with singles/spreads (API and page), the score pulse and its
   haptic, scrubbing the game chart, the Sold moment (tap, failed sale, smart sell's calm card from a fake sell log),
   small win vs big hit, Results profit bars (scrub ticks, tap for bets, Day/Week) and the loading skeletons.
+  `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
+  ticking clock).
 
 ## Writing tests
 

@@ -419,47 +419,95 @@ def hub_address():
 
 
 class HubCache:
-    """Recent public reads, kept fresh in the background for whatever the phone asked for lately."""
+    """Recent public reads, kept fresh in the background for whatever the phone asked for lately.
+    Display only: nothing that trades reads through here. Polite by design: an entry is only kept warm while
+    somebody has asked for it in the last 30 minutes (warming itself never counts as asking), it is warmed
+    quickly only while the phone is actually looking and slowly otherwise, a host that answers 429 or 5xx is
+    backed off, and the last good copy is served while a host is struggling."""
+    FAST, SLOW, STALE_OK = 3, 60, 300            # warm loop beat; idle refresh period; oldest last-good copy served
+
     def __init__(self, E):
         self.E, self.lock = E, threading.Lock()
-        self.data, self.wanted = {}, {}
+        self.data, self.wanted, self.cool = {}, {}, {}
 
     @staticmethod
     def ttl(url):
         if "espn.com" in url or "hockeytech.com" in url:
-            return 8
+            return 6                                # live scores: the phone's view is at most ~6s behind the feed
         if "/multivariate_event_collections" in url or "/series" in url:
             return 120
         return 12
 
-    def get(self, url, params, fresh=False):
+    @staticmethod
+    def host(url):
+        return url.split("//", 1)[-1].split("/", 1)[0] or url
+
+    def get(self, url, params, fresh=False, touch=True):
         key = url + "?" + json.dumps(params, sort_keys=True)
         now = time.time()
+        host = self.host(url)
         with self.lock:
-            self.wanted[key] = (now, url, params)
+            if touch:
+                self.wanted[key] = (now, url, params)
             hit = self.data.get(key)
+            cool = self.cool.get(host)
         if hit and not fresh and now - hit[0] < self.ttl(url):
             return hit[1]
-        r = requests.get(url, params=params, timeout=20)
+        if cool and now < cool[1]:                  # this host said slow down: last good copy, or nothing
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+            raise requests.ConnectionError(f"backing off {host}")
+        try:
+            r = requests.get(url, params=params, timeout=20)
+        except requests.RequestException:
+            self.note(host, False)
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+            raise
+        if r.status_code == 429 or r.status_code >= 500:
+            self.note(host, False, r.headers.get("Retry-After"))
+            if hit and now - hit[0] < self.STALE_OK:
+                return hit[1]
+        else:
+            self.note(host, True)
         val = {"status": r.status_code, "text": r.text}
         if r.ok:
             with self.lock:
                 self.data[key] = (time.time(), val)
         return val
 
+    def note(self, host, good, retry_after=None):
+        """Count a host's failures in a row: back off 5s, 10s, 20s ... up to a minute (or its Retry-After)."""
+        with self.lock:
+            if good:
+                self.cool.pop(host, None)
+                return
+            n = (self.cool.get(host) or (0, 0))[0] + 1
+            wait = min(60, 5 * 2 ** (n - 1))
+            try:
+                wait = max(wait, min(120, float(retry_after)))
+            except (TypeError, ValueError):
+                pass
+            self.cool[host] = (n, time.time() + wait)
+
     def warm(self):
         while True:
-            time.sleep(8)
+            time.sleep(self.FAST)
             now = time.time()
             with self.lock:
                 for k in [k for k, (t, _, _) in self.wanted.items() if now - t > 1800]:
                     self.wanted.pop(k, None)
                     self.data.pop(k, None)
-                todo = [(u, p) for k, (t, u, p) in self.wanted.items()
-                        if now - (self.data.get(k) or (0,))[0] > self.ttl(u) - 6][:60]
+                todo = []
+                for k, (t, u, p) in self.wanted.items():
+                    age = now - (self.data.get(k) or (0,))[0]
+                    # asked for in the last minute: keep it as fresh as its ttl; otherwise only a slow refresh
+                    if age > (self.ttl(u) - self.FAST if now - t < 60 else self.SLOW):
+                        todo.append((u, p))
+                todo = todo[:60]
             for u, p in todo:
                 try:
-                    self.get(u, p, fresh=True)
+                    self.get(u, p, fresh=True, touch=False)
                 except Exception as err:          # one bad read doesn't stop the rest
                     log("hub warm skipped:", type(err).__name__, err)
 
@@ -1805,7 +1853,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .board2{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;background:var(--panel2);border-radius:14px;padding:16px 18px;margin-bottom:14px;box-shadow:inset 0 0 0 1.5px var(--line)}
 .board2.up{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--yes) 60%,transparent)}.board2.down{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--no) 60%,transparent)}
 .tm2{display:flex;align-items:center;gap:12px}.tm2.r{justify-content:flex-end}.tm2 span{font-weight:700;color:var(--sub)}.tm2 b{font-size:38px;letter-spacing:-.03em;line-height:1}
-.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px}
+.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+.fresh{font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--mute);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
+.fresh.old{color:var(--no)}
 .sheet.wide{max-width:880px;max-height:calc(100vh - 40px);overflow:auto;padding:24px}
 .dhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
 .dkpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}
@@ -2089,8 +2139,8 @@ addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contai
    edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
 function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
  sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
-function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.comboOpen=null;$('#sheet').classList.remove('wide');$('#sheet').innerHTML='<i class="grab"></i>'+h;$('#modal').classList.add('on');hap('light');}
-function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.comboOpen=null;
+function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;$('#sheet').classList.remove('wide');$('#sheet').innerHTML='<i class="grab"></i>'+h;$('#modal').classList.add('on');hap('light');}
+function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
  clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
 const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
@@ -2184,13 +2234,21 @@ function warm(v){/* show the last copy straight away while the fresh one loads *
  if(v==='results'&&!S.res)S.res=cget('results');if(v==='results'&&!S.an)S.an=cget('analytics');
  if(v==='games'&&!S.games)S.games=cget('games');
  if(S.view===v&&(v!=='build'||S.build))render();}
+// ---- freshness: how old the numbers on screen are ("Updated 4s ago"), counted on the phone between loads
+S.fr={};
+function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
+function frAge(k){const o=S.fr[k];if(!o)return null;const f=o.f;const at=Math.min(f.built,f.scores!=null?f.now-f.scores:f.built);return Math.max(0,f.now-at+(Date.now()-o.recv)/1000);}
+function frTxt(k){const a=frAge(k);if(a==null)return '';return a<3?'Updated just now':a<90?'Updated '+Math.round(a)+'s ago':'Updated '+Math.round(a/60)+' min ago';}
+function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frAge(k)||0)>60);});}
+setInterval(()=>{frTick();clkTick();},1000);
+setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
 async function load(v,fresh){try{warm(v);
- if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
+ if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
  if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
   if(lg!==S.lg||pv!==(S.pview||'all'))return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);
   api('/app/api/analytics').then(a=>{S.an=a;cput('analytics',a);if(S.view==='results')renderResults();}).catch(()=>{});}
- if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);}
+ if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);frSet('N',S.games.fresh);}
  if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
  if(S.view===v)render();}catch(e){if(e)console.log(e);}}
@@ -2322,7 +2380,7 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const cls=Math.abs(dl)<.005?'flat':dl>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
- return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold</span>
+ return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
    <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} <span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>${St?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/St*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
    ${heroChart(d,cls)}</div>
@@ -2912,20 +2970,38 @@ function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=gam
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);
  const on=g=>g.state==='live'&&g.phase!=='probably_over',live=gs.filter(on),idle=gs.filter(g=>!on(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!idle.includes(g));
- m.innerHTML=(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
+ m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
   +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;pushOpen('Game');await drawGame();}
-async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on')||S.scrub)return;
- const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),pushWait()]);if(S.gameOpen!==t)return;
- if(!r||!r.leg){pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;pushOpen('Game');await drawGame();}
+// The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
+// live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
+// down between updates while it is running. Only the first draw waits for the slide-in to finish.
+async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on')||S.gameBusy||S.scrub)return;   // a finger on the chart holds the page still
+ const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
+ try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
+  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
+  frSet('G',r.fresh);clkNote(t,r.leg);
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif]);
+  if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
+  S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
+ }finally{S.gameBusy=false;}}
+const CLK_SPORTS=['nba','ncaamb','ncaawb','nhl','ahl'];
+function clkNote(t,l){S.clk=S.clk||{};const sc=l.sc,m=sc&&l.state==='live'&&CLK_SPORTS.includes(l.sport)?/^(.*?)\s*(\d{1,2}):(\d{2})$/.exec(sc.detail||''):null;
+ if(!m){delete S.clk[t];return;}
+ const lab=m[1].trim(),secs=+m[2]*60+ +m[3],p=S.clk[t],now=Date.now();
+ if(p&&p.lab===lab&&secs===p.srv){if(p.run&&now-p.recv<25000)return;S.clk[t]={lab,srv:secs,secs,recv:now,run:false};return;}
+ S.clk[t]={lab,srv:secs,secs,recv:now,run:!!(p&&p.lab===lab&&secs<p.srv)};}
+function clkTick(){document.querySelectorAll('[data-clk]').forEach(e=>{const c=(S.clk||{})[e.dataset.clk];if(!c)return;const v=c.run?Math.max(0,c.secs-Math.floor((Date.now()-c.recv)/1000)):c.secs;
+ const t=c.lab+' '+Math.floor(v/60)+':'+String(v%60).padStart(2,'0');if(e.textContent!==t)e.textContent=t;});}
+function paintGame(r){const t=S.gameOpen;
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
  const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
  const plays=st.plays.slice().reverse();
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'&&l.phase!=='probably_over'?' · <span style="color:var(--live)">LIVE</span>':''}</div>
+ pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'&&l.phase!=='probably_over'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'&&l.phase!=='probably_over'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${l.state==='live'&&l.phase!=='probably_over'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
@@ -3017,7 +3093,7 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
  es.onopen=()=>{S.live_ok=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
-  if(ev.kind==='tick'){if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
+  if(ev.kind==='tick'){if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
   if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
   if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
@@ -3238,33 +3314,90 @@ def webapp_main():
     def jsonable(x):
         return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
 
+    # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
+    # every buy/sell decision read their own data and are untouched by any of this).
+    LIVE_FAST, LIVE_SLOW = 8, 30             # seconds a Live snapshot is served before a new one is built
+    SCORES_FAST, SCORES_SLOW = 8, 30         # seconds this app keeps a league's scores (default was 45)
+    A.SCORES_MAX_AGE = SCORES_FAST
+
+    def games_live():
+        """Is any game under way in the scores this app last read?"""
+        now = time.time()
+        for got in list(A.SCORES_BY.values()):
+            if now - (got.get("at") or 0) > 300:
+                continue
+            for infos in list((got.get("by") or {}).values()):
+                for i in infos if isinstance(infos, list) else [infos]:
+                    if isinstance(i, dict) and str(i.get("state") or "") in ("in", "live"):
+                        return True
+        return False
+
+    def live_limit():
+        return LIVE_FAST if LIVE.get("fast") else LIVE_SLOW
+
+    def set_pace():
+        """Quick score and snapshot refreshes only while a game is live; relaxed otherwise."""
+        fast = games_live()
+        LIVE["fast"] = fast
+        A.SCORES_MAX_AGE = SCORES_FAST if fast else SCORES_SLOW
+
     def live_refresh():
         try:
-            api_live(fresh=True)
+            api_live(warm=True)
         finally:
             LIVE["busy"] = False
 
-    def api_live(fresh=False):
-        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < 600:
-            if time.time() - LIVE["at"] > 8 and not LIVE.get("busy"):      # stale: answer now, refresh behind it
-                LIVE["busy"] = True
-                threading.Thread(target=live_refresh, daemon=True).start()
+    def api_live(fresh=False, warm=False):
+        """The Live numbers. A snapshot younger than the limit is served as is; an older one is rebuilt first and
+        the fresh one is served (waiting a few seconds at most), so the page isn't one refresh behind. If the
+        build is stuck behind another job or fails, the last good copy is served."""
+        if not fresh and not warm:
+            LIVE["asked"] = time.time()
+        limit = live_limit() - (2 if warm else 0)
+        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < limit:
             return live_extras(LIVE["data"])
-        with alock:
-            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > 8:
-                if not A.MINE.get("all_games"):
-                    games, days, sunday = A.week_games(A.fetch_markets())
-                    A.MINE.update(all_games=games, days=days, sunday=sunday, notes=[], book={}, live=True)
-                    try:
-                        book, _ = A.fetch_book_odds(A.CFG.get("odds_key", ""))
-                        A.MINE["book"] = book
-                    except Exception:
-                        pass
-                A.MINE["live"] = True
-                A.mine_page(live=True)
-                LIVE.update(at=time.time(), data=jsonable(A.MINE.get("view") or {}))
+        patient = not fresh and LIVE["data"] is not None and time.time() - LIVE["at"] < 600
+        if not alock.acquire(timeout=6 if patient else -1):
+            return live_extras(LIVE["data"])                    # busy elsewhere (e.g. pricing a combo): last good copy
+        try:
+            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > limit:
+                try:
+                    if not A.MINE.get("all_games"):
+                        games, days, sunday = A.week_games(A.fetch_markets())
+                        A.MINE.update(all_games=games, days=days, sunday=sunday, notes=[], book={}, live=True)
+                        try:
+                            book, _ = A.fetch_book_odds(A.CFG.get("odds_key", ""))
+                            A.MINE["book"] = book
+                        except Exception:
+                            pass
+                    A.MINE["live"] = True
+                    A.mine_page(live=True)
+                    LIVE.update(at=time.time(), built=time.time(), data=jsonable(A.MINE.get("view") or {}))
+                    set_pace()
+                except Exception as err:
+                    if not LIVE["data"]:
+                        raise
+                    log("live refresh failed, serving the last good copy:", type(err).__name__, err)
+                    LIVE["at"] = time.time() - max(0, live_limit() - 5)       # try again in ~5s
             out = LIVE["data"]
+        finally:
+            alock.release()
         return live_extras(out)
+
+    def freshness():
+        """How old each stage of the numbers on screen is, so the page can say so and we can see where time goes."""
+        now = time.time()
+        ages, on = [], []                  # the age of each league's scores; leagues with a game under way are the ones that matter
+        for got in list(A.SCORES_BY.values()):
+            if not got.get("at") or now - got["at"] > 600:
+                continue
+            ages.append(now - got["at"])
+            if any(isinstance(i, dict) and str(i.get("state") or "") in ("in", "live")
+                   for infos in list((got.get("by") or {}).values()) for i in (infos if isinstance(infos, list) else [infos])):
+                on.append(now - got["at"])
+        scores = max(on) if on else (min(ages) if ages else None)
+        return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
+                "fast": bool(LIVE.get("fast"))}
 
     def live_extras(out):
         try:
@@ -3280,7 +3413,7 @@ def webapp_main():
         except Exception:
             pulse = []
         return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(),
-                    auto_sell=bool(A.CFG.get("auto_sell"))) if isinstance(out, dict) else out
+                    auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
 
     def recent_sales(hours=3):
         """Read-only: what auto cash-out / smart sell sold lately (from its own log), so an open page can show the
@@ -3626,7 +3759,7 @@ def webapp_main():
                         c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
                         c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
                         c["now"] = round(c["pays"] * c["p"] * disc, 2)
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi})
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "fresh": freshness()})
 
     def api_games():
         d = api_live() or {}
@@ -3664,7 +3797,7 @@ def webapp_main():
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
         out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
-        return jsonable({"games": out, "at": d.get("at")})
+        return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
@@ -4055,14 +4188,19 @@ def webapp_main():
     threading.Thread(target=lambda: (time.sleep(3), api_live()), daemon=True).start()   # warm up the Live numbers
 
     def warmer():
-        """Keeps pages ready: Live refreshed every 20s, and the Build for the sports you've looked at in the last
-        day rebuilt every 5 minutes, only while nobody is tapping, so a page opens from what's already there."""
+        """Keeps pages ready: Live rebuilt a little ahead of its limit while a page is open and a game is on (every
+        ~6s), every 20s otherwise, and the Build for the sports you've looked at in the last day rebuilt every 5
+        minutes, only while nobody is tapping, so a page opens from what's already there."""
+        def live_beat():
+            asked = time.time() - LIVE.get("asked", 0) < 90          # a page has asked for Live lately
+            pace = live_limit() - 2 if asked else 20
+            if not LIVE.get("busy") and time.time() - LIVE["at"] > pace:
+                LIVE["busy"] = True
+                live_refresh()
         time.sleep(20)
         while True:
             try:
-                if not LIVE.get("busy") and time.time() - LIVE["at"] > 20:
-                    LIVE["busy"] = True
-                    live_refresh()
+                live_beat()
                 idle = time.time() - BUILD.get("touched", 0) > 30
                 seen = BUILD.get("seen") or {"nba": 0, "nhl": 0}
                 for lg, at in sorted(seen.items(), key=lambda x: -x[1]):
@@ -4087,7 +4225,12 @@ def webapp_main():
                     break                                       # one sport per round
             except Exception as err:
                 print("warm-up:", type(err).__name__, err, flush=True)
-            time.sleep(15)
+            for _ in range(5):                                  # 15s between Build rounds, Live checked every 3s
+                time.sleep(3)
+                try:
+                    live_beat()
+                except Exception as err:
+                    print("warm-up (live):", type(err).__name__, err, flush=True)
     threading.Thread(target=warmer, daemon=True, name="warmer").start()
     srv.serve_forever()
 
