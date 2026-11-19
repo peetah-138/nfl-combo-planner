@@ -131,11 +131,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 
 ### Fair prices and data
 - "Fair" = sharp sportsbooks de-vigged (free sources; The Odds API free plan; no paid odds). Calibrated by Pete's own
-  record per league and chance band (`calib_fair`, shrink n/(n+300)): the sport's nudge as before, and a league
-  inside a sport (each soccer league) moves from its sport's nudge toward its own record by the same n/(n+300), so
-  a league with no games gets exactly its sport's. A sport with no games in a band keeps the books' chance (no
-  "everyone" level here yet; see ROADMAP). Leagues marked `require_line` need a sportsbook line (Kalshi alone
-  isn't trusted there).
+  record per league and chance band (`calib_fair`, shrink n/(n+300)), borrowing everyone -> sport -> league (Pete,
+  #37): the other sports' record (`calibration()["all"]` minus this sport's own games, so none count twice) nudges
+  the books' chance by n/(n+300); the sport moves from that nudge toward its own record by its n/(n+300); a league
+  inside a sport (each soccer league) moves from its sport's the same way. A level with no games gets exactly the one
+  above; a sport alone in a band is exactly as before; a band nobody has played keeps the books' chance.
+  Leagues marked `require_line` need a sportsbook line (Kalshi alone isn't trusted there).
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
@@ -177,8 +178,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   moving only on solid data. Pete considered 80% and agreed 95% start; the combo lab tests lower levels on paper.
   Borrowing (`_cut_level`, `combo_cutoff(code, n, legs)`, file `combo_cutoffs.json`): a league inside a sport
   (e.g. `epl:2`) uses its own level once it has 30+ quotes or has moved, starting from its sport's; until then it
-  follows its sport's live (`soccer:2`, the old keys, read exactly as before). A sport with no entry borrows
-  everyone's (`all:2`) once that has 30+ quotes, and a sport new to the file starts from that level.
+  follows its sport's live (`soccer:2`, the old keys, read exactly as before). A sport with no level of its own
+  borrows everyone's (`all:2`, once that has 30+ quotes) **only upward: max(everyone's, 95%)** (Pete, #37 M2;
+  `CUT_START`). `adjust_cutoffs` saves such a sport marked `"borrowed": true` (ignored by `_cut_level`, hidden in
+  Settings) until it has 30+ quotes of its own, so a borrowed level is never kept as its own; it becomes its own
+  at 30+ quotes or when its own record moves it. Only a group's own record can take it below 95% (to the 85% floor).
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
