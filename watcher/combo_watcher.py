@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.108"
+WATCHER_VERSION = "2026.11.18.109"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1758,6 +1758,9 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .seg{display:flex;background:var(--panel2);border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
 .seg button{border:0;background:none;padding:7px 11px;border-radius:8px;color:var(--sub);font-weight:600;font-size:12.5px}
 .seg button.on{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.mixl>.mixr{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 22px;border-top:1px solid var(--line)}
+.mixr b{display:block;font-weight:600}.mixr small{color:var(--mute);font-size:12px}
+.mixs{display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--mute)}.mixs>div{display:flex;align-items:center;gap:8px}.mixs>div>span:first-child{min-width:84px}
 .mixt{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,minmax(96px,126px));align-items:center;border-top:1px solid var(--line)}
 .mixt>div{padding:11px 22px 11px 0;border-top:1px solid var(--line)}.mixt>div:nth-child(4n+1){padding-left:22px}
 .mixt .h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding-top:12px;padding-bottom:6px}
@@ -2512,9 +2515,9 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
   mode==='day'?tgl('next_day','Use tomorrow\'s games','Instead of today\'s'):
   tgl('thursday','Thursday games')+tgl('saturday','Saturday games')+tgl('monday','Monday games')+`<div class="srow"><div class="l"><small>Sunday is always in.</small></div></div>`;
- const tiers=(d.full?[['full','Full slate','Every game','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos',null,2,8],['middle','Middle','The core of the mix',null,2,12],['moonshot','Moonshot','Long shots, big payouts',null,2,16]]);
- const mix=`<div class="mixt"><div class="h">Type</div><div class="h">Combos</div><div class="h">Fewest</div><div class="h">Most</div>${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
-  return `<div><b>${n}</b><small>${s}${unit?' · '+unit:' · games'}</small></div><div>${stp(t+'_count',0,10)}</div><div>${stp(b+'_min',alt?0:lo,hi)}</div><div>${stp(b+'_max',alt?0:lo,hi)}</div>`;}).join('')}</div>`;
+ const tiers=(d.full?[['full','Full slate','Every game on the slate in one bet. You choose how many underdogs it picks.','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos, more likely to hit.',null,2,8,'games each'],['middle','Middle','The core of the mix.',null,2,12,'games each'],['moonshot','Moonshot','Long shots, big payouts.',null,2,16,'games each']]);
+ const mix=`<div class="mixl">${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
+  return `<div class="mixr"><div><b>${n}</b><small>${s}</small></div><div class="mixs"><div><span>How many</span>${stp(t+'_count',0,10)}</div><div><span>${alt?'Underdogs':'Games each'}</span>${stp(b+'_min',alt?0:lo,hi)}<span>to</span>${stp(b+'_max',alt?0:lo,hi)}</div></div></div>`;}).join('')}</div>`;
  const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
@@ -2534,7 +2537,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
    rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
- ${scard('mix','🧩','Combo mix','How many of each kind to build, and how many games in each.',mix)}
+ ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
  ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
