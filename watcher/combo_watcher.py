@@ -1448,137 +1448,11 @@ class WebBuild:
 
 
 # ---------------------------------------------------------------- the planner app, in a browser
-# The Mac runs a separate copy of the planner (its own process) that believes it is on the phone:
-# a stand-in "ui" module turns its window into a bridge. Pages it shows go to your browser; taps in
-# the browser go back to it, exactly as on the phone. The hub (port 8765) signs you in and passes
-# requests through to it on this Mac only (port 8766).
+# The Mac runs a separate copy of the planner (its own process) for Combo Hub's screens (the SPA below). It keeps
+# stand-ins for Pythonista's modules (`ui` and friends) so the engine imports and behaves as it does on the phone.
+# The old "Classic screens" (the phone UI drawn in the browser through a bridge) are gone: the SPA is the only UI.
+# The hub (port 8765) signs you in and passes requests through to it on this Mac only (port 8766).
 WEBAPP_PORT = int(os.environ.get("CW_WEBAPP_PORT") or 8766)   # the check suite moves it, so tests never reach the real app
-
-BRIDGE_JS = r"""<script>
-(function(){
-var TOK="__CWTOK__", V=__CWV__, wrap=document.getElementById('cwwrap');
-function post(p,b){return fetch(p,{method:'POST',credentials:'same-origin',
-  headers:{'Content-Type':'application/json','X-CW':TOK},body:JSON.stringify(b)});}
-function go(u){u=String(u);if(u.indexOf('combo://')===0){post('/app/nav',{u:u});}else{location.href=u;}}
-window.__cwgo=go;
-window.__cw={set href(u){go(u);},get href(){return location.href;}};
-window.__cwadmin=function(b){b.textContent='Opening…';post('/app/admin',{}).then(function(){setTimeout(function(){b.textContent='⚙︎ Mac settings';},3000);});};
-window.__cwtab=function(t){if(t!=='refresh')mark(t);else{var r=document.getElementById('cwref');if(r){r.classList.add('spin');setTimeout(function(){r.classList.remove('spin')},400);}}post('/app/tab',{t:t});};
-function mark(t){if(!t)return;document.querySelectorAll('#cwbar button,#cwside nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===t);});}
-document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;
-  var h=a.getAttribute('href');if(h&&h.indexOf('combo://')===0){e.preventDefault();go(h);}},true);
-async function newPage(v){              /* swap the page in place: no white flash, no reload */
-  var r=await fetch('/app/classic?frag=1',{credentials:'same-origin',headers:{'X-CW':TOK}});
-  var h=await r.text();V=v;
-  if(window.__load){window.__load(h);}else{document.open();document.write(h);document.close();}
-  if(!wrap.isConnected)document.body.appendChild(wrap);
-  mark(r.headers.get('X-CW-Where')||'');}
-async function poll(){for(;;){try{
-  var r=await fetch('/app/poll?v='+V,{credentials:'same-origin',headers:{'X-CW':TOK}});
-  if(r.status==403){location.href='/';return;}
-  var d=await r.json();
-  if(d.v!==V){await newPage(d.v);}
-  if(d.where)mark(d.where);
-  for(const j of d.js){var out='';try{out=(0,eval)(j.code);}catch(err){out='';}
-    if(!wrap.isConnected)document.body.appendChild(wrap);
-    if(j.w)post('/app/result',{id:j.id,value:(out===undefined||out===null)?'':String(out)});}
-}catch(err){await new Promise(function(r){setTimeout(r,1500);});}}}
-poll();
-})();
-</script>"""
-
-ICONS = {
-    "mine": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='5' fill='currentColor'/><circle cx='12' cy='12' r='9.5' fill='none' stroke='currentColor' stroke-width='1.6' opacity='.45'/></svg>",
-    "build": "<svg viewBox='0 0 24 24'><path d='M12 4.5v15M4.5 12h15' stroke='currentColor' stroke-width='2.2' stroke-linecap='round'/></svg>",
-    "results": "<svg viewBox='0 0 24 24'><path d='M5 19V11M12 19V5M19 19v-6' stroke='currentColor' stroke-width='2.4' stroke-linecap='round'/></svg>",
-    "settings": "<svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='3.2' fill='none' stroke='currentColor' stroke-width='1.9'/><path d='M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8' stroke='currentColor' stroke-width='1.9' stroke-linecap='round'/></svg>",
-}
-
-SHELL_CSS = """<style>
-/* ---------- Combo Hub: the planner's screens, dressed for the browser ---------- */
-html{-webkit-text-size-adjust:100%}
-body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"tnum" 1,"ss01" 1;
- padding-bottom:calc(76px + env(safe-area-inset-bottom))!important;-webkit-tap-highlight-color:transparent}
-@media (display-mode:standalone){body{padding-top:env(safe-area-inset-top)!important}}
-h1{letter-spacing:-.025em}
-.card,.game,.stat,details.lostbox,.quote{transition:transform .18s cubic-bezier(.2,.7,.3,1),box-shadow .18s,background-color .18s}
-.stat b{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.btn,button,.tabs button,summary,label.row,.pickrow .seg button{transition:background-color .15s,color .15s,transform .1s,opacity .15s}
-.btn:active,.tabs button:active{transform:scale(.97)}
-:focus-visible{outline:2px solid var(--accent,#0a84ff);outline-offset:2px;border-radius:10px}
-
-/* bottom tab bar (phone) */
-#cwbar{position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;justify-content:space-around;
- padding:7px 6px calc(5px + env(safe-area-inset-bottom));
- background:color-mix(in srgb,var(--bg,#000) 72%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);
- backdrop-filter:saturate(180%) blur(24px);border-top:.5px solid var(--line,rgba(84,84,88,.6))}
-#cwbar button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;
- color:var(--muted,#98989f);font:600 10.5px -apple-system,system-ui;letter-spacing:.01em;padding:3px 0;cursor:pointer}
-#cwbar button svg{width:26px;height:26px;transition:transform .2s cubic-bezier(.2,.7,.3,1.4)}
-#cwbar button.on{color:var(--accent,#0a84ff)}
-#cwbar button.on svg{transform:scale(1.06)}
-#cwref{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;z-index:9999;width:38px;height:38px;border-radius:50%;
- display:flex;align-items:center;justify-content:center;border:.5px solid var(--line,rgba(84,84,88,.6));
- background:color-mix(in srgb,var(--card,#1c1c1e) 82%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);
- color:var(--accent,#0a84ff);cursor:pointer;transition:transform .35s cubic-bezier(.2,.7,.3,1)}
-#cwref:active,#cwref.spin{transform:rotate(200deg)}
-#cwside{display:none}
-
-/* ---------- laptop & desktop: sidebar, centred content, cards in a grid ---------- */
-@media (min-width:900px){
- body{padding:0 40px 56px 292px!important;font-size:16px}
- #cwbar{display:none}
- #cwside{display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;width:252px;z-index:9999;padding:26px 14px 18px;
-  background:color-mix(in srgb,var(--card,#1c1c1e) 55%,var(--bg,#000));border-right:.5px solid var(--line,rgba(84,84,88,.6));
-  -webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px)}
- #cwside .brand{display:flex;align-items:center;gap:11px;padding:0 10px 26px;font:700 19px -apple-system,system-ui;
-  letter-spacing:-.02em;color:var(--ink,#fff)}
- #cwside .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
-  background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff);box-shadow:0 4px 14px rgba(80,90,255,.35)}
- #cwside .mark svg{width:20px;height:20px}
- #cwside nav{display:flex;flex-direction:column;gap:3px}
- #cwside nav button{display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border:0;border-radius:10px;
-  background:none;color:var(--ink,#fff);font:500 15px -apple-system,system-ui;cursor:pointer;text-align:left;opacity:.82}
- #cwside nav button svg{width:21px;height:21px;color:var(--muted,#98989f)}
- #cwside nav button:hover{background:var(--card2,#2c2c2e);opacity:1}
- #cwside nav button.on{background:var(--accentbg,rgba(10,132,255,.18));color:var(--accent,#0a84ff);opacity:1;font-weight:600}
- #cwside nav button.on svg{color:var(--accent,#0a84ff)}
- #cwside .foot{margin-top:auto;padding:12px 12px 0;border-top:.5px solid var(--line,rgba(84,84,88,.6));
-  font:500 12px -apple-system,system-ui;color:var(--muted,#98989f);line-height:1.5}
- #cwside .foot button{margin-top:10px;display:flex;align-items:center;gap:8px;border:0;background:var(--card2,#2c2c2e);
-  color:var(--ink,#fff);font:600 13px -apple-system;padding:8px 12px;border-radius:9px;cursor:pointer}
- #cwside .foot button:hover{background:var(--press,#3a3a3c)}
- #cwref{display:none}
- body>*:not(#cwwrap):not(script):not(.ptr){max-width:1040px;margin-left:auto!important;margin-right:auto!important}
- body:has(#budgetline)>*:not(#cwwrap):not(script):not(.ptr){max-width:760px}
- header{padding-top:38px!important}
- h1{font-size:40px!important}
- .tabs,.seg{max-width:560px}
- .stats{gap:16px!important}
- .stat{padding:20px 22px!important;border-radius:18px!important}
- .stat b{font-size:30px!important}
- section#combos:has(>.card~.card),section:has(>.card~.card~.card){display:grid!important;
-  grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px;align-items:start}
- section:has(>.card~.card)>:not(.card){grid-column:1/-1}
- section:has(>.card~.card)>.card{margin:0!important}
- .card,.game,.stat{border:.5px solid var(--line,rgba(84,84,88,.45))}
- .card:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,.28)}
- .row:hover,label.row:hover,summary:hover{background:color-mix(in srgb,var(--card2,#2c2c2e) 60%,transparent)}
- a,button,summary,label,.btn{cursor:pointer}
- ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:var(--track,#444);border-radius:10px;border:3px solid var(--bg,#000)}
-}
-@media (min-width:1500px){body>*:not(#cwwrap):not(script):not(.ptr){max-width:1240px}}
-</style>"""
-
-MARK = ("<svg viewBox='0 0 24 24'><path d='M4 15.5l4.2-4.2 3.3 3.3L20 6' fill='none' stroke='#fff' stroke-width='2.6' "
-        "stroke-linecap='round' stroke-linejoin='round'/><circle cx='20' cy='6' r='1.6' fill='#fff'/></svg>")
-
-
-PWA_HEAD = ("<meta name='apple-mobile-web-app-capable' content='yes'><meta name='mobile-web-app-capable' content='yes'>"
-            "<meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>"
-            "<meta name='apple-mobile-web-app-title' content='Combos'><meta name='theme-color' content='#000000'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>")
-
 
 SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -1607,10 +1481,6 @@ button{font:inherit;color:inherit;cursor:pointer}a{color:var(--acc);text-decorat
 .dot{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg)}.dot.off{background:var(--no);box-shadow:0 0 0 4px var(--nobg)}
 .cta{border:0;background:var(--acc);color:#fff;border-radius:10px;padding:9px 14px;font-weight:700;white-space:nowrap}
 .cta:hover{filter:brightness(1.08)}
-.menu{position:relative}.menu>button{border:1px solid var(--line);background:var(--panel);border-radius:10px;width:38px;height:38px;color:var(--sub)}
-.dd{position:absolute;right:0;top:46px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:200px;box-shadow:0 12px 40px rgba(0,0,0,.35);display:none}
-.dd.open{display:block}.dd button,.dd a{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 12px;border-radius:8px;color:var(--ink);font-weight:500}
-.dd button:hover,.dd a:hover{background:var(--hover)}
 main{max-width:1520px;margin:0 auto;padding:22px 24px 60px;overflow-x:clip}
 .grid>*,.trow>*,.kpi,.name,.legs{min-width:0}.name span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px}
@@ -1784,7 +1654,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
  padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}.toast.good{background:var(--yes);color:#04130c}.toast.bad{background:var(--no);color:#fff}
-.toast.on{opacity:1;transform:translateX(-50%)}
+.toast.on{opacity:1;transform:translateX(-50%)}.toast[hidden]{display:none!important}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
 .modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .sheet h3{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}.sheet p{color:var(--sub);margin:0 0 18px}.sheet .row{display:flex;gap:10px;justify-content:flex-end}
@@ -1795,6 +1665,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .doit{display:grid;gap:10px;margin:4px 0 18px}
 .dcard{background:linear-gradient(100deg,var(--yesbg),transparent 70%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);border-radius:var(--r);padding:16px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
 .dcard.idea{background:linear-gradient(100deg,var(--accbg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.dcard.gone{opacity:.6;filter:saturate(.4);animation:goneout .5s ease 3.8s forwards}@keyframes goneout{to{opacity:0;transform:scale(.97)}}
 .dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
 .dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
@@ -1977,9 +1848,6 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
   <div class="ts wk"><span>Last 7 days</span><b id="wk">—</b></div>
   <div class="status" id="st"><span class="dot"></span>Mac · live</div>
   <button class="cta" onclick="go('build')">＋ Build combos</button>
-  <div class="menu"><button onclick="menu()" aria-label="More">⋯</button><div class="dd" id="dd">
-   <button onclick="go('settings')">Settings</button><a href="/app/classic">Classic screens</a>
-   <button onclick="location.reload()">Reload</button></div></div>
  </div>
 </header>
 <main id="main"></main>
@@ -2003,10 +1871,16 @@ const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="
  settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
 const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
-function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),ms||3200);}
-function menu(){$('#dd').classList.toggle('open');}
-document.addEventListener('click',e=>{if(!e.target.closest('.menu'))$('#dd').classList.remove('open');});
-function admin(){api('/app/admin',{}).then(()=>toast('Opening Mac settings…'));}
+/* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
+   every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
+   Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
+function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
+function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
+function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+ clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
+setInterval(toastCheck,1000);
+['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
+addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
 function modal(h){$('#sheet').innerHTML='<i class="grab"></i>'+h;$('#modal').classList.add('on');hap('light');}
 function closeModal(){$('#modal').classList.remove('on');$('#sheet').classList.remove('wide');S.gameOpen=null;}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
@@ -2029,8 +1903,6 @@ function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'
  $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
  $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
 }
-function menuSheet(){modal(`<h3>More</h3><p>Planner settings and the classic screens open in the same window.</p>
- <div style="display:grid;gap:8px"><a class="btn" href="/app/classic">Planner settings</a>${LOCAL?'<button class="btn" onclick="admin();closeModal()">Mac settings</button>':''}<button class="btn" onclick="closeModal()">Close</button></div>`);}
 const TABS=['live','games','build','results','settings'];
 function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=true;const from=TABS.indexOf(S.view);S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
  const paint=()=>{render();window.scrollTo(0,0);};
@@ -2079,12 +1951,12 @@ function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.b
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
 // ---------------- LIVE
-function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live')return '';
+function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over')return '';
  const lead=l.sc?(l.sc.me-l.sc.opp):0;const ch=l.live!=null?l.live:l.chance;
  if(lead>0||(!lead&&ch!=null&&ch>=.6))return 'up';if(lead<0||(!lead&&ch!=null&&ch<=.4))return 'down';return 'live';}
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
- const tip=c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
+ const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
  return `<span class="leg ${c}" title="${tip}">${pre}${esc(short(l.name))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
@@ -2107,7 +1979,12 @@ function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
  if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
- const up=c.legs.find(l=>!l.res&&l.starts);return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
+ const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
+ if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
+ const up=c.legs.find(l=>!l.res&&l.starts&&l.state!=='live');return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
+function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{const k=legCls(l);if(k)on.add(k);}));if(!on.size)return '';
+ const it=[['up','<i class="pd"></i>Winning now'],['down','<i class="pd"></i>Losing now'],['live','<i class="pd"></i>Tied'],['won','✓ Won'],['lost','✕ Lost']].filter(x=>on.has(x[0]));
+ return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
 function renderLive(){_renderLive();afterPaint();}
 function _renderLive(){const d=S.live;const m=$('#main');
  if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
@@ -2125,9 +2002,9 @@ function _renderLive(){const d=S.live;const m=$('#main');
  ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
  <h2>Your combos <span class="n">${S.filter==='done'?shown.length:pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  ${S.filter==='done'?settledBar(cs):''}
+ ${S.filter!=='done'?legendFor(pend):''}
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||'<div class="empty"><b>Nothing here</b>Combos you place on Kalshi show up here with live scores and cash-out offers.</div>'}</div>
- ${pend.some(c=>c.legs.some(l=>l.state==='live'&&!l.res))?`<div class="legend"><span class="leg up"><i class="pd"></i>Winning now</span><span class="leg down"><i class="pd"></i>Losing now</span><span class="leg live"><i class="pd"></i>Tied</span><span class="leg won">✓ Won</span><span class="leg lost">✕ Lost</span></div>`:''}
  ${singlesLive(d)}
  </div><aside class="side">${sideLive(d)}</aside></div>`;}
 function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
@@ -2157,6 +2034,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
 function ideaBlock(ideas){S.ideaq=S.ideaq||{};
  return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
   const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
+  if(S.ideaGone&&S.ideaGone[x.id])return `<div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div>`;
   if(x.n===1)return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>🎯 ${esc(x.picks)} <span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4>
    <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
@@ -2170,13 +2048,15 @@ function ideaBlock(ideas){S.ideaq=S.ideaq||{};
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
  const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
+ if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
  S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
  clearInterval(S.ideaT);S.ideaT=setInterval(()=>{if(S.view==='live'&&!$('#modal').classList.contains('on'))renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
  toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
 async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
+function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
+ setTimeout(()=>{delete S.ideaGone[id];hideIdea(id);},4500);}
 function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
 function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
  const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
@@ -2219,8 +2099,8 @@ function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
-function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':'';
- const line=x.how||x.score||(x.starts?'starts '+x.starts:'');
+function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'?'<span class="tag">Waiting on Kalshi</span>':'';
+ const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
  return `<div class="trow srow1" data-key="s:${x.t}" data-sig="${esc(x.score||'')}" onclick="openGame('${x.t}')"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
   <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
@@ -2235,7 +2115,7 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
   <div class="num" data-l="To hit">${c.group==='pending'?pct(c.p):'—'}${c.group==='pending'?`<div class="bar"><i style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
   <div class="num offer" data-l="Offer">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
-   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
+   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
    ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
    ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
@@ -2249,8 +2129,8 @@ function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse(
  return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'?'<span class="tag">LIVE</span>':''}</div>
-  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.starts||'')}`}</div>
+ return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'?'<span class="tag">LIVE</span>':''}</div>
+  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.short||g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
  ${todayCard(d)}`;}
@@ -2660,20 +2540,21 @@ async function openCombo(t){modal(`<div class="m" style="padding:30px;text-align
   ${c.why?`<p style="margin:-4px 0 14px">${esc(c.why)}</p>`:''}
   <div class="chartbox">${valueChart(h.offers,c.cost,c.pays)}</div>
   <h2 style="margin:4px 0 6px">Picks <span class="n">${c.legs.length}</span></h2><div class="dlegs">${c.legs.map(l=>{const tk=(h.ticks||{})[l.ticker]||[];const pts=tk.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
-   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
+   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
     ${l.res?`<span class="m" style="text-align:center">${l.res==='yes'?'✓ won':'✕ lost'}</span>`:spark(pts,120,28)}<b style="text-align:right">${l.res?'':pct(l.live!=null?l.live:l.chance)}</b></div>`;}).join('')}</div>
   ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" onclick="closeModal();hedge('${c.t}')">Hedge · ${money(c.hedge.cost)}</button>`:''}
    <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`;}
 // ---------------- games
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=`<div class="games">${'<div class="gt skel" style="height:190px"></div>'.repeat(6)}</div>`;return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you need show up here with live scores and win chances.</div>';return;}
- const live=gs.filter(g=>g.state==='live'),rest=gs.filter(g=>g.state!=='live');
- const tile=g=>{const ch=g.chance;const sc=g.sc;const lc=g.state==='live'?legCls({state:'live',sc,live:ch}):'';return `<div class="gt ${g.state==='live'?'live '+lc:''}" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${g.state!=='live'&&g.starts?' · '+esc(g.starts):''}</div></div>
-   ${g.state==='live'&&sc?`<div class="sc">${sc.me}–${sc.opp}<small>${esc(sc.detail||'')}</small></div>`:'<span class="tag" style="background:var(--panel2);color:var(--sub)">'+(g.state==='live'?'LIVE':'UPCOMING')+'</span>'}</div>
-   <div class="ch"><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b><span>${g.state==='live'?'to win right now':'to win'}</span></div>${spark(g.spark,300,56)}
+ const on=g=>g.state==='live'&&g.phase!=='probably_over',live=gs.filter(on),idle=gs.filter(g=>g.phase==='probably_over'),rest=gs.filter(g=>!on(g)&&g.phase!=='probably_over');
+ const tile=g=>{const ch=g.chance;const sc=g.sc;const lc=on(g)?legCls({state:'live',sc,live:ch}):'';return `<div class="gt ${on(g)?'live '+lc:''}" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="top2"><div><div class="tm">${ICON[g.sport]||''} ${esc(g.name)}</div><div class="vs">${g.opp?'vs '+esc(g.opp):''}${!on(g)&&(g.short||g.starts)?(g.opp?' · ':'')+esc(g.short||g.starts):''}</div></div>
+   ${on(g)&&sc?`<div class="sc">${sc.me}–${sc.opp}<small>${esc(sc.detail||'')}</small></div>`:'<span class="tag" style="background:var(--panel2);color:var(--sub)">'+(on(g)?'LIVE':g.phase==='probably_over'?'PROBABLY OVER':'UPCOMING')+'</span>'}</div>
+   <div class="ch"><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b><span>${on(g)?'to win right now':'to win'}</span></div>${spark(g.spark,300,56)}
    <div class="ft"><span>In ${g.combos} combo${g.combos>1?'s':''}</span><b>${money(g.pays)} riding</b></div></div>`;};
  m.innerHTML=(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(tile).join('')}</div>`:'')
-  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(tile).join('')}</div>`:'');}
+  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(tile).join('')}</div>`:'')
+  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(tile).join('')}</div>`:'');}
 // ---------------- one game, live
 async function openGame(t){if(!t)return;S.gameOpen=t;modal(`<div class="m" style="padding:30px;text-align:center"><span class="spin"></span></div>`);$('#sheet').classList.add('wide');await drawGame();}
 async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
@@ -2681,10 +2562,10 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
  const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
  const plays=st.plays.slice().reverse();
- $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'?' · <span style="color:var(--live)">LIVE</span>':''}</div>
+ $('#sheet').innerHTML=`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'&&l.phase!=='probably_over'?' · <span style="color:var(--live)">LIVE</span>':''}</div>
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div><button class="btn ghost" onclick="closeModal()">Close</button></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
-   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.starts||'Not started')}</div></div>`}</div>
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk">${esc(sc.detail||'')}</div><div class="m">${l.state==='live'&&l.phase!=='probably_over'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
@@ -2767,15 +2648,15 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
-   <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button></div>
+   <div class="sact"><button class="btn acc" onclick="macDo('update',this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
    <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
   :!LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Newest</span><b style="display:block;word-break:normal">${mac.latest?(mac.latest===mac.engine?'<i style="font-style:normal;color:var(--yes)">Up to date</i>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}${mac.checked?`<i class="m" style="display:block;font-style:normal;font-size:12px;font-weight:500;margin-top:2px">${Date.now()/1000-mac.checked<60?'checked just now':'checked '+ago(Math.round(Date.now()/1000-mac.checked))+' ago'}</i>`:''}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
-   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><button class="btn" onclick="macCheck(this)">Check for an update now</button></div>`
-  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div></div>`;
+   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><div class="sact" style="margin:0"><button class="btn" onclick="macCheck(this)">Check for an update now</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div></div>`
+  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>`;
  m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
@@ -2800,7 +2681,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=`<
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
-   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div><a class="btn ghost" href="${S.inapp?'combo://phone':'/app/classic'}">${S.inapp?'Phone screens':'Classic screens'}</a></div>`)}
+   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
  </div></div>`;}
 async function macCheck(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking…';const was=S.mac&&S.mac.engine;
  const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){b.disabled=false;b.textContent='Check for an update now';return;}
@@ -2823,7 +2704,7 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
-window.__inapp=function(){S.inapp=true;if(!document.getElementById('phonescr'))$('#dd').insertAdjacentHTML('beforeend','<a id="phonescr" href="combo://phone">Phone screens (no Mac)</a>');};
+window.__inapp=function(){S.inapp=true;if(S.view==='settings')renderSettings();};
 if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
 chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
@@ -2839,59 +2720,8 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view===
 
 def webapp_main():
     """Run the planner app for the browser (started by the watcher as its own process)."""
-    import threading, types, itertools
+    import threading, types
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    class Bridge:
-        def __init__(self):
-            self.cv = threading.Condition()
-            self.html, self.v, self.q, self.res, self.seen = "", 0, [], {}, 0.0
-            self.ids = itertools.count(1)
-
-        def active(self):
-            return time.time() - self.seen < 120
-
-        def load(self, h):
-            with self.cv:
-                self.html, self.v, self.q = h, self.v + 1, []
-                self.cv.notify_all()
-
-        def quiet(self, h):
-            """The page changed in place (already sent to the browser): remember it for a reload."""
-            with self.cv:
-                self.html = h
-
-        def js(self, code, timeout=4.0, wait=False):
-            if not self.active():
-                return ""
-            with self.cv:
-                i = next(self.ids)
-                self.q.append({"id": i, "code": code, "w": wait})
-                self.cv.notify_all()
-                if not wait:
-                    return ""                       # the planner never needs these answers: don't wait
-                end = time.time() + timeout
-                while i not in self.res and time.time() < end:
-                    self.cv.wait(end - time.time())
-                return self.res.pop(i, "")
-
-        def poll(self, v):
-            self.seen = time.time()
-            with self.cv:
-                end = time.time() + 20
-                while v == self.v and not self.q and time.time() < end:
-                    self.cv.wait(end - time.time())
-                out, self.q = self.q, []
-                return {"v": self.v, "js": out}
-
-        def result(self, i, value):
-            with self.cv:
-                self.res[i] = value
-                self.cv.notify_all()
-                if len(self.res) > 200:
-                    self.res.clear()
-
-    B = Bridge()
 
     # ---- stand-ins for Pythonista's modules, so the planner runs its phone code here
     ui = types.ModuleType("ui")
@@ -2923,27 +2753,10 @@ def webapp_main():
         delegate = None
 
         def load_html(self, h):
-            B.load(h)
+            pass
 
         def evaluate_javascript(self, js):
-            # whole-page swaps become a fresh page in the browser (so a reload shows the same thing)
-            if js.startswith("typeof window.__load") or js.startswith("typeof window.__swap"):
-                return "function"
-            if js.startswith("window.__load(") and js.endswith(")"):
-                try:
-                    B.load(json.loads(js[len("window.__load("):-1]))
-                    return ""
-                except ValueError:
-                    pass
-            if js.startswith("window.__swap(") and js.endswith(")"):
-                try:                                # a refresh of the same page: update it in place
-                    body = json.loads(js[len("window.__swap("):-1])
-                    head = B.html.split("<body", 1)[0] if "<body" in B.html else "<html><head></head>"
-                    B.quiet(head + "<body>" + body + "</body></html>")
-                except ValueError:
-                    pass
-                return B.js(js.replace("location.href=", "__cw.href="))
-            return B.js(js)
+            return ""
 
     class ButtonItem:
         def __init__(self, **kw):
@@ -2961,10 +2774,7 @@ def webapp_main():
     console = types.ModuleType("console")
 
     def alert(title, message="", button1="OK", *a, **k):
-        got = B.js("confirm(%s)?'1':''" % json.dumps(f"{title}\n\n{message}".strip()), timeout=120, wait=True)
-        if got != "1":
-            raise KeyboardInterrupt
-        return 1
+        raise KeyboardInterrupt                     # no phone screen to ask: treat it as Cancel, never as a yes
     console.alert = alert
     console.set_idle_timer_disabled = lambda on: None
     console.hud_alert = lambda *a, **k: None
@@ -2989,8 +2799,8 @@ def webapp_main():
     A.schedule_buy_nudge = lambda *a, **k: None
     A.watcher_alive = lambda *a, **k: True          # the watcher does the automatic cash-outs, never this copy
     A.start_autosell_keeper = lambda *a, **k: None
-    A.window_open = lambda: A.APP.get("web") is not None and B.active()   # live updates pause with no browser
-    A.open_outside = lambda url: B.js("window.open(%s,'_blank');''" % json.dumps(url))
+    A.window_open = lambda: False                   # there is no phone window in this copy
+    A.open_outside = lambda url: None
     A.tap_haptic = lambda *a, **k: None
     try:                                            # get data, odds and trades through the hub like the phone
         c = json.load(open(CONF))                   # does: one shared cache, one set of odds credits
@@ -3006,7 +2816,6 @@ def webapp_main():
         A.CFG["built_once"] = True                  # you're not new: no first-time tips
     A.set_league = set_league
     set_league(A.LEAGUE["code"])
-    started = {"run": False}
 
     # ---- Combo Hub's own screens: plain data in, actions out (same engine, same rules as the phone)
     alock = threading.RLock()
@@ -3522,7 +3331,7 @@ def webapp_main():
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
-                    return {"ok": False, "msg": "That idea has expired."}
+                    return {"ok": False, "gone": True, "msg": "That idea has expired."}
                 row = rows[0]
                 if row["n"] == 1:                           # a single game: today's price, straight from the book
                     tk = json.loads(row["legs"])[0]
@@ -3532,7 +3341,7 @@ def webapp_main():
                     dpt = A.book_depth(tk, max_age=0)
                     fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
                     if not fair or not dpt or dpt.get("ask") is None:
-                        return {"ok": False, "msg": "Kalshi isn't listing that game right now."}
+                        return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
                     edge = fair - ask - fee
@@ -3547,14 +3356,14 @@ def webapp_main():
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
                                      "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
                 if row["kick"] and row["kick"] < time.time() + 60:
-                    return {"ok": False, "msg": "A game in it is starting, so this one's off the table."}
+                    return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
                 if row.get("live") and row["ts"] < time.time() - 600:
-                    return {"ok": False, "msg": "That idea had a game in progress and is more than 10 minutes old."}
+                    return {"ok": False, "gone": True, "msg": "That idea had a game in progress and is more than 10 minutes old."}
                 if BUILD.get("lg") != row["lg"]:
                     api_build(row["lg"], rebuild=True)
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
-                    return {"ok": False, "msg": why or "Kalshi isn't listing those games any more."}
+                    return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
                 try:
                     r = A.get_offer(k)
                     c = A.CTX["combos"][k - 1]
@@ -3688,50 +3497,6 @@ def webapp_main():
         return {"ok": False, "msg": "Unknown action."}
 
 
-    def page(frag=False, local=False):
-        h = B.html or ("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
-                       "<body style='background:#000;color:#8e8e93;font:600 17px -apple-system;display:flex;"
-                       "align-items:center;justify-content:center;height:90vh'>Starting the planner…</body></html>")
-        h = h.replace("location.href=", "__cw.href=")
-        if frag:
-            return h
-        where = A.APP.get("where") or "mine"
-        tabs = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
-                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
-        side = "".join(f"<button data-t='{k}' class='{'on' if k == where else ''}' onclick=\"__cwtab('{k}')\">"
-                       f"{ICONS.get(k, '')}<span>{label}</span></button>" for k, icon, label in A.TABS)
-        side = (f"<aside id='cwside'><div class='brand'><div class='mark'>{MARK}</div>Combo Hub</div><nav>{side}</nav>"
-                f"<div class='foot'>Running on your Mac · v{A.VERSION}<br>Live data refreshes by itself"
-                "<button onclick=\"__cwtab('refresh')\">↻ Refresh now</button>"
-                + ("<button onclick=\"__cwadmin(this)\">⚙︎ Mac settings</button>" if local else "")
-                + "</div></aside>")
-        wrap = (f"<div id='cwwrap'>{SHELL_CSS}{side}<div id='cwbar'>{tabs}</div>"
-                "<button id='cwref' aria-label='Refresh' onclick=\"__cwtab('refresh')\"><svg viewBox='0 0 24 24' width='18' height='18'>"
-                "<path d='M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5' fill='none' stroke='currentColor' stroke-width='2.2' "
-                "stroke-linecap='round' stroke-linejoin='round'/></svg></button>"
-                + BRIDGE_JS.replace("__CWV__", str(B.v)) + "</div>")
-        h = h.replace("</body>", wrap + "</body>") if "</body>" in h else h + wrap
-        h = h.replace("<head>", "<head>" + PWA_HEAD, 1) if "<head>" in h else PWA_HEAD + h
-        return h
-
-    def start():
-        if not started["run"]:
-            started["run"] = True
-            A.RUN_OPTS["goto"] = "mine" if A.can_trade() else "build"
-            threading.Thread(target=A.run, daemon=True, name="app").start()
-            if A.can_trade():                       # open on Live, like the phone
-                def to_live():
-                    for _ in range(120):
-                        if started.get("user"):             # you've tapped something: leave you there
-                            return
-                        if "id='budgetline'" in B.html and A.APP.get("settings_wait"):
-                            time.sleep(1)
-                            return A.native_nav("mine")
-                        if A.APP.get("where") == "mine":
-                            return
-                        time.sleep(0.5)
-                threading.Thread(target=to_live, daemon=True).start()
-
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -3755,19 +3520,6 @@ def webapp_main():
                 return {}
 
         def do_GET(self):
-            if self.path.startswith("/app/poll"):
-                was_idle = not B.active()
-                try:
-                    v = int(self.path.split("v=", 1)[1].split("&")[0])
-                except (IndexError, ValueError):
-                    v = -1
-                if was_idle and started["run"]:
-                    if not started.get("shown") and A.can_trade() and A.APP.get("where") != "mine":
-                        threading.Timer(1.0, A.native_nav, ("mine",)).start()   # very first visit: open on Live
-                    elif A.APP.get("where") == "mine" and not A.APP.get("settings_wait"):
-                        threading.Timer(1.0, A.native_nav, ("refresh",)).start()   # back on Live: fresh numbers
-                started["shown"] = True                     # after that, never move you off the screen you're on
-                return self._send(200, json.dumps(dict(B.poll(v), where=A.APP.get("where") or "")))
             path, _, query = self.path.partition("?")
             local = self.headers.get("X-CW-Local") == "1"
             if path in ("/app", "/app/"):
@@ -3806,12 +3558,6 @@ def webapp_main():
                     traceback.print_exc()
                     out = {"error": f"{type(err).__name__}: {err}"}
                 return self._send(200, json.dumps(out))
-            if path == "/app/classic":
-                B.seen = time.time()
-                start()
-                frag = "frag=1" in self.path
-                return self._send(200, page(frag, local), "text/html; charset=utf-8",
-                                  {"X-CW-Where": A.APP.get("where") or ""})
             self._send(404, "{}")
 
         def do_POST(self):
@@ -3832,23 +3578,6 @@ def webapp_main():
                     traceback.print_exc()
                     out = {"ok": False, "msg": f"That didn't work: {type(err).__name__}: {err}"}
                 return self._send(200, json.dumps(out, default=str))
-            if self.path == "/app/result":
-                B.result(d.get("id"), str(d.get("value", "")))
-                return self._send(200, "{}")
-            if self.path in ("/app/nav", "/app/tab"):
-                started["user"] = started["shown"] = True
-            if self.path == "/app/nav":
-                u = str(d.get("u", ""))
-                web = A.APP.get("web")
-                dg = getattr(web, "delegate", None)
-                if u.startswith("combo://") and dg is not None:
-                    threading.Thread(target=dg.webview_should_start_load, args=(web, u, 0), daemon=True).start()
-                return self._send(200, "{}")
-            if self.path == "/app/tab":
-                t = str(d.get("t", ""))
-                if t in ("mine", "build", "results", "settings", "refresh"):
-                    threading.Thread(target=A.native_nav, args=(t,), daemon=True).start()
-                return self._send(200, "{}")
             self._send(404, "{}")
 
     parent = os.getppid()
@@ -4351,11 +4080,6 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
-            if web and u.path == "/app/classic" and "frag=1" not in u.query:
-                tok = web.session(self)
-                if not tok:
-                    return self._html(200, web.login_page("", web.rp_of(self)))
-                return webapp_proxy(self, tok, "GET", self.path)
             if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok:
