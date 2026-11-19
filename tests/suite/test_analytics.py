@@ -32,7 +32,7 @@ AN={"at":time.time()-120,"levels":[{"band":"80–85%","n":12,"hit":0.2,"exp":0.2
  "types":[{"mode":"real","what":"Spreads & totals","n":6,"won":4,"pl":3.2,"roi":0.12,"clv":0.02,"smart":0.14,"sim_n":4},{"mode":"paper","what":"Combos","n":9,"won":2,"pl":-8,"roi":-0.18,"clv":None,"smart":-0.05,"sim_n":6}],
  "live":[{"mode":"real","what":"NBA","n":3,"won":2,"pl":1.4,"roi":0.09,"clv":None,"smart":0.05,"sim_n":2}],"live_excluded":"EuroLeague, UFC and tennis games stay out once they've started.",
  "sports":[{"mode":"real","what":"NHL","n":6,"won":4,"pl":3.2,"roi":0.12,"clv":0.02,"smart":0.1,"sim_n":2}],
- "exits":[{"what":"Rode to the end","n":10,"pl":-12,"roi":-0.2},{"what":"Cashed out early","n":7,"pl":9,"roi":0.25}],"auto":{"smart":3,"lock in":1},"cut_held":{"too early in the game":2,"halftime or a break":1},
+ "exits":[{"what":"Rode to the end","n":10,"pl":-12,"roi":-0.2},{"what":"Cashed out early","n":7,"pl":9,"roi":0.25}],"auto":{"smart":3,"lock in":1},"cut_held":{"too early in the game":2,"halftime or a break":1},"hedge_held":{"score feed stale":2,"wouldn't lock in what you paid":1},
  "tuning":[{"key":"nhl","name":"NHL","floor":1.5,"lam":1,"loss":0.15,"n":40,"own":True,"sl_prog":0.5,"sl_drop":0.2,"sl_n":0,"sl_own":False,"sl_why":""}],
  "notes":["Combos priced 95–100% of fair have done best so far: +3% riding to the end over 44 quotes.","Not enough results yet for 80–85% (30+ each before reading much into them)."]}
 SING=[{"t":"S1","kind":"spread","sport":"nfl","side":"yes","label":"KC wins by over 6.5","game":"BUF at KC","event":"E","n":10,"cost":5.2,"pays":10,"worth":7.0,"chance":0.72,"state":"live","res":None,"score":"","starts":"","how":"","url":"","own":True,"self":False,"sell_at":8.4}]
@@ -55,6 +55,8 @@ with sync_playwright() as pw:
     if pg.locator(".an", has_text="3 smart").count() != 1: print("PROBLEMS: auto-sale counts missing")
     ch = pg.locator(".an .cut-held").inner_text()
     if "2 too early in the game" not in ch or "1 halftime or a break" not in ch: print("PROBLEMS: loss cuts held back by the guards missing:", ch)
+    hh = pg.locator(".an .hedge-held").inner_text()
+    if "Auto-hedges the guards held back" not in hh or "3" not in hh or "2 score feed stale" not in hh or "fresh live score" not in hh: print("PROBLEMS: auto-hedges held back by the guards missing:", hh)
     sel = pg.locator(".an").inner_text()
     if "late, confirmed" not in sel or "Selling at a loss (a learned cut" not in sel or "after 50% of the game" not in sel:
         print("PROBLEMS: the loss cut's guards aren't shown in Results > Selling")

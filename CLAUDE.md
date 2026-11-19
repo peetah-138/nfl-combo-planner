@@ -250,6 +250,18 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   Results › Selling. `stoploss_params` borrows league → sport → all, but borrowed values can only be **stricter**
   than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
   notifies "Stop-loss (your switch)".
+- **Auto-hedge guards (issue #27, Pete approved):** auto-hedge (with Auto cash-out on, replaces an already-chosen
+  sale when the combo has one pick left and the hedge locks in ≥ 95% of the cash-out, ≤ `hedge_cap`, default $100)
+  now buys only when `hedge_guard` passes: the last game **in play on a fresh score** (`fresh_live_score`, shared with
+  the loss guards; missing/stale = no hedge), **not at a break** (`at_break`), the hedge **locks in at least the
+  combo's cost** (`locked = contracts − hedge cost ≥ h["cost"]`), all held on **3+ checks over ≥ 3 min** (`_sl_confirm`
+  under `hedge:<ticker>`). Then `hedge_fresh` re-reads the hedge side's order book (`book_depth(max_age=0)`; no ask or
+  a gap > 6¢ = no hedge) and redoes the sums on the fresh ask (still beats the cash-out, within the cap, ≥ cost); the
+  IOC order goes at that ask. While confirming, the sale waits; any other failed guard = it cashes out as if
+  auto-hedge were off. A hedge order with an unknown outcome (timeout, lost Mac, 5xx) is marked `check` in
+  `combo_hedges.json` (`hedge_unsure`): never retried, no sale on top, and auto cash-out leaves that combo alone. Holds
+  are logged (`result: "held"`, `hedge: true`) and Results › Selling shows the count by reason (`hedge_held`). The
+  manual Hedge tap has no guards (Pete's own tap, board price), but an unknown outcome there is also marked `check`.
 - **Loss-cut guards (issue #27, Pete's decision):** the learned per-league "cut loss" (combos in `take_profit_reason`,
   singles/spreads/totals in `single_sell_reason`) now needs the **same guards**, reusing the helpers: combos run
   `stop_loss_check(t, h, also=<under the cut-off>, key="cut:<ticker>")` once per `auto_sell_now` pass and pass
