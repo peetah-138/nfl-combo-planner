@@ -393,7 +393,7 @@ class HubCache:
 
     @staticmethod
     def ttl(url):
-        if "espn.com" in url:
+        if "espn.com" in url or "hockeytech.com" in url:
             return 8
         if "/multivariate_event_collections" in url or "/series" in url:
             return 120

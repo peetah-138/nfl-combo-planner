@@ -104,7 +104,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL.
+  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores.
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
@@ -117,11 +117,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - "Fair" = sharp sportsbooks de-vigged (free sources; The Odds API free plan; no paid odds). Calibrated by Pete's own
   record per sport and chance band (`calib_fair`, shrink n/(n+300)). Leagues marked `require_line` need a
   sportsbook line (Kalshi alone isn't trusted there).
-- Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis, AHL).
+- Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
+  periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
+  no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
-  require_line, hockey shapes, no live scores.
+  require_line, hockey shapes, live scores from the league feed (Kalshi's team codes can differ from the feed's,
+  e.g. CHA/CLT, so `AHL_ALIAS` maps them; names are matched too).
 
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
