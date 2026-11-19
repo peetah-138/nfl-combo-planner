@@ -816,10 +816,33 @@ def tailscale_env():
     return env
 
 
+# Where a real install keeps its files. Anything else (a test's temp folder, dev.sh's throwaway home) is not allowed to
+# run the Tailscale command line at all: `tailscale serve` re-points Pete's real secure address, and a test run once
+# pointed it at a fake hub that then went away. COMBO_NO_TAILSCALE=1 (set by every test harness) blocks it too.
+TS_FAKE_OK = False        # only the secure-address test sets this, and then only a fake command line in a temp folder runs
+
+
+def tailscale_blocked():
+    """Why the Tailscale command line must not run in this process (a short reason), or '' when it may."""
+    if os.environ.get("COMBO_NO_TAILSCALE", "").strip() not in ("", "0"):
+        return "COMBO_NO_TAILSCALE is set (a test or dev run)"
+    real = {os.path.realpath(os.path.expanduser("~/combowatch")), os.path.realpath("/var/lib/combowatch")}
+    if os.path.realpath(HOME) not in real:
+        return f"{HOME} is not a real install folder (a test or dev run)"
+    return ""
+
+
 def tailscale_run(cli, args, timeout):
     """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
-    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
-    import subprocess
+    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI.
+    Hard safety net: refuses (OSError) outside a real install. The secure-address test may run its own fake script
+    from a temp folder (TS_FAKE_OK), never a real one."""
+    import subprocess, tempfile
+    why = tailscale_blocked()
+    if why:
+        fake = TS_FAKE_OK and os.path.realpath(cli).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep)
+        if not fake:
+            raise OSError(f"refusing to run tailscale {' '.join(args[:1])}: {why}")
     return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
                           env=tailscale_env())
 
@@ -902,6 +925,10 @@ def tailscale_https(conf, port):
     allowed https yet, keep the one-time link that turns it on, for Settings > This Mac.
     Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
+    blocked = tailscale_blocked()
+    if blocked and not TS_FAKE_OK:
+        log("https: not touching Tailscale:", blocked)
+        return _https_set(conf, "off-in-tests", detail="Secure address is off here: " + blocked + ".")
     with HTTPS_LOCK:
         cli, st, why = tailscale_status()
         if why:
@@ -976,6 +1003,9 @@ def tailscale_https(conf, port):
 def https_loop(conf, port):
     """Keep trying: enabling HTTPS in Tailscale's admin, or Tailscale finishing its start at login, is picked up
     without a tap. Quiet once it is on (a light check every 30 minutes)."""
+    if tailscale_blocked() and not TS_FAKE_OK:
+        log("https: not checking Tailscale:", tailscale_blocked())
+        return
     while True:
         try:
             tailscale_https(conf, port)
@@ -2349,8 +2379,9 @@ main.ptrd{transition:none!important}
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
 .psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
 .ccard.flash{animation:fl 1.2s ease}
-/* Results: bars grow in, the What's working tabs crossfade */
-main.fresh .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
+/* Results: bars grow in, the What's working tabs crossfade. (<main> is marked `arrived` for 1.6 s after a screen change; it must never be
+   called `fresh`: that is the small "Updated Ns ago" stamp's class, and its nowrap/small-grey rules made every new screen draw too wide.) */
+main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
 .bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
 .antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
@@ -2509,7 +2540,7 @@ function render(){({live:renderLive,games:renderGames,build:renderBuild,results:
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
 function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const mn=$('#main');if(mn){mn.classList.add('fresh');clearTimeout(S.freshT);S.freshT=setTimeout(()=>mn.classList.remove('fresh'),1600);}
+ const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
  const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
  document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
