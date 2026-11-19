@@ -82,10 +82,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 - **Fair-price calibration** (`calib_fair`) is per sport; make it per league.
 - **Sizing and the panel's sport priorities** should read league-level results too.
 
-### c. Live scores for the AHL
-- ESPN's free scoreboard doesn't cover it, so AHL bets show prices but no score or clock. Find a free, reliable
-  AHL score source (e.g. the league's own public feed), with the same caching and fallbacks as ESPN.
-
 ### e. Friends could use it (onboarding)
 - Pete wants an app friends would want to use. Today it's one person, one Mac, one Kalshi key. A friend-ready
   version needs: a guided first-run (connect Kalshi with their own key, pick sports, set a budget), plain

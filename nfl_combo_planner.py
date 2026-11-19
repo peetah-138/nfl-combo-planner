@@ -157,7 +157,7 @@ LEAGUES = {
                          "middle_count": 3, "middle_min": 3, "middle_max": 4,
                          "moonshot_count": 2, "moonshot_min": 4, "moonshot_max": 6}},
     # AHL: the NHL's top minor league. Hockey shapes (short combos, a one-goal game swings), its own tuning;
-    # a sportsbook line is required, and there's no free live scoreboard, so live play runs on Kalshi's prices.
+    # a sportsbook line is required; ESPN has no AHL scoreboard, so live scores come from the league's own feed.
     "ahl": {"name": "AHL", "short": "AHL", "icon": "🏒", "series": "KXAHLGAME", "odds": "icehockey_ahl",
             "espn": None, "espn_q": {}, "slate": "day", "game_hours": 2.75, "periods": 3, "full": False,
             "teams": None, "require_line": True,
@@ -4593,7 +4593,7 @@ def open_singles(max_age=30):
         status = (m.get("status") or "").lower()
         sc = None
         try:
-            if code in SPORTS and SPORTS[code].get("espn"):
+            if code in SPORTS and (SPORTS[code].get("espn") or SPORTS[code].get("feed")):
                 fetch_scores(code=code)
             sc = leg_score(_score_leg(t, kind, side, code))
         except Exception:
@@ -5024,7 +5024,7 @@ SPORTS = {
     "nfl": {"icon": "🏈", "name": "NFL", "espn": "football/nfl", "q": {}, "periods": 4, "day": False, "hours": 3.5},
     "nba": {"icon": "🏀", "name": "NBA", "espn": "basketball/nba", "q": {}, "periods": 4, "day": True, "hours": 2.5},
     "nhl": {"icon": "🏒", "name": "NHL", "espn": "hockey/nhl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
-    "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "q": {}, "periods": 3, "day": True, "hours": 2.75},
+    "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "feed": "ahl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
     "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
     "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
@@ -5063,8 +5063,10 @@ def fetch_scores(max_age=None, code=None):
     max_age = SCORES_MAX_AGE if max_age is None else max_age
     sp = SPORTS.get(code)
     got = SCORES_BY.get(code) or {"at": 0, "by": {}}
-    if not sp or not sp.get("espn") or time.time() - got["at"] < max_age:
+    if not sp or not (sp.get("espn") or sp.get("feed")) or time.time() - got["at"] < max_age:
         return got["by"]
+    if sp.get("feed"):
+        return _fetch_feed_scores(code, sp, got)
     by = {}
     try:
         events = []
@@ -5121,6 +5123,107 @@ def fetch_scores(max_age=None, code=None):
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
                     by.setdefault(alt, []).append(info)
     except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return got["by"]
+    SCORES_BY[code] = {"at": time.time(), "by": by}
+    if code == LEAGUE["code"]:
+        SCORES.update(at=time.time(), by_team=by)
+    return by
+
+
+# The AHL's own public score feed (the JSON its website's score widgets read, run by HockeyTech): ESPN has no
+# AHL scoreboard. Free, no login. The client key below is the public one baked into theahl.com's pages, not a
+# secret; the AHL_FEED_KEY environment variable replaces it if the league ever rotates it.
+AHL_FEED_URL = "https://lscluster.hockeytech.com/feed/index.php"
+AHL_FEED_KEY = os.environ.get("AHL_FEED_KEY") or "ccb91f29d6744675"
+AHL_ALIAS = {"CLT": ("CHA",)}      # Kalshi's tickers spell a few teams differently from the league's feed
+try:
+    from zoneinfo import ZoneInfo as _ZI
+    FEED_TZ = _ZI("America/Toronto")                 # the feed's own clock (Eastern, daylight saving included)
+except Exception:                                    # no time-zone data (some iOS builds)
+    FEED_TZ = None
+
+
+def _feed_start(g):
+    """(UTC start as ISO text, US-Eastern game date) of one feed game. The feed's 'Ord' is the start in Eastern
+    time and is the reliable one (its ISO text has a wrong offset for some western arenas), so it wins when
+    time-zone data exists; otherwise the ISO text is used."""
+    day = None
+    try:
+        day = dt.date.fromisoformat(str(g.get("Ord") or g.get("Date") or "")[:10])
+        if FEED_TZ:
+            t = dt.datetime.strptime(str(g["Ord"])[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=FEED_TZ)
+            return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), day
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        t = dt.datetime.fromisoformat(str(g.get("GameDateISO8601") or ""))
+        return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), day or (t - dt.timedelta(hours=5)).date()
+    except ValueError:
+        return "", day
+
+
+def _feed_state(g):
+    """'pre' / 'in' / 'post' from the feed's game status (1 not started, 2 in progress, 3 and 4 final)."""
+    stt = str(g.get("GameStatus") or "")
+    if stt in ("3", "4") or str(g.get("GameStatusString") or "").lower().startswith("final"):
+        return "post"
+    return "in" if stt == "2" else "pre"
+
+
+def _fetch_feed_scores(code, sp, got):
+    """Live scores for a league whose games ESPN doesn't carry, in the shape fetch_scores builds from ESPN: the
+    same cache, and the same last-good-copy fallback when the feed can't be reached or sends something odd."""
+    import time
+    n_per = sp["periods"]
+    try:
+        r = requests.get(AHL_FEED_URL, params={
+            "feed": "modulekit", "view": "scorebar", "numberofdaysback": 1, "numberofdaysahead": 3,
+            "key": AHL_FEED_KEY, "client_code": sp["feed"], "fmt": "json", "lang": "en"}, timeout=8)
+        games = r.json()["SiteKit"]["Scorebar"] if r.ok else None
+        if not isinstance(games, list):
+            return got["by"]                                 # keep the last good copy, never cache a blank
+        by = {}
+        for g in games:
+            state = _feed_state(g)
+            try:
+                per = int(g.get("Period") or 0)
+            except ValueError:
+                per = 0
+            clock = str(g.get("GameClock") or "").lstrip("0")
+            clock = ("0" + clock) if clock.startswith(":") else (clock or "0:00")
+            if state == "post":
+                detail = str(g.get("GameStatusStringLong") or "").strip()
+                if not detail.startswith("Final"):
+                    detail = "Final"
+            elif state == "in":
+                if str(g.get("PeriodNameShort") or "").upper() == "SO":
+                    detail = "SO"
+                elif str(g.get("Intermission") or "0") == "1":
+                    detail = f"End P{per}" if per <= n_per else "End OT"
+                else:
+                    detail = f"{'OT' if per > n_per else 'P' + str(per)} {clock}"
+            else:
+                detail = str(g.get("GameStatusStringLong") or g.get("GameStatusString") or "")
+            start, day = _feed_start(g)
+            st = {"period": per, "displayClock": clock}
+            sides = []
+            for pre in ("Home", "Visitor"):
+                nm = g.get(pre + "LongName") or f"{g.get(pre + 'City', '')} {g.get(pre + 'Nickname', '')}".strip()
+                sides.append((nm, g.get(pre + "Code") or "", int(float(g.get(pre + "Goals") or 0)), pre))
+            for i, (name, abbr, goals, pre) in enumerate(sides):
+                oname, oabbr, ogoals, _ = sides[1 - i]
+                if not name:
+                    continue
+                info = {"frac": _frac_left(code, st, n_per, state), "me": goals, "opp": ogoals,
+                        "abbr": abbr, "opp_abbr": oabbr, "opp_name": oname, "state": state, "detail": detail,
+                        "start": start, "ball": False, "redzone": False, "sport": code,
+                        "game": g.get("ID"), "day": day, "wp": None}
+                keys = {name, norm_team(name), norm_team(g.get(pre + "City") or ""),
+                        norm_team(g.get(pre + "Nickname") or ""), "@" + abbr.upper()}
+                keys |= {"@" + x for x in AHL_ALIAS.get(abbr.upper(), ())}
+                for alt in keys - {"", "@"}:
+                    by.setdefault(alt, []).append(info)
+    except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError):
         return got["by"]
     SCORES_BY[code] = {"at": time.time(), "by": by}
     if code == LEAGUE["code"]:
@@ -5664,7 +5767,7 @@ _requests = requests
 HUB = {"up": None, "at": 0.0, "info": {}, "ms": None, "why": "", "armed": 0.0}
 HUB_PORT = 8765
 HUB_RECHECK_UP, HUB_RECHECK_DOWN = 30, 45
-HUB_GET_HOSTS = (KALSHI + "/", "https://site.api.espn.com/")
+HUB_GET_HOSTS = (KALSHI + "/", "https://site.api.espn.com/", "https://lscluster.hockeytech.com/")
 AUTO = _threading.local()          # set while an automatic cash-out/hedge runs (no confirm prompt)
 
 
@@ -5762,7 +5865,7 @@ class _HubResp:
 
 
 class _HubRequests:
-    """The planner's `requests`: public Kalshi and ESPN reads come from the Mac when it's up."""
+    """The planner's `requests`: public Kalshi, ESPN and AHL-feed reads come from the Mac when it's up."""
     def __init__(self, real):
         self._r = real
 
