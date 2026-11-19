@@ -85,6 +85,32 @@ def espn_events(path):
     return evs
 
 
+def _tennis(mid, ev, a, b, sets_a, sets_b, games, pts=(0, 0), done=False):
+    """Kalshi's milestone and live block for one tennis match, in the shapes its public API returns."""
+    ia, ib = f"{mid}-a", f"{mid}-b"
+    ms = {"id": mid, "type": "tennis_tournament_singles", "title": f"{a} vs {b}", "primary_event_tickers": [ev], "related_event_tickers": [ev],
+          "details": {"best_of": "3", "first_competitor_id": ia, "second_competitor_id": ib, "status": "closed" if done else "live"}}
+    rs = lambda mine, done_: [{"outcome": ("winner" if x > y else "loser") if done_ or i < len(games) - 1 else "ongoing", "score": x}
+                              for i, (x, y) in enumerate(g if mine else (g[1], g[0]) for g in games)]
+    d = {"competitor1_id": ia, "competitor2_id": ib, "competitor1_overall_score": sets_a, "competitor2_overall_score": sets_b,
+         "competitor1_round_scores": rs(True, done), "competitor2_round_scores": rs(False, done),
+         "competitor1_current_round_score": 0 if done else pts[0], "competitor2_current_round_score": 0 if done else pts[1],
+         "advantage": "", "server": "" if done else ia, "status": "closed" if done else "started",
+         "widget_status": "finished" if done else "live", "winner": (ia if sets_a > sets_b else ib) if done else "",
+         "match_status": "ended" if done else ""}
+    return ms, {"milestone_id": mid, "type": "tennis_tournament_singles", "details": d}
+
+
+def kalshi_live():
+    """The dev seed's tennis on Kalshi's live data: Sinner-Alcaraz finished, Rublev-Zverev in play (games move as time
+    passes), Djokovic-Medvedev unknown to it (so it keeps the honest 'Probably finished')."""
+    el = int(time.time() - STARTED)
+    g = 3 + (el // 40) % 3
+    out = [_tennis("ms-sinalc", "KXATPMATCH-26NOV18SINALC", "Sinner", "Alcaraz", 2, 1, [(6, 4), (3, 6), (7, 5)], done=True),
+           _tennis("ms-rubzve", "KXATPMATCH-26NOV18RUBZVE", "Rublev", "Zverev", 1, 0, [(6, 3), (g, 3)], pts=((15 * (el // 10)) % 45, 30))]
+    return {ms["related_event_tickers"][0]: ms for ms, _ in out}, {ld["milestone_id"]: ld for _, ld in out}
+
+
 def fake(method, url, params=None, port=18800):
     """The answer for one call, or None for the dev app's own address (the caller makes that one for real)."""
     try:
@@ -113,6 +139,14 @@ def fake(method, url, params=None, port=18800):
             return R({"fills": [], "settlements": [], "positions": [], "market_positions": [], "event_positions": [], "orders": [], "cursor": ""})
         if path.startswith("/communications"):
             return R({"rfqs": [], "quotes": []})
+        if path == "/milestones":
+            ms, _ = kalshi_live()
+            m = ms.get((params or {}).get("related_event_ticker"))
+            return R({"milestones": [m] if m else [], "cursor": ""})
+        if path == "/live_data/batch":
+            _, ld = kalshi_live()
+            ids = (params or {}).get("milestone_ids") or []
+            return R({"live_datas": [ld[i] for i in ([ids] if isinstance(ids, str) else ids) if i in ld]})
         return R({"multivariate_contracts": [], "series": [], "events": [], "cursor": ""})
     if "espn.com" in url:
         p = next((p for p in ESPN_PATH.values() if f"/{p}/" in url), None)

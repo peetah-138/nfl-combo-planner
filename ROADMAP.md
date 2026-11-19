@@ -99,6 +99,16 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   ESPN is asked once per 6 s however many screens are open; (3) a faster Kalshi price read for the games on screen.
   Measure with the `fresh` block on `/app/api/live` (`built`, `scores`) before changing anything else.
 
+### d. Live scores for every sport, the rest (GitHub #25; display shipped)
+- Shipped: tennis, EuroLeague and UFC scores from Kalshi's public live data, display only (see CLAUDE.md).
+- Still open: (1) **UFC in-fight detail is unverified**: no fight was live when it was built, so only the round is
+  read and the page says "no clock"; check the `/live_data` fields on the next fight night and add the clock if one
+  exists. (2) How fast Kalshi's live data updates during play is unmeasured; log it on a live match before tuning
+  the 8 s cache. (3) **Waiting on Pete:** these scores feed nothing that sells or decides a result (smart sell, early
+  results, the started-game rules still use ESPN/the AHL feed only). Letting smart sell use them (per sport) is a
+  separate opt-in. (4) Kalshi also covers the AHL (as a backup to the league feed) and cricket, darts, volleyball etc.;
+  not wired in since the AHL feed works and we don't bet those.
+
 ### e. Friends could use it (onboarding)
 - Pete wants an app friends would want to use. Today it's one person, one Mac, one Kalshi key. A friend-ready
   version needs: a guided first-run (connect Kalshi with their own key, pick sports, set a budget), plain

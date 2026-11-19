@@ -2256,12 +2256,12 @@ function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.b
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
 // ---------------- LIVE
-function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over')return '';
+function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over'||l.phase==='waiting')return '';
  const lead=l.sc?(l.sc.me-l.sc.opp):0;const ch=l.live!=null?l.live:l.chance;
  if(lead>0||(!lead&&ch!=null&&ch>=.6))return 'up';if(lead<0||(!lead&&ch!=null&&ch<=.4))return 'down';return 'live';}
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
- const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
+ const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
  return `<span class="leg ${c}" title="${tip}">${pre}${esc(short(l.name))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
@@ -2442,7 +2442,7 @@ function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
-function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'?'<span class="tag">Waiting on Kalshi</span>':'';
+function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
  const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
  return `<div class="trow srow1" data-key="s:${x.t}" data-sig="${esc(x.score||'')}" onclick="openGame('${x.t}')"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
@@ -2472,7 +2472,7 @@ function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse(
  return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'?'<span class="tag">LIVE</span>':''}</div>
+ return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>
   <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.short||g.starts||'')}`}</div>
   <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
  ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
@@ -2948,15 +2948,16 @@ function miniLine(pts,col){if(!pts||pts.length<2)return `<div class="mline"><svg
 function gameLine(g){S.gh=S.gh||{};const k=g.ticker||g.name;let h=S.gh[k]||[];const now=Date.now()/1000;   // the page keeps its own line too, for bets the Mac hasn't charted yet
  if(g.chance!=null&&(!h.length||h[h.length-1][1]!==g.chance))h=h.concat([[now,g.chance]]).slice(-240);S.gh[k]=h;
  const sp=(g.spark||[]).filter(p=>p[1]!=null);return sp.length>=2?sp.concat(h.filter(p=>p[0]>sp[sp.length-1][0])):h;}
-function gameCard(g){const live=g.state==='live'&&g.phase!=='probably_over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
+const GLIVE=g=>g.state==='live'&&!['probably_over','waiting','over'].includes(g.phase);
+function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
  const col=ch==null?'var(--acc)':ch>=.5?'var(--yes)':'var(--no)';const sg=S.gscore&&S.gscore[g.ticker||g.name];
  const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
  const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.label||'')}</span>`)].join('');
- const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
+ const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
  return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" onclick="openGame('${esc(g.ticker||'')}')">
   <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
-  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.name)}</span><span class="mine">YOURS</span>${sc&&live?`<b class="pts ${sg?'bump':''}">${sc.me}</b>`:''}</div>
-   ${g.opp?`<div class="gtr them"><span class="nm">${esc(g.opp)}</span>${sc&&live?`<b class="pts">${sc.opp}</b>`:''}</div>`:''}</div>
+  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.name)}</span><span class="mine">YOURS</span>${sc&&(live||fin)?`<b class="pts ${sg?'bump':''}">${sc.me}</b>`:''}</div>
+   ${g.opp?`<div class="gtr them"><span class="nm">${esc(g.opp)}</span>${sc&&(live||fin)?`<b class="pts">${sc.opp}</b>`:''}</div>`:''}</div>
   <div class="gl"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
    <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
   <div class="bets">${bets}<span class="rd">${money(g.pays)} riding</span></div></div>`;}
@@ -2969,9 +2970,10 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=gamesSkel();return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);
- const on=g=>g.state==='live'&&g.phase!=='probably_over',live=gs.filter(on),idle=gs.filter(g=>!on(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!idle.includes(g));
+ const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
+  +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
   +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
 async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;pushOpen('Game');await drawGame();}
@@ -2987,7 +2989,7 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
  }finally{S.gameBusy=false;}}
-const CLK_SPORTS=['nba','ncaamb','ncaawb','nhl','ahl'];
+const CLK_SPORTS=['nba','ncaamb','ncaawb','nhl','ahl','euroleague'];
 function clkNote(t,l){S.clk=S.clk||{};const sc=l.sc,m=sc&&l.state==='live'&&CLK_SPORTS.includes(l.sport)?/^(.*?)\s*(\d{1,2}):(\d{2})$/.exec(sc.detail||''):null;
  if(!m){delete S.clk[t];return;}
  const lab=m[1].trim(),secs=+m[2]*60+ +m[3],p=S.clk[t],now=Date.now();
@@ -2999,9 +3001,9 @@ function paintGame(r){const t=S.gameOpen;
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
  const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
  const plays=st.plays.slice().reverse();
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${l.state==='live'&&l.phase!=='probably_over'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
+ pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${l.state==='live'&&l.phase!=='probably_over'?'in progress':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
@@ -3330,7 +3332,10 @@ def webapp_main():
                 for i in infos if isinstance(infos, list) else [infos]:
                     if isinstance(i, dict) and str(i.get("state") or "") in ("in", "live"):
                         return True
-        return False
+        try:                                     # tennis, EuroLeague, UFC (Kalshi's live data, display only)
+            return bool(A.kalshi_live_on())
+        except Exception:
+            return False
 
     def live_limit():
         return LIVE_FAST if LIVE.get("fast") else LIVE_SLOW
@@ -3554,13 +3559,19 @@ def webapp_main():
                     A.fetch_scores(code=code)
                 except Exception:
                     pass
+            try:                                        # tennis, EuroLeague, UFC: Kalshi's live data (display only)
+                A.kalshi_live_refresh({e for e in on if A.ticker_sport(e) in A.KLIVE_SPORTS})
+            except Exception:
+                pass
             for e, sides in games.items():
                 teams = [x for x in sides if not x.get("tie")]
                 sc = None
                 if e in on and teams:
                     try:
-                        x = A.leg_score({"ticker": teams[0]["ticker"], "side": "yes"})
+                        x = A.display_score({"ticker": teams[0]["ticker"], "side": "yes"}, pre=True)
                         sc = {k: x.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail", "state")} if x else None
+                        if sc and x.get("src") == "kalshi" and x.get("state") == "pre":   # due, but not begun yet
+                            sc.update(me=None, opp=None, detail="Not started yet")
                     except Exception:
                         sc = None
                 board.append({"event": e, "start": A.KICKOFF.get(e), "label": A.start_label(e), "sc": sc,
