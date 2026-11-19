@@ -53,11 +53,14 @@ with sync_playwright() as pw:
     while not os.path.exists(A.REBUILD_FLAG) and time.time() - t0 < 4: time.sleep(.1)
     check("Look now asks the Mac (flag written)", os.path.exists(A.REBUILD_FLAG))
     check("page shows it's starting", wait(pg, "/Putting together a fresh panel/.test($('#pblock').innerText)&&/Starting/.test($('#pblock').innerText)", 6))
-    pg.evaluate("window.__card=document.querySelector('#pblock .rbcard')")
     # the Mac picks it up and works through the sports
     A.rebuild_asked(); A._rebuild_note(state="running", at=time.time(), sport="nba", i=1, n=6)
     check("progress names the sport and count", wait(pg, "/Looking at NBA… 2 of 6 sports/.test($('#pblock').innerText)", 6))
     check("progress bar moved", pg.evaluate("parseFloat(document.querySelector('#pblock .rbtrack i').style.width)") > 10)
+    wait(pg, "!S.rbBusy", 3); time.sleep(.5)           # the tap's own page load has finished by now
+    pg.evaluate("window.__card=document.querySelector('#pblock .rbcard')")
+    A._rebuild_note(state="running", at=time.time(), sport="nhl", i=2, n=6)
+    check("next sport shows", wait(pg, "/Looking at NHL… 3 of 6 sports/.test($('#pblock').innerText)", 6))
     check("progress redraws in place (no full page redraw)", pg.evaluate("window.__card===document.querySelector('#pblock .rbcard')"))
     A._rebuild_note(state="running", at=time.time(), sport="", i=6, n=6, step="choosing")
     check("then says it's picking the mix", wait(pg, "/Picking the best mix/.test($('#pblock').innerText)", 6))
