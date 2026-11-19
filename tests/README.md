@@ -39,7 +39,8 @@ pattern in a local `.git/hooks/pre-commit`.
   (`t_kalshi_live.py`: real response shapes in `fixtures/kalshi_live.json`, sides, caching, backoff, and a source check
   that no buy/sell function reads it), display-code robustness (`t_robust.py`: a malformed or slow live feed never stops or delays auto
   cash-out, caches pruned, the web app's capped tap lock and shared request limit), settings cleanup (removed `sell_own`; `stop_loss` kept as a
-  labelled manual override), the stop-loss guards (`t_stoploss.py`: late enough, fresh score, no break, big fall,
+  labelled manual override), the learned loss cut's guards (`t_cutloss.py`: the same guards for combos and singles, never borrowed, held cuts
+  logged, the replay only cuts where the guards held, Pause/Ride it out win), the stop-loss guards (`t_stoploss.py`: late enough, fresh score, no break, big fall,
   confirmed over 3+ minutes, per-league learning that never loosens on borrowed data, off/paused never sells), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
   reaches web push, deduped; nothing trades), per-league learning
