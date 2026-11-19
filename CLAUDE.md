@@ -104,7 +104,8 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, per-league learning, the secure address and web
+  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
+  (`t_kalshi_live`; page test `test_klive`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
@@ -124,6 +125,21 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
+- **Tennis, EuroLeague and UFC scores come from Kalshi's public live data (GitHub #25), display only.** No key, no
+  account endpoints: `GET /milestones?related_event_ticker=<event>` maps a game to its milestone (cached 6 h, a miss
+  15 min, at most 8 new lookups a refresh) and one `GET /live_data/batch?milestone_ids=...` per refresh covers every
+  game under way (cached like ESPN, `SCORES_MAX_AGE`; last good copy kept; 429/5xx/unreachable pauses 15 s doubling
+  to 10 min, Retry-After honoured; sent straight to Kalshi with only an Accept header, never through the hub).
+  `kalshi_score` returns leg_score's shape from the pick's side (side from the event code: tennis/UFC list the first
+  competitor first, team games are "Away at Home"; can't tell → nothing shown). Tennis: sets as the score, detail
+  "Set 2 of 3 · 4–3 · 30–15 · serving", finals "6–2 7–6"; EuroLeague: points, "Q3 4:18" / "End Q1" / "Half" / "Final"
+  (its clock ticks on the game sheet like the NBA's); UFC: no points, the note says "Round 2 of 3 · no clock" (in-fight
+  fields unverified) or "Fight over · Decision · R5 · waiting on Kalshi to settle". **Isolation rule:** only
+  `display_score` (the Live legs, the combo row, the game strip, the Build board, singles' display fields) reads it;
+  `leg_score`, `fetch_scores`, `SCORES_BY`, `pick_state`, `started`, early results (`final_result`), singles' `state`
+  and their order, smart sell and every buy/sell/panel path never do (`t_kalshi_live` checks the sources). Tick
+  sampling ignores a Kalshi score so smart-sell tuning's replays are unchanged. Fixtures of the real shapes:
+  `tests/suite/fixtures/kalshi_live.json`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -198,7 +214,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
   them under "Probably finished"). Display only: `pick_state` and all money logic are unchanged, the pick stays open
-  until Kalshi settles it. Live scoring for those sports is a separate roadmap item (GitHub #25).
+  until Kalshi settles it. Tennis, EuroLeague and UFC now usually have Kalshi's live data instead (above), so these
+  words are the fallback when it has nothing. With a score source, `run_status` also says "Not started yet · was due
+  20 min ago" (phase `waiting`: a match running late is never shown as live; the combo row says "Not started yet")
+  and "Match/Fight/Game over · <score> · waiting on Kalshi to settle" (phase `over`; the Games tab files these under
+  "Finished", not "Playing now").
 - **Fast live numbers (display only, GitHub #21).** The web app keeps a league's scores for 8 s while any game is
   live (30 s when none; `A.SCORES_MAX_AGE` in `webapp_main`, the old default was 45 s) and rebuilds the Live snapshot
   when it is older than 8 s (30 s idle) and serves the **fresh** one, not the one-refresh-behind copy; if a build

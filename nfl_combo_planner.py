@@ -4574,6 +4574,11 @@ def open_singles(max_age=30):
             mk.update({m.get("ticker"): m for m in r.json().get("markets", [])})
         except (requests.RequestException, ValueError):
             mk.update({t: SINGLES["mk"][t] for t in chunk if t in SINGLES["mk"]})
+    try:                                             # display only: scores for tennis, EuroLeague, UFC
+        kalshi_live_refresh(klive_events([{"ticker": t, "event": game_event((mk.get(t) or {}).get("event_ticker") or "")}
+                                          for t, _, _ in held if not (mk.get(t) or {}).get("result")]))
+    except Exception as err:
+        print("kalshi live data:", type(err).__name__, err)
     out = []
     for t, n, p in held:
         m = mk.get(t) or {}
@@ -4602,23 +4607,36 @@ def open_singles(max_age=30):
         state = "done" if res else "over" if status in ("closed", "settled", "finalized", "determined") else \
             "live" if live else "pre"
         rs = None                                   # started, nothing settled it, no live score: say so honestly
+        ksc = None                                  # tennis, EuroLeague, UFC: Kalshi's live data, shown only
+        if not sc and code in KLIVE_SPORTS:         # (state, and so smart sell, stay exactly as before)
+            try:
+                ksc = kalshi_score({"ticker": t, "side": side})
+            except Exception:
+                ksc = None
         if state == "pre":
+            ks_detail = (ksc or {}).get("detail", "") if ksc and (ksc.get("me") is None or ksc["state"] == "post") else ""
             rs = run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
-                            score_state=(sc or {}).get("state"))
+                            score_state=(sc or ksc or {}).get("state"), detail=ks_detail)
+        dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
                     "opp": (sc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
-                    "sc": {k: sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if sc else None,
+                    "sc": {k: dsc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if dsc else None,
+                    "on": bool(ksc and not sc and ksc["state"] == "in"),       # display: Kalshi's data says it's playing
+                    "src": "kalshi" if ksc and not sc else "",
                     "kind": kind, "sport": code, "side": side, "label": label or m.get("title") or t,
                     "game": (m.get("title") or "").strip(), "event": m.get("event_ticker") or "",
                     "n": round(n, 2), "cost": round(cost, 2), "pays": round(n, 2),
                     "worth": round(n * bid, 2) if bid is not None else None,
                     "chance": round(chance, 4) if chance is not None else None, "state": state, "res": res,
-                    "score": re.sub(r"<[^>]+>", "", score_line(sc)) if sc and state != "pre" else "",
+                    "score": re.sub(r"<[^>]+>", "", score_line(sc)) if sc and state != "pre" else
+                    re.sub(r"<[^>]+>", "", score_line(dsc)) if dsc and dsc["state"] in ("in", "post") else "",
                     "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" and not rs else "",
                     "note": (rs or {}).get("text", ""), "phase": (rs or {}).get("phase", ""),
                     "short": (rs or {}).get("short", ""),
-                    "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else "",
+                    "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else
+                    _single_how(kind, side, _line_num(yes_sub), dsc)       # tennis lines count games, not the sets shown
+                    if dsc and not sc and dsc["state"] in ("in", "post") and (code != "tennis" or kind == "win") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
     mine = self_sell_set()
@@ -4630,7 +4648,7 @@ def open_singles(max_age=30):
             x["sell_at"] = round(fl, 2) if fl and (x.get("chance") or 0) >= 0.5 else None
         except Exception:
             x["sell_at"] = None
-    out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))
+    out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))   # order kept: smart sell walks it
     SINGLES.update(at=time.time(), items=out, mk=mk)
     return out
 
@@ -5381,27 +5399,322 @@ def ago_text(secs):
     return f"{d} day{'s' if d != 1 else ''}"
 
 
-def run_status(sport, started_at, now=None, score_state=None):
+def run_status(sport, started_at, now=None, score_state=None, detail=""):
     """Honest status for a game that has started but that Kalshi hasn't settled.
-    None if it hasn't started. Otherwise {"phase": "on" | "probably_over" | "over", "text": ...}:
-    "on" while a score says so or while it is within a sport-typical length; "probably_over" after that when
-    there is no score to say otherwise (the pick stays open until Kalshi settles it); "over" when the score
-    source says it finished."""
+    None if it hasn't started. Otherwise {"phase": "on" | "waiting" | "probably_over" | "over", "text": ...}:
+    "on" while a score says so or while it is within a sport-typical length; "waiting" when the score source says
+    it hasn't begun yet although its scheduled time has passed (tennis matches often run late); "probably_over"
+    after a sport-typical length when there is no score to say otherwise (the pick stays open until Kalshi settles
+    it); "over" when the score source says it finished. `detail` is what the score source says, for sports whose
+    feed has no points to show (a UFC fight's round). Display only: nothing that buys or sells reads this."""
     if not started_at:
         return None
     now = now or dt.datetime.now(dt.timezone.utc)
     secs = (now - started_at).total_seconds()
     if secs < 0:
         return None
+    word = {"tennis": "Match", "ufc": "Fight"}.get(sport, "Game")
     if score_state == "in":
-        return {"phase": "on", "text": "", "short": ""}
+        return {"phase": "on", "text": detail or "", "short": detail or ""}
     if score_state == "post":
-        return {"phase": "over", "text": "Game over · waiting on Kalshi to settle", "short": "Game over"}
+        return {"phase": "over", "text": f"{word} over · {detail + ' · ' if detail else ''}waiting on Kalshi to settle",
+                "short": f"{word} over"}
+    if score_state == "pre":
+        return {"phase": "waiting", "text": f"Not started yet · was due {ago_text(secs)} ago", "short": "Not started yet"}
     ago = ago_text(secs)
     if secs / 3600.0 < DONE_HOURS.get(sport, 3.5):
         return {"phase": "on", "text": f"Started {ago} ago · no live score", "short": f"Started {ago} ago"}
     return {"phase": "probably_over", "text": f"Probably finished · started {ago} ago, waiting on Kalshi",
             "short": "Probably over"}
+
+
+# ---------------------------------------------------------------- Kalshi's own live game data (display only)
+# ESPN has nothing for tennis, EuroLeague or UFC. Kalshi's public API has the live score block its own app shows
+# (no key, no account: /milestones maps a game's event ticker to its "milestone", /live_data/batch returns up to
+# 100 milestones' scores in one call). It is used ONLY to show scores: leg_score, fetch_scores and SCORES_BY (which
+# smart sell, auto cash-out, early results and the started-game rules read) never see it. Light by design: one
+# milestone lookup per game (kept for hours), one batch call per refresh for every game under way, the last good
+# copy kept when Kalshi is slow or says 429, and a growing pause after failures.
+KLIVE_SPORTS = ("tennis", "euroleague", "ufc")
+KLIVE = {"ms": {}, "live": {}, "cool": 0.0, "fails": 0}       # event -> milestone; milestone id -> {"at", "d"}
+KLIVE_MS_TTL, KLIVE_MS_MISS, KLIVE_NEW_MAX = 6 * 3600, 900, 8   # keep a mapping 6h, a "none found" 15 min; 8 lookups a refresh
+KLIVE_HDR = {"Accept": "application/json"}                       # public reads, sent straight to Kalshi (no key)
+
+
+def _klive_fail(r=None):
+    """Kalshi said no (429/5xx) or couldn't be reached: pause 15s, 30s, 60s ... up to 10 min (or its Retry-After)."""
+    import time
+    KLIVE["fails"] += 1
+    wait = min(600, 15 * 2 ** (KLIVE["fails"] - 1))
+    try:
+        wait = max(wait, min(900, float((getattr(r, "headers", None) or {}).get("Retry-After"))))
+    except (TypeError, ValueError):
+        pass
+    KLIVE["cool"] = time.time() + wait
+
+
+def _klive_sides(m):
+    """(first id, second id) of a milestone, in the order its title and Kalshi's event code name them:
+    tennis and UFC list the first competitor first; team games read 'Away at Home'."""
+    d = m.get("details") or {}
+    if d.get("first_competitor_id"):
+        return d.get("first_competitor_id"), d.get("second_competitor_id")
+    if d.get("first_fighter_id"):
+        return d.get("first_fighter_id"), d.get("second_fighter_id")
+    if " at " in (m.get("title") or "") or d.get("away_team_id"):
+        return d.get("away_team_id"), d.get("home_team_id")
+    return None, None
+
+
+def kalshi_milestone(event, now=None):
+    """Kalshi's milestone for one game's event ticker (cached), or None. Never retried within the miss window."""
+    import time
+    now = now or time.time()
+    got = KLIVE["ms"].get(event)
+    if got and now - got["at"] < (KLIVE_MS_TTL if got.get("id") else KLIVE_MS_MISS):
+        return got if got.get("id") else None
+    if now < KLIVE["cool"]:
+        return got if got and got.get("id") else None
+    try:
+        r = requests.get(f"{KALSHI}/milestones", params={"related_event_ticker": event, "limit": 10},
+                         headers=KLIVE_HDR, timeout=6)
+        if r.status_code == 429 or r.status_code >= 500:
+            _klive_fail(r)
+            return got if got and got.get("id") else None
+        ms = (r.json().get("milestones") or []) if r.ok else []
+    except (requests.RequestException, ValueError, AttributeError):
+        _klive_fail()
+        return got if got and got.get("id") else None
+    KLIVE["fails"] = 0
+    pick = next((m for m in ms if event in (m.get("primary_event_tickers") or [])), None) or \
+        next((m for m in ms if event in (m.get("related_event_tickers") or [])), None)
+    if not pick or not pick.get("id"):
+        KLIVE["ms"][event] = {"at": now, "id": None}
+        return None
+    first, second = _klive_sides(pick)
+    KLIVE["ms"][event] = {"at": now, "id": pick["id"], "type": pick.get("type") or "", "title": pick.get("title") or "",
+                          "first": first, "second": second, "start": pick.get("start_date") or "",
+                          "rounds": (pick.get("details") or {}).get("fight_length") or (pick.get("details") or {}).get("best_of")}
+    return KLIVE["ms"][event]
+
+
+def kalshi_live_refresh(events, max_age=None):
+    """Bring Kalshi's live data up to date for these games' event tickers (only sports ESPN lacks). One batch call
+    for all of them; at most KLIVE_NEW_MAX new milestone lookups per call. Quietly keeps the last good copy."""
+    import time
+    now = time.time()
+    max_age = max(SCORES_MAX_AGE if max_age is None else max_age, 5)
+    evs = sorted({e for e in events if e and ticker_sport(e) in KLIVE_SPORTS})
+    if not evs or now < KLIVE["cool"]:
+        return 0
+    ids, new = [], 0
+    for e in evs:
+        known = KLIVE["ms"].get(e)
+        if not known:
+            if new >= KLIVE_NEW_MAX:
+                continue
+            new += 1
+        m = kalshi_milestone(e, now)
+        if m and m.get("id"):
+            ids.append(m["id"])
+        if now < KLIVE["cool"]:
+            break
+    stale = sorted({i for i in ids if now - (KLIVE["live"].get(i) or {}).get("at", 0) >= max_age})
+    for k in range(0, len(stale), 100):
+        try:
+            r = requests.get(f"{KALSHI}/live_data/batch", params={"milestone_ids": stale[k:k + 100]},
+                             headers=KLIVE_HDR, timeout=6)
+            if r.status_code == 429 or r.status_code >= 500:
+                _klive_fail(r)
+                break
+            rows = r.json().get("live_datas") if r.ok else None
+            if not isinstance(rows, list):
+                continue                                    # odd answer: keep the last good copy
+        except (requests.RequestException, ValueError, AttributeError):
+            _klive_fail()
+            break
+        KLIVE["fails"] = 0
+        seen = set()
+        for x in rows:
+            if isinstance(x, dict) and x.get("milestone_id") and isinstance(x.get("details"), dict):
+                KLIVE["live"][x["milestone_id"]] = {"at": time.time(), "d": x["details"], "type": x.get("type") or ""}
+                seen.add(x["milestone_id"])
+        for i in set(stale[k:k + 100]) - seen:          # no live block yet (not begun): note it, ask again next time
+            if not (KLIVE["live"].get(i) or {}).get("d"):
+                KLIVE["live"][i] = {"at": time.time(), "d": None, "type": ""}
+    return len(stale)
+
+
+def _kclock(t):
+    """'07:42' -> '7:42', '00:45' -> '0:45'."""
+    t = str(t or "").strip()
+    m = re.match(r"^(\d+):(\d{2})", t)
+    return f"{int(m.group(1))}:{m.group(2)}" if m else t
+
+
+def _kstate(d):
+    w = str(d.get("widget_status") or "").lower()
+    st = str(d.get("status") or "").lower()
+    if w == "finished" or st in ("closed", "finished", "ended", "complete", "completed") or \
+            str(d.get("match_status") or "").lower() in ("ended", "postgame", "finished") or d.get("winner"):
+        return "post"
+    return "in" if w == "live" or st in ("started", "inprogress", "in_progress", "live") else "pre"
+
+
+def _ktennis(d, mine_first, n_sets):
+    """(sets me, sets them, detail) for a tennis match from my side."""
+    a, b = ("competitor1", "competitor2") if mine_first else ("competitor2", "competitor1")
+    me_id = d.get(a + "_id")
+    ra, rb = d.get(a + "_round_scores") or [], d.get(b + "_round_scores") or []
+    sets = [(int(x.get("score") or 0), int(y.get("score") or 0)) for x, y in zip(ra, rb)]
+    if _kstate(d) == "post":
+        return int(d.get(a + "_overall_score") or 0), int(d.get(b + "_overall_score") or 0), \
+            " ".join(f"{x}–{y}" for x, y in sets) or "Final"
+    if not sets:
+        return int(d.get(a + "_overall_score") or 0), int(d.get(b + "_overall_score") or 0), ""
+    gm, go = sets[-1]
+    pa, pb = d.get(a + "_current_round_score"), d.get(b + "_current_round_score")
+    adv = d.get("advantage") or ""
+    pts = ""
+    if adv:
+        pts = "AD–40" if adv == me_id else "40–AD"
+    elif pa or pb:
+        pts = f"{pa or 0}–{pb or 0}"
+    text = f"Set {len(sets)}{' of ' + str(n_sets) if n_sets else ''} · {gm}–{go}" + (f" · {pts}" if pts else "")
+    if d.get("server") and d.get("server") == me_id:
+        text += " · serving"
+    return int(d.get(a + "_overall_score") or 0), int(d.get(b + "_overall_score") or 0), text
+
+
+def _khoops(d, mine_first):
+    me, opp = (d.get("away_points"), d.get("home_points")) if mine_first else (d.get("home_points"), d.get("away_points"))
+    per = int(d.get("period") or 0)
+    phase = str(d.get("match_status") or d.get("genius_phase") or "")
+    state = _kstate(d)
+    if state == "post":
+        detail = "Final" + (" OT" if per > 4 else "")
+    elif state == "pre":
+        detail = ""
+    elif "half" in phase.lower():
+        detail = "Half"
+    elif phase.startswith("Before") and per:
+        detail = f"End Q{per}" if per <= 4 else "End OT"
+    else:
+        detail = f"{'OT' if per > 4 else 'Q' + str(per or 1)} {_kclock(d.get('period_remaining_time'))}".strip()
+    return int(me or 0), int(opp or 0), detail
+
+
+def _kfight(d, rounds):
+    """What a UFC fight's feed says. The in-fight fields are unverified (no fight was live when this was built), so
+    only the round is read, and the clock only if a field for it turns up; never a made-up clock."""
+    state = _kstate(d)
+    if state == "post":
+        how = str(d.get("method_of_victory") or "").strip()
+        r, t = d.get("final_round") or d.get("current_round"), str(d.get("final_round_time_left") or "").strip()
+        return " · ".join(x for x in (how, f"R{r}" + (f" {t}" if t and t not in ("0:00", "00:00") else "") if r else "") if x)
+    if state == "in":
+        r = d.get("current_round")
+        clock = next((_kclock(d[k]) for k in ("current_round_time_left", "round_time_left", "time_left", "clock")
+                      if d.get(k)), "")
+        return (f"Round {r}{' of ' + str(rounds) if rounds else ''}" if r else "In progress") + \
+            (f" · {clock} left" if clock else " · no clock")
+    return ""
+
+
+def kalshi_score(l, max_age=900):
+    """The score of the game this pick is on, from Kalshi's live data, shaped like leg_score's (from the side the pick
+    needs), or None. Only for sports ESPN lacks; None when the data is missing, older than `max_age` seconds, or the
+    pick can't be matched to a side for sure. Points are None for a fight (no score to show, only its round)."""
+    import time
+    t = l.get("ticker") or ""
+    code = ticker_sport(t)
+    if code not in KLIVE_SPORTS or "-" not in t:
+        return None
+    ev, suffix = t.rsplit("-", 1)
+    m = KLIVE["ms"].get(ev)
+    if not m or not m.get("id"):
+        return None
+    got = KLIVE["live"].get(m["id"])
+    if not got or not got.get("d") or time.time() - got["at"] > max_age:
+        return None
+    d = got["d"]
+    mt = re.search(r"-\d{2}[A-Z]{3}\d{2}(?:\d{4})?([A-Z0-9]+)$", ev)
+    tail = mt.group(1) if mt else ""
+    side_of_tail = None
+    for team in dict.fromkeys((suffix.upper(), re.sub(r"\d+$", "", suffix.upper()))):   # a spread's "RMA5" -> "RMA"
+        if not team or team.isdigit() or not tail:
+            continue
+        if tail.startswith(team) and not tail.endswith(team):
+            side_of_tail = (True, team, tail[len(team):])
+        elif tail.endswith(team) and not tail.startswith(team):
+            side_of_tail = (False, team, tail[:-len(team)])
+        if side_of_tail:
+            break
+    if "TOTAL" in ev.upper() or (not side_of_tail and re.sub(r"[\d.]+", "", suffix) == ""):
+        first, mine_code, opp_code = True, tail[:len(tail) // 2], tail[len(tail) // 2:]   # a total: no side, read from the first
+    elif side_of_tail:
+        first, mine_code, opp_code = side_of_tail
+    else:
+        return None                                                  # can't tell which side: say nothing
+    if l.get("side", "yes") == "no" and "TOTAL" not in ev.upper():
+        first, mine_code, opp_code = not first, opp_code, mine_code
+    state = _kstate(d)
+    kind = (got.get("type") or m.get("type") or "")
+    me = opp = None
+    if kind.startswith("tennis"):
+        mine_id = m["first"] if first else m["second"]
+        mine_first = d.get("competitor1_id") == mine_id if d.get("competitor1_id") and mine_id else first
+        me, opp, detail = _ktennis(d, mine_first, m.get("rounds"))
+    elif kind.startswith("basketball"):
+        me, opp, detail = _khoops(d, first)
+    elif kind.startswith("mma"):
+        detail = _kfight(d, m.get("rounds"))
+    else:
+        return None
+    win = d.get("winner") or ""
+    mine_id = m["first"] if first else m["second"]
+    return {"me": me, "opp": opp, "abbr": mine_code, "opp_abbr": opp_code, "opp_name": "", "state": state,
+            "detail": detail, "start": m.get("start") or "", "ball": False, "redzone": False, "sport": code,
+            "game": m["id"], "day": ticker_day(t), "wp": None, "frac": None, "src": "kalshi",
+            "won": (win == mine_id) if (state == "post" and win and mine_id) else None,
+            "delayed": bool(d.get("live_data_delayed")), "age": round(time.time() - got["at"])}
+
+
+def klive_events(legs, side_of=None, soon=15 * 60):
+    """Event tickers of these picks worth asking Kalshi's live data about: sports ESPN lacks, games that have
+    started or start within `soon` seconds (or whose start is unknown)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    out = set()
+    for l in legs:
+        t = l.get("ticker") or ""
+        if ticker_sport(t) not in KLIVE_SPORTS or "-" not in t:
+            continue
+        try:
+            st = leg_start(l, side_of or {})
+        except Exception:
+            st = None
+        if st is None or (st - now).total_seconds() < soon:
+            out.add(t.rsplit("-", 1)[0])
+    return out
+
+
+def display_score(l, points=True, pre=False):
+    """The score to SHOW for a pick: the usual source (ESPN / the AHL feed) first, then Kalshi's live data for the
+    sports ESPN lacks. Display only: anything that buys, sells or decides a result calls leg_score instead.
+    With points=True a record with no points (a UFC fight) is left out; with pre=False so is a Kalshi record for a
+    game that hasn't begun (it has nothing to show but that)."""
+    sc = leg_score(l)
+    if sc:
+        return sc
+    sc = kalshi_score(l)
+    return sc if sc and (not points or sc.get("me") is not None) and (pre or sc["state"] != "pre") else None
+
+
+def kalshi_live_on():
+    """Is any game in Kalshi's live data (the display-only copy) under way right now?"""
+    import time
+    now = time.time()
+    return any(now - v["at"] < 300 and v.get("d") and _kstate(v["d"]) == "in" for v in list(KLIVE["live"].values()))
 
 
 def when_label(t):
@@ -6593,6 +6906,11 @@ def mine_page(live=False):
     for code in {ticker_sport(l["ticker"]) for a in mine for l in a["legs"]} | {LEAGUE["code"]}:
         if code:
             fetch_scores(code=code)
+    try:                                       # tennis, EuroLeague, UFC: Kalshi's live data, for display only
+        kalshi_live_refresh(klive_events([l for a in mine if a["status"] == "pending" for l in a["legs"]
+                                          if not results.get(l["ticker"])], side_of))
+    except Exception as err:
+        print("kalshi live data:", type(err).__name__, err)
 
     def final_result(l):
         """'yes'/'no' for the bettor once ESPN shows the game final, before Kalshi settles it
@@ -6773,7 +7091,7 @@ def mine_page(live=False):
                         lp = 1 - lp
                     tag = "<span class='tag bad'>In progress</span>"
                     pct = f"<span style='font-size:12px;font-weight:500' class='muted'>live</span> {lp:.0%}" if lp else ""
-            sline = score_line(leg_score(l)) if not res else ""
+            sline = score_line(display_score(l)) if not res else ""
             if sline:
                 sub = sline
             elif not res and start_label(l.get("event") or "") and pick_state(l, side_of) not in ("live", "over"):
@@ -6789,13 +7107,18 @@ def mine_page(live=False):
             _lp = (MARKET_INFO.get(l["ticker"]) or {}).get("live") if _st == "live" else None
             if _lp is not None and l.get("side", "yes") == "no":
                 _lp = 1 - _lp
-            _sc = leg_score(l) if not res else None
-            _rs = (run_status(ticker_sport(l["ticker"]), leg_start(l, side_of),
-                              score_state=(_sc or {}).get("state")) if _st == "live" else None)
+            _sc = display_score(l, points=False, pre=True) if not res else None   # display only (Kalshi's data for tennis etc.)
+            _ks = bool(_sc and _sc.get("src") == "kalshi")
+            _rs = (run_status(ticker_sport(l["ticker"]), leg_start(l, side_of), score_state=(_sc or {}).get("state"),
+                              detail=_sc["detail"] if _ks and (_sc.get("me") is None or _sc["state"] == "post") else "")
+                   if _st == "live" else None)
+            if _ks and (_sc.get("me") is None or _sc["state"] == "pre"):   # a fight (its round is in the note) or not begun
+                _sc = None
             vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
                           "state": _st, "phase": (_rs or {}).get("phase", ""), "note": (_rs or {}).get("text", ""),
                           "short": (_rs or {}).get("short", ""), "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
                           "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
+                          "src": "kalshi" if _ks else "",
                           "starts": start_label(l.get("event") or "") if not res else "",
                           "sport": ticker_sport(l["ticker"]) or "other", "side": l.get("side", "yes"),
                           "url": game_url(l["ticker"]) if (l["ticker"] or "").startswith(tuple(GAME_SLUG)) else ""})
@@ -6816,8 +7139,11 @@ def mine_page(live=False):
         # games on with no score for longer than a game takes: say so, don't claim "Live now" for ever
         gone_live = any_live and all(v["phase"] in ("probably_over", "over") for v in vlegs
                                      if v["state"] == "live" and not v["res"])
-        when = (("Probably finished" if gone_live else "Live now") if any_live else when_label(nxt)) \
-            if group == "pending" else ""
+        # a score source says the "started" games haven't begun (a tennis match running late): don't say "Live now"
+        late = any_live and not gone_live and all(v["phase"] in ("waiting", "probably_over", "over") for v in vlegs
+                                                  if v["state"] == "live" and not v["res"])
+        when = (("Probably finished" if gone_live else "Not started yet" if late else "Live now") if any_live
+                else when_label(nxt)) if group == "pending" else ""
         dots = "".join({"yes": "<i class='d w'></i>", "no": "<i class='d l'></i>"}.get(r, "<i class='d o'></i>")
                        for _, (_, _, _, r) in legs_sorted)
         sort_t = 0 if any_live and not gone_live else (nxt.timestamp() if nxt else 9e12)
@@ -6831,8 +7157,8 @@ def mine_page(live=False):
             preview = ("Needs " if len(need_names) < len(legs_sorted) else "") + " · ".join(need_names[:3]) + (
                 f" · +{len(need_names) - 3}" if len(need_names) > 3 else "")
         # what the row says: the live score if a game is on, else what it still needs and when
-        live_sc = next((leg_score(l) for l, (_, _, _, r) in legs_sorted if not r and pick_state(l, side_of) == "live"
-                        and leg_score(l)), None)
+        live_sc = next((display_score(l) for l, (_, _, _, r) in legs_sorted if not r and pick_state(l, side_of) == "live"
+                        and display_score(l)), None)
         if group == "pending" and live_sc:
             context = (f"<span class='lv'>{e(live_sc['abbr'])} {live_sc['me']}–{live_sc['opp']} "
                        f"{e(live_sc['opp_abbr'])} · {e(live_sc['detail'])}</span>")
@@ -6934,7 +7260,7 @@ def mine_page(live=False):
             if r:
                 continue
             ev = l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0]
-            sc_l = leg_score(l)
+            sc_l = display_score(l)                  # the game strip is display only
             g = games.setdefault(ev, {"n": set(), "sc": sc_l, "nm": nm, "t": leg_start(l, side_of),
                                       "sp": ticker_sport(l["ticker"]) or "other", "mine": set()})
             g["n"].add(a["ticker"])
@@ -12241,7 +12567,9 @@ def record_view(view):
             key = ("tick", lg["ticker"])
             sc = lg.get("sc") or {}
             pts = (sc.get("me"), sc.get("opp")) if sc else None
-            sig = (round(ch or 0, 3), lg.get("state"), lg.get("score") or "")
+            # a Kalshi-data score (display only) never changes how often prices are recorded: smart sell's tuning
+            # replays these ticks, so they're sampled exactly as before
+            sig = (round(ch or 0, 3), lg.get("state"), (lg.get("score") or "") if lg.get("src") != "kalshi" else "")
             prev = last.get(key)
             if not prev or prev[1] != sig and now - prev[0] > 4 or now - prev[0] > 300:
                 last[key] = (now, sig)

@@ -35,7 +35,9 @@ pattern in a local `.git/hooks/pre-commit`.
 - **compile, JavaScript syntax, undefined names, secret grep.**
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
   Kalshi bets, never buying started games, smart sell for singles, the combo lab and analytics, self-tuning smart
-  sell, AHL, AHL live scores (the league's feed, faked), settings cleanup (removed `sell_own`; `stop_loss` kept as a
+  sell, AHL, AHL live scores (the league's feed, faked), tennis/EuroLeague/UFC scores from Kalshi's public live data
+  (`t_kalshi_live.py`: real response shapes in `fixtures/kalshi_live.json`, sides, caching, backoff, and a source check
+  that no buy/sell function reads it), settings cleanup (removed `sell_own`; `stop_loss` kept as a
   labelled manual override), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
   reaches web push, deduped; nothing trades), per-league learning
@@ -50,7 +52,8 @@ pattern in a local `.git/hooks/pre-commit`.
   distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
   ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
-  ticking clock).
+  ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
+  EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.
 
 ## Writing tests
 
