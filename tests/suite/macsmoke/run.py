@@ -1,7 +1,7 @@
 """Simulated Mac: the real watcher (main loop, hub, shadow, panel, history, updates) against fake Kalshi/ESPN/
 GitHub for ~60 seconds with sleeps sped up. Fails on any 'failed', 'skipped', 'Traceback' or error in the log,
 and checks that a newer version on GitHub gets installed."""
-import os, sys, json, time, shutil, tempfile, threading, datetime as dt, re, importlib.util, traceback
+import os, sys, json, shutil, tempfile, threading, datetime as dt, re, importlib.util, traceback
 SP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.environ.get("REPO") or os.path.dirname(os.path.dirname(SP))
 home = tempfile.mkdtemp(prefix="macsim")

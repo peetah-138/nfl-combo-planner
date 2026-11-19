@@ -2294,7 +2294,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             f"<div class='meta'>fair payout · {chance} chance · {len(c['legs'])} picks</div>{est_line}"
             + (f"<div class='muted' style='font-size:12px;margin-top:2px'>Your {CFG['accept_pct']}% cut-off: "
                f"<span class='minv'>{money(c['min'])}</span></div>" if can_trade() else "") + "</div>"
-            f"<div class='side'>"
+            "<div class='side'>"
             + ("" if can_trade() else f"<label class='placed'><input type='checkbox' onchange='tog({i})'><span>Placed</span></label>")
             + "</div></div>"
             f"<div class='min'{HIDE if can_trade() else ''}>Take Kalshi's offer if it's at least <b class='{'minv0' if can_trade() else 'minv'}'>{money(c['min'])}</b>"
@@ -2311,7 +2311,7 @@ def render(build_id, combos, games, all_games, days, sunday, p_any, p_each,
             + (lambda nd: f" · {nd} underdog{'s' * (nd != 1)}" if nd else "")(
                 sum(1 for l in c['legs'] if l['fair'] < other_side(all_games[l['event']], l)['fair']))
             + (" · " + " ".join(sorted({sport_icon(l["ticker"]) for l in c["legs"]})) if is_mix() else "")
-            + f"<span class='muted' style='font-weight:400'> · see all</span></span></summary>" + decision_html(c["legs"]) + "<ol>")
+            + "<span class='muted' style='font-weight:400'> · see all</span></span></summary>" + decision_html(c["legs"]) + "<ol>")
         for n, l in enumerate(sorted(c["legs"], key=lambda l: (start_key(l["event"]), order[l["event"]])), 1):
             other = other_side(all_games[l["event"]], l)
             tags = ""
@@ -2786,7 +2786,7 @@ def results_page(sunday):
             + (f" Another {money(tot['live_staked'])} is still live." if tot["live"] else "") + "</div>"
             f"<div style='font-size:14px;margin-top:6px'>{int(tot['won'])} won · {int(tot['cashed'])} cashed out · "
             f"{int(tot['lost'])} lost · {int(tot['live'])} live</div>"
-            + (f"<div class='muted' style='font-size:13px;margin-top:4px'>Your cash-outs: "
+            + ("<div class='muted' style='font-size:13px;margin-top:4px'>Your cash-outs: "
                + ", ".join(x for x in [
                    f"{int(tot['hs_won'])} would have won ({money(tot['hs_pay'])})" if tot["hs_won"] else "",
                    f"{int(tot['hs_lost'])} would have lost" if tot["hs_lost"] else "",
@@ -4813,7 +4813,6 @@ def action_button(t, f, h):
     if not o or f == 0:
         return ""
     if abs(o.get("frac", 1.0) - f) < 0.01:
-        what = "half of " if f < 1 else ""
         return (f"<button class='btn go cashb two' onclick=\"{confirm_cash(t, h, o)}\">"
                 f"{cash_label(html.escape(h['label']), f, o['offer'], h['cost'] * f)}</button>")
     # Kalshi quotes one size at a time, so this price is worked out from the offer in hand;
@@ -5990,7 +5989,6 @@ def wname():
 
 def watcher_line():
     """One line for Live: is the Pi watching?"""
-    import time
     if not watcher_conf():
         return ""
     if hub_conf():
@@ -6404,7 +6402,7 @@ window.__after=applyGame;applyGame();
 
 def mine_page(live=False):
     """Build the My Kalshi combos page. Returns (page, snapshot for alerts)."""
-    all_games, sunday = MINE["all_games"], MINE["sunday"]
+    all_games = MINE["all_games"]
     e = html.escape
     if not live:
         loading("Reading your Kalshi account…")
@@ -6601,7 +6599,6 @@ def mine_page(live=False):
                      f"<span class='verdict {cls}'>{pct:.0%} of fair</span>"
                      f"<div class='muted' style='font-size:12px;margin-top:4px'>Based on pre-game chances.</div></div>")
         else:
-            names = ", ".join(e(n) for n in missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
             value = ""
         rows = []
         vlegs = []
@@ -6662,7 +6659,6 @@ def mine_page(live=False):
         dots = "".join({"yes": "<i class='d w'></i>", "no": "<i class='d l'></i>"}.get(r, "<i class='d o'></i>")
                        for _, (_, _, _, r) in legs_sorted)
         sort_t = 0 if any_live else (nxt.timestamp() if nxt else 9e12)
-        marks = {"yes": "✓", "no": "✗"}
         need_names = [nm for _, (nm, _, _, r) in legs_sorted if not r]
         lost_names = [nm for _, (nm, _, _, r) in legs_sorted if r == "no"]
         if lost_names:
@@ -6742,17 +6738,8 @@ def mine_page(live=False):
     act_on = {t for t, f in ((plan or {}).get("acts") or {}).items() if f} | {t for t in MINE["hold"] if fresh_offer(t)}
     cards = [(g, re.sub(r"@@OPEN:([^@]+)@@", lambda m: " open" if html.unescape(m.group(1)) in act_on else "", c))
              for g, c in cards]
-    now_box = right_now_html(mine, infos, snap, plan)
-    n_act = sum(1 for f in ((plan or {}).get("acts") or {}).values() if f)
-    strip = (f"<a class='strip' href='#now' onclick=\"document.getElementById('now').scrollIntoView({{behavior:'smooth'}});return false;\">"
-             f"<span>Locked <b data-k='lk'>{money(MINE.get('locked', 0))}</b> · Live <b data-k='lv'>"
-             f"{money(sum(h['hold'] for h in MINE['hold'].values()))}</b></span>"
-             + (f"<span class='tag good'>{n_act} to do ›</span>" if n_act else "<span class='muted'>›</span>") + "</a>"
-             if MINE["hold"] or MINE.get("locked") else "")
     alive = [a for a in mine if snap.get(a["ticker"], {}).get("status") in ("pending", "won")]
     best = max((a["pays"] for a in alive), default=0)      # lost combos can't pay out
-    n_alive = sum(1 for a in mine if snap.get(a["ticker"], {}).get("status") == "pending")
-    n_cashed = sum(1 for a in mine if a["status"] == "cashed")
     wl = watcher_line() if in_pythonista() else ""
     alerts_row = wl + ("<label class='alertrow'><div><b>Live updates &amp; alerts</b><span id='livemsg'>"
                   + (f"Updated {MINE['last']}" if live and MINE.get("last") else
@@ -6771,18 +6758,6 @@ def mine_page(live=False):
                "\"Worth a sure $X to you\" weighs a chance at a big payout against your betting bankroll "
                "(Settings → Cash out): the bigger the amount next to your bankroll, the more a sure thing is worth.</div>"
                "</details>")
-    present_sports = [c for c in SPORTS if any(c in (x.split()) for x in
-                      (" ".join(sorted({ticker_sport(l["ticker"]) or "other" for l in a["legs"]})) for a in mine))]
-    fbar = ""
-    if len(mine) > 1:
-        chips = ("".join([f"<button class='fchip' data-v='all' onclick=\"view('lg','all')\">All</button>"]
-                         + [f"<button class='fchip' data-v='{c}' onclick=\"view('lg','{c}')\">{SPORTS[c]['icon']} "
-                            f"{SPORTS[c]['name']}</button>" for c in present_sports])
-                 if len(present_sports) > 1 else "")
-        fbar = (f"<div class='fbar'><div class='fchips'>{chips}</div>"
-                "<div class='seg'><button class='schip' data-v='t' onclick=\"view('sort','t')\">Next game</button>"
-                "<button class='schip' data-v='pay' onclick=\"view('sort','pay')\">Payout</button>"
-                "<button class='schip' data-v='p' onclick=\"view('sort','p')\">Chance</button></div></div>")
     pend = {a["ticker"]: a for a in mine if snap.get(a["ticker"], {}).get("status") == "pending"}
     by_id = {re.search(r"id='c-([^']+)'", c).group(1): (g, c) for g, c in cards}
     todo = sorted(((t, f) for t, f in ((plan or {}).get("acts") or {}).items() if f and t in MINE["hold"]),
@@ -6844,7 +6819,7 @@ def mine_page(live=False):
     quiet_when = when_label(dt.datetime.fromtimestamp(nxt_quiet).astimezone()) if nxt_quiet < 9e11 else ""
     won_ids = [i for i, (g, _) in by_id.items() if g == "won"]
     finished = [i for i, (g, _) in by_id.items() if g in ("cashed", "lost")]
-    body = [head, f"<header><h1>Live</h1><div class='sub'>"
+    body = [head, "<header><h1>Live</h1><div class='sub'>"
                   + (f"<span class='lv'>{n_live_games} game{'s' if n_live_games != 1 else ''} on now</span> · " if n_live_games else "")
                   + f"{len(pend)} combo{'s' if len(pend) != 1 else ''} riding</div></header>",
             (f"<div style='padding:0 16px'><div class='batch' style='border:2px solid var(--good)'><b>{e(flash)}</b></div></div>" if flash else ""),
@@ -7737,10 +7712,6 @@ def settings_page(all_games, days, counts):
                 f"<div class='game'><div class='inote' style='display:none'>{note}</div>{inner}</div>")
 
     top = []
-    lg_btns = "".join(
-        f"<button class='btn {'go' if k == LEAGUE['code'] else ''}' style='flex:1' "
-        f"onclick=\"go('lg-{k}')\">{v['icon']} {v['short']}</button>"
-        for k, v in LEAGUES.items())
     pass
     notice = RUN_OPTS.pop("notice", None)
     if notice:
@@ -7919,7 +7890,7 @@ def settings_page(all_games, days, counts):
                  "Opens the planner with one tap, without the Pythonista editor. You can do this later in Settings."),
             "</section>"])
     elif mode == "build":
-        upd = (f"<div class='note'>Update available: see the Settings tab.</div>"
+        upd = ("<div class='note'>Update available: see the Settings tab.</div>"
                if latest and version_tuple(latest) > version_tuple(VERSION) else "")
         notice_html = [x for x in top if "class='game'" in x]
         body = "".join([
@@ -10234,7 +10205,7 @@ def panel_collect(book_snap, code, log=print):
         for x in line_candidates(code):
             if x["edge"] >= LINE_MIN_EDGE:
                 cands.append(_cand("line", code, [dict(x, start=x.get("start"))], x["fair"], x["edge"] / x["p"],
-                                   f"From the sportsbook line and how often games land past it.", price=x["p"],
+                                   "From the sportsbook line and how often games land past it.", price=x["p"],
                                    game=x.get("game"), line_kind=x.get("kind")))
     except Exception as err:
         log(f"panel lines {code}:", type(err).__name__, err)

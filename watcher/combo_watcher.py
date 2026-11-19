@@ -683,12 +683,10 @@ def tailscale_https(conf, port):
 
 # ---- iPhone notifications (Web Push from the home screen app; needs the https address)
 def _b64u(b):
-    import base64
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
 
 
 def _b64u_dec(s):
-    import base64
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
@@ -1118,7 +1116,6 @@ def _cbor(b, i=0):
 
 
 def _b64d(s):
-    import base64
     s = str(s or "")
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
@@ -1221,7 +1218,6 @@ class Web:
         key, _ = _cbor(ad, 55 + ln)
         if key.get(1) != 2 or key.get(3) != -7 or key.get(-1) != 1:
             raise ValueError("Only Face ID / Touch ID keys (ES256) are supported.")
-        import base64
         b = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
         pk = {"id": b(cid), "x": b(key[-2]), "y": b(key[-3]), "rp": rp, "name": name[:40] or "Device",
               "added": int(time.time())}
@@ -1256,7 +1252,7 @@ class Web:
         return self.new_session(), ""
 
     def login(self, form):
-        import secrets, hmac as _h
+        import hmac as _h
         now = time.time()
         self.fails = [t for t in self.fails if now - t < 600]
         if len(self.fails) >= 5:
@@ -3940,7 +3936,7 @@ LATEST_SEEN = {}
 
 def mac_settings(conf, web, d, tok):
     """Combo Hub's This Mac section: status, pairing code, passcode, update. Only from the Mac itself."""
-    import base64, subprocess
+    import subprocess
     a = str(d.get("a", ""))
     E = WATCHER.get("E")
     if a == "status":
