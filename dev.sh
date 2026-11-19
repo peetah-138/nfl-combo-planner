@@ -30,7 +30,7 @@ import json, sys
 s = json.load(open(sys.argv[1])); s["kalshi_key_id"] = ""; s["watcher_code"] = ""; s["odds_key"] = ""; s["auto_sell"] = False
 json.dump(s, open(sys.argv[1], "w"))
 P
-export COMBOWATCH_HOME="$DEVHOME" COMBOWATCH_NTFY="http://127.0.0.1:9" CW_WEBAPP_PORT="$PORT"
+export COMBOWATCH_HOME="$DEVHOME" COMBOWATCH_NTFY="http://127.0.0.1:9" CW_WEBAPP_PORT="$PORT" COMBO_NO_TAILSCALE=1
 python3 "$R/tests/dev_webapp.py" &
 PID=$!
 wait "$PID"

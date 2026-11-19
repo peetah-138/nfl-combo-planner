@@ -816,10 +816,33 @@ def tailscale_env():
     return env
 
 
+# Where a real install keeps its files. Anything else (a test's temp folder, dev.sh's throwaway home) is not allowed to
+# run the Tailscale command line at all: `tailscale serve` re-points Pete's real secure address, and a test run once
+# pointed it at a fake hub that then went away. COMBO_NO_TAILSCALE=1 (set by every test harness) blocks it too.
+TS_FAKE_OK = False        # only the secure-address test sets this, and then only a fake command line in a temp folder runs
+
+
+def tailscale_blocked():
+    """Why the Tailscale command line must not run in this process (a short reason), or '' when it may."""
+    if os.environ.get("COMBO_NO_TAILSCALE", "").strip() not in ("", "0"):
+        return "COMBO_NO_TAILSCALE is set (a test or dev run)"
+    real = {os.path.realpath(os.path.expanduser("~/combowatch")), os.path.realpath("/var/lib/combowatch")}
+    if os.path.realpath(HOME) not in real:
+        return f"{HOME} is not a real install folder (a test or dev run)"
+    return ""
+
+
 def tailscale_run(cli, args, timeout):
     """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
-    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
-    import subprocess
+    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI.
+    Hard safety net: refuses (OSError) outside a real install. The secure-address test may run its own fake script
+    from a temp folder (TS_FAKE_OK), never a real one."""
+    import subprocess, tempfile
+    why = tailscale_blocked()
+    if why:
+        fake = TS_FAKE_OK and os.path.realpath(cli).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep)
+        if not fake:
+            raise OSError(f"refusing to run tailscale {' '.join(args[:1])}: {why}")
     return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
                           env=tailscale_env())
 
@@ -902,6 +925,10 @@ def tailscale_https(conf, port):
     allowed https yet, keep the one-time link that turns it on, for Settings > This Mac.
     Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
+    blocked = tailscale_blocked()
+    if blocked and not TS_FAKE_OK:
+        log("https: not touching Tailscale:", blocked)
+        return _https_set(conf, "off-in-tests", detail="Secure address is off here: " + blocked + ".")
     with HTTPS_LOCK:
         cli, st, why = tailscale_status()
         if why:
@@ -976,6 +1003,9 @@ def tailscale_https(conf, port):
 def https_loop(conf, port):
     """Keep trying: enabling HTTPS in Tailscale's admin, or Tailscale finishing its start at login, is picked up
     without a tap. Quiet once it is on (a light check every 30 minutes)."""
+    if tailscale_blocked() and not TS_FAKE_OK:
+        log("https: not checking Tailscale:", tailscale_blocked())
+        return
     while True:
         try:
             tailscale_https(conf, port)
