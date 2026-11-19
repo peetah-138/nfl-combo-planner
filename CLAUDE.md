@@ -406,6 +406,7 @@ Engine: `panel_collect`, `build_panel`, `choose_panel`, `panel_pass`, `panel_exe
 `accept_offer`, `add_own_combo`, `set_league`, `LEAGUES`/`SPORTS`/`SPORT_PREFIX`.
 Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `rebuild_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
 `webapp_main` (`api_live`, `api_build`, `api_act`, `api_panel`, `api_results`, `api_game`), `mac_settings`,
-`tailscale_cli`/`tailscale_run`/`tailscale_https`/`https_loop` (secure address; retries every 5 min until on), `push`/`web_push`
+`tailscale_clis`/`tailscale_env`/`tailscale_run`/`tailscale_status`/`tailscale_https`/`https_loop` (secure address: tries
+every Tailscale CLI with a launchd-safe env; "signed out" only when BackendState is NeedsLogin; retries every 5 min until on), `push`/`web_push`
 (every ntfy alert also goes to web push unless `web=False` or a topic is given; the Pi has no subscribers so it stays alerts-only). SPA: `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
 `afterPaint` (number rolls, stagger, indicators), `go`, `modal`, `okSheet`, `toast`, `hap`.
