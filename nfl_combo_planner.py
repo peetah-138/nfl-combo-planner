@@ -10680,25 +10680,29 @@ def _kick_ts(leg):
 #  - each sport on its own rhythm: NBA/NHL/college by the day, the NFL week as one slate
 #  - sell-early favorites: bought at fair or better with an exit price the Mac sells at by itself
 #  - NFL slate combos spread over the day's time slots, with the usual number of upsets built in
-# Pete approves a panel once; the Mac then buys each bet ~45 minutes before its game after checking the
-# price again, swapping in a similar bet if one no longer qualifies. A paper copy runs the panel fully
+# Pete approves a panel once; the Mac then buys each bet right away (Pete's decision: waiting until shortly before
+# the game gave up the price he approved), after checking the price again, swapping in a similar bet if one no
+# longer qualifies. A paper copy runs the panel fully
 # automatically alongside, which is the record that decides when it can be handed $300.
-PANEL = {"size": 10, "per_game": 2, "buy_before": 45 * 60, "longer_max": 2, "pool_age": 45 * 60,
+PANEL = {"size": 10, "per_game": 2, "longer_max": 2, "pool_age": 45 * 60,
          "fresh_age": 12 * 60, "min_edge": 0.02, "line_edge": 0.06, "line_share": 0.3, "budget": 40.0, "max_bet_share": 0.05, "skim": 0.5}
 PANEL_POOL = {}            # code -> (time, [candidates])
 PANEL_GAMES = {}           # code -> games coming up (for showing only the sports that have any)
 NEXT_KICK = {}             # code -> the next start time (checked every few minutes when it's close)
 LIVE_NOW = {}              # code -> True while it has a game under way priced live for the panel (checked often)
 LIVE_WHY = {}              # code -> {game: why a game under way was left out}
+BUY_WAIT = {}              # code -> when an approved bet last waited for fresher prices (looked at again soon)
 REBUILD_FLAG = os.path.join(HERE, "panel_rebuild.flag")
+BUY_FLAG = os.path.join(HERE, "panel_buy.flag")      # left by Approve / Add: the Mac's buying pass runs within seconds
 
 
 def sports_near(within=2 * 3600):
     """Sports with a game starting in the next two hours, or a game under way priced live for the panel: checked
     every few minutes, not every ten (live prices go stale fast)."""
     now = time.time()
-    return [c for c, k in NEXT_KICK.items() if (k and now < k <= now + within) or LIVE_NOW.get(c)] + \
+    near = [c for c, k in NEXT_KICK.items() if (k and now < k <= now + within) or LIVE_NOW.get(c)] + \
         [c for c, on in LIVE_NOW.items() if on and c not in NEXT_KICK]
+    return near + [c for c, t in BUY_WAIT.items() if now - t < 15 * 60 and c not in near]   # approved, waiting on a fresh price
 
 
 def rebuild_asked():
@@ -10722,6 +10726,24 @@ def ask_rebuild():
     """Ask the Mac for a fresh panel now: its rebuild thread sees this within a few seconds."""
     try:
         open(REBUILD_FLAG, "w").close()
+        return True
+    except OSError:
+        return False
+
+
+def ask_buy():
+    """Approve / Add just scheduled bets: wake the Mac's buying pass now instead of at its next minute."""
+    try:
+        open(BUY_FLAG, "w").close()
+        return True
+    except OSError:
+        return False
+
+
+def buy_asked():
+    """The watcher's panel_loop: was a buying pass asked for? Clears the request (a later tap leaves a new one)."""
+    try:
+        os.remove(BUY_FLAG)
         return True
     except OSError:
         return False
@@ -11740,28 +11762,11 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     used = {e for c in picked for e in _events_of(c)}
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
-    lead = best_combo_lead()
-    for c in picked:
-        before = lead if c["kind"] == "combo" and lead else PANEL["buy_before"]
-        c["buy_at"] = now if c.get("live") else max(now, (c["kick"] or now) - before)
     return {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
             "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
 
 
-# ---- storage, approval and the Mac's scheduled buying
-def best_combo_lead():
-    """Seconds before the first game when Kalshi's combo makers have paid best (from the quote model's
-    hours-to-game effects), or None. Never under 20 minutes."""
-    m = QMODEL.get("m")
-    if not m:
-        return None
-    hs = {k[2:]: v for k, v in m["eff"].items() if k.startswith("h:")}
-    if not hs:
-        return None
-    lead_of = {"<2h": 1.0, "2-8h": 4, "8h+": 10}
-    best = max(hs, key=hs.get)
-    h = lead_of.get(best)
-    return max(h * 3600, 20 * 60) if h else None
+# ---- storage, approval and the Mac's buying (right after approval)
 
 
 def _panel_day(now=None):
@@ -11829,7 +11834,7 @@ def _item(p, cid):
 
 
 def panel_approve(ids=None, view="all", at=None):
-    """Pete's tap: the Mac may buy these panel bets (all by default) at their scheduled times. A one-sport
+    """Pete's tap: the Mac buys these panel bets (all by default) right away, each after a fresh price check. A one-sport
     panel (view = its code) becomes today's panel when approved. `at` is the version he was looking at;
     if the panel has been rebuilt since, nothing is approved and he's asked to look again. After a Cancel,
     approving again schedules the bets that weren't bought."""
@@ -11865,18 +11870,20 @@ def panel_approve(ids=None, view="all", at=None):
     if msg.get("no"):
         return False, msg["no"]
     n = msg["n"]
+    if n:
+        ask_buy()
     if not n and msg.get("late"):
         prune_drafts()
         ask_rebuild()
         return False, ("Those games have already started, so nothing was approved or bought. The Mac is looking "
                        "at today's remaining games now; you can watch it here, and a fresh panel appears when it's ready.")
-    return True, (f"Approved {n} bet{'s' if n != 1 else ''}. Each one is bought shortly before its game "
-                  f"(singles about 45 minutes before; combos at the time Kalshi has paid best).")
+    return True, (f"Approved {n} bet{'s' if n != 1 else ''}. The Mac buys {'them' if n != 1 else 'it'} now, "
+                  f"checking each price again first (not while Pause is on).")
 
 
 def panel_add(ids, view):
-    """Add bets from one sport's panel to today's already-approved panel, inside the day's panel budget,
-    skipping any game today's panel already has a bet on."""
+    """Add bets from one sport's panel (or the new-since-you-approved extras) to today's already-approved panel,
+    inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away."""
     src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
@@ -11907,7 +11914,7 @@ def panel_add(ids, view):
             used |= set(_events_of(c))
             if old:                                       # it was skipped/swapped earlier: this replaces that entry
                 cur["items"] = [i for i in cur["items"] if i["id"] != c["id"]]
-            cur["items"].append(dict(c, state="scheduled", buy_at=max(time.time(), c.get("buy_at") or time.time())))
+            cur["items"].append(dict({k: v for k, v in c.items() if k != "buy_at"}, state="scheduled"))
             added.append(c["legs"][0]["pick"])
         msg["added"], msg["skipped"] = added, skipped
         return (cur, st) if added else None
@@ -11917,7 +11924,8 @@ def panel_add(ids, view):
     a, k = msg.get("added", []), msg.get("skipped", [])
     if not a:
         return False, "Nothing added: " + ("those games already have a bet, or it's over today's panel budget." if k else "nothing selected.")
-    return True, (f"Added {len(a)} to today's panel." + (f" Left out {len(k)}: already a bet on that game, or over the budget." if k else ""))
+    ask_buy()
+    return True, (f"Added {len(a)} to today's panel. The Mac is buying {'them' if len(a) != 1 else 'it'} now." + (f" Left out {len(k)}: already a bet on that game, or over the budget." if k else ""))
 
 
 def day_items(day, prefix="real"):
@@ -12161,8 +12169,9 @@ def _set_items(day, mode, changes):
 
 
 def panel_exec(alert=None, log=print, paused=False, may_trade=True):
-    """Every minute on the Mac: buy approved panel bets that are due (rechecked first, swapped if needed),
-    and run the paper panel the same way without money. Each real buy is marked "buying" (and saved) before
+    """On the Mac every minute, and within seconds of an Approve/Add (ask_buy): buy every approved panel bet still
+    waiting (rechecked first, swapped if needed), and run the paper panel the same way without money. There's no
+    waiting for a time before the game (Pete's decision); only the price checks and the start rules decide. Each real buy is marked "buying" (and saved) before
     the order goes out, so a crash can never lead to buying it twice; a buy whose outcome is unknown is
     marked "check" and you're told, never retried."""
     out = []
@@ -12184,8 +12193,10 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                 out.append(f"⚠️ Panel: not sure whether {c['legs'][0]['pick']} was bought (the Mac restarted mid-purchase). "
                            f"Check Kalshi; it won't be bought again.")
                 continue
-            if c.get("state") != "scheduled" or c.get("buy_at", 0) > now:
+            if c.get("state") != "scheduled":
                 continue
+            if (c.get("buy_at") or 0) > now:
+                continue                                  # approved before buying-at-once (#51): keeps the time it was approved under
             picks = " + ".join(l["pick"] for l in c["legs"])
             if not _start_ok(c, now, 5 * 60):
                 f0 = _fresh(c) if live_panel_on() and not c.get("live") else None
@@ -12201,16 +12212,23 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                                                                      else "its game starts too soon to buy safely."))
                     continue
             if mode == "real" and (paused or not may_trade):
+                hold = "paused" if paused else "no key"   # the card says why it isn't bought yet
+                if c.get("hold") != hold:
+                    _set_items(day, mode, {c["id"]: {"hold": hold}})
                 continue
             f = _fresh(c)
-            if f == "wait":
-                continue                                  # candidates too old: try again next minute
+            if f == "wait":                               # candidates too old: try again shortly, and have the Mac
+                if mode == "real":                        # look at that sport again soon (sports_near)
+                    BUY_WAIT[c["code"]] = now
+                    if c.get("hold") != "price":
+                        _set_items(day, mode, {c["id"]: {"hold": "price"}})
+                continue
             if f is None:
                 alt = _replacement(c, p)
                 if alt:
-                    alt = dict(alt, stake=c["stake"], buy_at=now, state="scheduled", swapped_for=picks)
-                    alt["buy_at"] = now
+                    alt = dict(alt, stake=c["stake"], state="scheduled", swapped_for=picks)
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
+                    ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
                         out.append(f"🔁 Panel: swapped {picks} for {' + '.join(l['pick'] for l in alt['legs'])}: "
                                    f"its price no longer beat its chance.")
@@ -12243,6 +12261,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                 if st != "approved" or not it or it.get("state") != "scheduled":
                     return None                           # cancelled or already taken in the meantime
                 it.update(upd, state="buying", buy_started=time.time())
+                it.pop("hold", None)
                 claimed["ok"] = True
                 return cur, st
             panel_tx(day, mode, claim)
