@@ -10708,6 +10708,89 @@ def rebuild_asked():
         return True
     except OSError:
         return False
+
+
+REBUILD_STATE = os.path.join(HERE, "combo_rebuild.json")   # how far a requested rebuild has got (the page shows it)
+
+
+def rebuild_pending():
+    """A fresh panel was asked for and the Mac hasn't started on it yet (the flag is still there)."""
+    return os.path.exists(REBUILD_FLAG)
+
+
+def ask_rebuild():
+    """Ask the Mac for a fresh panel now: its rebuild thread sees this within a few seconds."""
+    try:
+        open(REBUILD_FLAG, "w").close()
+        return True
+    except OSError:
+        return False
+
+
+def _rebuild_note(**kw):
+    save_json(REBUILD_STATE, dict(kw, upd=time.time()))
+
+
+def rebuild_status(now=None):
+    """What the Build page shows about a requested rebuild: asked (waiting for the Mac to start), running
+    (which sport, how many of how many), or done (how many bets it found, or why none). None when nothing to say."""
+    now = now or time.time()
+    s = load_json(REBUILD_STATE, None) or {}
+    if s.get("state") == "running" and now - (s.get("upd") or 0) < 300:
+        return s
+    try:
+        asked = os.path.getmtime(REBUILD_FLAG)
+    except OSError:
+        asked = None
+    if asked:
+        return {"state": "asked", "at": asked, "wait": round(now - asked)}
+    if s.get("state") == "done" and now - (s.get("upd") or 0) < 6 * 3600 and _panel_day(s["upd"]) == _panel_day(now):
+        return s
+    return None
+
+
+def panel_rebuild(collect, codes, lock=None, log=print):
+    """'Build a fresh panel' was tapped: look at every sport now (not at the next 10-minute round), then put the
+    panel together the usual way (panel_pass: the same choices and rules; drafts only, never buys).
+    collect(code) gathers one sport's candidates; lock guards the shared engine between steps. Notes progress
+    for the page as it goes and returns the panel_pass messages."""
+    import contextlib
+    lock = lock or contextlib.nullcontext()
+    rebuild_asked()                                    # clear the request; a new tap during the run asks again
+    codes, t0 = list(codes), time.time()
+    for i, code in enumerate(codes):
+        _rebuild_note(state="running", at=t0, sport=code, i=i, n=len(codes))
+        try:
+            with lock:
+                collect(code)
+        except Exception as err:
+            log(f"rebuild {code} skipped:", type(err).__name__, err)
+    _rebuild_note(state="running", at=t0, sport="", i=len(codes), n=len(codes), step="choosing")
+    with lock:
+        out = panel_pass(log=log)
+        real = panel_get("real")
+        games = sum(PANEL_GAMES.get(c) or 0 for c in codes)
+        left = float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today()
+    if real and real.get("status") == "draft":
+        found, kind = len(real.get("items") or []), "panel"
+    elif real and real.get("status") == "approved":
+        x = panel_get("extra")
+        found, kind = len((x or {}).get("items") or []), "extra"
+    else:
+        found, kind = 0, "panel"
+    why = ""
+    if not found:
+        if not games:
+            why = "No games left today to bet on."
+        elif left < 2:
+            why = "Today's panel budget is already used."
+        else:
+            why = (f"Checked {games} upcoming game{'s' if games != 1 else ''}: none is priced better than its real "
+                   f"chance right now (Kalshi is in line with the sportsbooks).")
+    _rebuild_note(state="done", at=t0, took=round(time.time() - t0, 1), found=found, kind=kind, games=games, why=why,
+                  n=len(codes))
+    log(f"panel rebuild: {found} bet{'s' if found != 1 else ''} in {time.time() - t0:.0f}s")
+    return out
 CUTOFF_FILE = os.path.join(HERE, "combo_cutoffs.json")
 SIZING_FILE = os.path.join(HERE, "combo_sizing.json")
 SWING = {"nhl": 1.25, "ahl": 1.3, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
@@ -11784,12 +11867,9 @@ def panel_approve(ids=None, view="all", at=None):
     n = msg["n"]
     if not n and msg.get("late"):
         prune_drafts()
-        try:
-            open(REBUILD_FLAG, "w").close()
-        except OSError:
-            pass
+        ask_rebuild()
         return False, ("Those games have already started, so nothing was approved or bought. The Mac is looking "
-                       "at today's remaining games now; a fresh panel shows up here in about a minute if anything qualifies.")
+                       "at today's remaining games now; you can watch it here, and a fresh panel appears when it's ready.")
     return True, (f"Approved {n} bet{'s' if n != 1 else ''}. Each one is bought shortly before its game "
                   f"(singles about 45 minutes before; combos at the time Kalshi has paid best).")
 
@@ -11861,7 +11941,7 @@ def spent_earlier_today(now=None):
 
 def panel_restart():
     """After a Stop: put today's stopped panel aside (its bought bets stay on the record) so the Mac builds a
-    fresh panel from today's remaining games at its next check, with whatever budget is left."""
+    fresh panel from today's remaining games right away (rebuild_loop), with whatever budget is left."""
     day = _panel_day()
     _panel_table()
     n = len(store_rows("select 1 from panel where day=? and mode like 'real#%'", (day,))) + 1
@@ -11878,12 +11958,20 @@ def panel_restart():
         return False, "Today's panel isn't stopped."
     panel_tx(day, "real", fn)
     left = float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today()
-    try:
-        open(REBUILD_FLAG, "w").close()               # the Mac picks this up within a minute
-    except OSError:
-        pass
+    ask_rebuild()                                     # the Mac starts on it within a few seconds
     return True, (f"Building a fresh panel from today's remaining games, with {money(max(left, 0))} of today's budget left. "
-                  f"It shows up here in about a minute, ready to approve.")
+                  f"You can watch it here; it appears on its own, ready to approve.")
+
+
+def panel_look_now():
+    """The Build page's 'Look now' (no panel yet, or the last look found nothing): ask the Mac to look at every
+    sport right away instead of at its next round. Only drafts come of it; nothing is approved or bought."""
+    real = panel_get("real")
+    if real and real.get("status") in ("approved", "cancelled"):
+        return False, "Today's panel is already decided. Use the buttons on it instead."
+    if not ask_rebuild():
+        return False, "Couldn't ask the Mac. Try again."
+    return True, "The Mac is looking at every sport now."
 
 
 def panel_cancel():

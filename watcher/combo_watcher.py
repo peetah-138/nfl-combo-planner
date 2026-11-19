@@ -1171,8 +1171,6 @@ def panel_loop(odds, conf, every=60):
                 n += 1
                 if n % 5 == 0:                            # results, exits and game-time prices
                     H.panel_settle()
-                if H.rebuild_asked():                     # "Build a fresh panel" was tapped: do it now
-                    H.panel_pass(log=log)
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
                     conf["recap_day"] = time.strftime("%Y-%m-%d")
@@ -1187,6 +1185,28 @@ def panel_loop(odds, conf, every=60):
         except Exception as err:
             log("panel buying skipped:", type(err).__name__, err)
         time.sleep(every)
+
+
+def rebuild_loop(odds, notifier=None, every=2):
+    """'Build a fresh panel' / 'Look now' starts at once: the tap leaves a flag, this sees it within a couple of
+    seconds and looks at every sport right away (not at the shadow's next 10-minute round), noting progress for the
+    Build page. It only makes drafts; buying stays with panel_loop (Pause, started games and all)."""
+    while True:
+        time.sleep(every)
+        try:
+            with odds.lock:
+                H = odds.engine()
+                if not H.rebuild_pending():
+                    continue
+            did = H.panel_rebuild(lambda code: H.panel_collect(odds.get(code, ""), code, log=log), SHADOW_LEAGUES,
+                                  lock=odds.lock, log=log)
+            if did:
+                log("panel:", "; ".join(did))
+            for m in did if notifier else []:
+                if m.startswith("🆕"):
+                    notifier.add(m, "idea")
+        except Exception as err:
+            log("panel rebuild skipped:", type(err).__name__, err)
 
 
 def history_loop(E, every=900):
@@ -2139,6 +2159,8 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .hrow2{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}.hrow2:last-child{border-bottom:0}
 .hd2{display:flex;align-items:center;gap:8px;min-width:0}.hd2 .hs{font-size:16px}.hd2 .m{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hn{display:flex;gap:16px;font-size:12.5px;color:var(--sub)}.hn b{color:var(--ink)}
+.rbtrack{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;margin:12px 0 8px}.rbtrack i{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.rbstrip{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--sub);margin:0 2px 10px}
 .panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
  background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
@@ -2771,14 +2793,14 @@ async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r
 function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
  return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
-function renderBuild(){_renderBuild();rollNums($('#main'));}
+function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
 function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
  const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
-  ${panelBlock(S.panel)}
+  <div id="pblock">${panelBlock(S.panel)}</div>
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
@@ -2819,9 +2841,24 @@ function pxSpark(c){const a=pxNote(c);if(a.length<2)return '';const vs=a.map(p=>
  const d=a.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*64).toFixed(1)} ${(19-(p[1]-lo)/rg*16).toFixed(1)}`).join('');const col=vs[vs.length-1]>=vs[0]?'var(--yes)':'var(--no)';
  const f=c.kind==='combo'?pct:(x=>Math.round(x*100)+'¢');
  return `<svg class="psp" viewBox="0 0 64 22" preserveAspectRatio="none" aria-label="Price ${f(vs[0])} then ${f(vs[vs.length-1])}"><title>Kalshi price since this phone first saw it: ${f(vs[0])} → ${f(vs[vs.length-1])}</title><path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>`;}
-function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
-  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac checks every 10 minutes. You can still build your own below.</div></div>`:`<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">Today's panel is being put together</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac looks at every sport every 10 minutes and keeps only bets priced better than their real chance. Check back shortly.</div></div>`;
+function rbOn(r){return !!(r&&(r.state==='asked'||r.state==='running'));}
+/* A requested rebuild, from the Mac's own notes: waiting to start, which sport it's on, or picking the mix. */
+function rbText(r){if(r.state==='asked')return r.wait>=90?'Waiting for the Mac to start. It hasn\'t picked this up yet: is it on and awake?':'Starting…';
+ if(r.step==='choosing')return 'Picking the best mix for today…';return `Looking at ${esc(SPN[r.sport]||String(r.sport||'').toUpperCase())}… ${Math.min((r.i||0)+1,r.n||1)} of ${r.n||1} sports`;}
+function rbFrac(r){if(r.state==='asked')return .04;const n=(r.n||1)+1;return Math.min(.97,r.step==='choosing'?(n-.5)/n:((r.i||0)+.5)/n);}
+function rbCard(r){return `<div class="card rbcard" style="text-align:center;padding:22px 18px"><div style="font-size:30px">🔎</div><b style="display:block;margin:6px 0 4px;font-size:17px">Putting together a fresh panel</b>
+  <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
+  <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
+function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
+function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
+ if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
+  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
+ const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
+ if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
+  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
+ return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
+function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
@@ -2835,7 +2872,7 @@ function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div cl
    <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
- return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
+ return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
@@ -2855,7 +2892,20 @@ async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.p
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');await load('build');}
+ hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
+async function panelLook(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking the Mac…';}
+ const r=await api('/app/api/act',{a:'panel_look'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ if(!r.ok){hap('error');toast(r.msg,6000,'bad');}else{S.rbWas=true;if(S.panel){S.panel.rebuild=r.rebuild||{state:'asked',wait:0};}}
+ await load('build');}
+/* While the Mac rebuilds, ask it every 2 s how far it's got and redraw just the panel card; when it's done, the
+   new panel (or the reason there isn't one) drops in by itself. */
+function rbWatch(){const on=S.view==='build'&&rbOn((S.panel||{}).rebuild);if(on){S.rbWas=true;if(!S.rbT)S.rbT=setInterval(rbPoll,2000);}else if(S.rbT){clearInterval(S.rbT);S.rbT=null;}}
+async function rbPoll(){if(S.view!=='build'){rbWatch();return;}if(document.hidden||S.rbBusy)return;S.rbBusy=true;const pv=S.pview||'all';
+ try{const p=await api('/app/api/panel?v='+pv);if(!p||pv!==(S.pview||'all'))return;S.panel=p;cput('panel_'+pv,p);
+  if(rbOn(p.rebuild)){const el=$('#pblock');const t=el&&el.querySelector('.rbtxt'),bar=el&&el.querySelector('.rbtrack i');
+   if(t&&!!bar===!p.panel){t.innerHTML=(p.panel?'':'<span class="spin"></span> ')+rbText(p.rebuild);if(bar)bar.style.width=Math.round(rbFrac(p.rebuild)*100)+'%';}else renderBuild();return;}
+  const r=p.rebuild;if(S.rbWas&&r&&r.state==='done'){if(r.found){hap('success');toast(r.kind==='extra'?`Found ${r.found} new bet${r.found===1?'':'s'} since you approved.`:`Your fresh panel is ready: ${r.found} bet${r.found===1?'':'s'}.`,5000,'good');}else hap('warning');}
+  S.rbWas=false;renderBuild();}catch(e){}finally{S.rbBusy=false;rbWatch();}}
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open){S.slip=[];S.custom=null;}try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){}renderBuild();
  if(S.adv)setTimeout(()=>{const h=document.querySelector('.board');if(h)h.scrollIntoView({behavior:'smooth',block:'start'});},60);}
@@ -4058,6 +4108,7 @@ def webapp_main():
         p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
+                         "rebuild": A.rebuild_status(),
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
@@ -4385,6 +4436,9 @@ def webapp_main():
             if a == "panel_add":
                 ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
                 return {"ok": ok, "msg": msg}
+            if a == "panel_look":
+                ok, msg = A.panel_look_now()
+                return {"ok": ok, "msg": msg, "rebuild": A.rebuild_status()}
             if a == "panel_restart":
                 ok, msg = A.panel_restart()
                 return {"ok": ok, "msg": msg}
@@ -5148,6 +5202,7 @@ def main():
             threading.Thread(target=shadow_loop, args=(odds, notifier), daemon=True, name="shadow").start()
             if not backup:
                 threading.Thread(target=panel_loop, args=(odds, conf), daemon=True, name="panel").start()
+                threading.Thread(target=rebuild_loop, args=(odds, notifier), daemon=True, name="rebuild").start()
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()

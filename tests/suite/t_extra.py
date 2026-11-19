@@ -23,6 +23,6 @@ okA,msg=E.panel_add([c["id"] for c in x["items"]],"extra"); ok("add extras to to
 ok("approval kept", E.panel_get()["status"]=="approved")
 # rebuild flag
 E.panel_cancel(); okR,msg=E.panel_restart()
-ok("restart asks the Mac to rebuild now", os.path.exists(E.REBUILD_FLAG) and "minute" in msg)
+ok("restart asks the Mac to rebuild now", os.path.exists(E.REBUILD_FLAG) and "watch it here" in msg and "minute" not in msg)
 ok("the request is taken once", E.rebuild_asked() and not E.rebuild_asked())
 E.NEXT_KICK={"nba":now+3600,"nfl":now+5*86400}; ok("near-game sports found", E.sports_near()==["nba"])
