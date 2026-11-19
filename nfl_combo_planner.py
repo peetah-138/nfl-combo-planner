@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.114"
+VERSION = "2026.11.18.115"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -11681,6 +11681,7 @@ _SCHEMA = """
 create table if not exists cover(sunday text primary key, ts real, early text, late text, r_buy real, r_sell real,
   status text, result text);
 create table if not exists ticks(ts real, ticker text, chance real, state text, score text);
+create table if not exists pulse(ts real, worth real, staked real);
 create index if not exists ticks_t on ticks(ticker, ts);
 create table if not exists offers(ts real, combo text, p real, pays real, hold real, offer real, real_offer int, verdict text);
 create index if not exists offers_c on offers(combo, ts);
@@ -11867,6 +11868,17 @@ def record_view(view):
                         (v["group"], v.get("back") if v["group"] == "cashed" else v["pays"] if v["group"] == "won" else 0,
                          now, t))
                 ev.append({"kind": "settled", "combo": t, "text": f"{v['label']} {v['group']}"})
+    try:                                             # the day's value line for the top of Live
+        pend = [v for v in view.get("combos") or [] if v.get("group") == "pending"]
+        open_s = [x for x in view.get("singles") or [] if x.get("state") in ("live", "pre")]
+        worth = sum(v.get("offer") or 0 for v in pend) + sum(x.get("worth") or 0 for x in open_s)
+        staked = sum(v.get("cost") or 0 for v in pend) + sum(x.get("cost") or 0 for x in open_s)
+        if (pend or open_s) and now - last.get(("pulse",), 0) >= 120:
+            last[("pulse",)] = now
+            store_x("create table if not exists pulse(ts real, worth real, staked real)")
+            store_x("insert into pulse values(?,?,?)", (now, round(worth, 2), round(staked, 2)))
+    except Exception:
+        pass
     for x in view.get("singles") or []:             # single bets and spreads: their game's story too
         if x.get("state") in ("live", "pre") and x.get("ticker"):
             _legs(x["t"], [x])
@@ -11885,6 +11897,19 @@ def short_name(name):
     return w[-1] if len(w) > 1 and len(name) > 12 else name
 
 
+def pulse_series(hours=16, points=150):
+    """What your open bets were worth through the day (every 2 minutes), thinned to ~150 points."""
+    if not STORE["db"]:
+        return []
+    store_x("create table if not exists pulse(ts real, worth real, staked real)")
+    rows = store_rows("select ts, worth, staked from pulse where ts > ? order by ts", (time.time() - hours * 3600,))
+    step = max(1, len(rows) // points)
+    out = [[round(r["ts"]), r["worth"], r["staked"]] for r in rows[::step]]
+    if rows and (not out or out[-1][0] != round(rows[-1]["ts"])):
+        out.append([round(rows[-1]["ts"]), rows[-1]["worth"], rows[-1]["staked"]])
+    return out
+
+
 def game_story(ticker, hours=8):
     """One game's live story for the game screen: its win chance over time and every score change."""
     return {"ticks": store_rows("select ts, chance, state, score from ticks where ticker=? and ts > ? order by ts",
@@ -11897,6 +11922,10 @@ def store_trim(days=120):
     """Keep the file a sensible size: ticks for 30 days, everything else for `days`."""
     cut = time.time() - days * 86400
     store_x("delete from ticks where ts < ?", (time.time() - 30 * 86400,))
+    try:
+        store_x("delete from pulse where ts < ?", (time.time() - 30 * 86400,))
+    except Exception:
+        pass
     store_x("delete from offers where ts < ?", (cut,))
     store_x("delete from events where ts < ?", (cut,))
 
