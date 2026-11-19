@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.107"
+WATCHER_VERSION = "2026.11.18.108"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -854,6 +854,8 @@ def panel_loop(odds, conf, every=60):
                 n += 1
                 if n % 5 == 0:                            # results, exits and game-time prices
                     H.panel_settle()
+                if H.rebuild_asked():                     # "Build a fresh panel" was tapped: do it now
+                    H.panel_pass(log=log)
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
                     conf["recap_day"] = time.strftime("%Y-%m-%d")
@@ -941,6 +943,9 @@ def shadow_loop(odds, notifier=None, every=600):
                 did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()]
             if did:
                 log("panel:", "; ".join(did))
+            for m in did if notifier else []:
+                if m.startswith("🆕"):
+                    notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
         try:                                              # Sunday "cover the early games" paper test
@@ -950,7 +955,28 @@ def shadow_loop(odds, notifier=None, every=600):
                 log("cover test:", "; ".join(did))
         except Exception as err:
             log("cover test skipped:", type(err).__name__, err)
-        time.sleep(every)
+        quick_rounds(odds, notifier, until=time.time() + every)
+
+
+def quick_rounds(odds, notifier, until, gap=150):
+    """Between full rounds: every 2.5 minutes, look again at the sports with a game starting in the next two
+    hours (that's when prices move and good bets come and go), and refresh the panel from them."""
+    while time.time() < until:
+        time.sleep(min(gap, max(until - time.time(), 1)))
+        if time.time() >= until:
+            break
+        try:
+            with odds.lock:
+                H = odds.engine()
+                near = H.sports_near()
+                for code in near:
+                    H.panel_collect(odds.get(code, ""), code, log=log)
+                did = H.panel_pass(log=log) if near else []
+            for m in did if notifier else []:
+                if m.startswith("🆕"):
+                    notifier.add(m, "idea")
+        except Exception as err:
+            log("quick check skipped:", type(err).__name__, err)
 
 
 
@@ -2075,7 +2101,12 @@ function panelBlock(d){if(!d||!d.panel)return d&&d.view&&d.view!=='all'?`<div cl
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
  return `<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
-  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${longer}`;}
+  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
+function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
+ return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
+  <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
+  <div class="plist">${x.items.map(c=>panelItem(c,'',false)).join('')}</div>
+  ${live.length?`<button class="btn acc" style="width:100%;justify-content:center;margin-top:10px" onclick="panelAdd(this,'extra')">Add ${live.length} to today's panel · ${money(tot)}</button>`:''}</div>`;}
 function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
  return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
@@ -2083,9 +2114,9 @@ async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
-async function panelAdd(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
+async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_add',ids,view:S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+ b.innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
@@ -3032,7 +3063,8 @@ def webapp_main():
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
-                         "approved_other": bool(real and real["status"] != "draft" and view not in ("all", ""))})
+                         "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
+                         "extra": A.panel_get("extra") if (real and real["status"] == "approved" and view in ("all", "")) else None})
 
     def api_orders():
         return jsonable(A.maker_summary() if A.STORE.get("db") else {})

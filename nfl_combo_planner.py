@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.107"
+VERSION = "2026.11.18.108"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -9425,6 +9425,23 @@ PANEL = {"size": 10, "per_game": 2, "buy_before": 45 * 60, "longer_max": 2, "poo
          "fresh_age": 12 * 60, "min_edge": 0.02, "line_edge": 0.06, "line_share": 0.3, "budget": 40.0, "max_bet_share": 0.05, "skim": 0.5}
 PANEL_POOL = {}            # code -> (time, [candidates])
 PANEL_GAMES = {}           # code -> games coming up (for showing only the sports that have any)
+NEXT_KICK = {}             # code -> the next start time (checked every few minutes when it's close)
+REBUILD_FLAG = os.path.join(HERE, "panel_rebuild.flag")
+
+
+def sports_near(within=2 * 3600):
+    """Sports with a game starting in the next two hours: checked every few minutes, not every ten."""
+    now = time.time()
+    return [c for c, k in NEXT_KICK.items() if k and now < k <= now + within]
+
+
+def rebuild_asked():
+    """Combo Hub asked for a fresh panel now (a tap of 'Build a fresh panel'); clears the request."""
+    try:
+        os.remove(REBUILD_FLAG)
+        return True
+    except OSError:
+        return False
 CUTOFF_FILE = os.path.join(HERE, "combo_cutoffs.json")
 SIZING_FILE = os.path.join(HERE, "combo_sizing.json")
 SWING = {"nhl": 1.25, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
@@ -9793,6 +9810,8 @@ def panel_collect(book_snap, code, log=print):
     attach_fair(games, book)
     games = {e: sd for e, sd in games.items() if not any(started(x) for x in sd)}
     PANEL_GAMES[code] = len(games)
+    kicks = [k for sd in games.values() for k in [_kick_ts(sd[0])] if k and k > time.time()]
+    NEXT_KICK[code] = min(kicks) if kicks else None
     try:
         record_closes(games, code)
     except Exception as err:
@@ -9975,10 +9994,11 @@ def sport_pay_index():
     return {k: round(statistics.median(v) / mid, 3) for k, v in by.items() if len(v) >= 10 and "," not in k}
 
 
-def build_panel(codes=None, budget=None, now=None):
-    """Today's panel (and a couple of longer plays) from the latest candidates of each league."""
+def build_panel(codes=None, budget=None, now=None, exclude=()):
+    """Today's panel (and a couple of longer plays) from the latest candidates of each league. exclude: games
+    to leave out (already bet on). budget given explicitly is used as-is (what's left for extras)."""
     now = now or time.time()
-    budget = float(budget or CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today(now)
+    budget = float(budget) if budget is not None else float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today(now)
     base, _ = sizing_base()
     day_end, nfl_end = _local_day_end(now), _nfl_week_end(now)
     idx = sport_pay_index()
@@ -9998,6 +10018,7 @@ def build_panel(codes=None, budget=None, now=None):
             elif c["kind"] == "combo" and (c["last"] <= now + 3 * 86400 or c.get("weeks")) and c["ret"] >= 0.10:
                 longer.append(c)
     held = {e for c in day_items(_panel_day(now)) if c.get("state") in ("bought", "buying", "check") for e in _events_of(c)}
+    held |= set(exclude)
     today = [c for c in today if not held & set(_events_of(c))]     # games an earlier panel today already bet on
     games_today = len({e for c in today for e in _events_of(c)})
     size = min(14, max(6, 4 + games_today // 3))       # heavy hockey/NBA nights get a bigger panel
@@ -10138,7 +10159,7 @@ def panel_approve(ids=None, view="all", at=None):
 def panel_add(ids, view):
     """Add bets from one sport's panel to today's already-approved panel, inside the day's panel budget,
     skipping any game today's panel already has a bet on."""
-    src = panel_get(f"view:{view}")
+    src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
     msg = {}
@@ -10213,8 +10234,12 @@ def panel_restart():
         return False, "Today's panel isn't stopped."
     panel_tx(day, "real", fn)
     left = float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today()
+    try:
+        open(REBUILD_FLAG, "w").close()               # the Mac picks this up within a minute
+    except OSError:
+        pass
     return True, (f"Building a fresh panel from today's remaining games, with {money(max(left, 0))} of today's budget left. "
-                  f"It shows up here within about 10 minutes, ready to approve.")
+                  f"It shows up here in about a minute, ready to approve.")
 
 
 def panel_cancel():
@@ -10567,13 +10592,30 @@ def panel_pass(log=print):
         v = build_panel(codes=[code])
         if v["items"] or v["longer"]:
             panel_save_draft(v, f"view:{code}")
+    out = []
+    real = panel_get("real")
+    if real and real["status"] == "approved":          # still looking: good bets that turned up since you approved
+        active = [c for c in real["items"] if c.get("state") in ("scheduled", "buying", "bought", "check")]
+        left = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
+        x = build_panel(budget=max(left, 0), exclude={e for c in active for e in _events_of(c)})
+        x["items"] = [c for c in x["items"] if not _item(real, c["id"])]
+        old = panel_get("extra")
+        told = set((old or {}).get("told", [])) if old and _panel_day(old["at"]) == _panel_day() else set()
+        new = [c for c in x["items"] if c["id"] not in told]
+        x["told"] = sorted(told | {c["id"] for c in x["items"]})
+        store_x("insert or replace into panel values(?,?,?,?,?)", (_panel_day(x["at"]), "extra", x["at"], "draft", json.dumps(x)))
+        if new and left >= 2:
+            names = ", ".join(" + ".join(short_name(l["pick"]) for l in c["legs"]) for c in new[:3])
+            out.append(f"🆕 New good bet{'s' if len(new) > 1 else ''} since you approved today's panel: {names}"
+                       f"{' and more' if len(new) > 3 else ''}. Add {'them' if len(new) > 1 else 'it'} in Build.")
+        return out
     p = build_panel()
     if not p["items"]:
         return []
     panel_save_draft(p, "real")
     q = dict(p, items=[dict(c, state="scheduled") for c in p["items"]])
     panel_tx(_panel_day(p["at"]), "paper", lambda cur, st: None if cur else (q, "paper"))   # the day's first draft, as-is
-    return [f"panel: {len(p['items'])} bets, {p['stats']['p_ahead']:.0%} chance to finish ahead"]
+    return out + [f"panel: {len(p['items'])} bets, {p['stats']['p_ahead']:.0%} chance to finish ahead"]
 
 
 # ---------------------------------------------------------------- "cover the early games" paper test
