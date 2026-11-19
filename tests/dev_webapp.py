@@ -35,7 +35,7 @@ if json.load(open(os.path.join(HOME, "combo_settings.json"))).get("kalshi_key_id
     die("combo_settings.json has a kalshi_key_id: trading must be impossible in dev")
 
 sys.path.insert(0, os.path.join(HERE, "suite"))
-import requests, fakenet
+import fakenet
 fakenet.install(PORT)
 os.environ["COMBOWATCH_NTFY"] = "http://127.0.0.1:9"      # notifications go nowhere (and the fake refuses it anyway)
 
