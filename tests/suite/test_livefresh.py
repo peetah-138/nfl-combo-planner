@@ -138,7 +138,8 @@ with sync_playwright() as pw:
     print("new score painted:", ok, "| scroll kept:", top0, "->", top1)
     if not ok: print("PROBLEMS: a new score didn't show")
     if top0 > 0 and abs(top1 - top0) > 2: print("PROBLEMS: scroll place lost on redraw")
-    if "66%" not in pg.evaluate("document.querySelector('#sheet .dkpis').innerText"): print("PROBLEMS: chance line didn't update")
+    # the chance rolls to its new value (~0.65 s): wait for it rather than reading mid-roll
+    if not until(pg, "document.querySelector('#sheet .dkpis').innerText.includes('66%')", 5): print("PROBLEMS: chance line didn't update")
 
     # the clock counts down between updates once it is seen running
     state["g"] = game(57, 49, "Q2 5:20", .66)

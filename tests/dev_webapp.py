@@ -71,7 +71,8 @@ BETS = [
     {"ticker": "KXMVE-4", "legs": [leg(nba, 0, "BOS"), leg(nba, 2, "CHI")], "cost": 5.0, "pays": 22, "status": "lost", "back": 0, "week": "2026-11-12", "full_pays": 22, "lg": "nba", "lgs": ["nba"]},
     {"ticker": "KXMVE-5", "legs": [leg(nba, 0, "BOS"), leg(nba, 1, "DEN")], "cost": 5.0, "pays": 14, "status": "won", "back": 14, "week": today, "full_pays": 14, "lg": "nba", "lgs": ["nba"]},
     {"ticker": "KXMVE-6", "legs": [leg(nba, 3, "PHX"), leg(nba, 2, "MIL")], "cost": 6.0, "pays": 30, "status": "cashed", "back": 11.4, "week": today, "full_pays": 30, "lg": "nba", "lgs": ["nba"]},
-    # tennis: no live score source. KXMVE-7's matches started 5 hours ago (so "Probably finished"), KXMVE-8's 40 min ago.
+    # tennis: scores from fake Kalshi live data (fakenet.kalshi_live). KXMVE-7: Sinner-Alcaraz finished, Djokovic-Medvedev
+    # unknown to it (so "Probably finished" after 5 hours); KXMVE-8: Rublev-Zverev in play, 40 min in.
     {"ticker": "KXMVE-7", "legs": [{"ticker": "KXATPMATCH-26NOV18SINALC-SIN", "event_ticker": "KXATPMATCH-26NOV18SINALC", "event": "KXATPMATCH-26NOV18SINALC", "side": "yes"},
                                    {"ticker": "KXATPMATCH-26NOV18DJOMED-DJO", "event_ticker": "KXATPMATCH-26NOV18DJOMED", "event": "KXATPMATCH-26NOV18DJOMED", "side": "yes"}],
      "cost": 3.0, "pays": 12.0, "status": "pending", "back": 0, "week": today, "full_pays": 12.0, "lg": "tennis", "lgs": ["tennis"]},
