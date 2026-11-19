@@ -208,6 +208,17 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. `stop_loss` stays as a
   labelled **manual override** ("Manual override: sell at a loss when a game turns", off by default, separate from the
   learned per-league loss cut). Pete to confirm whether to keep or remove it.
+- **Stop-loss guards (issue #27):** with `stop_loss` on, auto cash-out may sell a combo below cost only when
+  `stop_loss_check` passes: a pick on a **fresh** score feed (`leg_score`, never Kalshi's display-only data; scores
+  older than 150 s or missing = never, and any other pick whose game has started must have a fresh score too), game
+  in play and **not at halftime/a break/end of a period** (`at_break`), **game played ≥ the league's `prog`** (start
+  50%, bounds 35–90%), pick under 50% and **≥ `drop` points below its pregame chance** (start 20 points, bounds
+  10–45; `pre_of` on each held combo), all held on **3+ checks in a row spanning ≥ 3 min** (none > 5 min apart).
+  `prog`/`drop` are learned weekly in `smart_tune` (`_sl_tune`/`_sl_replay` on recorded ticks + score lines, 50+
+  combos, ≥ 2% gain, 0.05 steps, smallest change on ties), stored as `sl_*` in `combo_smart.json`, shown in
+  Results › Selling. `stoploss_params` borrows league → sport → all, but borrowed values can only be **stricter**
+  than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
+  notifies "Stop-loss (your switch)". The learned "cut loss" paths (combos and singles) are unchanged.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
