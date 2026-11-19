@@ -18,7 +18,8 @@ instance is running; stop that one first.
 - Build (NBA and NHL): four NBA and two NHL games with prices, so combos can be built and priced.
 - Live: six seeded combos (pending, won, lost, cashed) over those games, with fake ESPN scores (per sport the first game is live and the
   second is final: two live and two final across both sports; the rest not started), a fake balance of $211.03, and one fake cash-out offer.
-- Results/history: stored in the throwaway home folder's own database.
+- Results/history: stored in the throwaway home folder's own database. A week of made-up "worth now" history is
+  seeded there at start, so the Live hero chart (Day/Week, scrub) has a line to draw.
 
 Everything is faked in `tests/suite/fakenet.py` (Kalshi, ESPN, GitHub, ntfy, odds). Edit the games or scores there.
 The seeded bets are in `tests/dev_webapp.py`.

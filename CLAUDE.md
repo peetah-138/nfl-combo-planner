@@ -178,10 +178,21 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   held when tracking began counts as the app's). The panel avoids games he already bet himself.
 
 ### Live page
-- Hero card: worth now if sold (rolling number), change vs what's in, a sparkline of the day (`pulse` table),
+- Hero card: worth now if sold (rolling number), change vs what's in, a chart of open-bet worth (`pulse` table),
   riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
-- Combos table, "Single bets & spreads" section (tap opens the game sheet: score, chance it covers, your bets on
-  that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total.
+- Hero chart (`heroChart`/`wireChart`): Day (16 h, from `/app/api/live`) or Week (`/app/api/pulse?h=168`, read-only,
+  pulse keeps 30 days) via a plain-text switcher (remembered, `cw_rng`); gradient area, glowing end dot, the staked
+  amount dashed; draws in left to right when the range changes. Press and drag to scrub: a line and dot follow the
+  finger, the big number and change pill show that moment's value, a time readout sits above, each point crossed ticks
+  a haptic; release restores the live numbers. Live refreshes wait while a finger is on it (`S.scrub`).
+- Combos table, "Single bets & spreads" section (tap opens the game page: score, chance it covers, your bets on
+  that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total. Offer and chance
+  numbers roll frame by frame to new values and the chance bars slide (`rollNums`, `data-num`/`data-bar`).
+- Game and combo detail pages **push** in Kalshi-style (`pushOpen`/`pushFill`): the page slides in from the right in
+  270 ms (ease-out) while the page behind slides a third left and dims; flat skeleton blocks show until the content
+  swaps in (never before the slide ends), then the content fades/staggers in. A sticky Back bar, or swipe right,
+  goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
+- Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
@@ -209,6 +220,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   swipe left/right between tabs, sliding tab and segmented indicators, spring bottom sheets with drag-to-close,
   press feedback, a drawn-check "Bought" moment, haptics everywhere (`hap()`: in-app via `combo://haptic`, iOS 18
   Safari via the `<input switch>` trick), and `prefers-reduced-motion` respected.
+- **Press feedback + haptic on every control, from one place** (makeover phase 1): anything matching `TAP` (buttons,
+  links, `[onclick]`, chips, rows, labels, selects, switches, sliders) shrinks while pressed (`.prs`; rows and settings
+  lines highlight instead) and ticks on tap via a global capture listener, so new controls get it for free. Tabs,
+  chips, segments and switches tick as `selection`, the rest `light`; sliders tick per step. Distinct patterns:
+  success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
+  tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
+  at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
+- Planned next phases (game page drill-down, Games cards, Sold moment, charts): `ROADMAP.md` and issue #12.
 
 ## Open items
 
