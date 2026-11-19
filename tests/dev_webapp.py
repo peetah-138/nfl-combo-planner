@@ -8,7 +8,6 @@ throwaway home folder this checks for. Safe by construction, see DEV.md:
 import os, sys, json, time, socket, shutil, threading, importlib.util
 
 HOME = os.path.realpath(os.environ.get("COMBOWATCH_HOME") or "")
-PORT = int(os.environ.get("CW_WEBAPP_PORT") or 0)
 REAL = os.path.realpath(os.path.expanduser("~/combowatch"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -17,6 +16,12 @@ REPO = os.path.dirname(HERE)
 def die(msg):
     print("dev environment refused to start:", msg, file=sys.stderr)
     sys.exit(2)
+
+
+try:
+    PORT = int(os.environ.get("CW_WEBAPP_PORT") or 0)
+except ValueError:
+    die(f"CW_WEBAPP_PORT must be a number, got {os.environ.get('CW_WEBAPP_PORT')!r}")
 
 
 if not HOME or HOME == REAL or HOME.startswith(REAL + os.sep) or REAL.startswith(HOME + os.sep):
@@ -31,8 +36,11 @@ with socket.socket() as s:
 for f in ("kalshi_private_key.pem", "combo_keys.json"):
     if os.path.exists(os.path.join(HOME, f)):
         die(f"{f} found in the dev home: no Kalshi keys allowed here")
-if json.load(open(os.path.join(HOME, "combo_settings.json"))).get("kalshi_key_id"):
+_settings = json.load(open(os.path.join(HOME, "combo_settings.json")))
+if _settings.get("kalshi_key_id"):
     die("combo_settings.json has a kalshi_key_id: trading must be impossible in dev")
+if _settings.get("watcher_code"):
+    die("combo_settings.json has a watcher_code: no hub pairing allowed in dev")
 
 sys.path.insert(0, os.path.join(HERE, "suite"))
 import fakenet
@@ -44,7 +52,7 @@ sys.argv = [os.path.join(HOME, "combo_watcher.py"), "--webapp"]
 spec = importlib.util.spec_from_file_location("W", os.path.join(HOME, "combo_watcher.py"))
 W = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(W)
-assert W.HOME == HOME and W.WEBAPP_PORT == PORT, "watcher is not using the dev home/port"
+assert os.path.realpath(W.HOME) == HOME and W.WEBAPP_PORT == PORT, "watcher is not using the dev home/port"
 
 ev = {s: sorted({m["event_ticker"] for m in fakenet.markets() if m["event_ticker"].startswith(s)}) for s in fakenet.GAMES}
 nba, nhl = ev["KXNBAGAME"], ev["KXNHLGAME"]
