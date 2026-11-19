@@ -3993,16 +3993,24 @@ def game_played(sc):
     return round(1 - float(sc["frac"]), 3)
 
 
-def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
-    """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
-    code = ticker_sport(ticker) or ""
+def fresh_live_score(ticker, side, now=None):
+    """This pick's game on a fresh score feed, while it's in play: (score, '') or (None, why not). Shared by every
+    guard that acts on a live game (the stop-loss switch, the learned loss cut, auto-hedge)."""
     sc = leg_score({"ticker": ticker, "side": side})   # never Kalshi's live data (display only)
     if not sc:
-        return False, "no score feed"
-    if score_age(code, now) > SL_FEED_AGE:
-        return False, "score feed stale"
+        return None, "no score feed"
+    if score_age(ticker_sport(ticker) or "", now) > SL_FEED_AGE:
+        return None, "score feed stale"
     if sc.get("state") != "in":
-        return False, "game not under way"
+        return None, "game not under way"
+    return sc, ""
+
+
+def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
+    """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
+    sc, why = fresh_live_score(ticker, side, now)
+    if not sc:
+        return False, why
     if pre is None or now_ch is None:
         return False, "no pregame chance"
     if at_break(sc):
@@ -4088,15 +4096,78 @@ def cut_loss_single_check(x, loss, now=None):
     return _sl_confirm("cut:" + x["t"], ok, why, now)
 
 
-def note_cut_held(t, label, why, guard):
-    """A learned loss cut that the guards held back: logged once per bet and reason (for Results › Selling)."""
+def note_cut_held(t, label, why, guard, hedge=False):
+    """A learned loss cut (or, with hedge=True, an auto-hedge) that the guards held back: logged once per bet and
+    reason (for Results › Selling)."""
     if len(MINE.setdefault("cut_told", {})) > 500:
         MINE["cut_told"].clear()
-    told = MINE["cut_told"].setdefault(t, set())
+    told = MINE["cut_told"].setdefault(("hedge:" if hedge else "") + t, set())
     if not guard or guard in told:
         return
     told.add(guard)
-    log_decision({"combo": label, "ticker": t, "why": why, "result": "held", "guard": guard})
+    log_decision(dict({"combo": label, "ticker": t, "why": why, "result": "held", "guard": guard},
+                      **({"hedge": True} if hedge else {})))
+
+
+# ---------------------------------------------------------------- auto-hedge, guarded (issue #27)
+# Auto-hedge (with Auto cash-out on) buys the other side of a combo's last game instead of an already-chosen sale.
+# Before it buys, all of these must hold: the last game is in play on a fresh score (not missing or stale), not at
+# halftime or a break, the hedge locks in at least what the combo cost, and all that held on 3+ checks in a row over
+# 3+ minutes (the same count as the loss guards). Then the order book is read again and the sums are redone on that
+# price. While it's confirming, the sale waits; if any other guard fails, it cashes out as if auto-hedge were off.
+HEDGE_GAP = 0.06                                   # the widest bid/ask gap on the hedge side it will buy into
+
+
+def hedge_guard(t, h, hg, now=None):
+    """The auto-hedge guards for combo `t` with hedge `hg` (from hedge_for), called once per check where the hedge
+    beats the cash-out: (ready, why not). Shares the loss guards' fresh-score and confirmation helpers."""
+    now = now or time.time()
+    need = h.get("need") or []
+    hit, why = False, "not down to one pick"
+    if len(need) == 1:
+        (side, tk), _ = need[0]
+        sc, why = fresh_live_score(tk, side, now)
+        hit = sc is not None
+        if hit and at_break(sc):
+            hit, why = False, "halftime or a break"
+        if hit and hg["locked"] < h["cost"]:
+            hit, why = False, "wouldn't lock in what you paid"
+    ready, why = _sl_confirm("hedge:" + t, hit, why, now)
+    return ready, ("waiting to confirm" if why == "waiting to confirm the drop" else why)
+
+
+def hedge_fresh(t, h, whole):
+    """Re-read the hedge side's order book right before buying and redo the sums on that price: (hedge, '') when it
+    still beats the cash-out, fits the cap and locks in at least the combo's cost, else (None, why not)."""
+    hg = hedge_for(t)
+    bk = book_depth(hg["ticker"], max_age=0) if hg and hg.get("n") else None
+    if not bk or not bk.get("ask"):
+        return None, "no fresh price for the hedge"
+    if bk.get("spread") is None or bk["spread"] > HEDGE_GAP + 1e-9:
+        return None, "hedge side's order book too thin"
+    hg = hedge_for(t, price=bk["ask"])
+    if not hg or not hg.get("n"):
+        return None, "no fresh price for the hedge"
+    if hg["cost"] > float(CFG.get("hedge_cap", 100)):
+        return None, "over the hedge cap at the fresh price"
+    if not hedge_beats(hg, whole):
+        return None, "no longer beats the cash-out at the fresh price"
+    if hg["locked"] < h["cost"]:
+        return None, "wouldn't lock in what you paid at the fresh price"
+    return hg, ""
+
+
+def hedge_beats(hg, whole):
+    """Whether hedging locks in enough compared with the whole cash-out offer `whole`."""
+    if CFG.get("prefer_hedge", True):
+        return hg["locked"] >= whole * 0.95
+    return hg["locked"] >= whole + 0.5
+
+
+def hedge_unsure(t):
+    """A hedge on this combo whose outcome is unknown: marked 'check', never retried, and auto cash-out leaves the
+    combo alone until you look."""
+    return bool((load_json(HEDGES, {}).get(t) or {}).get("check"))
 
 
 def swing_lambda(h):
@@ -4261,6 +4332,8 @@ def auto_sell_now(plan):
                 cands.append((t, 1.0, why))
         for t, f, why in cands:
             h = MINE["hold"].get(t)
+            if hedge_unsure(t):
+                continue                                  # a hedge with an unknown outcome: hands off until checked
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
             if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
@@ -4307,23 +4380,37 @@ def auto_sell_now(plan):
                 rec["stop_loss"] = True
             hg = hedge_for(t) if CFG.get("auto_hedge") else None
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
-            better = hg["locked"] >= whole * (0.95 if CFG.get("prefer_hedge", True) else 1.0) + (0 if CFG.get("prefer_hedge", True) else 0.5) \
-                if hg and hg.get("n") else False
+            better = hedge_beats(hg, whole) if hg and hg.get("n") else False
             if better:
                 if hg["cost"] > float(CFG.get("hedge_cap", 100)):
                     rec["hedge_skipped"] = f"hedge would cost {money(hg['cost'])}, over the {money(CFG.get('hedge_cap', 100))} cap"
+                    better = False
+            if better:
+                ready, gw = hedge_guard(t, h, hg)
+                if ready:
+                    hg, gw = hedge_fresh(t, h, whole)
+                    ready = hg is not None
+                if not ready:
+                    if gw == "waiting to confirm":
+                        continue                # the sale waits while the hedge is confirmed (3+ checks, 3+ minutes)
+                    note_cut_held(t, h["label"], why, gw, hedge=True)
+                    rec["hedge_skipped"] = "held back by the guards: " + gw
                 else:
                     if t in MINE["cash"]:
                         drop_cash(t)            # not selling: release the cash-out request
-                    msg = place_hedge(t)
+                    msg = place_hedge(t, hg=hg, auto=True)
                     ok = msg.startswith("✅")
-                    log_decision(dict(rec, result="hedged" if ok else "hedge failed", hedge_cost=round(hg["cost"], 2),
-                                      locked=round(hg["locked"], 2), note=msg[:140]))
+                    unsure = msg.startswith("⚠️")
+                    log_decision(dict(rec, result="hedged" if ok else "hedge check" if unsure else "hedge failed",
+                                      hedge_cost=round(hg["cost"], 2), locked=round(hg["locked"], 2), note=msg[:140]))
                     if ok:
                         vs = ("more than" if hg["locked"] > whole + 0.5 else "about the same as")
                         out.append(f"🤖 Auto-hedge (Let it ride: {ride_level()[0]}): locks in {vs} the "
                                    f"{money(whole)} cash-out, without the buyer's cut. " + msg)
                         continue
+                    if unsure:
+                        out.append("🤖 Auto-hedge: " + msg)
+                        continue                # never retried, and no sale on top of a hedge that may have filled
             msg = accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
@@ -5121,9 +5208,10 @@ def qty(x):
     return f"{x:,.2f}".rstrip("0").rstrip(".")
 
 
-def hedge_for(ticker):
+def hedge_for(ticker, price=None):
     """For a combo down to its last pick: buying the other side of that game so you collect about
-    the same whichever team wins. {ticker, name, price, n, cost, locked, done} or None."""
+    the same whichever team wins. {ticker, name, price, n, cost, locked, done} or None. `price` (a fresh
+    ask from the order book) replaces the last board price."""
     h = MINE["hold"].get(ticker) or {}
     need = h.get("need") or []
     if len(need) != 1:
@@ -5139,7 +5227,7 @@ def hedge_for(ticker):
             break
     else:
         return None
-    q = buy.get("p") if buy else None
+    q = (price if price is not None else buy.get("p")) if buy else None
     if not q or not 0.01 <= q <= 0.97:
         return None
     done = (load_json(HEDGES, {}).get(ticker) or {}).get("n", 0.0)
@@ -5152,39 +5240,65 @@ def hedge_for(ticker):
             "cost": cost, "locked": n - cost, "done": done}
 
 
-def place_hedge(ticker):
+def hedge_unknown(err):
+    """Whether a failed hedge order may still have gone through (no answer, a lost connection, a Kalshi server
+    error): then it is marked 'check' and never retried."""
+    if isinstance(err, PermissionError):
+        return False
+    if isinstance(err, RuntimeError):
+        if "Tap again within" in str(err):
+            return False                                  # the backup-key prompt: nothing was sent
+        m = re.search(r"\((\d{3})\)\s*$", str(err))
+        return "may or may not" in str(err) or not m or m.group(1).startswith("5")
+    return True
+
+
+def place_hedge(ticker, hg=None, auto=False):
     """Buy the other side of the last pick's game, at today's price or not at all (fills now or
-    cancels). Only runs after you confirm. Returns a message."""
+    cancels). Runs after you confirm, or from guarded auto-hedge with `hg` priced on a fresh order book.
+    An order whose outcome is unknown is marked 'check' (never retried) and the message starts with ⚠️.
+    Returns a message."""
     import uuid
     h = MINE["hold"].get(ticker) or {}
-    hg = hedge_for(ticker)
+    hg = hg or hedge_for(ticker)
     if not hg or not hg.get("n"):
         return "Nothing to hedge on this combo now."
+
+    def unsure(err):
+        d = load_json(HEDGES, {})
+        d[ticker] = dict(d.get(ticker) or {}, check=int(time.time()), check_ticker=hg["ticker"], name=hg["name"])
+        save_json(HEDGES, d)
+        ACCT_CACHE["at"] = 0
+        return (f"⚠️ The hedge on {h.get('label', 'the combo')} ({hg['name']}) may or may not have gone through "
+                f"({type(err).__name__}). Check Kalshi. It won't be tried again"
+                + (", and auto cash-out leaves this combo alone." if auto else "."))
     body = {"ticker": hg["ticker"], "side": "bid", "count": f"{hg['n']:.2f}", "price": f"{hg['price']:.4f}",
             "time_in_force": "immediate_or_cancel", "self_trade_prevention_type": "taker_at_cross",
             "client_order_id": str(uuid.uuid4())}
     try:
         r = kalshi_send("POST", "/portfolio/events/orders", body) or {}
         filled = float(r.get("fill_count") or 0)
-    except RuntimeError as err:
-        if "(404)" not in str(err):
-            return f"Kalshi didn't take the hedge: {err}"
+    except PermissionError:
+        return "Kalshi refused. Your API key needs write (trading) access to hedge."
+    except Exception as err:
+        if not (isinstance(err, RuntimeError) and "(404)" in str(err)):
+            return unsure(err) if hedge_unknown(err) else f"Kalshi didn't take the hedge: {err}"
         legacy = {"ticker": hg["ticker"], "action": "buy", "side": "yes", "type": "limit",
                   "count": int(hg["n"]), "yes_price": int(round(hg["price"] * 100)),
                   "time_in_force": "immediate_or_cancel", "client_order_id": str(uuid.uuid4())}
         try:
             o = (kalshi_send("POST", "/portfolio/orders", legacy) or {}).get("order") or {}
-        except RuntimeError as err2:
-            return f"Kalshi didn't take the hedge: {err2}"
+        except PermissionError:
+            return "Kalshi refused. Your API key needs write (trading) access to hedge."
+        except Exception as err2:
+            return unsure(err2) if hedge_unknown(err2) else f"Kalshi didn't take the hedge: {err2}"
         filled = float(o.get("fill_count_fp") or o.get("fill_count") or
                        (legacy["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
-    except PermissionError:
-        return "Kalshi refused. Your API key needs write (trading) access to hedge."
     ACCT_CACHE["at"] = 0
     if filled <= 0:
         return f"No one was selling {hg['name']} at {hg['price'] * 100:.0f}¢ just now. Nothing was bought."
     d = load_json(HEDGES, {})
-    d[ticker] = {"n": round(hg["done"] + filled, 2), "ticker": hg["ticker"], "name": hg["name"]}
+    d[ticker] = dict(d.get(ticker) or {}, n=round(hg["done"] + filled, 2), ticker=hg["ticker"], name=hg["name"])
     save_json(HEDGES, d)
     haptic("success")
     locked = filled * (1 - hg["price"]) - hg["fee"] * filled / hg["n"]
@@ -8575,7 +8689,8 @@ def settings_page(all_games, days, counts):
                                  names=[n for n, _ in RIDE])
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
                         + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
-                        + switch("auto_hedge", "Hedge instead when that locks in more")
+                        + switch("auto_hedge", "Hedge instead when that locks in more (only on a fresh live "
+                                 "score, never at a break, at least what you paid, held 3+ min, fresh price)")
                         + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
                         + slider("hedge_cap", "Most to spend on one hedge", 25, 500, 25, "$")
                         + "<div class='row'><span class='muted'>Notifications from your Mac (bundled, at most one "
@@ -12062,7 +12177,7 @@ def analytics(max_age=600):
         e["back"] += (r["back"] if r["status"] == "cashed" else r["pays"] if r["status"] == "won" else 0) or 0
     out["exits"] = [{"what": k, "n": e["n"], "pl": round(e["back"] - e["cost"], 2), "roi": _roi(e["back"] - e["cost"], e["cost"])}
                     for k, e in ex.items()]
-    auto, held = defaultdict(int), defaultdict(int)
+    auto, held, hheld = defaultdict(int), defaultdict(int), defaultdict(int)
     try:
         cut = time.time() - 30 * 86400
         with open(SELL_LOG, encoding="utf-8") as f:
@@ -12076,11 +12191,12 @@ def analytics(max_age=600):
                 if d.get("result") in ("sold", "hedged"):
                     auto[d.get("why") or d.get("result")] += 1
                 elif d.get("result") == "held" and d.get("guard"):
-                    held[d["guard"]] += 1                # a learned loss cut the guards held back, and why
+                    (hheld if d.get("hedge") else held)[d["guard"]] += 1   # a loss cut or auto-hedge held back, and why
     except OSError:
         pass
     out["auto"] = dict(auto)
     out["cut_held"] = dict(held)
+    out["hedge_held"] = dict(hheld)
     real = [c for m, c in items if m == "real"]
     out["notes"] = _analytics_notes(rows, out["types"], len(real))
     try:
