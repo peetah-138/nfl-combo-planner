@@ -190,10 +190,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   `best_combo_lead`, is gone and bets carry no `buy_at`). Approve and Add leave `panel_buy.flag` (`ask_buy`); the
   watcher's `panel_loop` (`panel_wait`) sees it within ~2 s and runs `panel_exec`, otherwise it runs every minute. Each
   bet still gets the fresh price recheck first (newest candidates via `_fresh`, then Kalshi's book/quote in
-  `_buy_panel_bet`), swaps in a similar bet (bought on the pass right after) or skips; prices too old to judge wait.
+  `_buy_panel_bet`), swaps in a similar bet (bought on the pass right after) or skips; prices too old to judge wait
+  (the item gets `hold: "price"` and its sport joins `sports_near` via `BUY_WAIT`, so it's re-collected within ~2.5
+  min; Pause / no key set `hold: "paused"` / `"no key"`, shown on the card). Items approved before this change keep a
+  stored `buy_at` and wait for it (no surprise buys on the update). `panel_settle` runs every 5 min by the clock.
   A bet whose game is hours or days away is bought now too. Unchanged: Pause, the start rules (`_start_ok`), sizing
   and budget, claim-before-buy under `panel_tx` (no double buy), unknown outcome = "check". The panel card says
-  "buys when you approve" (or "when you add it") before, "Buying now" once approved, then "Bought". The paper panel
+  "buys when you approve" (or "when you add it") before, "Buying now" once approved (or why not yet), then
+  "Bought"; after Approve/Add the page re-checks a few times (`pBuyWatch`). The paper panel
   buys at once the same way. Price at build, at buy (`bought_at`) and game time are still recorded, so CLV works. "Build a fresh panel" (after a Stop) and the empty card's
   "Look now" start at once: the tap leaves `panel_rebuild.flag`, the watcher's `rebuild_loop` thread sees it within
   ~2 s and runs `panel_rebuild` (collects every shadow sport fresh, then the usual `panel_pass`; drafts only, never

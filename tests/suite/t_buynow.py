@@ -47,11 +47,12 @@ ok("the draft has bets and none carries a buy time", len(p["items"]) == 2 and no
 
 # Pause blocks, even right after approval
 okA, msg = E.panel_approve(None, "all", at=p["at"])
-ok("approve says it buys now, not shortly before the game", okA and "buying" in msg and "45" not in msg and "before its game" not in msg)
+ok("approve says it buys now, not shortly before the game", okA and "buys them now" in msg and "Pause" in msg and "45" not in msg and "before its game" not in msg)
 ok("approve wakes the Mac's buying pass", os.path.exists(E.BUY_FLAG))
 ok("the watcher's check clears the request", E.buy_asked() and not os.path.exists(E.BUY_FLAG) and not E.buy_asked())
 E.panel_exec(paused=True, may_trade=True)
 ok("Pause wins: nothing bought", not BOUGHT and all(c["state"] == "scheduled" for c in items().values()))
+ok("...and the card can say it's paused", all(c.get("hold") == "paused" for c in items().values()))
 E.panel_exec(paused=False, may_trade=False)
 ok("can't trade (the Pi / no key): nothing bought", not BOUGHT and all(c["state"] == "scheduled" for c in items().values()))
 
@@ -59,6 +60,7 @@ ok("can't trade (the Pi / no key): nothing bought", not BOUGHT and all(c["state"
 E.panel_exec()
 st = items()
 ok("bought on the next pass, games 9-10 hours away", len(BOUGHT) == 2 and all(c["state"] == "bought" for c in st.values()))
+ok("...and the paused note is gone", not any(c.get("hold") for c in st.values()))
 ok("bought at the price checked right then", all(px == .50 for _, _, px in BOUGHT) and all(c.get("bought_at") for c in st.values()))
 E.panel_exec()
 ok("never bought twice", len(BOUGHT) == 2)
@@ -96,6 +98,15 @@ E.panel_approve(None, "all", at=p["at"])
 E.PANEL_POOL["nba"] = (time.time() - 20 * 60, [A])
 E.panel_exec()
 ok("stale candidates: waits, nothing bought", not BOUGHT and items()[A["id"]]["state"] == "scheduled")
+ok("...says it's waiting for a fresh price, and the Mac looks at that sport again soon",
+   items()[A["id"]].get("hold") == "price" and "nba" in E.sports_near())
+
+# a bet approved before this change keeps the buy time it was approved under (no surprise buys on the update)
+E._set_items(E._panel_day(), "real", {A["id"]: {"buy_at": time.time() + 3600}})
+E.PANEL_POOL["nba"] = (time.time(), [A])
+E.panel_exec()
+ok("approved under the old timing: waits for its time", not BOUGHT and items()[A["id"]]["state"] == "scheduled")
+E._set_items(E._panel_day(), "real", {A["id"]: {"buy_at": time.time() - 1}})
 
 # start rules unchanged: a pre-game bet within 5 minutes of its start is skipped
 E.PANEL_POOL["nba"] = (time.time(), [A])

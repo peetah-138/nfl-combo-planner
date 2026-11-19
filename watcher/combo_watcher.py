@@ -1174,7 +1174,7 @@ def panel_loop(odds, conf, every=60):
     """Buys approved panel bets right after approval (rechecked, swapped if needed): every minute, and within a
     couple of seconds of an Approve / Add tap. Also runs the paper panel."""
     time.sleep(180)
-    n = 0
+    settled = time.time()
     H = None
     while True:
         try:
@@ -1182,8 +1182,8 @@ def panel_loop(odds, conf, every=60):
                 H = odds.engine()
                 H.buy_asked()                             # this pass covers anything asked for so far
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
-                n += 1
-                if n % 5 == 0:                            # results, exits and game-time prices
+                if time.time() - settled >= 5 * 60:       # results, exits and game-time prices: every 5 minutes
+                    settled = time.time()
                     H.panel_settle()
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
@@ -2838,7 +2838,7 @@ const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],l
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
 const started=c=>!c.live&&c.kick&&c.kick*1000<Date.now()+5*60e3;
 function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
- const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':'<span class="tag">Buying now</span>',bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
+ const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':c.buy_at&&c.buy_at*1000>Date.now()?`<span class="tag">buys ${pTime(c.buy_at)}</span>`:`<span class="tag">${{paused:'Paused · not bought yet','no key':'Can\'t trade from here',price:'Waiting for a fresh price'}[c.hold]||'Buying now'}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
@@ -2880,7 +2880,7 @@ function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
-   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','bought'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
+   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','buying','bought','check'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
    <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
  const addMode=d.view!=='all'&&d.approved_other;
  const btn=addMode?`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelAdd(this)">Add ${live.length} to today's panel · ${money(total)}</button>
@@ -2905,9 +2905,10 @@ async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.
  b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
 /* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
-function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build'||document.hidden||S.buying||$('#modal').classList.contains('on'))return;
- const its=(((S.panel||{}).panel||{}).items||[]);if(i&&!its.some(c=>c.state==='scheduled'||c.state==='buying'))return;
- load('build').catch(()=>{}).finally(()=>{if(++i<6)S.pbT=setTimeout(tick,[6,10,15,20,30][i-1]*1000);});};S.pbT=setTimeout(tick,4000);}
+function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
+ if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
+ const pn=((S.panel||{}).panel||{}),its=pn.items||[];if(i&&S.pview==='all'&&pn.status==='approved'&&!its.some(c=>c.state==='scheduled'||c.state==='buying'))return;
+ load('build').catch(()=>{}).finally(()=>{if(++i<8)S.pbT=setTimeout(tick,[6,10,15,20,30,60,90][i-1]*1000);});};S.pbT=setTimeout(tick,4000);}
 async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
