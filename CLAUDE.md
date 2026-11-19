@@ -118,7 +118,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
-  own-bets, started-games, smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
+  own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
@@ -186,10 +186,31 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
 - Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
-  time), rechecks price, swaps in a similar bet or skips. Never buys or approves a game that has started; drafts
-  drop started games. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
+  time), rechecks price, swaps in a similar bet or skips. "Build a fresh panel" rebuilds within a minute. After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
   notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+- **Games already under way (Pete's decision, replaces the old "never buys or approves a game that has started"):**
+  the panel picks on the chance of a profit, not on whether a game has started. Settings › Money › **Include games
+  already under way** (`panel_live`, shared setting, **on** by default; `live_panel_on()` reads the shared settings
+  file) lets `panel_collect` add started games via `panel_live_games`. A game under way **never uses its pre-game
+  fair price**: it gets a fresh live sportsbook line (odds-service line read after the start, ≤ `LIVE_LINE_AGE` 180 s:
+  `line_live`/`line_at` from `attach_fair`) or else the **live model** (`live_model_chance`: points sports = normal
+  margin, hockey/soccer = Poisson goals, on the closing line from `closes` as the prior, ESPN's football win chance
+  averaged in), calibrated per league by its own record of live chances (`live_fairs` table, `calib_fair(...,
+  table="live_fairs")`, resolved in `resolve_closes`). Eligible only with a **fresh score** (`score_age` ≤
+  `LIVE_SCORE_AGE` 120 s; missing/stale = out), the game **in play** (never finished), Kalshi bid/ask gap ≤ 6¢, not
+  nearly decided (≥ 95%), and Kalshi's mid within 8 points of the live chance (a wider gap is treated as something the
+  score doesn't show, not a bargain). **EuroLeague, UFC and tennis stay out once started** (only Kalshi's display-only
+  live data, no clock); spreads/totals and sell-early favorites stay pre-game only. Live candidates carry `live`,
+  `kick_pre` and per-leg `live`/`pre`; `_start_ok` replaces the old start-time checks in `build_panel`,
+  `panel_approve`, `panel_add`, `panel_exec`, `prune_drafts` and `_replacement` (pre-game-priced bets still need
+  20 min/5 min before the start). Live prices older than `LIVE_POOL_AGE` (6 min) are never offered or bought; sports
+  with a live-priced game are re-checked every 2.5 min (`LIVE_NOW` in `sports_near`). Buying: bought straight away;
+  `_buy_panel_bet` re-prices every live leg on a fresh score (`live_recheck`) and still rechecks Kalshi's price; any
+  refusal before an order (stale score, finished game, price moved, Kalshi won't price the combo: `get_offer` errors
+  are caught) is **skipped**, never "check"; rule 8 unchanged. Pause still wins; the switch turned off after approval
+  skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
+  predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it).
 - Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
