@@ -152,6 +152,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (starts 1.5×, 0.1 steps, 1.2–2.0), risk weight, and a learned loss cut (off until a league's record shows
   selling a sliding bet beats holding). On a tie, the smallest change wins. Results › Selling shows each league's
   settings and why they last changed.
+- Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. `stop_loss` stays as a
+  labelled **manual override** ("Manual override: sell at a loss when a game turns", off by default, separate from the
+  learned per-league loss cut). Pete to confirm whether to keep or remove it.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything

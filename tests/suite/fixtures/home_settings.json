@@ -43,7 +43,6 @@
 "tp_v2": true,
 "lock_trail": true,
 "stop_loss": false,
-"sell_own": false,
 "smart_sell": true,
 "panel_budget": 40,
 "auto_hedge": true,
