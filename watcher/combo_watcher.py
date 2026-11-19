@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.18.112"
+WATCHER_VERSION = "2026.11.18.113"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("sell_own", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -956,6 +956,9 @@ def shadow_loop(odds, notifier=None, every=600):
             with odds.lock:
                 H = odds.engine()
                 did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()]
+                n_lab = H.lab_pass()
+            if n_lab:
+                log(f"combo lab: paper-bought {n_lab} at different price levels")
             if did:
                 log("panel:", "; ".join(did))
             for m in did if notifier else []:
@@ -987,6 +990,7 @@ def quick_rounds(odds, notifier, until, gap=150):
                 for code in near:
                     H.panel_collect(odds.get(code, ""), code, log=log)
                 did = H.panel_pass(log=log) if near else []
+                H.lab_ticks()                              # game prices for the smart-sell replay
             for m in did if notifier else []:
                 if m.startswith("🆕"):
                     notifier.add(m, "idea")
@@ -1632,6 +1636,13 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
 .legs .up{color:var(--yes)}.legs .down{color:var(--no)}
 .ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}
+.an{padding:16px 18px;margin:18px 0}.anh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}
+.ant{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.ant button{flex:1 1 auto}
+.annotes{margin:0 0 6px 18px;padding:0;font-size:13.5px;line-height:1.5}
+.anrow{display:grid;grid-template-columns:1.4fr repeat(5,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--line);font-size:13px;align-items:center}
+@media (max-width:760px){.anrow.h{display:none}.anrow{display:flex;flex-wrap:wrap;gap:6px 14px;padding:11px 0}.anrow>div:first-child{flex-basis:100%;font-size:14px}
+ .anrow>div[data-l]:not([data-l=""])::before{content:attr(data-l);display:block;color:var(--mute);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}}
+.anrow.h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .tbl{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .thead,.trow{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(200px,2fr) 82px 82px 110px 130px 92px;align-items:center;gap:12px;padding:0 16px}
 .thead{height:40px;background:var(--panel2);color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
@@ -1927,14 +1938,15 @@ function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Dat
 function warm(v){/* show the last copy straight away while the fresh one loads */
  if(v==='live'&&!S.live){S.live=cget('live');if(S.live)head(S.live);}
  if(v==='build'&&(!S.build||S.build.lg!==S.lg)){S.build=cget('build_'+S.lg);S.panel=cget('panel_'+(S.pview||'all'))||S.panel;}
- if(v==='results'&&!S.res)S.res=cget('results');
+ if(v==='results'&&!S.res)S.res=cget('results');if(v==='results'&&!S.an)S.an=cget('analytics');
  if(v==='games'&&!S.games)S.games=cget('games');
  if(S.view===v&&(v!=='build'||S.build))render();}
 async function load(v,fresh){try{warm(v);
  if(v==='live'){S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);}
  if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
   if(lg!==S.lg||pv!==(S.pview||'all'))return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
- if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);}
+ if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);
+  api('/app/api/analytics').then(a=>{S.an=a;cput('analytics',a);if(S.view==='results')renderResults();}).catch(()=>{});}
  if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);}
  if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
   try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
@@ -1963,18 +1975,18 @@ function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs
 function renderLive(){const d=S.live;const m=$('#main');
  if(!d){m.innerHTML=`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div>`+skel(6);return;}
  if(d.error){m.innerHTML=`<div class="card empty"><b>Couldn't load your combos</b>${esc(d.error)}</div>`;return;}
- const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');
+ const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
  const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending':c.group==='pending'&&c.sports.includes(S.filter))
    .sort((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort);
  const todo=cs.filter(c=>(d.todo||[]).includes(c.t));
  m.innerHTML=`<div class="grid"><div>
  <div class="kpis">
-  <div class="kpi"><span>Riding</span><b>${d.riding} <small>combos</small></b></div>
-  <div class="kpi"><span>Staked</span><b>${money(d.staked)}</b></div>
-  <div class="kpi"><span>Chance one hits</span><b>${pct(d.chance_one)}</b></div>
-  <div class="kpi"><span>Cash-out value now</span><b>${(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real)?'≈ ':''}${money(d.cash_now)}</b></div>
-  <div class="kpi"><span>Biggest payout</span><b class="up">${money(d.best)}</b></div></div>
+  <div class="kpi"><span>Riding</span><b>${d.riding+sOpen.length} <small>bet${d.riding+sOpen.length===1?'':'s'}</small></b><small class="m" style="display:block;margin-top:2px">${d.riding} combo${d.riding===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'} &amp; spread${sOpen.length===1?'':'s'}</small></div>
+  <div class="kpi"><span>Staked</span><b>${money(d.staked+sOpen.reduce((a,x)=>a+(x.cost||0),0))}</b></div>
+  <div class="kpi"><span>Chance something wins</span><b>${pct(1-(1-(d.riding?d.chance_one||0:0))*sOpen.reduce((a,x)=>a*(1-(x.chance||0)),1))}</b></div>
+  <div class="kpi"><span>Worth now if sold</span><b>${(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real)?'≈ ':''}${money((d.cash_now||0)+sOpen.reduce((a,x)=>a+(x.worth||0),0))}</b></div>
+  <div class="kpi"><span>Most it can pay</span><b class="up">${money((d.combos||[]).filter(c=>c.group==='pending').reduce((a,c)=>a+c.pays,0)+sOpen.reduce((a,x)=>a+(x.pays||0),0))}</b><small class="m" style="display:block;margin-top:2px">biggest single bet ${money(Math.max(d.best||0,...sOpen.map(x=>x.pays||0)))}</small></div></div>
  ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
  <h2>Your combos <span class="n">${pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
@@ -1994,7 +2006,8 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const hid=(()=>{try{return JSON.parse(localStorage.getItem('cw_hide')||'[]')}catch(e){return []}})();
  const ideas=(d.ideas||[]).filter(x=>!hid.includes(x.id));
  if(!items.length&&ideas.length)return ideaBlock(ideas);
- if(!items.length)return pend.length?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${pend.length} combo${pend.length>1?'s':''} riding · the Mac tells you the moment one is worth selling.</span></div>`:'';
+ const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
+ if(!items.length)return nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'';
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
   const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
@@ -2262,7 +2275,7 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=`<d
   <h2>By week</h2><div class="chart"><svg viewBox="0 0 ${Math.max(1,w.length)*60} 160" width="100%" height="170" preserveAspectRatio="none">
    <line x1="0" y1="80" x2="${w.length*60}" y2="80" stroke="var(--line)"/>${w.map((x,i)=>{const h=Math.abs(x.pl)/mx*70;return `<rect x="${i*60+14}" y="${x.pl>=0?80-h:80}" width="32" height="${Math.max(2,h)}" rx="4" fill="${x.pl>=0?'var(--yes)':'var(--no)'}"><title>${x.week}: ${smoney(x.pl)} on ${x.n}</title></rect>`}).join('')}</svg>
    <div style="display:flex">${w.map(x=>`<div style="width:${100/Math.max(1,w.length)}%;text-align:center;font-size:11px" class="m">${(x.week||'').slice(5)}</div>`).join('')}</div></div>
-  ${edgeBlock(d)}
+  ${anBlock(S.an)}${edgeBlock(d)}
   ${historyBlock(d.history||[])}
  </div><aside class="side">
   <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
@@ -2309,6 +2322,24 @@ function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const ne
   <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
   <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
   <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
+function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div><div class="m" style="padding:6px 0 4px">${a?'Nothing to measure yet. Results show up as bets settle.':'Loading…'}</div></div>`;
+ const tab=S.anTab||'levels';const r=x=>x==null?'—':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(Math.round(x*100))}%</b>`;
+ const tabs=[['levels','Combo price levels'],['types','Bet types'],['sports','Sports'],['exits','Selling']];
+ const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="S.anTab='${k}';renderResults()">${l}</button>`).join('')}</div>`;
+ const table=(head,rows)=>`<div class="antbl"><div class="anrow h">${head.map(h=>`<div>${h}</div>`).join('')}</div>${rows.map(cs=>`<div class="anrow">${cs.map((c,i)=>`<div data-l="${i?esc(head[i]):''}">${c}</div>`).join('')}</div>`).join('')||'<div class="m" style="padding:10px 0">No settled bets here yet.</div>'}</div>`;
+ const mode=m=>m==='real'?'<span class="tag good">Real</span>':'<span class="tag">Paper</span>';
+ let body='',expl='';
+ if(tab==='levels'){expl='Every combo Kalshi has quoted (last 90 days), as if bought at that price. "% of fair" is what Kalshi pays compared to the fair payout. The lab paper-buys 3 a day in each band from 80% up, and replays smart sell on their game prices.';
+  body=table(['% of fair','Quotes','Hit vs expected','Riding to end','Worth at game time','Lab: ride · smart sell'],(a.levels||[]).map(x=>[`<b>${esc(x.band)}</b>`,x.n,x.hit==null?'—':pct(x.hit)+' <span class="m">vs '+pct(x.exp)+'</span>',r(x.ride),r(x.gt)+(x.gt_n?` <span class="m">(${x.gt_n})</span>`:''),x.lab_n?`${r(x.lab_ride)} · ${r(x.lab_smart)} <span class="m">(${x.lab_n})</span>`:'<span class="m">—</span>']));}
+ else if(tab==='types'||tab==='sports'){expl=tab==='types'?'Every settled panel bet, real and paper (the paper panel and the combo lab). Return is profit over what was staked. Smart sell is the replay on recorded game prices, where there are enough of them. CLV: how the price you got compares with Kalshi\'s price right before the game. Positive means the market moved your way.':'The same bets, by sport.';
+  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));}
+ else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
+  const au=a.auto||{};const an=Object.keys(au);
+  body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
+   +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`;}
+ const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
+ return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)} ago</span></div>${tb}
+  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>`;}
 function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
@@ -3533,6 +3564,8 @@ def webapp_main():
                         out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1")
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/analytics":
+                        out = jsonable(A.analytics()) if A.STORE.get("db") else {}
                     elif path == "/app/api/recap":
                         out = jsonable(A.recap()) if A.STORE.get("db") else {}
                     elif path == "/app/api/panel":

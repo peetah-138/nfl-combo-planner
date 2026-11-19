@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.112"
+VERSION = "2026.11.18.113"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -10904,7 +10904,7 @@ def panel_settle():
         return []
     _panel_table()
     since = (dt.datetime.now(PACIFIC).date() - dt.timedelta(days=10)).isoformat()
-    for mode in ("real", "paper"):
+    for mode in ("real", "paper", "lab"):
         for r in store_rows("select * from panel where (mode=? or mode like ?) and day >= ?", (mode, mode + "#%", since)):
             p = json.loads(r["body"])
             changes = {}
@@ -10945,6 +10945,12 @@ def panel_settle():
                         n = s / (p_ + single_fee(p_))
                         pl = n - s if won else -s
                     ch.update(result="won" if pl > 0 else "lost", pl=round(pl, 2))
+                    try:                                   # what smart sell would have done, from its game prices
+                        sim = sim_exit(c)
+                    except Exception:
+                        sim = None
+                    if sim:
+                        ch.update(sim_pl=sim[0], sim_why=sim[1])
                 if ch:
                     changes[c["id"]] = ch
             if changes:
@@ -10974,6 +10980,284 @@ def panel_record():
     pp["ready"] = (pp["bets"] >= 50 and pp["pl"] > 0 and pp["days_up"] >= 0.55 * max(pp["days"], 1)
                    and (pp["clv"] is None or pp["clv"] >= 0))
     return out
+
+
+# ---------------------------------------------------------------- the combo lab and the analytics
+# Pete: "make the paper buy combos at different levels so we can learn more." Every day the lab paper-buys
+# a few combos in each price band (how much Kalshi pays vs. fair), from real Kalshi quotes, with no money.
+# During games the Mac records each paper and panel bet's prices, so afterwards it can estimate what smart
+# sell would have done, not only what riding to the end did.
+LAB_BANDS = [(0.80, 0.85, "80–85%"), (0.85, 0.90, "85–90%"), (0.90, 0.95, "90–95%"), (0.95, 1.00, "95–100%"),
+             (1.00, 9.99, "100%+")]
+ALL_BANDS = [(0.0, 0.70, "under 70%"), (0.70, 0.80, "70–80%")] + LAB_BANDS
+LAB = {"per_band": 3, "stake": 5.0, "fresh": 1800}
+
+
+def _band(pct, bands=LAB_BANDS):
+    for lo, hi, name in bands:
+        if pct is not None and lo <= pct < hi:
+            return name
+    return None
+
+
+def _pick_label(t):
+    return PICK_NAME.get(t) or (MARKET_INFO.get(t) or {}).get("name") or \
+        sport_teams(ticker_sport(t) or "").get(t.rsplit("-", 1)[-1]) or t.rsplit("-", 1)[-1]
+
+
+def lab_pass(now=None):
+    """Paper-buy today's lab combos: up to 3 per price band, from Kalshi quotes of the last half hour whose
+    games start in 20+ minutes, never the same combo twice. Returns how many were added."""
+    if not STORE["db"]:
+        return 0
+    now = now or time.time()
+    rows = store_rows("select rowid as id, ts, sport, n, legs, stake, pays, fair, pct, hours from quotes "
+                      "where ts > ? and pct is not null and hours is not null and stake > 0", (now - LAB["fresh"],))
+    if not rows:
+        return 0
+    got = {}
+
+    def fn(cur, st):
+        p = cur or {"at": now, "items": [], "budget": 0, "lab": True}
+        have = {c["id"] for c in p["items"]}
+        count = defaultdict(int)
+        for c in p["items"]:
+            count[c["band"]] += 1
+        seen = {tuple(sorted(l["ticker"] for l in c["legs"])) for c in p["items"]}
+        added = 0
+        for r in sorted(rows, key=lambda r: -r["ts"]):
+            b = _band(r["pct"])
+            kick = r["ts"] + (r["hours"] or 0) * 3600
+            legs = json.loads(r["legs"] or "[]")
+            key = tuple(sorted(x[0] for x in legs))
+            iid = f"lab:{r['id']}"
+            if not b or not legs or kick < now + 20 * 60 or iid in have or key in seen or count[b] >= LAB["per_band"]:
+                continue
+            k = LAB["stake"] / r["stake"]
+            p["items"].append({"id": iid, "kind": "combo", "band": b, "code": (r["sport"] or "other").split(",")[0],
+                               "sports": r["sport"], "stake": LAB["stake"], "pays": round(r["pays"] * k, 2),
+                               "pct": round(r["pct"], 4), "chance": round(r["stake"] / r["fair"], 4) if r["fair"] else None,
+                               "legs": [{"ticker": x[0], "p": x[1], "fair": x[2], "pick": _pick_label(x[0])} for x in legs],
+                               "kick": kick, "state": "paper", "quote": r["id"], "at": now})
+            count[b] += 1
+            seen.add(key)
+            added += 1
+        got["n"] = added
+        return (p, "paper") if added else None
+    panel_tx(_panel_day(now), "lab", fn)
+    return got.get("n", 0)
+
+
+def lab_ticks(now=None):
+    """Record the in-game prices of every open paper, lab and panel bet (one batched Kalshi call), so the
+    analytics can replay what smart sell would have done. Returns how many prices were saved."""
+    if not STORE["db"]:
+        return 0
+    now = now or time.time()
+    _panel_table()
+    since = (dt.datetime.now(PACIFIC).date() - dt.timedelta(days=2)).isoformat()
+    want = set()
+    for r in store_rows("select body from panel where day >= ? and (mode in ('lab','paper','real') or mode like 'real#%')",
+                        (since,)):
+        for c in json.loads(r["body"]).get("items", []):
+            if c.get("state") in ("paper", "bought") and not c.get("result") and now - 8 * 3600 < (c.get("kick") or 9e12) < now + 300:
+                want |= {l["ticker"] for l in c["legs"]}
+    want = sorted(want)
+    saved = 0
+    if now - LAB.get("pruned", 0) > 86400:          # keep the game-price record to 45 days
+        LAB["pruned"] = now
+        store_x("delete from ticks where state='sim' and ts < ?", (now - 45 * 86400,))
+    for i in range(0, len(want), 50):
+        try:
+            r = requests.get(f"{KALSHI}/markets", params={"tickers": ",".join(want[i:i + 50])}, timeout=15)
+            r.raise_for_status()
+            for m in r.json().get("markets", []):
+                lp = 1.0 if m.get("result") == "yes" else 0.0 if m.get("result") == "no" else live_price(m)
+                if lp is not None:
+                    store_x("insert into ticks values(?,?,?,?,?)", (now, m.get("ticker"), lp, "sim", (m.get("status") or "")[:12]))
+                    saved += 1
+        except (requests.RequestException, ValueError):
+            continue
+    return saved
+
+
+def sim_exit(c):
+    """What smart sell (or lock-in) would have done with this bet, replayed on its recorded game prices.
+    Returns (profit or loss, "smart"/"lock in") if it would have sold, or None if it would have ridden."""
+    if not STORE["db"] or c.get("kind") == "early" or not c.get("kick"):
+        return None
+    tks = [l["ticker"] for l in c["legs"]]
+    q_ = ",".join("?" * len(tks))
+    rows = store_rows(f"select ts, ticker, chance from ticks where state='sim' and ticker in ({q_}) and ts >= ? order by ts",
+                      (*tks, c["kick"] - 300))
+    if len(rows) < 3:
+        return None
+    cur = {l["ticker"]: (l.get("p") or 0.5) for l in c["legs"]}
+    stake = c["stake"]
+    if c["kind"] == "combo":
+        P = c.get("pays") or 0
+    else:
+        p0 = c.get("paid") or c.get("price") or c["legs"][0].get("p") or 0.5
+        P = stake / (p0 + single_fee(p0))
+    if not P:
+        return None
+    peak = 0.0
+    by_ts = defaultdict(list)
+    for r in rows:
+        by_ts[r["ts"]].append(r)
+    for ts in sorted(by_ts):
+        for r in by_ts[ts]:
+            cur[r["ticker"]] = r["chance"]
+        q = math.prod(cur.values())
+        open_ = [t for t in tks if 0.02 < cur[t] < 0.98]
+        if not open_:
+            break                                  # decided: it rode to the end
+        if c["kind"] == "combo":
+            est = kalshi_discount(True) * q * P
+        else:
+            x = cur[tks[0]]
+            est = P * max(x - single_fee(x) - 0.01, 0)
+        lam = 0.35 * sum(SWING.get(ticker_sport(t) or "", 1.0) for t in open_) / len(open_)
+        floor = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), 1.5 * stake)
+        if q >= 0.5 and est >= floor:
+            return round(est - stake, 2), "smart"
+        peak = max(peak, est)
+        if peak >= max(TRAIL_ARM * P, 1.5 * stake) and est <= (1 - TRAIL_DROP) * peak and est >= 1.1 * stake:
+            return round(est - stake, 2), "lock in"
+    return None
+
+
+ANALYTICS = {"at": 0, "v": None}
+
+
+def _roi(pl, staked):
+    return round(pl / staked, 4) if staked else None
+
+
+def analytics(max_age=600):
+    """Everything the Mac has learned, by price level, bet type, sport and exit. Cached 10 minutes."""
+    if ANALYTICS["v"] is not None and time.time() - ANALYTICS["at"] < max_age:
+        return ANALYTICS["v"]
+    if not STORE["db"]:
+        return {}
+    now = time.time()
+    out = {"at": now}
+    # 1. combos by price level: every combo Kalshi quoted in the last 90 days, as if bought at that quote
+    levels = {name: {"band": name, "n": 0, "hits": 0, "exp": 0.0, "staked": 0.0, "ride": 0.0, "gt_n": 0, "gt": 0.0}
+              for _, _, name in ALL_BANDS}
+    for r in store_rows("select legs, stake, pays, fair, pct, outcome from quotes where pct is not null and ts > ? "
+                        "and outcome in ('won','lost')", (now - 90 * 86400,)):
+        b = _band(r["pct"], ALL_BANDS)
+        if not b or not r["stake"]:
+            continue
+        L = levels[b]
+        L["n"] += 1
+        L["hits"] += r["outcome"] == "won"
+        L["exp"] += (r["stake"] / r["fair"]) if r["fair"] else 0
+        L["staked"] += r["stake"]
+        L["ride"] += (r["pays"] if r["outcome"] == "won" else 0) - r["stake"]
+        legs = json.loads(r["legs"] or "[]")
+        cl = close_prices([x[0] for x in legs])
+        if legs and len(cl) == len(legs) and all(x[1] for x in legs):
+            L["gt_n"] += 1
+            L["gt"] += r["pays"] * math.prod(cl[x[0]] for x in legs) - r["stake"]
+    _panel_table()
+    bodies = [(r["mode"], json.loads(r["body"])) for r in
+              store_rows("select mode, body from panel where mode in ('real','paper','lab') or mode like 'real#%'")]
+    items = [(m.split("#")[0], c) for m, b in bodies for c in b.get("items", []) if c.get("result")]
+    lab = defaultdict(lambda: {"n": 0, "won": 0, "staked": 0.0, "pl": 0.0, "sim": 0.0})
+    for m, c in items:
+        if m == "lab":
+            x = lab[c.get("band")]
+            x["n"] += 1
+            x["won"] += c["result"] == "won"
+            x["staked"] += c["stake"]
+            x["pl"] += c["pl"]
+            x["sim"] += c["sim_pl"] if c.get("sim_pl") is not None else c["pl"]
+    rows = []
+    for _, _, name in ALL_BANDS:
+        L, x = levels[name], lab.get(name)
+        if not L["n"] and not x:
+            continue
+        rows.append({"band": name, "n": L["n"], "hit": round(L["hits"] / L["n"], 3) if L["n"] else None,
+                     "exp": round(L["exp"] / L["n"], 3) if L["n"] else None, "ride": _roi(L["ride"], L["staked"]),
+                     "gt": _roi(L["gt"], L["staked"] * L["gt_n"] / L["n"]) if L["gt_n"] else None, "gt_n": L["gt_n"],
+                     "lab_n": x["n"] if x else 0, "lab_ride": _roi(x["pl"], x["staked"]) if x else None,
+                     "lab_smart": _roi(x["sim"], x["staked"]) if x else None})
+    out["levels"] = rows
+    # 2. bet types and 3. sports: the real panel, the paper panel and the lab
+    names = {"single": "Single games", "early": "Sell-early favorites", "line": "Spreads & totals", "combo": "Combos"}
+
+    def roll(key):
+        g = defaultdict(lambda: {"n": 0, "won": 0, "staked": 0.0, "pl": 0.0, "clv": [], "sim": 0.0, "sim_n": 0})
+        for m, c in items:
+            k = (m if m != "lab" else "paper", key(c))
+            x = g[k]
+            x["n"] += 1
+            x["won"] += c["result"] == "won"
+            x["staked"] += c["stake"]
+            x["pl"] += c["pl"]
+            if c.get("clv") is not None:
+                x["clv"].append(c["clv"])
+            if c.get("sim_pl") is not None:
+                x["sim_n"] += 1
+            x["sim"] += c["sim_pl"] if c.get("sim_pl") is not None else c["pl"]
+        return [{"mode": m, "what": w, "n": x["n"], "won": x["won"], "pl": round(x["pl"], 2), "roi": _roi(x["pl"], x["staked"]),
+                 "clv": round(sum(x["clv"]) / len(x["clv"]), 4) if x["clv"] else None,
+                 "smart": _roi(x["sim"], x["staked"]), "sim_n": x["sim_n"]}
+                for (m, w), x in sorted(g.items(), key=lambda kv: (kv[0][0] != "real", -kv[1]["n"]))]
+    out["types"] = roll(lambda c: names.get(c["kind"], c["kind"]))
+    out["sports"] = roll(lambda c: (SPORTS.get(c.get("code") or "", {}).get("name") or (c.get("code") or "other").upper()))
+    # 4. exits: your real combos (Kalshi record) ridden vs cashed, and what automatic selling did
+    ex = defaultdict(lambda: {"n": 0, "cost": 0.0, "back": 0.0})
+    for r in store_rows("select cost, pays, back, status from bets where status in ('won','lost','cashed') and settled > ?",
+                        (now - 90 * 86400,)):
+        k = "Cashed out early" if r["status"] == "cashed" else "Rode to the end"
+        e = ex[k]
+        e["n"] += 1
+        e["cost"] += r["cost"] or 0
+        e["back"] += (r["back"] if r["status"] == "cashed" else r["pays"] if r["status"] == "won" else 0) or 0
+    out["exits"] = [{"what": k, "n": e["n"], "pl": round(e["back"] - e["cost"], 2), "roi": _roi(e["back"] - e["cost"], e["cost"])}
+                    for k, e in ex.items()]
+    auto = defaultdict(int)
+    try:
+        cut = time.time() - 30 * 86400
+        with open(SELL_LOG, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("at", 0) >= cut and d.get("result") in ("sold", "hedged"):
+                    auto[d.get("why") or d.get("result")] += 1
+    except OSError:
+        pass
+    out["auto"] = dict(auto)
+    real = [c for m, c in items if m == "real"]
+    out["notes"] = _analytics_notes(rows, out["types"], len(real))
+    ANALYTICS.update(at=now, v=out)
+    return out
+
+
+def _analytics_notes(levels, types, n_real):
+    """A few plain sentences: what the numbers say so far, and how sure they are."""
+    notes = []
+    big = [r for r in levels if r["n"] >= 30 and r["ride"] is not None]
+    if big:
+        best = max(big, key=lambda r: r["ride"])
+        notes.append(f"Combos priced {best['band']} of fair have done best so far: {best['ride']:+.0%} riding to the end "
+                     f"over {best['n']} quotes.")
+    thin = [r["band"] for r in levels if 0 < r["n"] < 30]
+    if thin:
+        notes.append("Not enough results yet for " + ", ".join(thin) + " (30+ each before reading much into them).")
+    for t in types:
+        if t["mode"] == "paper" and t["n"] >= 20 and t["smart"] is not None and t["roi"] is not None \
+                and abs(t["smart"] - t["roi"]) >= 0.05:
+            better = "smart sell" if t["smart"] > t["roi"] else "riding to the end"
+            notes.append(f"{t['what']} (paper): {better} has done better ({t['smart']:+.0%} vs {t['roi']:+.0%}).")
+    if not n_real:
+        notes.append("No real panel bets have settled yet.")
+    return notes
 
 
 def prune_drafts(now=None):
