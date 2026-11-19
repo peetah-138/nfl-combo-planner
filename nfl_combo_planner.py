@@ -4601,6 +4601,10 @@ def open_singles(max_age=30):
         live = bool(sc) and str(sc.get("state") or "") in ("in", "live")
         state = "done" if res else "over" if status in ("closed", "settled", "finalized", "determined") else \
             "live" if live else "pre"
+        rs = None                                   # started, nothing settled it, no live score: say so honestly
+        if state == "pre":
+            rs = run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
+                            score_state=(sc or {}).get("state"))
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
                     "opp": (sc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
@@ -4611,7 +4615,9 @@ def open_singles(max_age=30):
                     "worth": round(n * bid, 2) if bid is not None else None,
                     "chance": round(chance, 4) if chance is not None else None, "state": state, "res": res,
                     "score": re.sub(r"<[^>]+>", "", score_line(sc)) if sc and state != "pre" else "",
-                    "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" else "",
+                    "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" and not rs else "",
+                    "note": (rs or {}).get("text", ""), "phase": (rs or {}).get("phase", ""),
+                    "short": (rs or {}).get("short", ""),
                     "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
@@ -4687,6 +4693,7 @@ def live_view(mine, views, plan, chance_one, balance):
             x = need.setdefault(k, {"name": lg["name"], "opp": lg["opp"], "sport": lg["sport"], "combos": 0, "pays": 0.0,
                                     "ticker": lg["ticker"],
                                     "state": lg["state"], "score": lg["score"], "sc": lg["sc"], "starts": lg["starts"],
+                                    "phase": lg.get("phase", ""), "note": lg.get("note", ""), "short": lg.get("short", ""),
                                     "chance": lg["live"] if lg["live"] is not None else lg["chance"]})
             x["combos"] += 1
             x["pays"] += v["pays"]
@@ -5236,6 +5243,10 @@ def leg_start(l, side_of):
         t = start_dt(s["event"])
         if t:
             return t
+    else:                                      # a game outside the sport on screen (tennis in an NBA view)
+        t = start_dt(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
+        if t:
+            return t
     sc = leg_score(l)
     try:
         if sc and sc.get("start"):
@@ -5249,14 +5260,55 @@ def leg_start(l, side_of):
     return None
 
 
+# Hours after the start when we stop calling a game "on" if nothing says it is: sports with no live score source
+# (tennis, UFC, EuroLeague, AHL) otherwise look live for ever. Sport-typical lengths, a little generous.
+DONE_HOURS = {"nfl": 4.25, "nba": 3.25, "nhl": 3.5, "ahl": 3.5, "ncaamb": 2.75, "ncaawb": 2.75, "ncaaf": 4.5,
+              "euroleague": 2.75, "ufc": 3.0, "soccer": 2.75, "tennis": 4.0}
+
+
+def ago_text(secs):
+    """'25 min', '3h 10m', '5h', '2 days' for how long ago something began."""
+    m = max(int(secs // 60), 0)
+    if m < 60:
+        return f"{max(m, 1)} min"
+    if m < 24 * 60:
+        h, r = divmod(m, 60)
+        return f"{h}h {r}m" if r >= 10 else f"{h}h"
+    d = m // (24 * 60)
+    return f"{d} day{'s' if d != 1 else ''}"
+
+
+def run_status(sport, started_at, now=None, score_state=None):
+    """Honest status for a game that has started but that Kalshi hasn't settled.
+    None if it hasn't started. Otherwise {"phase": "on" | "probably_over" | "over", "text": ...}:
+    "on" while a score says so or while it is within a sport-typical length; "probably_over" after that when
+    there is no score to say otherwise (the pick stays open until Kalshi settles it); "over" when the score
+    source says it finished."""
+    if not started_at:
+        return None
+    now = now or dt.datetime.now(dt.timezone.utc)
+    secs = (now - started_at).total_seconds()
+    if secs < 0:
+        return None
+    if score_state == "in":
+        return {"phase": "on", "text": "", "short": ""}
+    if score_state == "post":
+        return {"phase": "over", "text": "Game over · waiting on Kalshi to settle", "short": "Game over"}
+    ago = ago_text(secs)
+    if secs / 3600.0 < DONE_HOURS.get(sport, 3.5):
+        return {"phase": "on", "text": f"Started {ago} ago · no live score", "short": f"Started {ago} ago"}
+    return {"phase": "probably_over", "text": f"Probably finished · started {ago} ago, waiting on Kalshi",
+            "short": "Probably over"}
+
+
 def when_label(t):
-    """'Live', 'Tonight 7:10 PM', 'Tue 4:00 PM', 'Nov 29' for a start time."""
+    """'Started 25 min ago', 'Tonight 7:10 PM', 'Tue 4:00 PM', 'Nov 29' for a start time."""
     if not t:
         return ""
     t = t.astimezone()
     now = dt.datetime.now().astimezone()
     if t <= now:
-        return "Live now"
+        return "Started " + ago_text((now - t).total_seconds()) + " ago"
     days = (t.date() - now.date()).days
     clock = t.strftime("%-I:%M %p").replace(":00 ", " ")
     if days == 0:
@@ -6635,8 +6687,11 @@ def mine_page(live=False):
             if _lp is not None and l.get("side", "yes") == "no":
                 _lp = 1 - _lp
             _sc = leg_score(l) if not res else None
+            _rs = (run_status(ticker_sport(l["ticker"]), leg_start(l, side_of),
+                              score_state=(_sc or {}).get("state")) if _st == "live" else None)
             vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
-                          "state": _st, "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
+                          "state": _st, "phase": (_rs or {}).get("phase", ""), "note": (_rs or {}).get("text", ""),
+                          "short": (_rs or {}).get("short", ""), "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
                           "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
                           "starts": start_label(l.get("event") or "") if not res else "",
                           "sport": ticker_sport(l["ticker"]) or "other", "side": l.get("side", "yes"),
@@ -6655,10 +6710,14 @@ def mine_page(live=False):
         upcoming = [x for x in (leg_start(l, side_of) for l, (_, _, _, r) in legs_sorted if not r) if x]
         nxt = min(upcoming) if upcoming else None
         any_live = any(pick_state(l, side_of) == "live" for l, (_, _, _, r) in legs_sorted if not r)
-        when = ("Live now" if any_live else when_label(nxt)) if group == "pending" else ""
+        # games on with no score for longer than a game takes: say so, don't claim "Live now" for ever
+        gone_live = any_live and all(v["phase"] in ("probably_over", "over") for v in vlegs
+                                     if v["state"] == "live" and not v["res"])
+        when = (("Probably finished" if gone_live else "Live now") if any_live else when_label(nxt)) \
+            if group == "pending" else ""
         dots = "".join({"yes": "<i class='d w'></i>", "no": "<i class='d l'></i>"}.get(r, "<i class='d o'></i>")
                        for _, (_, _, _, r) in legs_sorted)
-        sort_t = 0 if any_live else (nxt.timestamp() if nxt else 9e12)
+        sort_t = 0 if any_live and not gone_live else (nxt.timestamp() if nxt else 9e12)
         need_names = [nm for _, (nm, _, _, r) in legs_sorted if not r]
         lost_names = [nm for _, (nm, _, _, r) in legs_sorted if r == "no"]
         if lost_names:
@@ -6697,10 +6756,10 @@ def mine_page(live=False):
             n1, n2 = f"<b class='neg'>−{money(a['cost'])}</b>", "<span>lost</span>"
         games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
                                     for l, (_, _, _, r) in legs_sorted if not r}))
-        kind = ("playing" if any_live else "quiet") if group == "pending" else group
+        kind = ("playing" if any_live and not gone_live else "quiet") if group == "pending" else group
         views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
                       "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
-                      "full": a.get("full_pays") or 0, "when": when, "live": any_live, "sort": sort_t,
+                      "full": a.get("full_pays") or 0, "when": when, "live": any_live and not gone_live, "sort": sort_t,
                       "preview": preview, "legs": vlegs, "week": a.get("week")})
         cards.append((group, f"<details class='crow' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "

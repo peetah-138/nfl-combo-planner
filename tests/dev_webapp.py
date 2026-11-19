@@ -6,6 +6,7 @@ throwaway home folder this checks for. Safe by construction, see DEV.md:
   - no Kalshi key anywhere, so trading is impossible, and no hub, so nothing is routed to the real one
   - every outgoing request is answered from memory; any local address except this app's own is refused"""
 import os, sys, json, time, socket, shutil, threading, importlib.util
+import datetime as dt
 
 HOME = os.path.realpath(os.environ.get("COMBOWATCH_HOME") or "")
 REAL = os.path.realpath(os.path.expanduser("~/combowatch"))
@@ -70,6 +71,13 @@ BETS = [
     {"ticker": "KXMVE-4", "legs": [leg(nba, 0, "BOS"), leg(nba, 2, "CHI")], "cost": 5.0, "pays": 22, "status": "lost", "back": 0, "week": "2026-11-12", "full_pays": 22, "lg": "nba", "lgs": ["nba"]},
     {"ticker": "KXMVE-5", "legs": [leg(nba, 0, "BOS"), leg(nba, 1, "DEN")], "cost": 5.0, "pays": 14, "status": "won", "back": 14, "week": today, "full_pays": 14, "lg": "nba", "lgs": ["nba"]},
     {"ticker": "KXMVE-6", "legs": [leg(nba, 3, "PHX"), leg(nba, 2, "MIL")], "cost": 6.0, "pays": 30, "status": "cashed", "back": 11.4, "week": today, "full_pays": 30, "lg": "nba", "lgs": ["nba"]},
+    # tennis: no live score source. KXMVE-7's matches started 5 hours ago (so "Probably finished"), KXMVE-8's 40 min ago.
+    {"ticker": "KXMVE-7", "legs": [{"ticker": "KXATPMATCH-26NOV18SINALC-SIN", "event_ticker": "KXATPMATCH-26NOV18SINALC", "event": "KXATPMATCH-26NOV18SINALC", "side": "yes"},
+                                   {"ticker": "KXATPMATCH-26NOV18DJOMED-DJO", "event_ticker": "KXATPMATCH-26NOV18DJOMED", "event": "KXATPMATCH-26NOV18DJOMED", "side": "yes"}],
+     "cost": 3.0, "pays": 12.0, "status": "pending", "back": 0, "week": today, "full_pays": 12.0, "lg": "tennis", "lgs": ["tennis"]},
+    {"ticker": "KXMVE-8", "legs": [{"ticker": "KXATPMATCH-26NOV18RUBZVE-RUB", "event_ticker": "KXATPMATCH-26NOV18RUBZVE", "event": "KXATPMATCH-26NOV18RUBZVE", "side": "yes"},
+                                   leg(nba, 3, "PHX")],
+     "cost": 2.0, "pays": 9.0, "status": "pending", "back": 0, "week": today, "full_pays": 9.0, "lg": "mix", "lgs": ["tennis", "nba"]},
 ]
 
 real_load = W.load_engine
@@ -83,6 +91,16 @@ def load():
     A.fetch_results = lambda t: {}
     A.resting_sells = lambda: {}
     A.hub_call = lambda *a, **k: None                       # no hub, ever
+    def ago(h):
+        return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for ev_, h_ in (("KXATPMATCH-26NOV18SINALC", 5), ("KXATPMATCH-26NOV18DJOMED", 5.5), ("KXATPMATCH-26NOV18RUBZVE", 0.7)):
+        A.KICKOFF[ev_] = ago(h_)
+    A.PICK_NAME["KXATPMATCH-26NOV18SINALC-SIN"] = "Jannik Sinner"
+    A.MARKET_INFO["KXATPMATCH-26NOV18SINALC-SIN"] = {"status": "open", "exp": "", "live": None, "name": "Jannik Sinner"}
+    A.PICK_NAME["KXATPMATCH-26NOV18DJOMED-DJO"] = "Novak Djokovic"
+    A.MARKET_INFO["KXATPMATCH-26NOV18DJOMED-DJO"] = {"status": "open", "exp": "", "live": None, "name": "Novak Djokovic"}
+    A.PICK_NAME["KXATPMATCH-26NOV18RUBZVE-RUB"] = "Andrey Rublev"
+    A.MARKET_INFO["KXATPMATCH-26NOV18RUBZVE-RUB"] = {"status": "open", "exp": "", "live": None, "name": "Andrey Rublev"}
     A.MINE["cash"]["KXMVE-3"] = {"rfq": "estimate", "offer": 15.8, "price": .81, "contracts": 19.5, "frac": 1.0, "at": time.time()}
     return A
 
