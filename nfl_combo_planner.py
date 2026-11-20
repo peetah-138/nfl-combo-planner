@@ -3935,7 +3935,8 @@ def sold_today():
     today = dt.date.today().isoformat()
     try:
         with open(SELL_LOG, encoding="utf-8") as f:
-            return sum(1 for x in f if ('"result": "sold"' in x or '"result": "hedged"' in x) and f'"when": "{today}' in x)
+            return sum(1 for x in f if ('"result": "sold"' in x or '"result": "hedged"' in x or '"result": "check"' in x)
+                       and f'"when": "{today}' in x)     # a "check" sale may have gone through: it counts
     except OSError:
         return 0
 
@@ -6373,6 +6374,9 @@ def post_sell(ticker, n, per):
 def place_take_profit(ticker, contracts, cost, p=None, steps=None):
     """Put standing sell orders on Kalshi (a ladder in thirds, or one) at the wait-one-more-game
     price. Kalshi keeps them working with your phone closed; each fills only if a buyer pays it."""
+    if not RESTING_SELLS_OK:
+        return ("Kalshi now only takes sell orders that fill at once, so standing auto-sell orders are off for now. "
+                "Smart sell and auto cash-out still sell for you while you watch.")
     n = math.floor(contracts * 100 + 1e-6) / 100
     if n < 1:
         return "Auto-sell needs at least 1 contract."
@@ -6409,8 +6413,8 @@ def retarget_one(t, orders, cost_full, pays_full, p=None):
     At most once a minute per combo, and only for a 5%+ change. Returns (old, new) if moved."""
     import time
     moved_at = MINE.setdefault("tp_moved", {})
-    if not orders or time.time() - moved_at.get(t, 0) < 60:
-        return None
+    if not orders or not RESTING_SELLS_OK or time.time() - moved_at.get(t, 0) < 60:
+        return None                         # can't put a standing sell back (V2): leave the old ladder as it is
     cur = order_steps(orders)
     left = round(sum(k for k, _ in cur), 2) or pays_full
     cost = cost_full * left / max(pays_full, 1e-9)
@@ -7933,11 +7937,14 @@ def _signed(method, path, body=None, params=None):
     """One signed request to Kalshi with this device's key. Returns the response, whatever its status."""
     import base64
     key_id = CFG.get("kalshi_key_id", "").strip()
-    with open(KEYFILE, encoding="utf-8") as f:
-        key = load_private_key(f.read())
     full = "/trade-api/v2" + path
     ts = str(int(time.time() * 1000))
-    sig = base64.b64encode(sign(key, (ts + method + full).encode())).decode()
+    try:                                           # nothing has been sent yet: a failure here is a plain refusal
+        with open(KEYFILE, encoding="utf-8") as f:
+            key = load_private_key(f.read())
+        sig = base64.b64encode(sign(key, (ts + method + full).encode())).decode()
+    except Exception as err:
+        raise KalshiRefused(f"this device's Kalshi key couldn't be read ({type(err).__name__})", 400, "app_no_key")
     headers = {"KALSHI-ACCESS-KEY": key_id, "KALSHI-ACCESS-TIMESTAMP": ts,
                "KALSHI-ACCESS-SIGNATURE": sig}
     if body is not None:
@@ -8014,11 +8021,9 @@ def order_outcome(err):
     s = str(err)
     if "Tap again within" in s:
         return "refused"                                   # the backup-key prompt: nothing was sent
-    if "may or may not" in s:
-        return "unknown"
     m = re.search(r"\((\d{3})\)\s*$", s)
     if isinstance(err, RuntimeError) and m and m.group(1).startswith("4") and m.group(1) != "408":
-        return "refused"
+        return "refused"                                   # a definite refusal, whatever its words say
     return "unknown"
 
 
@@ -8083,8 +8088,8 @@ def deprecation_check(r, path):
         where = re.sub(r"/[0-9A-Za-z-]{20,}", "/<id>", str(path).split("?")[0])[:80]
         _log_once(("dep", code, where), f"Kalshi retirement notice: code={code} status={status} path={where} "
                                         f"header={str(hdr)[:80]!r} body={str(getattr(r, 'text', ''))[:300]!r}")
-        if DEPRECATION_HOOK:
-            DEPRECATION_HOOK(code)
+        if DEPRECATION_HOOK:                       # a push can take seconds: never on the order's own path
+            threading.Thread(target=DEPRECATION_HOOK, args=(code,), daemon=True, name="kalshi-retired").start()
         return code
     except Exception:
         return None
@@ -8254,16 +8259,12 @@ def _mark_unsure(o, why):
         save_json(ORDER_LEDGER, d)
 
 
-def _route_missing(r, create=True):
-    """V2 isn't there for this account yet: a 405, or a 404 that isn't about the order or the market."""
+def _route_missing(r):
+    """V2 isn't there for this account yet: a 405, or a 404 without one of Kalshi's error codes (a 404 that names
+    a code is about the order or the market, and is a definite refusal)."""
     if r.status_code == 405:
         return True
-    if r.status_code != 404:
-        return False
-    code, _ = _kalshi_error(r)
-    real = ("market_not_found", "order_group_not_found", "insufficient_shard_balance") if create else \
-        ("not_found", "market_not_found", "insufficient_shard_balance")
-    return code not in real
+    return r.status_code == 404 and not _kalshi_error(r)[0]
 
 
 def _order_fail(r, what):
@@ -8287,11 +8288,12 @@ def _order_create(body):
         now = time.time()
         u = load_json(ORDER_LEDGER, {}).get(key)
         if isinstance(u, dict) and now - float(u.get("ts", 0)) < ORDER_UNSURE_SECS:
-            raise KalshiRefused("an earlier order on this market may or may not have gone through, so the app "
-                                "won't send another; check Kalshi", 409, "app_unsure")
-        if now - sh.recent.get(key, 0) < ORDER_REPEAT_SECS:
+            raise KalshiRefused("an earlier order on this market had no clear answer, so the app won't send "
+                                "another; check Kalshi", 409, "app_unsure")
+        same = f"{key}|{o['count']}|{o['yes']}"
+        if now - sh.recent.get(same, 0) < ORDER_REPEAT_SECS:
             raise KalshiRefused("the same order went out a moment ago, so it wasn't sent twice", 409, "app_repeat")
-        sh.recent[key] = now
+        sh.recent[same] = now
         for k in [k for k, t in sh.recent.items() if now - t > 600]:
             sh.recent.pop(k, None)
     try:
@@ -8320,7 +8322,7 @@ def _order_create(body):
         raise
     except (KalshiRefused, PermissionError):
         with sh.lock:
-            sh.recent.pop(key, None)            # nothing was placed: a fresh tap may try again
+            sh.recent.pop(same, None)           # nothing was placed: a fresh tap may try again
         raise
 
 
@@ -8332,7 +8334,7 @@ def _order_cancel(path, params):
     p = {"market_ticker": str(params["market_ticker"])} if (params or {}).get("market_ticker") else {}
     try:
         r = _signed("DELETE", f"{ORDERS_V2}/{oid}", params=p)
-        if _route_missing(r, create=False):
+        if _route_missing(r):
             r = _signed("DELETE", f"{ORDERS_LEGACY}/{oid}")
     except requests.RequestException as err:
         raise OrderUnknown(type(err).__name__)
@@ -10316,7 +10318,8 @@ KILLER = {"single_edge": 0.08, "single_rel": 0.15, "combo_pct": 1.15, "combo_leg
 
 def killer_today():
     start = time.mktime(dt.date.today().timetuple())
-    rows = store_rows("select stake from killer where mode='on' and status='bought' and ts >= ?", (start,))
+    rows = store_rows("select stake from killer where mode='on' and status in ('bought', 'check') and ts >= ?",
+                      (start,))                     # a "check" may have been bought: it counts
     return len(rows), sum(r["stake"] for r in rows)
 
 
@@ -10392,6 +10395,9 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
         if status == "bought":
             _alert(alert, f"🔥 Auto-bought a killer deal: {picks} for {money(stake)} to win {money(pays)} "
                           f"({pct:.0%} of fair). {why}", "cash", "/app")
+        elif status == "check":
+            _alert(alert, f"⚠️ Killer deal {picks}: Kalshi didn't answer clearly, so it may or may not have been "
+                          f"bought ({money(stake)}). Check Kalshi; it won't be tried again.", "cash", "/app")
         elif status == "watched":
             _alert(alert, f"🔥 Killer deal (watch mode, nothing bought): {picks} at {pct:.0%} of fair, "
                           f"{money(stake)} to win {money(pays)}. Tap to buy it yourself.", "value", "/app")
@@ -12022,7 +12028,7 @@ def panel_collect(book_snap, code, log=print):
                             f"({x.get('live_how')}, on a fresh score)." if x.get("live") else
                             f"Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance."), price=x["p"],
                            opp=opp_of(games, x)))
-    for x in sell_early_candidates(games):
+    for x in (sell_early_candidates(games) if RESTING_SELLS_OK else []):   # no standing exit order on V2 yet
         if any(c["id"] == "single:" + x["ticker"] for c in cands):
             continue
         cands.append(_cand("early", code, [x], x["touch"], x["ev"],

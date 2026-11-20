@@ -286,6 +286,7 @@ def deprecation_alert(code, conf=None):
     conf = conf or DEP["conf"]
     code = re.sub(r"[^A-Za-z0-9_.:-]", "", str(code))[:60] or "deprecated"
     if not conf or not conf.get("topic"):
+        log("Kalshi retirement notice (no push from this copy):", code)
         return False
     day = time.strftime("%Y-%m-%d")
     with _DEP_LOCK:
@@ -4566,8 +4567,13 @@ def webapp_main():
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
-                    r = {"error": A.order_words(err) if isinstance(err, (RuntimeError, PermissionError))
-                         else f"Something went wrong ({type(err).__name__}). Check Kalshi before trying again."}
+                    if A.order_outcome(err) == "refused":       # a definite refusal: nothing was bought
+                        r = {"error": A.order_words(err)}
+                    else:                                       # may have gone through (e.g. after the accept)
+                        w = A.order_words(err) if isinstance(err, RuntimeError) else \
+                            f"Something went wrong ({type(err).__name__})"
+                        r = {"error": w if "may or may not" in w else
+                             w.rstrip(".") + ". It may or may not have been bought: check Kalshi before trying again."}
                 print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
                 if not r.get("error") and 1 <= i <= len(A.CTX.get("combos") or []):

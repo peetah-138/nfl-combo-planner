@@ -24,6 +24,12 @@ ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 T = "KXNBAGAME-26NOV19NYKMIN-NYK"
 
 
+def wait(cond, secs=3.0):
+    end = time.time() + secs
+    while not cond() and time.time() < end:
+        time.sleep(0.02)
+
+
 def reset(mode="v2"):
     D.update(mode=mode, sent=[], next=None, fill=None, headers={})
     E._ORDER_SHARED.recent.clear()
@@ -172,7 +178,8 @@ filled, err = E.buy_single(T, 5, 0.52)
 ok("V2 missing and legacy 410: a clean refusal in plain English, two tries, no loop",
    filled == 0 and err == "Kalshi didn't take the order: Kalshi changed how orders are placed; the app is updating"
    and len(D["sent"]) == 2 and not E.order_unsure(T))
-ok("the 410 told the watcher's retirement hook", HOOK == ["deprecated_v1_order_endpoint"])
+wait(lambda: HOOK)
+ok("the 410 told the watcher's retirement hook (on its own thread)", HOOK == ["deprecated_v1_order_endpoint"])
 reset("v2")
 D["next"] = (410, "deprecated_v1_order_endpoint")
 good, note, _ = E._buy_panel_bet({"kind": "single", "code": "nba", "stake": 10.0, "legs": [{"ticker": T, "fair": 0.9}]})
@@ -199,7 +206,7 @@ for what, nxt in (("timeout", requests.Timeout("slow")), ("connection lost", req
     n = len(D["sent"])
     filled, err = E.buy_single(T, 5, 0.52)
     ok(f"{what}: unknown outcome raised (the caller marks 'check'); a second try is not sent",
-       raised and E.order_unsure(T) and n == 1 and len(D["sent"]) == 1 and filled == 0 and "may or may not" in err)
+       raised and E.order_unsure(T) and n == 1 and len(D["sent"]) == 1 and filled == 0 and "no clear answer" in err)
 reset("v2")
 D["next"] = requests.Timeout("slow")
 try:
@@ -223,10 +230,53 @@ reset("v2")
 f1, _ = E.buy_single(T, 5, 0.52)
 f2, err2 = E.buy_single(T, 5, 0.52)
 ok("double tap: the second identical order isn't sent", f1 == 5 and f2 == 0 and "moment ago" in err2 and len(D["sent"]) == 1)
+f4, _ = E.buy_single(T, 3, 0.52)
+ok("a different order on the same market right after (the rest of a hedge) still goes", f4 == 3 and len(D["sent"]) == 2)
+first = D["sent"][0][2]["client_order_id"]
 E._ORDER_SHARED.recent.clear()
 f3, _ = E.buy_single(T, 5, 0.52)
 ok("after the double-tap window a new order goes out with a new client order id",
-   f3 == 5 and len(D["sent"]) == 2 and D["sent"][0][2]["client_order_id"] != D["sent"][1][2]["client_order_id"])
+   f3 == 5 and len(D["sent"]) == 3 and D["sent"][-1][2]["client_order_id"] != first)
+
+# ---- (4b) review fixes: words passed back from the Mac, 404s with a code, no key, standing sells, killer checks
+ok("words from the Mac: a trailing 4xx is a refusal even if they say 'may or may not'; no code = unknown",
+   E.order_outcome(RuntimeError("an earlier order may or may not have gone through (409)")) == "refused" and
+   E.order_outcome(RuntimeError("Lost contact with your Mac during this trade, so it may or may not have gone")) == "unknown"
+   and E.order_outcome(RuntimeError("Kalshi said: bad gateway (502)")) == "unknown")
+reset("v2")
+D["next"] = (404, "not_found")
+try:
+    E.kalshi_send("DELETE", "/portfolio/orders/ord-gone", params={"market_ticker": T})
+    out = "ok"
+except E.KalshiRefused:
+    out = "refused"
+ok("a cancel answered 404 not_found is a refusal, not a reason to try the legacy path", out == "refused" and len(D["sent"]) == 1)
+reset("v2")
+real_key = E.KEYFILE
+E.KEYFILE = os.path.join(E.HERE, "missing.pem")
+filled, err = E.buy_single(T, 1, 0.5)
+E.KEYFILE = real_key
+ok("no key file: a plain refusal before anything is sent (not 'check')", filled == 0 and not D["sent"] and "key" in err
+   and not E.order_unsure(T))
+reset("v2")
+ok("standing auto-sell: refused in plain words, nothing sent", "standing auto-sell orders are off" in
+   E.place_take_profit("KXMVECOMBO-1", 10, 4.0, steps=[(10, 9.0)]) and not D["sent"])
+cancels = []
+E.cancel_take_profit = lambda t: cancels.append(t) or 1
+ok("a ladder that can't be put back is never cancelled to be moved",
+   E.retarget_one("KXMVECOMBO-1", [{"order_id": "o1", "remaining_count_fp": "10.00", "yes_price_dollars": "0.9"}], 4.0, 10.0)
+   is None and not cancels)
+src = open("wahome/engine.py").read()
+ok("the panel doesn't draft sell-early bets while standing sells are off",
+   "sell_early_candidates(games) if RESTING_SELLS_OK else []" in src)
+E.store_x("create table if not exists killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why, outcome)")
+ALERTS = []
+E.CFG.update(killer_mode="on", budget=1000)
+E.week_spend = lambda: 0
+st = E.killer_act("single", [{"ticker": T, "pick": "Knicks"}], 5.0, 10.0, 1.2, lambda: (None, "check Kalshi: slow"),
+                  alert=lambda m, k, u=None: ALERTS.append(m), log=lambda *a: None)
+ok("killer deal with an unknown outcome: 'check', Pete is told, and it counts toward the day's caps",
+   st == "check" and ALERTS and "may or may not" in ALERTS[0] and E.killer_today()[0] >= 1)
 
 # ---- (5) the 6-cent gap rule for single sales (exactly 6c sells, 7c is too thin), resting sells read both ways
 E.hands_off = lambda t: False
@@ -263,12 +313,15 @@ E.DEPRECATION_HOOK = lambda code: W.deprecation_alert(code, conf)
 for k in range(2):
     reset("gone")
     E.buy_single(f"KXNBAGAME-26NOV19NYKMIN-X{k}", 1, 0.5)
+    wait(lambda: PUSHED)
+time.sleep(0.3)
 ok("410 twice in a day -> one push, plain words", len(PUSHED) == 1 and PUSHED[0] ==
    "Kalshi is retiring something the app uses (deprecated_v1_order_endpoint). Claude is looking at it.")
 ok("the raw code is in the log", any("deprecated_v1_order_endpoint" in x for x in LOGS))
 reset("v2")
 D["headers"] = {"Deprecation": "true"}
 E.buy_single("KXNBAGAME-26NOV19NYKMIN-Y", 1, 0.5)
+wait(lambda: len(PUSHED) >= 2)
 ok("a Deprecation header is a notice too (its own push)", len(PUSHED) == 2 and "deprecation_header" in PUSHED[1])
 seen = json.load(open(W.DEP_FILE))
 seen = {k: "2000-01-01" for k in seen}

@@ -180,13 +180,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   `POST /portfolio/events/orders` with `side` on the YES book (bid = buy YES / sell NO, ask = sell YES / buy NO),
   `price` = the YES price as a 4-decimal dollar string (a NO price q goes as 1 − q; cents ÷ 100 exactly, Decimal;
   rounded so a buy never pays more and a sale never takes less), `count` = a 2-decimal contract string; cancels are
-  `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405/route-missing 404, and a 410
-  there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
+  `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
+  (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
   skips); a timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
-  "check", logged in `combo_orders.json`, and that market+side gets no order for 12 h. The same order within 10 s (a
-  double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
-  sell-early exits) are refused before sending and the panel skips sell-early bets (`RESTING_SELLS_OK`, Pete to
-  decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
+  "check", logged in `combo_orders.json`, and that market+side gets no order for 12 h (killer "check"s alert and count
+  toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
+  (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
+  sell-early exits) are refused before sending, existing ladders are never moved (cancelled), and the panel doesn't
+  draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
   Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
   watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
