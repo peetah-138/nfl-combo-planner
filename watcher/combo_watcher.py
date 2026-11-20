@@ -1973,7 +1973,7 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .chip.on{animation:chipon .32s var(--spring)}@keyframes chipon{0%{transform:scale(.92)}100%{transform:none}}
 .seg,.ant{position:relative}.segind{position:absolute;border-radius:8px;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .32s var(--spring),width .32s var(--spring),top .32s var(--spring);z-index:0;pointer-events:none}
 .seg.hasind button,.ant.hasind button{position:relative;z-index:1}.seg.hasind button.on,.ant.hasind button.on{background:transparent!important;box-shadow:none!important}
-.tabbar{position:fixed}.tabind{position:absolute;top:4px;height:3px;border-radius:3px;background:var(--acc);transition:left .36s var(--spring),width .36s var(--spring);pointer-events:none}
+.tabbar{position:fixed;transform:translateY(var(--tbo,0px))}.tabind{position:absolute;top:4px;height:3px;border-radius:3px;background:var(--acc);transition:left .36s var(--spring),width .36s var(--spring);pointer-events:none}
 /* live scores on Build */
 .lvsc{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--live);font-size:11.5px;letter-spacing:.02em;white-space:nowrap}
 .pickbtn .scr{font-weight:800;font-size:15px;margin-right:8px;min-width:22px;display:inline-block;font-variant-numeric:tabular-nums}
@@ -1998,7 +1998,7 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .gt.live{animation:none}.gt.scored{animation:rowpop 1.4s var(--ease)}
 .stp button{transition:transform .12s var(--ease),background-color .15s}.stp button:active{transform:scale(.86)}
 .tg{transition:background-color .2s}.tg:active{transform:scale(.94)}
-.empty b{display:block}.empty:before{content:"";display:block;width:44px;height:44px;margin:0 auto 10px;border-radius:14px;background:linear-gradient(145deg,var(--accbg),transparent);animation:floaty 3s ease-in-out infinite}
+.empty[data-ic]:before{content:attr(data-ic)}.empty b{display:block}.empty:before{content:"✨";display:block;width:44px;height:44px;line-height:44px;font-size:22px;text-align:center;margin:0 auto 10px;border-radius:14px;background:linear-gradient(145deg,var(--accbg),transparent);animation:floaty 3s ease-in-out infinite}
 @keyframes floaty{50%{transform:translateY(-4px)}}
 /* ---- the hero on Live ---- */
 .kpis.hero{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:0;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:14px;position:relative}
@@ -2502,8 +2502,23 @@ function netBanner(){let el=document.getElementById('netbar');if(!el){el=documen
  if(S.netShown){S.netShown=false;el.className='netbar on ok';el.innerHTML='<i></i><span>Back online</span>';clearTimeout(S.netT);S.netT=setTimeout(()=>{el.classList.remove('on');},1600);}}
 addEventListener('online',()=>netBanner());addEventListener('offline',()=>{S.netNow=1;netBanner();S.netNow=0;});
 /* the header tucks in once you scroll (with a little hysteresis so it never flickers) */
-(()=>{let on=false,raf=0;const f=()=>{raf=0;const y=scrollY,want=on?y>8:y>40;if(want!==on){on=want;document.body.classList.toggle('hc',on);}};
- addEventListener('scroll',()=>{if(!raf)raf=requestAnimationFrame(f);},{passive:true});})();
+/* The header tucks (body.hc) only while the page is really scrolled. It is re-read from the page itself (never from a remembered flag) on
+   scroll, on every tab switch and every second, so a page that got shorter or was reset without a scroll event can't leave it tucked. */
+function hcSync(){const y=scrollY,cur=document.body.classList.contains('hc'),short=document.documentElement.scrollHeight<=innerHeight+1,want=short?false:cur?y>8:y>40;if(want!==cur)document.body.classList.toggle('hc',want);}
+(()=>{let raf=0;addEventListener('scroll',()=>{if(!raf)raf=requestAnimationFrame(()=>{raf=0;hcSync();});},{passive:true});})();
+/* The tab bar never moves: it is fixed to the bottom of the page, but on iPhones the page's height can stay out of step with what is on
+   screen (after the keyboard closes, after returning to the Home Screen app), which floated the bar above the bottom. Whenever what is
+   visible is taller than the page, the bar is moved down by the difference (--tbo), so it is always flush with the bottom of the screen.
+   A shorter visible area is the keyboard: the bar stays where it is, behind it, as before. */
+function tbSet(vv){const given=!!vv;vv=vv||window.visualViewport;if(!vv)return;const d=Math.round(vv.height+vv.offsetTop-innerHeight),px=d>0&&d<400?d:0;
+ /* a drift must show in two readings in a row (a rubber-band at the page's end passes in a moment); a reading handed in (the test) counts at once */
+ const ok=px===0||given||S.tbp===px;S.tbp=px;if(!ok)return;
+ if(S.tbo!==px){S.tbo=px;document.documentElement.style.setProperty('--tbo',px+'px');}}
+(()=>{const vv=window.visualViewport,f=()=>{tbSet();hcSync();};if(vv){vv.addEventListener('resize',f);vv.addEventListener('scroll',f);}
+ addEventListener('resize',f);addEventListener('orientationchange',()=>setTimeout(f,300));addEventListener('pageshow',f);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(f,100);});
+ addEventListener('focusout',()=>setTimeout(()=>{const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;scrollTo(scrollX,scrollY);f();},350));
+ setInterval(()=>{if(!document.hidden)f();},1000);})();
 /* keyboard-aware sheets: when the on-screen keyboard opens, the bottom sheet rises above it and the field stays in view */
 function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.style.setProperty('--kb',px+'px');S.kb=px;
  if(px){const f=document.activeElement;if(f&&f.closest&&f.closest('#sheet'))setTimeout(()=>f.scrollIntoView({block:'center',behavior:'smooth'}),60);}}
@@ -2606,7 +2621,7 @@ function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'
 }
 const TABS=['live','games','build','results','settings'];
 function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=true;const from=TABS.indexOf(S.view);S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
- const paint=()=>{render();window.scrollTo(0,0);};
+ const paint=()=>{render();window.scrollTo(0,0);hcSync();tbSet();};
  if(!same&&!dir&&document.startViewTransition&&!matchMedia('(prefers-reduced-motion: reduce)').matches){document.startViewTransition(paint);}
  else{paint();const m=$('#main');if(m&&!same){const c=dir?(dir>0?'sw-l':'sw-r'):'enter';m.classList.remove('enter','sw-l','sw-r');void m.offsetWidth;m.classList.add(c);}}
  load(v);}
@@ -2665,7 +2680,7 @@ async function load(v,fresh){try{warm(v);
   const have={live:S.live,games:S.games,build:S.build,results:S.res,settings:S.set}[v];   // nothing to show yet: say so, with a retry, instead of a skeleton forever
   if(e!==0&&!have){S.lerr=S.lerr||{};S.lerr[v]=navigator.onLine===false?'You\'re offline.':'Couldn\'t reach your Mac. It may be asleep or restarting.';if(S.view===v)render();}}}
 /* the error card for a screen that couldn't load: calm, says why, and a Try again that spins while it retries */
-function errCard(v){return `<div class="card empty err"><b>Couldn't load this screen</b>${esc((S.lerr||{})[v]||'')}<br><button class="btn acc" onclick="retry('${v}',this)">Try again</button></div>`;}
+function errCard(v){return `<div class="card empty err" data-ic="⚠️"><b>Couldn't load this screen</b>${esc((S.lerr||{})[v]||'')}<br><button class="btn acc" onclick="retry('${v}',this)">Try again</button></div>`;}
 async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
  if((S.lerr||{})[v]&&b&&b.isConnected){btnState(b,false,'Still no answer');setTimeout(()=>{if(b.isConnected){b.className='btn acc';b.textContent='Try again';}},2200);}}
 /* A button that reports back: spins while working, then a check and "Done" (green) or a cross (red, a small shake),
@@ -2718,7 +2733,7 @@ function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="he
  <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
 function _renderLive(){const d=S.live;const m=$('#main');
  if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
- if(d.error){m.innerHTML=`<div class="card empty err"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
+ if(d.error){m.innerHTML=`<div class="card empty err" data-ic="⚠️"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
  const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
  const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
@@ -2734,7 +2749,7 @@ function _renderLive(){const d=S.live;const m=$('#main');
  ${S.filter==='done'?settledBar(cs):''}
  ${S.filter!=='done'?legendFor(pend):''}
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
- ${shown.map(rowLive).join('')||(S.filter==='all'&&!pend.length?'<div class="empty"><b>Nothing riding right now</b>Bets you place, here or on Kalshi, show up with live scores and cash-out offers.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>':'<div class="empty"><b>Nothing here</b>Try another filter. Combos show up here with live scores and cash-out offers.</div>')}</div>
+ ${shown.map(rowLive).join('')||(S.filter==='all'&&!pend.length?'<div class="empty" data-ic="🌤️"><b>Nothing riding right now</b>Bets you place, here or on Kalshi, show up with live scores and cash-out offers.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>':'<div class="empty" data-ic="🗒️"><b>Nothing here</b>Try another filter. Combos show up here with live scores and cash-out offers.</div>')}</div>
  ${singlesLive(d)}
  </div><aside class="side">${sideLive(d)}</aside></div>`;}
 function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
@@ -2857,7 +2872,7 @@ function singlesLive(d){const all=d.singles||[];
  if(!all.length)return '';
  return `<h2 style="margin-top:22px">Single bets &amp; spreads <span class="n">${all.length}</span></h2>
  <div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
- ${ss.map(rowSingle).join('')||'<div class="empty"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
+ ${ss.map(rowSingle).join('')||'<div class="empty" data-ic="🗒️"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
  `;}
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  const hint=!x.self&&!off&&x.sell_at?` · sells at ${money(x.sell_at)}+`:'';
@@ -3236,7 +3251,7 @@ function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style=
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
  if(S.scrub){S.resDirty=true;return;}
  const sh=d.shadow;
- m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}<div class="kpis">
+ m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}<div class="kpis">
   <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
   <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
   <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>
@@ -3560,7 +3575,7 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
  if(any&&S.view==='games')hap(any==='good'?'success':'warning');
  clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
- const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
+ const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
