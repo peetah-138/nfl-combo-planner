@@ -181,6 +181,12 @@ with sync_playwright() as pw:
         pg.evaluate("S.sb.q.at-=21"); time.sleep(1.4)
         if "fresh price" not in (sheet(pg)["btn"] or ""): bad(f"{tag}: after 20 s the button should be Get a fresh price: {sheet(pg)}")
         pg.evaluate("closeModal()"); time.sleep(.4)
+        # a Bought answer that lands after the sheet was closed is still shown
+        ST["quote"] = Q()
+        pg.evaluate(f"sbOpen('{tk}','nba')"); wait(pg, "!!document.querySelector('#sbx #sbbuy')", 6); time.sleep(.3)
+        pg.evaluate("(async()=>{const p=sbBuy(document.querySelector('#sbbuy'));closeModal();await p;})()")
+        if not wait(pg, "!!document.querySelector('#sheet .okcard:not(.bad)')&&$('#modal').classList.contains('on')", 6): bad(f"{tag}: a Bought answer after the sheet was closed should still show")
+        pg.evaluate("closeModal()"); time.sleep(.4)
         # ---- (7) the game page's pinned buttons open the sheet for that side
         pg.evaluate(f"openGame('{GT}')")
         if not wait(pg, "document.querySelectorAll('#sheet .gbuy button').length===2", 10): bad(f"{tag}: the game page should pin two buy buttons")
@@ -197,7 +203,9 @@ with sync_playwright() as pw:
             if not wait(pg, "!!document.querySelector('#sbx #sbbuy')", 8): bad(f"{tag}: a game page button should open the buy sheet")
             q = [x for x in SENT[n0:] if x.get("a") == "singlequote"]
             if not q or q[0].get("t") != "KXNFLGAME-26NOV20HOUIND-HOU" or q[0].get("lg") != "nfl": bad(f"{tag}: the HOU button should price HOU (nfl): {q}")
-            pg.evaluate("closeModal()"); time.sleep(.3)
+            pg.locator("#sbx .sbgo button", has_text="Cancel").click()
+            if not wait(pg, "S.gameOpen==='%s'&&document.querySelectorAll('#sheet .gbuy button').length===2" % GT, 8): bad(f"{tag}: Cancel should go back to the game page")
+            pg.evaluate("closeModal()"); time.sleep(.4)
         # ---- (8) the web app's real action answers in plain words (nothing to buy in the test world)
         r = pg.evaluate("api('/app/api/act',{a:'singlequote',t:'KXNBAGAME-26NOV19ZZZYYY-ZZZ',real:1})")
         if not isinstance(r, dict) or r.get("ok") or not r.get("msg") or "{" in r.get("msg", ""): bad(f"{tag}: the real quote action should refuse in plain words: {r}")

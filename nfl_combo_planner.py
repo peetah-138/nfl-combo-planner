@@ -11922,11 +11922,14 @@ def event_sides(event, max_age=15):
     except (requests.RequestException, ValueError, AttributeError):
         ms = None
     if ms is None:
-        return got[1] if got else []
+        keep = got[1] if got else []
+        EVENT_SIDES[event] = (time.time(), keep)
+        return keep
     out = []
     for m in ms:
         if not isinstance(m, dict) or str(m.get("status") or "active").lower() not in ("active", "open") or \
-                m.get("event_ticker") not in (None, event):
+                m.get("event_ticker") not in (None, event) or \
+                not re.fullmatch(r"[A-Z0-9._-]{3,120}", str(m.get("ticker") or "")):   # it lands in an onclick
             continue
         try:
             ask = float(m.get("yes_ask_dollars")) if m.get("yes_ask_dollars") not in (None, "") else None
@@ -11949,6 +11952,44 @@ def _manual_base():
     except (TypeError, ValueError, AttributeError):
         b = 0.0
     return b if b > 0 else float(CFG.get("bankroll", 300) or 300)
+
+
+SINGLE_FAIR_AGE = 12 * 60     # a sportsbook price older than this (the board's) isn't used to price a manual buy
+
+
+def _manual_table():
+    store_x("create table if not exists manual_buys(ts real, ticker text, cost real)")
+
+
+def manual_spend(days=7, now=None):
+    """What manual single buys (Buy straight) cost over the last `days` days. Kalshi's combo record (week_spend) doesn't
+    see single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through)."""
+    if not STORE["db"]:
+        return 0.0
+    _manual_table()
+    r = store_rows("select coalesce(sum(cost), 0) s from manual_buys where ts > ?", ((now or time.time()) - days * 86400,))
+    return float(r[0]["s"] if r else 0.0)
+
+
+def _manual_note(t, cost):
+    if STORE["db"]:
+        _manual_table()
+        store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", (time.time(), t, round(float(cost), 2)))
+
+
+def _manual_spent():
+    """The cap's spending for a manual buy: the league's combos (Kalshi's record) plus every manual single lately."""
+    return float(week_spend() if can_trade() else 0.0) + manual_spend()
+
+
+def _game_over(t):
+    """True when the score feed says this pick's game is finished (display or trading feeds alike are fine here:
+    it only ever stops a buy)."""
+    try:
+        sc = leg_score({"ticker": t, "side": "yes"})
+    except Exception:
+        return False
+    return bool(sc) and sc.get("state") == "post"
 
 
 def _sq_prune(now):
@@ -11986,8 +12027,15 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     gap = round(ask - bid, 4) if bid is not None else None
     depth = float(book.get("ask_size") or 0)
     kind = x.get("kind") if x.get("kind") in ("spread", "total") else "win"
-    live = bool(x.get("event") or x.get("exp")) and started(x)
+    if not x.get("event") and "-" in t:
+        x["event"] = t.rsplit("-", 1)[0]
     warn, fair, how, nofair = [], None, None, None
+    unknown_start = not x.get("exp") and not KICKOFF.get(x.get("event") or "")
+    live = started(x)
+    if _game_over(t):
+        return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
+    if unknown_start:
+        warn.append({"k": "start", "t": "Couldn't tell whether this game has started, so treat the price with care."})
     if live:
         if kind != "win":
             nofair = "spreads and totals have no live fair price"
@@ -12010,6 +12058,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.insert(0, {"k": "live", "t": "This game is under way. " + (
             f"Our chance is live ({how}), not the pre-game one." if fair is not None else
             "There's no live fair price, so you'd be going on Kalshi's price alone.")})
+    elif x.get("fair") and x.get("src") and x.get("fair_at") and now - float(x["fair_at"]) > SINGLE_FAIR_AGE:
+        nofair = f"the sportsbook price is {int((now - float(x['fair_at'])) / 60)} minutes old; refresh Build for a new one"
     elif x.get("fair") and x.get("src"):
         fair = float(x["fair"])
         if kind == "win":
@@ -12024,7 +12074,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
                      "Kalshi's price alone."})
     edge = round(fair - per, 4) if fair is not None else None
     ret = round(fair / per - 1, 4) if fair is not None else None
-    sug = _size({"kind": "single", "chance": fair, "price": ask}, _manual_base()) if fair is not None else 2.0
+    size_fair = fair if fair is None or kind == "win" else per + (fair - per) * 0.7   # model prices: shrink the edge
+    sug = _size({"kind": "single", "chance": size_fair, "price": ask}, _manual_base()) if fair is not None else 2.0
     try:
         want = float(stake) if stake not in (None, "") else sug
     except (TypeError, ValueError):
@@ -12057,7 +12108,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     spent = budget = room = None
     if not blocked:
         try:
-            spent = float(week_spend() if can_trade() else 0.0)
+            spent = _manual_spent()
         except Exception:
             spent = None
         budget = float(CFG.get("budget") or 0)
@@ -12067,7 +12118,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             room = round(max(0.0, budget - spent), 2)
             if spent + cost > budget + 0.01:
                 blocked = cap_msg(spent, cost)
-    clears = fair is not None and edge >= SINGLE_MIN_EDGE * 0.6 and not thin and not blocked
+    need = SINGLE_MIN_EDGE * 0.6 if kind == "win" else LINE_MIN_EDGE   # a score model's small edges count as zero
+    clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -12114,17 +12166,14 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     if now_ask > ask + 1e-9:
         return {"ok": False, "moved": True, "msg": f"The price moved to {now_ask * 100:.0f}¢ (you saw {ask * 100:.0f}¢). "
                                                    "Nothing was bought. Get a fresh price."}
-    if q["live"] and q["kind"] == "win":
-        try:
-            _, _, w = live_side_fair(dict(q["x"]))
-        except Exception:
-            w = None
-        if w == "the game is over":
-            return {"ok": False, "msg": "The game just ended. Nothing was bought."}
+    if q["live"]:
+        listed, _ = market_open(t)
+        if listed is False or _game_over(t):
+            return {"ok": False, "msg": "The game just ended (or Kalshi closed the market). Nothing was bought."}
     if order_unsure(t):
         return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
     try:
-        spent = float(week_spend() if can_trade() else 0.0)
+        spent = _manual_spent()
     except Exception:
         return {"ok": False, "msg": "Couldn't read what you've spent this week, so nothing was bought. Try again."}
     if spent + q["cost"] > float(CFG.get("budget") or 0) + 0.01:
@@ -12138,6 +12187,10 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
             _mark_unsure({"ticker": t, "side": "bid", "reduce_only": False, "coid": coid}, err)
         except Exception:
             pass
+        try:
+            _manual_note(t, q["cost"])
+        except Exception:
+            pass
         log(f"manual single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
         return {"ok": False, "check": True,
                 "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi (or Live in a "
@@ -12148,6 +12201,11 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         return {"ok": False, "msg": f"Nobody was selling at {ask * 100:.0f}¢ any more. Nothing was bought."}
     mark_app(t, "manual")
     per = ask + single_fee(ask)
+    try:
+        _manual_note(t, filled * per)
+        store_x("update app_bets set how='manual' where ticker=?", (t,))   # the order itself was noted as 'order'
+    except Exception as err:
+        log("manual single: couldn't note the spend:", type(err).__name__)
     log(f"manual single bought: {filled:g} of {t} at {ask:.4f}")
     part = f" of {n}" if filled < n else ""
     return {"ok": True, "filled": filled, "price": ask, "cost": round(filled * per, 2), "pays": filled,

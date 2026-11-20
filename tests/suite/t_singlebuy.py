@@ -40,6 +40,8 @@ def reset(mode="v2"):
     E.save_json(E.ORDER_LEDGER, {})
     E.book_depth = REAL_BOOK
     SPENT["v"] = 10.0
+    E._manual_table()
+    E.store_x("delete from manual_buys")
 
 
 def book(ask, bid, size=500):
@@ -176,6 +178,52 @@ r = E.single_buy_quote(X, 10)
 ok("a closed market: no quote, 'closed for trading'", not r["ok"] and "closed" in r["msg"])
 fakenet.markets = real_markets
 ok("a bad ticker is refused before anything is read", not E.single_buy_quote({"ticker": "x y"})["ok"])
+
+# ---- (4b) review fixes: manual singles count toward the cap; a stale board price; spreads/totals; game over; unknown start
+reset()
+SPENT["v"] = 70.0
+r = buy(E.single_buy_quote(X, 10))
+q = E.single_buy_quote(X, 10)
+ok(f"a manual single counts toward the cap afterwards (Kalshi's combo record doesn't see it): room {q.get('room')}",
+   r["ok"] and abs(E.manual_spend() - r["cost"]) < 0.01 and abs(q["room"] - round(100 - 70 - r["cost"], 2)) < 0.011)
+SPENT["v"] = 81.0
+q = E.single_buy_quote(X, 10)
+ok("two $10 singles on top of $81: the second is over the cap", q["blocked"] and "cap" in q["blocked"])
+ok("the bought market is tagged as a manual buy", E.store_rows("select how from app_bets where ticker=?", (T,))[0]["how"] == "manual")
+reset()
+D["next"] = requests.Timeout("slow")
+q = E.single_buy_quote(X, 10)
+buy(q)
+ok("an unclear buy counts toward the cap too (it may have gone through)", abs(E.manual_spend() - q["cost"]) < 0.01)
+E.save_json(E.ORDER_LEDGER, {})
+reset()
+qs = E.single_buy_quote(dict(X, fair_at=time.time() - 20 * 60))
+ok(f"a board price 20 minutes old isn't used: no fair price, yellow ({qs.get('nofair')})",
+   qs["ok"] and qs["fair"] is None and not qs["clears"] and "minutes old" in (qs["nofair"] or ""))
+ok("a fresh board price is used", E.single_buy_quote(dict(X, fair_at=time.time() - 60))["fair"] == 0.8)
+LX = dict(X, kind="spread", src="model")
+ok("a spread 6.6c under the model: green", E.single_buy_quote(dict(LX, fair=0.80))["clears"])
+s2 = E.single_buy_quote(dict(LX, fair=0.76))
+ok("a spread only 2.6c under the model: yellow (the board's 4c margin), and sized on a shrunk edge",
+   not s2["clears"] and E.single_buy_quote(dict(X, fair=0.76))["clears"] and
+   s2["sug"] <= E.single_buy_quote(dict(X, fair=0.76))["sug"])
+real_ls = E.leg_score
+E.leg_score = lambda l: {"state": "post", "me": 100, "opp": 90}
+r = E.single_buy_quote(X, 10)
+ok("a finished game: no quote", not r["ok"] and "over" in r["msg"])
+E.leg_score = real_ls
+q = E.single_buy_quote(dict(X, live=True))
+E._SQ["q"][q["q"]]["live"] = True
+E.leg_score = lambda l: {"state": "post", "me": 100, "opp": 90}
+r = buy(q)
+E.leg_score = real_ls
+ok("a live quote whose game ends before the tap: refused, nothing sent", not r["ok"] and "ended" in r["msg"] and not D["sent"])
+real_mo = E.market_open
+E.market_open = lambda t: (None, {})
+u = E.single_buy_quote({"ticker": T, "pick": "Denver Nuggets", "fair": 0.8, "src": "pinnacle"}, 10)
+E.market_open = real_mo
+ok("can't tell when the game starts: a warning, yellow (event taken from the ticker)",
+   u["ok"] and any(w["k"] == "start" for w in u["warn"]) and not u["clears"])
 
 # ---- (5) unknown outcomes: "check", never resent; 410 is a clean refusal
 reset()

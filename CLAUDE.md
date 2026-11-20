@@ -434,15 +434,21 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (sportsbooks via `calib_fair`; a game under way **only** via `live_side_fair`, else "no live fair price"; spreads/totals
   under way have none), sizes with `_size` (quarter Kelly, shrunk edge, $2 minimum), warns (thin > 6¢ gap, little for
   sale, live, nearly decided, live price far from the live chance, above fair, no fair price) and blocks (Pause, the
-  unknown-outcome block, under one contract, over the cap via `week_spend`/`cap_msg`, account unreadable). It keeps a
+  unknown-outcome block, under one contract, account unreadable, over the cap: `week_spend` (Kalshi's combo record, which
+  never sees singles) **plus** `manual_spend` (every manual single in the last 7 days, an unclear one included, table
+  `manual_buys`), against the cap of the league Build has loaded, via `cap_msg`). The board's fair price is used only while
+  under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
+  on a 30%-shrunk model edge; a finished game (`_game_over`) gets no quote; a start time it can't tell = a warning, yellow. It keeps a
   quote id (16 hex) for 20 s (`_SQ`). `single_buy(qid, ticker, anyway, paused)` checks the quote is the one on screen,
   unused, fresh, not blocked and (unless Buy anyway) clear; marks it used **before** sending (one order per quote, ever);
-  re-reads the book and refuses a higher ask; rechecks a live game isn't over, the block and the cap; then
+  re-reads the book and refuses a higher ask; rechecks a live game isn't over (market status and the score feed), the block and the cap; then
   `buy_single(..., coid="cw-sb-<qid>", exact=True)`: one IOC limit at the quoted ask (sub-cent asks sent as dollars,
   rounded down). An unclear answer = "check", the market blocked 2 h (`_mark_unsure`), never resent; a refusal is plain
-  words and a fresh price may be asked. Bought markets are marked the app's (`mark_app(t, "manual")`), so they show on
+  words and a fresh price may be asked. Bought markets are marked the app's (`app_bets.how = 'manual'`), so they show on
   Live under Single bets & spreads with smart sell on by default. Web app actions: `singlequote`, `singlebuy` with `q`
-  (Pause read fresh from `watcher.json` each time: `paused_now`). Tests: `t_singlebuy.py`, `test_singlebuy_ui.py`.
+  (Pause read fresh from `watcher.json` each time: `paused_now`); `single_side` finds the side on the board on screen
+  or a saved board (`SNAP`), read only, never rebuilding or switching it. The sheet's answer always shows (a sheet, else a
+  toast), and Cancel from a game page goes back to it. Tests: `t_singlebuy.py`, `test_singlebuy_ui.py`.
 - **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
   labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
   asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`

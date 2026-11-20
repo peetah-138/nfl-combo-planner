@@ -3650,7 +3650,7 @@ function singleFromBoard(t){sbOpen(t,S.lg);}
    for 20 seconds (the draining bar). Buy sends that exact quote once; the Mac re-reads the book and refuses a higher price,
    so it never pays more than shown. Stakes over the quote's `arm` need a second tap. Nothing here buys by itself. */
 const m2=x=>x==null?'—':'$'+(+x).toFixed(2);
-function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
+function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null,back:S.gameOpen||null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
 function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi for its price now…</div>`;}
 async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
  const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
@@ -3664,7 +3664,7 @@ function sbTick(){const s=S.sb,q=s&&s.q,box=$('#sbx');if(!q||!box||!$('#modal').
 function sbKind(q){return q.kind==='spread'?'📏 Spread':q.kind==='total'?'➕ Total':'🎯 Single game';}
 function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
  if(!s.q){box.innerHTML=s.busy?sbSkel():`<div class="sbk">Buy straight</div><h3>No price right now</h3><div class="sbw sbx"><i>✕</i><span>${esc(s.err||'No price came in.')}</span></div>
-  <div class="sbgo"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn acc pri" onclick="sbQuote()">Try again</button></div>`;return;}
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Close</button><button class="btn acc pri" onclick="sbQuote()">Try again</button></div>`;return;}
  const q=s.q,dead=q.x||Date.now()/1000-q.at>=q.secs,left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));
  const ret=q.ret,ok=q.clears&&!q.blocked;
  const chips=(q.presets||[3,5,10]).map(v=>`<button class="chip ${Math.abs(q.stake-v)<.005?'on':''}" onclick="sbQuote(${v})">$${v}</button>`).join('');
@@ -3683,7 +3683,7 @@ function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
   ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
-  <div class="sbgo"><button class="btn ghost" onclick="closeModal()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
    q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
    `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
   <div class="sbleft">${dead||s.fail||q.used?'Prices move. Get a fresh one to buy.':`Price good for <span class="sbs">${left}</span>s · fills now at ${Math.round(q.ask*100)}¢ or better, or not at all`}</div>`;
@@ -3698,10 +3698,15 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
  let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
- if(S.sb!==s)return;
- if(r.ok){S.sb=null;okSheet('Bought',`${m2(r.pays)} if it wins`,`${q.pick}. ${r.msg} It shows on Live under Single bets & spreads within a minute; smart sell watches it from there.`);return;}
- if(r.check){S.sb=null;okSheet('Check Kalshi',null,r.msg,true);return;}
- s.fail=r.msg||'It didn\'t go through. Nothing was bought.';hap('error');sbPaint();}
+ /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
+    must never go unseen): on this sheet, else as a sheet of its own, else (another sheet is up) as a long toast */
+ const here=S.sb===s&&!!$('#sbx')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
+ if(r.ok||r.check){if(S.sb===s)S.sb=null;const sub=r.ok?`${q.pick}. ${r.msg} It shows on Live under Single bets & spreads within a minute; smart sell watches it from there.`:r.msg;
+  if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
+  else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
+ const why=r.msg||'It didn\'t go through. Nothing was bought.';
+ if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
+function sbClose(){const back=S.sb&&S.sb.back;closeModal();S.sb=null;if(back)setTimeout(()=>openGame(back),300);}
 function lineFromBoard(t){sbOpen(t,S.lg);}
 function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
  const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
@@ -3865,8 +3870,8 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
    of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
 /* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
    fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
-function gameBuyBar(r){const b=(r&&r.buy)||[];if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
- return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${esc(sp)}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
+function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
@@ -4443,25 +4448,25 @@ def webapp_main():
             return True
 
     def single_side(t, lg):
-        """The board's side for one market (its fair chance, game and kind), loading that league's board if needed.
-        A market the board doesn't have is priced from Kalshi alone (no fair price)."""
-        def find():
-            for x in BUILD.get("lines") or []:
+        """The board's side for one market (its fair chance, game and kind, and when that price was read), from the
+        board on screen or another sport's saved board. Read only: never rebuilds or switches the board (that would
+        hold the tap lock and change what Build shows). A market no board has is priced from Kalshi alone."""
+        def find(ctx, lines, at):
+            for x in lines or []:
                 if x.get("ticker") == t:
-                    return dict(x)
-            games = A.CTX.get("all_games") or {}
+                    return dict(x, fair_at=at)
+            games = (ctx or {}).get("all_games") or {}
             for e, sd in games.items():
                 for x in sd:
                     if x.get("ticker") == t:
-                        return dict(x, event=x.get("event") or e, opp=A.opp_of(games, x))
+                        return dict(x, event=x.get("event") or e, opp=A.opp_of(games, x), fair_at=at)
             return None
-        x = find()
-        if x is None and lg in A.LEAGUES and lg != BUILD.get("lg"):
-            try:
-                api_build(lg, rebuild=False)
-            except Exception as err:
-                log("buy straight: couldn't load the board:", type(err).__name__)
-            x = find()
+        x = find(A.CTX, BUILD.get("lines"), BUILD.get("at") or 0)
+        for k in sorted(list(SNAP), key=lambda k: (k != lg, -((SNAP.get(k) or {}).get("at") or 0))) if x is None else ():
+            sn = SNAP.get(k) or {}
+            x = find(sn.get("ctx"), sn.get("lines"), sn.get("at") or 0)
+            if x is not None:
+                break
         return x or {"ticker": t}
 
     # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
