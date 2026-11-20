@@ -89,7 +89,9 @@ def push(conf, msg, title="Combo planner", priority="default", topic=None, pause
     if web and not topic:
         try:
             urgent = priority in ("high", "urgent") if web_urgent is None else web_urgent
-            web_push(web_title or title, web_msg or msg, url=click or "/app", tag=tag, urgent=urgent)
+            base = hub_base(conf)                    # absolute so iOS Home Screen apps can resolve the tap target (#79)
+            web_url = (base + (click or "/app")) if base else (click or "/app")
+            web_push(web_title or title, web_msg or msg, url=web_url, tag=tag, urgent=urgent)
         except Exception as err:
             log("web push skipped:", type(err).__name__, err)
     try:
@@ -1196,7 +1198,7 @@ self.addEventListener('push', e => {
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || '/app';
+  const url = new URL((e.notification.data && e.notification.data.url) || '/app', self.location.origin).href;
   e.waitUntil(self.clients.matchAll({type: 'window', includeUncontrolled: true}).then(cs => {
     for (const c of cs) { if ('focus' in c) { c.navigate(url); return c.focus(); } }
     return self.clients.openWindow(url);
