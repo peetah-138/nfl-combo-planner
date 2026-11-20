@@ -2679,8 +2679,9 @@ function frEl(k){const o=S.fr[k];return o?Math.max(0,(Date.now()-o.recv)/1000):0
 function frBuilt(k){const o=S.fr[k];if(!o)return null;return Math.max(0,o.f.now-o.f.built+frEl(k));}   // snapshot/prices age
 function frScores(k){const o=S.fr[k];if(!o||o.f.scores==null)return null;return Math.max(0,o.f.scores+frEl(k));} // scores age
 function agoTxt(a){return a<3?'just now':a<90?Math.round(a)+'s ago':Math.round(a/60)+' min ago';}
+function frLive(k){const o=S.fr[k];return !!(o&&o.f.live);}                                                   // is a game under way (server says)
 function frTxt(k){const b=frBuilt(k);if(b==null)return '';const s=frScores(k);
- return s==null?'Updated '+agoTxt(b):'Prices '+(b<90?Math.round(b)+'s':Math.round(b/60)+' min')+' ago · scores '+agoTxt(s);}
+ return(!frLive(k)||s==null)?'Updated '+agoTxt(b):'Prices '+agoTxt(b)+' · scores '+agoTxt(s);}
 function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frBuilt(k)||0)>60);});}
 setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
 setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
@@ -4150,8 +4151,9 @@ def webapp_main():
                    for infos in list((got.get("by") or {}).values()) for i in (infos if isinstance(infos, list) else [infos])):
                 on.append(now - got["at"])
         scores = max(on) if on else (min(ages) if ages else None)
+        # "live" is the real signal that a game is under way; "scores" alone is just the newest cache age when nothing is on
         return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
-                "fast": bool(LIVE.get("fast"))}
+                "live": bool(on), "fast": bool(LIVE.get("fast"))}
 
     def live_extras(out):
         try:
