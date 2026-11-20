@@ -271,7 +271,43 @@ def load_engine():
     E = importlib.util.module_from_spec(spec)
     sys.argv = [ENGINE]
     spec.loader.exec_module(E)
+    E.DEPRECATION_HOOK = deprecation_alert         # Kalshi retiring something: one push a day per notice
     return E
+
+
+DEP = {"conf": None}                               # set by main(); the web app's copy only logs
+DEP_FILE = os.path.join(HOME, "kalshi_retired.json")
+_DEP_LOCK = threading.Lock()
+
+
+def deprecation_alert(code, conf=None):
+    """Kalshi answered with a retirement notice (410, a "deprecated" error code, a Deprecation/Sunset header):
+    one plain-English push (web push + ntfy) per code per day. The raw code goes in the log. Returns True if sent."""
+    conf = conf or DEP["conf"]
+    code = re.sub(r"[^A-Za-z0-9_.:-]", "", str(code))[:60] or "deprecated"
+    if not conf or not conf.get("topic"):
+        return False
+    day = time.strftime("%Y-%m-%d")
+    with _DEP_LOCK:
+        try:
+            with open(DEP_FILE, encoding="utf-8") as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            seen = {}
+        if not isinstance(seen, dict) or seen.get(code) == day:
+            return False
+        seen = {k: v for k, v in seen.items() if v == day}
+        seen[code] = day
+        try:
+            with open(DEP_FILE + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(seen, f)
+            os.replace(DEP_FILE + ".tmp", DEP_FILE)
+        except OSError as err:
+            log("retirement notice not saved:", err)
+    log("Kalshi retirement notice:", code)
+    push(conf, f"Kalshi is retiring something the app uses ({code[:32]}). Claude is looking at it.",
+         title="Kalshi change", priority="high", tag="kalshi-retired")
+    return True
 
 
 def auto_updates(conf):
@@ -4505,7 +4541,14 @@ def webapp_main():
                 n, price = int(d.get("n") or 0), float(d.get("price") or 0)
                 if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
                     return {"ok": False, "msg": "That size or price isn't allowed."}
-                filled, err = A.buy_single(json.loads(rows[0]["legs"])[0], n, price)
+                try:
+                    filled, err = A.buy_single(json.loads(rows[0]["legs"])[0], n, price)
+                except Exception as e:                  # no clear answer: it may have gone through, never resent
+                    LIVE["at"] = 0
+                    log("single buy: outcome unknown:", type(e).__name__, str(e)[:160])
+                    return {"ok": False, "check": True,
+                            "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check "
+                                   "Kalshi before trying again; the app won't send it again."}
                 LIVE["at"] = 0
                 if err:
                     return {"ok": False, "msg": err}
@@ -4523,7 +4566,8 @@ def webapp_main():
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
-                    r = {"error": f"{type(err).__name__}: {err}"}
+                    r = {"error": A.order_words(err) if isinstance(err, (RuntimeError, PermissionError))
+                         else f"Something went wrong ({type(err).__name__}). Check Kalshi before trying again."}
                 print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
                 if not r.get("error") and 1 <= i <= len(A.CTX.get("combos") or []):
@@ -5245,6 +5289,7 @@ def start_hub(conf, E, odds=None):
 
 def main():
     conf = load_conf()
+    DEP["conf"] = conf
     E = load_engine()
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here
     E.present = lambda *a, **k: None

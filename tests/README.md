@@ -68,7 +68,11 @@ pattern in a local `.git/hooks/pre-commit`.
   Kalshi's order book shapes (`t_orderbook.py`: the new `orderbook_fp` dollar-string answer and the old `orderbook`
   cents answer read identically, from real fixtures `fixtures/kalshi_orderbook.json`/`kalshi_market.json`; garbage never
   raises; the 6¢ gap rule; a single/spread/total panel buy, a hedge re-read and a smart-sell single sale against the
-  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`).
+  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`), Kalshi's V2 orders (`t_orders_v2.py`:
+  every price/count conversion incl. 1¢/99¢, NO prices, fractional counts and reduce-only IOC sells; the fake order
+  desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
+  no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
+  `fixtures/kalshi_orders_v2.json`).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
