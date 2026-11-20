@@ -34,6 +34,8 @@ AN={"at":time.time()-120,"levels":[{"band":"80–85%","n":12,"hit":0.2,"exp":0.2
  "sports":[{"mode":"real","what":"NHL","n":6,"won":4,"pl":3.2,"roi":0.12,"clv":0.02,"smart":0.1,"sim_n":2}],
  "exits":[{"what":"Rode to the end","n":10,"pl":-12,"roi":-0.2},{"what":"Cashed out early","n":7,"pl":9,"roi":0.25}],"auto":{"smart":3,"lock in":1},"cut_held":{"too early in the game":2,"halftime or a break":1},"hedge_held":{"score feed stale":2,"wouldn't lock in what you paid":1},
  "tuning":[{"key":"nhl","name":"NHL","floor":1.5,"lam":1,"loss":0.15,"n":40,"own":True,"sl_prog":0.5,"sl_drop":0.2,"sl_n":0,"sl_own":False,"sl_why":""}],
+ "lines":[{"lg":"nfl","name":"NFL","kind":"spread","on":True,"why":"Beat the old model on 1,001 past games","bt_games":1001,"bt_old":0.6149,"bt_new":0.6104,"live_n":12,"live_old":0.66,"live_new":0.64},
+  {"lg":"nhl","name":"NHL","kind":"total","on":False,"why":"Didn't clearly beat the old model on 3,000 past games","bt_games":3000,"bt_old":0.68,"bt_new":0.679,"live_n":0,"live_old":None,"live_new":None}],
  "notes":["Combos priced 95–100% of fair have done best so far: +3% riding to the end over 44 quotes.","Not enough results yet for 80–85% (30+ each before reading much into them)."]}
 SING=[{"t":"S1","kind":"spread","sport":"nfl","side":"yes","label":"KC wins by over 6.5","game":"BUF at KC","event":"E","n":10,"cost":5.2,"pays":10,"worth":7.0,"chance":0.72,"state":"live","res":None,"score":"","starts":"","how":"","url":"","own":True,"self":False,"sell_at":8.4}]
 with sync_playwright() as pw:
@@ -50,6 +52,9 @@ with sync_playwright() as pw:
     lt = pg.locator(".an").inner_text()
     if "Bought during the game, by league" not in lt or "NBA" not in lt or "EuroLeague, UFC and tennis" not in lt:
         print("PROBLEMS: bets bought during games aren't their own group by league in What's working:", lt[-300:])
+    if "Spreads & totals: old vs new pricing" not in lt or "0.615 → 0.610" not in lt or "(1,001)" not in lt or "Beat the old model" not in lt \
+            or "Didn't clearly beat" not in lt or pg.locator(".an .tag.good", has_text="New").count() != 1:
+        print("PROBLEMS: Results › What's working doesn't show spreads/totals old vs new with sample sizes and which model is on:", lt[-500:])
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Bet types tab scrolls sideways on a phone")
     pg.locator(".ant button", has_text="Selling").click(); time.sleep(.3)
     if pg.locator(".an", has_text="3 smart").count() != 1: print("PROBLEMS: auto-sale counts missing")
@@ -71,6 +76,14 @@ with sync_playwright() as pw:
         row.locator("input").click(); time.sleep(1.5)
         v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get("panel_live")
         if v is not False: print("PROBLEMS: turning off 'Include games already under way' didn't save:", v)
+        row.locator("input").click(); time.sleep(1.5)
+    row = pg.locator("label.srow", has_text="Smarter spread/total pricing")
+    if row.count() != 1 or not row.locator("input").is_checked() or "beaten the old model" not in row.inner_text():
+        print("PROBLEMS: Settings › Money has no 'Smarter spread/total pricing' switch (auto by default)")
+    else:
+        row.locator("input").click(); time.sleep(1.5)
+        v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get("line_model")
+        if v is not False: print("PROBLEMS: turning off 'Smarter spread/total pricing' didn't save:", v)
         row.locator("input").click(); time.sleep(1.5)
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
     pg.evaluate("go('live')"); time.sleep(6); pg.evaluate("window.load=async()=>{}")

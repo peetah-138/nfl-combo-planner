@@ -1,6 +1,6 @@
 # Roadmap: planned work not done yet
 
-Everything we've agreed on or lined up but haven't built, as of version 2026.11.20.123 (Nov 18, 2026).
+Everything we've agreed on or lined up but haven't built, as of version 2026.11.20.124 (Nov 18, 2026).
 What's already built is described in `CLAUDE.md`. When an item ships, move its facts into `CLAUDE.md` and delete it
 here; when Pete adds or drops something, update this file in the same change.
 
@@ -65,6 +65,16 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
+
+### Smarter spreads and totals (issue #117)
+- **Part A shipped** (the margin-shape model, per-league gate, old vs new logged side by side). Its own record takes
+  over the gate once a league has 200+ settled games of spread/total markets; watch Results › What's working.
+- **Part B to build:** CLV per strike type, fillable size and after-fee expected profit from the order book, and a
+  learned minimum edge per league/type (see the issue).
+- **Left as they are on purpose (selection changes, need Pete's OK):** NHL spreads are never priced today (ESPN's
+  "details" for hockey is a moneyline, read as a 185-point spread, so the distance filter drops every puck line), and
+  soccer spreads/totals aren't fetched at all (`_espn_board` gets a list of ESPN paths for soccer). The new model can
+  price both (the backtest has them), but turning them on adds bets to the panel.
 
 ---
 
