@@ -1615,13 +1615,57 @@ def winners_only(legs):
     return all((l["ticker"] or "").startswith(WINNER_SERIES) for l in legs)
 
 
+def sunday_of(d):
+    """The Sunday that labels d's week (Monday maps back to the day before, every other day forward
+    to the coming Sunday). Shared by week_of and the Results "Profit by week" bucketing so a date always
+    lands in one week the same way."""
+    if not d:
+        return None
+    return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
+
+
 def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
     if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL", "KXAHL", "KXNCAAWB", "KXEUROLEAGUE", "KXATP")):
         return d                                  # daily leagues: the game's own day
-    return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
+    return sunday_of(d)
+
+
+def iso_unix(s):
+    """A Kalshi ISO time (e.g. "2026-11-19T14:03:00Z") as a unix timestamp, or None if it won't parse."""
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def realized_ts(a, st=None):
+    """When the money actually moved for a settled bet, as a unix timestamp (issue #91): the cash-out
+    sell for a bet sold early, else Kalshi's settlement time for a won/lost bet, else when the Mac first
+    noticed it settle (st). None when nothing is timestamped (then the caller falls back to the game date)."""
+    return a.get("cashed_at") or a.get("settled_at") or st
+
+
+def realized_buckets(a, st=None):
+    """(day, week_key) for the Results "Profit by day/week" bars, both from ONE realized date in ONE
+    local timezone so a bet can't land in different buckets (issue #91). Precedence: the realized
+    transaction time (realized_ts), else the game-date "week" already on the bet. The week is the Sunday
+    of the realized local day (sunday_of), the same rounding weeks always used."""
+    ts = realized_ts(a, st)
+    if ts:
+        d = dt.date.fromtimestamp(ts)             # the Mac's local day the money moved
+        return d.isoformat(), sunday_of(d).isoformat()
+    wk = a.get("week") or ""                      # last resort: an un-timestamped bet still lands somewhere
+    if wk:                                        # round the game date to its week too (daily leagues' week
+        try:                                      # is their game day), so timestamped and un-timestamped
+            wk = sunday_of(dt.date.fromisoformat(wk)).isoformat()   # bets from one week share a bar
+        except ValueError:
+            pass
+    return (a.get("week") or ""), wk
 
 
 ACCT_CACHE = {"at": 0, "value": None}
@@ -1684,7 +1728,7 @@ def _fetch_account():
         return None, None, f"Couldn't reach your Kalshi account just now ({why}). Showing what's saved."
 
     held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0,
-                                "bought_n": 0.0, "first": None})
+                                "bought_n": 0.0, "first": None, "cashed_at": None})
     for f in fills:
         t = f.get("ticker") or f.get("market_ticker")
         if not is_combo(t):
@@ -1705,6 +1749,9 @@ def _fetch_account():
             held[t]["sold"] += n * yes_px
             held[t]["sold_n"] += n
             held[t]["contracts"] -= n
+            sold_ts = iso_unix(f.get("created_time"))  # when the cash-out money moved (issue #91)
+            if sold_ts and (not held[t]["cashed_at"] or sold_ts > held[t]["cashed_at"]):
+                held[t]["cashed_at"] = sold_ts     # the LAST sell fill is when it finished cashing out
         held[t]["fees"] += dollars(f, "fee_cost")
         when = str(f.get("created_time") or "")[:10]
         if when and (not held[t]["first"] or when < held[t]["first"]):
@@ -1756,10 +1803,16 @@ def _fetch_account():
                 weeks = [week_of("X-" + dt.date.fromisoformat(h["first"]).strftime("%y%b%d").upper())]
             except ValueError:
                 pass
+        # When the money actually moved, for the Results "Profit by day/week" bars (issue #91, display only):
+        # a bet cashed early is dated by its last sell fill; a won/lost bet by Kalshi's settlement time.
+        # field name TBC from a real Kalshi settlement record
+        settled_at = iso_unix(s.get("settled_time") or s.get("settlement_time")) if s else None
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
                      "week": max(weeks).isoformat() if weeks else None,
                      "first_week": min(weeks).isoformat() if weeks else None,
+                     "cashed_at": h["cashed_at"] if status == "cashed" else None,
+                     "settled_at": settled_at if status in ("won", "lost") else None,
                      "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2),
                      "winners": winners_only(legs),
                      "lg": lg if lg in LEAGUES else "nfl",    # other combos are shown with the NFL

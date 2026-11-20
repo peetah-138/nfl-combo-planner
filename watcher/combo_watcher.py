@@ -3237,9 +3237,12 @@ function plChart(d){const bars=plBars(d),n=bars.length,tot=bars.reduce((a,b)=>a+
   ${bars.map((b,i)=>{const h=Math.max(2,Math.abs(b.pl)/mx*(mid-8));return `<rect class="brc" x="${(i+.5)*W/n-bw/2}" y="${b.pl>=0?mid-h:mid}" width="${bw}" height="${h}" rx="4" fill="${b.pl>=0?'var(--yes)':'var(--no)'}"/>`;}).join('')}</svg></div>
   <div class="xl"><span>${esc(bars[0].lab)}</span><span>${n>1?esc(bars[n-1].lab):''}</span></div><div class="hint">Drag across the bars, or tap one to see its bets.</div></div>`;}
 function barSheet(b){if(!b)return;const xs=b.items||[];
+ const sd=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'});};
+ /* Issue #91: the bars group by when the money moved. Show the buy date and the cash-out/settlement date so the grouping explains itself. */
+ const when2=h=>{const cd=h.cashed?(h.status==='cashed'?'Cashed out ':'Settled ')+sd(h.cashed):'';const bd=h.bought?'Bought '+sd(h.bought):'';return bd&&cd?bd+' · '+cd:bd||cd;};
  modal(`<h3>${esc(b.lab)}</h3><p><b class="${b.pl>=0?'up':'down'}">${smoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
   <div class="blist">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${esc((h.picks||[]).map(short).slice(0,3).join(' + '))}${(h.picks||[]).length>3?' +'+((h.picks||[]).length-3):''}</b><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
-   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
+   ${when2(h)?`<div class="m" style="font-size:12px;margin:2px 0 4px">${esc(when2(h))}</div>`:''}<div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
   <div class="row"><button class="btn acc" onclick="closeModal()">Done</button></div>`);}
 try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
 function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
@@ -4243,30 +4246,36 @@ def webapp_main():
             bets = bets or []
             done = [a for a in bets if a["status"] in ("won", "lost", "cashed")]
             back = lambda a: a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+            when = {}
+            if A.STORE.get("db"):                       # the day each combo finished, from the Mac's record
+                for r in A.store_rows("select combo, settled, first_seen from bets"):
+                    when[r["combo"]] = (r["settled"], r["first_seen"])
+            # Issue #91: date each bet by when the money actually moved (the cash-out sell, else Kalshi's
+            # settlement, else the Mac's detection time st), not the game/slate date. Day and week come from
+            # the one realized date in the Mac's local tz, so a bet can't land in different buckets.
+            realized = {a["ticker"]: A.realized_buckets(a, when.get(a["ticker"], (None, None))[0]) for a in done}
             weeks = {}
             for a in done:
-                wk = a.get("week") or "?"
+                wk = realized[a["ticker"]][1] or "?"
                 w = weeks.setdefault(wk, {"week": wk, "pl": 0.0, "n": 0, "won": 0})
                 w["pl"] += back(a) - a["cost"]
                 w["n"] += 1
                 w["won"] += a["status"] == "won"
             hist = []
-            when = {}
-            if A.STORE.get("db"):                       # the day each combo finished, from the Mac's record
-                for r in A.store_rows("select combo, settled, first_seen from bets"):
-                    when[r["combo"]] = (r["settled"], r["first_seen"])
-            for a in sorted(done, key=lambda a: (when.get(a["ticker"], (0, 0))[0] or 0, a.get("week") or ""), reverse=True)[:400]:
+            for a in sorted(done, key=lambda a: (realized[a["ticker"]][0] or "", when.get(a["ticker"], (0, 0))[0] or 0), reverse=True)[:400]:
                 names = []
                 for l in a.get("legs") or []:
                     t = l.get("ticker") or ""
                     nm = A.PICK_NAME.get(t) or A.sport_teams(A.ticker_sport(t) or "nfl").get(t.rsplit("-", 1)[-1]) or t.rsplit("-", 1)[-1]
                     names.append(("not " if l.get("side") == "no" else "") + nm)
                 st, fs = when.get(a["ticker"], (None, None))
-                day = time.strftime("%Y-%m-%d", time.localtime(st)) if st else (a.get("week") or "")
+                day, week = realized[a["ticker"]]    # money-moved day and its week, one local-tz date (issue #91)
+                cashed = A.realized_ts(a, st)         # the moment the money moved, for the detail sheet
                 sports = sorted({A.ticker_sport(l.get("ticker") or "") or "" for l in a.get("legs") or []} - {""}) or (a.get("lgs") or [])
                 hist.append({"t": a["ticker"], "status": a["status"], "cost": a["cost"], "back": round(back(a), 2),
-                             "pl": round(back(a) - a["cost"], 2), "pays": a["pays"], "week": a.get("week"), "day": day,
+                             "pl": round(back(a) - a["cost"], 2), "pays": a["pays"], "week": week, "day": day,
                              "bought": time.strftime("%Y-%m-%d", time.localtime(fs)) if fs else None,
+                             "cashed": time.strftime("%Y-%m-%d", time.localtime(cashed)) if cashed else None,
                              "picks": names, "sports": sports})
             staked = sum(a["cost"] for a in done)
             ret = sum(back(a) for a in done)
