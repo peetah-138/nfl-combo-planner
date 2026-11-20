@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.19.120). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.19.121). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -75,8 +75,8 @@ Real money is involved. Pete uses it daily.
   (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
   silence them. Run code review and security review before opening the PR and fix everything they raise.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
-  version bump (below). Open it, but **never merge it without Pete's explicit go-ahead in that conversation.**
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.120`. Each release bumps N (N keeps
+  version bump (below). **Standing go-ahead (Pete, 2026-11-19):** Claude may open AND merge release PRs (develop -> main, merge commit) whenever it judges there is enough in develop, without asking each time; all other release gates still apply (reviews, green checks, matching versions, screenshots for visual changes, no new automatic money movement without Pete's opt-in).
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.121`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -91,7 +91,7 @@ Real money is involved. Pete uses it daily.
   - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
   - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
     (`develop` → `main`) is merged.
-  - **Release PRs** are opened by Claude and merged only on Pete's explicit go-ahead.
+  - **Release PRs** are opened by Claude and, under Pete's standing go-ahead of 2026-11-19 (see Releases above), merged by Claude when it judges develop has enough, with every other release gate intact.
   - **When Pete gives feedback, open a GitHub issue** to track it.
   - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
@@ -106,7 +106,7 @@ Real money is involved. Pete uses it daily.
 4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
 5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
-   screenshots or a clip first. Merge it only after Pete says go. The Macs then update within ~10 minutes; Pete can
+   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead, 2026-11-19; visual changes need his screenshots first). The Macs then update within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
