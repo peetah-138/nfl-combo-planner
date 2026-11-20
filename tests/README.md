@@ -54,7 +54,7 @@ pattern in a local `.git/hooks/pre-commit`.
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
-  Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_motion.py` covers the makeover's motion
+  Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_motion.py` covers the makeover's motion
   layer: every visible clickable element on every screen has press feedback and a haptic, the haptic patterns are
   distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
   ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
