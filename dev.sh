@@ -8,10 +8,11 @@ case "$PORT" in 8765|8766) echo "refusing port $PORT (the real hub/app)"; exit 2
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "Port $PORT is busy: another dev instance may be running (try: lsof -nP -iTCP:$PORT -sTCP:LISTEN). Not starting."; exit 2
 fi
+# before the throwaway folder exists: the first run may spend minutes building .venv-tests (Ctrl-C then leaves nothing behind)
+PY_MODS="requests"; . "$R/tests/python_env.sh"   # sets PY: a Python >= 3.10 (Apple's 3.9 has a crashing sqlite)
 DEVHOME="$(mktemp -d "$HOME/combodev.XXXX")" || exit 1
 case "$DEVHOME" in "$HOME"/combodev.*) ;; *) echo "unexpected dev home $DEVHOME"; exit 2;; esac
 [ "$(cd "$DEVHOME" && pwd -P)" = "$(cd "$HOME/combowatch" 2>/dev/null && pwd -P)" ] && { echo "dev home is the real home. Refusing."; exit 2; }
-PY_MODS="requests, cryptography"; . "$R/tests/python_env.sh"   # sets PY: a Python >= 3.10 (Apple's 3.9 has a crashing sqlite)
 PID=""
 cleanup() {
   trap - EXIT INT TERM HUP
