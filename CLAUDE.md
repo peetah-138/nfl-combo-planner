@@ -396,9 +396,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   defence/kicking, per side with a team switch), team stats (`detail.tstats`, `_parse_team_stats`/`_ts_num`: 13 head-to-head rows,
   share bars; made-att rows compare success rates, possession compares seconds) and injuries (`detail.inj`, `_parse_injuries`,
   worst first) come off the same summary. Last 5 games and season leaders (`detail.last5`/`detail.leaders`) come from each
-  team's ESPN schedule and ESPN's core-feed season leaders (`game_extras`: a background thread, `GX` cache 30/60 min, a
-  player's name 24 h in `ATH`, backoff 30 s doubling to 30 min, Retry-After honoured; only the first open of a game waits, at
-  most `GX_BUDGET` 1.5 s). Same isolation rule; an absent block hides its tab, an empty one says so ("No injuries listed",
+  team's ESPN schedule (regular season, plus the postseason in the playoffs; last season in the preseason) and ESPN's
+  core-feed season leaders (`game_extras`: a background thread, `GX` cache 30/60 min, a player's name 24 h in `ATH`, any
+  failure backs off 30 s doubling to 30 min, Retry-After honoured; these GETs carry an Accept header so they go straight to
+  ESPN, never through the hub's warm cache; only the first open of a game waits, at most `GX_BUDGET` 1.5 s). Last-5 dates
+  are UTC kickoffs shown in the phone's own time zone. Same isolation rule; an absent block hides its tab, an empty one says so ("No injuries listed",
   "Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
   The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
   `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).

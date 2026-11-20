@@ -3966,7 +3966,9 @@ function tmHead(r){const T=gTeams(r),c=tcols(r);
 /* a head-to-head share bar; even and quiet when there is nothing to compare */
 function sbar(key,an,hn,c){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const p=ok?Math.max(4,Math.min(96,an/(an+hn)*100)):50;
  return `<div class="h2bar${ok?'':' even'}" role="img" aria-label="${ok?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
-function gdate(d){if(!/^\d{4}-\d{2}-\d{2}$/.test(d||''))return '';const x=new Date(d+'T12:00:00Z');return isNaN(x)?'':x.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});}
+/* 'Nov 15' from a plain date (as given) or a UTC kickoff time (in this phone's own time zone, so a night game keeps its day) */
+function gdate(d){d=d||'';const day=/^\d{4}-\d{2}-\d{2}$/.test(d),at=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(d);if(!day&&!at)return '';
+ const x=new Date(day?d+'T12:00:00Z':d);return isNaN(x)?'':x.toLocaleDateString('en-US',day?{month:'short',day:'numeric',timeZone:'UTC'}:{month:'short',day:'numeric'});}
 function numAttr(k,v,f){return /^\d{1,6}$/.test(String(v))?` data-num="${esc(k)}" data-v="${+v}" data-f="${f||'int'}"`:'';}
 /* a freshly opened tab rises in and its bars grow from nothing (refreshes only roll what changed) */
 function gtabIn(p){if(!p)return;rollNums(p);if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;

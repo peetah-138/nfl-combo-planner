@@ -5856,20 +5856,22 @@ def _gx_get(key, url, shape):
         return
     got = GX.get(key)
     try:
-        r = requests.get(url, timeout=GX_TIMEOUT)
+        # An explicit header sends this straight to ESPN, never through the hub's warm cache (which would refetch it every
+        # few seconds): this cache's own 30/60 min and ESPN's Retry-After are the only pace.
+        r = requests.get(url, headers={"Accept": "application/json"}, timeout=GX_TIMEOUT)
         code = int(getattr(r, "status_code", 0) or 0)
         if code == 429 or code >= 500 or code <= 0:
             raise _GxBusy(code, _retry_after(r))
         GX[key] = (now, shape(r.json()) if r.ok else None, 0, 0)    # a 404 (no such season/team) is an answer: nothing to show
-    except (requests.RequestException, ValueError, TypeError, AttributeError, _GxBusy) as err:
+    except Exception as err:          # any failure (a 400-digit number, odd JSON, a dropped link) takes the backoff path
         fails = (got[2] if got else 0) + 1
         wait = min(GX_BACKOFF[1], GX_BACKOFF[0] * 2 ** min(fails - 1, 10))
         if getattr(err, "wait", None):
             wait = max(wait, err.wait)
         GX[key] = (got[0] if got else 0, got[1] if got else None, fails, now + wait)
-        klive_log_once("gamedetail", key[0], err)
-    if len(GX) > GX_MAX:
-        for k, _v in sorted(list(GX.items()), key=lambda kv: kv[1][0])[:len(GX) - GX_MAX // 2]:
+        klive_log_once("gamedetail", ":".join(map(str, key)), err)
+    if len(GX) > GX_MAX:              # drop the least recently useful; an entry still backing off counts as recent
+        for k, _v in sorted(list(GX.items()), key=lambda kv: max(kv[1][0], kv[1][3]))[:len(GX) - GX_MAX // 2]:
             GX.pop(k, None)
 
 
@@ -5900,8 +5902,8 @@ def _shape_sched(j):
         if ms is None or ts is None:
             continue
         w = "W" if ms > ts else "L" if ms < ts else "T"
-        d = _cut(e.get("date"), 10)
-        out.append({"id": _cut(e.get("id"), PBP_ID_MAX), "d": d if re.match(r"^\d{4}-\d{2}-\d{2}$", d) else "", "w": w,
+        d = _cut(e.get("date"), 25)                      # the UTC kickoff; the page shows it in local time
+        out.append({"id": _cut(e.get("id"), PBP_ID_MAX), "d": d if re.match(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?Z)?$", d) else "", "w": w,
                     "at": "vs" if me.get("homeAway") == "home" else "@", "opp": _cut(_dic(op.get("team")).get("abbreviation"), 6),
                     "me": ms, "them": ts})
     return {"rec": _cut(tm.get("recordSummary"), 12), "g": out}
@@ -5937,22 +5939,41 @@ def _shape_ath(j):
     return {"n": name, "s": _cut(j.get("shortName")) or name, "j": _jersey(j.get("jersey"))} if name else None
 
 
-def _gx_refresh(path, lg, yr, away, home):
+def _gx_types(stype):
+    """Which season types make up "recent games": the regular season, plus the playoffs once they are on."""
+    return (2, 3) if stype == 3 else (2,)
+
+
+def _ath_known(aid):
+    """True when a player's name is on file and under a day old."""
+    got = ATH.get(aid)
+    return bool(got) and time.time() - got[0] < GX_TTL["ath"]
+
+
+def _ath_due(lg, yr, ids):
+    """The season leaders whose names we still need (not on file, and not backing off after a failed lookup)."""
+    out = []
+    for tid in ids:
+        for c in (_gx_val(("lead", lg, yr, tid)) or {}).values():
+            aid = c.get("id")
+            if aid and not _ath_known(aid) and _gx_due(("ath", aid)) and aid not in out:
+                out.append(aid)
+    return out
+
+
+def _gx_refresh(path, lg, yr, stype, away, home):
     """Fetch what is due for both teams (schedule, season leaders), then the names of leaders the summary did not have."""
     sport = path.split("/")[0]
     for tid in (away, home):
-        _gx_get(("sched", path, tid), f"{ESPN_SITE}/{path}/teams/{tid}/schedule", _shape_sched)
+        for st in _gx_types(stype):
+            _gx_get(("sched", path, tid, yr, st), f"{ESPN_SITE}/{path}/teams/{tid}/schedule?season={yr}&seasontype={st}", _shape_sched)
         _gx_get(("lead", lg, yr, tid), f"{ESPN_CORE}/{sport}/leagues/{lg}/seasons/{yr}/types/2/teams/{tid}/leaders", _shape_leaders)
-    n = 0
-    for tid in (away, home):
-        for c in (_gx_val(("lead", lg, yr, tid)) or {}).values():
-            aid = c.get("id")
-            if aid and aid not in ATH and n < GX_ATH_FETCH:
-                n += 1
-                _gx_get(("ath", aid), f"{ESPN_CORE}/{sport}/leagues/{lg}/athletes/{aid}", _shape_ath)
-                got = _gx_val(("ath", aid))
-                if got:
-                    ATH[aid] = (time.time(), got)
+    for n, aid in enumerate(_ath_due(lg, yr, (away, home))):
+        if n < GX_ATH_FETCH:
+            _gx_get(("ath", aid), f"{ESPN_CORE}/{sport}/leagues/{lg}/athletes/{aid}", _shape_ath)
+            got = _gx_val(("ath", aid))
+            if got:
+                ATH[aid] = (time.time(), got)
 
 
 def _gx_kick(job):
@@ -5979,16 +6000,17 @@ def _gx_kick(job):
         return th
 
 
-def _gx_last5(path, ids, event_id):
+def _gx_last5(path, ids, event_id, yr, stype):
     out = {}
     for side in ("away", "home"):
-        key = ("sched", path, ids[side])
-        v = _gx_val(key)
-        if v is None:
-            if key in GX:
+        keys = [("sched", path, ids[side], yr, st) for st in _gx_types(stype)]
+        vals = [_gx_val(k) for k in keys]
+        if vals[0] is None:
+            if keys[0] in GX:
                 out[side] = {"rec": "", "g": [], "na": True}       # asked and it failed: say so on that side
             continue
-        out[side] = {"rec": v.get("rec") or "", "g": [x for x in v.get("g") or [] if x.get("id") != event_id][-5:][::-1]}
+        games = sorted((x for v in vals if v for x in v.get("g") or [] if x.get("id") != event_id), key=lambda x: x.get("d") or "")
+        out[side] = {"rec": vals[0].get("rec") or "", "g": games[-5:][::-1]}
     return out
 
 
@@ -6016,19 +6038,22 @@ def game_extras(base, path, event_id, budget=None):
         b = _dic(_dic(base).get("board"))
         lg = CORE_LEAGUE.get(str(path))
         ids = {s: str(_dic(b.get(s)).get("id") or "") for s in ("away", "home")}
-        yr = b.get("season")
+        yr, stype = b.get("season"), b.get("stype")
         if not lg or not isinstance(yr, int) or not all(re.match(r"^\d{1,8}$", i) for i in ids.values()):
             return base
-        job = (str(path), lg, yr, ids["away"], ids["home"])
-        keys = [("sched", job[0], i) for i in ids.values()] + [("lead", lg, yr, i) for i in ids.values()]
-        if any(_gx_due(k) for k in keys):
+        if stype == 1:                       # preseason: last season's results and leaders are the useful ones
+            yr, stype = yr - 1, 2
+        stype = 3 if stype == 3 else 2
+        job = (str(path), lg, yr, stype, ids["away"], ids["home"])
+        keys = [("sched", job[0], i, yr, st) for i in ids.values() for st in _gx_types(stype)] + [("lead", lg, yr, i) for i in ids.values()]
+        if any(_gx_due(k) for k in keys) or _ath_due(lg, yr, ids.values()):
             first = not any(k in GX for k in keys)
             th = _gx_kick(job)
             wait = budget if budget is not None else (GX_BUDGET if first else 0)
             if th is not None and wait:
                 th.join(wait)
         extra = {}
-        l5 = _gx_last5(job[0], ids, str(event_id))
+        l5 = _gx_last5(job[0], ids, str(event_id), yr, stype)
         if l5:
             extra["last5"] = l5
         ld = _gx_leaders(lg, yr, ids)

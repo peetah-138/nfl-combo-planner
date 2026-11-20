@@ -26,10 +26,12 @@ class Net:
     RequestException = E._requests.RequestException
 
     def __init__(self):
-        self.calls, self.mode, self.athletes = [], "ok", dict(FX["athletes"])
+        self.calls, self.heads, self.mode, self.athletes = [], [], "ok", dict(FX["athletes"])
 
     def get(self, url, params=None, headers=None, **kw):
         self.calls.append(url)
+        if "/summary" not in url:
+            self.heads.append(headers)
         if self.mode == "down":
             raise self.RequestException("down")
         if self.mode == "429":
@@ -162,8 +164,13 @@ ok("IND's record from its schedule (3-8) and five games, newest first",
    ia.get("rec") == "3-8" and len(ia.get("g", [])) == 5 and ia["g"][0]["d"] >= ia["g"][-1]["d"], ia)
 ok("this game itself is never in its own last 5", all(x["id"] != EV for x in ia.get("g", []) + l5["home"].get("g", [])))
 hg = l5["home"]["g"][0]
+ok("a last-5 game keeps its full UTC kickoff (the page shows the local date, so a night game is not a day late)",
+   hg["d"].startswith("2026-11-15T") and hg["d"].endswith("Z"), hg["d"])
+ok("schedules ask for this season's regular season explicitly", any("/teams/11/schedule?season=2026&seasontype=2" in u for u in net.calls), net.calls)
+ok("team fetches carry an explicit header, so they go straight to ESPN (never the hub's warm cache)",
+   net.heads and all(h and h.get("Accept") for h in net.heads), net.heads[:3])
 ok("a last-5 row: W/L, home/away, opponent, both scores, date (HOU lost at CLE 24-27 on Nov 15)",
-   hg == {"id": hg["id"], "d": "2026-11-15", "w": "L", "at": "@", "opp": "CLE", "me": 24, "them": 27}, hg)
+   hg == {"id": hg["id"], "d": hg["d"], "w": "L", "at": "@", "opp": "CLE", "me": 24, "them": 27}, hg)
 ld = {r["k"]: r for r in g.get("leaders") or []}
 ok("season leaders: passing, rushing, receiving", list(ld) == ["pass", "rush", "rec"], list(ld))
 p = ld["pass"]
@@ -210,7 +217,7 @@ ok("ESPN down: last 5 says not available on both sides, no leaders tab",
 n = len(net.calls)
 E.game_extras(base, "football/nfl", EV, budget=5)
 ok("after a failure it backs off (no refetch on the next poll)", len(net.calls) == n, net.calls[n:])
-k = ("sched", "football/nfl", "11")
+k = ("sched", "football/nfl", "11", 2026, 2)
 ok("the backoff starts at 30 s and doubles", 25 < E.GX[k][3] - time.time() <= 31 and E.GX[k][2] == 1, E.GX.get(k))
 E.GX[k] = E.GX[k][:3] + (0,)
 E._gx_get(k, "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/11/schedule", E._shape_sched)
@@ -257,6 +264,50 @@ ok("college football maps to the core feed's league", E.CORE_LEAGUE.get("footbal
 E.game_extras(base, "football/college-football", EV, budget=5)
 ok("college football fetches its own schedule and leaders", any("/football/college-football/teams/11/schedule" in u for u in net.calls)
    and any("/leagues/college-football/seasons/2026/types/2/teams/11/leaders" in u for u in net.calls), net.calls)
+
+# ---- review fixes: any failure backs off; playoffs add postseason games; preseason uses last season; missing names are
+#      retried on their own; names expire after a day; a backing-off entry survives a prune
+fresh(); net.calls.clear()
+big = {"categories": [{"name": "passingLeader", "leaders": [{"value": 10 ** 400, "athlete": {"$ref": "http://x/athletes/12"}}]}]}
+orig_get = net.get
+net.get = lambda url, params=None, headers=None, **kw: Resp(big) if "/leaders" in url else orig_get(url, params, headers, **kw)
+kL = ("lead", "nfl", 2026, "11")
+E._gx_get(kL, "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/types/2/teams/11/leaders", E._shape_leaders)
+net.get = orig_get
+ok("a feed that makes the shaper overflow still takes the backoff path (no refetch every poll)",
+   kL in E.GX and E.GX[kL][2] == 1 and E.GX[kL][3] > time.time(), E.GX.get(kL))
+fresh(); net.calls.clear()
+po = copy.deepcopy(base); po["board"]["stype"] = 3
+E.game_extras(po, "football/nfl", EV, budget=5)
+ok("in the playoffs both the regular season and the postseason schedules are read",
+   any("seasontype=3" in u for u in net.calls) and any("seasontype=2" in u for u in net.calls), [u for u in net.calls if "schedule" in u])
+fresh(); net.calls.clear()
+pr = copy.deepcopy(base); pr["board"]["stype"] = 1
+E.game_extras(pr, "football/nfl", EV, budget=5)
+ok("in the preseason last season's results and leaders are used", any("season=2025&seasontype=2" in u for u in net.calls)
+   and any("/seasons/2025/types/2/" in u for u in net.calls), [u for u in net.calls if "schedule" in u or "leaders" in u])
+fresh(); net.calls.clear(); net.mode = "down"
+E.game_extras(base, "football/nfl", EV, budget=0)
+for t in list(E.GX_JOB["t"].values()):
+    t.join(5)
+net.mode = "ok"
+for k in list(E.GX):
+    E.GX[k] = (time.time(), {"pass": {"id": "4688813", "v": 354.0, "line": ""}} if k[0] == "lead" else {"rec": "", "g": []}, 0, 0)
+E.ATH.pop("4688813", None); net.calls.clear()
+g = E.game_extras(base, "football/nfl", EV, budget=5)
+ok("a leader whose name is missing is looked up again on its own (schedule and leaders still fresh)",
+   [u for u in net.calls if "/athletes/4688813" in u] and not [u for u in net.calls if "schedule" in u or "/leaders" in u], net.calls)
+ok("...and the name then shows", any((r.get("away") or {}).get("n") == "J. Downs" for r in g.get("leaders") or []), g.get("leaders"))
+E.ATH["4688813"] = (time.time() - E.GX_TTL["ath"] - 5, {"n": "Old Name", "s": "O. Name", "j": "99"})
+E.GX.pop(("ath", "4688813"), None)
+ok("a name older than a day is due again", not E._ath_known("4688813") and E._ath_due("nfl", 2026, ["11", "34"]) == ["4688813"])
+fresh()
+E.GX[("sched", "x", "1", 2026, 2)] = (0, None, 3, time.time() + 1800)       # backing off
+for i in range(E.GX_MAX):
+    E.GX[("ath", str(i))] = (time.time() - 100, None, 0, 0)
+E._gx_get(("ath", "zz"), "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/0", E._shape_ath)
+ok("pruning the cache keeps an entry that is still backing off", ("sched", "x", "1", 2026, 2) in E.GX and len(E.GX) <= E.GX_MAX // 2 + 2, len(E.GX))
+fresh()
 
 # ---- the GAME_DETAIL eviction no longer trips over another thread adding a game mid-sweep (issue #72 follow-up)
 fresh()

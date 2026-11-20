@@ -309,6 +309,21 @@ def run_empty(pg, label):
     return probs
 
 
+def run_tz(pg, label):
+    """A Monday night game (01:15 UTC on the Tuesday) shows Monday's date in the phone's own time zone."""
+    d = copy.deepcopy(DETAIL)
+    d["last5"]["home"]["g"][0]["d"] = "2026-11-17T01:15Z"
+    state["g"] = game(d)
+    pg.route("**/app/api/game*", answer)
+    if not open_game(pg):
+        return [label + ": game sheet didn't draw"]
+    pick(pg, "last5")
+    rows = txt(pg, ".gpanel[data-tab=last5] .l5r")
+    probs = [] if rows[5].endswith("Nov 16") else [label + ": a night game shows the next day: " + rows[5]]
+    pg.evaluate("closeModal()")
+    return probs
+
+
 def run_reduced(pg, label):
     probs = []
     state["g"] = game()
@@ -350,6 +365,10 @@ with sync_playwright() as pw:
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce")
     rpg = ctx.new_page(); rpg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run_reduced(rpg, "reduced")
+    ctx.close()
+    ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", timezone_id="America/New_York")
+    zpg = ctx.new_page(); zpg.on("pageerror", lambda e: errs.append(str(e)))
+    probs += run_tz(zpg, "new-york")
     ctx.close()
     print("errs:", errs)
     if errs:
