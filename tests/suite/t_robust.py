@@ -149,6 +149,50 @@ ok("old milestones, misses and live blocks are forgotten; recent ones kept",
    "OLD-EV" not in E.KLIVE["ms"] and "OLD-MISS" not in E.KLIVE["ms"] and "old-id" not in E.KLIVE["live"]
    and "NEW-EV" in E.KLIVE["ms"] and "new-id" in E.KLIVE["live"])
 
+# ---- GitHub #95: the opponent on a Live leg and its game card, from the score when no odds-book match names it (college hoops)
+import copy as _copy
+HOU = "KXNCAAMBGAME-26NOV19HOUDUKE"
+E.KICKOFF[HOU] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 50 * 60))
+E.MARKET_INFO[HOU + "-HOU"] = {"status": "open", "exp": "", "live": .55, "name": "Houston"}
+bets.append({"ticker": "KXMVE-R2", "legs": [L(HOU + "-HOU"), L(EUR + "-ADE")], "cost": 3.0, "pays": 12.0, "status": "pending",
+             "back": 0, "week": "2026-11-19", "full_pays": 12.0, "lg": "mix", "lgs": ["ncaamb", "euroleague"]})
+E.fetch_scores = lambda *a, **k: {}
+_real_display = E.display_score
+
+
+def hoops_score(name, code):
+    def ds(l, points=True, pre=False):
+        if (l.get("ticker") or "").startswith("KXNCAAMBGAME"):
+            return {"state": "in", "me": 61, "opp": 58, "abbr": "DUK", "opp_abbr": code, "opp_name": name, "detail": "H2 7:15", "ball": False}
+        return _real_display(l, points, pre)
+    return ds
+
+
+def hoops_run(ds):
+    E.display_score = ds
+    try:
+        E.mine_page(live=True)
+    finally:
+        E.display_score = _real_display
+    v = next(c for c in E.MINE["view"]["combos"] if c["t"] == "KXMVE-R2")
+    lg = next(x for x in v["legs"] if x["ticker"] == HOU + "-HOU")
+    gm = next(g for g in E.MINE["view"]["games"] if g["ticker"] == HOU + "-HOU")
+    return v, lg, gm, _copy.deepcopy(E.MINE["hold"].get("KXMVE-R2"))
+
+
+base_v, base_lg, base_gm, base_hold = hoops_run(_real_display)
+ok("the college-hoops leg is a pending combo leg with nothing naming the opponent (no odds-book match)", base_lg["opp"] == "" and base_gm["opp"] == "", (base_lg["opp"], base_gm["opp"]))
+for label, name, code, want in (("no full name, only the short code", "", "HOU", "HOU"),
+                                ("the full name wins over the short code", "Houston Cougars", "HOU", "Houston Cougars"),
+                                ("no score at all: nothing is made up", None, None, "")):
+    ds = hoops_score(name, code) if name is not None else (lambda l, points=True, pre=False: None if (l.get("ticker") or "").startswith("KXNCAAMBGAME") else _real_display(l, points, pre))
+    v, lg, gm, hold = hoops_run(ds)
+    ok(f"Live leg opponent, {label}: {want!r}", lg["opp"] == want, lg["opp"])
+    ok(f"the game card carries the same opponent ({want!r})", gm["opp"] == lg["opp"], gm["opp"])
+    ok(f"display only ({label}): chance, offer, verdict and the held value are exactly as without the score",
+       v["p"] == base_v["p"] and v.get("offer") == base_v.get("offer") and v.get("verdict") == base_v.get("verdict") and hold == base_hold,
+       (v["p"], base_v["p"], v.get("offer"), base_v.get("offer"), v.get("verdict"), base_v.get("verdict")))
+
 # ---- L1 and L2: the web app's tap lock and shared request limit
 sys.argv = ["combo_watcher.py", "--webapp"]
 wspec = importlib.util.spec_from_file_location("W", "wtest/combo_watcher.py")

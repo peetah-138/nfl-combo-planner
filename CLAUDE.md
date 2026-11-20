@@ -449,6 +449,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
     line with a glowing end dot (the Mac's `ticks`, plus what the page saw itself in `S.gh`), and chips for the bets
     riding on it. When someone scores the card pulses green (your side) or red (theirs), the number bumps and the
     phone ticks (`scoreWatch`). Tap pushes the game page. Skeleton cards while loading.
+    **Both teams and both scores on every card (issue #95, display only):** their row shows the full opponent name, else the
+    short code on the score (`sc.opp_abbr`), else "Opponent" when only their score is known; a card with no opponent score
+    (tennis/UFC on Kalshi's live data) shows no number, never a fake 0 (a real 0 shows). The server fills the leg/single
+    `opp` from the score when no odds-book match names the other side (college hoops). `test_gamecard_opp.py` covers it.
   - **Charts you can scrub** (`wireScrubs` + a spec in `S.scr[name]`): the game page's chance chart (readout of time
     and chance) and the Results profit bars; a haptic tick per point, refreshes wait while a finger is down
     (`S.scrub`), a short tap can open the point.

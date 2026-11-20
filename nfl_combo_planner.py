@@ -5000,7 +5000,7 @@ def open_singles(max_age=30):
         dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
-                    "opp": (sc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
+                    "opp": (dsc or {}).get("opp_name") or (dsc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
                     "sc": {k: dsc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if dsc else None,
                     "on": bool(ksc and not sc and ksc["state"] == "in"),       # display: Kalshi's data says it's playing
                     "src": "kalshi" if ksc and not sc else "",
@@ -7730,7 +7730,9 @@ def mine_page(live=False):
                 _rs = None
             if _ks and (_sc.get("me") is None or _sc["state"] == "pre"):   # a fight (its round is in the note) or not begun
                 _sc = None
-            vlegs.append({"ticker": l["ticker"], "name": name, "opp": opp, "chance": ch, "live": _lp, "res": res,
+            # display only: a game with no odds-book match (college hoops) leaves opp empty; name the other side from the score
+            _opp = opp or (_sc or {}).get("opp_name") or (_sc or {}).get("opp_abbr") or ""
+            vlegs.append({"ticker": l["ticker"], "name": name, "opp": _opp, "chance": ch, "live": _lp, "res": res,
                           "state": _st, "phase": (_rs or {}).get("phase", ""), "note": (_rs or {}).get("text", ""),
                           "short": (_rs or {}).get("short", ""), "score": re.sub(r"<[^>]+>", "", score_line(_sc)) if _sc else "",
                           "sc": {k: _sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if _sc else None,
