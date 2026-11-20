@@ -12184,7 +12184,7 @@ def _buy_panel_bet(c):
         ask = book.get("ask")
         if not ask:
             return False, "no price on Kalshi right now", {}
-        if c.get("live") and (book.get("bid") is None or ask - book["bid"] > LIVE_SPREAD):
+        if c.get("live") and (book.get("bid") is None or round(ask - book["bid"], 4) > LIVE_SPREAD):
             return False, "its game is under way and the live price is too jumpy to buy", {}
         edge_needed = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask
         if ask + single_fee(ask) + edge_needed > l["fair"] + 1e-9:
@@ -13383,9 +13383,9 @@ def book_levels(ob, side):
     out = []
     for row in rows if isinstance(rows, (list, tuple)) else ():
         try:
-            p, q = row[0], float(row[1])
-            # old rows are whole cents (45); a dollar string ("0.45") in them is already dollars
-            p = float(p) if not cents or (isinstance(p, str) and "." in p) else float(p) / 100
+            p, q = float(row[0]), float(row[1])
+            if cents and p >= 1:                  # old rows are whole cents (45); anything under 1 is already dollars
+                p /= 100
         except (TypeError, ValueError, IndexError, KeyError):
             continue
         if 0 < p < 1 and 0 < q < float("inf"):
@@ -13397,18 +13397,17 @@ def book_info(payload):
     """{'bid', 'ask', 'spread', 'ask_size', 'thin'} from a Kalshi order book answer, in dollars. Kalshi now sends
     {'orderbook_fp': {'yes_dollars': [...], 'no_dollars': [...]}} (dollar strings); it used to send
     {'orderbook': {'yes': [[cents, n]...], 'no': [...]}}. Both read the same. An empty or odd answer = no prices."""
-    yes = no = []
-    for key in ("orderbook_fp", "orderbook"):
-        ob = payload.get(key) if isinstance(payload, dict) else None
-        yes, no = book_levels(ob, "yes"), book_levels(ob, "no")
-        if yes or no:
-            break
+    books = [(book_levels(ob, "yes"), book_levels(ob, "no"))
+             for ob in ((payload.get(k) if isinstance(payload, dict) else None) for k in ("orderbook_fp", "orderbook"))]
+    # the first key with both sides wins; else the first with either side
+    yes, no = next((b for b in books if b[0] and b[1]), None) or next((b for b in books if b[0] or b[1]), ([], []))
     if not yes or not no:
         return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
                 "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
     bid, ask = yes[-1][0], 1 - no[-1][0]
-    return {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
-            "thin": ask - bid > 0.04 or no[-1][1] < 100}
+    spread = round(ask - bid, 4)                  # rounded: 0.53 - 0.49 is 0.04000000000000001 in floats
+    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1],
+            "thin": spread > 0.04 or no[-1][1] < 100}
 
 
 def book_depth(ticker, max_age=60):
@@ -13420,7 +13419,9 @@ def book_depth(ticker, max_age=60):
         return got[1]
     try:
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
-        info = book_info(r.json() if r.ok else {})
+        if not r.ok:
+            return None                           # 429/5xx: unknown, not an empty book (and not cached)
+        info = book_info(r.json())
     except (requests.RequestException, ValueError):
         return None
     BOOK_DEPTH[ticker] = (now, info)

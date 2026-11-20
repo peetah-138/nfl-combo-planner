@@ -4440,7 +4440,10 @@ def webapp_main():
                     pct = fair / (ask + fee) if ask else 0
                     stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
                     n = max(1, int(stake / (ask + fee)))
-                    n = min(n, int(dpt.get("ask_size") or n))
+                    if dpt.get("ask_size"):             # Kalshi's sizes can be fractional now ("0.40")
+                        n = min(n, int(dpt["ask_size"]))
+                    if n < 1:
+                        return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
                     spent = A.week_spend() if A.can_trade() else 0
                     if spent + n * (ask + fee) > A.CFG["budget"] + 0.01:
                         return {"ok": False, "msg": f"That would go over your {A.money(A.CFG['budget'])} cap."}

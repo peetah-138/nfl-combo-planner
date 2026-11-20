@@ -77,6 +77,13 @@ mixed = E.book_info({"orderbook_fp": {"yes_dollars": [], "no_dollars": []}, "ord
 ok("empty new key but a filled old one: reads the old one", abs(mixed["bid"] - 0.45) < 1e-9 and abs(mixed["ask"] - 0.50) < 1e-9)
 ds = E.book_info({"orderbook": {"yes": [["0.45", "200"]], "no": [["0.50", "200"]]}})
 ok("old key with dollar strings: read as dollars, not divided by 100", abs(ds["bid"] - 0.45) < 1e-9 and abs(ds["ask"] - 0.50) < 1e-9)
+df = E.book_info({"orderbook": {"yes": [[0.45, 200]], "no": [[0.50, 200]]}})
+ok("old key with dollar numbers: read as dollars, not divided by 100", abs(df["bid"] - 0.45) < 1e-9 and abs(df["ask"] - 0.50) < 1e-9)
+half = E.book_info({"orderbook_fp": {"yes_dollars": [["0.30", "200"]], "no_dollars": []},
+                    "orderbook": {"yes": [[45, 200]], "no": [[50, 200]]}})
+ok("new key with one side only, full old key: reads the full one", abs(half["bid"] - 0.45) < 1e-9 and abs(half["ask"] - 0.50) < 1e-9)
+four = E.book_info({"orderbook_fp": {"yes_dollars": [["0.49", "500"]], "no_dollars": [["0.47", "500"]]}})
+ok("exactly 4c apart (0.53 - 0.49 in floats): spread 0.04, not thin", four["spread"] == 0.04 and not four["thin"])
 both = E.book_info({"orderbook_fp": {"yes_dollars": [["0.30", "200"]], "no_dollars": [["0.60", "200"]]},
                     "orderbook": {"yes": [[45, 200]], "no": [[50, 200]]}})
 ok("both keys: the new one wins", abs(both["bid"] - 0.30) < 1e-9)
@@ -97,6 +104,30 @@ ok("book_depth: new-shape answer gives the market's bid and ask",
 ok("book_depth: old-shape answer reads identically", seen["fp"] == seen["old"])
 E.BOOK_DEPTH.clear()
 ok("book_depth: an unknown ticker = no prices (not an error)", E.book_depth("KXNOPE-1", max_age=0)["ask"] is None)
+_get = E.requests.get
+E.requests.get = lambda url, **k: fakenet.R({"error": "rate limited"}, 429)
+E.BOOK_DEPTH.clear()
+r429 = E.book_depth(T)
+E.requests.get = _get
+ok("book_depth: a 429 is unknown (None), not an empty book, and isn't cached", r429 is None and T not in E.BOOK_DEPTH
+   and E.book_depth(T)["ask"] is not None)
+
+# ---- a Buy idea for a single never offers under one contract (sizes can be fractional now)
+W = open("wtest/combo_watcher.py").read() if os.path.exists("wtest/combo_watcher.py") else ""
+ok("Buy idea: caps at the whole contracts on sale, says so when under one",
+   'n = min(n, int(dpt["ask_size"]))' in W and "under one contract for sale" in W)
+
+# ---- the gap rule at exactly 6c on a live panel single: 0.55 - 0.49 is 0.06000000000000005 in floats, still allowed
+_real_book_depth, _real_recheck = E.book_depth, E.live_recheck
+E.buy_single = lambda t, n, px: (n, None)
+E.live_recheck = lambda legs: (legs, "")
+E.book_depth = lambda t, max_age=60: E.book_info({"orderbook_fp": {"yes_dollars": [["0.49", "500"]], "no_dollars": [["0.45", "500"]]}})
+good, note, _ = E._buy_panel_bet({"kind": "single", "live": True, "code": "nba", "stake": 10.0, "legs": [{"ticker": T, "fair": 0.7}]})
+ok(f"live panel single, exactly 6c gap: allowed ({note})", good)
+E.book_depth = lambda t, max_age=60: E.book_info({"orderbook_fp": {"yes_dollars": [["0.48", "500"]], "no_dollars": [["0.45", "500"]]}})
+good, note, _ = E._buy_panel_bet({"kind": "single", "live": True, "code": "nba", "stake": 10.0, "legs": [{"ticker": T, "fair": 0.7}]})
+ok("live panel single, 7c gap: too jumpy, not bought", good is False and "jumpy" in note)
+E.book_depth, E.live_recheck = _real_book_depth, _real_recheck
 
 # ---- the 6c gap rule on the parsed book
 wide = {"orderbook_fp": {"yes_dollars": [["0.40", "500"]], "no_dollars": [["0.53", "500"]]}}   # 40c bid, 47c ask
