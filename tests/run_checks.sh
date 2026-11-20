@@ -27,6 +27,9 @@ json.dump({"kalshi_key_id": "fake-key-id"}, open("wahome/combo_keys.json", "w"))
 json.dump({"topic": "t", "secret": "s", "web_pass": "pass1234"}, open("wahome/watcher.json", "w"))
 P
 export REPO="$R"
+# Nothing a test does may touch the real Tailscale (`tailscale serve` re-points Pete's real secure address) or post to a
+# real ntfy topic. The watcher refuses the Tailscale command line when this is set (and outside ~/combowatch anyway).
+export COMBO_NO_TAILSCALE=1 COMBOWATCH_NTFY="http://ntfy.invalid"
 export CW_WEBAPP_PORT=18766              # tests run their own web apps on 18766+, never on the real one (8766)
 command -v timeout >/dev/null 2>&1 || timeout(){ perl -e 'alarm shift; exec @ARGV' "$@"; }   # macOS has no timeout
 PY=python3
@@ -65,13 +68,13 @@ print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild; do
+for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow; do
   o=$($PY $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
 # each worker with its own copy of everything and its own port (18766, 18767, ...), so nothing is shared.
 N=${CHECK_WORKERS:-4}
-PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui"
+PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth"
 for w in $(seq 0 $((N-1))); do
   p=$((18766 + w))
   $PY -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."

@@ -281,7 +281,7 @@ with sync_playwright() as pw:
     for view in ("games", "build", "results", "settings", "live"):
         pg.evaluate(f"go('{view}')"); time.sleep(2.5)
     pg.evaluate("modal('<h3>Sure?</h3><p>x</p>')"); time.sleep(.3)
-    rm = pg.evaluate("({stag:$('#sheet').classList.contains('stag'),fresh:$('#main').classList.contains('fresh')})")
+    rm = pg.evaluate("({stag:$('#sheet').classList.contains('stag'),fresh:$('#main').classList.contains('arrived')})")
     pg.evaluate("closeModal();S.esEver=true;S.live_ok=false;stat()"); time.sleep(1.6)
     rm["bar"] = pg.evaluate("document.querySelector('#netbar.on')?getComputedStyle(document.querySelector('#netbar i')).animationName+'/'+getComputedStyle(document.querySelector('#netbar')).transitionDuration:'none'")
     print("reduced motion:", rm, "errs:", errs)

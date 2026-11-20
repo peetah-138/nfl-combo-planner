@@ -1,6 +1,6 @@
 # Roadmap: planned work not done yet
 
-Everything we've agreed on or lined up but haven't built, as of version 2026.11.19.119 (Nov 18, 2026).
+Everything we've agreed on or lined up but haven't built, as of version 2026.11.19.120 (Nov 18, 2026).
 What's already built is described in `CLAUDE.md`. When an item ships, move its facts into `CLAUDE.md` and delete it
 here; when Pete adds or drops something, update this file in the same change.
 
@@ -52,13 +52,6 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ---
 
 ## 2. Waiting on data (decisions with a date)
-
-### Buy timing (≈ early December)
-- **Question:** should the panel buy earlier than ~45 minutes before a game? Pete saw good prices disappear
-  before the buy time.
-- **Data being recorded:** price at build, at buy, and at game time for every panel and paper bet.
-- **Then:** compare how much price is lost or gained by waiting, by league and bet type; move the buy time
-  (per league if it differs) and explain it to Pete before shipping.
 
 ### The combo cut-off, from the combo lab (≈ 2–3 weeks)
 - The lab paper-buys combos at 80–85, 85–90, 90–95, 95–100 and 100+% of fair, and replays smart sell on them.

@@ -47,7 +47,9 @@ pattern in a local `.git/hooks/pre-commit`.
   (cut-offs, calibration, pay index; checked against the old code), the hub's read cache (`t_hubcache.py`: short
   score ttl, last-good copy, per-host backoff, warming that never keeps an entry alive on its own), the panel rebuild on
   request (`t_rebuild.py`: flag, per-sport progress notes, done/why, drafts only, no started game, the watcher's
-  `rebuild_loop` picks a request up within seconds).
+  `rebuild_loop` picks a request up within seconds), buying right after approval (`t_buynow.py`: no lead time,
+  Approve/Add wake the Mac's `panel_loop` within seconds, the price recheck still skips or swaps, start rules, Pause,
+  unknown outcome = check never retried, no double buy from passes at once, live bets skipped once switched off).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
@@ -67,6 +69,9 @@ pattern in a local `.git/hooks/pre-commit`.
   streak note, light mode, the login page's motion and haptics, and reduced motion. Every action call is faked.
   `test_rebuild_ui.py`: the empty panel card (no 10-minute promise, Look now), live rebuild progress redrawn in place,
   the new panel dropping in by itself, and the "nothing found, here's why" card.
+  `test_loadwidth.py`: a frame-by-frame sampler on a phone for 2.4 s after every tab switch and a game page push (dark and light): no
+  element past the screen's right edge, no line past its card, `<main>` keeps normal wrapping and text size (the `arrived` class on
+  `<main>` once reused the name `fresh`, the "Updated Ns ago" stamp, and every new screen drew too wide for 1.6 s).
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.

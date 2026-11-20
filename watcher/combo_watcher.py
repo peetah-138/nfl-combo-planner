@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.19.119"
+WATCHER_VERSION = "2026.11.19.120"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -816,10 +816,33 @@ def tailscale_env():
     return env
 
 
+# Where a real install keeps its files. Anything else (a test's temp folder, dev.sh's throwaway home) is not allowed to
+# run the Tailscale command line at all: `tailscale serve` re-points Pete's real secure address, and a test run once
+# pointed it at a fake hub that then went away. COMBO_NO_TAILSCALE=1 (set by every test harness) blocks it too.
+TS_FAKE_OK = False        # only the secure-address test sets this, and then only a fake command line in a temp folder runs
+
+
+def tailscale_blocked():
+    """Why the Tailscale command line must not run in this process (a short reason), or '' when it may."""
+    if os.environ.get("COMBO_NO_TAILSCALE", "").strip() not in ("", "0"):
+        return "COMBO_NO_TAILSCALE is set (a test or dev run)"
+    real = {os.path.realpath(os.path.expanduser("~/combowatch")), os.path.realpath("/var/lib/combowatch")}
+    if os.path.realpath(HOME) not in real:
+        return f"{HOME} is not a real install folder (a test or dev run)"
+    return ""
+
+
 def tailscale_run(cli, args, timeout):
     """Run the Tailscale command line the way it needs under launchd: no terminal (stdin closed), a sane PATH and
-    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI."""
-    import subprocess
+    TAILSCALE_BE_CLI=1 so the app's own binary acts as a command line instead of starting the GUI.
+    Hard safety net: refuses (OSError) outside a real install. The secure-address test may run its own fake script
+    from a temp folder (TS_FAKE_OK), never a real one."""
+    import subprocess, tempfile
+    why = tailscale_blocked()
+    if why:
+        fake = TS_FAKE_OK and os.path.realpath(cli).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep)
+        if not fake:
+            raise OSError(f"refusing to run tailscale {' '.join(args[:1])}: {why}")
     return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
                           env=tailscale_env())
 
@@ -902,6 +925,10 @@ def tailscale_https(conf, port):
     allowed https yet, keep the one-time link that turns it on, for Settings > This Mac.
     Every way out is logged and leaves conf["https"] saying what is actually wrong."""
     import subprocess
+    blocked = tailscale_blocked()
+    if blocked and not TS_FAKE_OK:
+        log("https: not touching Tailscale:", blocked)
+        return _https_set(conf, "off-in-tests", detail="Secure address is off here: " + blocked + ".")
     with HTTPS_LOCK:
         cli, st, why = tailscale_status()
         if why:
@@ -976,6 +1003,9 @@ def tailscale_https(conf, port):
 def https_loop(conf, port):
     """Keep trying: enabling HTTPS in Tailscale's admin, or Tailscale finishing its start at login, is picked up
     without a tap. Quiet once it is on (a light check every 30 minutes)."""
+    if tailscale_blocked() and not TS_FAKE_OK:
+        log("https: not checking Tailscale:", tailscale_blocked())
+        return
     while True:
         try:
             tailscale_https(conf, port)
@@ -1159,17 +1189,31 @@ def ensure_crypto():
         log("cryptography install failed:", err)
 
 
+def panel_wait(H, every, step=2):
+    """Sleep until the next buying pass: `every` seconds, or sooner (within `step`) once Approve / Add asks for one.
+    Clears the request, so the pass that follows covers it and a tap during that pass asks again."""
+    end = time.time() + every
+    while time.time() < end:
+        if H is not None and H.buy_asked():
+            return True
+        time.sleep(min(step, max(0.0, end - time.time())))
+    return bool(H is not None and H.buy_asked())
+
+
 def panel_loop(odds, conf, every=60):
-    """Buys approved panel bets when they're due (rechecked, swapped if needed) and runs the paper panel."""
+    """Buys approved panel bets right after approval (rechecked, swapped if needed): every minute, and within a
+    couple of seconds of an Approve / Add tap. Also runs the paper panel."""
     time.sleep(180)
-    n = 0
+    settled = time.time()
+    H = None
     while True:
         try:
             with odds.lock:
                 H = odds.engine()
+                H.buy_asked()                             # this pass covers anything asked for so far
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
-                n += 1
-                if n % 5 == 0:                            # results, exits and game-time prices
+                if time.time() - settled >= 5 * 60:       # results, exits and game-time prices: every 5 minutes
+                    settled = time.time()
                     H.panel_settle()
                 lt = time.localtime()
                 if lt.tm_hour == 8 and conf.get("recap_day") != time.strftime("%Y-%m-%d"):
@@ -1184,7 +1228,11 @@ def panel_loop(odds, conf, every=60):
                 push(conf, m)
         except Exception as err:
             log("panel buying skipped:", type(err).__name__, err)
-        time.sleep(every)
+        try:
+            panel_wait(H, every)
+        except Exception as err:                          # never let a wait problem stop the buying loop
+            log("panel wait:", type(err).__name__, err)
+            time.sleep(every)
 
 
 def rebuild_loop(odds, notifier=None, every=2):
@@ -2331,8 +2379,9 @@ main.ptrd{transition:none!important}
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
 .psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
 .ccard.flash{animation:fl 1.2s ease}
-/* Results: bars grow in, the What's working tabs crossfade */
-main.fresh .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
+/* Results: bars grow in, the What's working tabs crossfade. (<main> is marked `arrived` for 1.6 s after a screen change; it must never be
+   called `fresh`: that is the small "Updated Ns ago" stamp's class, and its nowrap/small-grey rules made every new screen draw too wide.) */
+main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
 .bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
 .antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
@@ -2491,7 +2540,7 @@ function render(){({live:renderLive,games:renderGames,build:renderBuild,results:
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
 function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const mn=$('#main');if(mn){mn.classList.add('fresh');clearTimeout(S.freshT);S.freshT=setTimeout(()=>mn.classList.remove('fresh'),1600);}
+ const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
  const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
  document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
@@ -2819,8 +2868,8 @@ S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
 const started=c=>!c.live&&c.kick&&c.kick*1000<Date.now()+5*60e3;
-function panelItem(c,st,approved){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
- const state=c.state||'';const chip={scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':`<span class="tag">buys ${pTime(c.buy_at)}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
+function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
+ const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':c.buy_at&&c.buy_at*1000>Date.now()?`<span class="tag">buys ${pTime(c.buy_at)}</span>`:`<span class="tag">${{paused:'Paused · not bought yet','no key':'Can\'t trade from here',price:'Waiting for a fresh price'}[c.hold]||'Buying now'}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
  const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
@@ -2862,22 +2911,22 @@ function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
  const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
-   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','bought'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
+   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','buying','bought','check'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
    <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
  const addMode=d.view!=='all'&&d.approved_other;
  const btn=addMode?`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelAdd(this)">Add ${live.length} to today's panel · ${money(total)}</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Today's panel is already approved. These are bought the same way, inside your daily panel budget.</div>`:approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelRestart(this)">Build a fresh panel for today</button>
+   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Today's panel is already approved. These are bought right after you add them, the same way, inside your daily panel budget.</div>`:approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelRestart(this)">Build a fresh panel for today</button>
    <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Bets already bought stay. The Mac looks at today's remaining games again and puts together a new panel for you to approve.</div>`:'')
   :`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelApprove(this)">Approve ${live.length} bet${live.length===1?'':'s'} · ${money(total)}</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys each one shortly before its game (the time is on each bet), after checking the price again. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
+   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys them right after you approve, checking each price again first. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
- return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved)).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
+ return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved,addMode?'add':'approve')).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
   <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
-  <div class="plist">${x.items.map(c=>panelItem(c,'',false)).join('')}</div>
+  <div class="plist">${x.items.map(c=>panelItem(c,'',false,'add')).join('')}</div>
   ${live.length?`<button class="btn acc" style="width:100%;justify-content:center;margin-top:10px" onclick="panelAdd(this,'extra')">Add ${live.length} to today's panel · ${money(tot)}</button>`:''}</div>`;}
 function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
@@ -2885,11 +2934,16 @@ function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
 async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
+ hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
+/* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
+function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
+ if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
+ const pn=((S.panel||{}).panel||{}),its=pn.items||[];if(i&&S.pview==='all'&&pn.status==='approved'&&!its.some(c=>c.state==='scheduled'||c.state==='buying'))return;
+ load('build').catch(()=>{}).finally(()=>{if(++i<8)S.pbT=setTimeout(tick,[6,10,15,20,30,60,90][i-1]*1000);});};S.pbT=setTimeout(tick,4000);}
 async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
  b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');}
+ hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}

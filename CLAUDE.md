@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.19.119). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.19.120). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -76,7 +76,7 @@ Real money is involved. Pete uses it daily.
   silence them. Run code review and security review before opening the PR and fix everything they raise.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below). Open it, but **never merge it without Pete's explicit go-ahead in that conversation.**
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.119`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.120`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -121,6 +121,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
   push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
+- **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
+  `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
+  folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do
+  nothing (state `off-in-tests`). Only `t_https_push` runs a fake script from a temp folder (`TS_FAKE_OK`). `t_tailscale_safe`
+  uses a shim `tailscale` that records calls. `COMBOWATCH_NTFY` points at `ntfy.invalid` in the checks. New harnesses that boot
+  the watcher must set the flag too.
 - A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
   temp home; must never touch the repo files).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
@@ -185,8 +191,20 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   at 30+ quotes or when its own record moves it. Only a group's own record can take it below 95% (to the 85% floor).
 - The panel's sport tie-break (`sport_pay_index`/`pay_index_of`) uses a league's own pay index once it has 10+
   quotes, else its sport's. Sizing reads league results through the calibrated chance.
-- Pete approves once; the Mac buys each bet at a good time before its game (~45 min; combos at their best lead
-  time), rechecks price, swaps in a similar bet or skips. "Build a fresh panel" (after a Stop) and the empty card's
+- Pete approves once; **the Mac buys each bet right after he approves it** (Pete's decision, issue #51: waiting
+  until ~45 min before the game gave up the price he approved; the old lead-time code, `PANEL["buy_before"]` and
+  `best_combo_lead`, is gone and bets carry no `buy_at`). Approve and Add leave `panel_buy.flag` (`ask_buy`); the
+  watcher's `panel_loop` (`panel_wait`) sees it within ~2 s and runs `panel_exec`, otherwise it runs every minute. Each
+  bet still gets the fresh price recheck first (newest candidates via `_fresh`, then Kalshi's book/quote in
+  `_buy_panel_bet`), swaps in a similar bet (bought on the pass right after) or skips; prices too old to judge wait
+  (the item gets `hold: "price"` and its sport joins `sports_near` via `BUY_WAIT`, so it's re-collected within ~2.5
+  min; Pause / no key set `hold: "paused"` / `"no key"`, shown on the card). Items approved before this change keep a
+  stored `buy_at` and wait for it (no surprise buys on the update). `panel_settle` runs every 5 min by the clock.
+  A bet whose game is hours or days away is bought now too. Unchanged: Pause, the start rules (`_start_ok`), sizing
+  and budget, claim-before-buy under `panel_tx` (no double buy), unknown outcome = "check". The panel card says
+  "buys when you approve" (or "when you add it") before, "Buying now" once approved (or why not yet), then
+  "Bought"; after Approve/Add the page re-checks a few times (`pBuyWatch`). The paper panel
+  buys at once the same way. Price at build, at buy (`bought_at`) and game time are still recorded, so CLV works. "Build a fresh panel" (after a Stop) and the empty card's
   "Look now" start at once: the tap leaves `panel_rebuild.flag`, the watcher's `rebuild_loop` thread sees it within
   ~2 s and runs `panel_rebuild` (collects every shadow sport fresh, then the usual `panel_pass`; drafts only, never
   buys or approves). Progress is noted in `combo_rebuild.json` (`rebuild_status`: asked / running "Looking at NBA…
@@ -338,6 +356,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   per-league smart-sell tuning).
 
 ### Look and feel (the makeover)
+- CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
+  "Updated Ns ago" stamp: nowrap, small grey text). Reusing it made every new screen draw too wide for a moment (GitHub #52);
+  `test_loadwidth.py` samples every frame after each tab switch.
 - One motion system: rolling numbers with green/red flashes, staggered entrances, page fades (View Transitions),
   swipe left/right between tabs, sliding tab and segmented indicators, spring bottom sheets with drag-to-close,
   press feedback, a drawn-check "Bought" moment, haptics everywhere (`hap()`: in-app via `combo://haptic`, iOS 18
