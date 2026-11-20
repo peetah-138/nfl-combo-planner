@@ -2208,6 +2208,56 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .pp:last-child{border-bottom:0}.pp.sc{background:var(--yesbg)}.pp.to{background:var(--nobg)}.pp.cur{box-shadow:inset 3px 0 0 var(--acc)}
 .ppm b{display:block;font-size:12.5px}.ppm .m{font-size:11.5px}.ppt{overflow-wrap:anywhere;line-height:1.4}
 .situ .rzt.rpl{background:var(--acc)}
+/* slice 3 tabs: box score, team stats, injury report, last 5 games, season leaders (our own look, team colours as accents) */
+.gtabx{min-width:0}
+:root{--tmix:28%}@media (prefers-color-scheme:light){:root{--tmix:0%}}
+.tdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 6px 1px 0;vertical-align:middle;flex:0 0 auto}
+.ghead{display:flex;align-items:center;gap:4px;margin:14px 2px 6px;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub)}
+.gempty{color:var(--mute);font-size:13px;margin:6px 2px 10px}
+.seg.bxsw{display:inline-flex;flex-wrap:nowrap;position:relative;margin-bottom:2px}
+.seg.bxsw button{display:flex;align-items:center;position:relative;z-index:1;padding:7px 16px}
+.gtw{overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel2);border-radius:12px}
+.gstat{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.gstat th{font-size:10px;font-weight:800;letter-spacing:.04em;color:var(--mute);text-align:right;padding:9px 6px 6px;white-space:nowrap}
+.gstat td{text-align:right;padding:7px 6px;border-top:1px solid var(--line);white-space:nowrap}
+.gstat th:first-child,.gstat td:first-child{text-align:left;padding-left:12px;width:100%;max-width:0}
+.gstat td:first-child>div{display:flex;align-items:center;min-width:0}.gstat th:last-child,.gstat td:last-child{padding-right:12px}
+.gstat .pn{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600}.gstat .jn{flex:0 0 auto}
+.gstat tr.tot td{color:var(--sub);font-weight:700}
+.jn{display:inline-block;margin-left:5px;padding:0 5px;border-radius:6px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font-size:10.5px;font-weight:800;line-height:16px;vertical-align:1px}
+.h2h{display:flex;justify-content:space-between;align-items:center;margin:2px 2px 10px;font-weight:800;font-size:13px}
+.h2h b{display:flex;align-items:center}.h2h b:last-child .tdot{margin:0 0 1px 6px}
+.tsr,.ldr{padding:9px 2px 11px;border-bottom:1px solid var(--line)}.tsr:last-of-type,.ldr:last-of-type{border-bottom:0}
+.tsv{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:baseline;gap:8px;margin-bottom:7px}
+.tsv b{font-size:16px;font-variant-numeric:tabular-nums}.tsv b:last-child{text-align:right}
+.tsv span{font-size:12px;color:var(--sub);text-align:center;white-space:nowrap}
+.h2bar{display:flex;gap:3px;height:6px}
+.h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
+.h2bar.even i{opacity:.35}
+.gin .h2bar i{animation:sbarIn .7s var(--ease) both}
+.gin .h2bar i:last-child{animation-name:sbarInR}
+@keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
+@keyframes sbarInR{from{transform:scaleX(0);transform-origin:right}to{transform:none;transform-origin:right}}
+.gin .tsr,.gin .ldr,.gin .l5r,.gin .injr,.gin .gtw{animation:rise .38s var(--ease) both;animation-delay:calc(var(--i,0)*28ms)}
+.injr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
+.injr:last-child{border-bottom:0}.injn{min-width:0;display:flex;gap:8px;align-items:baseline}
+.injn b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}.injn .m{font-size:11.5px;white-space:nowrap}
+.injw{grid-column:1;font-size:12px}
+.ist{grid-row:1/span 2;grid-column:2;font-size:11px;font-weight:800;padding:4px 9px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap}
+.ist.bad{background:var(--nobg);color:var(--no)}.ist.warn{background:var(--livebg);color:var(--live)}.ist.q{background:var(--accbg);color:var(--acc)}
+.l5grid,.injgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:4px 18px}
+.l5r{display:grid;grid-template-columns:30px minmax(0,1fr) auto 52px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
+.l5r:last-child{border-bottom:0}
+.wl{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:900;font-size:12px}
+.wl.w{background:var(--yesbg);color:var(--yes)}.wl.l{background:var(--nobg);color:var(--no)}.wl.t{background:var(--panel2);color:var(--sub)}
+.l5o{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.l5s{font-variant-numeric:tabular-nums;font-weight:700}.l5d{text-align:right;font-size:12px}
+.form{display:inline-flex;gap:3px;margin-left:auto}.form i{width:7px;height:7px;border-radius:50%;background:var(--line)}.form i.w{background:var(--yes)}.form i.l{background:var(--no)}
+.ldc{text-align:center;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);margin-bottom:4px}
+.ldg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-bottom:8px}
+.ldp{min-width:0}.ldp.h{text-align:right}
+.ldv{display:block;font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
+.ldn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.ldl{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* play illustrations on the field strip (illustrative only; .noanim / reduced motion turns them all off) */
 .fld .grass .fproj{position:absolute;top:50%;width:11px;height:11px;margin:-5px 0 0 -5px;z-index:6;transition:left var(--dur,600ms) linear}
 .fproj b{display:block;width:100%;height:100%;border-radius:50%;background:#8a4b1e;box-shadow:0 0 0 1.5px #fff;animation:arcY var(--dur,600ms) both}
@@ -2679,7 +2729,7 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
@@ -3788,7 +3838,9 @@ function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if
    (or a spec with only one visible tab) gets no tab row and the page is exactly as before. A tab is {k, l, has(r), html(r, ov)}:
    `has` hides it when its data is missing (a bad or absent feed shows nothing), `html` draws its panel (`ov` is the overview
    markup). The chosen tab lives in S.gtab and survives the page's periodic redraws; only the open tab's panel is drawn. */
-const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml}];
+const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml},
+ {k:'box',l:'Box score',has:boxHas,html:boxHtml},{k:'tstats',l:'Team stats',has:tsHas,html:tsHtml},{k:'inj',l:'Injury report',has:injHas,html:injHtml},
+ {k:'last5',l:'Last 5 games',has:l5Has,html:l5Html},{k:'leaders',l:'Season leaders',has:ldHas,html:ldHtml}];
 const GAME_TABS={nfl:FOOTBALL_TABS,ncaaf:FOOTBALL_TABS};
 function gameTabList(r){const spec=GAME_TABS[((r||{}).leg||{}).sport];if(!spec)return [];const a=spec.filter(t=>!t.has||t.has(r));return a.length>1?a:[];}
 function gameTabCur(tabs){return tabs.some(t=>t.k===S.gtab)?S.gtab:(tabs[0]||{}).k;}
@@ -3798,7 +3850,7 @@ function gameTabsHtml(r,ov){const tabs=gameTabList(r);S.gtabCur=null;if(!tabs.le
 /* switch tab without a full repaint: only the visible panel is (re)drawn, and leaving the play-by-play puts the strip back to live */
 function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);if(!t)return;const was=S.gtabCur;S.gtab=k;S.gtabCur=k;
  document.querySelectorAll('#sheet .gtab').forEach(b=>{const on=b.dataset.tab===k;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
- document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k)p.innerHTML=t.html(r,'');else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
+ document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k){p.innerHTML=t.html(r,'');gtabIn(p);}else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
  gameTabInd();if(was==='pbp'&&k!=='pbp'&&S.pbpStep!=null){S.pbpStep=null;pbpRefresh('slide');}}
 /* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
 function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
@@ -3810,7 +3862,7 @@ function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)
  const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
 addEventListener('resize',()=>{if(document.querySelector('#sheet .gtabs'))gameTabInd();});
 /* after every repaint: the underline, the row's own sideways scroll, and (live) the newest play's animation */
-function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);}
+function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);if(document.querySelector('#sheet .bxsw'))segInd();}
 /* ---- Play-by-play (football; ESPN drives and plays, display only). Stepping shows the strip as it stood after the chosen play
    (S.pbpStep = that play's id, null = live) and replays an illustration of the play from its type and yardage. The animations
    are illustrations only: ESPN has no player tracking, and the tab says so. Under prefers-reduced-motion nothing moves: the
@@ -3899,6 +3951,67 @@ function pbpFx(p){if(matchMedia('(prefers-reduced-motion: reduce)').matches)retu
  else if(k.safety){tag('SAFETY','bad');}
  if(k.turn){const bl=document.querySelector('#sheet .fstrip .fball');if(bl){bl.classList.add('turn');setTimeout(()=>bl.classList.remove('turn'),1700);}tag('TURNOVER','bad');}
  return delay;}
+/* ---- Slice 3 tabs (football): box score, team stats, injury report, last 5 games, season leaders. Drawn only from the game
+   answer's detail block (ESPN feeds, display only). A side the feed has nothing for says so in plain words instead of guessing.
+   Team colours are accents only (our own art; no logos). Numbers roll and share bars slide when the game changes them. */
+function gd(r){return (r||{}).detail||{};}
+function gTeams(r){const b=gd(r).board||{};return {away:b.away||{},home:b.home||{}};}
+/* a team colour that reads on the page: the primary, else the alternate, when it is neither near-black nor near-white */
+function tcol(t,fb){const ok=c=>{c=fcolor(c,'');if(!c)return '';const n=parseInt(c.slice(1),16),L=(.2126*((n>>16)&255)+.7152*((n>>8)&255)+.0722*(n&255))/255;return L>.08&&L<.9?c:'';};
+ const c=ok(t.color)||ok(t.alt);return c?`color-mix(in srgb,${c},#fff var(--tmix,0%))`:fb;}
+function tcols(r){const T=gTeams(r);const a=tcol(T.away,'var(--yes)');let h=tcol(T.home,'var(--no)');if(h===a)h='var(--sub)';return {a,h};}
+function tmName(T,s){return T[s].name||T[s].abbr||(s==='home'?'Home':'Away');}
+function tmHead(r){const T=gTeams(r),c=tcols(r);
+ return `<div class="h2h"><b><i class="tdot" style="background:${c.a}"></i>${esc(T.away.abbr||'Away')}</b><b>${esc(T.home.abbr||'Home')}<i class="tdot" style="background:${c.h}"></i></b></div>`;}
+/* a head-to-head share bar; even and quiet when there is nothing to compare */
+function sbar(key,an,hn,c){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const p=ok?Math.max(4,Math.min(96,an/(an+hn)*100)):50;
+ return `<div class="h2bar${ok?'':' even'}" role="img" aria-label="${ok?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
+function gdate(d){if(!/^\d{4}-\d{2}-\d{2}$/.test(d||''))return '';const x=new Date(d+'T12:00:00Z');return isNaN(x)?'':x.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});}
+function numAttr(k,v,f){return /^\d{1,6}$/.test(String(v))?` data-num="${esc(k)}" data-v="${+v}" data-f="${f||'int'}"`:'';}
+/* a freshly opened tab rises in and its bars grow from nothing (refreshes only roll what changed) */
+function gtabIn(p){if(!p)return;rollNums(p);if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ p.querySelectorAll('.tsr,.ldr,.l5r,.injr,.gtw').forEach((e,i)=>e.style.setProperty('--i',Math.min(i,16)));
+ p.classList.add('gin');clearTimeout(S.ginT);S.ginT=setTimeout(()=>p.classList.remove('gin'),1100);}
+/* Box score: a team switch, then that team's tables (passing, rushing, receiving, then defence and kicking). */
+function boxHas(r){const b=gd(r).box;return !!(b&&((b.away||[]).length||(b.home||[]).length));}
+function boxSide(r){const b=gd(r).box||{};const s=S.boxSide;return (s==='away'||s==='home')&&(b[s]||[]).length?s:((b.away||[]).length?'away':'home');}
+function boxHtml(r){const b=gd(r).box||{},T=gTeams(r),c=tcols(r),side=boxSide(r);
+ const sw=`<div class="seg bxsw" data-k="boxsw" role="group" aria-label="Team">${['away','home'].map(s=>`<button type="button" class="${s===side?'on':''}" aria-pressed="${s===side}" data-side="${s}" onclick="boxPick('${s}')"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(T[s].abbr||tmName(T,s))}</button>`).join('')}</div>`;
+ const td=v=>`<td>${esc(v==null||v===''?'–':v)}</td>`;
+ const tables=(b[side]||[]).map(g=>`<h4 class="ghead">${esc(g.t)}</h4><div class="gtw"><table class="gstat"><thead><tr><th>Player</th>${(g.c||[]).map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>
+  ${(g.r||[]).map(p=>`<tr><td><div><span class="pn" title="${esc(p.n)}">${esc(p.n)}</span>${p.j?`<span class="jn">#${esc(p.j)}</span>`:''}</div></td>${(p.s||[]).map(td).join('')}</tr>`).join('')}
+  ${(g.tot||[]).some(v=>v)?`<tr class="tot"><td>Team</td>${g.tot.map(td).join('')}</tr>`:''}</tbody></table></div>`).join('');
+ return `<div class="gtabx box">${sw}${tables||'<p class="gempty">No stats for this team yet.</p>'}<p class="pnote">ESPN's box score. It updates as the game goes.</p></div>`;}
+function boxPick(s){if(s!=='away'&&s!=='home')return;S.boxSide=s;
+ const p=document.querySelector('#sheet .gpanel[data-tab=box]');if(!p||!S.gameR)return;p.innerHTML=boxHtml(S.gameR);segInd();gtabIn(p);}
+/* Team stats: head to head, the label in the middle, a share bar under each row. */
+function tsHas(r){const t=gd(r).tstats;return Array.isArray(t)&&t.length>0;}
+function tsHtml(r){const t=S.gameOpen,c=tcols(r);
+ const rows=gd(r).tstats.map(x=>`<div class="tsr"><div class="tsv"><b${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}</span><b${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates.</p></div>`;}
+/* Injury report: both teams, worst first, with ESPN's guess at a return date. */
+function injHas(r){const i=gd(r).inj;return !!(i&&(Array.isArray(i.away)||Array.isArray(i.home)));}
+function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
+function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
+ const sec=s=>{const L=Array.isArray(i[s])?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
+  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries listed.</p>'}</div>`;};
+ return `<div class="gtabx"><div class="injgrid">${sec('away')}${sec('home')}</div><p class="pnote">ESPN's injury report. Return dates are ESPN's estimate.</p></div>`;}
+/* Last 5 games: each team's five most recent finished games, newest first, and its record. */
+function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home));}
+function l5Html(r){const l=gd(r).last5||{},T=gTeams(r),c=tcols(r);
+ const sec=s=>{const x=l[s];const rec=(x&&x.rec)||T[s].record||'';const g=x&&Array.isArray(x.g)?x.g:[];
+  const body=!x?'<p class="gempty">Looking up recent results…</p>':x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
+   g.map(v=>`<div class="l5r"><span class="wl ${v.w==='W'?'w':v.w==='L'?'l':'t'}">${esc(v.w)}</span><span class="l5o"><span class="m">${esc(v.at)}</span> ${esc(v.opp)}</span><span class="l5s">${+v.me}–${+v.them}</span><span class="m l5d">${esc(gdate(v.d))}</span></div>`).join('');
+  const form=g.length?`<span class="form" aria-hidden="true">${g.slice().reverse().map(v=>`<i class="${v.w==='W'?'w':v.w==='L'?'l':''}"></i>`).join('')}</span>`:'';
+  return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}${rec?`&nbsp;<span class="m">(${esc(rec)})</span>`:''}${form}</h4>${body}</div>`;};
+ return `<div class="gtabx"><div class="l5grid">${sec('away')}${sec('home')}</div><p class="pnote">Scores show this team first. From ESPN's schedule.</p></div>`;}
+/* Season leaders: the top passer, rusher and receiver on each side, head to head, with a share bar. */
+function ldHas(r){const l=gd(r).leaders;return Array.isArray(l)&&l.length>0;}
+function ldHtml(r){const t=S.gameOpen,c=tcols(r);
+ const side=(x,s,k)=>x?`<div class="ldp ${s}"><b class="ldv" data-num="ld:${esc(t)}:${esc(k)}:${s}" data-v="${+x.v||0}" data-f="cint">${esc(Math.round(+x.v||0).toLocaleString('en-US'))}</b><div class="ldn">${x.n?esc(x.n):'—'}${x.j?`<span class="jn">#${esc(x.j)}</span>`:''}</div><div class="m ldl">${esc(x.line||'')}</div></div>`
+  :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
+ const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">Season totals from ESPN.</p></div>`;}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
