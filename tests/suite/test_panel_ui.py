@@ -71,9 +71,10 @@ with sync_playwright() as pw:
           S.pOff=new Set();S.panel=q;renderBuild();})()""" % P); time.sleep(.4)
         new_pg = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].map(e=>[e.dataset.pid,e.querySelector('.pk').innerText,[...e.querySelectorAll('.pg div')].map(d=>d.innerText)])")
         print(tag, "new drafts:", new_pg)
-        if len(new_pg) != 5 or any(not x[2] for x in new_pg): print("PROBLEMS: every panel card should name its game", new_pg)
+        if len(new_pg) != 5 or any(not x[2] for x in new_pg if x[0] != "combo:C"): print("PROBLEMS: every panel card should name its game", new_pg)
         byid = {x[0]: x for x in new_pg}
-        if byid["combo:C"][2] != ["Avalanche vs Sharks", "Golden Knights vs Kings"]: print("PROBLEMS: each leg of a combo should name its game", byid["combo:C"])
+        ctitle = pg.evaluate("document.querySelector('.pitem[data-pid=\"combo:C\"] .pm b').innerText")
+        if ctitle.split("\n") != ["Avalanche vs Sharks", "Golden Knights vs Kings"] or byid["combo:C"][2]: print("PROBLEMS: each leg of a combo should name its game once, in its title", ctitle, byid["combo:C"])
         if "NHL" not in byid["early:A"][1] or "CFB" not in byid["line:E"][1] or "SPREAD / TOTAL" not in byid["line:D"][1].upper(): print("PROBLEMS: league tag missing", [x[1] for x in new_pg])
         if byid["line:D"][2] != ["Boston Celtics at Los Angeles Lakers"]: print("PROBLEMS: a total should name its game", byid["line:D"])
         titles = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].map(e=>[e.dataset.pid,e.querySelector('.pm b').innerText])")

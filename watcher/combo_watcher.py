@@ -2877,7 +2877,7 @@ function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];cons
  const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':c.buy_at&&c.buy_at*1000>Date.now()?`<span class="tag">buys ${pTime(c.buy_at)}</span>`:`<span class="tag">${{paused:'Paused · not bought yet','no key':'Can\'t trade from here',price:'Waiting for a fresh price'}[c.hold]||'Buying now'}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
- const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.kind==='single'?' to win':''}`;
+ const title=c.kind==='combo'?(c.legs.every(l=>l.game)?c.legs.map(l=>esc(l.game)).join('<br>'):c.legs.map(l=>esc(short(l.pick))).join(' + ')):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.kind==='single'?' to win':''}`;
  const games=pGames(c);
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
  return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''}${c.league?' · '+esc(c.league):''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
@@ -2889,7 +2889,7 @@ function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];cons
    drafts have no game text, so fall back to what they do carry. */
 function pGames(c){const L=c.legs||[];
  if(c.kind==='line'){const m=/\((.*)\)$/.exec(L[0]&&L[0].pick||'');return [c.game||(L[0]&&L[0].game)||(m?m[1]:'')].filter(Boolean);}
- if(c.kind==='combo')return L.map(l=>l.game||'').filter(Boolean);
+ if(c.kind==='combo')return [];   // its title already lists each leg's game
  return [c.game||(L[0]&&L[0].game)||(c.opp&&L[0]?short(L[0].pick)+' vs '+short(c.opp):'')].filter(Boolean);}
 function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
 /* A tiny line on each panel card: the bet's Kalshi price (a combo's share of fair) over the times this phone has seen
@@ -3034,11 +3034,12 @@ async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t
  S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');S.ccJust=i;renderBuild();S.ccJust=null;}
 /* A bet's leg, Kalshi-style: sport icon, the pick in bold, then who it plays, the league and when, with the price on the right
    (and the live score when the game is under way). Display only: it reads the Build board the page already has. */
-function gameOf(l){const ev=l.event||String(l.ticker||'').replace(/-[^-]*$/,'');return (S.build&&S.build.board||[]).find(x=>x.event===ev);}
+function gameOf(l){const ev=l.event||String(l.ticker||'').replace(/-[^-]*$/,'');const b=S.build&&S.build.board;if(!b)return undefined;
+ if(!S._gm||S._gm.b!==b){S._gm={b,m:new Map(b.map(x=>[x.event,x]))};}return S._gm.m.get(ev);}
 function legWhere(l){const g=gameOf(l)||{};const opp=(g.sides||[]).find(s=>!s.tie&&s.ticker!==l.ticker);return {g,opp,sp:g.sport||''};}
 function legRow(l,o){o=o||{};const {g,opp,sp}=legWhere(l);const meta=[opp?'vs '+opp.pick:'',SPN[sp]||'',g.started?'':(g.label||'')].filter(Boolean).join(' · ');
  const live=g.started?(legLive(l)||'<span class="legsc even">● Live</span>'):'';
- return `<div class="lrow${o.flip?' flip':''}"${o.flip?` onclick="flipLeg(${o.i},'${l.ticker}')" title="Tap to flip to the other team"`:''}><span class="li">${ICON[sp]||''}</span><div class="lm"><b>${esc(l.pick)}</b><small>${esc(meta)}</small>${live}</div><span class="lp">${l.fair!=null?pct(l.fair):''}${o.flip?'<i>⇄</i>':''}</span></div>`;}
+ return `<div class="lrow${o.flip?' flip':''}"${o.flip?` onclick="flipLeg(${o.i},'${l.ticker}')" title="Tap to flip to the other team"`:''}>${ICON[sp]?`<span class="li">${ICON[sp]}</span>`:''}<div class="lm"><b>${esc(l.pick)}</b><small>${esc(meta)}</small>${live}</div><span class="lp">${l.fair!=null?pct(l.fair):''}${o.flip?'<i>⇄</i>':''}</span></div>`;}
 function legSummary(ls){return (ls||[]).map(l=>{const {opp,sp}=legWhere(l);return `${ICON[sp]||''} ${l.pick}${opp?' vs '+opp.pick:''}`.trim();}).join(' · ');}
 function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
  const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}

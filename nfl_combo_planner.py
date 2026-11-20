@@ -11058,10 +11058,16 @@ def _size(c, base):
 PRO_SHORT = ("nfl", "nba", "nhl", "ahl")        # pro teams read fine by last word ("Flyers"); college and the rest keep full names
 
 
+MULTI_NICK = ("Maple Leafs", "Red Wings", "Blue Jackets", "Golden Knights", "Silver Knights", "Trail Blazers", "Wolf Pack",
+              "Hockey Club", "Black Hawks", "Blue Devils")      # nicknames of two words: 'Leafs' or 'Club' alone would mislead
+
+
 def team_short(code, name):
     """A team the way the panel names it: 'Flyers' for pro leagues, the full name elsewhere ('Temple Owls')."""
     name = str(name or "").strip()
-    return name.split()[-1] if code in PRO_SHORT and name else name
+    if code not in PRO_SHORT or not name:
+        return name
+    return next((n for n in MULTI_NICK if name.endswith(n)), name.split()[-1])
 
 
 def stamp_games(code, games):
@@ -11073,11 +11079,17 @@ def stamp_games(code, games):
         if len(two) != 2:
             continue
         for x, y in ((two[0], two[1]), (two[1], two[0])):
+            x["me"] = team_short(code, x.get("pick"))
             x["vs"] = team_short(code, y.get("pick"))
-            x["game"] = f"{team_short(code, x.get('pick'))} vs {x['vs']}"
+            x["game"] = f"{x['me']} vs {x['vs']}"
 
 
-def league_tag(code):
+def league_tag(code, ticker=""):
+    """The league's short name; a soccer bet says which league ('Premier League'), not just 'Soccer'."""
+    if code == "soccer" and ticker:
+        k = league_key(ticker)
+        if k in LEAGUE_NAME:
+            return LEAGUE_NAME[k]
     return str((LEAGUES.get(code) or SPORTS.get(code) or {}).get("short") or (SPORTS.get(code) or {}).get("name") or "")
 
 
@@ -11088,7 +11100,7 @@ def leg_text(l, kind="combo"):
         base = re.sub(r" \(.*\)$", "", pick)
         return f"{base} ({l['game']})" if l.get("game") else pick
     if l.get("vs"):
-        return f"{pick} to beat {l['vs']}"
+        return f"{l.get('me') or pick} to beat {l['vs']}"
     return pick
 
 
@@ -11109,8 +11121,8 @@ def _cand(kind, code, legs, chance, ret, why, **extra):
     pre = [k for k in (_kick_ts(l) for l in legs if not l.get("live")) if k]
     out = dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
-                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs")} for l in legs],
-                "league": league_tag(code),
+                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs", "me")} for l in legs],
+                "league": league_tag(code, legs[0]["ticker"] if legs else ""),
                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
     if len(legs) == 1 and not out.get("game"):

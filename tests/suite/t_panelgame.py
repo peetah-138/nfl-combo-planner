@@ -31,6 +31,11 @@ sg = {"E3": [{"ticker": "E3-ARS", "event": "E3", "pick": "Arsenal", "p": .4, "fa
 E.stamp_games("soccer", sg)
 ok("soccer: the draw is not a team", sg["E3"][0]["game"] == "Arsenal vs Chelsea" and "game" not in sg["E3"][1])
 ok("league tags are plain", E.league_tag("nhl") == "NHL" and E.league_tag("ncaaf") == "CFB" and E.league_tag("soccer") == "Soccer")
+ok("two-word nicknames stay whole ('Maple Leafs', 'Wolf Pack', 'Utah Hockey Club')",
+   E.team_short("nhl", "Toronto Maple Leafs") == "Maple Leafs" and E.team_short("ahl", "Hartford Wolf Pack") == "Wolf Pack"
+   and E.team_short("nhl", "Utah Hockey Club") == "Hockey Club" and E.team_short("nba", "Portland Trail Blazers") == "Trail Blazers")
+ok("a soccer bet names its league, not just 'Soccer'", E.league_tag("soccer", "KXEPLGAME-26NOV19ARSCHE-ARS") == "Premier League"
+   and E.league_tag("soccer", "KXLIGAMXGAME-26NOV19AAABBB-AAA") == "Liga MX" and E.league_tag("nhl", "KXNHLGAME-X-Y") == "NHL")
 ok("pro teams are short, others full", E.team_short("nhl", "Philadelphia Flyers") == "Flyers" and E.team_short("ncaamb", "Temple Owls") == "Temple Owls")
 
 # ---- candidates: every kind names its game, and the league
@@ -39,6 +44,8 @@ early = E._cand("early", "nhl", [a], .8, .1, "w", price=.4, exit=.6, opp="Boston
 combo = E._cand("combo", "nhl", [a, dict(cg["E2"][0], ticker="X-9")], .3, .1, "w", pct=1.0, fair_mult=3.0)
 ok("a single names its game and league", single["game"] == "Flyers vs Bruins" and single["league"] == "NHL")
 ok("a sell-early favorite names its game and league", early["game"] == "Flyers vs Bruins" and early["league"] == "NHL")
+ok("a soccer single is tagged with its league", E._cand("single", "soccer", [{"ticker": "KXEPLGAME-26NOV19ARSCHE-ARS", "event": "KXEPLGAME-26NOV19ARSCHE", "pick": "Arsenal", "p": .4, "fair": .5, "game": "Arsenal vs Chelsea", "vs": "Chelsea", "me": "Arsenal"}],
+   .5, .1, "w", price=.4)["league"] == "Premier League")
 ok("each leg of a combo names its game", [l["game"] for l in combo["legs"]] == ["Flyers vs Bruins", "Temple Owls vs Tulane Green Wave"])
 ok("nothing about ids, prices or kickoffs changed", single["id"] == "single:E1-PHI" and single["price"] == .4 and combo["id"].startswith("combo:"))
 
@@ -68,7 +75,7 @@ ok("a line without a game still gets an empty one, never an error",
    E._cand("line", "nhl", [{"ticker": "Z", "event": "Z", "pick": "Over 5.5"}], .5, .1, "w", price=.4)["game"] == "")
 
 # ---- notifications and the recap say which game
-ok("single, in words", E.bet_text(single) == "Philadelphia Flyers to beat Bruins")
+ok("single, in words", E.bet_text(single) == "Flyers to beat Bruins")
 ok("spread, in words", E.bet_text(sp) == f"{lc['spread']['pick']} ({G})")
 ok("total, in words", E.bet_text(tt).startswith("Over 140.5") and E.bet_text(tt).endswith(f"({G})") and E.bet_text(tt).count("(") == 1)
 ok("combo, every leg named", E.bet_text(combo).count(" + ") == 1 and "to beat Bruins" in E.bet_text(combo))
@@ -88,7 +95,7 @@ ok("the saved draft still has the game and league", back["items"][0]["game"] == 
 E.PANEL_POOL.clear(); E.PANEL_POOL["nhl"] = (time.time(), [single])
 okA, msg = E.panel_approve(None, "all", at=back["at"])
 out = E.panel_exec()
-ok("the 'bought' notification names the game", okA and any("Panel bought" in x and "Philadelphia Flyers to beat Bruins" in x for x in out))
+ok("the 'bought' notification names the game", okA and any("Panel bought" in x and "Flyers to beat Bruins" in x and "Philadelphia" not in x for x in out))
 
 # ---- panel_collect itself stamps the games (singles, sell-early favorites, combo legs), with the real chooser
 E.load_book_state = lambda snap: {}
@@ -117,4 +124,4 @@ ok("panel_collect made singles, sell-early and combo candidates", {"single", "ea
 ok("every collected single/early names its game and league", all(c["game"] and c["league"] == "NHL" for c in cands if c["kind"] in ("single", "early")))
 ok("...the sell-early favorite reads from its own side", kinds["early"]["game"] == "Sharks vs Avalanche")
 ok("every leg of every collected combo names its game", all(l.get("game") for c in cands if c["kind"] == "combo" for l in c["legs"]))
-ok("...as 'pick vs opponent'", [l["game"] for l in kinds["combo"]["legs"]] == ["Flyers vs Bruins", "Knights vs Kings"])
+ok("...as 'pick vs opponent'", [l["game"] for l in kinds["combo"]["legs"]] == ["Flyers vs Bruins", "Golden Knights vs Kings"])
