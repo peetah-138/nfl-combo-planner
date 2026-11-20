@@ -376,6 +376,22 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   down by itself, only for NBA/college basketball/NHL/AHL, and only once two polls showed it running (a clock that
   hasn't moved for 25 s is treated as stopped); football and soccer show the last value. Tests: `t_hubcache.py`,
   `test_livefresh.py`.
+- **Live football game page (GitHub #72, display only).** On a live NFL/college-football game sheet the engine's
+  `game_detail` (one ESPN summary fetch, cached 6 s; `_parse_game_detail`, `_situation_info`) feeds `api_game`'s `detail`
+  block: the field strip (`fieldStrip`: ball, first-down line, red zone, possession arrow; everything inside `.grass` is
+  positioned in % of the grass box = yards from the left goal line), the situation line, the last play and the scoreboard's
+  timeout dots and possession ball. Slice 2 adds `detail.pbp` (`_parse_pbp`/`_pbp_play`: ESPN `drives.previous[]` + `current`,
+  at most `PBP_MAX_PLAYS` newest plays, short keys) and a generic **game-page tab framework** in the SPA (`GAME_TABS`: a per-sport
+  list of `{k, l, has(r), html(r, ov)}`; football = Overview + Play-by-play; a sport with no spec, or a tab whose data is missing,
+  shows no tab row and the page is as before; the chosen tab, stepped play and collapsed sections live in `S.gtab`/`S.pbpStep`/
+  `S.pbpOpen` and survive the 2 s redraws). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
+  the ball as it stood after that play, from the play's `yardsToEndzone` and the team whose end zone it is), Back to live,
+  collapsible quarters and drives, and tinted scoring/turnover plays, newest first. Stepping (and a new live play) plays a small
+  illustration (pass arc, run trail, sack, kick, flag, touchdown, turnover) driven only by play type and yardage: **illustrations
+  only, there is no player tracking** (the tab says so); `prefers-reduced-motion` turns the motion off, the text and ball spot still
+  update. **Isolation:** none of this is read by any buy/sell/panel path or takes the tap lock; a bad or missing feed hides the
+  tab and is logged once per game (`klive_log_once("gamedetail", ...)`). Tests: `t_gamedetail`, `test_fieldstrip`,
+  `test_gamedetail_api`, `test_pbptabs` (fixture `espn_game_detail.json`). Box score, team stats, injuries etc. are slice 3.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

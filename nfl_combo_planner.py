@@ -5513,17 +5513,20 @@ def game_detail(event_id, code, max_age=6):
         url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
         r = requests.get(url, params={"event": str(event_id)}, timeout=10)
         data = r.json() if r.ok else {}
-        out = _parse_game_detail(data) if data else {}
+        out = _parse_game_detail(data, event_id) if data else {}
     except (requests.RequestException, ValueError, TypeError, AttributeError) as err:
         # Keep serving the last good copy, but log it once per game (like kalshi_score/display_score) so a
         # persistent feed break is visible instead of silently falling back forever.
         klive_log_once("gamedetail", event_id, err)
         out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
-    GAME_DETAIL[event_id] = (time.time(), out)
+    now = time.time()
+    for k in [k for k, v in GAME_DETAIL.items() if now - v[0] > GAME_DETAIL_KEEP]:
+        del GAME_DETAIL[k]                                  # forget games nobody has opened for an hour, so the cache stays small
+    GAME_DETAIL[event_id] = (now, out)
     return out
 
 
-def _parse_game_detail(data):
+def _parse_game_detail(data, event_id=None):
     """Pull the slice-1 fields out of an ESPN football summary. Every step is defensive: a malformed feed
     yields {} (or drops just the missing piece), never an exception, so the trading loop is never touched."""
     try:
@@ -5562,18 +5565,29 @@ def _parse_game_detail(data):
                 break
         out = {"board": board}
         # current drive: team on offense + ball/first-down spots (yardsToEndzone so the strip can place the ball)
-        cur = ((data.get("drives") or {}).get("current") or {})
-        if cur:
-            dteam = (cur.get("team") or {})
-            plays = cur.get("plays") or []
-            last = plays[-1] if plays else {}
-            start, end = (last.get("start") or {}), (last.get("end") or {})
+        drives = data.get("drives")
+        drives = drives if isinstance(drives, dict) else {}         # an odd drives block drops only the drive/pbp pieces, not the board
+        cur = drives.get("current") or {}
+        if cur and isinstance(cur, dict):
+            dteam = _dic(cur.get("team"))
+            plays = cur.get("plays") if isinstance(cur.get("plays"), list) else []
+            last = _dic(plays[-1]) if plays else {}
+            start, end = _dic(last.get("start")), _dic(last.get("end"))
             out["drive"] = {"teamId": str(dteam.get("id") or ""), "teamAbbr": dteam.get("abbreviation") or "",
                             "ballYardsToEndzone": end.get("yardsToEndzone") if end.get("yardsToEndzone") is not None
                             else start.get("yardsToEndzone"),
                             "ballYardLine": end.get("yardLine") if end.get("yardLine") is not None
                             else start.get("yardLine"),
                             "downDistanceText": (end.get("downDistanceText") or start.get("downDistanceText") or "")}
+        # Slice 2: the play-by-play (drives + plays) off the same summary, so there is no second ESPN fetch. Shaped by its
+        # own helper, which never raises on odd data; this narrow guard is only a backstop, and a failure just drops the tab.
+        try:
+            pbp = _parse_pbp(drives, {t["id"]: side for side, t in teams.items() if t.get("id")})
+        except (AttributeError, TypeError, ValueError) as err:
+            klive_log_once("gamedetail", event_id or "pbp", err)
+            pbp = None
+        if pbp:
+            out["pbp"] = pbp
         return out
     except (AttributeError, TypeError, ValueError):
         # The explicit guards above (len==2, "home"/"away" present, plays[-1] only when non-empty) make KeyError
@@ -5582,10 +5596,121 @@ def _parse_game_detail(data):
 
 
 def _to_int(v):
+    """An int from a feed value, or None. 1e999, Infinity and a 400-digit integer overflow float()/int(): that is None too,
+    never an exception (an uncaught OverflowError would take the whole game page down and refetch ESPN every poll)."""
     try:
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, ArithmeticError):
         return None
+
+
+PBP_MAX_PLAYS = 220       # most plays sent to the page (a full NFL game is about 160; the cap keeps a wild one light)
+PBP_TEXT_MAX = 300
+PBP_ID_MAX = 24           # feed ids are short numbers; cap them so a wild one cannot bloat the payload
+PBP_RAW_DRIVES = 60       # raw drives/plays looked at at all, newest kept (a game has ~25 drives): bounds the work before shaping
+PBP_RAW_PLAYS = 400
+GAME_DETAIL_KEEP = 3600   # seconds a game's cached detail is kept after it was last fetched
+# A play whose end spot is on the OTHER team's side of the ball: with no team id on it the drive's team is the wrong guess.
+PBP_FLIP = ("punt", "kickoff", "free kick", "onside")
+# Plays that carry no ball movement (ESPN gives them a bogus yard line): stepping leaves the ball where it was.
+PBP_ADMIN = ("timeout", "two-minute", "end period", "end of half", "end of game", "end of regulation", "coin toss")
+
+
+def _dic(v):
+    """v if it is a dict, else an empty one: feed fields are untrusted, so every nested read goes through this."""
+    return v if isinstance(v, dict) else {}
+
+
+def _ytz(spot):
+    """A yards-to-end-zone value from an ESPN play start/end block, or None when it is missing or not 0..100."""
+    v = _to_int(spot.get("yardsToEndzone")) if isinstance(spot, dict) else None
+    return v if v is not None and 0 <= v <= 100 else None
+
+
+def _pbp_play(p, side_of, drive_side, drive_q):
+    """One ESPN play shaped for the play-by-play tab (short keys, it is sent to the page every poll). None for junk.
+    a/b = the ball's yards to the end zone it is attacking before/after, as/bs = the side ('home'/'away') whose end
+    zone that is (a turnover or punt changes it), sc = scoring play, to = turnover, pen = penalty."""
+    if not isinstance(p, dict):
+        return None
+    typ = str(_dic(p.get("type")).get("text") or "")
+    low = typ.lower()
+    start, end = _dic(p.get("start")), _dic(p.get("end"))
+    admin = any(k in low for k in PBP_ADMIN)
+    a, b = (None, None) if admin else (_ytz(start), _ytz(end))
+    if a is None or b is None:
+        a = b = None                          # half a move would draw a ball jumping from nowhere: show none
+    sdown = _to_int(start.get("down"))
+    to = p.get("isTurnover")
+    if to is None:                            # the flag is missing on some plays: an interception, or a fumble the other side recovers
+        to = "interception" in low or "(opponent)" in low
+    a_side = side_of.get(str(_dic(start.get("team")).get("id") or ""), drive_side)
+    b_side = side_of.get(str(_dic(end.get("team")).get("id") or ""))
+    if b_side is None:                        # no team id on the end spot: the drive's team is right only if the ball did not change hands
+        b_side = "" if (to or any(k in low for k in PBP_FLIP)) else drive_side
+    if a is not None and (a_side not in ("home", "away") or b_side not in ("home", "away")):
+        a = b = None                          # whose end zone is unknown: show the text, never a ball guessed onto the wrong end
+    return {"id": str(p.get("id") or "")[:PBP_ID_MAX], "q": _to_int(_dic(p.get("period")).get("number")) or drive_q,
+            "clk": str(_dic(p.get("clock")).get("displayValue") or "")[:8],
+            "dn": str(start.get("shortDownDistanceText") or "")[:20] if sdown is not None and sdown >= 1 else "",
+            "txt": str(p.get("text") or "").strip()[:PBP_TEXT_MAX], "ty": typ[:40],
+            "yd": _to_int(p.get("statYardage")),
+            "a": a, "as": a_side if a is not None else None,
+            "b": b, "bs": b_side if b is not None else None,
+            "ep": str(end.get("possessionText") or "")[:20] if b is not None else "",
+            "edd": str(end.get("downDistanceText") or "")[:30] if b is not None else "",
+            "ed": _to_int(end.get("distance")) if b is not None else None,
+            "sc": bool(p.get("scoringPlay")), "to": bool(to), "pen": bool(p.get("isPenalty"))}
+
+
+def _parse_pbp(drives, side_of):
+    """The ESPN summary's drives (previous[] then current) as {drives: [...], n, cut} for the play-by-play tab, or None when
+    there is nothing to show (the tab is then hidden). Display only; never raises on odd data: every level is type-checked,
+    so a bad drive or play is skipped, not fatal. At most PBP_MAX_PLAYS plays go out: the oldest whole drives are dropped
+    first (`cut` counts the plays left off)."""
+    if not isinstance(drives, dict):
+        return None
+    prev = drives.get("previous")
+    # Bound the work BEFORE shaping anything: only the newest PBP_RAW_DRIVES drives and, in each, the newest PBP_RAW_PLAYS plays
+    # are looked at (a real game is ~25 drives and ~160 plays), so a wild feed costs a bounded amount however big it is.
+    raw = [d for d in (prev[-PBP_RAW_DRIVES:] if isinstance(prev, list) else []) if isinstance(d, dict)]
+    cur = drives.get("current")
+    if isinstance(cur, dict) and cur.get("plays") and str(cur.get("id") or "")[:PBP_ID_MAX] not in {str(d.get("id") or "")[:PBP_ID_MAX] for d in raw}:
+        raw.append(dict(cur, _cur=True))
+        raw = raw[-PBP_RAW_DRIVES:]
+    kept, total, size, full = [], 0, 0, False        # kept is newest first; once a drive does not fit, older ones only get counted
+    for d in reversed(raw):
+        pl = d.get("plays") if isinstance(d.get("plays"), list) else []
+        plays_raw = [p for p in pl[-PBP_RAW_PLAYS:] if isinstance(p, dict)]
+        if not plays_raw:
+            continue
+        total += len(plays_raw)
+        if full or (kept and size + len(plays_raw) > PBP_MAX_PLAYS):
+            full = True                              # same as dropping the oldest whole drives until the rest fit
+            continue
+        tm = _dic(d.get("team"))
+        side = side_of.get(str(tm.get("id") or ""), "")
+        q = _to_int(_dic(_dic(d.get("start")).get("period")).get("number")) or _to_int(
+            _dic(plays_raw[0].get("period")).get("number")) or 1
+        plays = [x for x in (_pbp_play(p, side_of, side, q) for p in plays_raw) if x]
+        n = _to_int(d.get("offensivePlays"))
+        n = n if n is not None else len(plays)
+        yds = _to_int(d.get("yards")) or 0
+        res = str(d.get("displayResult") or d.get("result") or "")[:30]
+        resk = str(d.get("result") or "").upper()
+        kept.append({"id": str(d.get("id") or "")[:PBP_ID_MAX], "team": str(tm.get("abbreviation") or "")[:5], "side": side, "q": q,
+                     "res": res, "sum": "%d play%s, %d yard%s" % (n, "" if n == 1 else "s", yds, "" if abs(yds) == 1 else "s"),
+                     "sc": bool(d.get("isScore")),
+                     "to": any(k in resk for k in ("INT", "FUM", "DOWNS")) or any(x["to"] for x in plays),
+                     "cur": bool(d.get("_cur")), "plays": plays})
+        size += len(plays)
+    if not kept:
+        return None
+    keep = kept[::-1]
+    if len(keep[-1]["plays"]) > PBP_MAX_PLAYS:
+        keep[-1] = dict(keep[-1], plays=keep[-1]["plays"][-PBP_MAX_PLAYS:])
+    sent = sum(len(d["plays"]) for d in keep)
+    return {"drives": keep, "n": total, "cut": total - sent}
 
 
 def fetch_scores(max_age=None, code=None):

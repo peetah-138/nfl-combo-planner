@@ -2181,6 +2181,47 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .lastplay .lpt{font-weight:800;color:var(--ink);text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;white-space:nowrap}
 .tdots{display:flex;gap:3px;justify-content:center;margin-top:4px}.tdots i{width:7px;height:4px;border-radius:2px;background:var(--line)}.tdots i.on{background:var(--sub)}
 .poss{color:var(--live);font-size:11px;margin-left:4px}
+/* game page tabs (a horizontally scrolling row with a sliding underline) and the play-by-play tab */
+.gtabs{position:relative;display:flex;gap:2px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;border-bottom:1px solid var(--line);margin:2px 0 14px}
+.gtabs::-webkit-scrollbar{display:none}
+.gtab{flex:0 0 auto;border:0;background:none;color:var(--sub);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;padding:11px 14px;white-space:nowrap;scroll-snap-align:center}
+.gtab.on{color:var(--ink)}
+.gtabind{position:absolute;bottom:0;left:0;width:0;height:3px;border-radius:3px 3px 0 0;background:var(--acc);transition:left .28s var(--spring),width .28s var(--spring);pointer-events:none}
+.gpanel[hidden]{display:none}
+.pcard{background:var(--panel2);border-radius:14px;padding:12px;margin-bottom:6px}
+.pcard.sc{background:var(--yesbg)}.pcard.to{background:var(--nobg)}
+.pch{display:flex;align-items:center;gap:8px}.pcm{flex:1;min-width:0;text-align:center}
+.pct{font-weight:800;font-size:15px;overflow-wrap:anywhere}.pcs{font-size:12px;color:var(--sub);margin-top:2px}
+.pstep{flex:0 0 38px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:20px;line-height:1;display:grid;place-items:center;padding:0}
+.pstep:disabled{opacity:.35}
+.pctx{margin-top:10px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}
+.pcf{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--sub)}
+.plive{border:0;border-radius:99px;background:var(--live);color:#1a1100;font-weight:800;font-size:12px;padding:6px 12px}.plive[hidden]{display:none}
+.pnote{font-size:11.5px;color:var(--mute);margin:2px 2px 12px}
+.pq{width:100%;display:flex;align-items:center;justify-content:space-between;border:0;background:none;color:var(--ink);font-weight:800;font-size:15px;padding:12px 2px;border-top:1px solid var(--line)}
+.pdr{width:100%;display:flex;align-items:center;gap:8px;border:0;background:var(--panel2);border-radius:10px;padding:9px 10px;margin:6px 0 4px;color:var(--ink);text-align:left;font-size:13px;min-width:0}
+.pdr .pres{font-weight:800}.pdr .psum{margin-left:auto;font-size:12px;white-space:nowrap}
+.pdr.sc .pres{color:var(--yes)}.pdr.to .pres{color:var(--no)}
+.pdot{width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 1.5px var(--line);flex:0 0 auto}
+.chev{flex:0 0 auto;transition:transform .2s var(--ease)}[aria-expanded=false]>.chev{transform:rotate(-90deg)}
+.pp{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;padding:9px 8px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
+.pp:last-child{border-bottom:0}.pp.sc{background:var(--yesbg)}.pp.to{background:var(--nobg)}.pp.cur{box-shadow:inset 3px 0 0 var(--acc)}
+.ppm b{display:block;font-size:12.5px}.ppm .m{font-size:11.5px}.ppt{overflow-wrap:anywhere;line-height:1.4}
+.situ .rzt.rpl{background:var(--acc)}
+/* play illustrations on the field strip (illustrative only; .noanim / reduced motion turns them all off) */
+.fld .grass .fproj{position:absolute;top:50%;width:11px;height:11px;margin:-5px 0 0 -5px;z-index:6;transition:left var(--dur,600ms) linear}
+.fproj b{display:block;width:100%;height:100%;border-radius:50%;background:#8a4b1e;box-shadow:0 0 0 1.5px #fff;animation:arcY var(--dur,600ms) both}
+@keyframes arcY{0%{transform:translateY(0);animation-timing-function:ease-out}50%{transform:translateY(calc(var(--ah,20px)*-1));animation-timing-function:ease-in}100%{transform:translateY(0)}}
+.fld .grass .ftrail{position:absolute;top:50%;height:5px;margin-top:-2px;border-radius:3px;background:rgba(255,255,255,.8);z-index:3;animation:trailIn .9s ease-out both}
+.fld .grass .ftrail.red{background:rgba(255,80,80,.9)}
+@keyframes trailIn{0%{transform:scaleX(0);opacity:.95}55%{transform:scaleX(1);opacity:.95}100%{transform:scaleX(1);opacity:0}}
+.fld .grass .fflag{position:absolute;top:8px;margin-left:-9px;font-size:18px;z-index:7;transform-origin:bottom center;animation:flagPop 1.4s ease-out both}
+@keyframes flagPop{0%{transform:scale(0) rotate(-30deg);opacity:0}25%{transform:scale(1.3) rotate(8deg);opacity:1}40%{transform:scale(1) rotate(0)}85%{opacity:1}100%{opacity:0}}
+.fld .grass .ftag{position:absolute;left:50%;top:6px;transform:translateX(-50%);z-index:8;padding:2px 9px;border-radius:99px;background:rgba(0,0,0,.7);color:#fff;font-weight:800;font-size:11px;letter-spacing:.06em;white-space:nowrap;animation:tagPop 1.3s ease-out both}
+.fld .grass .ftag.good{background:var(--yes)}.fld .grass .ftag.bad{background:var(--no)}
+@keyframes tagPop{0%{opacity:0;transform:translateX(-50%) scale(.6)}20%{opacity:1;transform:translateX(-50%) scale(1.12)}35%{transform:translateX(-50%) scale(1)}85%{opacity:1}100%{opacity:0}}
+.fld .ez.tdflash{animation:tdf .55s ease-in-out 2}@keyframes tdf{0%,100%{filter:none}50%{filter:brightness(2.1) saturate(1.5)}}
+.fld .fball.turn ellipse{animation:turnf .5s ease-in-out 3}@keyframes turnf{0%,100%{fill:#8a4b1e}50%{fill:#ff3b4a}}
 /* settings */
 .set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
 .sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
@@ -2582,8 +2623,10 @@ function pushFill(h,title,sk){const sh=$('#sheet');const first=sh.dataset.sk==='
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
 (()=>{const sh=$('#sheet');let x0=null,y0=null,dx=0,dy=0,ax=null,past=false;
  const cross=v=>{if(v!==past){past=v;hap(v?'light':'selection');}};
+ /* a swipe that starts on the game tab row (or any sideways-scrolling strip) belongs to that strip, never to swipe-back */
+ const hscroll=el=>{for(;el&&el!==sh&&el.nodeType===1;el=el.parentElement){if(el.classList.contains('gtabs'))return true;const o=getComputedStyle(el).overflowX;if((o==='auto'||o==='scroll')&&el.scrollWidth>el.clientWidth)return true;}return false;};
  sh.addEventListener('touchstart',e=>{const t=e.touches[0];dx=dy=0;ax=null;past=false;
-  if($('#modal').classList.contains('push')){x0=t.clientX;y0=t.clientY;return;}x0=null;
+  if($('#modal').classList.contains('push')){if(hscroll(e.target)){x0=y0=null;return;}x0=t.clientX;y0=t.clientY;return;}x0=null;
   if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=t.clientY;},{passive:true});
  sh.addEventListener('touchmove',e=>{const t=e.touches[0];
   if(x0!=null){const mx=t.clientX-x0,my=t.clientY-y0;if(ax==null&&(Math.abs(mx)>8||Math.abs(my)>8))ax=mx>0&&Math.abs(mx)>Math.abs(my)*1.2?'x':'y';
@@ -2602,7 +2645,7 @@ function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
  addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
-  hap(el.matches('.tabbar button,.nav button,.seg button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
+  hap(el.matches('.tabbar button,.nav button,.seg button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
@@ -3634,7 +3677,7 @@ function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.
   +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
   +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;pushOpen('Game');await drawGame();}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
 // The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
 // live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
 // down between updates while it is running. Only the first draw waits for the slide-in to finish.
@@ -3655,16 +3698,11 @@ function clkNote(t,l){S.clk=S.clk||{};const sc=l.sc,m=sc&&l.state==='live'&&CLK_
  S.clk[t]={lab,srv:secs,secs,recv:now,run:!!(p&&p.lab===lab&&secs<p.srv)};}
 function clkTick(){document.querySelectorAll('[data-clk]').forEach(e=>{const c=(S.clk||{})[e.dataset.clk];if(!c)return;const v=c.run?Math.max(0,c.secs-Math.floor((Date.now()-c.recv)/1000)):c.secs;
  const t=c.lab+' '+Math.floor(v/60)+':'+String(v%60).padStart(2,'0');if(e.textContent!==t)e.textContent=t;});}
-function paintGame(r){const t=S.gameOpen;
+function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelector('#sheet .gtabs');if(gb)S.gtabScroll=gb.scrollLeft;}
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
  const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
  const plays=st.plays.slice().reverse();
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
-   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
-   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
-  ${fieldStrip(r.detail,l)}
-  <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
+ const ov=`<div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
@@ -3672,7 +3710,13 @@ function paintGame(r){const t=S.gameOpen;
    ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
-  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);}
+  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;
+ pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
+   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
+   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
+  ${fieldStrip(gameStepDetail(r),l)}
+  ${gameTabsHtml(r,ov)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
 /* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
    two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
    arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
@@ -3690,19 +3734,21 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
  const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
  const haveBall=ytz!=null;
- // Field goes 0..100 left→right in the 100-yard playing area, inset inside two end zones (each 1/12 of the width).
+ // Field goes 0..100 left→right in the 100-yard playing area. Everything inside .grass (ball, arrow, ticks, first-down line,
+ // red zone) is positioned in % of the GRASS box, which already sits between the two end zones, so a spot at N yards from the
+ // left goal line is simply left:N%. The ruler lives in .fld (the whole strip), so it keeps its own end-zone inset below.
  const EZ=100/12,play=100-2*EZ;
  // Line of scrimmage as a % of the whole strip. For the away offence (driving right) distance from left goal = 100-ytz.
  let losYd=homeHas?ytz:(100-ytz);                 // yards from the LEFT goal line (0..100)
- let losPct=haveBall?EZ+losYd/100*play:50;
+ let losPct=haveBall?Math.max(0,Math.min(100,losYd)):50;
  // First-down line: `distance` yards further toward the offence's target end zone.
  const dist=(sit.distance!=null)?sit.distance:null;
  let fdYd=dist!=null?(homeHas?losYd-dist:losYd+dist):null;
- let fdPct=fdYd!=null?EZ+Math.max(0,Math.min(100,fdYd))/100*play:null;
+ let fdPct=fdYd!=null?Math.max(0,Math.min(100,fdYd)):null;
  const rz=!!sit.isRedZone;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  const rulerN=['G','10','20','30','40','50','40','30','20','10','G'];
  const ruler=rulerN.map((n,i)=>`<span style="left:${(EZ+i*play/10).toFixed(2)}%">${n}</span>`).join('');
- const ticks=Array.from({length:11},(_,i)=>`<i style="left:${(EZ+i*play/10).toFixed(2)}%"></i>`).join('');
+ const ticks=Array.from({length:11},(_,i)=>`<i style="left:${i*10}%"></i>`).join('');
  // The ball marker + possession arrow point the direction of the drive.
  const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
  const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
@@ -3711,7 +3757,7 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
  // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
  // right end zone (away attacking) covers 80..100.
- const rzShade=rz?`<i class="frz" style="left:${(dir>0?EZ+80/100*play:EZ).toFixed(2)}%;width:${(20/100*play).toFixed(2)}%"></i>`:'';
+ const rzShade=rz?`<i class="frz" style="left:${dir>0?80:0}%;width:20%"></i>`:'';
  // The situation line: down & distance, ball spot, who has it; and the last play + its type.
  const dd=sit.downDistanceText||dr.downDistanceText||'';
  const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
@@ -3724,8 +3770,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
    <div class="grass">${ticks}${rzShade}${fdLine}${ball}</div>
    <div class="ruler">${ruler}</div>
   </div>
-  ${haveBall||dd?`<div class="situ"><span class="dd">${esc(dd||(sit.down?ordinal(sit.down)+' & '+(sit.distance??''):''))||'Live'}</span>
-   ${spot?`<span class="m">· ball on ${esc(spot)}</span>`:''}${offName?`<span class="m">· ${esc(offName)} ball</span>`:''}${rz?'<span class="rzt">RED ZONE</span>':''}</div>`:''}
+  ${haveBall||dd?`<div class="situ"><span class="dd">${esc(dd||(sit.down?ordinal(sit.down)+' & '+(sit.distance??''):''))||(sit.replay?'Replay':'Live')}</span>
+   ${spot?`<span class="m">· ball on ${esc(spot)}</span>`:''}${offName?`<span class="m">· ${esc(offName)} ball</span>`:''}${rz?'<span class="rzt">RED ZONE</span>':''}${sit.replay?'<span class="rzt rpl">REPLAY</span>':''}</div>`:''}
   ${lastPlay?`<div class="lastplay">${lastType?`<span class="lpt">${esc(lastType)}</span>`:''}<span>${esc(lastPlay)}</span></div>`:''}
  </div>`;}
 function ordinal(n){n=+n;const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
@@ -3738,6 +3784,121 @@ function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situ
 function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
  const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
  return has?'<span class="poss" title="has the ball">🏈</span>':'';}
+/* ---- The game page's tab framework (display only). One spec per sport says which tabs its page has; a sport with no spec
+   (or a spec with only one visible tab) gets no tab row and the page is exactly as before. A tab is {k, l, has(r), html(r, ov)}:
+   `has` hides it when its data is missing (a bad or absent feed shows nothing), `html` draws its panel (`ov` is the overview
+   markup). The chosen tab lives in S.gtab and survives the page's periodic redraws; only the open tab's panel is drawn. */
+const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml}];
+const GAME_TABS={nfl:FOOTBALL_TABS,ncaaf:FOOTBALL_TABS};
+function gameTabList(r){const spec=GAME_TABS[((r||{}).leg||{}).sport];if(!spec)return [];const a=spec.filter(t=>!t.has||t.has(r));return a.length>1?a:[];}
+function gameTabCur(tabs){return tabs.some(t=>t.k===S.gtab)?S.gtab:(tabs[0]||{}).k;}
+function gameTabsHtml(r,ov){const tabs=gameTabList(r);S.gtabCur=null;if(!tabs.length)return ov;const cur=gameTabCur(tabs);S.gtabCur=cur;
+ return `<div class="gtabs" role="tablist">${tabs.map(t=>`<button type="button" role="tab" class="gtab${t.k===cur?' on':''}" aria-selected="${t.k===cur}" data-tab="${esc(t.k)}" onclick="gameTab('${esc(t.k)}')">${esc(t.l)}</button>`).join('')}<i class="gtabind"></i></div>
+ ${tabs.map(t=>`<div class="gpanel" role="tabpanel" data-tab="${esc(t.k)}"${t.k===cur?'':' hidden'}>${t.k===cur||t===tabs[0]?t.html(r,ov):''}</div>`).join('')}`;}
+/* switch tab without a full repaint: only the visible panel is (re)drawn, and leaving the play-by-play puts the strip back to live */
+function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);if(!t)return;const was=S.gtabCur;S.gtab=k;S.gtabCur=k;
+ document.querySelectorAll('#sheet .gtab').forEach(b=>{const on=b.dataset.tab===k;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
+ document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k)p.innerHTML=t.html(r,'');else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
+ gameTabInd();if(was==='pbp'&&k!=='pbp'&&S.pbpStep!=null){S.pbpStep=null;pbpRefresh('slide');}}
+/* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
+function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
+ const to={left:on.offsetLeft,width:on.offsetWidth},prev=S.gtabPos;
+ /* paintGame rebuilds the row, so a fresh underline starts at left:0/width:0: always seed it where the old one was (or where it is going), no transition, then glide only if the tab changed */
+ const from=prev||to;ind.style.transition='none';ind.style.left=from.left+'px';ind.style.width=from.width+'px';void ind.offsetWidth;ind.style.transition='';
+ ind.style.left=to.left+'px';ind.style.width=to.width+'px';S.gtabPos=to;
+ if(S.gtabScroll!=null){bar.scrollLeft=S.gtabScroll;S.gtabScroll=null;}
+ const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
+addEventListener('resize',()=>{if(document.querySelector('#sheet .gtabs'))gameTabInd();});
+/* after every repaint: the underline, the row's own sideways scroll, and (live) the newest play's animation */
+function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);}
+/* ---- Play-by-play (football; ESPN drives and plays, display only). Stepping shows the strip as it stood after the chosen play
+   (S.pbpStep = that play's id, null = live) and replays an illustration of the play from its type and yardage. The animations
+   are illustrations only: ESPN has no player tracking, and the tab says so. Under prefers-reduced-motion nothing moves: the
+   text and the ball spot still update. Nothing here is read by any buy/sell path. */
+function pbpData(r){const p=((r||{}).detail||{}).pbp;return p&&Array.isArray(p.drives)?p:null;}
+function pbpHas(r){const p=pbpData(r);return !!(p&&p.drives.some(d=>d&&Array.isArray(d.plays)&&d.plays.length));}
+function pbpPlays(r){const out=[];let n=0;((pbpData(r)||{}).drives||[]).forEach(d=>((d&&d.plays)||[]).forEach(p=>{out.push({p,d,k:String(p.id||('#'+n)),n});n++;}));return out.slice(-250);}
+function pbpIdx(list){if(S.pbpStep==null)return list.length-1;const i=list.findIndex(x=>x.k===S.pbpStep);return i<0?list.length-1:i;}
+function pbpLiveNow(list){return S.pbpStep==null||!list.some(x=>x.k===S.pbpStep);}
+const Q_LBL=['','1st','2nd','3rd','4th'];
+function qShort(q){q=+q;return q>4?(q===5?'OT':(q-4)+'OT'):(Q_LBL[q]||'Q'+q);}
+function qFull(q){q=+q;return q>4?'Overtime':(Q_LBL[q]||'Q'+q)+' Quarter';}
+function pbpHtml(r){const pb=pbpData(r),list=pbpPlays(r);if(!pb||!list.length)return '';S.pbpOpen=S.pbpOpen||{};
+ const i=pbpIdx(list),cur=list[i],live=pbpLiveNow(list),p=cur.p,b=(r.detail||{}).board||{};const open=(k,def)=>k in S.pbpOpen?S.pbpOpen[k]:def;
+ const tint=x=>x.sc?' sc':x.to?' to':'';const keyOf=new Map(list.map(x=>[x.p,x.k]));
+ const meta=[qShort(p.q)+(p.clk?' · '+p.clk:''),p.dn].filter(Boolean).join(' · ');
+ const card=`<div class="pcard${tint(p)}" id="pbp-card"><div class="pch"><button type="button" class="pstep" data-step="prev" aria-label="Previous play" onclick="pbpStepBy(-1)"${i<=0?' disabled':''}>‹</button>
+   <div class="pcm"><div class="pct">${esc(p.ty||'Play')}</div><div class="pcs">${live?'Latest play':'Replay · play '+(i+1)+' of '+list.length}${meta?' · '+esc(meta):''}</div></div>
+   <button type="button" class="pstep" data-step="next" aria-label="Next play" onclick="pbpStepBy(1)"${i>=list.length-1?' disabled':''}>›</button></div>
+  <div class="pctx">${esc(p.txt)}</div>
+  <div class="pcf"><span>${list.length} play${list.length===1?'':'s'}${pb.cut>0?' (latest shown)':''}</span><button type="button" class="plive" onclick="pbpLive()"${live?' hidden':''}>Back to live</button></div></div>
+  <div class="pnote">Illustrations only, no player tracking</div>`;
+ const qs=[];pb.drives.forEach(d=>{let g=qs.find(x=>x.q===d.q);if(!g){g={q:d.q,ds:[]};qs.push(g);}g.ds.push(d);});
+ qs.reverse().forEach(g=>g.ds.reverse());
+ const chev='<svg class="chev" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+ const secs=qs.map(g=>{const qk='q'+g.q,qo=open(qk,g.ds.some(d=>d.plays.includes(p)));
+  return `<div class="pqs"><button type="button" class="pq" data-k="${esc(qk)}" aria-expanded="${qo}" onclick="pbpTog(this)"><span>${esc(qFull(g.q))}</span>${chev}</button>
+   ${qo?g.ds.map(d=>{const dk='d'+d.id,dop=open(dk,d.plays.includes(p));const tm=(b[d.side]||{});
+    return `<button type="button" class="pdr${tint(d)}" data-k="${esc(dk)}" aria-expanded="${dop}" onclick="pbpTog(this)"><i class="pdot" style="background:${fcolor(tm.color,'var(--sub)')}"></i><b>${esc(d.team)}</b><span class="pres">${esc(d.res)}</span><span class="m psum">${esc(d.sum)}</span>${chev}</button>
+     ${dop?`<div class="pps">${d.plays.slice().reverse().map(x=>{const k=keyOf.get(x)||'';return `<div class="pp${tint(x)}${x===p&&!live?' cur':''}" data-pid="${esc(k)}" onclick="pbpGo(this.dataset.pid)"><div class="ppm"><b>${esc(x.dn||'')}</b><span class="m">${esc(qShort(x.q))}${x.clk?' · '+esc(x.clk):''}</span></div><div class="ppt">${esc(x.txt)}</div></div>`;}).join('')}</div>`:''}`;}).join(''):''}</div>`;}).join('');
+ return `<div class="pbp">${card}${secs}</div>`;}
+function pbpTog(el){S.pbpOpen=S.pbpOpen||{};S.pbpOpen[el.dataset.k]=el.getAttribute('aria-expanded')!=='true';pbpRefresh('');}
+function pbpStepBy(dl){const r=S.gameR,list=pbpPlays(r);if(!list.length)return;const i=pbpIdx(list),j=Math.max(0,Math.min(list.length-1,i+dl));if(j===i)return;S.pbpStep=j===list.length-1?null:list[j].k;pbpRefresh('play');}
+function pbpGo(k){const list=pbpPlays(S.gameR),j=list.findIndex(x=>x.k===k);if(j<0||j===pbpIdx(list))return;S.pbpStep=j===list.length-1?null:list[j].k;pbpRefresh('play');}
+function pbpLive(){S.pbpStep=null;pbpRefresh('slide');}
+/* The strip as it stood after the stepped play (the ball spot, who has it, first-down line, red zone), as a detail block for fieldStrip().
+   A play with no ball movement (timeout, end of quarter) keeps the spot of the nearest earlier play that had one. */
+function gameStepDetail(r){const d=r.detail;if(!d||S.pbpStep==null)return d;const list=pbpPlays(r);let i=list.findIndex(x=>x.k===S.pbpStep);if(i<0)return d;const p=list[i].p;
+ let j=i;while(j>=0&&(list[j].p.b==null||!pbpSide(list[j].p.bs)))j--;if(j<0)return d;const pb=list[j].p,side=pb.bs==='home'||pb.bs==='away'?pb.bs:'',abbr=(((d.board||{})[side])||{}).abbr||'';
+ return Object.assign({},d,{drive:{teamAbbr:abbr,ballYardsToEndzone:pb.b,downDistanceText:pb.edd||''},
+  situation:{distance:pb.edd?pb.ed:null,downDistanceText:pb.edd||'',possessionText:pb.ep||'',isRedZone:pb.b>0&&pb.b<=20,lastPlayText:p.txt,lastPlayType:p.ty,replay:true}});}
+function pbpRefresh(mode){const r=S.gameR;if(!r)return;const st=document.querySelector('#sheet .fstrip');
+ if(mode&&st){const tmp=document.createElement('div');tmp.innerHTML=fieldStrip(gameStepDetail(r),r.leg);const ns=tmp.firstElementChild;if(ns)st.replaceWith(ns);}
+ const pan=document.querySelector('#sheet .gpanel[data-tab="pbp"]');if(pan&&!pan.hidden)pan.innerHTML=pbpHtml(r);
+ let delay=0;if(mode==='play'){const list=pbpPlays(r);const x=list[pbpIdx(list)];if(x)delay=pbpFx(x.p);}
+ if(mode)pbpSlide(delay);}
+function pbpAfterPaint(r){const list=pbpPlays(r);
+ if(S.gtabCur==='pbp'&&S.pbpStep==null&&list.length){const last=list[list.length-1];if(S.pbpSeen!=null&&S.pbpSeen!==last.k){pbpSlide(pbpFx(last.p));}else pbpSyncBall();S.pbpSeen=last.k;}
+ else pbpSyncBall();}
+function pbpSyncBall(){const b=document.querySelector('#sheet .fstrip .fball');S.pbpBall=b?parseFloat(b.style.left):null;}
+/* slide the ball marker (and the possession arrow) from where it was to its new spot; a pass or kick waits for the flight */
+function pbpSlide(delay){const st=document.querySelector('#sheet .fstrip'),ball=st&&st.querySelector('.fball');if(!ball){S.pbpBall=null;return;}const to=ball.style.left,from=S.pbpBall;S.pbpBall=parseFloat(to);
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches||from==null||isNaN(from)||Math.abs(from-parseFloat(to))<.05)return;
+ const els=[ball,st.querySelector('.fdir')].filter(Boolean);els.forEach(e=>{e.style.transition='none';e.style.left=from+'%';});void st.offsetWidth;
+ els.forEach(e=>{e.style.transition='';e.style.transitionDelay=(delay||0)+'ms';e.style.left=to;});}
+/* ---- illustrations: what kind of play was it, and a small effect on the field for it */
+function fabs(side,ytz){return side==='home'?ytz:100-ytz;}      // yards from the LEFT goal line = % across .grass (home attacks left, away right), the same as fieldStrip
+function pbpSide(x){return x==='home'||x==='away';}      // a ball move is only drawn when the server knew whose end zone it is
+function pbpKind(p){const t=(p.ty||'').toLowerCase(),turn=!!p.to&&!/penalty/.test(t);
+ const k={mv:'dflt',td:/touchdown/.test(t)||(p.sc&&p.b===0&&!/field goal|safety|extra point/.test(t)),turn,fg:null,safety:/safety/.test(t)};
+ if(p.a==null||p.b==null||!pbpSide(p.as)||!pbpSide(p.bs))k.mv='none';
+ else if(p.pen||/penalty/.test(t))k.mv='pen';
+ else if(/field goal/.test(t)){k.mv='kick';k.fg=p.sc?'good':'no';}
+ else if(/kickoff|punt|extra point/.test(t))k.mv='kick';
+ else if(/sack/.test(t))k.mv='sack';
+ else if(/pass|interception/.test(t))k.mv='pass';
+ else if(/rush|run/.test(t)||/scramble/.test((p.txt||'').toLowerCase()))k.mv='run';
+ return k;}
+function pbpFx(p){if(matchMedia('(prefers-reduced-motion: reduce)').matches)return 0;const grass=document.querySelector('#sheet .fstrip .grass');if(!grass)return 0;
+ const k=pbpKind(p);if(k.mv==='none')return 0;
+ const a=fabs(p.as,p.a),b=fabs(p.bs,p.b),off=p.as==='home'?-1:1;
+ const add=(cls,css,txt)=>{const e=document.createElement('div');e.className=cls;Object.assign(e.style,css||{});if(txt)e.textContent=txt;grass.appendChild(e);setTimeout(()=>e.remove(),2000);return e;};
+ const tag=(txt,tone)=>add('ftag '+(tone||''),{},txt);
+ const fly=(from,to,ah,dur)=>{const e=add('fproj',{left:from+'%'});e.style.setProperty('--ah',ah+'px');e.style.setProperty('--dur',dur+'ms');e.innerHTML='<b></b>';void e.offsetWidth;e.style.left=to+'%';return dur;};
+ const trail=(from,to,red)=>{add('ftrail'+(red?' red':''),{left:Math.min(from,to)+'%',width:Math.abs(to-from)+'%',transformOrigin:to>=from?'left center':'right center'});};
+ const goal=off>0?100:0;let delay=0;
+ if(k.mv==='pass'){const inc=/incomplet/.test((p.ty||'').toLowerCase())||Math.abs(b-a)<.1;const to=k.turn?a+off*15:(inc?a+off*11:b);
+  delay=fly(a,to,Math.min(26,9+Math.abs(to-a)*.5),460+Math.min(320,Math.abs(to-a)*6));}
+ else if(k.mv==='kick'){const to=k.fg?goal:b;delay=fly(a,to,Math.min(36,16+Math.abs(to-a)*.3),720+Math.min(520,Math.abs(to-a)*8));}
+ else if(k.mv==='run')trail(a,b,false);
+ else if(k.mv==='sack'){trail(a,b,true);tag('SACK','bad');}
+ else if(k.mv==='pen'){add('fflag',{left:a+'%'},'🚩');}
+ if(k.td){const ez=document.querySelector('#sheet .fstrip .ez.'+(off>0?'r':'l'));if(ez){ez.classList.add('tdflash');setTimeout(()=>ez.classList.remove('tdflash'),1400);}tag('TOUCHDOWN','good');}
+ else if(k.fg==='good'){tag('FIELD GOAL','good');}
+ else if(k.fg==='no'){tag('NO GOOD','bad');}
+ else if(k.safety){tag('SAFETY','bad');}
+ if(k.turn){const bl=document.querySelector('#sheet .fstrip .fball');if(bl){bl.classList.add('turn');setTimeout(()=>bl.classList.remove('turn'),1700);}tag('TURNOVER','bad');}
+ return delay;}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');

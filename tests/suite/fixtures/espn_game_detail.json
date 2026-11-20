@@ -1,5 +1,5 @@
 {
-  "_note": "Trimmed ESPN NFL responses for the live game page (slice 1). Shapes follow the paths in issue #72's Data verification comment: scoreboard competitions[0].situation, summary header...competitors[], summary.drives.current. Values are illustrative (Colts @ Texans, in-progress), captured with plain unauthenticated GETs.",
+  "_note": "Trimmed ESPN NFL responses for the live game page (slice 1). Shapes follow the paths in issue #72's Data verification comment: scoreboard competitions[0].situation, summary header...competitors[], summary.drives.previous[] and .current (slice 2 plays: type/text/period/clock/scoringPlay/isTurnover/isPenalty/statYardage and start/end with yardsToEndzone and team.id). Values are illustrative (Colts @ Texans, in-progress), captured with plain unauthenticated GETs.",
   "scoreboard": {
     "events": [
       {
@@ -55,11 +55,72 @@
       ]
     },
     "drives": {
+      "previous": [
+        {
+          "id": "4018730661", "description": "3 plays, 75 yards, 1:50", "team": {"id": "11", "abbreviation": "IND"},
+          "start": {"period": {"type": "quarter", "number": 1}, "clock": {"displayValue": "14:50"}, "yardLine": 25, "text": "IND 25"},
+          "yards": 75, "isScore": true, "offensivePlays": 3, "result": "TD", "shortDisplayResult": "TD", "displayResult": "Touchdown",
+          "plays": [
+            {"id": "401873066100", "type": {"id": "53", "text": "Kickoff"}, "text": "K.Fairbairn kicks 65 yards from HST 35 to IND 0. S.McGowan to IND 25 for 25 yards.", "period": {"number": 1}, "clock": {"displayValue": "15:00"}, "scoringPlay": false, "isPenalty": false, "statYardage": 25,
+             "start": {"down": 0, "distance": 0, "yardLine": 35, "yardsToEndzone": 65, "team": {"id": "34"}},
+             "end": {"down": 1, "distance": 10, "yardLine": 75, "yardsToEndzone": 75, "downDistanceText": "1st & 10 at IND 25", "shortDownDistanceText": "1st & 10", "possessionText": "IND 25", "team": {"id": "11"}}},
+            {"id": "401873066101", "type": {"id": "24", "text": "Pass Reception"}, "text": "(Shotgun) D.Jones pass short middle to A.Dulin to IND 40 for 15 yards (D.Stingley).", "period": {"number": 1}, "clock": {"displayValue": "14:32"}, "scoringPlay": false, "isPenalty": false, "statYardage": 15,
+             "start": {"down": 1, "distance": 10, "yardLine": 75, "yardsToEndzone": 75, "downDistanceText": "1st & 10 at IND 25", "shortDownDistanceText": "1st & 10", "possessionText": "IND 25", "team": {"id": "11"}},
+             "end": {"down": 1, "distance": 10, "yardLine": 60, "yardsToEndzone": 60, "downDistanceText": "1st & 10 at IND 40", "shortDownDistanceText": "1st & 10", "possessionText": "IND 40", "team": {"id": "11"}}},
+            {"id": "401873066102", "type": {"id": "5", "text": "Rush"}, "text": "J.Taylor up the middle to HST 45 for 15 yards (J.Smith).", "period": {"number": 1}, "clock": {"displayValue": "14:02"}, "scoringPlay": false, "isPenalty": false, "statYardage": 15,
+             "start": {"down": 1, "distance": 10, "yardLine": 60, "yardsToEndzone": 60, "downDistanceText": "1st & 10 at IND 40", "shortDownDistanceText": "1st & 10", "possessionText": "IND 40", "team": {"id": "11"}},
+             "end": {"down": 1, "distance": 10, "yardLine": 45, "yardsToEndzone": 45, "downDistanceText": "1st & 10 at HOU 45", "shortDownDistanceText": "1st & 10", "possessionText": "HOU 45", "team": {"id": "11"}}},
+            {"id": "401873066103", "type": {"id": "67", "text": "Passing Touchdown"}, "text": "D.Jones pass deep right to A.Pittman for 45 yards, TOUCHDOWN.", "period": {"number": 1}, "clock": {"displayValue": "13:40"}, "scoringPlay": true, "isPenalty": false, "statYardage": 45,
+             "start": {"down": 1, "distance": 10, "yardLine": 45, "yardsToEndzone": 45, "downDistanceText": "1st & 10 at HOU 45", "shortDownDistanceText": "1st & 10", "possessionText": "HOU 45", "team": {"id": "11"}},
+             "end": {"down": -1, "distance": 10, "yardLine": 100, "yardsToEndzone": 0, "team": {"id": "11"}}}
+          ]
+        },
+        {
+          "id": "4018730662", "description": "3 plays, 17 yards, 3:53", "team": {"id": "34", "abbreviation": "HOU"},
+          "start": {"period": {"type": "quarter", "number": 1}, "clock": {"displayValue": "13:40"}, "yardLine": 25, "text": "HOU 25"},
+          "yards": 17, "isScore": false, "offensivePlays": 3, "result": "INT", "shortDisplayResult": "INT", "displayResult": "Interception",
+          "plays": [
+            {"id": "401873066110", "type": {"id": "7", "text": "Sack"}, "text": "(Shotgun) C.Stroud sacked at HST 17 for -8 yards (J.Clowney).", "period": {"number": 1}, "clock": {"displayValue": "12:51"}, "scoringPlay": false, "isPenalty": false, "statYardage": -8,
+             "start": {"down": 1, "distance": 10, "yardLine": 25, "yardsToEndzone": 75, "shortDownDistanceText": "1st & 10", "team": {"id": "34"}},
+             "end": {"down": 2, "distance": 18, "yardLine": 17, "yardsToEndzone": 83, "downDistanceText": "2nd & 18 at HOU 17", "shortDownDistanceText": "2nd & 18", "possessionText": "HOU 17", "team": {"id": "34"}}},
+            {"id": "401873066111", "type": {"id": "74", "text": "Official Timeout"}, "text": "Official Timeout at 12:40.", "period": {"number": 1}, "clock": {"displayValue": "12:40"}, "scoringPlay": false, "isPenalty": false, "statYardage": 0,
+             "start": {"down": -1, "distance": 0, "yardLine": 83, "yardsToEndzone": 0, "team": {"id": "34"}}, "end": {"down": -1, "distance": 0, "yardLine": 83, "yardsToEndzone": 0, "team": {"id": "34"}}},
+            {"id": "401873066112", "type": {"id": "26", "text": "Pass Interception Return"}, "text": "(Shotgun) C.Stroud pass deep right intended for N.Collins INTERCEPTED by A.Haulcy at IND 25. A.Haulcy to IND 27 for 2 yards.", "period": {"number": 1}, "clock": {"displayValue": "6:59"}, "scoringPlay": false, "isPenalty": false, "isTurnover": true, "statYardage": 2,
+             "start": {"down": 3, "distance": 3, "yardLine": 50, "yardsToEndzone": 50, "downDistanceText": "3rd & 3 at 50", "shortDownDistanceText": "3rd & 3", "possessionText": "50", "team": {"id": "34"}},
+             "end": {"down": 1, "distance": 10, "yardLine": 73, "yardsToEndzone": 73, "downDistanceText": "1st & 10 at IND 27", "shortDownDistanceText": "1st & 10", "possessionText": "IND 27", "team": {"id": "11"}}}
+          ]
+        },
+        {
+          "id": "4018730663", "description": "2 plays, 20 yards, 1:25", "team": {"id": "11", "abbreviation": "IND"},
+          "start": {"period": {"type": "quarter", "number": 2}, "clock": {"displayValue": "9:10"}, "yardLine": 60, "text": "HOU 40"},
+          "yards": 20, "isScore": true, "offensivePlays": 2, "result": "FG", "shortDisplayResult": "FG", "displayResult": "Field Goal",
+          "plays": [
+            {"id": "401873066120", "type": {"id": "8", "text": "Penalty"}, "text": "(Shotgun) PENALTY on HST-A.Ersery, Offside, 5 yards, enforced at HST 40.", "period": {"number": 2}, "clock": {"displayValue": "9:00"}, "scoringPlay": false, "isPenalty": true, "statYardage": 5,
+             "start": {"down": 3, "distance": 8, "yardLine": 60, "yardsToEndzone": 40, "downDistanceText": "3rd & 8 at HOU 40", "shortDownDistanceText": "3rd & 8", "team": {"id": "11"}},
+             "end": {"down": 3, "distance": 3, "yardLine": 65, "yardsToEndzone": 35, "downDistanceText": "3rd & 3 at HOU 35", "shortDownDistanceText": "3rd & 3", "possessionText": "HOU 35", "team": {"id": "11"}}},
+            {"id": "401873066121", "type": {"id": "59", "text": "Field Goal Good"}, "text": "S.Shrader 52 yard field goal is GOOD.", "period": {"number": 2}, "clock": {"displayValue": "8:40"}, "scoringPlay": true, "isPenalty": false, "statYardage": 52,
+             "start": {"down": 4, "distance": 3, "yardLine": 65, "yardsToEndzone": 35, "downDistanceText": "4th & 3 at HOU 35", "shortDownDistanceText": "4th & 3", "team": {"id": "11"}},
+             "end": {"down": -1, "distance": 10, "yardLine": 100, "yardsToEndzone": 0, "team": {"id": "11"}}}
+          ]
+        },
+        {
+          "id": "4018730664", "description": "1 play, 0 yards, 0:12", "team": {"id": "34", "abbreviation": "HOU"},
+          "start": {"period": {"type": "quarter", "number": 2}, "clock": {"displayValue": "8:30"}, "yardLine": 40, "text": "HOU 40"},
+          "yards": 0, "isScore": false, "offensivePlays": 1, "result": "PUNT", "shortDisplayResult": "PUNT", "displayResult": "Punt",
+          "plays": [
+            {"id": "401873066130", "type": {"id": "52", "text": "Punt"}, "text": "R.Sanchez punts 47 yards to IND 22, fair catch.", "period": {"number": 2}, "clock": {"displayValue": "8:20"}, "scoringPlay": false, "isPenalty": false, "statYardage": 47,
+             "start": {"down": 4, "distance": 11, "yardLine": 40, "yardsToEndzone": 60, "downDistanceText": "4th & 11 at HOU 40", "shortDownDistanceText": "4th & 11", "team": {"id": "34"}},
+             "end": {"down": 1, "distance": 10, "yardLine": 78, "yardsToEndzone": 78, "downDistanceText": "1st & 10 at IND 22", "shortDownDistanceText": "1st & 10", "possessionText": "IND 22", "team": {"id": "11"}}}
+          ]
+        }
+      ],
       "current": {
+        "id": "4018730665",
         "team": {"id": "11", "abbreviation": "IND"},
-        "start": {"yardLine": 27},
+        "start": {"period": {"type": "quarter", "number": 2}, "yardLine": 27},
         "plays": [
           {
+            "id": "401873066140", "type": {"id": "5", "text": "Rush"}, "text": "J.Taylor left end to IND 31 for 4 yards.", "period": {"number": 2}, "clock": {"displayValue": "6:50"}, "scoringPlay": false, "isPenalty": false, "statYardage": 4,
             "start": {"down": 1, "distance": 10, "yardLine": 27, "yardsToEndzone": 73, "downDistanceText": "1st & 10 at IND 27"},
             "end": {"down": 2, "distance": 6, "yardLine": 31, "yardsToEndzone": 69, "downDistanceText": "2nd & 6 at IND 31"}
           }
