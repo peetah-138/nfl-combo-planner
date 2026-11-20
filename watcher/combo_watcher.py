@@ -2125,7 +2125,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .srow.dim{opacity:.45;pointer-events:none}
 .hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
 .hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
-.hxs{min-width:92px;text-align:right;color:var(--yes);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
+.hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
 .hxrow .l small{margin-top:6px}
 .rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
 input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
