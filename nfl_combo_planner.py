@@ -297,6 +297,32 @@ def slate_word():
     return "day" if by_day() else "weekend"
 
 
+def cap_label():
+    """The name of the spending-cap setting (Settings > Money) for the league on screen."""
+    return "Mix cap" if is_mix() else "Daily cap" if by_day() else "Weekend cap"
+
+
+def cap_window(today=None):
+    """Plain words for the stretch of time the cap counts (it follows `week_spend`): today / tomorrow for a daily
+    league, "this weekend" only for a football slate Friday to Monday, "this week" for the Wed-Mon week otherwise
+    (soccer, UFC, and football on a Wednesday or Thursday), and "on games still to play" for the Mix."""
+    if is_mix():
+        return "on games still to play"
+    if by_day():
+        return "tomorrow" if CFG.get("next_day") else "today"
+    day = (today or dt.date.today()).weekday()
+    return "this weekend" if LEAGUE["code"] in ("nfl", "ncaaf") and (day >= 4 or day == 0) else "this week"
+
+
+def cap_msg(spent, add):
+    """The Buy tap's answer when `add` would push what's spent over the cap: what it would reach, how much room
+    is left, and which setting to change."""
+    budget, left = CFG["budget"], max(0.0, CFG["budget"] - spent)
+    return (f"That would bring your spending {cap_window()} to {money(spent + add)}, over your {money(budget)} cap. "
+            f"You have {money(left)} left. To go ahead, raise it to at least {money(spent + add)} in "
+            f"Settings > Money > {cap_label()} (for {LG()['name']}).")
+
+
 def day_on():
     """Which day labels are switched on (every day in the Mix mode's window)."""
     if is_mix():
@@ -8130,11 +8156,11 @@ def get_offer(i, amount=None, check_cap=True):
     if stake < 1:
         return {"error": "Use at least $1 per combo."}
     if stake > CFG["budget"]:
-        return {"error": f"{money(stake)} is more than your whole {money(CFG['budget'])} {slate_word()} cap."}
+        return {"error": f"{money(stake)} is more than your whole {money(CFG['budget'])} cap "
+                         f"(Settings > Money > {cap_label()} for {LG()['name']})."}
     spent = week_spend() if check_cap else 0
     if check_cap and spent + stake > CFG["budget"] + 0.01:
-        return {"error": f"That would take this {slate_word()} to {money(spent + stake)}, over your "
-                         f"{money(CFG['budget'])} cap. Raise the cap in settings to go ahead."}
+        return {"error": cap_msg(spent, stake)}
     legs = [{"market_ticker": l["ticker"], "event_ticker": l["event"], "side": "yes"} for l in c["legs"]]
     coll = find_collection(c["legs"])
     made = kalshi_send("POST", f"/multivariate_event_collections/{coll}",
@@ -8185,8 +8211,7 @@ def accept_offer(i, skip_cap=False):
         return {"error": "That offer expired. Tap New price for a fresh one."}
     spent = 0 if skip_cap else week_spend()
     if not skip_cap and spent + o["stake"] > CFG["budget"] + 0.01:
-        return {"error": f"That would take this {slate_word()} to {money(spent + o['stake'])}, over your "
-                         f"{money(CFG['budget'])} cap. Raise the cap in Settings to go ahead."}
+        return {"error": cap_msg(spent, o["stake"])}
     CTX["offers"].pop(i, None)
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
@@ -8445,9 +8470,8 @@ def handle_action(webview, parts):
                 auto = len(parts) > 4 and parts[4] == "auto"     # prices only: the cap applies when you Accept
                 spent = 0 if auto else week_spend()
                 if not auto and spent + total > CFG["budget"] + 0.01:
-                    say(f"<span class='verdict no'>Those add up to {money(total)}, which would take this "
-                        f"{slate_word()} to {money(spent + total)}, over your {money(CFG['budget'])} cap. "
-                        "Untick some or lower the amounts.</span>", 0)
+                    say(f"<span class='verdict no'>Those add up to {money(total)}. "
+                        f"{html.escape(cap_msg(spent, total))} Or untick some or lower the amounts.</span>", 0)
                     for k, _ in wanted:
                         say("", k)
                     return
@@ -8646,7 +8670,7 @@ def settings_page(all_games, days, counts):
     APP["where"] = mode
     sec = {
         "money": section("Money", slider("stake", "Per combo", 1, 20, unit="$") +
-                         slider("budget", "Mix cap" if is_mix() else "Daily cap" if by_day() else "Weekend cap", 10, 200, 10, "$") +
+                         slider("budget", cap_label(), 10, 200, 10, "$") +
                          slider("accept_pct", "Fair-price cut-off", 50, 100, 5, "% of fair") +
                          switch("size_auto", "Bet more when the price is good ($3 to $10)"),
                          "Kalshi's prices are marked below your cut-off when they pay less than this share of the fair payout."),
