@@ -2156,6 +2156,8 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .fld .ez.l{left:0}.fld .ez.r{right:0}
 .fld .ez span{color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;writing-mode:vertical-rl;transform:rotate(180deg);text-shadow:0 1px 2px rgba(0,0,0,.5)}
 .fld .grass i{position:absolute;top:0;bottom:0;width:0}
+/* The ball and possession arrow sit on the field's vertical midline (centred by their own translate(..,-50%)); the rule above would pin their box top to 0 and clip the top half, so win the cascade and put them back on 50% (#93). */
+.fld .grass i.fball,.fld .grass i.fdir{top:50%;bottom:auto}
 .fld .grass>i:not(.fball):not(.fdir):not(.fdline):not(.frz){border-left:1px solid rgba(255,255,255,.28)}
 .fld .frz{background:rgba(220,40,40,.28);width:auto}
 .fld .fdline{border-left:3px solid #f5d020;box-shadow:0 0 6px rgba(245,208,32,.7);z-index:3}

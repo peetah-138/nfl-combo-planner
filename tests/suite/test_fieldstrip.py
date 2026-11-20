@@ -114,6 +114,18 @@ def run(pg, label, phone):
     pg.evaluate("S.gameSig=null;drawGame()")
     if not until(pg, "!!document.querySelector('#sheet .fstrip .frz')", 5):
         probs.append(label + ": no red-zone shading inside the 20")
+    # the ball marker must sit fully inside the field strip (not clipped at the top), even near the top of the
+    # field / in the red zone. Its bounding box top must be >= the field's top and its bottom <= the field's
+    # bottom (issue #93: the ball used to be pinned to the field's top edge and have its upper half clipped).
+    box = pg.evaluate("""(()=>{const b=document.querySelector('#sheet .fstrip .fball'),f=document.querySelector('#sheet .fstrip .fld');
+      if(!b||!f)return null;const br=b.getBoundingClientRect(),fr=f.getBoundingClientRect();
+      return {bt:br.top,bb:br.bottom,bh:br.height,ft:fr.top,fb:fr.bottom};})()""")
+    if not box:
+        probs.append(label + ": couldn't measure the ball/field for the clip check")
+    elif box["bh"] <= 0:
+        probs.append(label + ": ball marker has no height (not rendered): " + repr(box))
+    elif box["bt"] < box["ft"] - 0.5 or box["bb"] > box["fb"] + 0.5:
+        probs.append(label + ": ball marker is clipped by the field strip (top of field / red zone): " + repr(box))
     if phone and pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"):
         probs.append(label + ": page scrolls sideways")
     pg.screenshot(path="fieldstrip_%s.png" % label)
