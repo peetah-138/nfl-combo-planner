@@ -237,3 +237,56 @@ ok("panel, gate on: the bets both versions pick are identical apart from the cha
 allm = E2.line_candidates("ncaamb", everything=True)
 want = {"line:" + x["ticker"] for x in allm if x["edge"] >= E2.LINE_MIN_EDGE and x["edge"] / x["p"] >= 0.06}
 ok("panel, gate on: a bet comes or goes only when its new chance crosses the same edge rule", {c["id"] for c in on_p} == want)
+
+# ---- review fixes: a price for another line never anchors the curve; void markets stop being asked about; the
+# Mac's own 200+ games decide alone; the shipped evidence is valid Python; a partial rebuild keeps the rest
+od = {"pointSpread": {"home": {"close": {"line": "-3", "odds": "-125"}}, "away": {"close": {"line": "+3", "odds": "+105"}}},
+      "total": {"over": {"close": {"line": "o44.5", "odds": "-115"}}, "under": {"close": {"line": "u44.5", "odds": "-105"}}},
+      "moneyline": {"home": {"close": {"odds": "-170"}}, "away": {"close": {"odds": "+145"}}}}
+got = E.espn_line_prices(od, -3.5, 44.5)
+ok("a spread price for a different line (-3 vs the game's -3.5) is dropped; the total's own price kept",
+   "p_hcover" not in got and abs(got["p_over"] - E._devig("-115", "-105")) < 1e-3 and "p_home" in got)
+got = E.espn_line_prices(od, -3.0, 45.5)
+ok("...and the other way round", "p_over" not in got and "p_hcover" in got)
+ok("no line text at all: the price isn't trusted", "p_hcover" not in E.espn_line_prices(
+    {"pointSpread": {"home": {"close": {"odds": "-125"}}, "away": {"close": {"odds": "+105"}}}}, -3.5, None))
+ok("the shipped evidence is valid Python (no JSON null) and lists the leagues tested",
+   all(lg in E.LINE_EVIDENCE for lg in ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl")) and E.LINE_EVIDENCE["nhl"]["spread"]["ll_old"] is None)
+E.store_x("delete from line_fairs"); E.LINE_STATS["at"] = 0
+ok("a market with no known start isn't logged", E.note_line_fair("KXNFLSPREAD-X-A", "nfl", "nfl", "spread", 3.5, "above", .4, .41, .41, "old", .4, None) is None
+   and not E.store_rows("select 1 from line_fairs"))
+old_now = time.time()
+for i in range(160):                        # 160 voided markets would block the oldest-first queue forever
+    E.store_x("insert into line_fairs values(?,?,?,?,?,?,?,?,?,?,?,?,?,null)", (f"KXNFLSPREAD-V{i}-A", old_now - 90000, "nfl", "nfl", "spread", 3.5, "above", .4, .4, .4, "old", .4, old_now - 80000))
+E.store_x("insert into line_fairs values(?,?,?,?,?,?,?,?,?,?,?,?,?,null)", ("KXNFLSPREAD-NEW-A", old_now - 20000, "nfl", "nfl", "spread", 3.5, "above", .4, .4, .4, "old", .4, old_now - 15000))
+E.store_x("insert into line_fairs values(?,?,?,?,?,?,?,?,?,?,?,?,?,null)", ("KXNFLSPREAD-NEW-A", old_now - 19000, "nfl", "nfl", "spread", 3.5, "above", .4, .45, .45, "old", .4, old_now - 15000))
+_fr = E.fetch_results
+def fake_results(tks):
+    for t in tks:
+        E.MARKET_INFO[t] = {"status": "finalized" if "-V" in t else "settled"}
+    return {t: "yes" for t in tks if "NEW" in t}
+E.fetch_results = fake_results
+E.resolve_line_fairs(limit=150)
+E.fetch_results = _fr
+ok("the newest finished market is resolved first, voided ones are marked and never asked about again",
+   E.store_rows("select outcome from line_fairs where ticker='KXNFLSPREAD-NEW-A'")[0]["outcome"] == "yes"
+   and E.store_rows("select count(*) n from line_fairs where outcome='void'")[0]["n"] >= 149)
+ok("...only the last reading before the game is kept once it settles",
+   [r["fair_new"] for r in E.store_rows("select fair_new from line_fairs where ticker='KXNFLSPREAD-NEW-A'")] == [0.45])
+E.LINE_STATS["at"] = 0
+ok("void markets stay out of the record", all(r["event"] != "KXNFLSPREAD-V1" for r in E.line_record()))
+E.store_x("delete from line_fairs"); E.LINE_STATS["at"] = 0
+E.LINE_EVIDENCE = {"nfl": {"spread": {"games": 1000, "ll_old": 0.62, "ll_new": 0.61, "se": 0.001}}}
+for i in range(210):                        # own record: new barely better (gain < 0.002) -> off despite the backtest
+    E.store_x("insert into line_fairs values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (f"KXNFLSPREAD-T{i}-A", now - 9000, "nfl", "nfl", "spread", 3.5, "above", 0.5, 0.501, 0.501, "new", .5, now - 8000, "yes" if i % 2 else "no"))
+E.LINE_STATS["at"] = 0
+on, why = E.line_gate("nfl", "spread")
+ok("200+ of your own games decide alone: not clearly better = off, whatever the backtest said", not on and "Not clearly better" in why)
+st1 = E.line_live_stats(); st2 = E.line_live_stats()
+ok("the record's sums are worked out once per read, not once per market", st1 is st2)
+E.store_x("delete from line_fairs"); E.LINE_STATS["at"] = 0
+src = open(os.path.join(os.environ["REPO"], "tools", "build_line_tables.py")).read()
+ok("the tool writes a Python literal and a partial rebuild keeps the other leagues' evidence",
+   T._compact({"a": None, "b": 1}) == '{"a":None,"b":1}' and "dict(shipped, **ev)" in src)
+E.LINE_CACHE.clear(); E.LINE_CACHE[("x",)] = None
+ok("a cache read never raises (another thread may clear it)", E.margin_pmf("nfl", "spread", {"spread_home": -3.0}) is not None)

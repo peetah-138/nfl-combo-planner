@@ -5,7 +5,8 @@ Provenance: final scores from ESPN's free public scoreboard (site.api.espn.com .
 each game's pre-game sportsbook line from ESPN's public odds feed (sports.core.api.espn.com .../competitions/<id>/odds,
 provider "ESPN BET": spread, total, their prices, moneylines). No keys, no accounts, no paid data. Seasons 2023-24 to
 now for NFL, college football (FBS), NBA, men's and women's college basketball (Division I, a fixed random sample of
-9,000 games each), NHL and seven soccer leagues. The AHL and EuroLeague aren't on ESPN: they borrow their sport's.
+9,000 games each), NHL and seven soccer leagues. The AHL and EuroLeague aren't on ESPN, and ESPN's odds feed has no
+lines for Serie A, Bundesliga or Ligue 1: they borrow their sport's.
 
 What ships is small: per league, a curve width (sd = a + b * |line|) and a few dozen weights (how much more or less
 often a margin or total happens than a smooth curve says: NFL 3 and 7, no ties in basketball, empty-net 2-goal
@@ -226,11 +227,17 @@ def _np():
     return np
 
 
-def _binned(mu, sd, xs):
+def _cdf(z):
+    """Normal CDF on numpy arrays (Abramowitz-Stegun 7.1.26, error < 2e-7): fast enough to fit 9,000 games."""
     np = _np()
-    from math import erf
-    cdf = np.vectorize(lambda z: 0.5 * (1 + erf(z / math.sqrt(2))))
-    return cdf((xs[None, :] + 0.5 - mu[:, None]) / sd[:, None]) - cdf((xs[None, :] - 0.5 - mu[:, None]) / sd[:, None])
+    x = np.abs(z) / math.sqrt(2)
+    t = 1 / (1 + 0.3275911 * x)
+    e = 1 - t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429)))) * np.exp(-x * x)
+    return 0.5 * (1 + np.sign(z) * e)
+
+
+def _binned(mu, sd, xs):
+    return _cdf((xs[None, :] + 0.5 - mu[:, None]) / sd[:, None]) - _cdf((xs[None, :] - 0.5 - mu[:, None]) / sd[:, None])
 
 
 def _loglik(mu, sd, obs, xs, wv):
@@ -521,7 +528,9 @@ def _engine():
 
 
 def _compact(t):
-    return json.dumps(t, separators=(",", ":"), sort_keys=True)
+    """JSON without spaces, as a Python literal (the tables hold only names and numbers, so null is the one word
+    that differs)."""
+    return json.dumps(t, separators=(",", ":"), sort_keys=True).replace(":null", ":None")
 
 
 def write_block(tables, ev):
@@ -536,6 +545,7 @@ def write_block(tables, ev):
 
 def build(cache, write, lgs=None, out_rows=None):
     E = _engine()
+    shipped = json.loads(json.dumps(E.LINE_EVIDENCE))   # a rebuild of some leagues keeps the others' evidence
     data = {lg: load(cache, lg) for lg in LEAGUES}
     data = {lg: gs for lg, gs in data.items() if gs}
     for lg, gs in data.items():
@@ -555,6 +565,8 @@ def build(cache, write, lgs=None, out_rows=None):
         print(lg, len(data[lg]), "games", json.dumps(ev[lg]), f"{time.time() - t0:.0f}s", flush=True)
     tables = fit_all(E, data)
     if write:
+        if lgs:
+            ev = dict(shipped, **ev)
         write_block(tables, ev)
         print("engine block updated:", len(_compact(tables)) + len(_compact(ev)), "bytes")
     return tables, ev

@@ -169,6 +169,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (`_line_pick_model` in `line_candidates`): selection rules, caps, sizing, start rules and approval are untouched, a
   market the old model doesn't price stays unpriced, any error falls back to the old price, and with the gate off every
   price is byte for byte the old one (`t_linemodel`). Results › What's working › Bet types shows old vs new per league.
+  Shipped backtest (2023-26, held-out seasons): the gate is on for **NFL spreads, college football spreads, NHL totals
+  and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
+  spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
+  has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
