@@ -64,14 +64,12 @@ with sync_playwright() as pw:
     if pg.evaluate("document.body.classList.contains('hc')"): bad("header still tucked a second later on an unscrolled page")
     # the visible area reported taller than the page (iOS after the keyboard closes): the bar follows the visible bottom
     pg.evaluate("go('games')"); time.sleep(.6)
-    pg.evaluate("tbSet({height: innerHeight + 90, offsetTop: 0})")
-    r = pg.evaluate("(() => ({ b: Math.round(document.querySelector('#tabbar').getBoundingClientRect().bottom), ih: innerHeight }))()")
+    r = pg.evaluate("(() => { tbSet({height: innerHeight + 90, offsetTop: 0}); return { b: Math.round(document.querySelector('#tabbar').getBoundingClientRect().bottom), ih: innerHeight }; })()")
     print("visible area 90 px taller:", r)
     if abs(r["b"] - (r["ih"] + 90)) > 1: bad(f"bar not flush with a taller visible area: bottom {r['b']}, visible bottom {r['ih'] + 90}")
-    pg.evaluate("tbSet({height: innerHeight - 300, offsetTop: 0})")   # a keyboard: the bar stays put (behind it)
-    r = pg.evaluate("(() => ({ b: Math.round(document.querySelector('#tabbar').getBoundingClientRect().bottom), ih: innerHeight }))()")
+    r = pg.evaluate("(() => { tbSet({height: innerHeight - 300, offsetTop: 0}); return { b: Math.round(document.querySelector('#tabbar').getBoundingClientRect().bottom), ih: innerHeight }; })()")   # a keyboard: the bar stays put (behind it)
     if abs(r["b"] - r["ih"]) > 1: bad(f"bar moved for a keyboard-sized visible area: bottom {r['b']}, page bottom {r['ih']}")
-    pg.evaluate("tbSet()"); time.sleep(.3)
+    pg.evaluate("S.tbp=0;tbSet()"); time.sleep(.3)
     frames(pg, "go('build')", "after the simulated sizes -> build")
     # a keyboard-sized window and back
     cdp = ctx.new_cdp_session(pg)
