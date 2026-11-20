@@ -4222,7 +4222,7 @@ def recap(day=None):
     p = {"items": day_items(day)}
     for c in p["items"]:
         if c.get("result"):
-            out["bets"].append({"what": " + ".join(short_name(l["pick"]) for l in c["legs"]), "kind": c["kind"],
+            out["bets"].append({"what": bet_text(c), "kind": c["kind"],
                                 "pl": c["pl"], "chance": c["chance"]})
     if STORE["db"]:
         start = dt.datetime.fromisoformat(day).replace(tzinfo=PACIFIC).timestamp()
@@ -10161,7 +10161,7 @@ def line_candidates(code, everything=False):
             out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
-                        "start": g.get("start"), "game": f"{g['away'].split()[-1]} at {g['home'].split()[-1]}"})
+                        "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}"})
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
 
 
@@ -11055,6 +11055,60 @@ def _size(c, base):
 
 
 # ---- candidates
+PRO_SHORT = ("nfl", "nba", "nhl", "ahl")        # pro teams read fine by last word ("Flyers"); college and the rest keep full names
+
+
+MULTI_NICK = ("Maple Leafs", "Red Wings", "Blue Jackets", "Golden Knights", "Silver Knights", "Trail Blazers", "Wolf Pack",
+              "Hockey Club", "Black Hawks", "Blue Devils")      # nicknames of two words: 'Leafs' or 'Club' alone would mislead
+
+
+def team_short(code, name):
+    """A team the way the panel names it: 'Flyers' for pro leagues, the full name elsewhere ('Temple Owls')."""
+    name = str(name or "").strip()
+    if code not in PRO_SHORT or not name:
+        return name
+    return next((n for n in MULTI_NICK if name.endswith(n)), name.split()[-1])
+
+
+def stamp_games(code, games):
+    """Give every side of every game a plain-English matchup ('Flyers vs Bruins', the pick named first), so each
+    panel bet and each leg of a combo says which game it is on. Computed from the sides already in hand: no
+    lookups, and nothing about prices or choices changes."""
+    for sides in games.values():
+        two = [x for x in sides if not x.get("tie")]
+        if len(two) != 2:
+            continue
+        for x, y in ((two[0], two[1]), (two[1], two[0])):
+            x["me"] = team_short(code, x.get("pick"))
+            x["vs"] = team_short(code, y.get("pick"))
+            x["game"] = f"{x['me']} vs {x['vs']}"
+
+
+def league_tag(code, ticker=""):
+    """The league's short name; a soccer bet says which league ('Premier League'), not just 'Soccer'."""
+    if code == "soccer" and ticker:
+        k = league_key(ticker)
+        if k in LEAGUE_NAME:
+            return LEAGUE_NAME[k]
+    return str((LEAGUES.get(code) or SPORTS.get(code) or {}).get("short") or (SPORTS.get(code) or {}).get("name") or "")
+
+
+def leg_text(l, kind="combo"):
+    """One panel leg in plain English: 'Over 7.5 (Flyers at Bruins)', 'Flyers to beat Bruins'."""
+    pick = str(l.get("pick") or "")
+    if kind == "line":
+        base = re.sub(r" \(.*\)$", "", pick)
+        return f"{base} ({l['game']})" if l.get("game") else pick
+    if l.get("vs"):
+        return f"{l.get('me') or pick} to beat {l['vs']}"
+    return pick
+
+
+def bet_text(c):
+    """A panel bet named with its game, for notifications and logs."""
+    return " + ".join(leg_text(l, c.get("kind")) for l in c.get("legs") or [])
+
+
 def _cand(kind, code, legs, chance, ret, why, **extra):
     kicks = [k for k in (_kick_ts(l) for l in legs) if k]
     if not kicks:
@@ -11067,9 +11121,12 @@ def _cand(kind, code, legs, chance, ret, why, **extra):
     pre = [k for k in (_kick_ts(l) for l in legs if not l.get("live")) if k]
     out = dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
-                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair")} for l in legs],
+                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs", "me")} for l in legs],
+                "league": league_tag(code, legs[0]["ticker"] if legs else ""),
                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
+    if len(legs) == 1 and not out.get("game"):
+        out["game"] = legs[0].get("game") or ""          # the one game a single, spread or total is on
     if live:
         out["live"] = True
         out["kick_pre"] = min(pre) if pre else None
@@ -11523,6 +11580,7 @@ def panel_collect(book_snap, code, log=print):
         log("closing prices:", type(err).__name__, err)
     pre_games = games
     games = dict(pre_games, **live)
+    stamp_games(code, games)                           # each side names its game (display only)
     for sd in pre_games.values():                      # the books' chances, corrected by your own record
         two = [x for x in sd if x.get("fair") and not x.get("tie")]
         for x in two:
@@ -11573,6 +11631,7 @@ def panel_collect(book_snap, code, log=print):
             far, _, _ = week_games(fetch_markets(), weeks=2)
             attach_fair(far, book)
             far = {e: sd for e, sd in far.items() if not any(started(x) for x in sd)}
+            stamp_games(code, far)
             weeks = {e: week_of(e) for e in far}
             if len(set(weeks.values())) >= 2:
                 for c in value_combos(far, k=8, max_legs=4):
@@ -12125,7 +12184,7 @@ def _buy_panel_bet(c):
         ask = book.get("ask")
         if not ask:
             return False, "no price on Kalshi right now", {}
-        if c.get("live") and (book.get("bid") is None or ask - book["bid"] > LIVE_SPREAD):
+        if c.get("live") and (book.get("bid") is None or round(ask - book["bid"], 4) > LIVE_SPREAD):
             return False, "its game is under way and the live price is too jumpy to buy", {}
         edge_needed = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask
         if ask + single_fee(ask) + edge_needed > l["fair"] + 1e-9:
@@ -12240,14 +12299,14 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
         for c in list(p["items"]):
             if c.get("state") == "buying" and now - c.get("buy_started", now) > 300:
                 _set_items(day, mode, {c["id"]: {"state": "check", "note": "the Mac stopped mid-purchase; check Kalshi"}})
-                out.append(f"⚠️ Panel: not sure whether {c['legs'][0]['pick']} was bought (the Mac restarted mid-purchase). "
+                out.append(f"⚠️ Panel: not sure whether {bet_text(c)} was bought (the Mac restarted mid-purchase). "
                            f"Check Kalshi; it won't be bought again.")
                 continue
             if c.get("state") != "scheduled":
                 continue
             if (c.get("buy_at") or 0) > now:
                 continue                                  # approved before buying-at-once (#51): keeps the time it was approved under
-            picks = " + ".join(l["pick"] for l in c["legs"])
+            picks = bet_text(c)
             if not _start_ok(c, now, 5 * 60):
                 f0 = _fresh(c) if live_panel_on() and not c.get("live") else None
                 if isinstance(f0, dict) and f0.get("live") and _start_ok(f0, now, 5 * 60):
@@ -12280,7 +12339,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
                     ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
-                        out.append(f"🔁 Panel: swapped {picks} for {' + '.join(l['pick'] for l in alt['legs'])}: "
+                        out.append(f"🔁 Panel: swapped {picks} for {bet_text(alt)}: "
                                    f"its price no longer beat its chance.")
                 else:
                     _set_items(day, mode, {c["id"]: {"state": "skipped",
@@ -13108,7 +13167,7 @@ def panel_pass(log=print):
         panel_tx(_panel_day(x["at"]), "extra", put)
         new = told_box.get("new") or []
         if new and left >= 2:
-            names = ", ".join(" + ".join(short_name(l["pick"]) for l in c["legs"]) for c in new[:3])
+            names = "; ".join(bet_text(c) for c in new[:3])
             out.append(f"🆕 New good bet{'s' if len(new) > 1 else ''} since you approved today's panel: {names}"
                        f"{' and more' if len(new) > 3 else ''}. Add {'them' if len(new) > 1 else 'it'} in Build.")
         return out
@@ -13312,6 +13371,45 @@ def shadow_html(sm):
 BOOK_DEPTH = {}
 
 
+def book_levels(ob, side):
+    """One side of a Kalshi order book as [(price in dollars, contracts)], lowest price first. Reads the dollar
+    rows ('yes_dollars': [["0.45", "120.00"], ...]) or, failing that, the old whole-cent rows ('yes': [[45, 120]]).
+    Rows it can't read, prices outside 0-1 dollars and empty sizes are skipped; never raises."""
+    if not isinstance(ob, dict):
+        return []
+    rows, cents = ob.get(f"{side}_dollars"), False
+    if not rows:
+        rows, cents = ob.get(side), True
+    out = []
+    for row in rows if isinstance(rows, (list, tuple)) else ():
+        try:
+            p, q = float(row[0]), float(row[1])
+            if cents and p >= 1:                  # old rows are whole cents (45); anything under 1 is already dollars
+                p /= 100
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if 0 < p < 1 and 0 < q < float("inf"):
+            out.append((p, q))
+    return sorted(out)
+
+
+def book_info(payload):
+    """{'bid', 'ask', 'spread', 'ask_size', 'thin'} from a Kalshi order book answer, in dollars. Kalshi now sends
+    {'orderbook_fp': {'yes_dollars': [...], 'no_dollars': [...]}} (dollar strings); it used to send
+    {'orderbook': {'yes': [[cents, n]...], 'no': [...]}}. Both read the same. An empty or odd answer = no prices."""
+    books = [(book_levels(ob, "yes"), book_levels(ob, "no"))
+             for ob in ((payload.get(k) if isinstance(payload, dict) else None) for k in ("orderbook_fp", "orderbook"))]
+    # the first key with both sides wins; else the first with either side
+    yes, no = next((b for b in books if b[0] and b[1]), None) or next((b for b in books if b[0] or b[1]), ([], []))
+    if not yes or not no:
+        return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
+                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
+    bid, ask = yes[-1][0], 1 - no[-1][0]
+    spread = round(ask - bid, 4)                  # rounded: 0.53 - 0.49 is 0.04000000000000001 in floats
+    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1],
+            "thin": spread > 0.04 or no[-1][1] < 100}
+
+
 def book_depth(ticker, max_age=60):
     """Kalshi's order book for one pick: {'bid', 'ask', 'spread', 'ask_size' (contracts at the best
     ask), 'thin'}. Thin = wide spread or little size, so the price isn't reliable. None if unknown."""
@@ -13321,27 +13419,11 @@ def book_depth(ticker, max_age=60):
         return got[1]
     try:
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
-        ob = ((r.json() or {}).get("orderbook") or {}) if r.ok else {}
+        if not r.ok:
+            return None                           # 429/5xx: unknown, not an empty book (and not cached)
+        info = book_info(r.json())
     except (requests.RequestException, ValueError):
         return None
-
-    def levels(side):
-        rows = ob.get(f"{side}_dollars") or [[x[0] / 100, x[1]] for x in (ob.get(side) or [])]
-        out = []
-        for row in rows:
-            try:
-                out.append((float(row[0]), float(row[1])))
-            except (TypeError, ValueError, IndexError):
-                pass
-        return sorted(out)
-    yes, no = levels("yes"), levels("no")
-    if not yes or not no:
-        info = {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
-                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
-    else:
-        bid, ask = yes[-1][0], 1 - no[-1][0]
-        info = {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
-                "thin": ask - bid > 0.04 or no[-1][1] < 100}
     BOOK_DEPTH[ticker] = (now, info)
     if len(BOOK_DEPTH) > 3000:
         for k in sorted(BOOK_DEPTH, key=lambda k: BOOK_DEPTH[k][0])[:1000]:
