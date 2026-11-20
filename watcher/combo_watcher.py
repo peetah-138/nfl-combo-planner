@@ -2923,7 +2923,7 @@ function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const other='';
  return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved,addMode?'add':'approve')).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
   <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
-function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
+function extraBlock(x){const its=((x||{}).items||[]).filter(c=>!pSentHas(c.id));if(!its.length)return '';x=Object.assign({},x,{items:its});const live=its.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
   <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
   <div class="plist">${x.items.map(c=>panelItem(c,'',false,'add')).join('')}</div>
@@ -2931,19 +2931,40 @@ function extraBlock(x){if(!x||!(x.items||[]).length)return '';const live=x.items
 function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
  return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
-async function panelApprove(b){const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to approve';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
+/* Approve / Add: the first tap arms the button, the second sends it once. While it's on its way (S.pSend) every
+   other Approve/Add tap does nothing, and a redraw can't bring back a live button (the arm timer stands aside). */
+function pArm(b,txt){b.dataset.sure='1';b.textContent=txt;b.classList.add('arm');hap('warning');
+ setTimeout(()=>{if(b.isConnected&&!S.pSend&&b.dataset.sure==='1'){b.dataset.sure='';renderBuild();}},4000);}
+async function panelApprove(b){if(S.pSend||b.disabled)return;const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
+ if(!b.dataset.sure){pArm(b,'Tap again to approve');return;}
+ S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';let r;
+ try{r=await pPost({a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at});}finally{S.pSend=false;}
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
 /* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
 function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
  if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
  const pn=((S.panel||{}).panel||{}),its=pn.items||[];if(i&&S.pview==='all'&&pn.status==='approved'&&!its.some(c=>c.state==='scheduled'||c.state==='buying'))return;
  load('build').catch(()=>{}).finally(()=>{if(++i<8)S.pbT=setTimeout(tick,[6,10,15,20,30,60,90][i-1]*1000);});};S.pbT=setTimeout(tick,4000);}
-async function panelAdd(b,view){const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Tap again to add';b.classList.add('arm');hap('warning');setTimeout(()=>{if(b.isConnected){b.dataset.sure='';renderBuild();}},4000);return;}
- b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';const r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
+/* Extras this phone just added stay off the New-since-you-approved card for 2 min, even if a refresh that left
+   before the Mac saved the add still lists them (the Mac drops them from the card itself too). */
+function pSentHas(id){const t=(S.pSent||{})[id];return !!t&&Date.now()-t<120000;}
+async function panelAdd(b,view){if(S.pSend||b.disabled)return;const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;
+ const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)&&!(view==='extra'&&pSentHas(c.id))).map(c=>c.id);
+ if(!b.dataset.sure){pArm(b,'Tap again to add');return;}
+ S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Adding…';let r;
+ try{r=await pPost({a:'panel_add',ids,view:view||S.pview});}finally{S.pSend=false;}
+ hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');
+ if(r.ok){if(view==='extra'){S.pSent=S.pSent||{};const now=Date.now();ids.forEach(id=>S.pSent[id]=now);}
+  if(b.isConnected){b.innerHTML='✓ Added';b.classList.add('done');}await new Promise(res=>setTimeout(res,700));}
+ S.pOff=new Set();await load('build');
+ /* keep hidden only what today's panel now really has; anything the Mac left out (budget, same game) shows again */
+ if(r.ok&&view==='extra'&&S.panel&&S.panel.panel){const has=new Set((S.panel.panel.items||[]).filter(c=>['scheduled','buying','bought','check','failed'].includes(c.state)).map(c=>c.id));
+  let back=false;ids.forEach(id=>{if(!has.has(id)){delete S.pSent[id];back=true;}});if(back)renderBuild();}
+ if(r.ok)pBuyWatch();}
+/* Approve/Add requests give up waiting after 30 s so a hung link can't leave every button dead; the Mac's side is
+   safe to repeat (panel_tx), so the next tap can't buy anything twice. */
+function pPost(body){return Promise.race([api('/app/api/act',body).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'})),
+ new Promise(res=>setTimeout(()=>res({ok:false,msg:'The Mac is slow to answer. Pull to refresh in a moment to see whether it went through.'}),30000))]);}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
@@ -4166,7 +4187,7 @@ def webapp_main():
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
-                         "extra": A.panel_get("extra") if (real and real["status"] == "approved" and view in ("all", "")) else None})
+                         "extra": A.panel_extras(real) if (real and real["status"] == "approved" and view in ("all", "")) else None})
 
     def api_orders():
         return jsonable(A.maker_summary() if A.STORE.get("db") else {})
