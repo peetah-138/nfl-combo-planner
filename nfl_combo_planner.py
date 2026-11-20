@@ -1805,8 +1805,8 @@ def _fetch_account():
                 pass
         # When the money actually moved, for the Results "Profit by day/week" bars (issue #91, display only):
         # a bet cashed early is dated by its last sell fill; a won/lost bet by Kalshi's settlement time.
-        settled_at = iso_unix(s.get("settled_time") or s.get("settlement_time") or s.get("ts")
-                              or s.get("updated_time")) if s else None
+        # field name TBC from a real Kalshi settlement record
+        settled_at = iso_unix(s.get("settled_time") or s.get("settlement_time")) if s else None
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
                      "week": max(weeks).isoformat() if weeks else None,

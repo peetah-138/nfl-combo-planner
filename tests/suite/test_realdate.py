@@ -112,7 +112,7 @@ with sync_playwright() as p:
     time.sleep(.6)
     sheet = pg.evaluate("(()=>{const s=document.querySelector('#sheet');return s?s.innerText:'';})()")
     print("day sheet text:", json.dumps(sheet[:400]))
-    if "#modal" and not pg.evaluate("$('#modal').classList.contains('on')"):
+    if not pg.evaluate("$('#modal').classList.contains('on')"):
         bad("tapping the Nov 18 day bar didn't open a sheet")
     if "Cashed out" not in sheet:
         bad(f"the day detail sheet doesn't show the cash-out date: {sheet[:200]}")
