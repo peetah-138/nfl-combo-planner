@@ -4222,7 +4222,7 @@ def recap(day=None):
     p = {"items": day_items(day)}
     for c in p["items"]:
         if c.get("result"):
-            out["bets"].append({"what": " + ".join(short_name(l["pick"]) for l in c["legs"]), "kind": c["kind"],
+            out["bets"].append({"what": bet_text(c), "kind": c["kind"],
                                 "pl": c["pl"], "chance": c["chance"]})
     if STORE["db"]:
         start = dt.datetime.fromisoformat(day).replace(tzinfo=PACIFIC).timestamp()
@@ -10161,7 +10161,7 @@ def line_candidates(code, everything=False):
             out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
-                        "start": g.get("start"), "game": f"{g['away'].split()[-1]} at {g['home'].split()[-1]}"})
+                        "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}"})
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
 
 
@@ -11055,6 +11055,48 @@ def _size(c, base):
 
 
 # ---- candidates
+PRO_SHORT = ("nfl", "nba", "nhl", "ahl")        # pro teams read fine by last word ("Flyers"); college and the rest keep full names
+
+
+def team_short(code, name):
+    """A team the way the panel names it: 'Flyers' for pro leagues, the full name elsewhere ('Temple Owls')."""
+    name = str(name or "").strip()
+    return name.split()[-1] if code in PRO_SHORT and name else name
+
+
+def stamp_games(code, games):
+    """Give every side of every game a plain-English matchup ('Flyers vs Bruins', the pick named first), so each
+    panel bet and each leg of a combo says which game it is on. Computed from the sides already in hand: no
+    lookups, and nothing about prices or choices changes."""
+    for sides in games.values():
+        two = [x for x in sides if not x.get("tie")]
+        if len(two) != 2:
+            continue
+        for x, y in ((two[0], two[1]), (two[1], two[0])):
+            x["vs"] = team_short(code, y.get("pick"))
+            x["game"] = f"{team_short(code, x.get('pick'))} vs {x['vs']}"
+
+
+def league_tag(code):
+    return str((LEAGUES.get(code) or SPORTS.get(code) or {}).get("short") or (SPORTS.get(code) or {}).get("name") or "")
+
+
+def leg_text(l, kind="combo"):
+    """One panel leg in plain English: 'Over 7.5 (Flyers at Bruins)', 'Flyers to beat Bruins'."""
+    pick = str(l.get("pick") or "")
+    if kind == "line":
+        base = re.sub(r" \(.*\)$", "", pick)
+        return f"{base} ({l['game']})" if l.get("game") else pick
+    if l.get("vs"):
+        return f"{pick} to beat {l['vs']}"
+    return pick
+
+
+def bet_text(c):
+    """A panel bet named with its game, for notifications and logs."""
+    return " + ".join(leg_text(l, c.get("kind")) for l in c.get("legs") or [])
+
+
 def _cand(kind, code, legs, chance, ret, why, **extra):
     kicks = [k for k in (_kick_ts(l) for l in legs) if k]
     if not kicks:
@@ -11067,9 +11109,12 @@ def _cand(kind, code, legs, chance, ret, why, **extra):
     pre = [k for k in (_kick_ts(l) for l in legs if not l.get("live")) if k]
     out = dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
-                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair")} for l in legs],
+                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs")} for l in legs],
+                "league": league_tag(code),
                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
+    if len(legs) == 1 and not out.get("game"):
+        out["game"] = legs[0].get("game") or ""          # the one game a single, spread or total is on
     if live:
         out["live"] = True
         out["kick_pre"] = min(pre) if pre else None
@@ -11523,6 +11568,7 @@ def panel_collect(book_snap, code, log=print):
         log("closing prices:", type(err).__name__, err)
     pre_games = games
     games = dict(pre_games, **live)
+    stamp_games(code, games)                           # each side names its game (display only)
     for sd in pre_games.values():                      # the books' chances, corrected by your own record
         two = [x for x in sd if x.get("fair") and not x.get("tie")]
         for x in two:
@@ -11573,6 +11619,7 @@ def panel_collect(book_snap, code, log=print):
             far, _, _ = week_games(fetch_markets(), weeks=2)
             attach_fair(far, book)
             far = {e: sd for e, sd in far.items() if not any(started(x) for x in sd)}
+            stamp_games(code, far)
             weeks = {e: week_of(e) for e in far}
             if len(set(weeks.values())) >= 2:
                 for c in value_combos(far, k=8, max_legs=4):
@@ -12190,14 +12237,14 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
         for c in list(p["items"]):
             if c.get("state") == "buying" and now - c.get("buy_started", now) > 300:
                 _set_items(day, mode, {c["id"]: {"state": "check", "note": "the Mac stopped mid-purchase; check Kalshi"}})
-                out.append(f"⚠️ Panel: not sure whether {c['legs'][0]['pick']} was bought (the Mac restarted mid-purchase). "
+                out.append(f"⚠️ Panel: not sure whether {bet_text(c)} was bought (the Mac restarted mid-purchase). "
                            f"Check Kalshi; it won't be bought again.")
                 continue
             if c.get("state") != "scheduled":
                 continue
             if (c.get("buy_at") or 0) > now:
                 continue                                  # approved before buying-at-once (#51): keeps the time it was approved under
-            picks = " + ".join(l["pick"] for l in c["legs"])
+            picks = bet_text(c)
             if not _start_ok(c, now, 5 * 60):
                 f0 = _fresh(c) if live_panel_on() and not c.get("live") else None
                 if isinstance(f0, dict) and f0.get("live") and _start_ok(f0, now, 5 * 60):
@@ -12230,7 +12277,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
                     ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
-                        out.append(f"🔁 Panel: swapped {picks} for {' + '.join(l['pick'] for l in alt['legs'])}: "
+                        out.append(f"🔁 Panel: swapped {picks} for {bet_text(alt)}: "
                                    f"its price no longer beat its chance.")
                 else:
                     _set_items(day, mode, {c["id"]: {"state": "skipped",
@@ -13053,7 +13100,7 @@ def panel_pass(log=print):
         x["told"] = sorted(told | {c["id"] for c in x["items"]})
         store_x("insert or replace into panel values(?,?,?,?,?)", (_panel_day(x["at"]), "extra", x["at"], "draft", json.dumps(x)))
         if new and left >= 2:
-            names = ", ".join(" + ".join(short_name(l["pick"]) for l in c["legs"]) for c in new[:3])
+            names = "; ".join(bet_text(c) for c in new[:3])
             out.append(f"🆕 New good bet{'s' if len(new) > 1 else ''} since you approved today's panel: {names}"
                        f"{' and more' if len(new) > 3 else ''}. Add {'them' if len(new) > 1 else 'it'} in Build.")
         return out

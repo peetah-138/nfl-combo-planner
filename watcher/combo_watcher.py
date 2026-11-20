@@ -2215,7 +2215,7 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .pring b{font-size:18px;line-height:1}.pring small{font-size:9.5px;color:var(--mute);font-weight:600}
 .plist{display:flex;flex-direction:column;gap:8px}.pitem{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:12px;background:var(--panel2)}
 .pitem .pliv{color:var(--live)}.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
-.pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
+.pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0;overflow-wrap:anywhere}.pitem .pg{font-size:12.5px;color:var(--sub);line-height:1.35;overflow-wrap:anywhere}.pitem .pg:empty{display:none}.pitem .pg div+div{margin-top:1px}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
 .pitem .ps{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}.pitem .ps b{font-size:15px}.pitem .x{border:0;background:none;color:var(--mute);font-size:15px;cursor:pointer;padding:2px 4px}
 .bets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
 .bet{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
@@ -2872,11 +2872,20 @@ function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];cons
  const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':c.buy_at&&c.buy_at*1000>Date.now()?`<span class="tag">buys ${pTime(c.buy_at)}</span>`:`<span class="tag">${{paused:'Paused · not bought yet','no key':'Can\'t trade from here',price:'Waiting for a fresh price'}[c.hold]||'Buying now'}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
   skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
  const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
- const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.opp?` <span class="m" style="font-weight:500">vs ${esc(short(c.opp))}</span>`:''}`;
+ const title=c.kind==='combo'?c.legs.map(l=>esc(short(l.pick))).join(' + '):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.kind==='single'?' to win':''}`;
+ const games=pGames(c);
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
+ return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''}${c.league?' · '+esc(c.league):''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
+  <div class="pg">${games.map(g=>`<div>${esc(g)}</div>`).join('')}</div>
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
   <div class="ps"><b data-num="ps:${esc(c.id)}" data-v="${(+c.stake||0).toFixed(2)}">${money(c.stake)}</b>${pxSpark(c)}${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
+/* Which game each bet is on, in plain English ("Over 7.5" alone told Pete nothing): one line per game. Spreads and totals
+   say "Flyers at Bruins"; a single or one leg of a combo says "Flyers vs Bruins" (the team picked first). Older saved
+   drafts have no game text, so fall back to what they do carry. */
+function pGames(c){const L=c.legs||[];
+ if(c.kind==='line'){const m=/\((.*)\)$/.exec(L[0]&&L[0].pick||'');return [c.game||(L[0]&&L[0].game)||(m?m[1]:'')].filter(Boolean);}
+ if(c.kind==='combo')return L.map(l=>l.game||'').filter(Boolean);
+ return [c.game||(L[0]&&L[0].game)||(c.opp&&L[0]?short(L[0].pick)+' vs '+short(c.opp):'')].filter(Boolean);}
 function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
 /* A tiny line on each panel card: the bet's Kalshi price (a combo's share of fair) over the times this phone has seen
    it, kept for 36 hours. It only shows once there are two or more readings, so it never makes data up. */
