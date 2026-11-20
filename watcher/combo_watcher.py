@@ -2853,8 +2853,12 @@ function buildSkel(){/* the panel's shape while it loads: header, a few bet rows
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
 function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
 function _renderBuild(){const d=S.build;const m=$('#main');
- const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
- const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ /* The chip row never changes while a league loads: the list of leagues and the per-league game counts are remembered
+    (also on this phone) instead of read from the data that is cleared on a tap; the built-in list is only for a phone that has never loaded */
+ if(d&&d.leagues&&d.leagues.length>1){S.lgs=d.leagues;try{localStorage.setItem('cw_leagues',JSON.stringify(d.leagues))}catch(e){}}
+ if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
+ const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
+ const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
@@ -2873,6 +2877,8 @@ function _renderBuild(){const d=S.build;const m=$('#main');
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
+try{const l=JSON.parse(localStorage.getItem('cw_leagues')||'null');if(Array.isArray(l)&&l.length>1&&l.every(x=>Array.isArray(x)&&x.length>=3&&/^[a-z0-9_]+$/.test(x[0])&&typeof x[1]==='string'&&typeof x[2]==='string'))S.lgs=l;
+ const g=JSON.parse(localStorage.getItem('cw_gn')||'null');if(g&&typeof g==='object'&&!Array.isArray(g))S.gn=g}catch(e){}
 S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
