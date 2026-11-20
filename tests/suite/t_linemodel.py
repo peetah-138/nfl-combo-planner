@@ -251,7 +251,7 @@ ok("...and the other way round", "p_over" not in got and "p_hcover" in got)
 ok("no line text at all: the price isn't trusted", "p_hcover" not in E.espn_line_prices(
     {"pointSpread": {"home": {"close": {"odds": "-125"}}, "away": {"close": {"odds": "+105"}}}}, -3.5, None))
 ok("the shipped evidence is valid Python (no JSON null) and lists the leagues tested",
-   all(lg in E.LINE_EVIDENCE for lg in ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl")) and E.LINE_EVIDENCE["nhl"]["spread"]["ll_old"] is None)
+   all(lg in SHIPPED[1] for lg in ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl")) and SHIPPED[1]["nhl"]["spread"]["ll_old"] is None)
 E.store_x("delete from line_fairs"); E.LINE_STATS["at"] = 0
 ok("a market with no known start isn't logged", E.note_line_fair("KXNFLSPREAD-X-A", "nfl", "nfl", "spread", 3.5, "above", .4, .41, .41, "old", .4, None) is None
    and not E.store_rows("select 1 from line_fairs"))
@@ -290,3 +290,5 @@ ok("the tool writes a Python literal and a partial rebuild keeps the other leagu
    T._compact({"a": None, "b": 1}) == '{"a":None,"b":1}' and "dict(shipped, **ev)" in src)
 E.LINE_CACHE.clear(); E.LINE_CACHE[("x",)] = None
 ok("a cache read never raises (another thread may clear it)", E.margin_pmf("nfl", "spread", {"spread_home": -3.0}) is not None)
+ok("the line helpers don't shadow the Live page's own (_line_num reads 'wins by over 6.5')",
+   E._line_num("Kansas City wins by over 6.5 points") == 6.5 and E._espn_line_num("o44.5") == 44.5)

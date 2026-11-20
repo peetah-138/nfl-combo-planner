@@ -11388,7 +11388,7 @@ def espn_lines(code):
     return out
 
 
-def _line_num(x):
+def _espn_line_num(x):
     """ESPN's line text ('-3.5', 'o44.5', 'u44.5', '+7') as a number, or None."""
     try:
         return float(str(x).strip().lstrip("oOuU"))
@@ -11413,9 +11413,9 @@ def espn_line_prices(odds, spread_home=None, total=None):
     try:
         pc = _devig(close("pointSpread", "home", "close", "odds"), close("pointSpread", "away", "close", "odds"))
         po = _devig(close("total", "over", "close", "odds"), close("total", "under", "close", "odds"))
-        if not same(_line_num(close("pointSpread", "home", "close", "line")), spread_home):
+        if not same(_espn_line_num(close("pointSpread", "home", "close", "line")), spread_home):
             pc = None
-        if not same(_line_num(close("total", "over", "close", "line")), total):
+        if not same(_espn_line_num(close("total", "over", "close", "line")), total):
             po = None
         ph, pa = _am_prob(close("moneyline", "home", "close", "odds")), _am_prob(close("moneyline", "away", "close", "odds"))
         pd = _am_prob(close("moneyline", "draw", "close", "odds")) or _am_prob(close("drawOdds", "moneyLine"))
