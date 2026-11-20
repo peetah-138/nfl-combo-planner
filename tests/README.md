@@ -58,7 +58,8 @@ pattern in a local `.git/hooks/pre-commit`.
   logged, the replay only cuts where the guards held, Pause/Ride it out win), the auto-hedge guards (`t_hedge.py`: fresh score, no break, locks in at least the cost, confirmed over 3+ minutes, fresh order-book price, the cap, Pause, an unknown outcome marked check and never retried, held hedges counted), the stop-loss guards (`t_stoploss.py`: late enough, fresh score, no break, big fall,
   confirmed over 3+ minutes, per-league learning that never loosens on borrowed data, off/paused never sells), the secure address (`t_https_push`: a fake Tailscale command line that only answers when
   started like launchd would, state and log for every failure, retry loop) and web push coverage (every `push()` also
-  reaches web push, deduped; nothing trades), per-league learning
+  reaches web push, deduped; nothing trades), notification tap targets (`t_push_target.py`: `/` not `/app`, the service worker maps legacy
+  `/app` payloads, the hub redirects page navigations to `/app` and never answers a page with an empty file, API routes unchanged), per-league learning
   (cut-offs, calibration, pay index; checked against the old code), the hub's read cache (`t_hubcache.py`: short
   score ttl, last-good copy, per-host backoff, warming that never keeps an entry alive on its own), the panel rebuild on
   request (`t_rebuild.py`: flag, per-sport progress notes, done/why, drafts only, no started game, the watcher's
