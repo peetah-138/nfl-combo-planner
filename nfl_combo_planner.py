@@ -5573,7 +5573,7 @@ def game_detail(event_id, code, max_age=6):
         return {}
     got = GAME_DETAIL.get(event_id)
     if got and time.time() - got[0] < max_age:
-        return got[1]
+        return game_extras(got[1], path, event_id)
     out = {}
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
@@ -5589,7 +5589,7 @@ def game_detail(event_id, code, max_age=6):
     for k in [k for k, v in list(GAME_DETAIL.items()) if now - v[0] > GAME_DETAIL_KEEP]:
         GAME_DETAIL.pop(k, None)                                # forget games nobody has opened for an hour, so the cache stays small
     GAME_DETAIL[event_id] = (now, out)
-    return out
+    return game_extras(out, path, event_id)
 
 
 def _parse_game_detail(data, event_id=None):
@@ -5654,11 +5654,478 @@ def _parse_game_detail(data, event_id=None):
             pbp = None
         if pbp:
             out["pbp"] = pbp
+        # Slice 3: box score, team stats, injuries off the same summary (no second fetch), and the season/type the
+        # background team fetches (last 5 games, season leaders) need. Each piece is shaped on its own; a failure
+        # drops only that tab.
+        side_of = {t["id"]: side for side, t in teams.items() if t.get("id")}
+        for key, fn in (("box", _parse_box), ("tstats", _parse_team_stats), ("inj", _parse_injuries)):
+            try:
+                got = fn(data, side_of)
+            except (AttributeError, TypeError, ValueError) as err:
+                klive_log_once("gamedetail", f"{event_id or ''}:{key}", err)
+                got = None
+            if got:
+                out[key] = got
+        _note_athletes(data)
+        season = _dic(hdr.get("season"))
+        yr, styp = _to_int(season.get("year")), _to_int(season.get("type"))
+        if yr and 2000 <= yr <= 2100:
+            board["season"] = yr
+            board["stype"] = styp if styp in (1, 2, 3, 4) else 2
         return out
     except (AttributeError, TypeError, ValueError):
         # The explicit guards above (len==2, "home"/"away" present, plays[-1] only when non-empty) make KeyError
         # and IndexError unreachable for feed data; catching them too would only hide a future programming bug.
         return {}
+
+
+# ---- Slice 3 of the live game page (issue #72): box score, team stats, injury report, last 5 games, season leaders.
+# Display only, like the rest of the game detail: nothing that buys, sells, sizes or prices ever reads these, and a bad or
+# missing feed only hides (or empties) a tab. The box score, team stats and injuries come off the summary the page already
+# fetches. Last 5 games and season leaders need each team's schedule and season leaders (ESPN's free site and core feeds):
+# those are fetched in a background thread with their own polite cache (30/60 min; 24 h for a player's name) and backoff
+# (a failure waits 30 s, doubling to 30 min; Retry-After honoured), so a slow ESPN never holds up a page, and the trading
+# loop never calls any of it.
+BOX_GROUPS = (("passing", "Passing", ("C/ATT", "YDS", "TD", "INT", "SACKS")),
+              ("rushing", "Rushing", ("CAR", "YDS", "AVG", "TD", "LONG")),
+              ("receiving", "Receiving", ("REC", "YDS", "AVG", "TD", "LONG")),
+              ("defensive", "Defense", ("TOT", "SOLO", "SACKS", "TFL", "PD", "TD")),
+              ("kicking", "Kicking", ("FG", "PCT", "LONG", "XP", "PTS")))
+BOX_ROWS = 12             # most players per table
+TEAM_STATS = (("totalYards", "Total yards"), ("netPassingYards", "Passing yards"), ("rushingYards", "Rushing yards"),
+              ("firstDowns", "First downs"), ("thirdDownEff", "3rd down"), ("fourthDownEff", "4th down"),
+              ("redZoneAttempts", "Red zone"), ("yardsPerPlay", "Yards per play"), ("totalOffensivePlays", "Plays"),
+              ("sacksYardsLost", "Sacked"), ("turnovers", "Turnovers"), ("totalPenaltiesYards", "Penalties"),
+              ("possessionTime", "Time of possession"))
+TS_RATIO = ("thirdDownEff", "fourthDownEff", "redZoneAttempts")      # "made-att": the bar compares success rates
+INJ_ORDER = ("out", "injured reserve", "doubtful", "questionable", "day-to-day", "probable")
+INJ_MAX = 30              # most injured players listed per team
+TXT_MAX = 60
+LEAD_CATS = (("passingLeader", "pass", "Passing yards"), ("rushingLeader", "rush", "Rushing yards"),
+             ("receivingLeader", "rec", "Receiving yards"))
+CORE_LEAGUE = {"football/nfl": "nfl", "football/college-football": "college-football"}
+ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports"
+ESPN_CORE = "https://sports.core.api.espn.com/v2/sports"
+GX = {}                   # (kind, ...) -> (fetched at, shaped value, failures in a row, next try no sooner than)
+GX_JOB = {"lock": threading.Lock(), "t": {}}
+GX_TTL = {"sched": 1800, "lead": 3600, "ath": 86400}
+GX_BUDGET = 1.5           # most seconds the FIRST open of a game waits for its team fetches (later polls never wait)
+GX_TIMEOUT = 8
+GX_BACKOFF = (30, 1800)   # first wait after a failure, doubling up to the cap
+GX_ATH_FETCH = 6          # most player-name lookups per refresh
+GX_THREADS = 3            # most refreshes at once
+GX_MAX = 600              # cache entries kept (oldest dropped past this)
+ATH = {}                  # ESPN athlete id -> (seen at, {"n": name, "s": short name, "j": jersey})
+ATH_MAX = 4000
+
+
+def _cut(v, n=TXT_MAX):
+    """Feed text, trimmed, as a string ('' for anything that is not text or a number)."""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return ""
+    return str(v).strip()[:n]
+
+
+def _jersey(v):
+    """A jersey number ('7'), or '' when the feed has none or something odd."""
+    s = _cut(v, 4)
+    return s if re.match(r"^\d{1,3}$", s) else ""
+
+
+def _parse_box(data, side_of):
+    """The box score per side: {"away": [{"k", "t" (title), "c" (columns), "r": [{"n", "j", "s"}], "tot"}], "home": [...]}."""
+    out = {}
+    for p in (_dic(data.get("boxscore")).get("players") or [])[:4]:
+        p = _dic(p)
+        side = side_of.get(str(_dic(p.get("team")).get("id") or ""))
+        if side not in ("home", "away") or side in out:
+            continue
+        groups = {}
+        for g in (p.get("statistics") if isinstance(p.get("statistics"), list) else [])[:20]:
+            g = _dic(g)
+            groups.setdefault(str(g.get("name") or ""), g)
+        sec = []
+        for key, title, want in BOX_GROUPS:
+            g = groups.get(key)
+            if not g:
+                continue
+            labels = [_cut(x, 10) for x in (g.get("labels") if isinstance(g.get("labels"), list) else [])[:16]]
+            idx = [labels.index(c) for c in want if c in labels] or list(range(min(6, len(labels))))
+            rows = []
+            for a in (g.get("athletes") if isinstance(g.get("athletes"), list) else [])[:BOX_ROWS]:
+                a = _dic(a)
+                ath = _dic(a.get("athlete"))
+                st = a.get("stats") if isinstance(a.get("stats"), list) else []
+                name = _cut(ath.get("displayName") or ath.get("shortName"))
+                if name:
+                    rows.append({"n": name, "j": _jersey(ath.get("jersey")),
+                                 "s": [_cut(st[i], 12) if i < len(st) else "" for i in idx]})
+            if rows:
+                tot = g.get("totals") if isinstance(g.get("totals"), list) else []
+                sec.append({"k": key, "t": title, "c": [labels[i] for i in idx], "r": rows,
+                            "tot": [_cut(tot[i], 12) if i < len(tot) else "" for i in idx] if tot else []})
+        if sec:
+            out[side] = sec
+    return out
+
+
+def _ts_num(v, name):
+    """A team-stat value as a number for its share bar: 31:24 -> seconds, 5-11 -> 0.4545 for the efficiency rows (else the
+    first number: sacks-yards, penalties-yards), 12/29 -> a rate, 5.2 -> 5.2. None for anything else or a negative."""
+    s = _cut(v, 16).replace(",", "")
+    try:
+        m = re.match(r"^(\d{1,3}):(\d{2})$", s)
+        if m:
+            return float(int(m.group(1)) * 60 + int(m.group(2)))
+        m = re.match(r"^(\d{1,4})\s*([-/])\s*(\d{1,5})$", s)
+        if m:
+            a, b = int(m.group(1)), int(m.group(3))
+            if name in TS_RATIO or m.group(2) == "/":
+                return round(a / b, 4) if b else 0.0
+            return float(a)
+        x = float(s)
+        return x if math.isfinite(x) and x >= 0 else None
+    except (ValueError, ArithmeticError):
+        return None
+
+
+def _parse_team_stats(data, side_of):
+    """Head-to-head team stats: [{"k", "l" (label), "a"/"h" (as the feed shows them), "an"/"hn" (numbers for the bar, or None)}]."""
+    per = {}
+    for t in (_dic(data.get("boxscore")).get("teams") or [])[:4]:
+        t = _dic(t)
+        side = t.get("homeAway") if t.get("homeAway") in ("home", "away") else side_of.get(str(_dic(t.get("team")).get("id") or ""))
+        if side not in ("home", "away") or side in per:
+            continue
+        stats = t.get("statistics") if isinstance(t.get("statistics"), list) else []
+        per[side] = {}
+        for s in stats[:60]:
+            s = _dic(s)
+            if s.get("name"):
+                per[side].setdefault(str(s["name"]), s)
+    if set(per) != {"home", "away"}:
+        return []
+    names = [(k, lab) for k, lab in TEAM_STATS if k in per["home"] and k in per["away"]]
+    if len(names) < 3:          # another shape (e.g. season averages): show what the feed has, with its own labels
+        names = [(k, per["away"][k].get("label") or k) for k in list(per["away"])[:14] if k in per["home"]]
+    rows = []
+    for k, lab in names:
+        a, h = per["away"][k].get("displayValue"), per["home"][k].get("displayValue")
+        if not _cut(a) and not _cut(h):
+            continue
+        an, hn = _ts_num(a, k), _ts_num(h, k)
+        if an is None or hn is None or an + hn <= 0:
+            an = hn = None
+        rows.append({"k": _cut(k, 40), "l": _cut(lab, 40), "a": _cut(a, 16) or "–", "h": _cut(h, 16) or "–", "an": an, "hn": hn})
+    return rows
+
+
+def _inj_rank(st):
+    s = st.lower()
+    return next((i for i, w in enumerate(INJ_ORDER) if w in s), len(INJ_ORDER))
+
+
+def _parse_injuries(data, side_of):
+    """The injury report per side: {"away": [{"n", "j", "pos", "st", "ty", "ret"}], "home": [...]}, worst first. Present
+    (possibly with empty lists) whenever the summary carries an injuries block, so the tab can say "none listed"."""
+    raw = data.get("injuries")
+    if not isinstance(raw, list):
+        return {}
+    out = {"away": [], "home": []}
+    for t in raw[:4]:
+        t = _dic(t)
+        side = side_of.get(str(_dic(t.get("team")).get("id") or ""))
+        if side not in out or out[side]:
+            continue
+        for x in (t.get("injuries") if isinstance(t.get("injuries"), list) else [])[:80]:
+            x = _dic(x)
+            ath = _dic(x.get("athlete"))
+            name = _cut(ath.get("displayName") or ath.get("shortName"))
+            st = _cut(x.get("status") or _dic(x.get("type")).get("description"), 30)
+            if not name or not st or st.lower() == "active":
+                continue
+            det = _dic(x.get("details"))
+            ty = _cut(det.get("type"), 30)
+            ret = _cut(det.get("returnDate"), 10)
+            out[side].append({"n": name, "j": _jersey(ath.get("jersey")), "pos": _cut(_dic(ath.get("position")).get("abbreviation"), 5),
+                              "st": st[:1].upper() + st[1:], "ty": "" if ty.lower() in ("", "not specified") else ty,
+                              "ret": ret if re.match(r"^\d{4}-\d{2}-\d{2}$", ret) else ""})
+        out[side].sort(key=lambda r: _inj_rank(r["st"]))
+        del out[side][INJ_MAX:]
+    return out
+
+
+def _note_athletes(data):
+    """Remember the names and jersey numbers the summary already carries, so season leaders rarely need a lookup."""
+    try:
+        now = time.time()
+
+        def add(a):
+            a = _dic(a)
+            i = str(a.get("id") or "")
+            name = _cut(a.get("displayName") or a.get("shortName"))
+            if name and re.match(r"^\d{1,12}$", i):
+                ATH[i] = (now, {"n": name, "s": _cut(a.get("shortName")) or name, "j": _jersey(a.get("jersey"))})
+        for p in (_dic(data.get("boxscore")).get("players") or [])[:4]:
+            for g in (_dic(p).get("statistics") or [])[:20]:
+                for a in (_dic(g).get("athletes") or [])[:40]:
+                    add(_dic(a).get("athlete"))
+        for blk in ("leaders", "injuries"):
+            for t in (data.get(blk) or [])[:4]:
+                for c in (_dic(t).get(blk) or [])[:80]:
+                    c = _dic(c)
+                    add(c.get("athlete"))
+                    for x in (c.get("leaders") or [])[:3] if isinstance(c.get("leaders"), list) else []:
+                        add(_dic(x).get("athlete"))
+        if len(ATH) > ATH_MAX:
+            for k, _v in sorted(list(ATH.items()), key=lambda kv: kv[1][0])[:len(ATH) - ATH_MAX // 2]:
+                ATH.pop(k, None)
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+
+class _GxBusy(Exception):
+    """ESPN said slow down (429) or broke (5xx): back off, at least as long as it asked."""
+    def __init__(self, code, wait=None):
+        super().__init__(f"ESPN answered {code}")
+        self.wait = wait
+
+
+def _retry_after(r):
+    h = getattr(r, "headers", None)
+    v = _cut(h.get("Retry-After") if hasattr(h, "get") else None, 8)
+    return min(int(v), GX_BACKOFF[1]) if v.isdigit() else None
+
+
+def _gx_val(key):
+    return (GX.get(key) or (0, None))[1]
+
+
+def _gx_due(key, now=None):
+    """True when a cached team fetch is old enough to ask again and is not backing off after a failure."""
+    now = time.time() if now is None else now
+    got = GX.get(key)
+    if not got:
+        return True
+    if now < got[3]:
+        return False
+    return now - got[0] >= GX_TTL[key[0]]
+
+
+def _gx_get(key, url, shape):
+    """One polite fetch into the GX cache: skipped while fresh or backing off; a failure keeps the last good copy."""
+    now = time.time()
+    if not _gx_due(key, now):
+        return
+    got = GX.get(key)
+    try:
+        # An explicit header sends this straight to ESPN, never through the hub's warm cache (which would refetch it every
+        # few seconds): this cache's own 30/60 min and ESPN's Retry-After are the only pace.
+        r = requests.get(url, headers={"Accept": "application/json"}, timeout=GX_TIMEOUT)
+        code = int(getattr(r, "status_code", 0) or 0)
+        if code == 429 or code >= 500 or code <= 0:
+            raise _GxBusy(code, _retry_after(r))
+        GX[key] = (now, shape(r.json()) if r.ok else None, 0, 0)    # a 404 (no such season/team) is an answer: nothing to show
+    except Exception as err:          # any failure (a 400-digit number, odd JSON, a dropped link) takes the backoff path
+        fails = (got[2] if got else 0) + 1
+        wait = min(GX_BACKOFF[1], GX_BACKOFF[0] * 2 ** min(fails - 1, 10))
+        if getattr(err, "wait", None):
+            wait = max(wait, err.wait)
+        GX[key] = (got[0] if got else 0, got[1] if got else None, fails, now + wait)
+        klive_log_once("gamedetail", ":".join(map(str, key)), err)
+    if len(GX) > GX_MAX:              # drop the least recently useful; an entry still backing off counts as recent
+        for k, _v in sorted(list(GX.items()), key=lambda kv: max(kv[1][0], kv[1][3]))[:len(GX) - GX_MAX // 2]:
+            GX.pop(k, None)
+
+
+def _score(v):
+    if isinstance(v, dict):
+        v = v.get("value") if v.get("value") is not None else v.get("displayValue")
+    return _to_int(v)
+
+
+def _shape_sched(j):
+    """A team's finished games this season, oldest first: {"rec", "g": [{"id", "d", "w", "at", "opp", "me", "them"}]}."""
+    j = _dic(j)
+    tm = _dic(j.get("team"))
+    tid = str(tm.get("id") or "")
+    out = []
+    for e in (j.get("events") if isinstance(j.get("events"), list) else [])[:40]:
+        e = _dic(e)
+        comps = e.get("competitions") if isinstance(e.get("competitions"), list) else []
+        c = _dic(comps[0]) if comps else {}
+        if not _dic(_dic(c.get("status")).get("type")).get("completed"):
+            continue
+        cs = [_dic(x) for x in (c.get("competitors") if isinstance(c.get("competitors"), list) else [])[:2]]
+        me = next((x for x in cs if str(x.get("id") or "") == tid), None)
+        op = next((x for x in cs if x is not me), None)
+        if not tid or me is None or op is None:
+            continue
+        ms, ts = _score(me.get("score")), _score(op.get("score"))
+        if ms is None or ts is None:
+            continue
+        w = "W" if ms > ts else "L" if ms < ts else "T"
+        d = _cut(e.get("date"), 25)                      # the UTC kickoff; the page shows it in local time
+        out.append({"id": _cut(e.get("id"), PBP_ID_MAX), "d": d if re.match(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?Z)?$", d) else "", "w": w,
+                    "at": "vs" if me.get("homeAway") == "home" else "@", "opp": _cut(_dic(op.get("team")).get("abbreviation"), 6),
+                    "me": ms, "them": ts})
+    return {"rec": _cut(tm.get("recordSummary"), 12), "g": out}
+
+
+def _lead_line(dv):
+    """'222/347, 2656 YDS, 22 TD, 4 INT' -> '222/347, 22 TD, 4 INT' (the yards are the big number beside it)."""
+    parts = [x.strip() for x in re.split(r",\s+", _cut(dv, 60))]
+    return ", ".join(x for x in parts if x and not re.match(r"^[\d,.]+\s*YDS$", x))
+
+
+def _shape_leaders(j):
+    """A team's season leaders: {"pass"/"rush"/"rec": {"id", "v" (yards), "line"}} from ESPN's core feed."""
+    cats = {}
+    for c in (_dic(j).get("categories") if isinstance(_dic(j).get("categories"), list) else [])[:80]:
+        c = _dic(c)
+        cats.setdefault(str(c.get("name") or ""), c)
+    out = {}
+    for name, k, _lab in LEAD_CATS:
+        ls = cats.get(name, {}).get("leaders")
+        x = _dic(ls[0]) if isinstance(ls, list) and ls else {}
+        m = re.search(r"/athletes/(\d{1,12})(?:[/?]|$)", _cut(_dic(x.get("athlete")).get("$ref"), 300))
+        v = x.get("value")
+        if not m or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            continue
+        out[k] = {"id": m.group(1), "v": round(float(v), 1), "line": _lead_line(x.get("displayValue"))}
+    return out
+
+
+def _shape_ath(j):
+    j = _dic(j)
+    name = _cut(j.get("displayName") or j.get("shortName"))
+    return {"n": name, "s": _cut(j.get("shortName")) or name, "j": _jersey(j.get("jersey"))} if name else None
+
+
+def _gx_types(stype):
+    """Which season types make up "recent games": the regular season, plus the playoffs once they are on."""
+    return (2, 3) if stype == 3 else (2,)
+
+
+def _ath_known(aid):
+    """True when a player's name is on file and under a day old."""
+    got = ATH.get(aid)
+    return bool(got) and time.time() - got[0] < GX_TTL["ath"]
+
+
+def _ath_due(lg, yr, ids):
+    """The season leaders whose names we still need (not on file, and not backing off after a failed lookup)."""
+    out = []
+    for tid in ids:
+        for c in (_gx_val(("lead", lg, yr, tid)) or {}).values():
+            aid = c.get("id")
+            if aid and not _ath_known(aid) and _gx_due(("ath", aid)) and aid not in out:
+                out.append(aid)
+    return out
+
+
+def _gx_refresh(path, lg, yr, stype, away, home):
+    """Fetch what is due for both teams (schedule, season leaders), then the names of leaders the summary did not have."""
+    sport = path.split("/")[0]
+    for tid in (away, home):
+        for st in _gx_types(stype):
+            _gx_get(("sched", path, tid, yr, st), f"{ESPN_SITE}/{path}/teams/{tid}/schedule?season={yr}&seasontype={st}", _shape_sched)
+        _gx_get(("lead", lg, yr, tid), f"{ESPN_CORE}/{sport}/leagues/{lg}/seasons/{yr}/types/2/teams/{tid}/leaders", _shape_leaders)
+    for n, aid in enumerate(_ath_due(lg, yr, (away, home))):
+        if n < GX_ATH_FETCH:
+            _gx_get(("ath", aid), f"{ESPN_CORE}/{sport}/leagues/{lg}/athletes/{aid}", _shape_ath)
+            got = _gx_val(("ath", aid))
+            if got:
+                ATH[aid] = (time.time(), got)
+
+
+def _gx_kick(job):
+    """Start (or find) the background refresh for one game's teams. None when too many are already running."""
+    with GX_JOB["lock"]:
+        ts = GX_JOB["t"]
+        th = ts.get(job)
+        if th is not None and th.is_alive():
+            return th
+        for k, t in list(ts.items()):
+            if not t.is_alive():
+                ts.pop(k, None)
+        if len(ts) >= GX_THREADS:
+            return None
+
+        def run():
+            try:
+                _gx_refresh(*job)
+            except Exception as err:                # a background display fetch must never die loudly or touch anything else
+                klive_log_once("gamedetail", "extras", err)
+        th = threading.Thread(target=run, daemon=True, name="gamextras")
+        ts[job] = th
+        th.start()
+        return th
+
+
+def _gx_last5(path, ids, event_id, yr, stype):
+    out = {}
+    for side in ("away", "home"):
+        keys = [("sched", path, ids[side], yr, st) for st in _gx_types(stype)]
+        vals = [_gx_val(k) for k in keys]
+        if vals[0] is None:
+            if keys[0] in GX:
+                out[side] = {"rec": "", "g": [], "na": True}       # asked and it failed: say so on that side
+            continue
+        games = sorted((x for v in vals if v for x in v.get("g") or [] if x.get("id") != event_id), key=lambda x: x.get("d") or "")
+        out[side] = {"rec": vals[0].get("rec") or "", "g": games[-5:][::-1]}
+    return out
+
+
+def _gx_leaders(lg, yr, ids):
+    v = {s: _gx_val(("lead", lg, yr, ids[s])) or {} for s in ("away", "home")}
+    if not v["away"] and not v["home"]:
+        return []
+    rows = []
+    for _name, k, lab in LEAD_CATS:
+        row = {"k": k, "l": lab}
+        for s in ("away", "home"):
+            c = v[s].get(k)
+            if c:
+                a = (ATH.get(c["id"]) or (0, {}))[1]
+                row[s] = {"v": c["v"], "line": c["line"], "n": a.get("s") or a.get("n") or "", "j": a.get("j") or ""}
+        if "away" in row or "home" in row:
+            rows.append(row)
+    return rows
+
+
+def game_extras(base, path, event_id, budget=None):
+    """The game detail plus last 5 games and season leaders for both teams, from the background cache. Starts a refresh
+    when something is due; only the first open of a game waits for it (at most GX_BUDGET s, or `budget`). Never raises."""
+    try:
+        b = _dic(_dic(base).get("board"))
+        lg = CORE_LEAGUE.get(str(path))
+        ids = {s: str(_dic(b.get(s)).get("id") or "") for s in ("away", "home")}
+        yr, stype = b.get("season"), b.get("stype")
+        if not lg or not isinstance(yr, int) or not all(re.match(r"^\d{1,8}$", i) for i in ids.values()):
+            return base
+        if stype == 1:                       # preseason: last season's results and leaders are the useful ones
+            yr, stype = yr - 1, 2
+        stype = 3 if stype == 3 else 2
+        job = (str(path), lg, yr, stype, ids["away"], ids["home"])
+        keys = [("sched", job[0], i, yr, st) for i in ids.values() for st in _gx_types(stype)] + [("lead", lg, yr, i) for i in ids.values()]
+        if any(_gx_due(k) for k in keys) or _ath_due(lg, yr, ids.values()):
+            first = not any(k in GX for k in keys)
+            th = _gx_kick(job)
+            wait = budget if budget is not None else (GX_BUDGET if first else 0)
+            if th is not None and wait:
+                th.join(wait)
+        extra = {}
+        l5 = _gx_last5(job[0], ids, str(event_id), yr, stype)
+        if l5:
+            extra["last5"] = l5
+        ld = _gx_leaders(lg, yr, ids)
+        if ld:
+            extra["leaders"] = ld
+        return {**base, **extra} if extra else base
+    except (AttributeError, TypeError, ValueError, RuntimeError, KeyError) as err:
+        klive_log_once("gamedetail", f"{event_id}:extras", err)
+        return base
 
 
 def _to_int(v):
