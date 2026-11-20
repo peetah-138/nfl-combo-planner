@@ -5000,7 +5000,7 @@ def open_singles(max_age=30):
         dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
-                    "opp": (dsc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
+                    "opp": (dsc or {}).get("opp_name") or (dsc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
                     "sc": {k: dsc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if dsc else None,
                     "on": bool(ksc and not sc and ksc["state"] == "in"),       # display: Kalshi's data says it's playing
                     "src": "kalshi" if ksc and not sc else "",

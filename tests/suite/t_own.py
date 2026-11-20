@@ -26,7 +26,7 @@ E.CFG["auto_sell"] = True; E.can_trade = lambda: True
 E.MINE["hold"] = {t: {"label": t, "p": .6, "pays": 20, "cost": 5, "hold": 12, "won_some": True, "legs_left": []}
                   for t in ("KXMVEMINE-3", "KXMVEAPP-2")}
 E.MINE["cash"] = {}
-E.take_profit_reason = lambda t, h: ("take profit", 6.0)
+E.take_profit_reason = lambda t, h, cut_ok=False: ("take profit", 6.0)
 E.get_cash_offer = lambda t, f: asked.append(t) or {"offer": 0}
 E.fetch_account = lambda **k: ([], 300.0, None)
 E.auto_sell_now({"acts": {"KXMVEMINE-3": 1.0, "KXMVEAPP-2": 0}})
@@ -79,6 +79,19 @@ hk = ss["KXNHLGAME-26NOV18SJSVGK-SJS"]
 ok("moneyline single shows team to win, before the game", hk["label"] == "San Jose to win" and hk["state"] == "pre" and hk["how"] == "")
 ok("singles show the origin tag", hk["t"] and (E.is_own(hk["t"])) and not E.is_own(sp["t"]))
 n0 = len(asked_mk); E.open_singles(); ok("cached for half a minute", len(asked_mk) == n0)
+
+# --- the opponent on a single (GitHub #95): from the score, name first then code; nothing when there is no score
+ok("spread single: the opponent comes from the score's short code", sp["opp"] == "BUF")
+ok("NHL single (before the game): the opponent still comes from the score, unchanged", hk["opp"] == "VGK")
+E.ACCT_POS["items"] = E.ACCT_POS["items"] + [{"ticker": "KXNBAGAME-26NOV19BOSNYK-BOS", "position_fp": "5", "market_exposure_dollars": "2.50"}]
+MK["KXNBAGAME-26NOV19BOSNYK-BOS"] = {"ticker": "KXNBAGAME-26NOV19BOSNYK-BOS", "event_ticker": "KXNBAGAME-26NOV19BOSNYK",
+          "title": "Boston at New York Winner?", "yes_sub_title": "Boston", "status": "active",
+          "yes_bid_dollars": "0.50", "yes_ask_dollars": "0.54", "no_bid_dollars": "0.46"}
+E.SINGLES["at"] = 0
+ss2 = {x["t"]: x for x in E.open_singles()}
+nb = ss2.get("KXNBAGAME-26NOV19BOSNYK-BOS")
+ok("a held NBA single with no score at all (not a Kalshi-live sport): opp is empty, src empty", nb is not None and nb["opp"] == "" and nb["src"] == "" and nb["sc"] is None)
+ok("adding it changed nothing about the others' opponents", ss2["KXNFLSPREAD-26NOV22BUFKC-KC7"]["opp"] == "BUF" and ss2["KXNHLGAME-26NOV18SJSVGK-SJS"]["opp"] == "VGK")
 
 # --- the panel steers clear of games you bet yourself ---
 E.note_held({E.game_event(hk["event"])})
