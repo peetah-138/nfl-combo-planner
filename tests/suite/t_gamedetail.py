@@ -95,3 +95,79 @@ for junk in (None, {}, {"header": None}, {"header": {"competitions": [{"competit
     except Exception:
         raised = True
     ok("_parse_game_detail never raises on " + repr(junk)[:40], raised is False)
+
+# ---- a non-numeric event id is turned away before any ESPN fetch (defence in depth)
+before = len(net.calls)
+ok("a non-numeric event id returns empty and never calls ESPN",
+   E.game_detail("401; drop", "nfl", max_age=0) == {} and E.game_detail("../secret", "nfl", max_age=0) == {}
+   and len(net.calls) == before)
+
+# ---- college football is gated in exactly like the NFL (both are "football/..." in SPORTS/LEAGUES)
+net.mode = "ok"
+dc = E.game_detail("401873066", "ncaaf", max_age=0)
+ok("college football (ncaaf) is a football league, so the strip is built like the NFL's",
+   isinstance(dc, dict) and bool(dc.get("board")), dc)
+
+# ---- a valid board but no current drive: the strip still gets its scoreboard, no 'drive' key, no raise
+import copy as _copy
+FX_NODRIVE = _copy.deepcopy(FX)
+FX_NODRIVE["summary"].pop("drives", None)                       # a feed with no drives block at all
+orig_get = net.get
+
+
+def _nodrive_get(url, params=None, headers=None, **kw):
+    net.calls.append((url, dict(params or {})))
+    if "/summary" in url:
+        return Resp(_copy.deepcopy(FX_NODRIVE["summary"]))
+    if "/scoreboard" in url:
+        return Resp(_copy.deepcopy(FX_NODRIVE["scoreboard"]))
+    return Resp({"events": []})
+
+
+net.get = _nodrive_get
+try:
+    nd = E.game_detail("401873066", "nfl", max_age=0)
+    raised = False
+except Exception as err:
+    nd, raised = {"X": err}, True
+net.get = orig_get
+ok("no drives.current: a board but no 'drive' key, and no raise",
+   raised is False and bool((nd.get("board") or {}).get("home")) and "drive" not in nd, nd)
+
+# ---- _situation_info (called directly) is tolerant: a bad shape yields {}, a partial-but-dict shape passes through
+#      (a missing field is None/empty so the strip just leaves it out), and nothing ever raises.
+cases = [
+    (None, {}, "{}", lambda r: r == {}),                       # not a dict -> {}
+    ("oops", {}, "{}", lambda r: r == {}),                     # a string -> {}
+    ({"down": "x", "distance": None}, {}, "dict", lambda r: isinstance(r, dict) and r.get("down") == "x"),
+    ({"down": 2, "distance": 7}, {"text": "pass complete"}, "dict (no lastPlay.type)",
+     lambda r: isinstance(r, dict) and r.get("lastPlayType") == "" and r.get("lastPlayText") == "pass complete"),
+]
+for sit_in, lp_in, label, check in cases:
+    try:
+        r = E._situation_info(sit_in, lp_in)
+        raised = False
+    except Exception as err:
+        r, raised = {"X": err}, True
+    ok("_situation_info degraded (" + label + "): no raise, expected shape", raised is False and check(r), r)
+
+# ---- isolation: no money/account/trading function may reach the game-detail display helpers, and those three
+#      must never take the web app's tap lock (they are read on the page thread, outside TapLock). Static source
+#      checks, like the other isolation tests (t_kalshi_live / t_robust).
+import inspect
+# The money/account/trading functions the review named (panel_*, auto_sell_now, take_profit_reason,
+# single_sell_reason, leg_score, pick_state), plus the other buy/sell paths. fetch_scores is NOT here: it is the
+# score-fetching plumbing that legitimately builds the display situation via _situation_info.
+MONEY = ["panel_exec", "panel_pass", "build_panel", "choose_panel", "panel_approve", "panel_add", "_buy_panel_bet",
+         "auto_sell_now", "take_profit_reason", "single_sell_reason", "smart_sell_singles", "leg_score",
+         "pick_state", "accept_offer", "get_offer", "kalshi_send"]
+DISPLAY = ("game_detail", "_parse_game_detail", "_situation_info")
+leaks = [f for f in MONEY if hasattr(E, f)
+         and any(k in inspect.getsource(getattr(E, f)) for k in DISPLAY)]
+ok("no money/account/trading function calls the game-detail display helpers",
+   not leaks and all(hasattr(E, f) for f in ("auto_sell_now", "take_profit_reason", "single_sell_reason",
+                                             "leg_score", "pick_state")), leaks)
+# the display helpers themselves touch no lock (TapLock lives in the watcher; here just prove they never try to)
+locked = [f for f in DISPLAY if hasattr(E, f)
+          and any(k in inspect.getsource(getattr(E, f)) for k in ("TapLock", "act_lock", ".hold(", "alock"))]
+ok("the game-detail display helpers never acquire the tap lock", not locked, locked)

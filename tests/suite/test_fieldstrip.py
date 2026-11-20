@@ -122,6 +122,79 @@ def run(pg, label, phone):
     return probs
 
 
+def run_home(pg, label):
+    """Home-team possession (HOU has the ball, in the red zone): the ball sits on the home side of midfield and the
+    red-zone shade is on. The existing run() only exercises away possession (IND), so this covers the other branch."""
+    probs = []
+    pg.route("**/app/api/game*", answer)
+    # HOU (home) driving, deep in the red zone (12 yards to the end zone it attacks: the away/IND end zone, on the left).
+    state["g"] = game(12, "1st", "goal", "C.Stroud scramble to IND 12.", "Rush", "HOU", redzone=True)
+    pg.goto(B + "/app"); time.sleep(.6)
+    pg.evaluate(f"openGame('{TK}')")
+    if not until(pg, "!!document.querySelector('#sheet .fstrip .fball')"):
+        probs.append(label + ": field strip didn't render for home possession"); state["g"] = game(73, "1st", "10", "x", "Rush", "IND"); return probs
+    bx = pg.evaluate("parseFloat(document.querySelector('#sheet .fstrip .fball').style.left)")
+    # Home attacks left (toward the away/IND end zone), so deep in the red zone the ball is on the left half (< 50%).
+    if not (bx < 50):
+        probs.append(label + ": home-possession ball is on the wrong side (%.1f%%, expected < 50)" % bx)
+    if not until(pg, "!!document.querySelector('#sheet .fstrip .frz')", 5):
+        probs.append(label + ": no red-zone shading for the home-possession drive")
+    # the red-zone shade sits on the left (the IND end zone the home team attacks)
+    rzx = pg.evaluate("parseFloat((document.querySelector('#sheet .fstrip .frz')||{style:{}}).style.left||'99')")
+    if not (rzx < 25):
+        probs.append(label + ": home-possession red zone is on the wrong side (%.1f%%)" % rzx)
+    # the scoreboard shows the home team (HOU) with the football
+    if not pg.evaluate("[...document.querySelectorAll('#sheet .board2 .tm2')].some(e=>e.innerText.includes('HOU')&&e.querySelector('.poss'))"):
+        probs.append(label + ": home team doesn't show possession on the scoreboard")
+    pg.evaluate("closeModal()")
+    state["g"] = game(73, "1st", "10", "C.Stroud pass intended for N.Collins INTERCEPTED by A.Smith at IND 40.", "Interception", "IND")
+    return probs
+
+
+def run_nodrive(pg, label):
+    """A detail block with a situation (down/distance/yardLine) but no 'drive' key: the strip still renders from the
+    yard line, with no ball-less first-down line and no JS error."""
+    probs = []
+    pg.route("**/app/api/game*", answer)
+    g = game(60, "3rd", "5", "C.Stroud pass to N.Collins for 8. 1st down.", "Pass Reception", "IND", redzone=False)
+    g["detail"].pop("drive", None)                             # no current drive in the feed
+    state["g"] = g
+    pg.goto(B + "/app"); time.sleep(.6)
+    pg.evaluate(f"openGame('{TK}')")
+    if not until(pg, "!!document.querySelector('#sheet .fstrip .fld')"):
+        probs.append(label + ": field strip didn't render without a drive block"); state["g"] = game(73, "1st", "10", "x", "Rush", "IND"); return probs
+    # a yardLine is present, so the ball still gets placed from it
+    if not pg.evaluate("!!document.querySelector('#sheet .fstrip .fball')"):
+        probs.append(label + ": no ball marker from the yard line (no drive)")
+    # a ball marker is shown, so the first-down line may show; without one it must NOT (the haveBall gate)
+    if pg.evaluate("!document.querySelector('#sheet .fstrip .fball')&&!!document.querySelector('#sheet .fstrip .fdline')"):
+        probs.append(label + ": a floating first-down line with no ball")
+    pg.evaluate("closeModal()")
+    state["g"] = game(73, "1st", "10", "C.Stroud pass intended for N.Collins INTERCEPTED by A.Smith at IND 40.", "Interception", "IND")
+    return probs
+
+
+def run_reduced(pg, label):
+    """Reduced motion: the strip carries the .noanim class and the ball's left transition is off, so changing the
+    line of scrimmage doesn't animate."""
+    probs = []
+    pg.route("**/app/api/game*", answer)
+    state["g"] = game(73, "1st", "10", "C.Stroud pass intended for N.Collins INTERCEPTED by A.Smith at IND 40.", "Interception", "IND")
+    pg.goto(B + "/app"); time.sleep(.6)
+    pg.evaluate(f"openGame('{TK}')")
+    if not until(pg, "!!document.querySelector('#sheet .fstrip .fball')"):
+        probs.append(label + ": field strip didn't render under reduced motion"); return probs
+    if not pg.evaluate("document.querySelector('#sheet .fstrip').classList.contains('noanim')"):
+        probs.append(label + ": .fstrip is missing the noanim class under reduced motion")
+    # with noanim the ball's left transition must be off (no active 'left' transition)
+    tr = pg.evaluate("""(()=>{const s=getComputedStyle(document.querySelector('#sheet .fstrip .fball'));
+      return (s.transitionProperty||'')+'|'+(s.transitionDuration||'');})()""")
+    if "left" in tr and "0s" not in tr.split("|")[1]:
+        probs.append(label + ": the ball still transitions under reduced motion: " + repr(tr))
+    pg.evaluate("closeModal()")
+    return probs
+
+
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     errs = []
@@ -129,11 +202,18 @@ with sync_playwright() as pw:
     pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark")
     pg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run(pg, "phone", True)
+    probs += run_home(pg, "phone")                 # the home-possession branch (ball on the home side, red zone left)
+    probs += run_nodrive(pg, "phone")              # a detail block with a situation but no drive: render from yardLine
     pg.close()
     pg = br.new_page(viewport={"width": 1280, "height": 900}, color_scheme="dark")
     pg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run(pg, "desktop", False)
     pg.close()
+    # reduced motion: its own context so prefers-reduced-motion is emulated (like test_makeover3.py)
+    ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce")
+    rpg = ctx.new_page(); rpg.on("pageerror", lambda e: errs.append(str(e)))
+    probs += run_reduced(rpg, "reduced")
+    ctx.close()
     print("errs:", errs)
     if errs:
         probs.append("JS errors")
