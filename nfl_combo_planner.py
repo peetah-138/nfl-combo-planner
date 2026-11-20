@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.20.123"
+VERSION = "2026.11.20.124"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -5925,7 +5925,9 @@ def _gx_get(key, url, shape):
         code = int(getattr(r, "status_code", 0) or 0)
         if code == 429 or code >= 500 or code <= 0:
             raise _GxBusy(code, _retry_after(r))
-        GX[key] = (now, shape(r.json()) if r.ok else None, 0, 0)    # a 404 (no such season/team) is an answer: nothing to show
+        # a 404 (no such season/team) is an answer: nothing to show. Any other non-OK answer (a stray 403) is not an answer
+        # about the data, so a good copy already on file is kept rather than wiped.
+        GX[key] = (now, shape(r.json()) if r.ok else (got[1] if got and code != 404 else None), 0, 0)
     except Exception as err:          # any failure (a 400-digit number, odd JSON, a dropped link) takes the backoff path
         fails = (got[2] if got else 0) + 1
         wait = min(GX_BACKOFF[1], GX_BACKOFF[0] * 2 ** min(fails - 1, 10))
@@ -5934,8 +5936,8 @@ def _gx_get(key, url, shape):
         GX[key] = (got[0] if got else 0, got[1] if got else None, fails, now + wait)
         klive_log_once("gamedetail", ":".join(map(str, key)), err)
     if len(GX) > GX_MAX:              # drop the least recently useful; an entry still backing off counts as recent
-        for k, _v in sorted(list(GX.items()), key=lambda kv: max(kv[1][0], kv[1][3]))[:len(GX) - GX_MAX // 2]:
-            GX.pop(k, None)
+        for k, _v in sorted(list(GX.items()), key=lambda kv: (kv[0] == key, max(kv[1][0], kv[1][3])))[:len(GX) - GX_MAX // 2]:
+            GX.pop(k, None)           # (the entry just written sorts last, so a fresh answer is never the one dropped)
 
 
 def _score(v):
@@ -6068,12 +6070,12 @@ def _gx_last5(path, ids, event_id, yr, stype):
     for side in ("away", "home"):
         keys = [("sched", path, ids[side], yr, st) for st in _gx_types(stype)]
         vals = [_gx_val(k) for k in keys]
-        if vals[0] is None:
-            if keys[0] in GX:
+        if not any(vals):
+            if any(k in GX for k in keys):
                 out[side] = {"rec": "", "g": [], "na": True}       # asked and it failed: say so on that side
             continue
         games = sorted((x for v in vals if v for x in v.get("g") or [] if x.get("id") != event_id), key=lambda x: x.get("d") or "")
-        out[side] = {"rec": vals[0].get("rec") or "", "g": games[-5:][::-1]}
+        out[side] = {"rec": next((v.get("rec") for v in vals if v and v.get("rec")), ""), "g": games[-5:][::-1]}
     return out
 
 
