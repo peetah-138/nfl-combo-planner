@@ -167,6 +167,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   = 1.5 s, last good copy otherwise); `klive_prune` drops old cache entries. Web app taps (`api_act`) take the lock
   through `TapLock` (wait ≤ `ACT_WAIT` = 20 s, then "busy", nothing done; Live rebuilds stand aside while a tap
   waits); the hub's reads share one `RateLimit` (~6/s, bursts of 20). Tested by `t_robust`.
+- **Kalshi's order book** (`book_depth` → `book_info`/`book_levels`, issue #70): since Nov 2026 the public
+  `GET /markets/<t>/orderbook` answers `{"orderbook_fp": {"yes_dollars": [["0.52","3703.51"],...], "no_dollars": [...]}}`
+  (dollar strings, lowest first); the old `{"orderbook": {"yes": [[52, 3703]...]}}` (cents) is still read. Both give
+  the same dollars; an odd answer = no prices, never an error. Ask = 1 − best NO bid. Smart sell for singles reads
+  the market's own `yes_bid_dollars`/`yes_ask_dollars` (`GET /markets`), not the book. Test: `t_orderbook`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -212,7 +217,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   and swaps in the new panel by itself. No screen promises a 10-minute wait (the old "check back shortly" card
   waited for the shadow's next round, and a rebuild from a stale pool silently found nothing). After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
-  notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+  notification each, Add button, inside the remaining budget). A skipped/swapped (or left-out) bet can come back as an
+  extra; one that is scheduled, buying, bought, "check" or failed (Kalshi turned it down at buy time) never comes back
+  or gets added again that day (`PANEL_TRIED`), and extras on a game a live panel bet covers are hidden
+  (`panel_extras`/`_extras_filter`, used by the Build page and the rebuild status). **Add is safe to repeat (#62):**
+  `panel_add` checks and adds inside one `panel_tx`, so two taps or two phones at once add a bet once; an added extra
+  is dropped from the extras row at once; the page disables the button ("Adding…" then "✓ Added"), ignores taps while
+  one is on its way (`S.pSend`/`pPost`, gives up waiting after 30 s), and hides just-added extras for 2 min unless
+  today's panel doesn't have them. Approve works the same way (already idempotent in `panel_approve`).
 - **Games already under way (Pete's decision, replaces the old "never buys or approves a game that has started"):**
   the panel picks on the chance of a profit, not on whether a game has started. Settings › Money › **Include games
   already under way** (`panel_live`, shared setting, **on** by default; `live_panel_on()` reads the shared settings
@@ -348,6 +360,8 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+- **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
+  Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price

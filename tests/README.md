@@ -49,7 +49,11 @@ pattern in a local `.git/hooks/pre-commit`.
   request (`t_rebuild.py`: flag, per-sport progress notes, done/why, drafts only, no started game, the watcher's
   `rebuild_loop` picks a request up within seconds), buying right after approval (`t_buynow.py`: no lead time,
   Approve/Add wake the Mac's `panel_loop` within seconds, the price recheck still skips or swaps, start rules, Pause,
-  unknown outcome = check never retried, no double buy from passes at once, live bets skipped once switched off).
+  unknown outcome = check never retried, no double buy from passes at once, live bets skipped once switched off), every panel bet naming its game (`t_panelgame.py`: singles, sell-early, each combo leg, spreads/totals, notifications, saved drafts),
+  Kalshi's order book shapes (`t_orderbook.py`: the new `orderbook_fp` dollar-string answer and the old `orderbook`
+  cents answer read identically, from real fixtures `fixtures/kalshi_orderbook.json`/`kalshi_market.json`; garbage never
+  raises; the 6¢ gap rule; a single/spread/total panel buy, a hedge re-read and a smart-sell single sale against the
+  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
