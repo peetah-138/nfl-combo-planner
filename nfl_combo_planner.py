@@ -10796,7 +10796,7 @@ def panel_rebuild(collect, codes, lock=None, log=print):
     if real and real.get("status") == "draft":
         found, kind = len(real.get("items") or []), "panel"
     elif real and real.get("status") == "approved":
-        x = panel_get("extra")
+        x = panel_extras(real)
         found, kind = len((x or {}).get("items") or []), "extra"
     else:
         found, kind = 0, "panel"
@@ -11881,12 +11881,32 @@ def panel_approve(ids=None, view="all", at=None):
                   f"checking each price again first (not while Pause is on).")
 
 
+# A panel bet in one of these states was tried (or is being tried) today: it's never added or offered again the
+# same day, so a second Add tap (or two at once) can't buy it twice. Only a bet that was skipped before any order
+# (or left out at approval) may come back as a "New since you approved" extra.
+PANEL_TRIED = ("scheduled", "buying", "bought", "check", "failed", "swapped")
+
+
+def panel_extras(real=None):
+    """The New-since-you-approved extras as shown: without any bet today's panel already has, unless that bet was
+    skipped or left out. None when there are none."""
+    x = panel_get("extra")
+    if not x:
+        return None
+    real = real if real is not None else panel_get("real")
+    taken = {c["id"] for c in (real or {}).get("items", []) if c.get("state") in PANEL_TRIED}
+    return dict(x, items=[c for c in x.get("items", []) if c["id"] not in taken])
+
+
 def panel_add(ids, view):
     """Add bets from one sport's panel (or the new-since-you-approved extras) to today's already-approved panel,
-    inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away."""
+    inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away.
+    Safe to repeat: a bet already in today's panel (anything but skipped/left out) is never added again, the check
+    and the add happen in one locked step (panel_tx), and added extras leave the extras card at once."""
     src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
+    ids = set(ids or [])
     msg = {}
 
     def fn(cur, st):
@@ -11899,7 +11919,7 @@ def panel_add(ids, view):
         added, skipped = [], []
         for c in src["items"]:
             old = _item(cur, c["id"])
-            if c["id"] not in ids or (old and old.get("state") in ("scheduled", "buying", "bought", "check")):
+            if c["id"] not in ids or (old and old.get("state") in PANEL_TRIED):
                 continue
             if not _start_ok(c, time.time(), 5 * 60):
                 skipped.append(c["legs"][0]["pick"])
@@ -11917,12 +11937,28 @@ def panel_add(ids, view):
             cur["items"].append(dict({k: v for k, v in c.items() if k != "buy_at"}, state="scheduled"))
             added.append(c["legs"][0]["pick"])
         msg["added"], msg["skipped"] = added, skipped
+        msg["in"] = {c["id"] for c in cur["items"] if c["id"] in ids and c.get("state") in PANEL_TRIED}
+        msg["dupe"] = len(msg["in"]) - len(added)            # already in today's panel before this tap
         return (cur, st) if added else None
     panel_tx(_panel_day(), "real", fn)
     if msg.get("no"):
         return False, msg["no"]
+    gone = msg.get("in") or set()
+    if view == "extra" and gone:                            # in today's panel (this tap or an earlier one): off the card
+
+        def drop(cur, st):
+            if not cur or st != "draft":
+                return None
+            keep = [c for c in cur.get("items", []) if c["id"] not in gone]
+            return None if len(keep) == len(cur.get("items", [])) else (dict(cur, items=keep), st)
+        try:
+            panel_tx(_panel_day(), "extra", drop)
+        except Exception as err:                            # display only: api_panel filters them out anyway
+            print("panel: couldn't tidy the extras card:", type(err).__name__, err)
     a, k = msg.get("added", []), msg.get("skipped", [])
     if not a:
+        if msg.get("dupe") and not k:
+            return True, "Already in today's panel. Nothing more to do."
         return False, "Nothing added: " + ("those games already have a bet, or it's over today's panel budget." if k else "nothing selected.")
     ask_buy()
     return True, (f"Added {len(a)} to today's panel. The Mac is buying {'them' if len(a) != 1 else 'it'} now." + (f" Left out {len(k)}: already a bet on that game, or over the budget." if k else ""))
@@ -13045,8 +13081,8 @@ def panel_pass(log=print):
         active = [c for c in real["items"] if c.get("state") in ("scheduled", "buying", "bought", "check")]
         left = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
         x = build_panel(budget=max(left, 0), exclude={e for c in active for e in _events_of(c)})
-        live_ids = {c["id"] for c in active}           # a skipped or swapped bet may come back if it's good again
-        x["items"] = [c for c in x["items"] if c["id"] not in live_ids]
+        tried = {c["id"] for c in real["items"] if c.get("state") in PANEL_TRIED}   # only a skipped (or left-out)
+        x["items"] = [c for c in x["items"] if c["id"] not in tried]                # bet may come back if good again
         old = panel_get("extra")
         told = set((old or {}).get("told", [])) if old and _panel_day(old["at"]) == _panel_day() else set()
         new = [c for c in x["items"] if c["id"] not in told]
