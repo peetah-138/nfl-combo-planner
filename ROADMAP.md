@@ -1,6 +1,6 @@
 # Roadmap: planned work not done yet
 
-Everything we've agreed on or lined up but haven't built, as of version 2026.11.19.120 (Nov 18, 2026).
+Everything we've agreed on or lined up but haven't built, as of version 2026.11.19.121 (Nov 18, 2026).
 What's already built is described in `CLAUDE.md`. When an item ships, move its facts into `CLAUDE.md` and delete it
 here; when Pete adds or drops something, update this file in the same change.
 

@@ -7,7 +7,7 @@ bash tests/run_checks.sh
 ```
 
 It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0) or `SOME CHECKS FAILED`
-(exit 1). It takes about 4 minutes: the page tests run in 4 lanes side by side, each with its own copy of everything and its own port (18766–18769); set `CHECK_WORKERS` to change the number of lanes.
+(exit 1). It takes about 4 minutes: the page tests run in 4 lanes side by side, each with its own copy of everything and its own port (18766–18769); set `CHECK_WORKERS` to change the number of lanes, and `CHECK_PORT_BASE` (default 18766) to move the ports when two runs happen at once.
 
 ## Safe on the Mac that runs the real app
 
@@ -22,9 +22,24 @@ It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0
 
 ```
 brew install node                       # checks the web app's JavaScript
-pip3 install requests pyflakes playwright ruff   # ruff is the lint step: `ruff check .` (CI runs it too)
-python3 -m playwright install chromium  # the browser the page tests drive
 ```
+
+The Python is picked by `tests/python_env.sh` (used by `run_checks.sh` and `dev.sh`), which prints the interpreter, its
+SQLite version and whether it links Apple's `/usr/lib/libsqlite3.dylib`. It needs **Python 3.10 or newer**: Apple's
+Command Line Tools Python 3.9 uses the system SQLite, which segfaults on macOS 26.4 ("Python quit unexpectedly",
+GitHub #68). Order of choice:
+
+1. `$CHECK_PYTHON`, if you set it (a name or path of an interpreter that has `requests pyflakes playwright`; it warns if it is older than 3.10).
+2. `~/combowatch/.venv/bin/python`, only if it is 3.10+ and already has all of those (nothing is ever installed there).
+3. `.venv-tests/` in the repo (git-ignored). **First run builds it by itself** from `python3.13/3.12/3.11/3.10` found on
+   PATH, Homebrew, pyenv or uv (`pip install requests cryptography pyflakes ruff playwright`, then
+   `playwright install chromium`). To do it by hand: `python3.12 -m venv .venv-tests && .venv-tests/bin/pip install requests cryptography pyflakes ruff playwright && .venv-tests/bin/python -m playwright install chromium`.
+   Set `CHECK_VENV_NO_CREATE=1` to stop it building, `CHECK_VENV=/some/path` to put it elsewhere (e.g. shared by worktrees).
+4. `python3` on PATH if it is already 3.10+ with those modules (that is how CI runs; tried before step 3 builds the venv), else plain `python3` with a printed warning (expect SQLite crash dialogs on macOS 26.4).
+
+`CHECK_PORT_BASE` must be 1024 or more and never near 8765/8766.
+
+Lint: `.venv-tests/bin/python -m ruff check .` (CI runs `ruff check .` too).
 
 Optional: put the strings that must never be committed in `SECRET_PATTERN` (an extended-regex alternation) in
 your shell profile, not in any file in this repo. With it set, the run also greps the repo for them. Use the same
@@ -49,7 +64,11 @@ pattern in a local `.git/hooks/pre-commit`.
   request (`t_rebuild.py`: flag, per-sport progress notes, done/why, drafts only, no started game, the watcher's
   `rebuild_loop` picks a request up within seconds), buying right after approval (`t_buynow.py`: no lead time,
   Approve/Add wake the Mac's `panel_loop` within seconds, the price recheck still skips or swaps, start rules, Pause,
-  unknown outcome = check never retried, no double buy from passes at once, live bets skipped once switched off).
+  unknown outcome = check never retried, no double buy from passes at once, live bets skipped once switched off), every panel bet naming its game (`t_panelgame.py`: singles, sell-early, each combo leg, spreads/totals, notifications, saved drafts),
+  Kalshi's order book shapes (`t_orderbook.py`: the new `orderbook_fp` dollar-string answer and the old `orderbook`
+  cents answer read identically, from real fixtures `fixtures/kalshi_orderbook.json`/`kalshi_market.json`; garbage never
+  raises; the 6¢ gap rule; a single/spread/total panel buy, a hedge re-read and a smart-sell single sale against the
+  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`).
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no

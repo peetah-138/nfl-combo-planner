@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.19.120). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.19.121). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -75,8 +75,8 @@ Real money is involved. Pete uses it daily.
   (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
   silence them. Run code review and security review before opening the PR and fix everything they raise.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
-  version bump (below). Open it, but **never merge it without Pete's explicit go-ahead in that conversation.**
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.120`. Each release bumps N (N keeps
+  version bump (below). **Standing go-ahead (Pete, 2026-11-19):** Claude may open AND merge release PRs (develop -> main, merge commit) whenever it judges there is enough in develop, without asking each time; all other release gates still apply (reviews, green checks, matching versions, screenshots for visual changes, no new automatic money movement without Pete's opt-in).
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.121`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -91,7 +91,7 @@ Real money is involved. Pete uses it daily.
   - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
   - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
     (`develop` → `main`) is merged.
-  - **Release PRs** are opened by Claude and merged only on Pete's explicit go-ahead.
+  - **Release PRs** are opened by Claude and, under Pete's standing go-ahead of 2026-11-19 (see Releases above), merged by Claude when it judges develop has enough, with every other release gate intact.
   - **When Pete gives feedback, open a GitHub issue** to track it.
   - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
@@ -106,14 +106,16 @@ Real money is involved. Pete uses it daily.
 4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
 5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
-   screenshots or a clip first. Merge it only after Pete says go. The Macs then update within ~10 minutes; Pete can
+   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead, 2026-11-19; visual changes need his screenshots first). The Macs then update within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
 
 Run `ruff check .` (config in `ruff.toml`: correctness rules only, no style rules) and `bash tests/run_checks.sh`
 before every push; the latter must end with `ALL CHECKS PASSED`. CI runs both on every PR. See `tests/README.md`
-for the one-time Mac setup (node, pyflakes, ruff, playwright + chromium). It runs in a temp folder with fake services and a fake
+for the one-time Mac setup. The checks and `dev.sh` run on a **Python 3.10+** picked by `tests/python_env.sh` (`$CHECK_PYTHON`, else
+the watcher's venv if it has the modules, else a git-ignored `.venv-tests/` it builds itself); never Apple's Command Line Tools 3.9,
+whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the test ports when two runs overlap. It runs in a temp folder with fake services and a fake
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money. What it covers:
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.
@@ -167,6 +169,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   = 1.5 s, last good copy otherwise); `klive_prune` drops old cache entries. Web app taps (`api_act`) take the lock
   through `TapLock` (wait ≤ `ACT_WAIT` = 20 s, then "busy", nothing done; Live rebuilds stand aside while a tap
   waits); the hub's reads share one `RateLimit` (~6/s, bursts of 20). Tested by `t_robust`.
+- **Kalshi's order book** (`book_depth` → `book_info`/`book_levels`, issue #70): since Nov 2026 the public
+  `GET /markets/<t>/orderbook` answers `{"orderbook_fp": {"yes_dollars": [["0.52","3703.51"],...], "no_dollars": [...]}}`
+  (dollar strings, lowest first); the old `{"orderbook": {"yes": [[52, 3703]...]}}` (cents) is still read. Both give
+  the same dollars; an odd answer = no prices, never an error. Ask = 1 − best NO bid. Smart sell for singles reads
+  the market's own `yes_bid_dollars`/`yes_ask_dollars` (`GET /markets`), not the book. Test: `t_orderbook`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -212,7 +219,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   and swaps in the new panel by itself. No screen promises a 10-minute wait (the old "check back shortly" card
   waited for the shadow's next round, and a rebuild from a stale pool silently found nothing). After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
-  notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+  notification each, Add button, inside the remaining budget). A skipped/swapped (or left-out) bet can come back as an
+  extra; one that is scheduled, buying, bought, "check" or failed (Kalshi turned it down at buy time) never comes back
+  or gets added again that day (`PANEL_TRIED`), and extras on a game a live panel bet covers are hidden
+  (`panel_extras`/`_extras_filter`, used by the Build page and the rebuild status). **Add is safe to repeat (#62):**
+  `panel_add` checks and adds inside one `panel_tx`, so two taps or two phones at once add a bet once; an added extra
+  is dropped from the extras row at once; the page disables the button ("Adding…" then "✓ Added"), ignores taps while
+  one is on its way (`S.pSend`/`pPost`, gives up waiting after 30 s), and hides just-added extras for 2 min unless
+  today's panel doesn't have them. Approve works the same way (already idempotent in `panel_approve`).
 - **Games already under way (Pete's decision, replaces the old "never buys or approves a game that has started"):**
   the panel picks on the chance of a profit, not on whether a game has started. Settings › Money › **Include games
   already under way** (`panel_live`, shared setting, **on** by default; `live_panel_on()` reads the shared settings
@@ -348,6 +362,8 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+- **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
+  Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
