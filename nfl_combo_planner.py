@@ -10974,7 +10974,7 @@ def shadow_pass(book_snap, log=print, alert=None):
         if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05) and not c.get("same_game"):
             sid = store_suggestion(c, r, pct)            # a buy idea: Live shows it, one tap gets your price
             picks = " + ".join(l["pick"] for l in c["legs"])
-            url = f"/app#s={sid}" if sid else "/app"
+            url = f"/#s={sid}" if sid else "/"
             pays_txt = f"{money(r['stake'])} pays about {money(r['pays'])}"
             inplay = " Includes a game in progress, so the price moves fast." if any(started(l) for l in c["legs"]) else ""
             if alert and before is None:
@@ -11283,13 +11283,13 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
     if alert:
         if status == "bought":
             _alert(alert, f"🔥 Auto-bought a killer deal: {picks} for {money(stake)} to win {money(pays)} "
-                          f"({pct:.0%} of fair). {why}", "cash", "/app")
+                          f"({pct:.0%} of fair). {why}", "cash", "/")
         elif status == "check":
             _alert(alert, f"⚠️ Killer deal {picks}: Kalshi didn't answer clearly, so it may or may not have been "
-                          f"bought ({money(stake)}). Check Kalshi; it won't be tried again.", "cash", "/app")
+                          f"bought ({money(stake)}). Check Kalshi; it won't be tried again.", "cash", "/")
         elif status == "watched":
             _alert(alert, f"🔥 Killer deal (watch mode, nothing bought): {picks} at {pct:.0%} of fair, "
-                          f"{money(stake)} to win {money(pays)}. Tap to buy it yourself.", "value", "/app")
+                          f"{money(stake)} to win {money(pays)}. Tap to buy it yourself.", "value", "/")
     log(f"killer deal {status}: {picks} at {pct:.0%} {why}")
     return status
 
@@ -12040,7 +12040,7 @@ def line_pass(code, alert=None, log=print):
         if alert:
             _alert(alert, f"📐 {x['pick']} at {x['p'] * 100:.0f}¢ on Kalshi; the score model puts it at {x['fair']:.0%} "
                           f"from the sportsbook line. About {x['edge'] * 100:.1f}¢ a contract in your favour.", "value",
-                   f"/app#s={sid}" if sid else "/app")
+                   f"/#s={sid}" if sid else "/")
         did.append(f"line idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
 
@@ -12118,7 +12118,7 @@ def maker_pass(games, book_snap, alert=None, log=print):
                 store_x("update maker set filled=?, updated=? where rowid=?", (filled, now, row["rowid"]))
                 if alert:
                     _alert(alert, f"✅ Standing order filled: {filled:g} {x['pick']} at {row['price'] * 100:.0f}¢ "
-                                  f"(fair {fair_now:.0%}). Auto standing order.", "cash", "/app")
+                                  f"(fair {fair_now:.0%}). Auto standing order.", "cash", "/")
                 did.append(f"filled {x['pick']}")
             if st in ("executed", "canceled", "cancelled", "expired"):
                 store_x("update maker set status=?, updated=? where rowid=?",
@@ -12272,7 +12272,7 @@ def single_pass(book_snap, alert=None, log=print):
                f"{x['fair']:.0%}. About {x['edge'] * 100:.1f}¢ a contract in your favour after the fee."
                + (f" Injuries: {'; '.join(inj[:2])}." if inj else ""))
         if alert and not told:
-            _alert(alert, msg, "value", f"/app#s={sid}" if sid else "/app")
+            _alert(alert, msg, "value", f"/#s={sid}" if sid else "/")
         did.append(f"single idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
 
