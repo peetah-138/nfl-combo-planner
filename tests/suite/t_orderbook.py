@@ -182,3 +182,32 @@ SENT.clear()
 E.SINGLES.update(at=time.time(), mk={real["ticker"]: dict(real, yes_bid_dollars="0.4400", yes_ask_dollars="0.5300")})
 E.smart_sell_singles()
 ok("smart sell single: a 9c gap is too thin, nothing sold", not SENT)
+
+# ---- an order book Kalshi would not answer (429/5xx -> book_depth None) is unknown, never "fine": the single and
+# spread/total idea loops skip that bet and send no alert (before, only a thin book was skipped)
+_cand = {"ticker": T, "pick": "Knicks", "p": 0.40, "fair": 0.55, "edge": 0.12, "kind": "spread", "book_line": -3.5,
+         "event": "EV1", "start": "2099-01-01T00:00:00Z", "opp": "x"}
+_names = ("line_candidates", "single_candidates", "book_depth", "load_book_state", "week_games", "fetch_markets",
+          "attach_fair", "maker_pass", "screen_live", "injury_note")
+_saved = {k: getattr(E, k) for k in _names}
+E.line_candidates = lambda code: [dict(_cand)]
+E.single_candidates = lambda games, live_ok=(), min_fair=0.2: [dict(_cand, kind="single")]
+E.load_book_state = lambda snap: {}
+E.week_games = lambda mk: ({}, None, None)
+E.fetch_markets = lambda: []
+E.attach_fair = lambda games, book: None
+E.maker_pass = lambda *a, **k: []
+E.screen_live = lambda games, bf: ([], [])
+E.injury_note = lambda *a, **k: ([], False)
+E.LEAGUE["code"] = "nba"
+for label, depth, expect in (("unknown book (None)", None, 0), ("thin book", {"thin": True, "ask": 0.4, "bid": 0.3}, 0),
+                             ("good book", {"thin": False, "ask": 0.40, "bid": 0.39, "ask_size": 500}, 1)):
+    E.book_depth = lambda t, max_age=60, _d=depth: _d
+    for name, fn in (("line_pass", lambda al: E.line_pass("nba", alert=al)), ("single_pass", lambda al: E.single_pass({}, alert=al))):
+        E.store_x("delete from suggestions")
+        sent = []
+        did = fn(lambda *a, **k: sent.append(a))
+        ok(f"{name}, {label}: " + ("idea offered, alert sent" if expect else "skipped, no idea, no alert"),
+           (len(did) == 1 and len(sent) == 1) if expect else (not did and not sent))
+for k, v in _saved.items():
+    setattr(E, k, v)
