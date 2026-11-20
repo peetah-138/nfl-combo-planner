@@ -89,15 +89,15 @@ E.store_x("delete from panel where mode='extra'", ())
 E.panel_pass()
 left = {c["id"] for c in (E.panel_extras() or {}).get("items", [])}
 ok("bought extras aren't offered again", X["id"] not in left and Y["id"] not in left)
-for st in ("failed", "check", "buying", "skipped"):
+for st in ("failed", "check", "buying", "swapped", "skipped"):
     E._set_items(E._panel_day(), "real", {X["id"]: {"state": st}})
     E.panel_tx(E._panel_day(), "real", lambda cur, s: (dict(cur, items=[c for c in cur["items"] if c["id"] != Y["id"]]), s))
     E.store_x("delete from panel where mode='extra'", ())
     E.panel_pass()
     raw = {c["id"] for c in (E.panel_get("extra") or {}).get("items", [])}
     shown = {c["id"] for c in (E.panel_extras() or {}).get("items", [])}
-    if st == "skipped":
-        ok("a skipped bet can come back as an extra", X["id"] in raw and X["id"] in shown)
+    if st in ("skipped", "swapped"):
+        ok(f"a {st} bet can come back as an extra", X["id"] in raw and X["id"] in shown)
     else:
         ok(f"a {st} bet is never offered again", X["id"] not in raw and X["id"] not in shown)
 # and the card hides a tried bet even if an older extras row still lists it
@@ -106,5 +106,13 @@ ok("an old extras row can't show a failed bet", X["id"] not in {c["id"] for c in
 n = len(BOUGHT)
 okF, msgF = E.panel_add([X["id"]], "extra"); E.panel_exec()
 ok("re-adding a failed bet does nothing", len(BOUGHT) == n and rows(X["id"])[0]["state"] == "failed")
+ok("...and says so plainly, not 'already in'", not okF and "couldn't be bought earlier today" in msgF and "Already" not in msgF)
+# an extra on a game a just-added bet covers isn't shown (it would always be refused)
+Z = mk("Z1", "KXNBAGAME-Z", .62, .50, now + 9000)
+Z2 = E._cand("single", "nba", [{"ticker": "Z2", "event": "KXNBAGAME-Z", "pick": "Z2", "p": .5, "fair": .6}], .6, .1, "w", price=.5)
+E.store_x("delete from panel where mode='extra'", ())
+E.panel_tx(E._panel_day(), "extra", lambda cur, s: ({"at": time.time(), "items": [dict(Z, stake=2.0), dict(Z2, stake=2.0)], "told": []}, "draft"))
+E.panel_add([Z["id"]], "extra")
+ok("an extra on a game just added isn't offered", not {c["id"] for c in (E.panel_extras() or {}).get("items", [])} & {Z["id"], Z2["id"]})
 src = open("wahome/engine.py").read()
 ok("unknown outcome still marked check, never retried", '"check"' in src and "never retried" in src)

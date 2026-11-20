@@ -38,8 +38,9 @@ with sync_playwright() as pw:
         else:
             route.continue_()
     pg.route("**/app/api/act", on_act)
-    # the Mac's panel answer still lists the extra (a refresh that left before the add was saved)
-    pg.route("**/app/api/panel*", lambda r: r.fulfill(status=200, content_type="application/json", body=FIX))
+    # after the add, today's panel has the bet, but the extras row the Mac answers with is an older copy still listing it
+    d2 = json.loads(FIX); d2["panel"]["items"].append(dict(d2["extra"]["items"][0], state="scheduled")); FIX2 = json.dumps(d2)
+    pg.route("**/app/api/panel*", lambda r: r.fulfill(status=200, content_type="application/json", body=FIX2 if acts else FIX))
     pg.goto(B + "/app"); time.sleep(5); pg.evaluate("go('build')"); time.sleep(6)
     pg.evaluate("S.panel=" + FIX + ";renderBuild()"); time.sleep(.4)
     if not pg.locator("text=New since you approved").count():

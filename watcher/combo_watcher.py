@@ -2938,7 +2938,7 @@ function pArm(b,txt){b.dataset.sure='1';b.textContent=txt;b.classList.add('arm')
 async function panelApprove(b){if(S.pSend||b.disabled)return;const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
  if(!b.dataset.sure){pArm(b,'Tap again to approve');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';let r;
- try{r=await api('/app/api/act',{a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));}finally{S.pSend=false;}
+ try{r=await pPost({a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at});}finally{S.pSend=false;}
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
 /* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
 function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
@@ -2952,11 +2952,19 @@ async function panelAdd(b,view){if(S.pSend||b.disabled)return;const src=view==='
  const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)&&!(view==='extra'&&pSentHas(c.id))).map(c=>c.id);
  if(!b.dataset.sure){pArm(b,'Tap again to add');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Adding…';let r;
- try{r=await api('/app/api/act',{a:'panel_add',ids,view:view||S.pview}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));}finally{S.pSend=false;}
+ try{r=await pPost({a:'panel_add',ids,view:view||S.pview});}finally{S.pSend=false;}
  hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');
  if(r.ok){if(view==='extra'){S.pSent=S.pSent||{};const now=Date.now();ids.forEach(id=>S.pSent[id]=now);}
   if(b.isConnected){b.innerHTML='✓ Added';b.classList.add('done');}await new Promise(res=>setTimeout(res,700));}
- S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
+ S.pOff=new Set();await load('build');
+ /* keep hidden only what today's panel now really has; anything the Mac left out (budget, same game) shows again */
+ if(r.ok&&view==='extra'&&S.panel&&S.panel.panel){const has=new Set((S.panel.panel.items||[]).filter(c=>['scheduled','buying','bought','check','failed'].includes(c.state)).map(c=>c.id));
+  let back=false;ids.forEach(id=>{if(!has.has(id)){delete S.pSent[id];back=true;}});if(back)renderBuild();}
+ if(r.ok)pBuyWatch();}
+/* Approve/Add requests give up waiting after 30 s so a hung link can't leave every button dead; the Mac's side is
+   safe to repeat (panel_tx), so the next tap can't buy anything twice. */
+function pPost(body){return Promise.race([api('/app/api/act',body).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'})),
+ new Promise(res=>setTimeout(()=>res({ok:false,msg:'The Mac is slow to answer. Pull to refresh in a moment to see whether it went through.'}),30000))]);}
 async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
  const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
  hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
