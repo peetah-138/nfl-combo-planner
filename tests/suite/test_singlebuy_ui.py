@@ -70,6 +70,19 @@ def sheet(pg):
     return pg.evaluate("""(()=>{const b=document.querySelector('#sbx');if(!b)return null;const btn=b.querySelector('#sbbuy');
       return {txt:b.innerText,btn:btn&&btn.innerText,cls:btn&&btn.className,dis:!!(btn&&btn.disabled),warn:[...b.querySelectorAll('.sbw')].map(e=>e.dataset.w),
        on:[...b.querySelectorAll('.sbst .chip.on')].map(e=>e.innerText)};})()""")
+def hsw(pg, tag, sel, what):
+    """the light pass forces the see-through haptic switches on (HT.N, #116): every Buy straight control in sel has
+    exactly one switch of its own and a tap at its centre lands on it; the other passes have none."""
+    r = pg.evaluate("""(sel=>{const out=[];[...document.querySelectorAll(sel)].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&!e.disabled;}).forEach(e=>{
+      const sw=e.querySelectorAll(':scope>.hsw'),deep=e.querySelectorAll('.hsw').length,nm=(e.innerText||'').trim().slice(0,20);const a=e.getBoundingClientRect();
+      const t=document.elementFromPoint(a.left+a.width/2,a.top+a.height/2);out.push({nm,n:sw.length,deep,hit:!!(t&&sw[0]===t),inv:a.top>=0&&a.bottom<=innerHeight});});return out;})""", sel)
+    if not r: bad(f"{tag}: no {what} found to check the haptic switches"); return
+    for c in r:
+        if tag == "light":
+            if c["n"] != 1 or c["deep"] != 1: bad(f"{tag}: {what} {c['nm']!r} should carry exactly one haptic switch: {c}")
+            elif c["inv"] and not c["hit"]: bad(f"{tag}: a tap on {what} {c['nm']!r} should land on its haptic switch: {c}")
+        elif c["deep"]: bad(f"{tag}: {what} {c['nm']!r} has a haptic switch with the overlay off: {c}")
+
 def sideways(pg):
     return pg.evaluate("document.documentElement.scrollWidth>innerWidth+1||[...document.querySelectorAll('#sheet .sb,.gbuy,.slipbar')].some(e=>e.scrollWidth>e.clientWidth+2)")
 
@@ -78,7 +91,7 @@ with sync_playwright() as pw:
     for vw, vh, tag, scheme in ((390, 844, "phone", "dark"), (390, 844, "light", "light"), (1280, 900, "desk", "dark")):
         ctx = br.new_context(viewport={"width": vw, "height": vh}, color_scheme=scheme, has_touch=(vw < 900), device_scale_factor=2)
         pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.add_init_script("window.__haps=[];localStorage.clear();localStorage.setItem('cw_view','build');localStorage.setItem('cw_lg','nba');localStorage.setItem('cw_pview','nba')")
+        pg.add_init_script("window.__haps=[];localStorage.clear();localStorage.setItem('cw_view','build');localStorage.setItem('cw_lg','nba');localStorage.setItem('cw_pview','nba')" + (";window.__hswForce=1" if tag == "light" else ""))
         pg.route("**/app/api/act", act)
         pg.route(re.compile(r".*/app/api/game\?t=.*"), game)
         pg.goto(B + "/app")
@@ -103,6 +116,7 @@ with sync_playwright() as pw:
             if pg.evaluate("S.slip.length") != 1 or pg.evaluate("S.slip[0]") != tk2: bad(f"{tag}: in single mode a new team should replace the pick: {pg.evaluate('S.slip')}")
             if not pg.evaluate("window.__haps.length>0"): bad(f"{tag}: the switch should tick (haptic)")
             if sideways(pg): bad(f"{tag}: the slip bar scrolls sideways")
+            hsw(pg, tag, ".slipbar .sbtog button,.slipbar .sbrow button", "the slip bar's buttons")
             shot(pg, f"1_slip_single_{tag}.png")
             pg.locator(".slipbar .sbtog button", has_text="Combo").tap(); time.sleep(.3)
             if pg.evaluate("S.slipMode") != "combo": bad(f"{tag}: tapping Combo didn't switch back")
@@ -120,6 +134,7 @@ with sync_playwright() as pw:
         if "yes" not in s["cls"] or "Buy $9.54" not in s["btn"]: bad(f"{tag}: a good price should be a green Buy: {s}")
         if not pg.evaluate("!!document.querySelector('#sbbuy .qt')"): bad(f"{tag}: the Buy button should carry the 20 s draining bar")
         if sideways(pg): bad(f"{tag}: the sheet scrolls sideways")
+        hsw(pg, tag, "#sbx #sbbuy,#sbx .sbst .chip,#sbx .sbgo button", "the buy sheet's buttons")
         shot(pg, f"2_sheet_good_{tag}.png")
         # presets
         n0 = len(SENT)
@@ -198,6 +213,7 @@ with sync_playwright() as pw:
             gb = pg.evaluate("(()=>{const b=document.querySelector('#sheet .gbuy').getBoundingClientRect();return [b.top,b.bottom,innerHeight]})()")
             if gb[1] > gb[2] + 1 or gb[1] < gb[2] - 120: bad(f"{tag}: the buy buttons should sit pinned at the bottom of the screen: {gb}")
             shot(pg, f"9_game_buttons_{tag}.png")
+            hsw(pg, tag, "#sheet .gbuy button", "the game page's buy buttons")
             n0 = len(SENT)
             pg.locator("#sheet .gbuy button").nth(1).click()
             if not wait(pg, "!!document.querySelector('#sbx #sbbuy')", 8): bad(f"{tag}: a game page button should open the buy sheet")

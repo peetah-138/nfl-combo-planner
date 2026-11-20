@@ -13,10 +13,11 @@ def bad(m): problems.append(m); print("PROBLEM:", m)
 SPY = r"""
 window.__haps=[];window.__sw=[];window.__vib=[];window.__ev=[];
 addEventListener('change',e=>{if(e.target&&e.target.matches&&e.target.matches('input[switch]'))window.__sw.push({id:(e.target.closest('.hapx')||{}).id||'visible',t:performance.now()});},true);
+window.__swc=[];addEventListener('click',e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))window.__swc.push(e.isTrusted);},true);   // the finger landing on a see-through switch (N)
 navigator.vibrate=p=>{window.__vib.push(JSON.stringify(p));return true;};
 localStorage.setItem('cw_view','settings');
 """
-IDS = list("ABCDEFGHIJKLM")
+IDS = list("NABCDEFGHIJKLM")
 
 def wait(pg, js, secs=12):
     for _ in range(int(secs / .2)):
@@ -35,13 +36,14 @@ with sync_playwright() as pw:
     time.sleep(.5)
     card = pg.evaluate("""(()=>{const c=document.querySelector('#s-haptics');if(!c)return null;
       return {title:c.querySelector('h3').textContent,sub:c.querySelector('header p').textContent,rows:[...c.querySelectorAll('.hxrow')].map(r=>r.dataset.m),
-      ask:c.innerText.includes('Which one worked? Tell Claude'),tog:!!c.querySelector('#hapon'),nav:[...document.querySelectorAll('.sidx a')].some(a=>a.textContent.includes('Haptics')),
+      ask:c.innerText.includes('Does it tick on every tap now? Tell Claude.'),marks:['A','B','C','D','E','F','J','K'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Did nothing on iOS 27'))&&['G','H','I'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Pete confirmed')),tog:!!c.querySelector('#hapon'),nav:[...document.querySelectorAll('.sidx a')].some(a=>a.textContent.includes('Haptics')),
       plain:['vibrate','not expected on iPhone','combo://haptic'].every(t=>c.innerText.includes(t))};})()""")
     print("card:", card)
     if not card: bad("no card"); card = {"rows": []}
     else:
         if card["title"] != "Test haptics" or card["sub"] != "Tap each button. Tell Claude which one you feel.": bad(f"card wording: {card['title']!r} / {card['sub']!r}")
-        if card["rows"] != IDS: bad(f"the buttons should be A..M, got {card['rows']}")
+        if card["rows"] != IDS: bad(f"the buttons should be N, A..M, got {card['rows']}")
+        if not card["marks"]: bad("G/H/I should say Pete confirmed and A-F/J/K that they did nothing on iOS 27")
         if not card["ask"] or not card["tog"] or not card["nav"] or not card["plain"]: bad(f"card is missing the which-one line, the on/off switch, the side link or the vibrate/app labels: {card}")
     sc = pg.evaluate("document.documentElement.scrollWidth<=innerWidth+1")
     if not sc: bad("the Test haptics card makes the page scroll sideways on a phone")
@@ -102,6 +104,8 @@ with sync_playwright() as pw:
     pg.locator('.hxrow[data-m="M"] button').click(); m_no = pg.evaluate("document.querySelector('.hxrow[data-m=M] .hxs').textContent")
     print("L:", l_ok, "/", l_no, " M:", m_no)
     if l_ok != "sent ✓" or l_no != "not available here" or m_no != "not available here": bad("L/M should say when they can't work on this device")
+    pg.locator('.hxrow[data-m="N"] button').click(); n_no = pg.evaluate("document.querySelector('.hxrow[data-m=N] .hxs').textContent")
+    if n_no != "not available here" or pg.evaluate("document.querySelectorAll('.hsw').length"): bad(f"N should have no switches and say so off an iPhone ({n_no!r})")
     # the flash goes away by itself
     time.sleep(1.8)
     if pg.evaluate("[...document.querySelectorAll('.hxs')].filter(s=>s.textContent).length"): bad("a 'sent' flash never cleared")
@@ -124,15 +128,28 @@ with sync_playwright() as pw:
         if r["vib"]: bad("an iPhone shouldn't use navigator.vibrate")
         if not r["inview"] or r["vis"] != "visible" or r["disp"] == "none" or r["inp"] == "none" or r["op"] <= 0 or r["pe"] == "none" or not r["hasSwitch"]:
             bad(f"the haptic switch must be laid out on screen and not hidden (iOS ignores hidden ones): {r}")
-    # a real tap anywhere ticks exactly once through the switch
-    pg.evaluate("window.__sw.length=0;S.hapAt=0;__haps.length=0")
+    # a real tap anywhere lands on that control's own see-through switch (N), once, with no scripted switch on top
+    pg.evaluate("window.__sw.length=0;window.__swc.length=0;S.hapAt=0;__haps.length=0")
     pg.locator(".tabbar button").nth(1).click(); time.sleep(.3)
-    n = pg.evaluate("__sw.length")
-    if n != 1: bad(f"a tab tap should toggle the switch once on an iPhone, got {n}")
+    n = pg.evaluate("({finger:__swc.slice(),scripted:__sw.filter(x=>x.id!=='visible').length,haps:__haps.slice()})")
+    print("iPhone tab tap:", n)
+    if n["finger"] != [True] or n["scripted"] or n["haps"] != ["selection"]: bad(f"a tab tap should land on its own switch once, with no scripted tick on top: {n}")
+    # a pattern's extra ticks (and gestures with no tap) still try the scripted switch (iOS 27 ignores it; older iOS ticks)
+    pg.evaluate("window.__sw.length=0;S.hapAt=0;hap('success')"); time.sleep(.3)
+    if pg.evaluate("__sw.filter(x=>x.id==='hapl').length") != 2: bad("hap('success') outside a tap should still try two scripted ticks")
+    # N (the default): the N button carries its own see-through switch; a tap flips it, runs once, says sent, no scripted tick
+    pg.evaluate("go('settings')"); time.sleep(1.5); wait(pg, "!!document.querySelector('.hxrow[data-m=N] button>.hsw')", 10)
+    pg.evaluate("window.__sw.length=0;window.__swc.length=0;window.__hapt=[];__haps.length=0;S.hapAt=0"); row = pg.locator('.hxrow[data-m="N"]'); row.scroll_into_view_if_needed()
+    row.locator("button").click(); time.sleep(.2)
+    nres = pg.evaluate("({hapt:window.__hapt.slice(),sw:__sw.slice(),finger:__swc.slice(),flash:document.querySelector('.hxrow[data-m=N] .hxs').textContent,other:document.querySelectorAll('.hxrow:not([data-m=N]) button>.hsw').length})")
+    print("N on an iPhone:", nres)
+    if nres["hapt"] != ["N"] or nres["finger"] != [True] or [x for x in nres["sw"] if x["id"] != "visible"] or nres["flash"] != "sent ✓": bad(f"N: the finger's own switch should flip once and the method run once: {nres}")
+    if nres["other"]: bad("the other test buttons must not get a see-through switch (it would make them all tick)")
     # Haptics off: silent, remembered
     pg.evaluate("go('settings')"); time.sleep(1.5)
     pg.evaluate("window.__sw.length=0;S.hapAt=0"); pg.locator("#hapon").click(); time.sleep(.2)
-    if pg.evaluate("__sw.length"): bad("turning haptics off still buzzed once")
+    if pg.evaluate("__sw.filter(x=>x.id!=='visible').length"): bad("turning haptics off still buzzed once")   # (#hapon is a real switch: its own flip is the finger's)
+    if pg.evaluate("document.querySelectorAll('.hsw').length"): bad("turning haptics off left see-through switches in the page")
     off = pg.evaluate("({s:S.hapOff,ls:localStorage.getItem('cw_hapoff'),on:document.getElementById('hapon').checked})")
     pg.evaluate("window.__sw.length=0;S.hapAt=0;hap('light');S.hapAt=0;hap('success')")
     quiet = pg.evaluate("__sw.length")
@@ -142,6 +159,7 @@ with sync_playwright() as pw:
     pg.locator("#hapon").click(); time.sleep(.2)
     pg.evaluate("window.__sw.length=0;S.hapAt=0;hap('light')")
     if pg.evaluate("__sw.length") != 1 or pg.evaluate("localStorage.getItem('cw_hapoff')") != "": bad("turning haptics back on didn't bring them back")
+    if pg.evaluate("document.querySelectorAll('.hsw').length") < 5: bad("turning haptics back on didn't bring the see-through switches back")
     # remembered across a reload
     pg.locator("#hapon").click(); time.sleep(.2); pg.reload(); wait(pg, "!!document.querySelector('#s-haptics')", 25); time.sleep(.5)
     if pg.evaluate("hapOff()") is not True or pg.evaluate("document.getElementById('hapon').checked"): bad("the off setting isn't remembered after a reload")
