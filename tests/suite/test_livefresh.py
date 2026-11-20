@@ -81,24 +81,45 @@ with sync_playwright() as pw:
     b2 = pg.evaluate("api('/app/api/live?fresh=1').then(d=>d.fresh.built)")
     if not b2 > b1: print("PROBLEMS: building didn't recover after a failure")
 
-    # the hero stamp
+    # the hero stamp (issue #80): while a game is live it says what it measures — the snapshot/prices age AND the
+    # scores age, separately, never one conflated "Updated N ago" that hides which is stale.
     pg.evaluate("go('live')")
-    ok = until(pg, "!!document.querySelector('.hl [data-fr=L]')&&/Updated/.test(document.querySelector('.hl [data-fr=L]').textContent)")
+    ok = until(pg, "!!document.querySelector('.hl [data-fr=L]')&&/Prices.*scores/.test(document.querySelector('.hl [data-fr=L]').textContent)")
     txt = pg.evaluate("(document.querySelector('[data-fr=L]')||{}).textContent")
     print("hero stamp:", repr(txt))
-    if not ok: print("PROBLEMS: no 'Updated' stamp on the Live hero")
-    # it counts up on its own between loads (no reload)
+    if not ok: print("PROBLEMS: hero stamp doesn't name prices and scores separately")
+    if not (re.search(r"Prices\b", txt or "") and re.search(r"scores\b", txt or "")):
+        print("PROBLEMS: the stamp must say both 'Prices' and 'scores'")
+    # it counts up on its own between loads (no reload): push the whole snapshot (prices + scores) back 20 s
     pg.evaluate("window.load=async()=>{}")
     pg.evaluate("S.fr.L.recv-=20000")
-    ok = until(pg, "/Updated \\d+s ago/.test(document.querySelector('[data-fr=L]').textContent)", 4)
+    ok = until(pg, "/Prices \\d+s ago · scores \\d+s ago/.test(document.querySelector('[data-fr=L]').textContent)", 4)
     print("stamp counts on its own:", ok, repr(pg.evaluate("document.querySelector('[data-fr=L]').textContent")))
     if not ok: print("PROBLEMS: the stamp didn't tick")
+    # red staleness keys off the PRICES (snapshot) age, not the scores age: a snapshot older than a minute goes red
     pg.evaluate("S.fr.L.recv-=100000")
     until(pg, "document.querySelector('[data-fr=L]').classList.contains('old')", 3)
     print("old stamp muted:", pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"),
           repr(pg.evaluate("document.querySelector('[data-fr=L]').textContent")))
     if not pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"): print("PROBLEMS: stale stamp not marked")
     if not re.search(r"min ago", pg.evaluate("document.querySelector('[data-fr=L]').textContent")): print("PROBLEMS: minutes wording")
+    # the prices age the stamp leads with is the snapshot build age (now-built), not the oldest of build/scores:
+    # a fresh snapshot (built just now) with stale scores still reads "Prices <small>" but "scores <big>"
+    pg.evaluate("S.fr.L={f:{now:1000,built:999,scores:75,fast:true},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("fresh prices, stale scores:", repr(txt))
+    if not re.search(r"Prices [12]s ago", txt): print("PROBLEMS: prices age isn't the snapshot build age")
+    if not re.search(r"scores 1 min ago|scores 7[0-9]s ago", txt): print("PROBLEMS: scores age not shown separately")
+    if pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"):
+        print("PROBLEMS: a fresh snapshot went red just because scores are old")
+    # when no game is live (no scores age at all) the stamp falls back to a single honest 'Updated N ago'
+    pg.evaluate("S.fr.L={f:{now:1000,built:994,scores:null,fast:false},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("no live scores stamp:", repr(txt))
+    if not re.search(r"Updated \d+s ago", txt) or re.search(r"scores", txt):
+        print("PROBLEMS: with no live scores the stamp should be a single 'Updated N ago'")
 
     # the Games tab stamp
     pg.evaluate("S.fr.N={f:{now:1000,built:998,scores:1,fast:true},recv:Date.now()-5000}")
@@ -117,7 +138,7 @@ with sync_playwright() as pw:
     sc = lambda: pg.evaluate("[...document.querySelectorAll('#sheet .tm2 b')].map(e=>e.textContent).join('-')")
     print("score:", sc(), "| stamp:", repr(pg.evaluate("(document.querySelector('#sheet [data-fr=G]')||{}).textContent")))
     if sc() != "54-49": print("PROBLEMS: wrong score first")
-    if not pg.evaluate("/Updated/.test((document.querySelector('#sheet [data-fr=G]')||{}).textContent||'')"): print("PROBLEMS: no stamp in the game sheet")
+    if not pg.evaluate("/Updated|Prices .*scores/.test((document.querySelector('#sheet [data-fr=G]')||{}).textContent||'')"): print("PROBLEMS: no stamp in the game sheet")
 
     # an unchanged answer doesn't repaint (the node is the same one), and doesn't lose the scroll place
     pg.evaluate("document.querySelector('#sheet .board2').dataset.keep='1'")
