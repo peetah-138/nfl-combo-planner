@@ -302,9 +302,18 @@ ok("push: other topics (pause button etc.) never go to web push", len(SENT) == 1
 W.push(conf, "quiet one", web=False)
 ok("push: web=False stays ntfy only", len(SENT) == 1 and len(POSTED) == 4)
 W.push(conf, "danger", priority="high", click="/app?x=1")
-ok("push: high priority is urgent on web push and the tap opens the page", SENT[-1][4] is True and SENT[-1][2] == "/app?x=1")
+ok("push: high priority is urgent on web push and the tap opens the page (absolute URL, #79)",
+   SENT[-1][4] is True and SENT[-1][2] == "https://mac.example.ts.net/app?x=1")
 W.push(conf, "recap text", title="Recap", priority="low")
 ok("push: low priority is not urgent", SENT[-1][4] is False and SENT[-1][0] == "Recap")
+# web-push tap target is ABSOLUTE when a secure base is known, so iOS Home Screen apps open the hub, not a blank file (#79)
+W.push(conf, "absolute default", title="AbsDefault")
+ok("push: the default /app tap target is made absolute when hub_base is known (#79)", SENT[-1][2] == "https://mac.example.ts.net/app")
+real_hub_base = W.hub_base
+W.hub_base = lambda conf: ""                       # no secure address and no LAN hub: nothing to make it absolute
+W.push(conf, "relative fallback", title="RelFallback")
+ok("push: with no base known the tap target stays the relative /app fallback (#79)", SENT[-1][2] == "/app")
+W.hub_base = real_hub_base                          # restore the host mock for the Notifier block below
 
 SENT.clear(); POSTED.clear(); W._WEB_SEEN.clear()
 class FakeE:
@@ -314,7 +323,8 @@ real_localtime = time.localtime
 time.localtime = lambda *a: time.struct_time((2026, 11, 18, 12, 0, 0, 2, 322, 0))          # midday, so the "quiet hours" don't hide anything
 try:
     N.add("Fair-priced combo found", kind="value", url="/app#x")
-    ok("notifier: a buy idea is sent once to web push", [s[0] for s in SENT] == ["Buy idea"] and SENT[0][3] == "idea" and SENT[0][2] == "/app#x" and len(POSTED) == 1)
+    ok("notifier: a buy idea is sent once to web push (absolute URL via push(), #79)",
+       [s[0] for s in SENT] == ["Buy idea"] and SENT[0][3] == "idea" and SENT[0][2] == "https://mac.example.ts.net/app#x" and len(POSTED) == 1)
     SENT.clear(); POSTED.clear()
     N.add("Cash out now! Open the planner to confirm.")
     ok("notifier: an urgent cash alert is sent once, urgent, with the shorter wording",
