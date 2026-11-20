@@ -5039,6 +5039,48 @@ def open_singles(max_age=30):
     return out
 
 
+def live_offer_est(h, v):
+    """Display-only (Refs #80): the "worth now if sold" estimate made to follow the live leg prices,
+    so the Live hero's "≈" number moves with the market between leg resolutions instead of sitting on
+    the frozen Monte-Carlo chance. Same shape as the current estimate — kalshi_discount(live) times a
+    chance times pays — but the chance is the product of each still-open leg's fresh live Kalshi price
+    (won legs count as 1), not h["p"].
+
+    It is NEVER read by any sell/hedge/panel/auto path (those read MINE["cash"] and
+    kalshi_discount(live)*h["p"]*h["pays"]); it only sits on the view dict for the Live screen.
+
+    Returns None (so the caller falls back to the current frozen estimate, keeping the old number)
+    whenever it can't be trusted:
+      - same-game ("rough") combos, whose legs are correlated and so can't be multiplied as independent;
+      - any still-open leg without a fresh live price (not in play / finished-but-unsettled / missing);
+      - any error.
+    A lost open leg (res == "no") forces the product to 0, matching the frozen estimate (h["p"] is 0
+    once a leg is lost). The result is clamped to [0, pays] and never raises.
+    """
+    try:
+        if not h or h.get("rough"):
+            return None                                  # correlated same-game legs: keep the old number
+        pays = v.get("pays") or 0
+        if pays <= 0:
+            return None
+        prob = 1.0
+        for lg in v.get("legs") or []:
+            res = lg.get("res")
+            if res == "yes":
+                continue                                 # already won: counts as 1
+            if res == "no":
+                prob = 0.0                               # a lost leg sinks the whole combo
+                continue
+            lp = lg.get("live")                          # fresh live Kalshi price (already 1-p for NO legs)
+            if lp is None:
+                return None                              # an open leg with no fresh price: fall back
+            prob *= max(0.0, min(1.0, lp))
+        est = kalshi_discount(bool(v.get("live"))) * prob * pays
+        return round(max(0.0, min(est, pays)), 2)
+    except Exception:
+        return None
+
+
 def live_view(mine, views, plan, chance_one, balance):
     """Everything Combo Hub's Live screen shows, as plain data."""
     import time
@@ -5059,6 +5101,7 @@ def live_view(mine, views, plan, chance_one, balance):
             except Exception:
                 pass
         v["offer_real"] = bool(real)
+        v["offer_live"] = live_offer_est(h, v)    # display-only: estimate that follows live leg prices (Refs #80)
         v["fair_value"] = round(h["p"] * h["pays"], 2)          # what it's worth at the market's own chances
         v["overpay"] = round(v["offer"] / v["fair_value"], 3) if real and v["offer"] and v["fair_value"] > 0 else None
         v["offer_age"] = round(time.time() - o.get("at", 0)) if o.get("at") else None
@@ -5130,7 +5173,9 @@ def live_view(mine, views, plan, chance_one, balance):
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
             "chance_one": chance_one, "best": max((v["pays"] for v in alive), default=0),
-            "cash_now": round(sum(v.get("offer") or 0 for v in views if v["group"] == "pending"), 2),
+            "cash_now": round(sum((v.get("offer_live") if (not v.get("offer_real") and v.get("offer_live") is not None)
+                                    else v.get("offer")) or 0
+                                   for v in views if v["group"] == "pending"), 2),
             "hold_value": round(sum(h["hold"] for h in MINE["hold"].values()), 2),
             "locked": MINE.get("locked", 0), "week_pl": round(week_pl, 2), "games": games[:30],
             "risk": max(games, key=lambda x: (x["combos"], x["pays"])) if games else None,
