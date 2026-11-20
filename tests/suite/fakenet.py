@@ -60,6 +60,21 @@ def markets(hours=6):
     return out
 
 
+BOOK_SHAPE = {"v": "fp"}    # "fp" = Kalshi's order book shape since Nov 2026 (orderbook_fp, dollar strings); "old" = cents
+
+
+def orderbook(m, size=500):
+    """The order book behind a fake market: best YES bid = its bid, best NO bid = 1 - its ask (so the YES ask
+    matches the market's), a few worse levels under each, lowest price first like Kalshi."""
+    bid, ask = float(m["yes_bid_dollars"]), float(m["yes_ask_dollars"])
+    yes = [(round(bid - k / 100, 2), size + 100 * k) for k in (3, 2, 1, 0) if bid - k / 100 > 0]
+    no = [(round(1 - ask - k / 100, 2), size + 100 * k) for k in (3, 2, 1, 0) if 1 - ask - k / 100 > 0]
+    if BOOK_SHAPE["v"] == "old":
+        return {"orderbook": {"yes": [[round(p * 100), n] for p, n in yes], "no": [[round(p * 100), n] for p, n in no]}}
+    return {"orderbook_fp": {"yes_dollars": [[f"{p:.4f}", f"{n:.2f}"] for p, n in yes],
+                             "no_dollars": [[f"{p:.4f}", f"{n:.2f}"] for p, n in no]}}
+
+
 def espn_events(path):
     """Scoreboard events: the first game of each sport is live, the second is over, the rest haven't started."""
     series = next(s for s, p in ESPN_PATH.items() if p == path)
@@ -128,6 +143,9 @@ def fake(method, url, params=None, port=18800):
             return R({"error": "dev environment: no orders"}, 403)          # never a trade
         if path.startswith("/markets"):
             mk = markets()
+            if path.endswith("/orderbook"):
+                m = next((x for x in mk if x["ticker"] == path.split("/")[2]), None)
+                return R(orderbook(m) if m else {"orderbook_fp": {"yes_dollars": [], "no_dollars": []}})
             if path.count("/") >= 2:
                 m = next((x for x in mk if x["ticker"] == path.split("/")[2]), None)
                 return R({"market": m} if m else {}, 200 if m else 404)

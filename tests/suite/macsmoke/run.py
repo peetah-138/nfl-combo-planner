@@ -59,6 +59,11 @@ def fake(method, url, params=None, data=None, json_=None, **k):
         path = url.split("/trade-api/v2")[-1].split("?")[0]
         if path.startswith("/markets") and method == "GET":
             st = (params or {}).get("series_ticker", "")
+            if path.endswith("/orderbook"):        # Kalshi's order book shape since Nov 2026: orderbook_fp, dollar strings
+                tk = path.split("/")[2]; m = next((x for x in mk if x["ticker"] == tk), None)
+                b, a = (float(m["yes_bid_dollars"]), float(m["yes_ask_dollars"])) if m else (0, 1)
+                return R({"orderbook_fp": {"yes_dollars": [[f"{b:.4f}", "500.00"]] if b else [],
+                                           "no_dollars": [[f"{1 - a:.4f}", "500.00"]] if a < 1 else []}})
             if path.count("/") >= 2:
                 tk = path.split("/")[2]; m = next((x for x in mk if x["ticker"] == tk), None)
                 return R({"market": m} if m else {}, 200 if m else 404)
