@@ -52,6 +52,7 @@ CFG = {
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
+    "line_model": True,   # spreads/totals: the margin-shape model where its league's gate is on (False = old model everywhere)
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -249,7 +250,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "tp_v2")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2")
 
 
 def next_league():
@@ -7361,7 +7362,7 @@ NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
-                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live")
+                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -11380,10 +11381,38 @@ def espn_lines(code):
                 total = float(odds.get("overUnder")) if odds.get("overUnder") is not None else None
             except (TypeError, ValueError):
                 continue
-            out[frozenset({(home.get("displayName") or "").lower(), (away.get("displayName") or "").lower()})] = {
+            out[frozenset({(home.get("displayName") or "").lower(), (away.get("displayName") or "").lower()})] = dict({
                 "home": home.get("displayName") or "", "away": away.get("displayName") or "",
                 "home_abbr": home.get("abbreviation") or "", "away_abbr": away.get("abbreviation") or "",
-                "spread_home": spread, "total": total, "start": ev.get("date")}
+                "spread_home": spread, "total": total, "start": ev.get("date")}, **espn_line_prices(odds))
+    return out
+
+
+def espn_line_prices(odds):
+    """The sportsbook's prices around its lines, de-vigged, for the margin model: {'p_hcover': home covers its
+    spread, 'p_over': over the total, 'p_home'/'p_away'(/'p_draw'): who wins}. Missing ones are left out."""
+    def close(*path):
+        x = odds
+        for k in path:
+            x = x.get(k) if isinstance(x, dict) else None
+        return x
+    out = {}
+    try:
+        pc = _devig(close("pointSpread", "home", "close", "odds"), close("pointSpread", "away", "close", "odds"))
+        po = _devig(close("total", "over", "close", "odds"), close("total", "under", "close", "odds"))
+        ph, pa = _am_prob(close("moneyline", "home", "close", "odds")), _am_prob(close("moneyline", "away", "close", "odds"))
+        pd = _am_prob(close("moneyline", "draw", "close", "odds")) or _am_prob(close("drawOdds", "moneyLine"))
+    except (TypeError, AttributeError):
+        return out
+    if pc and 0.2 < pc < 0.8:
+        out["p_hcover"] = round(pc, 4)
+    if po and 0.2 < po < 0.8:
+        out["p_over"] = round(po, 4)
+    if ph and pa:
+        s = ph + pa + (pd or 0)
+        out.update(p_home=round(ph / s, 4), p_away=round(pa / s, 4))
+        if pd:
+            out["p_draw"] = round(pd / s, 4)
     return out
 
 
@@ -11414,6 +11443,396 @@ def line_fair(code, kind, line, team_is_home, g):
     if code in ("nhl", "ahl", "soccer"):
         return 1 - _poisson_cdf(math.floor(line), g["total"])
     return None
+
+
+# ---- spreads and totals, the margin-shape model (issue #117, part A). Same sportsbook line, but the chance of a
+# strike comes from how games really finish in each league: NFL and college football margins pile up on 3, 7, 10
+# and 14 and never tie in college; basketball never ties; hockey and soccer are goals (Poisson) anchored on the
+# moneyline and the total, with the empty-net 2-goal wins and soccer's draws learned from real scores. Each league's
+# shape comes from its own past seasons (ESPN's free scoreboard, tools/build_line_tables.py), borrowing its sport's
+# where it has few games. Then a per-league calibration by how far the strike is from the line (your own settled
+# Kalshi markets, n/(n+300) like the moneylines). A league uses it only where it has beaten the old model (gate).
+LINE_SPORT = {"nfl": "football", "ncaaf": "football", "nba": "basketball", "ncaamb": "basketball",
+              "ncaawb": "basketball", "euroleague": "basketball", "nhl": "hockey", "ahl": "hockey", "soccer": "soccer",
+              "epl": "soccer", "laliga": "soccer", "seriea": "soccer", "bundesliga": "soccer", "ligue1": "soccer",
+              "mls": "soccer", "ligamx": "soccer"}
+LINE_REF = {"football": {"spread": 14.0, "total": 11.0}, "basketball": {"spread": 11.0, "total": 15.0}}
+LINE_GATE = {"games": 200, "gain": 0.002, "z": 2.0, "live_games": 200}
+LINE_CACHE = {}
+# BEGIN LINE TABLES (generated by tools/build_line_tables.py from ESPN's public scoreboard; do not edit by hand)
+LINE_TABLES = {"leagues":{"nba":{"spread":{"n":1284,"sd":[13.566,0.0],"w":{"0":0.0,"1":0.731,"2":1.039,"6":1.233,"7":1.306,"8":1.28,"9":1.24,"11":1.061,"12":1.296,"13":0.935,"14":1.036,"15":0.909,"16":1.125,"17":0.815,"18":0.91,"19":0.965,"20":0.744,"22":0.875,"23":0.964,"24":0.804,"25":0.893,"26":0.88,"28":0.958,"29":0.934,"30":0.816,"31":0.818,"32":0.958,"33":1.056,"34":0.951,"36":1.303,"37":1.068,"38":1.044,"39":0.956,"40":1.041}},"total":{"n":1284,"sd":[17.408,0.0004],"w":{}}},"nfl":{"spread":{"n":1001,"sd":[12.817,0.0],"w":{"0":0.314,"1":0.829,"2":0.944,"3":2.495,"4":0.938,"5":0.941,"6":1.263,"7":1.504,"8":0.885,"9":0.372,"10":0.9,"11":0.391,"12":0.598,"13":0.61,"14":1.235,"15":0.496,"16":0.706,"17":1.631,"18":0.918,"19":0.712,"21":1.151,"23":1.197,"24":1.47,"25":1.062,"26":0.865,"27":0.871,"28":1.302,"29":0.87,"30":0.913,"31":1.434,"32":1.103,"33":0.915,"34":1.351,"35":1.091,"36":0.876,"37":1.08,"38":1.162,"39":0.927}},"total":{"n":812,"sd":[12.781,0.0035],"w":{"10":0.945,"11":0.933,"13":0.907,"14":0.891,"15":0.873,"16":1.09,"18":0.865,"19":1.173,"20":0.866,"21":0.73,"22":0.908,"23":1.071,"24":0.885,"25":0.849,"26":1.083,"28":0.827,"30":1.109,"31":0.913,"32":0.766,"33":1.303,"34":1.292,"35":0.883,"36":1.082,"37":1.337,"38":0.87,"39":0.851,"40":1.044,"41":1.146,"42":0.723,"43":1.296,"44":1.118,"46":1.033,"47":1.215,"48":0.875,"49":1.066,"50":0.723,"51":1.414,"52":0.883,"53":0.683,"54":0.903,"55":0.764,"56":0.828,"57":1.184,"58":1.044,"59":0.933,"60":1.053,"61":1.098,"62":0.887,"64":0.876,"65":1.151,"66":1.295,"67":0.737,"68":1.079,"69":0.903,"70":0.824,"71":1.131,"73":1.075,"75":1.062,"76":1.081,"78":1.114,"79":1.065,"80":1.14,"82":1.094,"86":1.116,"89":1.058,"90":1.06,"96":1.066}}},"nhl":{"spread":{"n":88,"w":{"1":0.758,"2":1.166,"3":1.402,"4":1.039,"5":0.872,"6":0.875}},"total":{"n":88,"w":{"3":0.947,"4":1.167,"5":1.073,"6":0.877,"8":1.121,"9":0.881,"10":1.083,"12":0.929,"13":0.937}}}},"sports":{"basketball":{"spread":{"n":1284,"sd":[13.566,0.0],"w":{"0":0.0,"1":0.795,"2":1.03,"6":1.175,"7":1.229,"8":1.209,"9":1.178,"11":1.044,"12":1.215,"13":0.953,"14":1.026,"15":0.936,"16":1.087,"17":0.873,"18":0.939,"19":0.977,"20":0.83,"22":0.919,"23":0.977,"24":0.877,"25":0.934,"26":0.927,"28":0.975,"29":0.962,"30":0.895,"31":0.897,"32":0.977,"33":1.031,"34":0.973,"36":1.162,"37":1.036,"38":1.023,"39":0.977,"40":1.021}},"total":{"n":1284,"sd":[17.408,0.0004],"w":{}}},"football":{"spread":{"n":1001,"sd":[12.817,0.0],"w":{"0":0.546,"1":0.873,"2":0.958,"3":2.108,"4":0.954,"5":0.956,"6":1.193,"7":1.367,"8":0.917,"9":0.549,"10":0.929,"11":0.57,"12":0.719,"13":0.73,"14":1.161,"15":0.66,"16":0.804,"17":1.414,"18":0.947,"19":0.816,"21":1.093,"23":1.118,"24":1.277,"25":1.036,"26":0.923,"27":0.927,"28":1.168,"29":0.929,"30":0.953,"31":1.233,"32":1.055,"33":0.955,"34":1.184,"35":1.047,"36":0.936,"37":1.041,"38":1.083,"39":0.963}},"total":{"n":812,"sd":[12.781,0.0035],"w":{"10":0.972,"11":0.966,"13":0.952,"14":0.944,"15":0.934,"16":1.047,"18":0.929,"19":1.092,"20":0.928,"21":0.854,"22":0.95,"23":1.039,"24":0.936,"25":0.915,"26":1.047,"28":0.9,"30":1.064,"31":0.948,"32":0.859,"33":1.184,"34":1.179,"35":0.928,"36":1.051,"37":1.211,"38":0.918,"39":0.905,"40":1.028,"41":1.093,"42":0.823,"43":1.19,"44":1.076,"46":1.021,"47":1.138,"48":0.92,"49":1.042,"50":0.824,"51":1.262,"52":0.926,"53":0.802,"54":0.94,"55":0.855,"56":0.895,"57":1.111,"58":1.026,"59":0.96,"60":1.031,"61":1.057,"62":0.935,"64":0.93,"65":1.084,"66":1.163,"67":0.856,"68":1.043,"69":0.948,"70":0.906,"71":1.069,"73":1.039,"75":1.032,"76":1.042,"78":1.058,"79":1.033,"80":1.071,"82":1.047,"86":1.058,"89":1.029,"90":1.03,"96":1.033}}},"hockey":{"spread":{"n":88,"w":{"1":0.832,"2":1.104,"3":1.238,"4":1.022,"5":0.932,"6":0.935}},"total":{"n":88,"w":{"3":0.97,"4":1.092,"5":1.044,"6":0.93,"8":1.067,"9":0.932,"10":1.044,"12":0.964,"13":0.968}}}}}
+LINE_EVIDENCE = {"nfl":{"spread":{"br_new":0.2107,"br_old":0.2125,"games":1001,"ll_new":0.6104,"ll_old":0.6149,"se":0.0013,"seasons":4,"strikes":21275},"total":{"br_new":0.2267,"br_old":0.2276,"games":812,"ll_new":0.6452,"ll_old":0.6475,"se":0.0012,"seasons":4,"strikes":13762}}}
+# END LINE TABLES
+
+
+def _line_sd(prm, x):
+    a, b = prm["sd"]
+    return max(a + b * abs(x), 0.5)
+
+
+def _pmf_binned(mu, sd, w, lo, hi, absw):
+    """A normal curve cut into whole numbers lo..hi, reshaped by the learned weights, adding up to 1."""
+    out, prev = {}, _phi((lo - 0.5 - mu) / sd)
+    for x in range(lo, hi + 1):
+        c = _phi((x + 0.5 - mu) / sd)
+        out[x] = (c - prev) * w.get(abs(x) if absw else x, 1.0)
+        prev = c
+    s = sum(out.values())
+    return {x: v / s for x, v in out.items()} if s > 0 else out
+
+
+def _pmf_split(p, c):
+    """(chance above c, chance below c) for a whole-number distribution."""
+    return sum(v for x, v in p.items() if x > c), sum(v for x, v in p.items() if x < c)
+
+
+def _pmf_anchor(c, target, make, mu0, sd):
+    """Slide the curve until it agrees with the sportsbook at its own line: P(X > c, given no push) = target."""
+    lo, hi = mu0 - 3 * sd, mu0 + 3 * sd
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        up, dn = _pmf_split(make(mid), c)
+        if up / max(up + dn, 1e-12) < target:
+            lo = mid
+        else:
+            hi = mid
+    return make((lo + hi) / 2)
+
+
+def _am_prob(x):
+    """An American price ('+136', '-162', 'EVEN', 110) as its implied chance, or None."""
+    s = str(x if x is not None else "").strip().upper()
+    if s in ("EVEN", "EV", "PK"):
+        return 0.5
+    try:
+        a = float(s)
+    except ValueError:
+        return None
+    if a >= 100:
+        return 100 / (a + 100)
+    if a <= -100:
+        return -a / (-a + 100)
+    return None
+
+
+def _devig(a, b):
+    pa, pb = _am_prob(a), _am_prob(b)
+    return pa / (pa + pb) if pa and pb else None
+
+
+def _pois_list(lam, n):
+    out, t = [], math.exp(-lam)
+    for i in range(n):
+        out.append(t)
+        t *= lam / (i + 1)
+    return out
+
+
+def goals_joint(lh, la, ot, n=13):
+    """Final-score chances {(home, away): p} from each side's expected goals. ot: a tie after regulation goes to
+    overtime or a shootout, which adds one goal to the winner (as the final score shows it)."""
+    ph, pa = _pois_list(lh, n), _pois_list(la, n)
+    q = lh / (lh + la)
+    out = {}
+    for i in range(n):
+        for j in range(n):
+            v = ph[i] * pa[j]
+            if ot and i == j:
+                out[(i + 1, j)] = out.get((i + 1, j), 0) + v * q
+                out[(i, j + 1)] = out.get((i, j + 1), 0) + v * (1 - q)
+            else:
+                out[(i, j)] = out.get((i, j), 0) + v
+    return out
+
+
+def _marginal(j, f):
+    out = {}
+    for k, v in j.items():
+        out[f(k)] = out.get(f(k), 0) + v
+    return out
+
+
+def goals_lambdas(total, p_over, p_home, p_away, ot):
+    """Each side's expected goals so the model agrees with the sportsbook's total line and who it thinks wins."""
+    target, want = p_over or 0.5, p_home / (p_home + p_away)
+    r, lt = 0.5, max(total, 0.5)
+    for _ in range(5):
+        lo, hi = 0.2, 15.0
+        for _ in range(28):
+            lt = (lo + hi) / 2
+            up, dn = _pmf_split(_marginal(goals_joint(lt * r, lt * (1 - r), ot), sum), total)
+            lo, hi = (lt, hi) if up / max(up + dn, 1e-12) < target else (lo, lt)
+        lo, hi = 0.02, 0.98
+        for _ in range(28):
+            r = (lo + hi) / 2
+            up, dn = _pmf_split(_marginal(goals_joint(lt * r, lt * (1 - r), ot), lambda k: k[0] - k[1]), 0)
+            lo, hi = (r, hi) if up / max(up + dn, 1e-12) < want else (lo, r)
+    return lt * r, lt * (1 - r)
+
+
+def goals_pmfs(prm_s, prm_t, total, p_over, p_home, p_away, p_draw, ot):
+    """(home margin, total goals) chances for hockey (ot=True) or soccer. The margin keeps the moneyline's
+    win/draw/lose split exactly and takes its shape inside each from the learned weights (more 2-goal wins than
+    plain Poisson: empty nets); the total is reshaped by its weights, then tilted to keep the line's over chance."""
+    lh, la = goals_lambdas(total, p_over, p_home, p_away, ot)
+    j = goals_joint(lh, la, ot)
+    ws = {int(k): v for k, v in (prm_s or {}).get("w", {}).items()}
+    mm = {x: v * ws.get(abs(x), 1.0) for x, v in _marginal(j, lambda k: k[0] - k[1]).items()}
+    s = p_home + p_away + (0 if ot else (p_draw or 0))
+    sides = {1: p_home / s, 0: 0.0 if ot else (p_draw or 0) / s, -1: p_away / s}
+    margin = {}
+    for sg in (1, 0, -1):
+        part = {x: v for x, v in mm.items() if (x > 0) - (x < 0) == sg}
+        tot = sum(part.values())
+        for x, v in part.items():
+            margin[x] = v / tot * sides[sg] if tot > 0 else 0.0
+    wt = {int(k): v for k, v in (prm_t or {}).get("w", {}).items()}
+    tt = {x: v * wt.get(x, 1.0) for x, v in _marginal(j, sum).items()}
+
+    def tilt(th):
+        q = {x: v * math.exp(th * x) for x, v in tt.items()}
+        z = sum(q.values())
+        return {x: v / z for x, v in q.items()}
+    lo, hi = -3.0, 3.0
+    for _ in range(40):
+        th = (lo + hi) / 2
+        up, dn = _pmf_split(tilt(th), total)
+        lo, hi = (th, hi) if up / max(up + dn, 1e-12) < (p_over or 0.5) else (lo, th)
+    return margin, tilt((lo + hi) / 2)
+
+
+def line_params(lg, kind):
+    """This league's learned shape for 'spread' or 'total', else its sport's (borrowing), else None."""
+    got = (LINE_TABLES.get("leagues", {}).get(lg) or {}).get(kind)
+    return got or (LINE_TABLES.get("sports", {}).get(LINE_SPORT.get(lg, "")) or {}).get(kind)
+
+
+def margin_pmf(lg, kind, g):
+    """The whole-number distribution behind a game's spread ('spread': the home team's winning margin) or total
+    ('total'), anchored on the sportsbook's line (and its prices, when ESPN gives them). None = can't price it."""
+    sport = LINE_SPORT.get(lg)
+    prm = line_params(lg, kind)
+    if not sport or not prm:
+        return None
+    if sport in ("hockey", "soccer"):
+        ph, pa = g.get("p_home"), g.get("p_away")
+        if g.get("total") is None or not ph or not pa or (sport == "soccer" and not g.get("p_draw")):
+            return None
+        key = (lg, kind, sport, g.get("total"), g.get("p_over"), ph, pa, g.get("p_draw"))
+    else:
+        line = g.get("spread_home") if kind == "spread" else g.get("total")
+        if line is None or (abs(line) > 80 if kind == "spread" else not 0 < line < 400):
+            return None                            # a broken line (e.g. a moneyline read as a spread): not priced
+        key = (lg, kind, line, g.get("p_hcover") if kind == "spread" else g.get("p_over"))
+    if key in LINE_CACHE:
+        return LINE_CACHE[key]
+    if len(LINE_CACHE) > 400:
+        LINE_CACHE.clear()
+    if sport in ("hockey", "soccer"):
+        m, t = goals_pmfs(line_params(lg, "spread"), line_params(lg, "total"), g["total"], g.get("p_over"), ph, pa,
+                          g.get("p_draw"), sport == "hockey")
+        LINE_CACHE[(lg, "spread") + key[2:]], LINE_CACHE[(lg, "total") + key[2:]] = m, t
+        return m if kind == "spread" else t
+    if kind == "spread":
+        sd, w = _line_sd(prm, line), {int(k): v for k, v in prm.get("w", {}).items()}
+        span = int(6 * sd) + 2
+        make = lambda mu: _pmf_binned(mu, sd, w, int(mu) - span, int(mu) + span, True)  # noqa: E731
+        out = _pmf_anchor(-line, g.get("p_hcover") or 0.5, make, -line, sd)
+    else:
+        sd, w = _line_sd(prm, line), {int(k): v for k, v in prm.get("w", {}).items()}
+        span = int(6 * sd) + 2
+        make = lambda mu: _pmf_binned(mu, sd, w, max(0, int(mu) - span), int(mu) + span, False)  # noqa: E731
+        out = _pmf_anchor(line, g.get("p_over") or 0.5, make, line, sd)
+    LINE_CACHE[key] = out
+    return out
+
+
+def margin_prob(lg, kind, strike, team_is_home=True, g=None):
+    """Chance that the team wins by more than `strike` (spread; a negative strike = loses by less than it) or the
+    total goes over it. Kalshi's markets are strict ("over 3"), so a whole-number strike never pushes."""
+    p = margin_pmf(lg, kind, g or {})
+    if not p:
+        return None
+    if kind == "spread" and not team_is_home:
+        return min(max(sum(v for x, v in p.items() if -x > strike + 1e-9), 0.0), 1.0)
+    return min(max(sum(v for x, v in p.items() if x > strike + 1e-9), 0.0), 1.0)
+
+
+def line_bucket(code, kind, strike, center):
+    """How far the strike is from the sportsbook's line, in five bands (points for football and basketball, in
+    units of a typical miss; goals for hockey and soccer)."""
+    ref = (LINE_REF.get(LINE_SPORT.get(code, "")) or {}).get(kind, 1.0)
+    z = (strike - center) / ref
+    return "far below" if z < -0.5 else "below" if z < -0.15 else "at the line" if z <= 0.15 else \
+        "above" if z <= 0.5 else "far above"
+
+
+def line_model_on():
+    """Settings › Money › 'Smarter spread/total pricing' (auto unless Pete switched it off). Read from the shared
+    settings file too, so the Mac's engines and the web app agree without waiting for a reload."""
+    v = load_json(MAIN_SAVED, {}).get("line_model") if os.path.exists(MAIN_SAVED) else None
+    return bool(CFG.get("line_model", True) if v is None else v)
+
+
+def _line_fair_table():
+    store_x("create table if not exists line_fairs(ticker text, ts real, sport text, league text, kind text, "
+            "strike real, bucket text, fair_old real, fair_new real, fair_cal real, used text, price real, kick real, "
+            "outcome text)")
+
+
+def note_line_fair(ticker, code, lg, kind, strike, bucket, old, new, cal, used, price, kick, now=None):
+    """Both prices of a spread/total market, side by side (one row per market per half hour, before its game), so
+    each league's record can show which model is right more often, and calibrate the new one."""
+    if not STORE["db"] or not ticker:
+        return
+    now = now or time.time()
+    if kick and kick <= now:
+        return
+    _line_fair_table()
+    if store_rows("select 1 from line_fairs where ticker=? and ts > ?", (ticker, now - 1800)):
+        return
+    store_x("insert into line_fairs values(?,?,?,?,?,?,?,?,?,?,?,?,?,null)",
+            (ticker, now, code, lg, kind, strike, bucket, None if old is None else round(old, 4),
+             None if new is None else round(new, 4), None if cal is None else round(cal, 4), used, price, kick))
+
+
+def resolve_line_fairs(limit=150):
+    if not STORE["db"]:
+        return 0
+    _line_fair_table()
+    rows = store_rows("select distinct ticker from line_fairs where outcome is null and kick < ? limit ?",
+                      (time.time() - 4 * 3600, limit))
+    res = fetch_results([r["ticker"] for r in rows]) if rows else {}
+    n = 0
+    for r in rows:
+        if res.get(r["ticker"]) in ("yes", "no"):
+            store_x("update line_fairs set outcome=? where ticker=?", (res[r["ticker"]], r["ticker"]))
+            n += 1
+    return n
+
+
+LINE_STATS = {"at": 0, "v": None}
+
+
+def line_record(max_age=600):
+    """Settled spread/total markets, the last reading of each before its game: [{sport, league, kind, bucket,
+    old, new, cal, y}]. Cached 10 minutes."""
+    if LINE_STATS["v"] is not None and time.time() - LINE_STATS["at"] < max_age:
+        return LINE_STATS["v"]
+    out = []
+    if STORE["db"]:
+        _line_fair_table()
+        rows = store_rows("select ticker, sport, league, kind, bucket, fair_old, fair_new, fair_cal, outcome, ts from "
+                          "line_fairs where outcome in ('yes','no') order by ts")
+        last = {}
+        for r in rows:
+            last[r["ticker"]] = r
+        out = [{"sport": r["sport"], "league": r["league"], "kind": r["kind"], "bucket": r["bucket"],
+                "event": (r["ticker"] or "").rsplit("-", 1)[0],
+                "old": r["fair_old"], "new": r["fair_new"], "cal": r["fair_cal"], "y": r["outcome"] == "yes"}
+               for r in last.values()]
+    LINE_STATS.update(at=time.time(), v=out)
+    return out
+
+
+def calib_line(code, lg, kind, bucket, fair):
+    """The new model's chance, nudged toward what really happened to spread/total markets this far from the line,
+    borrowing everyone -> sport -> league like the moneylines (n/(n+300) of the gap at each level). Kept apart
+    from the moneyline calibration: a strike 10 points off the line isn't a 50/50 game."""
+    rec = [r for r in line_record() if r["kind"] == kind and r["bucket"] == bucket and r["new"] is not None]
+
+    def band(rs):                                  # n counts games, not strikes: one game's strikes move together
+        return (sum(r["new"] for r in rs) / len(rs), sum(r["y"] for r in rs) / len(rs),
+                len({r["event"] for r in rs})) if rs else None
+    mine = [r for r in rec if r["sport"] == code]
+    others = band([r for r in rec if r["sport"] != code])
+    lg_b = band([r for r in mine if r["league"] == lg]) if lg and lg != code else None
+    adj, hit = 0.0, False
+    for b in (others, band(mine), lg_b):
+        if b:
+            adj += b[2] / (b[2] + 300) * ((b[1] - b[0]) - adj)
+            hit = True
+    return min(max(fair + adj, 0.01), 0.99) if hit else fair
+
+
+def _ll(p, y):
+    p = min(max(p, 1e-4), 1 - 1e-4)
+    return -math.log(p if y else 1 - p)
+
+
+def line_live_stats():
+    """{(league, kind): {n, old, new}}: average log loss of the old price and the new (calibrated) price on the
+    same settled markets (lower is better)."""
+    acc = defaultdict(lambda: [0, 0.0, 0.0, set()])
+    for r in line_record():
+        if r["old"] is None or (r["cal"] if r["cal"] is not None else r["new"]) is None:
+            continue
+        x = acc[(r["league"] or r["sport"], r["kind"])]
+        x[0] += 1
+        x[1] += _ll(r["old"], r["y"])
+        x[2] += _ll(r["cal"] if r["cal"] is not None else r["new"], r["y"])
+        x[3].add(r["event"])
+    return {k: {"n": n, "games": len(ev), "old": round(o / n, 4), "new": round(w / n, 4)}
+            for k, (n, o, w, ev) in acc.items()}
+
+
+def line_gate(lg, kind):
+    """(use the new model?, why) for one league's spreads or totals. On only where it has beaten the old model by a
+    clear margin: on 200+ past games (the backtest shipped with the app) or, once there are 200+ games of them, on
+    this Mac's own settled Kalshi markets, which also switch it back off if the new prices turn out worse. Settings
+    can turn it off everywhere."""
+    if not line_model_on():
+        return False, "Switched off in Settings"
+    if not line_params(lg, kind):
+        return False, "No learned shape for this league yet"
+    live = line_live_stats().get((lg, kind))
+    if live and live["games"] >= LINE_GATE["live_games"]:
+        gain = live["old"] - live["new"]
+        if gain < 0:
+            return False, f"Worse than the old model on {live['n']:,} of your settled markets"
+        if gain >= LINE_GATE["gain"]:
+            return True, f"Beats the old model on {live['n']:,} of your settled markets"
+    ev = (LINE_EVIDENCE.get(lg) or {}).get(kind)
+    if ev and ev.get("ll_old") is None:
+        return False, "The old model doesn't price these, so there's nothing to compare yet"
+    if not ev or ev.get("games", 0) < LINE_GATE["games"]:
+        return False, "Not enough past games to test it yet"
+    gain = ev["ll_old"] - ev["ll_new"]
+    if gain >= LINE_GATE["gain"] and gain >= LINE_GATE["z"] * ev.get("se", 1):
+        return True, f"Beat the old model on {ev['games']:,} past games"
+    return False, f"Didn't clearly beat the old model on {ev['games']:,} past games"
+
+
+def line_fair_new(code, kind, line, team_is_home, g, ticker=None):
+    """(new model's chance, calibrated chance, bucket, league) for a spread/total market, or None."""
+    lg = league_key(ticker) if ticker else code
+    lg = code if lg in ("other", "mix") or LINE_SPORT.get(lg) is None else lg
+    p = margin_prob(lg, kind, line, team_is_home, g)
+    if p is None:
+        return None
+    if kind == "spread":
+        sh = g.get("spread_home") or 0
+        center = -sh if team_is_home else sh
+    else:
+        center = g.get("total") or 0
+    b = line_bucket(code, kind, line, center)
+    return p, calib_line(code, lg, kind, b, p), b, lg
+
+
+def line_accuracy():
+    """Results › What's working: each league's spreads and totals, old model vs new, in the backtest and on this
+    Mac's own settled markets, and which one is pricing them now."""
+    live = line_live_stats()
+    keys = {(lg, k) for lg, d in LINE_EVIDENCE.items() for k in d} | set(live)
+    out = []
+    for lg, kind in sorted(keys, key=lambda x: (list(LINE_SPORT).index(x[0]) if x[0] in LINE_SPORT else 99, x[1])):
+        ev, lv = (LINE_EVIDENCE.get(lg) or {}).get(kind) or {}, live.get((lg, kind)) or {}
+        on, why = line_gate(lg, kind)
+        out.append({"lg": lg, "name": league_label(lg), "kind": kind, "on": on, "why": why,
+                    "bt_games": ev.get("games"), "bt_old": ev.get("ll_old"), "bt_new": ev.get("ll_new"),
+                    "bt_brier_old": ev.get("br_old"), "bt_brier_new": ev.get("br_new"),
+                    "live_n": lv.get("n", 0), "live_old": lv.get("old"), "live_new": lv.get("new")})
+    return out
 
 
 def line_candidates(code, everything=False):
@@ -11465,6 +11884,7 @@ def line_candidates(code, everything=False):
                 continue
             fair = line_fair(code, "total", line, True, g)
             label = f"Over {line:g} ({g['away'].split()[-1]} at {g['home'].split()[-1]})"
+        fair, model = _line_pick_model(code, m, line, team_is_home if m["kind"] == "spread" else True, g, fair, p)
         if fair is None:
             continue
         if abs(fair - p) > 0.15:                        # the market disagrees wildly: our match or model is wrong
@@ -11475,7 +11895,38 @@ def line_candidates(code, everything=False):
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
                         "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}"})
+            if model:                                   # only when the new model priced it (gate on)
+                out[-1]["model"] = model
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
+
+
+def _line_pick_model(code, m, line, team_is_home, g, old, p):
+    """Which chance prices this spread/total market: today's (old) model, or the margin-shape model where its
+    league's gate is on. Logs both side by side either way. Returns (fair, None) or (new fair, 'margin').
+    Never raises: anything wrong with the new model leaves the old price exactly as it was."""
+    try:
+        got = line_fair_new(code, m["kind"], line, team_is_home, g, m.get("ticker"))
+    except Exception:
+        got = None
+    use = False
+    if got is not None:
+        try:
+            use = line_gate(got[3], m["kind"])[0]
+        except Exception:
+            use = False
+    try:
+        kick = dt.datetime.fromisoformat(str(g.get("start")).replace("Z", "+00:00")).timestamp() if g.get("start") else None
+    except ValueError:
+        kick = None
+    try:
+        note_line_fair(m.get("ticker"), code, got[3] if got else code, m["kind"], line, got[2] if got else None,
+                       old, got[0] if got else None, got[1] if got else None,
+                       "new" if use and got[1] is not None and old is not None else "old", p, kick)
+    except Exception:
+        pass
+    if use and got[1] is not None and old is not None:   # never prices a market today's model leaves out
+        return got[1], "margin"
+    return old, None
 
 
 # ---- same-game combos (a team to win + the game's total): tested on paper first
@@ -12553,6 +13004,10 @@ def resolve_closes(limit=150):
     _close_table()
     try:
         resolve_live_fairs(limit)
+    except Exception:
+        pass
+    try:
+        resolve_line_fairs(limit)
     except Exception:
         pass
     rows = store_rows("select ticker from closes where outcome is null and kick < ? limit ?", (time.time() - 4 * 3600, limit))
@@ -13984,6 +14439,10 @@ def analytics(max_age=600):
     out["live"] = roll(lambda c: league_label(bet_key([l["ticker"] for l in c["legs"]])),
                        [(m, c) for m, c in items if c.get("live")])
     out["live_excluded"] = LIVE_EXCLUDED_WHY
+    try:
+        out["lines"] = line_accuracy()
+    except Exception:
+        out["lines"] = []
     # 4. exits: your real combos (Kalshi record) ridden vs cashed, and what automatic selling did
     ex = defaultdict(lambda: {"n": 0, "cost": 0.0, "back": 0.0})
     for r in store_rows("select cost, pays, back, status from bets where status in ('won','lost','cashed') and settled > ?",
