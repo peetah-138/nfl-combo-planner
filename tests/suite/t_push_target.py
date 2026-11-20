@@ -31,10 +31,12 @@ ok("no notification target is '/app' any more (watcher + engine)",
    not re.search(r'url="/app"|click="/app"|or "/app"|"/app#s=|f"/app#s=|"cash", "/app"|"value", "/app"', src_w + src_m))
 
 # ---- the hub
-conf = {"topic": "t", "secret": "s", "hub_port": 8797, "web_pass": "pass1234", "https_auto": False}
+import socket
+_s = socket.socket(); _s.bind(("127.0.0.1", 0)); PORT = _s.getsockname()[1]; _s.close()      # a free port, never one another run is using
+conf = {"topic": "t", "secret": "s", "hub_port": PORT, "web_pass": "pass1234", "https_auto": False}
 srv = W.start_hub(conf, M)
 import requests
-B = "http://127.0.0.1:8797"
+B = f"http://127.0.0.1:{PORT}"
 HTML = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
 REMOTE = {"X-Forwarded-For": "1.2.3.4"}          # like a phone arriving over Tailscale (a request from the Mac itself skips the login)
 s = requests.Session(); s.headers.update(REMOTE); s.post(B + "/login", data={"pass": "pass1234"}); ck = s.cookies.get("cw")
