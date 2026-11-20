@@ -378,8 +378,11 @@ import inspect
 MONEY = ["panel_exec", "panel_pass", "build_panel", "choose_panel", "panel_approve", "panel_add", "_buy_panel_bet",
          "auto_sell_now", "take_profit_reason", "single_sell_reason", "smart_sell_singles", "leg_score",
          "pick_state", "accept_offer", "get_offer", "kalshi_send"]
-DISPLAY = ("game_detail", "_parse_game_detail", "_situation_info", "_parse_pbp", "_pbp_play")
-DISPLAY_DATA = ("GAME_DETAIL", "PBP_")       # the cache and the cap/limit names are display-only too
+DISPLAY = ("game_detail", "_parse_game_detail", "_situation_info", "_parse_pbp", "_pbp_play",
+           # slice 3: box score, team stats, injuries, last 5 games, season leaders (and their background team fetches)
+           "game_extras", "_parse_box", "_parse_team_stats", "_parse_injuries", "_note_athletes", "_shape_sched",
+           "_shape_leaders", "_shape_ath", "_gx_get", "_gx_refresh", "_gx_kick", "_gx_last5", "_gx_leaders")
+DISPLAY_DATA = ("GAME_DETAIL", "PBP_", "GX", "ATH[", "ATH.")       # the cache and the cap/limit names are display-only too
 leaks = [f for f in MONEY if hasattr(E, f)
          and any(k in inspect.getsource(getattr(E, f)) for k in DISPLAY + DISPLAY_DATA)]
 ok("no money/account/trading function calls the game-detail display helpers",

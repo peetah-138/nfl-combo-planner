@@ -1,6 +1,6 @@
 # Roadmap: planned work not done yet
 
-Everything we've agreed on or lined up but haven't built, as of version 2026.11.19.122 (Nov 18, 2026).
+Everything we've agreed on or lined up but haven't built, as of version 2026.11.20.123 (Nov 18, 2026).
 What's already built is described in `CLAUDE.md`. When an item ships, move its facts into `CLAUDE.md` and delete it
 here; when Pete adds or drops something, update this file in the same change.
 
@@ -80,6 +80,8 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 1. **Game page drill-down** (Kalshi live game page): team rows with scores, a live chance chart per side (or both on
    one chart; scrub is in), range switcher (LIVE/1D/1W), outlined pills with payout multipliers, a strip of other live
    games to hop between, a one-line plain-English summary. Coordinate with the faster-live work on the game page's refresh.
+   Football (#72) has its field strip, play-by-play and the box score / team stats / injuries / last 5 / season leaders tabs;
+   still to do: the same tabs for basketball, hockey, soccer, tennis and UFC, the trade ticker and pinned buy buttons.
 2. **A shareable result card** (copy image / share) for Sold and Won, like Kalshi's "Position closed" card.
 3. **Charts to drill into:** bet value over time with scrub (combo page), charts for Results › What's working.
    Panel cards' price line is from what the phone has seen; a server-side price history per panel bet would make it
