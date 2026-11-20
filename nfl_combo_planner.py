@@ -13918,56 +13918,220 @@ def cover_math(early, r_buy, r_sell, stake=None):
     return {"k": k, "cost": cost, "expect": round(cost * r_buy * r_sell, 2), "p_ahead": round(win_p, 4)}
 
 
+def _cover_week_days(sunday):
+    """The NFL week's days around its anchoring Sunday (Wed-Mon), in order (same window week_games uses)."""
+    return [sunday + dt.timedelta(days=d) for d in range(-4, 2)]
+
+
+def _cover_week_slots(sunday):
+    """Every game on this NFL week's slate, grouped into ordered kickoff checkpoints (~90-min buckets), so a
+    Thursday-night game, Sunday's early window, the later windows and Monday night each become their own slot:
+    [{slot_key, day_label, kick_start, games:[...]}], earliest first. Replaces the single early/late split."""
+    days = {d: DAY_ORDER[i] for i, d in enumerate(_cover_week_days(sunday))}
+    games = []
+    for day, label in days.items():
+        for g in _cover_games(day):
+            games.append({**g, "day": label})
+    by_slot = defaultdict(list)
+    for g in games:
+        by_slot[round(g["kick"] / 5400)].append(g)
+    slots = []
+    for key in sorted(by_slot):
+        gs = sorted(by_slot[key], key=lambda g: g["kick"])
+        slots.append({"slot_key": key, "day_label": gs[0]["day"], "kick_start": gs[0]["kick"], "games": gs})
+    return slots
+
+
 def cover_pass(log=print, alert=None):
-    """Sunday mornings: snapshot the early games before kickoff. After they finish: work out what the one
-    surviving combo would be worth at midday. Paper only."""
-    if not STORE["db"]:
+    """Through the NFL week: snapshot the earliest checkpoint's games before kickoff and cover both sides, then as
+    each later checkpoint settles work out what the one surviving full-slate combo would be worth, and replay smart
+    sell on its still-live later legs. Paper only: no quotes, no money."""
+    try:                                              # must never stop the real panel_loop (paper test only)
+        return _cover_pass(log, alert)
+    except Exception as err:
+        log("cover test skipped:", type(err).__name__, err)
         return []
+
+
+def _cover_survivor_combo(early, winners, later_games, r_buy, stake):
+    """The surviving full-slate combo as a replayable bet dict: its early legs are the winners (so it survived the
+    early checkpoint), carried together with every still-live later leg's value-picked (higher-p) side. `pays` is the
+    survivor's gross payout (stake over the product of all entry prices, with the measured combo haircut), so _replay
+    (which already applies the cash-out discount) lands on the right scale. kick = the first later leg's kickoff."""
+    later_picks = [max(g["sides"], key=lambda x: x["p"]) for g in later_games]
+    legs = [{"ticker": w["ticker"], "p": w["p"]} for w in winners] + [{"ticker": p["ticker"], "p": p["p"]} for p in later_picks]
+    pe = math.prod(l["p"] for l in legs)
+    pays = round(stake / pe * r_buy, 2) if pe else 0.0
+    return {"kind": "combo", "stake": stake, "pays": pays, "legs": legs, "lgs": ["nfl"],
+            "kick": min((g["kick"] for g in later_games), default=None)}
+
+
+def _cover_pass(log=print, alert=None):
     now, did = time.time(), []
-    today = dt.datetime.now(PACIFIC).date()
-    if today.weekday() == 6 and not store_rows("select 1 from cover where sunday=?", (today.isoformat(),)):
-        games = _cover_games(today)
-        if games:
-            first = games[0]["kick"]
-            early = [g for g in games if g["kick"] <= first + COVER["window_min"] * 60]
-            late = [g for g in games if g not in early]
-            if first - 3 * 3600 <= now <= first - 120:
-                r_buy, r_sell = _cover_r_buy(), kalshi_discount(live=False)
-                store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
-                        (today.isoformat(), now, json.dumps(early), json.dumps(late), r_buy, r_sell, "open", None))
-                m = cover_math(early, r_buy, r_sell)
-                did.append(f"cover test: {m['k']} early games, ${m['cost']:,.0f} on paper, {m['p_ahead']:.0%} chance to end up ahead")
-            elif now > first - 120:
-                store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
-                        (today.isoformat(), now, json.dumps(early), json.dumps(late), 0, 0, "missed", None))
+    today = dt.datetime.now(PACIFIC).date()           # the anchoring Sunday of the current NFL week (Monday's
+    sunday = today - dt.timedelta(days=1) if today.weekday() == 0 \
+        else today + dt.timedelta(days=(6 - today.weekday()) % 7)   # game belongs to the week that just ended)
+    week_end = _nfl_week_end(now)
+    key = sunday.isoformat()
+    # First pass of the week, from the earliest kickoff on: snapshot the slate's checkpoints, cover the first one.
+    if now < week_end and not store_rows("select 1 from cover where sunday=?", (key,)):
+        slots = _cover_week_slots(sunday)
+        if slots and now >= slots[0]["kick_start"] - 3 * 3600:
+            first = slots[0]
+            kkey = week_of(first["games"][0]["sides"][0]["ticker"]) or sunday
+            key = kkey.isoformat()
+            if not store_rows("select 1 from cover where sunday=?", (key,)):
+                if now <= first["kick_start"] - 120:
+                    r_buy, r_sell = _cover_r_buy(), kalshi_discount(live=False)
+                    store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
+                            (key, now, json.dumps(slots), None, r_buy, r_sell, "open", None))
+                    m = cover_math(first["games"], r_buy, r_sell)
+                    did.append(f"cover test: {m['k']} games in the first ({first['day_label']}) checkpoint, "
+                               f"${m['cost']:,.0f} on paper, {m['p_ahead']:.0%} chance to end up ahead")
+                elif now > first["kick_start"] - 120:
+                    store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
+                            (key, now, json.dumps(slots), None, 0, 0, "missed", None))
     for row in store_rows("select * from cover where status='open'"):
-        early = json.loads(row["early"])
-        res = fetch_results([x["ticker"] for g in early for x in g["sides"]])
-        if any(not any(res.get(x["ticker"]) for x in g["sides"]) for g in early):
-            if now - row["ts"] > 36 * 3600:
-                store_x("update cover set status='stale' where sunday=?", (row["sunday"],))
-            continue                                  # an early game hasn't been settled yet
-        stake, k = COVER["stake"], len(early)
-        winners = [next((x for x in g["sides"] if res.get(x["ticker"]) == "yes"), None) for g in early]
-        cost = stake * 2 ** k
-        if any(w is None for w in winners):           # a tie: every combo loses
-            pe, fair_v, worth = 0.0, 0.0, 0.0
-        else:
-            pe = math.prod(w["p"] for w in winners)
-            fair_v = stake / pe
-            worth = fair_v * row["r_buy"] * row["r_sell"]
-        m = cover_math(early, row["r_buy"], row["r_sell"])
-        out = {"k": k, "cost": cost, "chance": round(pe, 5), "fair": round(fair_v, 2), "worth": round(worth, 2),
-               "pl": round(worth - cost, 2), "upsets": sum(1 for w in winners if w and w["p"] < 0.5),
-               "winners": [w["abbr"] if w else "tie" for w in winners], "expect": m["expect"], "p_ahead": m["p_ahead"]}
+        did += _cover_resolve(row, now, alert)
+    return did
+
+
+def _cover_resolve(row, now, alert):
+    """One open week: as each later checkpoint settles, record the surviving combo's worth there and its smart-sell
+    replay exit; when the whole week is settled, decide whether the exits beat the cost of covering both sides."""
+    did = []
+    slots = json.loads(row["early"])
+    if not slots:
+        return did
+    stake, r_buy, r_sell = COVER["stake"], row["r_buy"], row["r_sell"]
+    first, later = slots[0], slots[1:]
+    early = first["games"]
+    k = len(early)
+    cost_both = stake * 2 ** k
+    res = fetch_results([x["ticker"] for g in early for x in g["sides"]])
+    if any(not any(res.get(x["ticker"]) for x in g["sides"]) for g in early):
+        if now - row["ts"] > 7 * 86400:               # a whole week went by with the first checkpoint unsettled
+            store_x("update cover set status='stale' where sunday=?", (row["sunday"],))
+        return did
+    winners = [next((x for x in g["sides"] if res.get(x["ticker"]) == "yes"), None) for g in early]
+    state = json.loads(row["result"]) if row["result"] else {}
+    done_slots = {c["slot_key"] for c in state.get("checkpoints", [])}
+    if any(w is None for w in winners):               # a tie in the covered checkpoint: every combo loses
+        survivor, survivor_pays, pe = ["tie"], 0.0, 0.0
+        combo = None
+    else:
+        survivor = [w["abbr"] for w in winners]
+        pe = math.prod(w["p"] for w in winners)
+        later_live = [g for s in later for g in s["games"]]
+        combo = _cover_survivor_combo(early, winners, later_live, r_buy, stake)
+        survivor_pays = combo["pays"]
+    # measure each not-yet-recorded later checkpoint that has now settled
+    checkpoints = list(state.get("checkpoints", []))
+    for s in later:
+        if s["slot_key"] in done_slots:
+            continue
+        r2 = fetch_results([x["ticker"] for g in s["games"] for x in g["sides"]])
+        settled = all(any(r2.get(x["ticker"]) for x in g["sides"]) for g in s["games"])
+        if not settled:
+            continue
+        picks = [max(g["sides"], key=lambda x: x["p"]) for g in s["games"]]
+        slot_won = all(r2.get(p["ticker"]) == "yes" for p in picks)
+        worth = 0.0
+        if combo and slot_won:                        # the survivor's value-picks held through this checkpoint
+            q = pe * math.prod(p["p"] for p in picks)
+            worth = round(stake / q * r_buy * r_sell, 2) if q else 0.0
+        replay_exit = None
+        if combo:
+            ex = sim_exit(combo)                       # smart-sell replay on the survivor's still-live later legs
+            if ex:
+                replay_exit = {"exit": round(ex[0] + stake, 2), "pl": ex[0], "why": ex[1]}
+        checkpoints.append({"label": s["day_label"], "slot_key": s["slot_key"], "worth": worth,
+                            "replay_exit": replay_exit, "settled": True})
+    # is the week finished? (every later checkpoint recorded, or there were none)
+    all_done = all(s["slot_key"] in {c["slot_key"] for c in checkpoints} for s in later)
+    out = {"cost_both": round(cost_both, 2), "survivor": survivor, "survivor_pays": round(survivor_pays, 2),
+           "checkpoints": checkpoints, "k": k, "cost": round(cost_both, 2)}
+    # one-sided baseline: a single $5 favourite-side combo (the highest-p side of each early game) — a rough proxy,
+    # not what the real panel would build: the panel picks by edge (fair - p) and often takes the underdog. The cover
+    # path is p-only (no fair), so the favourite side is the closest stand-in we can measure here.
+    one_pe = math.prod(max(g["sides"], key=lambda x: x["p"])["p"] for g in early)
+    one_cost = stake
+    one_survived = all(w is not None and w["p"] == max(g["sides"], key=lambda x: x["p"])["p"]
+                       for g, w in zip(early, winners))
+    best_exit = max((c["replay_exit"]["exit"] for c in checkpoints if c.get("replay_exit")), default=None)
+    if combo and one_survived and best_exit is not None:
+        one_sided_result = best_exit if one_pe else 0.0
+    elif one_survived:
+        one_sided_result = round(stake / one_pe * r_buy * r_sell, 2) if one_pe else 0.0
+    else:
+        one_sided_result = 0.0
+    out["one_sided_cost"] = round(one_cost, 2)
+    out["one_sided_result"] = round(one_sided_result, 2)
+    out["one_sided_pl"] = round(one_sided_result - one_cost, 2)
+    if best_exit is not None:
+        out["sim_pl"] = round(best_exit - cost_both, 2)
+        out["beat_cost"] = best_exit > cost_both
+    else:                                             # no later legs to sell: fall back to the settled worth
+        wk = checkpoints[-1]["worth"] if checkpoints else (round(stake / pe * r_buy * r_sell, 2) if (combo and pe) else 0.0)
+        out["sim_pl"] = round(wk - cost_both, 2)
+        out["beat_cost"] = wk > cost_both
+    out["pl"] = out["sim_pl"]
+    if all_done:
         store_x("update cover set status='done', result=? where sunday=?", (json.dumps(out), row["sunday"]))
-        msg = (f"📒 Cover-the-early-games test (paper, {row['sunday']}): {k} early games, {out['upsets']} upset"
-               f"{'' if out['upsets'] == 1 else 's'}. All {2 ** k} combos would have cost ${cost:,.0f}; the one left "
-               f"would be worth about ${worth:,.0f} at midday: {'+' if out['pl'] >= 0 else '−'}${abs(out['pl']):,.0f}.")
+        upsets = sum(1 for w in winners if w and w["p"] < 0.5)
+        msg = (f"📒 Cover-the-early-games test (paper, {row['sunday']}): {k} games covered both sides, {upsets} upset"
+               f"{'' if upsets == 1 else 's'}. Covering both cost ${cost_both:,.0f}; smart sell's best exit on the "
+               f"survivor was ${(best_exit or 0):,.0f} ({'beat' if out['beat_cost'] else 'under'} the cost): "
+               f"{'+' if out['pl'] >= 0 else '−'}${abs(out['pl']):,.0f} vs one-sided {'+' if out['one_sided_pl'] >= 0 else '−'}${abs(out['one_sided_pl']):,.0f}.")
         did.append(msg)
         if alert:
             alert(msg)
+    else:                                             # record progress, keep the week open
+        store_x("update cover set result=? where sunday=?", (json.dumps(out), row["sunday"]))
     return did
+
+
+def cover_ticks(log=print):
+    """Record the current prices of each open cover week's surviving combo's still-live later legs, so the smart-sell
+    replay has a path to work with (lab_ticks only scans the panel table, which cover never touches). state='sim',
+    like lab_ticks. Paper only, and fully defensive: never propagates to the watcher loop."""
+    try:
+        return _cover_ticks(log)
+    except Exception as err:
+        log("cover ticks skipped:", type(err).__name__, err)
+        return 0
+
+
+def _cover_ticks(log=print):
+    if not STORE["db"]:
+        return 0
+    want = set()
+    for row in store_rows("select * from cover where status='open'"):
+        slots = json.loads(row["early"])
+        if not slots:
+            continue
+        early = slots[0]["games"]
+        res = fetch_results([x["ticker"] for g in early for x in g["sides"]])
+        winners = [next((x for x in g["sides"] if res.get(x["ticker"]) == "yes"), None) for g in early]
+        if any(w is None for w in winners):           # first checkpoint not settled, or a tie: nothing to carry yet
+            continue
+        for s in slots[1:]:
+            for g in s["games"]:
+                want.add(max(g["sides"], key=lambda x: x["p"])["ticker"])
+    want = sorted(want)
+    saved, now = 0, time.time()
+    for i in range(0, len(want), 50):
+        try:
+            r = requests.get(f"{KALSHI}/markets", params={"tickers": ",".join(want[i:i + 50])}, timeout=15)
+            r.raise_for_status()
+            for m in r.json().get("markets", []):
+                lp = 1.0 if m.get("result") == "yes" else 0.0 if m.get("result") == "no" else live_price(m)
+                if lp is not None and 0.02 <= lp <= 0.98:
+                    store_x("insert into ticks values(?,?,?,?,?)", (now, m.get("ticker"), lp, "sim", (m.get("status") or "")[:12]))
+                    saved += 1
+        except (requests.RequestException, ValueError):
+            continue
+    return saved
 
 
 def cover_summary():
@@ -13977,12 +14141,25 @@ def cover_summary():
         x = {"sunday": r["sunday"], "status": r["status"]}
         if r["result"]:
             x.update(json.loads(r["result"]))
-        elif r["status"] == "open":
-            x.update(cover_math(json.loads(r["early"]), r["r_buy"], r["r_sell"]))
+        elif r["status"] == "open":                   # waiting on the first checkpoint to settle
+            try:
+                slots = json.loads(r["early"]) or []
+                early = slots[0]["games"] if slots else []
+                x.update(cover_math(early, r["r_buy"], r["r_sell"]))
+            except (ValueError, KeyError, IndexError, TypeError):
+                pass
         weeks.append(x)
     done = [w for w in weeks if w["status"] == "done"]
-    return {"weeks": weeks, "n": len(done), "cost": round(sum(w["cost"] for w in done), 2),
-            "pl": round(sum(w["pl"] for w in done), 2)}
+    for w in done:                                    # tolerate old-schema rows that predate the multi-day result
+        w.setdefault("sim_pl", w.get("pl", 0.0))
+        w.setdefault("cost_both", w.get("cost", 0.0))
+        w.setdefault("one_sided_pl", 0.0)
+        w.setdefault("beat_cost", w.get("sim_pl", 0.0) > 0)
+    return {"weeks": weeks, "n": len(done), "cost": round(sum(w.get("cost_both", w.get("cost", 0.0)) for w in done), 2),
+            "sim_pl": round(sum(w.get("sim_pl", 0.0) for w in done), 2),
+            "one_sided_pl": round(sum(w.get("one_sided_pl", 0.0) for w in done), 2),
+            "beat": sum(1 for w in done if w.get("beat_cost")),
+            "pl": round(sum(w.get("sim_pl", 0.0) for w in done), 2)}
 
 
 def shadow_summary(st=None):

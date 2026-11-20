@@ -397,6 +397,28 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
+  rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
+  $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the
+  **shared `ticks` table** exactly as `lab_ticks` does. Isolation from real bets does **not** come from a separate table
+  — `_paths`/`_sl_paths` (the only consumers of these ticks) read `ticks` with no state filter and bucket by
+  `round(ts)` (last-writer-wins); it comes from those being **replay/analytics-only** readers that never drive a real
+  buy or sell. (Sim ticks sharing the `ticks` table is pre-existing `lab_ticks` behaviour, out of scope here.)
+  `cover_pass`/`cover_ticks` run in `shadow_loop` **outside `odds.lock`** (both do batched Kalshi `requests.get` via
+  `fetch_results` and `cover_ticks`' own calls, and the lock is the one `panel_loop` holds to place a real approved
+  buy) across the whole NFL week (gated by `_nfl_week_end`, not Sunday-only): the week's slate is bucketed into ~90-min
+  kickoff checkpoints (`_cover_week_slots`), the earliest checkpoint (Thu night / Sat / Sun-early) is "covered both
+  sides" before kickoff, and the one surviving **full-week-slate** combo (the early winners carried together with every
+  later game's higher-`p` side; no `fair` in this path) is measured at each later checkpoint and replayed through smart
+  sell (`sim_exit`, which already applies the cash-out discount; `cover_ticks` feeds it `state='sim'` ticks, which the
+  replay needs because `lab_ticks` only scans the `panel` table). `beat_cost` = the best smart-sell exit beat the
+  doubled cost of covering both sides; the baseline is a single $5 **favourite-side** combo (the highest-Kalshi-price
+  side of each early game) — a rough proxy only: the cover path has no `fair`, so it can't pick by edge, whereas the
+  real panel picks by edge (`fair - p`) and often takes the underdog. Everything is JSON in the existing `result`
+  column (no schema migration). Covering both sides adds no EV (the vig is paid twice) — it shifts variance and timing;
+  the test measures whether smart sell's exit beats the doubled cost. Results > What's working shows it in `edgeBlock`
+  (next to the gate), not in `anBlock`. Both bodies are fully defensive (never crash the loop). Tests: `t_cover.py`
+  (engine), `test_cover.py` (page).
 
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
