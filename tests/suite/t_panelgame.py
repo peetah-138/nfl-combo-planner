@@ -118,8 +118,12 @@ E.sell_early_candidates = lambda g: [dict(g[EV[1]][1], touch=.9, ev=.1, exit=.7)
 E.value_combos = lambda g, k=6, live_ok=(), max_legs=None: [{"legs": [g[EV[0]][0], g[EV[2]][0]], "value_pct": 1.2}]
 E.predict_quote = lambda c: None
 E.combo_cutoff = lambda *a, **k: 0.9
+E.RESTING_SELLS_OK = True        # sell-early bets wait for Pete's call on resting exits (issue #81)
 cands = E.panel_collect({}, "nhl", log=lambda *a: None)
 kinds = {c["kind"]: c for c in cands}
+E.RESTING_SELLS_OK = False
+ok("while standing sells are off (V2), panel_collect drafts no sell-early bet",
+   "early" not in {c["kind"] for c in E.panel_collect({}, "nhl", log=lambda *a: None)})
 ok("panel_collect made singles, sell-early and combo candidates", {"single", "early", "combo"} <= set(kinds))
 ok("every collected single/early names its game and league", all(c["game"] and c["league"] == "NHL" for c in cands if c["kind"] in ("single", "early")))
 ok("...the sell-early favorite reads from its own side", kinds["early"]["game"] == "Sharks vs Avalanche")
