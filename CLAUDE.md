@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.19.122). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.20.123). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -75,8 +75,12 @@ Real money is involved. Pete uses it daily.
   (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
   silence them. Run code review and security review before opening the PR and fix everything they raise.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
-  version bump (below). **Standing go-ahead (Pete, 2026-11-19):** Claude may open AND merge release PRs (develop -> main, merge commit) whenever it judges there is enough in develop, without asking each time; all other release gates still apply (reviews, green checks, matching versions, screenshots for visual changes, no new automatic money movement without Pete's opt-in).
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.122`. Each release bumps N (N keeps
+  version bump (below), and main is back-merged into develop right after. Releases are owned by the session that
+  holds the "release owner" role in issue #83 (it also merges the PRs). **Standing go-ahead (Pete, 2026-11-19,
+  repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
+  without asking each time. All other gates still apply: code review and security review on the release diff, green
+  checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.123`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -91,7 +95,7 @@ Real money is involved. Pete uses it daily.
   - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
   - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
     (`develop` → `main`) is merged.
-  - **Release PRs** are opened by Claude and, under Pete's standing go-ahead of 2026-11-19 (see Releases above), merged by Claude when it judges develop has enough, with every other release gate intact.
+  - **Release PRs** are opened and merged by the release owner (issue #83) under Pete's standing go-ahead (see Releases above), with every other release gate intact.
   - **When Pete gives feedback, open a GitHub issue** to track it.
   - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
@@ -106,7 +110,7 @@ Real money is involved. Pete uses it daily.
 4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
 5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
-   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead, 2026-11-19; visual changes need his screenshots first). The Macs then update within ~10 minutes; Pete can
+   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The Macs then update within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
@@ -362,13 +366,36 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   min; a host answering 429/5xx or timing out is backed off per host (Retry-After honoured, doubling to 60 s) while
   the last good copy is served. **None of this touches trading:** the watcher's `E`/`H` loops, smart sell, auto
   cash-out, the panel and every buy/sell decision read their own data on their own timing.
-  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores,
-  `fast`); the page shows a small "Updated Ns ago" stamp (Live hero, Games tab, game sheet) that counts on its own
-  and goes red after a minute. The open **game sheet redraws itself**: on every Mac tick, and on a 2 s timer when the
+  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores
+  (or, with none live, the newest score cache), `live` = a game is under way, `fast`); the page shows a small freshness stamp (Live hero, Games tab, game sheet) that counts on its own.
+  **It names what it measures (issue #80):** while the server says a game is under way (`fresh.live`, not merely a scores cache) it reads "Prices Ns ago · scores Ns ago" — the
+  snapshot/build age (how old the dollar numbers on screen actually are) and the live scores' age, kept separate so a
+  stale snapshot and stale scores are never conflated into one misleading "Updated N ago". With no game live it falls
+  back to the single "Updated N ago" (build age). It goes red after a minute **on the snapshot/prices age** (the
+  number's own age), not on the scores age (`frBuilt`/`frScores`/`frTxt`, `frTick` toggles `.old`). (The "worth now if
+  sold" dollar number is a model estimate that in the web app only moves when a leg resolves, not on every price tick —
+  driving it off live leg prices was investigated under #80 and is a separate, larger change, not done here.)
+  The open **game sheet redraws itself**: on every Mac tick, and on a 2 s timer when the
   link is down; it repaints only when something changed and keeps its scroll place. Between updates the clock counts
   down by itself, only for NBA/college basketball/NHL/AHL, and only once two polls showed it running (a clock that
   hasn't moved for 25 s is treated as stopped); football and soccer show the last value. Tests: `t_hubcache.py`,
   `test_livefresh.py`.
+- **Live football game page (GitHub #72, display only).** On a live NFL/college-football game sheet the engine's
+  `game_detail` (one ESPN summary fetch, cached 6 s; `_parse_game_detail`, `_situation_info`) feeds `api_game`'s `detail`
+  block: the field strip (`fieldStrip`: ball, first-down line, red zone, possession arrow; everything inside `.grass` is
+  positioned in % of the grass box = yards from the left goal line), the situation line, the last play and the scoreboard's
+  timeout dots and possession ball. Slice 2 adds `detail.pbp` (`_parse_pbp`/`_pbp_play`: ESPN `drives.previous[]` + `current`,
+  at most `PBP_MAX_PLAYS` newest plays, short keys) and a generic **game-page tab framework** in the SPA (`GAME_TABS`: a per-sport
+  list of `{k, l, has(r), html(r, ov)}`; football = Overview + Play-by-play; a sport with no spec, or a tab whose data is missing,
+  shows no tab row and the page is as before; the chosen tab, stepped play and collapsed sections live in `S.gtab`/`S.pbpStep`/
+  `S.pbpOpen` and survive the 2 s redraws). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
+  the ball as it stood after that play, from the play's `yardsToEndzone` and the team whose end zone it is), Back to live,
+  collapsible quarters and drives, and tinted scoring/turnover plays, newest first. Stepping (and a new live play) plays a small
+  illustration (pass arc, run trail, sack, kick, flag, touchdown, turnover) driven only by play type and yardage: **illustrations
+  only, there is no player tracking** (the tab says so); `prefers-reduced-motion` turns the motion off, the text and ball spot still
+  update. **Isolation:** none of this is read by any buy/sell/panel path or takes the tap lock; a bad or missing feed hides the
+  tab and is logged once per game (`klive_log_once("gamedetail", ...)`). Tests: `t_gamedetail`, `test_fieldstrip`,
+  `test_gamedetail_api`, `test_pbptabs` (fixture `espn_game_detail.json`). Box score, team stats, injuries etc. are slice 3.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
@@ -378,6 +405,17 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+- **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
+  is left, and the setting to change ("Settings > Money > Weekend cap/Daily cap/Mix cap for <league>"). Its window word
+  (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
+  college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
+  "on games still to play" for the Mix. The rule and the cap amount are unchanged.
+- **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
+  labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
+  asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
+  puts the same DOM node back across any redraw (refresh, rebuild, load), so the button is never replaced, flickers or
+  loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
+  quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
@@ -386,6 +424,28 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
+  rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
+  $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the
+  **shared `ticks` table** exactly as `lab_ticks` does. Isolation from real bets does **not** come from a separate table
+  — `_paths`/`_sl_paths` (the only consumers of these ticks) read `ticks` with no state filter and bucket by
+  `round(ts)` (last-writer-wins); it comes from those being **replay/analytics-only** readers that never drive a real
+  buy or sell. (Sim ticks sharing the `ticks` table is pre-existing `lab_ticks` behaviour, out of scope here.)
+  `cover_pass`/`cover_ticks` run in `shadow_loop` **outside `odds.lock`** (both do batched Kalshi `requests.get` via
+  `fetch_results` and `cover_ticks`' own calls, and the lock is the one `panel_loop` holds to place a real approved
+  buy) across the whole NFL week (gated by `_nfl_week_end`, not Sunday-only): the week's slate is bucketed into ~90-min
+  kickoff checkpoints (`_cover_week_slots`), the earliest checkpoint (Thu night / Sat / Sun-early) is "covered both
+  sides" before kickoff, and the one surviving **full-week-slate** combo (the early winners carried together with every
+  later game's higher-`p` side; no `fair` in this path) is measured at each later checkpoint and replayed through smart
+  sell (`sim_exit`, which already applies the cash-out discount; `cover_ticks` feeds it `state='sim'` ticks, which the
+  replay needs because `lab_ticks` only scans the `panel` table). `beat_cost` = the best smart-sell exit beat the
+  doubled cost of covering both sides; the baseline is a single $5 **favourite-side** combo (the highest-Kalshi-price
+  side of each early game) — a rough proxy only: the cover path has no `fair`, so it can't pick by edge, whereas the
+  real panel picks by edge (`fair - p`) and often takes the underdog. Everything is JSON in the existing `result`
+  column (no schema migration). Covering both sides adds no EV (the vig is paid twice) — it shifts variance and timing;
+  the test measures whether smart sell's exit beats the doubled cost. Results > What's working shows it in `edgeBlock`
+  (next to the gate), not in `anBlock`. Both bodies are fully defensive (never crash the loop). Tests: `t_cover.py`
+  (engine), `test_cover.py` (page).
 
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
@@ -416,6 +476,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
     line with a glowing end dot (the Mac's `ticks`, plus what the page saw itself in `S.gh`), and chips for the bets
     riding on it. When someone scores the card pulses green (your side) or red (theirs), the number bumps and the
     phone ticks (`scoreWatch`). Tap pushes the game page. Skeleton cards while loading.
+    **Both teams and both scores on every card (issue #95, display only):** their row shows the full opponent name, else the
+    short code on the score (`sc.opp_abbr`), else "Opponent" when only their score is known; a card with no opponent score
+    (tennis/UFC on Kalshi's live data) shows no number, never a fake 0 (a real 0 shows). The server fills the leg/single
+    `opp` from the score when no odds-book match names the other side (college hoops). `test_gamecard_opp.py` covers it.
   - **Charts you can scrub** (`wireScrubs` + a spec in `S.scr[name]`): the game page's chance chart (readout of time
     and chance) and the Results profit bars; a haptic tick per point, refreshes wait while a finger is down
     (`S.scrub`), a short tap can open the point.
@@ -471,6 +535,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
     reduced-motion run.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
+
+## Kalshi API watch (GitHub issue #82)
+
+- `.github/workflows/kalshi-api-watch.yml` runs on GitHub (not the Mac) every 6 hours and runs `tools/kalshi_feed_watch.py`, which reads Kalshi's API changelog RSS feed (`docs.kalshi.com/changelog/rss.xml`) and opens one issue per new entry from the last 14 days (max 5 a run, deduped by the feed id in the body, open or closed), labelled `kalshi-api-change`; two tiers: a removal/deprecation word (deprecat/remov/no longer/sunset/migrat/410...) AND an app area (orders, portfolio, RFQ/quotes, order book, market fields, signing, rate limit, websocket...) in the title/description gets `breaking` + an "ACTION LIKELY NEEDED" first line; everything else is filed as a plain "FYI" issue (2 of the 15 entries at launch were breaking). It never touches `wip:*` labels.
+- **Alerts appear as GitHub issues**: GitHub emails/notifies Pete (the repo owner) for each one. A dead feed exits quietly; after 4 failed runs in a row it opens one "Kalshi API watch is failing" issue (count kept in the `kalshi-watch-failures` label's description). Try it with `python3 tools/kalshi_feed_watch.py --dry-run` (prints, changes nothing).
+- Feed text is untrusted: stripped to plain text, trimmed, fenced, never run. Permissions are only `contents: read` + `issues: write`. Tested by `tests/suite/t_kalshi_feed_watch.py`. Scheduled runs start only once the file is on `main`.
 
 ## Open items
 

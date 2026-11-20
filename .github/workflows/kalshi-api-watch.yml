@@ -1,0 +1,46 @@
+name: Kalshi API watch
+
+# Reads Kalshi's API changelog feed every 6 hours and opens a GitHub issue for each new entry, so Pete hears about
+# an API change the day it is announced (GitHub emails the repo owner for every new issue). Runs on GitHub, not on
+# the Mac. See tools/kalshi_feed_watch.py. Scheduled runs only start once this file is on the default branch (main).
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only print the issues it would open (change nothing)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: kalshi-api-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: watch
+    if: github.repository == 'peetah-138/nfl-combo-planner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check Kalshi's changelog feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 tools/kalshi_feed_watch.py --dry-run
+          else
+            python3 tools/kalshi_feed_watch.py
+          fi

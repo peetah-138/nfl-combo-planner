@@ -21,6 +21,18 @@ def load():
     A.resting_sells = lambda: {}
     return A
 W.load_engine = load
+# the fake ESPN answers with NO events (nothing under way) until a test flips `espn["live"]`, then the one bet's game is in progress
+espn = {"live": False}
+_net = requests.get
+def _espn_get(url, params=None, **k):
+    if "espn.com" in url and espn["live"]:
+        st = {"period": 2, "displayClock": "5:42", "type": {"state": "in", "name": "STATUS_IN_PROGRESS", "shortDetail": "Q2 5:42"}}
+        tm = lambda i, n, ab, ha, s: {"id": i, "homeAway": ha, "score": str(s),
+                                      "team": {"id": i, "displayName": n, "shortDisplayName": n.split()[-1], "location": n.rsplit(" ", 1)[0], "abbreviation": ab}}
+        return R({"events": [{"id": "e1", "date": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), "status": st,
+                              "competitions": [{"status": st, "competitors": [tm("1", "Boston Celtics", "BOS", "away", 54), tm("2", "New York Knicks", "NYK", "home", 49)]}]}]})
+    return _net(url, params=params, **k)
+requests.get = _espn_get
 threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
@@ -31,7 +43,7 @@ def game(me, opp, clock, chance, extra=0):
                     "chance": chance, "live": chance, "side": "yes",
                     "sc": {"abbr": "BOS", "opp_abbr": "NYK", "me": me, "opp": opp, "detail": clock}},
             "combos": [], "story": {"ticks": [{"ts": time.time() - 60 * i, "chance": chance} for i in range(5)], "plays": []},
-            "whatif": None, "fresh": {"now": time.time(), "built": time.time() - 2, "scores": 3, "fast": True},
+            "whatif": None, "fresh": {"now": time.time(), "built": time.time() - 2, "scores": 3, "live": True, "fast": True},
             "pad": "x" * extra}
 
 state.update(g=game(54, 49, "Q2 5:42", .62), calls=0)
@@ -81,31 +93,91 @@ with sync_playwright() as pw:
     b2 = pg.evaluate("api('/app/api/live?fresh=1').then(d=>d.fresh.built)")
     if not b2 > b1: print("PROBLEMS: building didn't recover after a failure")
 
-    # the hero stamp
+    # the hero stamp (issue #80), against the server's REAL shape. Case 1: NO game is under way (the fake ESPN has no
+    # live event) but a scores cache exists (mine_page refetched it for the leg's sport). That cache age is NOT live
+    # scores, so the stamp must be the single "Updated N ago" and must not say "scores".
     pg.evaluate("go('live')")
-    ok = until(pg, "!!document.querySelector('.hl [data-fr=L]')&&/Updated/.test(document.querySelector('.hl [data-fr=L]').textContent)")
+    ok = until(pg, "!!document.querySelector('.hl [data-fr=L]')&&/^Updated /.test(document.querySelector('.hl [data-fr=L]').textContent)")
+    txt = pg.evaluate("(document.querySelector('[data-fr=L]')||{}).textContent")
+    f = pg.evaluate("S.live.fresh")
+    print("no game under way: fresh live/scores:", f.get("live"), f.get("scores") is not None, "| hero stamp:", repr(txt))
+    if f.get("live") is not False: print("PROBLEMS: the server says a game is under way when none is")
+    if f.get("scores") is None: print("PROBLEMS: this case needs a scores cache to exist (that is the bug's trigger)")
+    if not ok: print("PROBLEMS: with no game under way the hero stamp should be a single 'Updated N ago'")
+    if re.search(r"scores", txt or "") or not re.search(r"^Updated ", txt or ""):
+        print("PROBLEMS: a cache age was labelled as live scores")
+    # Case 2: a game IS under way (the fake ESPN now returns one in progress): the server flags live, and the stamp
+    # names the prices age AND the scores age separately, never one conflated "Updated N ago" that hides which is stale.
+    espn["live"] = True
+    state["A"].SCORES_BY.clear()
+    pg.evaluate("load('live',true)")
+    ok = until(pg, "!!(S.live&&S.live.fresh&&S.live.fresh.live)", 15)
+    print("game under way: server flags live:", ok)
+    if not ok: print("PROBLEMS: the server didn't flag a game under way")
+    ok = until(pg, "!!document.querySelector('.hl [data-fr=L]')&&/^Prices .* · scores /.test(document.querySelector('.hl [data-fr=L]').textContent)", 8)
     txt = pg.evaluate("(document.querySelector('[data-fr=L]')||{}).textContent")
     print("hero stamp:", repr(txt))
-    if not ok: print("PROBLEMS: no 'Updated' stamp on the Live hero")
-    # it counts up on its own between loads (no reload)
+    if not ok: print("PROBLEMS: hero stamp doesn't name prices and scores separately")
+    if not (re.search(r"Prices\b", txt or "") and re.search(r"scores\b", txt or "")):
+        print("PROBLEMS: the stamp must say both 'Prices' and 'scores'")
+    # it counts up on its own between loads (no reload): push the whole snapshot (prices + scores) back 20 s
     pg.evaluate("window.load=async()=>{}")
     pg.evaluate("S.fr.L.recv-=20000")
-    ok = until(pg, "/Updated \\d+s ago/.test(document.querySelector('[data-fr=L]').textContent)", 4)
+    ok = until(pg, "/Prices \\d+s ago · scores \\d+s ago/.test(document.querySelector('[data-fr=L]').textContent)", 4)
     print("stamp counts on its own:", ok, repr(pg.evaluate("document.querySelector('[data-fr=L]').textContent")))
     if not ok: print("PROBLEMS: the stamp didn't tick")
+    # red staleness keys off the PRICES (snapshot) age, not the scores age: a snapshot older than a minute goes red
     pg.evaluate("S.fr.L.recv-=100000")
     until(pg, "document.querySelector('[data-fr=L]').classList.contains('old')", 3)
     print("old stamp muted:", pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"),
           repr(pg.evaluate("document.querySelector('[data-fr=L]').textContent")))
     if not pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"): print("PROBLEMS: stale stamp not marked")
     if not re.search(r"min ago", pg.evaluate("document.querySelector('[data-fr=L]').textContent")): print("PROBLEMS: minutes wording")
+    # the prices age the stamp leads with is the snapshot build age (now-built), not the oldest of build/scores:
+    # a fresh snapshot (built just now) with stale scores still reads "Prices <small>" but "scores <big>"
+    pg.evaluate("S.fr.L={f:{now:1000,built:999,scores:75,live:true,fast:true},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("fresh prices, stale scores:", repr(txt))
+    if not re.search(r"Prices (just now|[12]s ago)", txt): print("PROBLEMS: prices age isn't the snapshot build age")
+    if not re.search(r"scores 1 min ago|scores 7[0-9]s ago", txt): print("PROBLEMS: scores age not shown separately")
+    if pg.evaluate("document.querySelector('[data-fr=L]').classList.contains('old')"):
+        print("PROBLEMS: a fresh snapshot went red just because scores are old")
+    # when no game is live (no scores age at all) the stamp falls back to a single honest 'Updated N ago'
+    pg.evaluate("S.fr.L={f:{now:1000,built:994,scores:null,live:false,fast:false},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("no live scores stamp:", repr(txt))
+    if not re.search(r"Updated \d+s ago", txt) or re.search(r"scores", txt):
+        print("PROBLEMS: with no live scores the stamp should be a single 'Updated N ago'")
+    # ...and so does a scores CACHE with no game under way (non-null scores age, live false): the old bug
+    pg.evaluate("S.fr.L={f:{now:1000,built:994,scores:8,live:false,fast:false},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("scores cache, no game stamp:", repr(txt))
+    if not re.search(r"^Updated \d+s ago$", txt) or re.search(r"scores", txt):
+        print("PROBLEMS: a scores cache with no game under way must not be labelled 'scores'")
+    # a just-refreshed prices half says "just now" like the scores half does
+    pg.evaluate("S.fr.L={f:{now:1000,built:999.5,scores:1,live:true,fast:true},recv:Date.now()}")
+    pg.evaluate("frTick()")
+    txt = pg.evaluate("document.querySelector('[data-fr=L]').textContent")
+    print("just now stamp:", repr(txt))
+    if txt != "Prices just now · scores just now": print("PROBLEMS: both halves should say 'just now' under a few seconds")
 
     # the Games tab stamp
-    pg.evaluate("S.fr.N={f:{now:1000,built:998,scores:1,fast:true},recv:Date.now()-5000}")
-    pg.evaluate("S.games={games:[{name:'Celtics',opp:'Knicks',sport:'nba',state:'live',phase:'on',chance:.62,ticker:'" + TK + "',combos:1,pays:40,spark:[],sc:{me:54,opp:49,detail:'Q2 5:42',abbr:'BOS',opp_abbr:'NYK'}}],at:1,fresh:{now:1000,built:998,scores:1,fast:true}}")
+    pg.evaluate("S.fr.N={f:{now:1000,built:998,scores:1,live:true,fast:true},recv:Date.now()-5000}")
+    pg.evaluate("S.games={games:[{name:'Celtics',opp:'Knicks',sport:'nba',state:'live',phase:'on',chance:.62,ticker:'" + TK + "',combos:1,pays:40,spark:[],sc:{me:54,opp:49,detail:'Q2 5:42',abbr:'BOS',opp_abbr:'NYK'}}],at:1,fresh:{now:1000,built:998,scores:1,live:true,fast:true}}")
     pg.evaluate("go('games')"); time.sleep(.8)
-    print("games stamp present:", pg.evaluate("!!document.querySelector('#main [data-fr=N]')"), repr(pg.evaluate("(document.querySelector('#main [data-fr=N]')||{}).textContent")))
+    gtxt = pg.evaluate("(document.querySelector('#main [data-fr=N]')||{}).textContent")
+    print("games stamp present:", pg.evaluate("!!document.querySelector('#main [data-fr=N]')"), repr(gtxt))
     if not pg.evaluate("!!document.querySelector('#main [data-fr=N]')"): print("PROBLEMS: no stamp on the Games tab")
+    # its TEXT, not just its presence: a game is under way, so both halves, each in "Ns ago" form
+    if not re.fullmatch(r"Prices \d+s ago · scores \d+s ago", gtxt or ""): print("PROBLEMS: Games-tab stamp text is wrong:", repr(gtxt))
+    pg.evaluate("S.fr.N={f:{now:1000,built:998,scores:1,live:false,fast:true},recv:Date.now()-5000}")
+    pg.evaluate("frTick()")
+    gtxt = pg.evaluate("(document.querySelector('#main [data-fr=N]')||{}).textContent")
+    if not re.fullmatch(r"Updated \d+s ago", gtxt or ""): print("PROBLEMS: Games-tab stamp with no game under way should be 'Updated N ago':", repr(gtxt))
+    pg.evaluate("S.fr.N={f:{now:1000,built:998,scores:1,live:true,fast:true},recv:Date.now()-5000}")
 
     # the game sheet
     pg.route("**/app/api/game*", answer)
@@ -117,7 +189,7 @@ with sync_playwright() as pw:
     sc = lambda: pg.evaluate("[...document.querySelectorAll('#sheet .tm2 b')].map(e=>e.textContent).join('-')")
     print("score:", sc(), "| stamp:", repr(pg.evaluate("(document.querySelector('#sheet [data-fr=G]')||{}).textContent")))
     if sc() != "54-49": print("PROBLEMS: wrong score first")
-    if not pg.evaluate("/Updated/.test((document.querySelector('#sheet [data-fr=G]')||{}).textContent||'')"): print("PROBLEMS: no stamp in the game sheet")
+    if not pg.evaluate("/^Prices .* · scores /.test((document.querySelector('#sheet [data-fr=G]')||{}).textContent||'')"): print("PROBLEMS: no 'Prices ... scores ...' stamp in the game sheet of a live game")
 
     # an unchanged answer doesn't repaint (the node is the same one), and doesn't lose the scroll place
     pg.evaluate("document.querySelector('#sheet .board2').dataset.keep='1'")

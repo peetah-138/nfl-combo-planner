@@ -198,3 +198,67 @@ evs = E.klive_events([{"ticker": "KXATPMATCH-26NOV25AAABBB-AAA", "event": "KXATP
                       {"ticker": "KXATPMATCH-26NOV19CCCDDD-CCC", "event": "KXATPMATCH-26NOV19CCCDDD"},
                       {"ticker": "KXNBAGAME-26NOV19BOSNYK-BOS", "event": "KXNBAGAME-26NOV19BOSNYK"}])
 ok("asks only about started tennis/EuroLeague/UFC games, not ones days away or ESPN sports", evs == {"KXATPMATCH-26NOV19CCCDDD"}, evs)
+
+# ---- singles on Live (GitHub #95): a held tennis single shows Kalshi's score and opponent, and NOTHING that trades moves
+import time
+MKT = {"KXATPMATCH-26NOV19DEBBLA-DEB": {"ticker": "KXATPMATCH-26NOV19DEBBLA-DEB", "event_ticker": "KXATPMATCH-26NOV19DEBBLA",
+          "title": "Debrecen vs Blake: Winner?", "yes_sub_title": "Debrecen", "status": "active",
+          "yes_bid_dollars": "0.40", "yes_ask_dollars": "0.44", "no_bid_dollars": "0.56"},
+       "KXATPMATCH-26NOV19RATWAR-RAT": {"ticker": "KXATPMATCH-26NOV19RATWAR-RAT", "event_ticker": "KXATPMATCH-26NOV19RATWAR",
+          "title": "Rat vs War: Winner?", "yes_sub_title": "Rat", "status": "active",
+          "yes_bid_dollars": "0.55", "yes_ask_dollars": "0.59", "no_bid_dollars": "0.41"},
+       "KXNBAGAME-26NOV19BOSNYK-BOS": {"ticker": "KXNBAGAME-26NOV19BOSNYK-BOS", "event_ticker": "KXNBAGAME-26NOV19BOSNYK",
+          "title": "Boston at New York Winner?", "yes_sub_title": "Boston", "status": "active",
+          "yes_bid_dollars": "0.50", "yes_ask_dollars": "0.54", "no_bid_dollars": "0.46"}}
+
+
+class MResp:
+    def __init__(self, d): self.d, self.ok = d, True
+    def raise_for_status(self): pass
+    def json(self): return self.d
+
+
+_net_get = net.get
+def get_with_markets(url, params=None, headers=None, **kw):
+    if url.endswith("/markets"):
+        return MResp({"markets": [MKT[t] for t in (params or {}).get("tickers", "").split(",") if t in MKT]})
+    return _net_get(url, params=params, headers=headers, **kw)
+net.get = get_with_markets
+nowu = dt.datetime.now(dt.timezone.utc)
+E.KICKOFF["KXATPMATCH-26NOV19DEBBLA"] = (nowu - dt.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")     # under way
+E.KICKOFF["KXATPMATCH-26NOV19RATWAR"] = (nowu + dt.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")       # hours away
+E.KICKOFF["KXNBAGAME-26NOV19BOSNYK"] = (nowu + dt.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+E.ACCT_POS.update(at=time.time(), items=[{"ticker": t, "position_fp": "8", "market_exposure_dollars": "4.00"} for t in MKT])
+DEB = "KXATPMATCH-26NOV19DEBBLA-DEB"
+
+
+def singles_run(live):
+    """open_singles with Kalshi's live data (the in-play match above) or without it (Kalshi unreachable, no cached copy)."""
+    E.KLIVE["live"].clear(); E.KLIVE["ms"].clear(); E.KLIVE.update(cool=0.0, fails=0)
+    net.mode = "ok" if live else "down"
+    E.SINGLES["at"] = 0
+    out = [dict(x) for x in E.open_singles()]
+    net.mode = "ok"; E.KLIVE.update(cool=0.0, fails=0)
+    return out
+
+
+withk = singles_run(True)
+ks = E.kalshi_score({"ticker": DEB, "side": "yes"})            # Kalshi's own score for it, read while its live data is cached
+nok = singles_run(False)
+a = next(x for x in withk if x["t"] == DEB); b = next(x for x in nok if x["t"] == DEB)
+ok("a held in-play tennis single shows Kalshi's score: source and opponent", a["src"] == "kalshi" and ks is not None
+   and a["opp"] == (ks.get("opp_name") or ks.get("opp_abbr")) and a["opp"] == "BLA" and a["sc"]["abbr"] == "DEB", (a["src"], a["opp"], ks))
+ok("without Kalshi's live data the same single has no opponent, no score, no source", b["opp"] == "" and b["sc"] is None and b["src"] == "" and b["on"] is False)
+ok("the in-play single is flagged as playing from Kalshi's data (display only)", a["on"] is True)
+nu = lambda xs: [(x["t"], x["state"], x["chance"], x["sell_at"], x["starts"]) for x in xs]
+ok("KEY: with or without Kalshi's live data: state, chance, sell_at and starts are identical", nu(withk) == nu(nok), (nu(withk), nu(nok)))
+ok("KEY: the order of the singles (smart sell walks it) is identical", [x["t"] for x in withk] == [x["t"] for x in nok])
+ok("KEY: state for the in-play tennis single is unchanged (still 'pre': the money path has no score for it)", a["state"] == b["state"] == "pre")
+sellw = [E.single_sell_reason(dict(x), 0.45, None, track=False) for x in withk]
+sellwo = [E.single_sell_reason(dict(x), 0.45, None, track=False) for x in nok]
+ok("KEY: single_sell_reason answers are identical with and without the live data", sellw == sellwo, (sellw, sellwo))
+differ = {k for x, y in zip(withk, nok) for k in x if x[k] != y[k]}
+ok("only the display fields differ (opp, sc, on, src, and the words that describe the score)",
+   {"opp", "sc", "on", "src"} <= differ and differ <= {"opp", "sc", "on", "src", "score", "how", "note", "phase", "short"}, sorted(differ))
+others = [(x, y) for x, y in zip(withk, nok) if x["t"] != DEB]
+ok("the other singles (not in play) are untouched, field for field", all(x == y for x, y in others), [(x["t"]) for x, y in others if x != y])
