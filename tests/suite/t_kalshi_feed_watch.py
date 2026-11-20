@@ -111,8 +111,10 @@ todo, _ = K.pick_new(items, known, late)
 ok("window: entries older than 14 days are never filed", {i["guid"] for i in todo} == {i["guid"] for i in items if i["date"] >= late - timedelta(days=14)} and len(todo) == 3)
 todo, _ = K.pick_new(items, known, datetime(2027, 3, 1, tzinfo=timezone.utc))
 ok("window: an old feed files nothing (no flood)", todo == [])
-odd = K.parse_feed(rss(item(guid="a", date="not a date"), item(guid="b", date="")))
-ok("window: an unreadable date is skipped, not filed", K.pick_new(odd, set(), NOW)[0] == [])
+odd = K.parse_feed(rss(item(guid="a", date="not a date"), item(guid="b", date=""), item(guid="c")))
+ok("window: an unreadable date is skipped, not filed", [i["guid"] for i in K.pick_new(odd, set(), NOW)[0]] == ["c"])
+ok("dates: a feed where NO date reads is a failure (the watch must not go silently blind)",
+   raises(rss(item(guid="a", date="2026-11-20T01:33:41Z"), item(guid="b", date=""))))
 dup = K.parse_feed(rss(item(guid="same"), item(guid="same", title="again")))
 ok("window: the same guid twice in one feed is one issue", len(K.pick_new(dup, set(), NOW)[0]) == 1)
 many = K.parse_feed(rss(*[item(guid=f"g{n}", title=f"T{n}", desc="plain") for n in range(12)]))
@@ -131,7 +133,7 @@ ok("run: a third run changes nothing (no duplicates)", rc == 0 and len(gh.create
 gh2 = FakeGh([{"number": 9, "title": "x", "state": "closed", "labels": [K.LABEL], "body": "hello\nkalshi-feed-id: 6c952087f58b2bc5\n"}])
 K.run(lambda: FIXTURE, gh2, now=NOW)
 ok("dedupe: a CLOSED issue still counts as filed", not any("6c952087f58b2bc5" in b for _, b, _ in gh2.created))
-ok("dedupe: ids_in reads markers from many bodies", K.ids_in([{"body": "a kalshi-feed-id: aa1 z"}, {"body": None}, {"body": "kalshi-feed-id:bb2"}]) == {"aa1", "bb2"})
+ok("dedupe: ids_in reads markers from many bodies", K.ids_in([{"body": "x\nkalshi-feed-id: aa1\nz"}, {"body": None}, {"body": "kalshi-feed-id: bb2"}]) == {"aa1", "bb2"})
 gh3 = FakeGh(fail_list=True)
 rc = K.run(lambda: FIXTURE, gh3, now=NOW)
 ok("dedupe: if issues cannot be listed it creates nothing (and the run shows red)", rc == 1 and gh3.created == [])
@@ -163,10 +165,14 @@ K.run(lambda: b"oops", g, now=NOW)
 ok("failing: the 4th bad run opens ONE 'watch is failing' issue", g.count == 4 and [t for t, _, _ in g.created] == [K.FAILING_TITLE] and g.created[0][2] == [K.LABEL_FAILING])
 K.run(lambda: b"oops", g, now=NOW); K.run(lambda: b"oops", g, now=NOW)
 ok("failing: more bad runs never open a second one", len(g.created) == 1 and g.count == 6)
+g.issues[0]["state"] = "closed"
+K.run(lambda: b"oops", g, now=NOW); K.run(lambda: b"oops", g, now=NOW)
+ok("failing: a hand-closed failing issue is not reopened or duplicated every 6 hours", len(g.created) == 1 and g.count == 8)
+g.issues[0]["state"] = "open"
 def broken():
     raise K.FeedError("down")
 K.run(broken, g, now=NOW)
-ok("failing: an unreachable feed counts the same way", g.count == 7)
+ok("failing: an unreachable feed counts the same way", g.count == 9)
 K.run(lambda: FIXTURE, g, now=NOW)
 ok("recovery: a good run resets the count and closes the failing issue", g.count == 0 and g.closed == [1] and g.issues[0]["state"] == "closed")
 for n in range(4):
@@ -190,6 +196,14 @@ ok("untrusted: the summary is cut to the limit", len(evil["summary"]) <= K.SUMMA
 body = K.issue_body(evil)
 inner = body.split("```text\n", 1)[1].rsplit("\n```", 1)[0]
 ok("untrusted: a ``` in the feed cannot close the code fence (mentions stay inert)", "```" not in inner and body.count("```") == 2)
+tg = K.parse_feed(rss("<item><title>t</title><guid>tg</guid><pubDate>Thu, 19 Nov 2026 16:47:30 GMT</pubDate>"
+                      "<category>@octocat</category><category><![CDATA[[x](http://e.co) #12]]></category><category>REST</category></item>"))[0]
+ok("untrusted: tags (outside the fence) keep plain characters only", all(re.fullmatch(r"[A-Za-z0-9 ._/+-]+", t) for t in tg["tags"]) and "REST" in tg["tags"]
+   and not re.search(r"[@\[\]()#]", K.issue_body(tg).split("- Tags:", 1)[1].split("\n", 1)[0]))
+mk = [{"body": "```text\nkalshi-feed-id: fake1\n```\n\nkalshi-feed-id: real1\n\nOpened"}]
+ok("dedupe: only the real marker line counts, not one quoted inside the summary", K.ids_in(mk) == {"real1"})
+cd = rss(item(guid="cd", content="<p>Returns <!DOCTYPE html> pages</p>", desc="<!DOCTYPE html> <!ENTITY x>"))
+ok("dtd: DOCTYPE text quoted inside an entry (CDATA) does not reject the feed", len(K.parse_feed(cd)) == 1)
 ok("untrusted: list items are kept as plain bullets", "- one" in evil["summary"] and "- two" in evil["summary"])
 for link in ("https://docs.kalshi.com/changelog#november-26-2026", "https://docs.kalshi.com.evil.example/x", "http://docs.kalshi.com/x", "https://evil.example/https://docs.kalshi.com/"):
     exp = link if link == "https://docs.kalshi.com/changelog#november-26-2026" else K.CHANGELOG_URL

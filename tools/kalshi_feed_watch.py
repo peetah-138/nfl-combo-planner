@@ -54,6 +54,8 @@ BREAKING_RE = re.compile(
     r"|fixed-point|order book|orderbook|websocket|authentication|signing|rate limit", re.I)
 CTRL_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]")
 GUID_BAD = re.compile(r"[^A-Za-z0-9._:/#-]")
+TAG_BAD = re.compile(r"[^A-Za-z0-9 ._/+-]")                 # tags sit outside the code fence: plain characters only
+CDATA_RE = re.compile(rb"<!\[CDATA\[.*?\]\]>", re.S)
 
 
 class FeedError(Exception):
@@ -154,7 +156,7 @@ def parse_feed(data):
     """RSS bytes -> list of items (newest feed order kept). Raises FeedError if it is not an RSS feed with items."""
     if not isinstance(data, (bytes, bytearray)) or not data.strip():
         raise FeedError("empty feed")
-    head = bytes(data).lower()
+    head = CDATA_RE.sub(b"", bytes(data)).lower()          # entry text lives in CDATA and may quote anything
     if b"<!doctype" in head or b"<!entity" in head:        # no DTDs: nothing here needs entities (and it blocks entity bombs)
         raise FeedError("feed has a DTD; refusing it")
     try:
@@ -181,11 +183,13 @@ def parse_feed(data):
         items.append({
             "title": title, "guid": guid0, "link": safe_link(link0), "pub": pub, "date": parse_date(pub),
             "summary": summary or short or "(no summary in the feed)",
-            "tags": [one_line(c.text, 30) for c in it.findall("category") if (c.text or "").strip()][:6],
+            "tags": [t for t in (TAG_BAD.sub("", one_line(c.text, 30)).strip() for c in it.findall("category")) if t][:6],
             "breaking": bool(BREAKING_RE.search(" ".join([title, short, summary]))),
         })
     if not items:
         raise FeedError("feed has no items")
+    if not any(i["date"] for i in items):       # dates we cannot read would silently hide every entry: count it as a failure
+        raise FeedError("no item has a readable date")
     return items
 
 
@@ -220,7 +224,7 @@ def issue_body(item):
               f"- Link: {item['link']}",
               f"- Published: {when}"]
     if item["tags"]:
-        lines.append("- Tags: " + ", ".join(t.replace("`", "'") for t in item["tags"]))
+        lines.append("- Tags: " + ", ".join(item["tags"]))
     lines += ["", "What the feed says (copied as plain text; it is Kalshi's wording, not ours):", "",
               fence + "text", summary, fence, "",
               f"{MARKER} {item['guid']}", "",
@@ -232,7 +236,9 @@ def issue_body(item):
 def ids_in(issues):
     out = set()
     for it in issues or []:
-        out.update(re.findall(re.escape(MARKER) + r"\s*([A-Za-z0-9._:/#-]+)", it.get("body") or ""))
+        found = re.findall(r"^" + re.escape(MARKER) + r"[ ]*([A-Za-z0-9._:/#-]+)[ ]*$", it.get("body") or "", re.M)
+        if found:
+            out.add(found[-1])      # ours is the last marker line; text quoted from the feed comes earlier
     return out
 
 
@@ -289,7 +295,8 @@ def record_failure(gh, why, dry_run):
     n = gh.fail_count() + 1
     gh.set_fail_count(n)
     log(f"consecutive failures: {n}")
-    if n >= FAIL_LIMIT and not gh.list_issues(LABEL_FAILING, "open"):
+    # Once per outage: at the 4th failure, or later only if that one never got made. A hand-closed issue is not reopened.
+    if n >= FAIL_LIMIT and not gh.list_issues(LABEL_FAILING, "open") and (n == FAIL_LIMIT or not gh.list_issues(LABEL_FAILING, "all")):
         gh.ensure_label(LABEL_FAILING, "b60205", "the Kalshi API watch cannot read Kalshi's changelog feed")
         url = gh.create_issue(
             FAILING_TITLE,
