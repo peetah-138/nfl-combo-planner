@@ -131,3 +131,17 @@ out = E.cover_pass(log=lambda *a: None)
 ok("cover_pass swallows an injected exception without raising (panel_loop safety)", out == [])
 E._cover_ticks = boom
 ok("cover_ticks swallows an injected exception without raising", E.cover_ticks(log=lambda *a: None) == 0)
+
+# --- 9. an open row saved by an older version (a plain list of games, no checkpoints) or left open 10+ days is marked
+#        stale instead of raising KeyError every round, and a good row is left alone
+E.store_x("insert into cover values(?,?,?,?,?,?,?,?)", ("2020-01-05", time.time(), json.dumps([{"event": "X", "kick": 1, "sides": []}]), None, 0.85, 0.9, "open", None))
+old = E.store_rows("select * from cover where sunday='2020-01-05'")[0]
+ok("an old-shape open cover row gives no checkpoints", E._cover_row_slots(old, time.time()) is None)
+ok("...and an old-shape row's resolve returns quietly", E._cover_resolve(old, time.time(), None) == [])
+ok("...and is marked stale", E.store_rows("select status from cover where sunday='2020-01-05'")[0]["status"] == "stale")
+E.store_x("insert into cover values(?,?,?,?,?,?,?,?)", ("2020-01-12", time.time() - 11 * 86400, json.dumps(slots), None, 0.85, 0.9, "open", None))
+aged = E.store_rows("select * from cover where sunday='2020-01-12'")[0]
+ok("a row open for 10+ days is marked stale", E._cover_row_slots(aged, time.time()) is None
+   and E.store_rows("select status from cover where sunday='2020-01-12'")[0]["status"] == "stale")
+fresh_row = dict(aged); fresh_row["ts"] = time.time()
+ok("a current row with checkpoints is kept", bool(E._cover_row_slots(fresh_row, time.time())))
