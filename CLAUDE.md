@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.20.123). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.20.124). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -80,7 +80,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.123`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.124`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -126,7 +126,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
   own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
-  push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
+  push (`t_https_push`: fake Tailscale CLI, push dedupe), notification tap targets (`t_push_target`: GitHub #79, a tap opens
+  `/`, never `/app`; the service worker maps old `/app` payloads to `/`; the hub redirects a browser navigation to `/app` and
+  `/app/` to `/` and answers any other navigation that finds nothing or has no session with a small HTML page, never an empty
+  file; API routes unchanged) and the login page's Face ID tap fallback (`test_login_faceid`).
 - **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
   `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
   folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do
@@ -395,7 +398,19 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   only, there is no player tracking** (the tab says so); `prefers-reduced-motion` turns the motion off, the text and ball spot still
   update. **Isolation:** none of this is read by any buy/sell/panel path or takes the tap lock; a bad or missing feed hides the
   tab and is logged once per game (`klive_log_once("gamedetail", ...)`). Tests: `t_gamedetail`, `test_fieldstrip`,
-  `test_gamedetail_api`, `test_pbptabs` (fixture `espn_game_detail.json`). Box score, team stats, injuries etc. are slice 3.
+  `test_gamedetail_api`, `test_pbptabs` (fixture `espn_game_detail.json`). Slice 3 adds five football tabs (Box score, Team
+  stats, Injury report, Last 5 games, Season leaders). Box score (`detail.box`, `_parse_box`: passing/rushing/receiving, then
+  defence/kicking, per side with a team switch), team stats (`detail.tstats`, `_parse_team_stats`/`_ts_num`: 13 head-to-head rows,
+  share bars; made-att rows compare success rates, possession compares seconds) and injuries (`detail.inj`, `_parse_injuries`,
+  worst first) come off the same summary. Last 5 games and season leaders (`detail.last5`/`detail.leaders`) come from each
+  team's ESPN schedule (regular season, plus the postseason in the playoffs; last season in the preseason) and ESPN's
+  core-feed season leaders (`game_extras`: a background thread, `GX` cache 30/60 min, a player's name 24 h in `ATH`, any
+  failure backs off 30 s doubling to 30 min, Retry-After honoured; these GETs carry an Accept header so they go straight to
+  ESPN, never through the hub's warm cache; only the first open of a game waits, at most `GX_BUDGET` 1.5 s). Last-5 dates
+  are UTC kickoffs shown in the phone's own time zone. Same isolation rule; an absent block hides its tab, an empty one says so ("No injuries listed",
+  "Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
+  The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
+  `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

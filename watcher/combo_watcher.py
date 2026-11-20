@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.20.123"
+WATCHER_VERSION = "2026.11.20.124"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -55,7 +55,7 @@ _WEB_SEEN = {}            # (title, body) -> when it last went to web push (so o
 _WEB_LOCK = threading.Lock()
 
 
-def web_push(title, body, url="/app", tag=None, urgent=False):
+def web_push(title, body, url="/", tag=None, urgent=False):
     """Send one notification to the devices signed up for Combo Hub notifications (Web Push), in the
     background. The same title+text within 2 minutes is sent once. Does nothing when no device is signed up."""
     key = (title, body)
@@ -90,7 +90,7 @@ def push(conf, msg, title="Combo planner", priority="default", topic=None, pause
         try:
             urgent = priority in ("high", "urgent") if web_urgent is None else web_urgent
             base = hub_base(conf)                    # absolute so iOS Home Screen apps can resolve the tap target (#79)
-            web_url = (base + (click or "/app")) if base else (click or "/app")
+            web_url = (base + (click or "/")) if base else (click or "/")
             web_push(web_title or title, web_msg or msg, url=web_url, tag=tag, urgent=urgent)
         except Exception as err:
             log("web push skipped:", type(err).__name__, err)
@@ -1163,7 +1163,7 @@ class Push:
         jwt = f"{head}.{claims}.{_b64u(r.to_bytes(32, 'big') + s_.to_bytes(32, 'big'))}"
         return f"vapid t={jwt}, k={self.public_b64()}"
 
-    def send(self, title, body, url="/app", tag=None, urgent=False):
+    def send(self, title, body, url="/", tag=None, urgent=False):
         if not self.ok():
             return 0
         subs, sent = self.subs(), 0
@@ -1187,24 +1187,41 @@ class Push:
 PUSH = Push(HOME)
 ICON_PNG = "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"
 
-SW_JS = """// Combo Hub service worker: shows the Mac's notifications and opens the right screen when tapped.
+SW_JS = """// Combo Hub service worker (v2: taps open '/', legacy '/app' targets are mapped): shows the Mac's notifications and opens the right screen when tapped.
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', e => {
   let d = {};
   try { d = e.data.json(); } catch (x) { d = {title: 'Combo Hub', body: e.data ? e.data.text() : ''}; }
   e.waitUntil(self.registration.showNotification(d.title || 'Combo Hub',
-    {body: d.body || '', tag: d.tag || undefined, data: {url: d.url || '/app'}, icon: '/icon.png', badge: '/icon.png'}));
+    {body: d.body || '', tag: d.tag || undefined, data: {url: d.url || '/'}, icon: '/icon.png', badge: '/icon.png'}));
 });
+// Notifications sent before 2026-11-20 carry '/app' (the API prefix, not a page: it used to answer an empty
+// file that iOS showed as "app, Zero KB"). The page is at '/', so those taps are mapped there (#79).
+function tapTarget(raw) {
+  let u;
+  try { u = new URL(raw || '/', self.location.origin); } catch (x) { u = new URL('/', self.location.origin); }
+  if (u.pathname === '/app' || u.pathname === '/app/') {
+    return new URL('/' + u.search + u.hash, self.location.origin).href;
+  }
+  return u.href;
+}
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const url = new URL((e.notification.data && e.notification.data.url) || '/app', self.location.origin).href;
+  const url = tapTarget(e.notification.data && e.notification.data.url);
   e.waitUntil(self.clients.matchAll({type: 'window', includeUncontrolled: true}).then(cs => {
     for (const c of cs) { if ('focus' in c) { c.navigate(url); return c.focus(); } }
     return self.clients.openWindow(url);
   }));
 });
 """
+
+NOT_FOUND_HTML = ("<!doctype html><html lang='en'><meta charset='utf-8'>"
+                  "<meta name='viewport' content='width=device-width,initial-scale=1'><title>Combo Hub</title>"
+                  "<body style='font:17px -apple-system,system-ui,sans-serif;padding:40px;line-height:1.5;"
+                  "background:#0b0d12;color:#e8eaf0'><h2>That page isn't here</h2>"
+                  "<p>Nothing is at this address. Combo Hub opens from the home page.</p>"
+                  "<p><a href='/' style='color:#5ac8fa;font-size:19px'>Open Combo Hub</a></p></body></html>")
 
 MANIFEST = json.dumps({"name": "Combo Hub", "short_name": "Combo Hub", "start_url": "/", "scope": "/", "display": "standalone",
                        "background_color": "#0b0d12", "theme_color": "#0b0d12",
@@ -2208,6 +2225,56 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .pp:last-child{border-bottom:0}.pp.sc{background:var(--yesbg)}.pp.to{background:var(--nobg)}.pp.cur{box-shadow:inset 3px 0 0 var(--acc)}
 .ppm b{display:block;font-size:12.5px}.ppm .m{font-size:11.5px}.ppt{overflow-wrap:anywhere;line-height:1.4}
 .situ .rzt.rpl{background:var(--acc)}
+/* slice 3 tabs: box score, team stats, injury report, last 5 games, season leaders (our own look, team colours as accents) */
+.gtabx{min-width:0}
+:root{--tmix:28%}@media (prefers-color-scheme:light){:root{--tmix:0%}}
+.tdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 6px 1px 0;vertical-align:middle;flex:0 0 auto}
+.ghead{display:flex;align-items:center;gap:4px;margin:14px 2px 6px;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub)}
+.gempty{color:var(--mute);font-size:13px;margin:6px 2px 10px}
+.seg.bxsw{display:inline-flex;flex-wrap:nowrap;position:relative;margin-bottom:2px}
+.seg.bxsw button{display:flex;align-items:center;position:relative;z-index:1;padding:7px 16px}
+.gtw{overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel2);border-radius:12px}
+.gstat{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.gstat th{font-size:10px;font-weight:800;letter-spacing:.04em;color:var(--mute);text-align:right;padding:9px 6px 6px;white-space:nowrap}
+.gstat td{text-align:right;padding:7px 6px;border-top:1px solid var(--line);white-space:nowrap}
+.gstat th:first-child,.gstat td:first-child{text-align:left;padding-left:12px;width:100%;max-width:0}
+.gstat td:first-child>div{display:flex;align-items:center;min-width:0}.gstat th:last-child,.gstat td:last-child{padding-right:12px}
+.gstat .pn{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600}.gstat .jn{flex:0 0 auto}
+.gstat tr.tot td{color:var(--sub);font-weight:700}
+.jn{display:inline-block;margin-left:5px;padding:0 5px;border-radius:6px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font-size:10.5px;font-weight:800;line-height:16px;vertical-align:1px}
+.h2h{display:flex;justify-content:space-between;align-items:center;margin:2px 2px 10px;font-weight:800;font-size:13px}
+.h2h b{display:flex;align-items:center}.h2h b:last-child .tdot{margin:0 0 1px 6px}
+.tsr,.ldr{padding:9px 2px 11px;border-bottom:1px solid var(--line)}.tsr:last-of-type,.ldr:last-of-type{border-bottom:0}
+.tsv{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:baseline;gap:8px;margin-bottom:7px}
+.tsv b{font-size:16px;font-variant-numeric:tabular-nums}.tsv b:last-child{text-align:right}
+.tsv span{font-size:12px;color:var(--sub);text-align:center;white-space:nowrap}
+.h2bar{display:flex;gap:3px;height:6px}
+.h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
+.h2bar.even i{opacity:.35}
+.gin .h2bar i{animation:sbarIn .7s var(--ease) both}
+.gin .h2bar i:last-child{animation-name:sbarInR}
+@keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
+@keyframes sbarInR{from{transform:scaleX(0);transform-origin:right}to{transform:none;transform-origin:right}}
+.gin .tsr,.gin .ldr,.gin .l5r,.gin .injr,.gin .gtw{animation:rise .38s var(--ease) both;animation-delay:calc(var(--i,0)*28ms)}
+.injr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
+.injr:last-child{border-bottom:0}.injn{min-width:0;display:flex;gap:8px;align-items:baseline}
+.injn b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}.injn .m{font-size:11.5px;white-space:nowrap}
+.injw{grid-column:1;font-size:12px}
+.ist{grid-row:1/span 2;grid-column:2;font-size:11px;font-weight:800;padding:4px 9px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap}
+.ist.bad{background:var(--nobg);color:var(--no)}.ist.warn{background:var(--livebg);color:var(--live)}.ist.q{background:var(--accbg);color:var(--acc)}
+.l5grid,.injgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:4px 18px}
+.l5r{display:grid;grid-template-columns:30px minmax(0,1fr) auto 52px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
+.l5r:last-child{border-bottom:0}
+.wl{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:900;font-size:12px}
+.wl.w{background:var(--yesbg);color:var(--yes)}.wl.l{background:var(--nobg);color:var(--no)}.wl.t{background:var(--panel2);color:var(--sub)}
+.l5o{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.l5s{font-variant-numeric:tabular-nums;font-weight:700}.l5d{text-align:right;font-size:12px}
+.form{display:inline-flex;gap:3px;margin-left:auto}.form i{width:7px;height:7px;border-radius:50%;background:var(--line)}.form i.w{background:var(--yes)}.form i.l{background:var(--no)}
+.ldc{text-align:center;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);margin-bottom:4px}
+.ldg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-bottom:8px}
+.ldp{min-width:0}.ldp.h{text-align:right}
+.ldv{display:block;font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
+.ldn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.ldl{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* play illustrations on the field strip (illustrative only; .noanim / reduced motion turns them all off) */
 .fld .grass .fproj{position:absolute;top:50%;width:11px;height:11px;margin:-5px 0 0 -5px;z-index:6;transition:left var(--dur,600ms) linear}
 .fproj b{display:block;width:100%;height:100%;border-radius:50%;background:#8a4b1e;box-shadow:0 0 0 1.5px #fff;animation:arcY var(--dur,600ms) both}
@@ -2679,7 +2746,7 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
@@ -3790,7 +3857,9 @@ function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if
    (or a spec with only one visible tab) gets no tab row and the page is exactly as before. A tab is {k, l, has(r), html(r, ov)}:
    `has` hides it when its data is missing (a bad or absent feed shows nothing), `html` draws its panel (`ov` is the overview
    markup). The chosen tab lives in S.gtab and survives the page's periodic redraws; only the open tab's panel is drawn. */
-const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml}];
+const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml},
+ {k:'box',l:'Box score',has:boxHas,html:boxHtml},{k:'tstats',l:'Team stats',has:tsHas,html:tsHtml},{k:'inj',l:'Injury report',has:injHas,html:injHtml},
+ {k:'last5',l:'Last 5 games',has:l5Has,html:l5Html},{k:'leaders',l:'Season leaders',has:ldHas,html:ldHtml}];
 const GAME_TABS={nfl:FOOTBALL_TABS,ncaaf:FOOTBALL_TABS};
 function gameTabList(r){const spec=GAME_TABS[((r||{}).leg||{}).sport];if(!spec)return [];const a=spec.filter(t=>!t.has||t.has(r));return a.length>1?a:[];}
 function gameTabCur(tabs){return tabs.some(t=>t.k===S.gtab)?S.gtab:(tabs[0]||{}).k;}
@@ -3800,7 +3869,7 @@ function gameTabsHtml(r,ov){const tabs=gameTabList(r);S.gtabCur=null;if(!tabs.le
 /* switch tab without a full repaint: only the visible panel is (re)drawn, and leaving the play-by-play puts the strip back to live */
 function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);if(!t)return;const was=S.gtabCur;S.gtab=k;S.gtabCur=k;
  document.querySelectorAll('#sheet .gtab').forEach(b=>{const on=b.dataset.tab===k;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
- document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k)p.innerHTML=t.html(r,'');else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
+ document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k){p.innerHTML=t.html(r,'');gtabIn(p);}else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
  gameTabInd();if(was==='pbp'&&k!=='pbp'&&S.pbpStep!=null){S.pbpStep=null;pbpRefresh('slide');}}
 /* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
 function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
@@ -3812,7 +3881,7 @@ function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)
  const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
 addEventListener('resize',()=>{if(document.querySelector('#sheet .gtabs'))gameTabInd();});
 /* after every repaint: the underline, the row's own sideways scroll, and (live) the newest play's animation */
-function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);}
+function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);if(document.querySelector('#sheet .bxsw'))segInd();}
 /* ---- Play-by-play (football; ESPN drives and plays, display only). Stepping shows the strip as it stood after the chosen play
    (S.pbpStep = that play's id, null = live) and replays an illustration of the play from its type and yardage. The animations
    are illustrations only: ESPN has no player tracking, and the tab says so. Under prefers-reduced-motion nothing moves: the
@@ -3901,6 +3970,69 @@ function pbpFx(p){if(matchMedia('(prefers-reduced-motion: reduce)').matches)retu
  else if(k.safety){tag('SAFETY','bad');}
  if(k.turn){const bl=document.querySelector('#sheet .fstrip .fball');if(bl){bl.classList.add('turn');setTimeout(()=>bl.classList.remove('turn'),1700);}tag('TURNOVER','bad');}
  return delay;}
+/* ---- Slice 3 tabs (football): box score, team stats, injury report, last 5 games, season leaders. Drawn only from the game
+   answer's detail block (ESPN feeds, display only). A side the feed has nothing for says so in plain words instead of guessing.
+   Team colours are accents only (our own art; no logos). Numbers roll and share bars slide when the game changes them. */
+function gd(r){return (r||{}).detail||{};}
+function gTeams(r){const b=gd(r).board||{};return {away:b.away||{},home:b.home||{}};}
+/* a team colour that reads on the page: the primary, else the alternate, when it is neither near-black nor near-white */
+function tcol(t,fb){const ok=c=>{c=fcolor(c,'');if(!c)return '';const n=parseInt(c.slice(1),16),L=(.2126*((n>>16)&255)+.7152*((n>>8)&255)+.0722*(n&255))/255;return L>.08&&L<.9?c:'';};
+ const c=ok(t.color)||ok(t.alt);return c?`color-mix(in srgb,${c},#fff var(--tmix,0%))`:fb;}
+function tcols(r){const T=gTeams(r);const a=tcol(T.away,'var(--yes)');let h=tcol(T.home,'var(--no)');if(h===a)h='var(--sub)';return {a,h};}
+function tmName(T,s){return T[s].name||T[s].abbr||(s==='home'?'Home':'Away');}
+function tmHead(r){const T=gTeams(r),c=tcols(r);
+ return `<div class="h2h"><b><i class="tdot" style="background:${c.a}"></i>${esc(T.away.abbr||'Away')}</b><b>${esc(T.home.abbr||'Home')}<i class="tdot" style="background:${c.h}"></i></b></div>`;}
+/* a head-to-head share bar; even and quiet when there is nothing to compare */
+function sbar(key,an,hn,c){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const p=ok?Math.max(4,Math.min(96,an/(an+hn)*100)):50;
+ return `<div class="h2bar${ok?'':' even'}" role="img" aria-label="${ok?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
+/* 'Nov 15' from a plain date (as given) or a UTC kickoff time (in this phone's own time zone, so a night game keeps its day) */
+function gdate(d){d=d||'';const day=/^\d{4}-\d{2}-\d{2}$/.test(d),at=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(d);if(!day&&!at)return '';
+ const x=new Date(day?d+'T12:00:00Z':d);return isNaN(x)?'':x.toLocaleDateString('en-US',day?{month:'short',day:'numeric',timeZone:'UTC'}:{month:'short',day:'numeric'});}
+function numAttr(k,v,f){return /^\d{1,6}$/.test(String(v))?` data-num="${esc(k)}" data-v="${+v}" data-f="${f||'int'}"`:'';}
+/* a freshly opened tab rises in and its bars grow from nothing (refreshes only roll what changed) */
+function gtabIn(p){if(!p)return;rollNums(p);if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ p.querySelectorAll('.tsr,.ldr,.l5r,.injr,.gtw').forEach((e,i)=>e.style.setProperty('--i',Math.min(i,16)));
+ p.classList.add('gin');clearTimeout(S.ginT);S.ginT=setTimeout(()=>p.classList.remove('gin'),1100);}
+/* Box score: a team switch, then that team's tables (passing, rushing, receiving, then defence and kicking). */
+function boxHas(r){const b=gd(r).box;return !!(b&&((b.away||[]).length||(b.home||[]).length));}
+function boxSide(r){const b=gd(r).box||{};const s=S.boxSide;return (s==='away'||s==='home')&&(b[s]||[]).length?s:((b.away||[]).length?'away':'home');}
+function boxHtml(r){const b=gd(r).box||{},T=gTeams(r),c=tcols(r),side=boxSide(r);
+ const sw=`<div class="seg bxsw" data-k="boxsw" role="group" aria-label="Team">${['away','home'].map(s=>`<button type="button" class="${s===side?'on':''}" aria-pressed="${s===side}" data-side="${s}" onclick="boxPick('${s}')"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(T[s].abbr||tmName(T,s))}</button>`).join('')}</div>`;
+ const td=v=>`<td>${esc(v==null||v===''?'–':v)}</td>`;
+ const tables=(b[side]||[]).map(g=>`<h4 class="ghead">${esc(g.t)}</h4><div class="gtw"><table class="gstat"><thead><tr><th>Player</th>${(g.c||[]).map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>
+  ${(g.r||[]).map(p=>`<tr><td><div><span class="pn" title="${esc(p.n)}">${esc(p.n)}</span>${p.j?`<span class="jn">#${esc(p.j)}</span>`:''}</div></td>${(p.s||[]).map(td).join('')}</tr>`).join('')}
+  ${(g.tot||[]).some(v=>v)?`<tr class="tot"><td>Team</td>${g.tot.map(td).join('')}</tr>`:''}</tbody></table></div>`).join('');
+ return `<div class="gtabx box">${sw}${tables||'<p class="gempty">No stats for this team yet.</p>'}<p class="pnote">ESPN's box score. It updates as the game goes.</p></div>`;}
+function boxPick(s){if(s!=='away'&&s!=='home')return;S.boxSide=s;
+ const p=document.querySelector('#sheet .gpanel[data-tab=box]');if(!p||!S.gameR)return;p.innerHTML=boxHtml(S.gameR);segInd();gtabIn(p);}
+/* Team stats: head to head, the label in the middle, a share bar under each row. */
+function tsHas(r){const t=gd(r).tstats;return Array.isArray(t)&&t.length>0;}
+function tsHtml(r){const t=S.gameOpen,c=tcols(r);
+ const rows=gd(r).tstats.map(x=>`<div class="tsr"><div class="tsv"><b${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}</span><b${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates.</p></div>`;}
+/* Injury report: both teams, worst first, with ESPN's guess at a return date. */
+function injHas(r){const i=gd(r).inj;return !!(i&&(Array.isArray(i.away)||Array.isArray(i.home)));}
+function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
+function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
+ const sec=s=>{const L=Array.isArray(i[s])?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
+  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries listed.</p>'}</div>`;};
+ return `<div class="gtabx"><div class="injgrid">${sec('away')}${sec('home')}</div><p class="pnote">ESPN's injury report. Return dates are ESPN's estimate.</p></div>`;}
+/* Last 5 games: each team's five most recent finished games, newest first, and its record. */
+function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home));}
+function l5Html(r){const l=gd(r).last5||{},T=gTeams(r),c=tcols(r);
+ const sec=s=>{const x=l[s];const rec=(x&&x.rec)||T[s].record||'';const g=x&&Array.isArray(x.g)?x.g:[];
+  const body=!x?'<p class="gempty">Looking up recent results…</p>':x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
+   g.map(v=>`<div class="l5r"><span class="wl ${v.w==='W'?'w':v.w==='L'?'l':'t'}">${esc(v.w)}</span><span class="l5o"><span class="m">${esc(v.at)}</span> ${esc(v.opp)}</span><span class="l5s">${+v.me}–${+v.them}</span><span class="m l5d">${esc(gdate(v.d))}</span></div>`).join('');
+  const form=g.length?`<span class="form" aria-hidden="true">${g.slice().reverse().map(v=>`<i class="${v.w==='W'?'w':v.w==='L'?'l':''}"></i>`).join('')}</span>`:'';
+  return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}${rec?`&nbsp;<span class="m">(${esc(rec)})</span>`:''}${form}</h4>${body}</div>`;};
+ return `<div class="gtabx"><div class="l5grid">${sec('away')}${sec('home')}</div><p class="pnote">Scores show this team first. From ESPN's schedule.</p></div>`;}
+/* Season leaders: the top passer, rusher and receiver on each side, head to head, with a share bar. */
+function ldHas(r){const l=gd(r).leaders;return Array.isArray(l)&&l.length>0;}
+function ldHtml(r){const t=S.gameOpen,c=tcols(r);
+ const side=(x,s,k)=>x?`<div class="ldp ${s}"><b class="ldv" data-num="ld:${esc(t)}:${esc(k)}:${s}" data-v="${+x.v||0}" data-f="cint">${esc(Math.round(+x.v||0).toLocaleString('en-US'))}</b><div class="ldn">${x.n?esc(x.n):'—'}${x.j?`<span class="jn">#${esc(x.j)}</span>`:''}</div><div class="m ldl">${esc(x.line||'')}</div></div>`
+  :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
+ const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">Season totals from ESPN.</p></div>`;}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
@@ -4105,7 +4237,9 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
 window.__inapp=function(){S.inapp=true;if(S.view==='settings')renderSettings();};
-if(location.hash.startsWith('#s=')){S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},2500);}
+function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
+ideaFromHash(false);
+addEventListener('hashchange',()=>ideaFromHash(true));
 chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
  if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
@@ -5308,7 +5442,7 @@ def mac_settings(conf, web, d, tok):
         return {"ok": open_admin(), "msg": "Opening the Mac setup window…"}
     if a == "testpush":
         push(conf, "✅ Test from your Mac. If you see this, ntfy alerts are working.", title="Combo Hub test", priority="high",
-             click="/app", web=False)
+             click="/", web=False)
         sent = PUSH.send("Combo Hub test", "If you see this, Combo Hub notifications are working.", tag="test")
         return {"ok": True, "msg": f"Sent a test to ntfy ({'ok' if PUSHLOG.get('ok') else 'failed'})"
                                    + (f" and to {sent} Combo Hub device{'s' * (sent != 1)}." if sent else
@@ -5669,6 +5803,9 @@ def start_hub(conf, E, odds=None):
                 tok = web.use_once((parse_qs(u.query).get("t") or [""])[0])
                 return self._html(303, "", cookie=tok, location="/") if tok else \
                     self._html(200, web.login_page("That link was already used or expired. Tap Open Combo Hub again."))
+            if (web and u.path in ("/app", "/app/") and "frag=1" not in u.query and not self.headers.get("X-CW")
+                    and self._wants_page()):
+                return self._html(302, "", location="/" + ("?" + u.query if u.query else ""))       # a tap or typed address, not the app's own call (#79)
             if web and (u.path.startswith("/app/") or (u.path == "/app" and "frag=1" in u.query)):
                 tok = web.session(self)
                 if not tok or self.headers.get("X-CW") != tok:
@@ -5694,7 +5831,14 @@ def start_hub(conf, E, odds=None):
                 return self._html(200, web.page(tok, note, builder.html(tok)))
             self._send(404, b"")
 
+        def _wants_page(self):
+            """True for a browser navigation (a tap on a notification or link): it asked for a web page."""
+            return "text/html" in (self.headers.get("Accept") or "")
+
         def _send(self, code, body):
+            if code in (403, 404) and not body and self.command == "GET" and self._wants_page():
+                # a page must never be an empty file (iOS offers it as "Zero KB"): say so and offer the way home (#79)
+                return self._html(code, NOT_FOUND_HTML)
             self.send_response(code)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(body)))
