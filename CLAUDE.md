@@ -415,7 +415,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   `game_detail`, nothing that prices, buys or sells. Last-5 dates
   are UTC kickoffs shown in the phone's own time zone. Same isolation rule. **Injuries:** a side shows a real report (or "No
   injuries reported") only when ESPN sent that team's own list; a side it sent nothing for says "Injury report isn't available
-  right now" (the tab shows whenever the summary loaded). **Team stats:** rows where fewer is better (turnovers, sacked,
+  right now" (the tab shows when ESPN sent injuries, or the box score / team stats loaded without them). **Team stats:** rows where fewer is better (turnovers, sacked,
   penalties; `TS_LOWER`) carry `lo`/`ld` from `_ts_leader`: the side with the lower number leads, its number is emphasised, its
   bar is the longer one, a tie is neutral (even bar). An absent block hides its tab, an empty one says so
   ("Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.

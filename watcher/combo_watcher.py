@@ -4078,9 +4078,9 @@ function tsHtml(r){const t=S.gameOpen,c=tcols(r);
  const rows=gd(r).tstats.map(x=>`<div class="tsr${x.lo?' lo':''}"><div class="tsv"><b class="${tsLead(x,'a')}"${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}${x.lo?'<small class="lob">fewer is better</small>':''}</span><b class="${tsLead(x,'h')}"${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c,x.lo)}</div>`).join('');
  return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates. Where fewer is better, the side with fewer leads.</p></div>`;}
 /* Injury report: both teams, worst first, with ESPN's guess at a return date. */
-/* The tab shows whenever the game's summary loaded. A side with its own list from ESPN is a real report (an empty list means
+/* The tab shows when ESPN sent injuries, or when the rest of the summary (box score, team stats) loaded without them. A side with its own list from ESPN is a real report (an empty list means
    nobody is hurt); a side ESPN sent nothing for is "not available right now", never "no injuries". */
-function injHas(r){return !!gd(r).board;}
+function injHas(r){return !!gd(r).inj||boxHas(r)||tsHas(r);}
 function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
 function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
  const sec=s=>{const known=Array.isArray(i[s]),L=known?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${!known?'<p class="gempty">Injury report isn’t available right now.</p>':L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
