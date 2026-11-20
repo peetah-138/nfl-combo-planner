@@ -11842,12 +11842,17 @@ def _killer_single(ticker, n, price):
     return True, f"Bought {filled:g} at {price * 100:.0f}¢."
 
 
-def buy_single(ticker, n, price):
-    """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap."""
+def buy_single(ticker, n, price, coid=None, exact=False):
+    """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap.
+    coid: a client order id of the caller's (a manual buy uses its quote's, so Kalshi itself sees one order).
+    exact: a sub-cent price goes as dollars rounded down (never more than shown) instead of to the nearest cent."""
     import uuid
     body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
             "yes_price": int(round(price * 100)), "time_in_force": "immediate_or_cancel",
-            "client_order_id": str(uuid.uuid4())}
+            "client_order_id": coid or str(uuid.uuid4())}
+    if exact and abs(price * 100 - round(price * 100)) > 1e-6:   # a sub-cent price (Kalshi's books have them): sent as
+        body.pop("yes_price")                             # dollars, rounded down, so it never pays more than shown
+        body["yes_price_dollars"] = f"{math.floor(price * 10000 + 1e-6) / 10000:.4f}"
     try:
         o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
     except PermissionError:
@@ -11861,6 +11866,292 @@ def buy_single(ticker, n, price):
                    (body["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
     ACCT_CACHE["at"] = 0
     return filled, None
+
+
+# ---- a single game bought by hand (issue #113): Pete picks a team (or a spread/total) and taps Buy. Nothing here runs
+# by itself: a quote reads Kalshi's order book right now and is good for 20 seconds; the buy re-reads the book, refuses
+# if the price went up, and sends one fill-now-or-cancel order at the quoted price (never more). Pause, the weekly cap
+# and the unknown-outcome block all apply; an unclear answer is "check" and never resent (rule 8).
+SINGLE_QUOTE_SECS = 20          # a quote's lifetime (the sheet's draining bar)
+SINGLE_ARM = 25.0               # stakes above this need a second tap ("Tap again to buy")
+SINGLE_MAX = 100.0              # the most one manual single bet may stake
+SINGLE_PRESETS = (3, 5, 10)
+_SQ = {"lock": threading.Lock(), "q": {}}
+
+
+def market_open(ticker):
+    """Is this market open for trading on Kalshi? (True, market) / (False, why not) / (None, {}) when it can't be told
+    (then the order book decides). Public read, no key."""
+    try:
+        r = requests.get(f"{KALSHI}/markets/{ticker}", timeout=10)
+    except requests.RequestException:
+        return None, {}
+    if r.status_code == 404:
+        return False, "Kalshi isn't listing that market any more."
+    if not r.ok:
+        return None, {}
+    try:
+        m = (r.json() or {}).get("market") or {}
+    except (ValueError, AttributeError):
+        return None, {}
+    st = str(m.get("status") or "").lower()
+    if st in ("active", "open"):
+        return True, m
+    if st in ("initialized", "unopened"):
+        return False, "Kalshi hasn't opened that market for trading yet."
+    if st:
+        return False, "That market is closed for trading on Kalshi."
+    return None, m
+
+
+EVENT_SIDES = {}
+
+
+def event_sides(event, max_age=15):
+    """One game's markets on Kalshi (public, cached a few seconds), for the game page's two buy buttons:
+    [{"ticker", "name", "ask", "bid"}] for the markets open for trading. Display only: a buy always quotes afresh."""
+    event = str(event or "")
+    if not re.fullmatch(r"[A-Z0-9._-]{3,100}", event):
+        return []
+    got = EVENT_SIDES.get(event)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    try:
+        r = requests.get(f"{KALSHI}/markets", params={"event_ticker": event, "limit": 20}, timeout=10)
+        ms = ((r.json() or {}).get("markets") or []) if r.ok else None
+    except (requests.RequestException, ValueError, AttributeError):
+        ms = None
+    if ms is None:
+        return got[1] if got else []
+    out = []
+    for m in ms:
+        if not isinstance(m, dict) or str(m.get("status") or "active").lower() not in ("active", "open") or \
+                m.get("event_ticker") not in (None, event):
+            continue
+        try:
+            ask = float(m.get("yes_ask_dollars")) if m.get("yes_ask_dollars") not in (None, "") else None
+            bid = float(m.get("yes_bid_dollars")) if m.get("yes_bid_dollars") not in (None, "") else None
+        except (TypeError, ValueError):
+            continue
+        out.append({"ticker": str(m.get("ticker") or ""), "name": str(m.get("yes_sub_title") or m.get("title") or "")[:60],
+                    "ask": ask if ask and 0 < ask < 1 else None, "bid": bid})
+    EVENT_SIDES[event] = (time.time(), out)
+    if len(EVENT_SIDES) > 300:
+        for k in sorted(list(EVENT_SIDES), key=lambda k: (EVENT_SIDES.get(k) or (0,))[0])[:100]:
+            EVENT_SIDES.pop(k, None)
+    return out
+
+
+def _manual_base():
+    """The bankroll the panel last sized from (read only; nothing is saved by a quote), else the Settings bankroll."""
+    try:
+        b = float(load_json(SIZING_FILE, {}).get("base") or 0)
+    except (TypeError, ValueError, AttributeError):
+        b = 0.0
+    return b if b > 0 else float(CFG.get("bankroll", 300) or 300)
+
+
+def _sq_prune(now):
+    for k in [k for k, v in _SQ["q"].items() if now - v["at"] > 600]:
+        _SQ["q"].pop(k, None)
+
+
+def single_buy_quote(x, stake=None, paused=False, now=None):
+    """A price for buying one team (or a spread/total) straight, for the buy sheet. x = the side as the board has it
+    (ticker, pick, event, fair, src, kind...). Reads Kalshi's order book now; gives the ask, the gap, what's for sale,
+    our fair chance (calibrated; for a game under way only a live one, never the pre-game price), the edge, a suggested
+    stake (the panel's sizing: quarter Kelly on a shrunk edge, $2 minimum), contracts, payout, the cap check, warnings,
+    and a quote id good for 20 seconds. Never places anything."""
+    import secrets
+    now = now or time.time()
+    x = dict(x or {})
+    t = str(x.get("ticker") or "")
+    if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+        return {"ok": False, "msg": "That market isn't recognized."}
+    listed, m = market_open(t)
+    if listed is False:
+        return {"ok": False, "gone": True, "msg": m}
+    if isinstance(m, dict) and m:
+        x.setdefault("pick", m.get("yes_sub_title") or m.get("title") or t)
+        x.setdefault("event", m.get("event_ticker"))
+        x.setdefault("exp", m.get("expected_expiration_time"))
+    book = book_depth(t, max_age=0)
+    if not book:
+        return {"ok": False, "msg": "Couldn't read Kalshi's order book just now. Try again in a moment."}
+    ask, bid = book.get("ask"), book.get("bid")
+    if not ask or not 0.01 <= ask <= 0.99:
+        return {"ok": False, "msg": "Nobody is selling this on Kalshi right now, so there's no price to buy at."}
+    fee = single_fee(ask)
+    per = ask + fee
+    gap = round(ask - bid, 4) if bid is not None else None
+    depth = float(book.get("ask_size") or 0)
+    kind = x.get("kind") if x.get("kind") in ("spread", "total") else "win"
+    live = bool(x.get("event") or x.get("exp")) and started(x)
+    warn, fair, how, nofair = [], None, None, None
+    if live:
+        if kind != "win":
+            nofair = "spreads and totals have no live fair price"
+        else:
+            try:
+                f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(t)))
+            except Exception as err:                    # a scores hiccup: no fair price, never a crash
+                f, how, w = None, None, f"the live score couldn't be read ({type(err).__name__})"
+            if f is None and w == "the game is over":
+                return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
+            if f is None:
+                nofair = w
+            else:
+                fair = round(f, 4)
+                if f >= LIVE_DECIDED or f <= 1 - LIVE_DECIDED:
+                    warn.append({"k": "decided", "t": "The game is nearly decided, so there's little left to win."})
+                if bid is not None and abs(f - (ask + bid) / 2) >= LIVE_DISAGREE:
+                    warn.append({"k": "disagree", "t": f"Kalshi's live price and our live chance ({fair:.0%}) are far "
+                                 "apart. That's usually something the score doesn't show (an injury, a power play)."})
+        warn.insert(0, {"k": "live", "t": "This game is under way. " + (
+            f"Our chance is live ({how}), not the pre-game one." if fair is not None else
+            "There's no live fair price, so you'd be going on Kalshi's price alone.")})
+    elif x.get("fair") and x.get("src"):
+        fair = float(x["fair"])
+        if kind == "win":
+            fair = round(calib_fair(ticker_sport(t) or "", fair, t), 4)
+            how = "sportsbooks + your record"
+        else:
+            how = "book line + score model"
+    else:
+        nofair = "no sportsbook line for this game"
+    if nofair and not live:
+        warn.append({"k": "nofair", "t": f"No fair price ({nofair}), so there's no edge to show. You'd be going on "
+                     "Kalshi's price alone."})
+    edge = round(fair - per, 4) if fair is not None else None
+    ret = round(fair / per - 1, 4) if fair is not None else None
+    sug = _size({"kind": "single", "chance": fair, "price": ask}, _manual_base()) if fair is not None else 2.0
+    try:
+        want = float(stake) if stake not in (None, "") else sug
+    except (TypeError, ValueError):
+        want = sug
+    if not want > 0:
+        want = sug
+    want = round(min(max(want, 1.0), SINGLE_MAX), 2)
+    n = int(want / per + 1e-9)
+    if depth and n > int(depth):
+        n = int(depth)
+        warn.append({"k": "depth", "t": f"Only {depth:g} contracts are for sale at {ask * 100:.0f}¢, so it buys {n}."})
+    cost = round(n * per, 2)
+    thin = gap is None or gap > LIVE_SPREAD
+    if thin:
+        warn.append({"k": "thin", "t": "Thin market: " + (f"{gap * 100:.0f}¢ between the buy and sell prices"
+                                                          if gap is not None else "nobody is bidding")
+                     + ", so this price may not be a real one."})
+    if fair is not None and per > fair:
+        warn.append({"k": "above", "t": f"Kalshi's price ({ask * 100:.0f}¢ plus its fee) is above our "
+                                        f"{fair:.0%} chance. On average this loses money."})
+    blocked = None
+    if paused:
+        blocked = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
+    elif order_unsure(t):
+        blocked = ("An earlier order on this market had no clear answer, so the app won't send another for now. "
+                   "Check Kalshi; you can lift the block in Settings › Money.")
+    elif n < 1:
+        blocked = (f"That's under one contract at {ask * 100:.0f}¢ ({money(per)} each with the fee). Pick a bigger stake."
+                   if not depth or depth >= 1 else "Kalshi has under one contract for sale at that price right now.")
+    spent = budget = room = None
+    if not blocked:
+        try:
+            spent = float(week_spend() if can_trade() else 0.0)
+        except Exception:
+            spent = None
+        budget = float(CFG.get("budget") or 0)
+        if spent is None:
+            blocked = "Couldn't read what you've spent this week, so the cap can't be checked. Try again in a moment."
+        else:
+            room = round(max(0.0, budget - spent), 2)
+            if spent + cost > budget + 0.01:
+                blocked = cap_msg(spent, cost)
+    clears = fair is not None and edge >= SINGLE_MIN_EDGE * 0.6 and not thin and not blocked
+    qid = secrets.token_hex(8)
+    with _SQ["lock"]:
+        _sq_prune(now)
+        _SQ["q"][qid] = {"t": t, "ask": ask, "n": n, "cost": cost, "at": now, "clears": clears, "blocked": blocked,
+                         "live": live, "kind": kind, "pick": x.get("pick") or t, "used": False,
+                         "x": {k: x.get(k) for k in ("ticker", "event", "exp", "pre", "pick")}}
+    return {"ok": True, "q": qid, "t": t, "pick": x.get("pick") or t, "opp": x.get("opp") or "",
+            "game": x.get("game") or "", "sport": ticker_sport(t) or "", "kind": kind, "live": live,
+            "ask": ask, "bid": bid, "gap": gap, "depth": depth, "fee": round(fee, 4), "per": round(per, 4),
+            "fair": fair, "how": how, "nofair": nofair, "edge": edge, "ret": ret, "sug": round(sug, 2),
+            "stake": want, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
+            "spent": spent, "budget": budget, "room": room, "blocked": blocked, "warn": warn, "clears": bool(clears),
+            "secs": SINGLE_QUOTE_SECS, "arm": SINGLE_ARM, "max": SINGLE_MAX, "presets": list(SINGLE_PRESETS)}
+
+
+def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
+    """Buy a quoted single (Pete's tap). One order per quote, ever: the quote must be the one on screen (same market),
+    under 20 seconds old and not used yet; Pause, the cap and the unknown-outcome block are checked again; the book is
+    read again and a price above the quoted one is refused (nothing sent). Then one fill-now-or-cancel order at the
+    quoted price, never more. {"ok", "msg", "filled", "price", "cost", "pays"} or {"ok": False, "check": True} when
+    Kalshi's answer was unclear (it may have gone through: never resent, the market is blocked for 2 hours)."""
+    now = now or time.time()
+    with _SQ["lock"]:
+        q = _SQ["q"].get(str(qid or ""))
+        if not q or q["t"] != str(ticker or ""):
+            return {"ok": False, "expired": True, "msg": "That price isn't the one on your screen any more. Get a fresh price."}
+        if q["used"]:
+            return {"ok": False, "msg": "This price was already used for a buy. Check Live before buying again."}
+        if now - q["at"] > SINGLE_QUOTE_SECS:
+            return {"ok": False, "expired": True, "msg": "That price is more than 20 seconds old. Get a fresh one."}
+        if paused:
+            return {"ok": False, "msg": "Paused from an alert, so nothing was bought. To resume, save Settings with "
+                                        "Auto cash-out on."}
+        if q["blocked"]:
+            return {"ok": False, "msg": q["blocked"]}
+        if not q["clears"] and not anyway:
+            return {"ok": False, "msg": "This one needs Buy anyway: the price isn't clearly better than fair."}
+        q["used"] = True                                # from here on this quote can never send a second order
+    t, ask, n = q["t"], q["ask"], q["n"]
+    book = book_depth(t, max_age=0)
+    now_ask = (book or {}).get("ask")
+    if not now_ask:
+        return {"ok": False, "msg": "Couldn't read Kalshi's price just now. Nothing was bought."}
+    if now_ask > ask + 1e-9:
+        return {"ok": False, "moved": True, "msg": f"The price moved to {now_ask * 100:.0f}¢ (you saw {ask * 100:.0f}¢). "
+                                                   "Nothing was bought. Get a fresh price."}
+    if q["live"] and q["kind"] == "win":
+        try:
+            _, _, w = live_side_fair(dict(q["x"]))
+        except Exception:
+            w = None
+        if w == "the game is over":
+            return {"ok": False, "msg": "The game just ended. Nothing was bought."}
+    if order_unsure(t):
+        return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
+    try:
+        spent = float(week_spend() if can_trade() else 0.0)
+    except Exception:
+        return {"ok": False, "msg": "Couldn't read what you've spent this week, so nothing was bought. Try again."}
+    if spent + q["cost"] > float(CFG.get("budget") or 0) + 0.01:
+        return {"ok": False, "msg": cap_msg(spent, q["cost"])}
+    coid = f"cw-sb-{qid}"
+    log(f"manual single: buying {n} of {t} at {ask:.4f} (IOC, quote {qid})")
+    try:
+        filled, err = buy_single(t, n, ask, coid=coid, exact=True)
+    except Exception as err:                           # no clear answer: it may have gone through. Never resent.
+        try:
+            _mark_unsure({"ticker": t, "side": "bid", "reduce_only": False, "coid": coid}, err)
+        except Exception:
+            pass
+        log(f"manual single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
+        return {"ok": False, "check": True,
+                "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi (or Live in a "
+                       "minute) before trying again; the app won't send it again."}
+    if err:
+        return {"ok": False, "msg": err}
+    if filled <= 0:
+        return {"ok": False, "msg": f"Nobody was selling at {ask * 100:.0f}¢ any more. Nothing was bought."}
+    mark_app(t, "manual")
+    per = ask + single_fee(ask)
+    log(f"manual single bought: {filled:g} of {t} at {ask:.4f}")
+    part = f" of {n}" if filled < n else ""
+    return {"ok": True, "filled": filled, "price": ask, "cost": round(filled * per, 2), "pays": filled,
+            "pick": q["pick"], "msg": f"Bought {filled:g}{part} at {ask * 100:.0f}¢: pays {money(filled)} if it wins."}
 
 
 def _alert(alert, msg, kind, url):
