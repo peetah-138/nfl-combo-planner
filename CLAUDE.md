@@ -498,13 +498,24 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
-  **Haptics on iOS (issue #60, unresolved):** Pete feels none on iOS 27.2.1 in the Home Screen app, and the `<input
-  switch>` trick is only documented for iOS 17.4-18. `hap()` now toggles a tiny see-through switch laid out *inside* the
-  screen (not parked off it), and iPhones/iPads use it even if `navigator.vibrate` exists. Settings › Test haptics
-  (`hapCard`, tests in `test_haptics.py`) has one lettered button per method (the list is `HAPM`, the code is `HT`);
-  the one `hap()` uses is the single letter `HAPDEF` (now `B`): **once Pete reports which letter he feels, change
-  `HAPDEF` to it** (and drop the methods that don't work). The card also has a per-phone Haptics on/off switch
-  (`cw_hapoff`). Helper switches carry class `hapx` (the tap listener ignores them); test buttons carry `data-hapt`.
+  **Haptics on iOS (issue #60):** Pete's test on iOS 27.2.1 (Home Screen app): only G, H and I tick, i.e. only when the
+  finger itself lands on a real `<input type=checkbox switch>`; every scripted click (A-F, J, K) does nothing. So the
+  default (`HAPDEF = 'N'`) is **method N**: every tappable control (`HSWQ`: buttons, `[onclick]`, chips, rows)
+  gets a see-through switch (`.hsw`, opacity .01, appearance none, tabindex -1, aria-hidden) as its **first child**,
+  covering it; the control becomes `position:relative` through a zero-specificity rule while `html.hswon` is set. The
+  tap flips that switch (the tick) and the same real click bubbles on to the control's own handler; nested controls
+  paint above their row's switch; icons/chance lines inside a control let taps through (`.hsw~svg`, `.mline`); disabled
+  controls hide theirs; a field appearing inside a control removes its switch (`hswFix`); the switches' change/input
+  events never reach the app. Skipped (`HSWNO`/`HSWIN`): links (no tick: a switch would take their navigation and
+  long-press menu), labels (their checkboxes carry `switch` themselves, method I), selects, sliders,
+  text fields, scrub charts, sideways strips, the test card's other buttons. A MutationObserver adds them to new content
+  (never two per control). Only on iPhones/iPads, not in the Pythonista app, and off with the Haptics switch or reduced
+  motion (`hswSync`). `hap()` still tries the scripted switch for a pattern's extra ticks and for gestures with no tap
+  (chart scrub, pull-to-refresh, sheet drag, tab swipe, slider steps): iOS 27 ignores those, so they stay silent there.
+  Settings › Test haptics (`hapCard`, `HAPM`/`HT`) lists N first, marks G/H/I "Pete confirmed" and the scripted ones
+  "did nothing on iOS 27", and asks whether every tap ticks now. Tests: `test_hsw.py` (Chromium and, where installed,
+  WebKit; CI installs it), `test_haptics.py`, the iPhone audit in `test_motion.py`. The card's on/off switch is per phone (`cw_hapoff`); helper switches carry class `hapx`,
+  test buttons `data-hapt` (N's also `data-hsw`).
 - **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
   - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
     (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and

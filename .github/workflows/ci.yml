@@ -47,7 +47,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pyflakes playwright ruff==0.17.5
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium webkit   # webkit: test_hsw.py checks the iPhone haptic switches in Safari's engine
 
       - name: Lint (ruff)
         run: ruff check .

@@ -2307,6 +2307,14 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .srow.dim{opacity:.45;pointer-events:none}
 .hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
 .hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
+.hxbtn .hsw{border-radius:inherit}
+/* Method N (#60): the see-through switch over each control, so the finger's own tap lands on a real switch (the tick).
+   appearance:none with nothing painted; opacity .01 like G's confirmed switch, never hidden, never pointer-events:none. */
+.hsw{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:inherit;background:transparent!important;box-shadow:none!important;-webkit-appearance:none!important;appearance:none!important;opacity:.01!important;transform:none!important;transition:none!important;animation:none!important;outline:none!important;cursor:inherit;flex:none;font-size:0;color:transparent;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+.hsw::before,.hsw::after{display:none!important}
+.hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
+html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
+:where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
 .hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
 .hxrow .l small{margin-top:6px}
 .rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
@@ -2709,23 +2717,24 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
 const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
-function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
+function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentElement;const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
- addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
+ addEventListener('click',e=>{const tg=e.target;if(tg&&tg.matches&&(tg.matches('.hsw,input[switch]')||tg.matches('label')&&tg.querySelector('input[switch]')))S.hswAt=performance.now();   // the finger's own switch ticked
+  const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
   hap(el.matches('.tabbar button,.nav button,.seg button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
- addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
+ addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input:not(.hsw),.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
  addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
   if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
 /* Pull down at the top of any tab to refresh it: the page follows the finger with a rubber band, a ring fills as you
    pull, it ticks once at the point where letting go refreshes, spins while loading and ends on a small check. */
 (()=>{let y0=null,dy=0,el=null,busy=false;const C=2*Math.PI*8,TH=64;
  const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke-dasharray="'+C.toFixed(1)+'" stroke-dashoffset="'+C.toFixed(1)+'"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>'}),document.body.appendChild(el),el);
- const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input,select,textarea,.chips,.seg,.ant,.sidx'));
+ const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input:not(.hsw),select,textarea,.chips,.seg,.ant,.sidx'));
  const main=()=>$('#main'),reduce=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
  addEventListener('touchstart',e=>{y0=(!busy&&scrollY<=0&&!$('#modal').classList.contains('on')&&!skip(e.target))?e.touches[0].clientY:null;dy=0;},{passive:true});
  addEventListener('touchmove',e=>{if(y0==null)return;const raw=e.touches[0].clientY-y0;if(raw<=0||scrollY>0){if(dy){dy=0;const p=ptr();p.style.opacity=0;const m=main();if(m){m.style.transform='';}}return;}
@@ -3343,11 +3352,14 @@ async function buy(i,custom,btn){if(S.buying)return;S.buying=true;
    event), on an element that is laid out (a tiny, nearly see-through one inside the screen; iOS ignores display:none,
    visibility:hidden and, it seems, things parked off-screen). iPhones and iPads get the switch even if they report
    navigator.vibrate; everything else uses navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests.
-   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses (change that one letter
-   once Pete reports which method he feels). The card's Haptics switch is saved on this phone (cw_hapoff). */
+   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses. On iOS 27 (Pete,
+   #60) only G, H and I tick: the finger itself has to land on a real switch, a scripted click never ticks. So the
+   default is N: a see-through switch over every control (hsw*, below); hap() then only tries the scripted switch for
+   the extra ticks of a pattern and for gestures without a tap, which iOS 27 ignores. The card's Haptics switch is
+   saved on this phone (cw_hapoff). */
 const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
 const APPLE=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
-const HAPDEF='B';
+const HAPDEF='N';
 const HAPCLICK='ABCDEFJK';   // the methods hap() can run itself (G, H, I need the finger itself; L, M aren't switches)
 const HAPCSS='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';
 const HAPSW='<input type="checkbox" switch tabindex="-1">';
@@ -3361,32 +3373,35 @@ const HT={
  F(){const l=hapNode('hapl',HAPCSS);l.click();setTimeout(()=>l.click(),120);},
  G(){},H(){},I(){},   // native: the user's own tap is the toggle, nothing to run
  J(){HT.B();},K(){HT.B();},
+ N(){if(!hswOn())return false;},   // the button's own see-through switch is the tick
  L(){if(!navigator.vibrate)return false;navigator.vibrate([20,40,20]);},
  M(){if(!S.inapp)return false;const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/light';document.body.appendChild(f);setTimeout(()=>f.remove(),300);}
 };
 const HAPM=[   // [id, event, name, what it does]
- ['A','click','Switch label click (how the app did it)','A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
- ['B','click','Switch label click, on screen (the app now)','The same, but the switch sits inside the screen, nearly see-through.'],
- ['C','click','Click the switch itself','Clicks the switch input directly, not its label.'],
- ['D','click','A brand-new switch each tap','Makes a fresh switch inside your tap, clicks it, removes it.'],
- ['E','click','Double tick, two clicks at once','Clicks the switch twice, right after each other.'],
- ['F','click','Double tick, second one 120 ms later','The second click is delayed, so it is outside your tap.'],
- ['G','native','The button is the switch','Your tap lands on a label wrapped around a real switch. No code involved.'],
- ['H','native','A real, visible switch','Tap the switch itself. The plain iOS baseline.'],
- ['I','native','Our toggle with the switch attribute','The same round toggle as Settings uses, with the iOS switch attribute added.'],
- ['J','pointerdown','Fires when the finger lands','The switch click runs on touch down, before you lift.'],
- ['K','pointerup','Fires when the finger lifts','The switch click runs on touch up.'],
+ ['N','native','Every tap lands on a switch (the app now)','A see-through switch covers each button, so your own tap flips a real switch. No code involved.'],
+ ['A','click','Switch label click (how the app did it)','Did nothing on iOS 27. A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
+ ['B','click','Switch label click, on screen','Did nothing on iOS 27. The same, but the switch sits inside the screen, nearly see-through.'],
+ ['C','click','Click the switch itself','Did nothing on iOS 27. Clicks the switch input directly, not its label.'],
+ ['D','click','A brand-new switch each tap','Did nothing on iOS 27. Makes a fresh switch inside your tap, clicks it, removes it.'],
+ ['E','click','Double tick, two clicks at once','Did nothing on iOS 27. Clicks the switch twice, right after each other.'],
+ ['F','click','Double tick, second one 120 ms later','Did nothing on iOS 27. The second click is delayed, so it is outside your tap.'],
+ ['G','native','The button is the switch','Pete confirmed. Your tap lands on a label wrapped around a real switch. No code involved.'],
+ ['H','native','A real, visible switch','Pete confirmed. Tap the switch itself. The plain iOS baseline.'],
+ ['I','native','Our toggle with the switch attribute','Pete confirmed. The same round toggle as Settings uses, with the iOS switch attribute added.'],
+ ['J','pointerdown','Fires when the finger lands','Did nothing on iOS 27. The switch click runs on touch down, before you lift.'],
+ ['K','pointerup','Fires when the finger lifts','Did nothing on iOS 27. The switch click runs on touch up.'],
  ['L','click','navigator.vibrate (not expected on iPhone)','The standard web vibrate call. iPhones usually have none.'],
  ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
 function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
-function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}}
+function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}hswSync();}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
  if(hapOff())return;
  try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
  if(!APPLE&&navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
- const f=HAPCLICK.includes(HAPDEF)?HT[HAPDEF]:HT.B;seq.forEach(d=>d?setTimeout(f,d):f());}catch(e){}}
+ const n=HAPDEF==='N',f=n||!HAPCLICK.includes(HAPDEF)?HT.B:HT[HAPDEF];
+ (n&&now-(S.hswAt||0)<90?seq.filter(d=>d):seq).forEach(d=>d?setTimeout(f,d):f());}catch(e){}}   // N: the finger's own switch was this tick
 /* Settings > Test haptics: one button per method. Each runs its method right inside its own tap, never through hap(),
    and the global tap listener leaves these buttons alone (data-hapt) so only the method under test can buzz. */
 function hapTry(id,b){const t=performance.now();if(hapTry.id===id&&t-hapTry.at<60)return;hapTry.id=id;hapTry.at=t;   // a label's tap clicks twice (label, then its switch): count it once
@@ -3398,11 +3413,41 @@ function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid"
   if(id==='G')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('G',this)"><input type="checkbox" switch class="hxnat" tabindex="-1">${lab}</label>`;
   else if(id==='H')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('H',this)">${lab}<input type="checkbox" switch data-hapt="1"></label>`;
   else if(id==='I')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('I',this)">${lab}<input type="checkbox" switch class="tg" data-hapt="1"></label>`;
+  else if(id==='N')btn=`<button class="btn hxbtn" type="button" data-hapt="1" data-hsw="1" onclick="hapTry('N',this)">${lab}</button>`;
   else btn=`<button class="btn hxbtn" type="button" data-hapt="1" ${ev==='click'?'onclick':ev==='pointerdown'?'onpointerdown':'onpointerup'}="hapTry('${id}',this)">${lab}</button>`;
   return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
  return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
-  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
-  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Which one worked? Tell Claude</b><small>Say the letter. Nothing here changes how the app buys or sells.</small></div></div>`);}
+  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" switch class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Nothing here changes how the app buys or sells.</small></div></div>`);}
+/* Method N, the default (#60): every tappable control gets a see-through <input type=checkbox switch> as its FIRST child,
+   covering it (position:absolute, inset 0; the control becomes position:relative through a zero-specificity rule, so
+   its own styles always win). The finger's tap lands on the switch: iOS flips it (the tick) and the same real click
+   bubbles on through the control, so its onclick, :active, press feedback and coordinates are unchanged. First child,
+   so a control nested inside another (a button in a row) paints above the row's switch and keeps its own. A scroll or
+   drag is never a click, so nothing flips. Disabled controls hide theirs, and the switches' change/input events never
+   reach the app. Skipped: links (a switch inside a link would take its navigation, its long-press menu, and a wrapped
+   link's box spills over its neighbours), native fields (selects, sliders, text, labels: their checkboxes are switches
+   themselves), chart scrub surfaces, sideways strips, the test card's other buttons. Only on iPhones/iPads, with
+   Haptics on and reduced motion off (as briefed). A MutationObserver adds switches to new content once per batch (a
+   control never gets two) and takes a control's switch away if a field appears inside it. */
+const HSWQ='button,[onclick],.chip,.trow';
+const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,svg,[data-hapt]:not([data-hsw]),[data-hsw="0"]';
+const HSWIN='input:not(.hsw),select,textarea,label,.sparkw,.scrub,.chartbox,.chips,.gtabs,.board,.antbl';   // fields, scrub charts and sideways strips stay reachable
+const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
+function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
+function hswAdd(el){if(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN))return;
+ const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
+ el.insertBefore(i,el.firstChild);}
+function hswScan(n){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))hswAdd(n);if(n.firstElementChild)n.querySelectorAll(HSWQ).forEach(hswAdd);}
+function hswFix(t){const h=t.closest&&t.closest(HSWQ);if(!h)return;const s=h.querySelector(':scope>.hsw');if(s&&h.querySelector(HSWIN))s.remove();}   // a field arrived inside: its switch goes
+const HSWMO=new MutationObserver(ms=>{for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;if(t.matches(HSWQ))hswAdd(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(hswScan);}});
+function hswSync(){const on=hswOn();document.documentElement.classList.toggle('hswon',on);HSWMO.disconnect();
+ if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true});}else document.querySelectorAll('.hsw').forEach(i=>i.remove());}
+addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('hsw'))return;const h=t.parentElement;
+ if(!h||h.disabled||h.getAttribute('aria-disabled')==='true'){e.preventDefault();e.stopImmediatePropagation();}},true);
+['change','input'].forEach(k=>addEventListener(k,e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))e.stopImmediatePropagation();},true));
+try{HSWRM.addEventListener('change',hswSync);}catch(e){}
+hswSync();
 // ---------------- RESULTS
 function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
@@ -4140,7 +4185,7 @@ function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||[
 function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
   oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
-function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
+function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" switch class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
 function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
 /* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
 function rideRow(names){names=names||[];const n=Math.max(2,names.length),v=Math.max(0,Math.min(n-1,+S.set.values.ride||0));
@@ -4180,7 +4225,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
    <div class="sact"><button class="btn acc" onclick="macUpdate(this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
-   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
+   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" switch class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
@@ -4242,7 +4287,7 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
-window.__inapp=function(){S.inapp=true;if(S.view==='settings')renderSettings();};
+window.__inapp=function(){S.inapp=true;hswSync();if(S.view==='settings')renderSettings();};
 function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
 ideaFromHash(false);
 addEventListener('hashchange',()=>ideaFromHash(true));

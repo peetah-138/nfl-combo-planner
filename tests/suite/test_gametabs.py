@@ -344,6 +344,56 @@ def run_reduced(pg, label):
     return probs
 
 
+IOS = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+HSW = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&!e.closest('[hidden]');};
+ const hosts=[...document.querySelectorAll('#sheet '+HSWQ.split(',').join(',#sheet '))].filter(e=>vis(e)&&!e.closest(HSWNO)&&!e.querySelector(HSWIN)&&!e.disabled);
+ const bad=hosts.filter(h=>h.querySelectorAll(':scope>.hsw').length!==1).map(h=>h.tagName+'.'+h.className+':'+(h.textContent||'').trim().slice(0,16));
+ return {n:hosts.length,bad:bad.slice(0,6),links:document.querySelectorAll('#sheet a[href]>.hsw').length,
+  tabs:[...document.querySelectorAll('#sheet .gtab')].filter(b=>b.querySelectorAll(':scope>.hsw').length===1).length};})()"""
+
+
+def run_hsw(pg, label):
+    """Method N (#60): every game-page tab, the box score's team pills and each tab's controls carry one see-through switch,
+    links none, and a real touch on a tab or a team pill lands on its switch and still does its job."""
+    probs = []
+    state["g"] = game()
+    pg.route("**/app/api/game*", answer)
+    if not open_game(pg):
+        return [label + ": game sheet didn't draw"]
+    if not pg.evaluate("hswOn()"):
+        return [label + ": method N isn't on for an iPhone"]
+    for k in ("overview", "pbp", "box", "tstats", "inj", "last5", "leaders"):
+        if pg.evaluate(f"!document.querySelector('#sheet .gtab[data-tab={k}]')"):
+            continue
+        pg.evaluate(f"document.querySelector('#sheet .gtab[data-tab={k}]').scrollIntoView({{inline:'center',block:'center'}})"); time.sleep(.3)
+        bb = pg.locator(f"#sheet .gtab[data-tab={k}]").bounding_box()
+        hit = pg.evaluate("([x,y])=>{const t=document.elementFromPoint(x,y);return t?t.className+'|'+(t.parentElement&&t.parentElement.dataset.tab):''}", [bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2])
+        if hit != "hsw|" + k:
+            probs.append(label + ": a tap on the %s tab doesn't land on its switch (%s)" % (k, hit))
+        pg.touchscreen.tap(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+        if not until(pg, f"document.querySelector('#sheet .gtab.on').dataset.tab==='{k}'&&!document.querySelector('#sheet .gpanel[data-tab={k}]').hidden", 4):
+            probs.append(label + ": tapping the %s tab through its switch didn't open it" % k)
+        time.sleep(.3)
+        c = pg.evaluate(HSW)
+        if c["bad"] or c["links"]:
+            probs.append(label + ": %s tab switches: %r" % (k, c))
+        if c["tabs"] != pg.evaluate("document.querySelectorAll('#sheet .gtab').length"):
+            probs.append(label + ": not every tab has its switch on %s: %r" % (k, c))
+        if k == "box":
+            if pg.evaluate("document.querySelectorAll('#sheet .bxsw button').length") != 2 or pg.evaluate("[...document.querySelectorAll('#sheet .bxsw button')].some(b=>b.querySelectorAll(':scope>.hsw').length!==1)"):
+                probs.append(label + ": the team pills lack their switches")
+            pg.evaluate("document.querySelector('#sheet .bxsw').scrollIntoView({block:'center'})"); time.sleep(.3)
+            hb = pg.locator("#sheet .bxsw button[data-side=home]").bounding_box()
+            pg.touchscreen.tap(hb["x"] + hb["width"] / 2, hb["y"] + hb["height"] / 2)
+            if not until(pg, "document.querySelector('#sheet .bxsw button.on').dataset.side==='home'", 3):
+                probs.append(label + ": tapping a team pill through its switch didn't switch teams")
+            elif pg.evaluate("document.querySelector('#sheet .bxsw button.on').querySelectorAll(':scope>.hsw').length") != 1:
+                probs.append(label + ": the redrawn team pill lost (or doubled) its switch")
+    pg.evaluate("closeModal()"); time.sleep(.3)
+    pg.unroute("**/app/api/game*")
+    return probs
+
+
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     errs, probs = [], []
@@ -369,6 +419,11 @@ with sync_playwright() as pw:
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", timezone_id="America/New_York")
     zpg = ctx.new_page(); zpg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run_tz(zpg, "new-york")
+    ctx.close()
+    ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", has_touch=True, user_agent=IOS)
+    hpg = ctx.new_page(); hpg.on("pageerror", lambda e: errs.append(str(e)))
+    hpg.add_init_script("localStorage.removeItem('cw_hapoff')")
+    probs += run_hsw(hpg, "iphone-switches")
     ctx.close()
     print("errs:", errs)
     if errs:
