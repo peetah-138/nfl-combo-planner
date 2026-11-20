@@ -174,6 +174,22 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (dollar strings, lowest first); the old `{"orderbook": {"yes": [[52, 3703]...]}}` (cents) is still read. Both give
   the same dollars; an odd answer = no prices, never an error. Ask = 1 − best NO bid. Smart sell for singles reads
   the market's own `yes_bid_dollars`/`yes_ask_dollars` (`GET /markets`), not the book. Test: `t_orderbook`.
+- **Kalshi V2 orders** (issue #81): Kalshi removed the legacy order writes (`POST/DELETE /portfolio/orders` = 410
+  `deprecated_v1_order_endpoint`). Callers still pass the app's order fields to `kalshi_send`; the one adapter there
+  (`order_intent` → `order_v2_body`, `_order_create`/`_order_cancel`, answers read by `order_answer_v2`) sends V2:
+  `POST /portfolio/events/orders` with `side` on the YES book (bid = buy YES / sell NO, ask = sell YES / buy NO),
+  `price` = the YES price as a 4-decimal dollar string (a NO price q goes as 1 − q; cents ÷ 100 exactly, Decimal;
+  rounded so a buy never pays more and a sale never takes less), `count` = a 2-decimal contract string; cancels are
+  `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
+  (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
+  skips); a timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
+  "check", logged in `combo_orders.json`, and that market+side gets no order for 2 h, which Pete can lift sooner with Settings › Money › "Clear order block" (confirm, logged; the unclear order itself is never resent) (killer "check"s alert and count
+  toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
+  (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
+  sell-early exits) are refused before sending, existing ladders are never moved (cancelled), and the panel doesn't
+  draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
+  Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
+  watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -367,6 +383,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
   college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
   "on games still to play" for the Mix. The rule and the cap amount are unchanged.
+- **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
+  labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
+  asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
+  puts the same DOM node back across any redraw (refresh, rebuild, load), so the button is never replaced, flickers or
+  loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
+  quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
