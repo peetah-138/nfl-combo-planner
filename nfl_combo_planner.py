@@ -5519,7 +5519,10 @@ def game_detail(event_id, code, max_age=6):
         # persistent feed break is visible instead of silently falling back forever.
         klive_log_once("gamedetail", event_id, err)
         out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
-    GAME_DETAIL[event_id] = (time.time(), out)
+    now = time.time()
+    for k in [k for k, v in GAME_DETAIL.items() if now - v[0] > GAME_DETAIL_KEEP]:
+        del GAME_DETAIL[k]                                  # forget games nobody has opened for an hour, so the cache stays small
+    GAME_DETAIL[event_id] = (now, out)
     return out
 
 
@@ -5593,20 +5596,24 @@ def _parse_game_detail(data, event_id=None):
 
 
 def _to_int(v):
+    """An int from a feed value, or None. 1e999, Infinity and a 400-digit integer overflow float()/int(): that is None too,
+    never an exception (an uncaught OverflowError would take the whole game page down and refetch ESPN every poll)."""
     try:
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, ArithmeticError):
         return None
 
 
 PBP_MAX_PLAYS = 220       # most plays sent to the page (a full NFL game is about 160; the cap keeps a wild one light)
 PBP_TEXT_MAX = 300
+PBP_ID_MAX = 24           # feed ids are short numbers; cap them so a wild one cannot bloat the payload
+PBP_RAW_DRIVES = 60       # raw drives/plays looked at at all, newest kept (a game has ~25 drives): bounds the work before shaping
+PBP_RAW_PLAYS = 400
+GAME_DETAIL_KEEP = 3600   # seconds a game's cached detail is kept after it was last fetched
+# A play whose end spot is on the OTHER team's side of the ball: with no team id on it the drive's team is the wrong guess.
+PBP_FLIP = ("punt", "kickoff", "free kick", "onside")
 # Plays that carry no ball movement (ESPN gives them a bogus yard line): stepping leaves the ball where it was.
 PBP_ADMIN = ("timeout", "two-minute", "end period", "end of half", "end of game", "end of regulation", "coin toss")
-
-
-def _ord(n):
-    return "%d%s" % (n, "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th"))
 
 
 def _dic(v):
@@ -5637,13 +5644,19 @@ def _pbp_play(p, side_of, drive_side, drive_q):
     to = p.get("isTurnover")
     if to is None:                            # the flag is missing on some plays: an interception, or a fumble the other side recovers
         to = "interception" in low or "(opponent)" in low
-    return {"id": str(p.get("id") or ""), "q": _to_int(_dic(p.get("period")).get("number")) or drive_q,
+    a_side = side_of.get(str(_dic(start.get("team")).get("id") or ""), drive_side)
+    b_side = side_of.get(str(_dic(end.get("team")).get("id") or ""))
+    if b_side is None:                        # no team id on the end spot: the drive's team is right only if the ball did not change hands
+        b_side = "" if (to or any(k in low for k in PBP_FLIP)) else drive_side
+    if a is not None and (a_side not in ("home", "away") or b_side not in ("home", "away")):
+        a = b = None                          # whose end zone is unknown: show the text, never a ball guessed onto the wrong end
+    return {"id": str(p.get("id") or "")[:PBP_ID_MAX], "q": _to_int(_dic(p.get("period")).get("number")) or drive_q,
             "clk": str(_dic(p.get("clock")).get("displayValue") or "")[:8],
             "dn": str(start.get("shortDownDistanceText") or "")[:20] if sdown is not None and sdown >= 1 else "",
             "txt": str(p.get("text") or "").strip()[:PBP_TEXT_MAX], "ty": typ[:40],
             "yd": _to_int(p.get("statYardage")),
-            "a": a, "as": side_of.get(str(_dic(start.get("team")).get("id") or ""), drive_side) if a is not None else None,
-            "b": b, "bs": side_of.get(str(_dic(end.get("team")).get("id") or ""), drive_side) if b is not None else None,
+            "a": a, "as": a_side if a is not None else None,
+            "b": b, "bs": b_side if b is not None else None,
             "ep": str(end.get("possessionText") or "")[:20] if b is not None else "",
             "edd": str(end.get("downDistanceText") or "")[:30] if b is not None else "",
             "ed": _to_int(end.get("distance")) if b is not None else None,
@@ -5657,37 +5670,43 @@ def _parse_pbp(drives, side_of):
     first (`cut` counts the plays left off)."""
     if not isinstance(drives, dict):
         return None
-    raw = [d for d in (drives.get("previous") or []) if isinstance(d, dict)]
+    prev = drives.get("previous")
+    # Bound the work BEFORE shaping anything: only the newest PBP_RAW_DRIVES drives and, in each, the newest PBP_RAW_PLAYS plays
+    # are looked at (a real game is ~25 drives and ~160 plays), so a wild feed costs a bounded amount however big it is.
+    raw = [d for d in (prev[-PBP_RAW_DRIVES:] if isinstance(prev, list) else []) if isinstance(d, dict)]
     cur = drives.get("current")
-    if isinstance(cur, dict) and cur.get("plays") and str(cur.get("id") or "") not in {str(d.get("id") or "") for d in raw}:
-        cur = dict(cur, _cur=True)
-        raw.append(cur)
-    out = []
-    for d in raw:
+    if isinstance(cur, dict) and cur.get("plays") and str(cur.get("id") or "")[:PBP_ID_MAX] not in {str(d.get("id") or "")[:PBP_ID_MAX] for d in raw}:
+        raw.append(dict(cur, _cur=True))
+        raw = raw[-PBP_RAW_DRIVES:]
+    kept, total, size, full = [], 0, 0, False        # kept is newest first; once a drive does not fit, older ones only get counted
+    for d in reversed(raw):
+        pl = d.get("plays") if isinstance(d.get("plays"), list) else []
+        plays_raw = [p for p in pl[-PBP_RAW_PLAYS:] if isinstance(p, dict)]
+        if not plays_raw:
+            continue
+        total += len(plays_raw)
+        if full or (kept and size + len(plays_raw) > PBP_MAX_PLAYS):
+            full = True                              # same as dropping the oldest whole drives until the rest fit
+            continue
         tm = _dic(d.get("team"))
         side = side_of.get(str(tm.get("id") or ""), "")
-        plays_raw = [p for p in (d.get("plays") if isinstance(d.get("plays"), list) else []) if isinstance(p, dict)]
         q = _to_int(_dic(_dic(d.get("start")).get("period")).get("number")) or _to_int(
-            _dic(plays_raw[0].get("period")).get("number") if plays_raw else None) or 1
+            _dic(plays_raw[0].get("period")).get("number")) or 1
         plays = [x for x in (_pbp_play(p, side_of, side, q) for p in plays_raw) if x]
-        if not plays:
-            continue
         n = _to_int(d.get("offensivePlays"))
         n = n if n is not None else len(plays)
         yds = _to_int(d.get("yards")) or 0
         res = str(d.get("displayResult") or d.get("result") or "")[:30]
         resk = str(d.get("result") or "").upper()
-        out.append({"id": str(d.get("id") or ""), "team": str(tm.get("abbreviation") or "")[:5], "side": side, "q": q,
-                    "res": res, "sum": "%d play%s, %d yard%s" % (n, "" if n == 1 else "s", yds, "" if abs(yds) == 1 else "s"),
-                    "sc": bool(d.get("isScore")),
-                    "to": any(k in resk for k in ("INT", "FUM", "DOWNS")) or any(x["to"] for x in plays),
-                    "cur": bool(d.get("_cur")), "plays": plays})
-    if not out:
+        kept.append({"id": str(d.get("id") or "")[:PBP_ID_MAX], "team": str(tm.get("abbreviation") or "")[:5], "side": side, "q": q,
+                     "res": res, "sum": "%d play%s, %d yard%s" % (n, "" if n == 1 else "s", yds, "" if abs(yds) == 1 else "s"),
+                     "sc": bool(d.get("isScore")),
+                     "to": any(k in resk for k in ("INT", "FUM", "DOWNS")) or any(x["to"] for x in plays),
+                     "cur": bool(d.get("_cur")), "plays": plays})
+        size += len(plays)
+    if not kept:
         return None
-    total = sum(len(d["plays"]) for d in out)
-    keep = list(out)
-    while len(keep) > 1 and sum(len(d["plays"]) for d in keep) > PBP_MAX_PLAYS:
-        keep.pop(0)                          # drop the oldest whole drive
+    keep = kept[::-1]
     if len(keep[-1]["plays"]) > PBP_MAX_PLAYS:
         keep[-1] = dict(keep[-1], plays=keep[-1]["plays"][-PBP_MAX_PLAYS:])
     sent = sum(len(d["plays"]) for d in keep)

@@ -2623,8 +2623,10 @@ function pushFill(h,title,sk){const sh=$('#sheet');const first=sh.dataset.sk==='
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
 (()=>{const sh=$('#sheet');let x0=null,y0=null,dx=0,dy=0,ax=null,past=false;
  const cross=v=>{if(v!==past){past=v;hap(v?'light':'selection');}};
+ /* a swipe that starts on the game tab row (or any sideways-scrolling strip) belongs to that strip, never to swipe-back */
+ const hscroll=el=>{for(;el&&el!==sh&&el.nodeType===1;el=el.parentElement){if(el.classList.contains('gtabs'))return true;const o=getComputedStyle(el).overflowX;if((o==='auto'||o==='scroll')&&el.scrollWidth>el.clientWidth)return true;}return false;};
  sh.addEventListener('touchstart',e=>{const t=e.touches[0];dx=dy=0;ax=null;past=false;
-  if($('#modal').classList.contains('push')){x0=t.clientX;y0=t.clientY;return;}x0=null;
+  if($('#modal').classList.contains('push')){if(hscroll(e.target)){x0=y0=null;return;}x0=t.clientX;y0=t.clientY;return;}x0=null;
   if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=t.clientY;},{passive:true});
  sh.addEventListener('touchmove',e=>{const t=e.touches[0];
   if(x0!=null){const mx=t.clientX-x0,my=t.clientY-y0;if(ax==null&&(Math.abs(mx)>8||Math.abs(my)>8))ax=mx>0&&Math.abs(mx)>Math.abs(my)*1.2?'x':'y';
@@ -3792,7 +3794,8 @@ function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);
 /* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
 function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
  const to={left:on.offsetLeft,width:on.offsetWidth},prev=S.gtabPos;
- if(prev&&prev.left!==to.left){ind.style.transition='none';ind.style.left=prev.left+'px';ind.style.width=prev.width+'px';void ind.offsetWidth;ind.style.transition='';}
+ /* paintGame rebuilds the row, so a fresh underline starts at left:0/width:0: always seed it where the old one was (or where it is going), no transition, then glide only if the tab changed */
+ const from=prev||to;ind.style.transition='none';ind.style.left=from.left+'px';ind.style.width=from.width+'px';void ind.offsetWidth;ind.style.transition='';
  ind.style.left=to.left+'px';ind.style.width=to.width+'px';S.gtabPos=to;
  if(S.gtabScroll!=null){bar.scrollLeft=S.gtabScroll;S.gtabScroll=null;}
  const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
@@ -3837,7 +3840,7 @@ function pbpLive(){S.pbpStep=null;pbpRefresh('slide');}
 /* The strip as it stood after the stepped play (the ball spot, who has it, first-down line, red zone), as a detail block for fieldStrip().
    A play with no ball movement (timeout, end of quarter) keeps the spot of the nearest earlier play that had one. */
 function gameStepDetail(r){const d=r.detail;if(!d||S.pbpStep==null)return d;const list=pbpPlays(r);let i=list.findIndex(x=>x.k===S.pbpStep);if(i<0)return d;const p=list[i].p;
- let j=i;while(j>=0&&list[j].p.b==null)j--;if(j<0)return d;const pb=list[j].p,side=pb.bs==='home'||pb.bs==='away'?pb.bs:'',abbr=(((d.board||{})[side])||{}).abbr||'';
+ let j=i;while(j>=0&&(list[j].p.b==null||!pbpSide(list[j].p.bs)))j--;if(j<0)return d;const pb=list[j].p,side=pb.bs==='home'||pb.bs==='away'?pb.bs:'',abbr=(((d.board||{})[side])||{}).abbr||'';
  return Object.assign({},d,{drive:{teamAbbr:abbr,ballYardsToEndzone:pb.b,downDistanceText:pb.edd||''},
   situation:{distance:pb.edd?pb.ed:null,downDistanceText:pb.edd||'',possessionText:pb.ep||'',isRedZone:pb.b>0&&pb.b<=20,lastPlayText:p.txt,lastPlayType:p.ty,replay:true}});}
 function pbpRefresh(mode){const r=S.gameR;if(!r)return;const st=document.querySelector('#sheet .fstrip');
@@ -3856,9 +3859,10 @@ function pbpSlide(delay){const st=document.querySelector('#sheet .fstrip'),ball=
  els.forEach(e=>{e.style.transition='';e.style.transitionDelay=(delay||0)+'ms';e.style.left=to;});}
 /* ---- illustrations: what kind of play was it, and a small effect on the field for it */
 function fabs(side,ytz){return side==='home'?ytz:100-ytz;}      // yards from the LEFT goal line = % across .grass (home attacks left, away right), the same as fieldStrip
+function pbpSide(x){return x==='home'||x==='away';}      // a ball move is only drawn when the server knew whose end zone it is
 function pbpKind(p){const t=(p.ty||'').toLowerCase(),turn=!!p.to&&!/penalty/.test(t);
  const k={mv:'dflt',td:/touchdown/.test(t)||(p.sc&&p.b===0&&!/field goal|safety|extra point/.test(t)),turn,fg:null,safety:/safety/.test(t)};
- if(p.a==null||p.b==null)k.mv='none';
+ if(p.a==null||p.b==null||!pbpSide(p.as)||!pbpSide(p.bs))k.mv='none';
  else if(p.pen||/penalty/.test(t))k.mv='pen';
  else if(/field goal/.test(t)){k.mv='kick';k.fg=p.sc?'good':'no';}
  else if(/kickoff|punt|extra point/.test(t))k.mv='kick';

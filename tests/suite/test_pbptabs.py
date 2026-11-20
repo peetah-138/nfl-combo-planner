@@ -180,9 +180,17 @@ def run(pg, label, phone, shots=None):
     if not any("IND" in x and "1 play, 4 yards" in x for x in dr):
         probs.append(label + ": the current drive header (offence, N plays, M yards) is wrong: " + repr(dr))
 
-    # ---- selection survives a redraw
+    # ---- selection survives a redraw, and the underline does not re-animate on a same-tab redraw: the row is rebuilt, so sample
+    #      the COMPUTED left/width on every frame (the inline style alone looks right even while the box glides in from 0)
+    pg.evaluate("""(()=>{window.__ls=[];let n=0;const tick=()=>{const i=document.querySelector('#sheet .gtabind');
+      if(i){const c=getComputedStyle(i);window.__ls.push([parseFloat(c.left),parseFloat(c.width)]);}if(n++<40)requestAnimationFrame(tick);};requestAnimationFrame(tick);})()""")
     if not redraw(pg, .31):
         probs.append(label + ": the page didn't repaint on a new answer")
+    time.sleep(.9)
+    want = pg.evaluate("(()=>{const b=document.querySelector('#sheet .gtab.on');return [b.offsetLeft,b.offsetWidth];})()")
+    ls = pg.evaluate("window.__ls")
+    if want[0] < 20 or len(ls) < 10 or any(abs(l - want[0]) > .6 or abs(w - want[1]) > .6 for l, w in ls):
+        probs.append(label + ": the tab underline moved on a same-tab redraw (computed left/width per frame vs %r): %r" % (want, [x for x in ls if abs(x[0] - want[0]) > .6 or abs(x[1] - want[1]) > .6][:6]))
     if not pg.evaluate("document.querySelector('#sheet .gtab.on').dataset.tab==='pbp'&&!document.querySelector('#sheet .gpanel[data-tab=pbp]').hidden"):
         probs.append(label + ": the chosen tab was lost on a redraw")
 
@@ -396,6 +404,45 @@ def run_absent(pg, label):
     return probs
 
 
+def swipe(cdp, x0, x1, y, steps=12):
+    """A real finger drag (touchStart, touchMove..., touchEnd) through Chrome's input pipeline."""
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x0, "y": y}]})
+    for i in range(1, steps + 1):
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x0 + (x1 - x0) * i / steps, "y": y}]}); time.sleep(.02)
+    cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+def run_swipe(ctx, pg, label):
+    """Swipe-back is the pushed sheet's edge gesture, but it listened on the whole sheet: a sideways swipe on the (overflowing) tab
+    row closed the page instead of scrolling the row. With real touch events: a rightward swipe ON the row scrolls it and the sheet
+    stays; a rightward swipe anywhere else still closes the sheet."""
+    probs = []
+    state["g"] = game(full())
+    if not open_game(pg, label, probs):
+        return probs
+    pg.evaluate("""(()=>{const r=document.querySelector('#sheet .gtabs');for(let i=0;i<6;i++){const b=document.createElement('button');b.type='button';b.className='gtab';b.textContent='Extra tab '+i;r.insertBefore(b,r.querySelector('.gtabind'));}
+      r.scrollLeft=r.scrollWidth;})()""")
+    time.sleep(.4)
+    row = pg.evaluate("(()=>{const r=document.querySelector('#sheet .gtabs'),b=r.getBoundingClientRect();return {over:r.scrollWidth>r.clientWidth,sl:r.scrollLeft,x:b.left,w:b.width,y:b.top+b.height/2};})()")
+    if not row["over"] or row["sl"] < 50:
+        probs.append(label + ": couldn't set up an overflowing, scrolled tab row " + repr(row)); return probs
+    cdp = ctx.new_cdp_session(pg)
+    swipe(cdp, row["x"] + 30, row["x"] + row["w"] - 20, row["y"]); time.sleep(.6)
+    after = pg.evaluate("({on:document.querySelector('#modal').classList.contains('on'),sl:document.querySelector('#sheet .gtabs')&&document.querySelector('#sheet .gtabs').scrollLeft,tx:document.querySelector('#sheet').style.transform})")
+    if not after["on"]:
+        probs.append(label + ": swiping the tab row right closed the page " + repr(after))
+    if after["sl"] is None or after["sl"] >= row["sl"] - 20:
+        probs.append(label + ": swiping the tab row right didn't scroll it (scrollLeft %s -> %s)" % (row["sl"], after["sl"]))
+    if after["tx"]:
+        probs.append(label + ": the sheet followed the finger while the row was swiped " + repr(after["tx"]))
+    # the same swipe on the plain page body (the header block) is the ordinary swipe-back and still closes the sheet
+    ym = pg.evaluate("(()=>{const b=document.querySelector('#sheet .dhead').getBoundingClientRect();return b.top+b.height/2;})()")
+    swipe(cdp, 15, 330, ym); time.sleep(.8)
+    if pg.evaluate("document.querySelector('#modal').classList.contains('on')"):
+        probs.append(label + ": an ordinary rightward swipe elsewhere no longer closes the page")
+    return probs
+
+
 def run_reduced(pg, label):
     """Reduced motion: the text and ball spot still update when stepping, but no illustration element is ever made and the
     ball doesn't glide."""
@@ -447,6 +494,10 @@ with sync_playwright() as pw:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run(pg, "desktop", False, "pbp_desktop.png")
     pg.close()
+    ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", has_touch=True)
+    tpg = ctx.new_page(); tpg.on("pageerror", lambda e: errs.append(str(e)))
+    probs += run_swipe(ctx, tpg, "swipe")
+    ctx.close()
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce")
     rpg = ctx.new_page(); rpg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run_reduced(rpg, "reduced")

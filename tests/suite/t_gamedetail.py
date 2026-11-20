@@ -231,6 +231,66 @@ ok("a missing or out-of-range yard line becomes None (no ball move), and the tex
 ok("a half-known move (only one end) shows no ball move rather than a jump from nowhere", pp and pp[2]["a"] == 40 and pp[2]["b"] == 35 and pp[2]["dn"] == "", pp[2:])
 ok("an unknown team falls back to the drive's side", pp and pp[1]["as"] is None and pp[2]["as"] == "away" and pp[2]["bs"] == "away", pp)
 
+# ---- numbers that overflow int(float(..)) (1e999, Infinity, a 400-digit integer) are None, never an exception: one wild play must
+#      not take the whole page down ("Game not found") and have ESPN refetched on every poll.
+HUGE = "9" * 400
+for label, val in (("Infinity", "Infinity"), ("-Infinity", "-Infinity"), ("1e999", "1e999"), ("a 400-digit string", HUGE), ("float inf", float("inf")), ("a 400-digit int", int(HUGE))):
+    ok("_to_int(%s) is None, no raise" % label, (lambda v: (E._to_int(v) is None))(val))
+    wild = {"previous": [{"id": "1", "team": {"id": "11", "abbreviation": "IND"}, "offensivePlays": val, "yards": val, "plays": [
+        {"id": "w", "type": {"text": "Rush"}, "text": "wild", "statYardage": val, "period": {"number": val},
+         "start": {"down": val, "distance": val, "yardsToEndzone": val}, "end": {"yardsToEndzone": val, "distance": val}},
+        {"id": "g", "type": {"text": "Rush"}, "text": "fine", "period": {"number": 1}, "start": {"down": 2, "yardsToEndzone": 40}, "end": {"yardsToEndzone": 35}}]}]}
+    S = copy.deepcopy(FX["summary"])
+    S["drives"] = wild
+    S["header"]["competitions"][0]["competitors"][0]["score"] = val          # a wild score too
+    try:
+        r, raised = E._parse_game_detail(S), False
+    except Exception as err:
+        r, raised = {"X": err}, True
+    wp = (((r.get("pbp") or {}).get("drives") or [{}])[0].get("plays")) or []
+    ok("odd numbers (%s): no raise, the board and the rest of the page data still come back" % label,
+       not raised and bool((r.get("board") or {}).get("home")) and bool((r.get("board") or {}).get("away"))
+       and r["board"]["home"]["score"] is None and [x["id"] for x in wp] == ["w", "g"], r)
+    ok("odd numbers (%s): the wild play shows its text but no ball move, the good one is untouched" % label,
+       wp and wp[0]["a"] is None and wp[0]["b"] is None and wp[0]["yd"] is None and wp[1]["a"] == 40 and wp[1]["b"] == 35, wp)
+# the same through game_detail(): the page's data is served (and cached), not swallowed into {} and refetched every poll
+E.GAME_DETAIL.clear()
+net.mode = "ok"
+_orig_summary = copy.deepcopy(FX["summary"])
+FX["summary"]["drives"]["previous"][0]["plays"][0]["start"]["yardsToEndzone"] = "1e999"
+FX["summary"]["drives"]["previous"][0]["yards"] = "-Infinity"
+wd = E.game_detail("401873066", "nfl", max_age=0)
+ok("game_detail with 1e999/-Infinity in the feed still returns the board and pbp", bool((wd.get("board") or {}).get("home")) and bool(wd.get("pbp")), list(wd))
+n1 = len([c for c in net.calls if "/summary" in c[0]])
+E.game_detail("401873066", "nfl", max_age=60)
+ok("and it is cached (no refetch on the next poll)", len([c for c in net.calls if "/summary" in c[0]]) == n1)
+FX["summary"] = _orig_summary
+
+# ---- an unknown side must not draw a wrong ball: a punt/kickoff/turnover with no team id on its end spot, in a drive whose own
+#      team is unknown too, has NO ball move (the text still shows); a plain play keeps the drive-team fallback
+def side_plays(drive_team, plays):
+    r, raised = pbp_of({"previous": [{"id": "1", "team": drive_team, "plays": plays}]})
+    return (((r.get("pbp") or {}).get("drives") or [{}])[0].get("plays")) or [], raised
+def sp(i, ty, start_team=None, end_team=None, **kw):
+    d = {"id": i, "type": {"text": ty}, "text": ty, "period": {"number": 1},
+         "start": {"down": 4, "yardsToEndzone": 60}, "end": {"yardsToEndzone": 22}}
+    if start_team: d["start"]["team"] = {"id": start_team}
+    if end_team: d["end"]["team"] = {"id": end_team}
+    d.update(kw)
+    return d
+pl_, raised = side_plays({}, [sp("punt", "Punt"), sp("ko", "Kickoff"), sp("int", "Pass Interception Return", isTurnover=True),
+                              sp("rush", "Rush", start_team="11", end_team="11"), sp("rush2", "Rush")])
+by = {x["id"]: x for x in pl_}
+ok("unknown side (no team ids, unknown drive team): punt, kickoff and turnover carry no ball move, text kept",
+   not raised and all(by[k]["a"] is None and by[k]["b"] is None and by[k]["as"] is None and by[k]["bs"] is None and by[k]["txt"] for k in ("punt", "ko", "int")), pl_)
+ok("unknown side: a play with a known team still draws; an unknown drive team on a plain play draws no ball either",
+   by["rush"]["a"] == 60 and by["rush"]["bs"] in ("home", "away") and by["rush2"]["a"] is None, by["rush"])
+pl_, raised = side_plays({"id": "11", "abbreviation": "IND"}, [sp("punt", "Punt"), sp("rush", "Rush"), sp("punt2", "Punt", end_team="34")])
+by = {x["id"]: x for x in pl_}
+ok("a punt with no end team id gets no ball move even when the drive's team is known (that fallback is the wrong end zone)",
+   by["punt"]["b"] is None and by["punt"]["a"] is None and by["rush"]["a"] == 60 and by["rush"]["as"] == by["rush"]["bs"] == "away"
+   and by["punt2"]["a"] == 60 and by["punt2"]["bs"] == "home", pl_)
+
 # ---- the cap: hundreds of plays are cut to PBP_MAX_PLAYS, the newest drives kept and `cut` says how many were left off
 def mk_play(i):
     return {"id": "p%d" % i, "type": {"text": "Rush"}, "text": "t", "period": {"number": 1}, "start": {"down": 1, "yardsToEndzone": 50}, "end": {"yardsToEndzone": 45}}
@@ -244,6 +304,36 @@ ok("the cap keeps the NEWEST drives", bp["drives"][-1]["id"] == "d59" and bp["dr
 one = {"previous": [{"id": "d1", "team": {"id": "11"}, "plays": [mk_play(i) for i in range(500)]}]}
 r, raised = pbp_of(one)
 ok("a single huge drive keeps its latest plays", not raised and len(r["pbp"]["drives"][0]["plays"]) == E.PBP_MAX_PLAYS and r["pbp"]["drives"][0]["plays"][-1]["id"] == "p499")
+
+# ---- bounds on the work and the data: ids capped, a huge raw feed trimmed BEFORE shaping (newest kept), the cache forgets old games
+long_id = "x" * 500
+r, raised = pbp_of({"previous": [{"id": long_id, "team": {"id": "11"}, "plays": [dict(mk_play(1), id=long_id)]}]})
+ok("drive and play ids are capped", not raised and len(r["pbp"]["drives"][0]["id"]) == E.PBP_ID_MAX and len(r["pbp"]["drives"][0]["plays"][0]["id"]) == E.PBP_ID_MAX, r.get("pbp"))
+shaped = []
+_orig_pp = E._pbp_play
+E._pbp_play = lambda *a, **k: (shaped.append(1), _orig_pp(*a, **k))[1]
+try:
+    huge = {"previous": [{"id": "d%d" % n, "team": {"id": "11", "abbreviation": "IND"}, "offensivePlays": 10, "plays": [mk_play(n * 100 + i) for i in range(10)]}
+                         for n in range(5000)]}
+    r, raised = pbp_of(huge)
+finally:
+    E._pbp_play = _orig_pp
+hp = r.get("pbp") or {}
+hsent = sum(len(x["plays"]) for x in hp.get("drives", []))
+ok("5000 drives: no raise, newest kept, same cap", not raised and hp["drives"][-1]["id"] == "d4999" and 0 < hsent <= E.PBP_MAX_PLAYS, (hsent, len(hp.get("drives", []))))
+ok("5000 drives: only a bounded number of plays were ever shaped (trim first, not shape everything)", 0 < len(shaped) <= E.PBP_MAX_PLAYS + 10, len(shaped))
+ok("5000 drives: n counts only the plays looked at (bounded by PBP_RAW_DRIVES)", hp.get("n") == E.PBP_RAW_DRIVES * 10 and hp.get("cut") == hp.get("n") - hsent, hp.get("n"))
+# the same result as shaping everything and dropping the oldest drives: a 60-drive feed is untouched by the raw cap
+ok("a normal 60-drive feed gives the same answer as before (newest drives whose plays fit)", bp["drives"][-1]["id"] == "d59" and sent == 220 and len(bp["drives"]) == 22, (sent, len(bp["drives"])))
+# the cache forgets games not fetched for an hour whenever a new one is written
+import time as _t
+E.GAME_DETAIL.clear()
+E.GAME_DETAIL["111"] = (_t.time() - E.GAME_DETAIL_KEEP - 5, {"old": 1})
+E.GAME_DETAIL["222"] = (_t.time() - 60, {"recent": 1})
+net.mode = "ok"
+E.game_detail("401873066", "nfl", max_age=0)
+ok("old GAME_DETAIL entries (> 1 hour) are evicted on a write, recent ones kept", "111" not in E.GAME_DETAIL and "222" in E.GAME_DETAIL and "401873066" in E.GAME_DETAIL, list(E.GAME_DETAIL))
+ok("the unused _ord helper is gone", not hasattr(E, "_ord"))
 
 # ---- a garbage / failed summary leaves no pbp and a swallowed error is logged once with the existing gamedetail pattern
 net.mode = "garbage"
@@ -289,8 +379,9 @@ MONEY = ["panel_exec", "panel_pass", "build_panel", "choose_panel", "panel_appro
          "auto_sell_now", "take_profit_reason", "single_sell_reason", "smart_sell_singles", "leg_score",
          "pick_state", "accept_offer", "get_offer", "kalshi_send"]
 DISPLAY = ("game_detail", "_parse_game_detail", "_situation_info", "_parse_pbp", "_pbp_play")
+DISPLAY_DATA = ("GAME_DETAIL", "PBP_")       # the cache and the cap/limit names are display-only too
 leaks = [f for f in MONEY if hasattr(E, f)
-         and any(k in inspect.getsource(getattr(E, f)) for k in DISPLAY)]
+         and any(k in inspect.getsource(getattr(E, f)) for k in DISPLAY + DISPLAY_DATA)]
 ok("no money/account/trading function calls the game-detail display helpers",
    not leaks and all(hasattr(E, f) for f in ("auto_sell_now", "take_profit_reason", "single_sell_reason",
                                              "leg_score", "pick_state")), leaks)
