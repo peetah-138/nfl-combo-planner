@@ -73,7 +73,9 @@ pattern in a local `.git/hooks/pre-commit`.
   every price/count conversion incl. 1¢/99¢, NO prices, fractional counts and reduce-only IOC sells; the fake order
   desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
   no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
-  `fixtures/kalshi_orders_v2.json`).
+  `fixtures/kalshi_orders_v2.json`). A refusal's true reason (`t_buyfunds.py`): the Live buy idea that said "not
+  enough money" with $69.49 in the account (55 at 17¢, through the webapp copy relaying to the Mac's), Kalshi's
+  per-shard cash pots (`fakenet.ORDERS["balance"]`/`["shards"]`), and every documented order error code's words.
   Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,

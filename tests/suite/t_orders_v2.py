@@ -31,7 +31,7 @@ def wait(cond, secs=3.0):
 
 
 def reset(mode="v2"):
-    D.update(mode=mode, sent=[], next=None, fill=None, headers={})
+    D.update(mode=mode, sent=[], next=None, fill=None, headers={}, balance=None, shards={})
     E._ORDER_SHARED.recent.clear()
     E.save_json(E.ORDER_LEDGER, {})
 
@@ -188,8 +188,8 @@ ok(f"panel: a 410 is a clean skip (False, not 'check'), no JSON in the note ({no
 reset("v2")
 D["next"] = (400, "insufficient_balance")
 filled, err = E.buy_single(T, 5, 0.52)
-ok("400 insufficient_balance: refused, plain words, can be tried again", filled == 0 and "enough money" in err
-   and not E.order_unsure(T))
+ok("400 insufficient_balance (account holds plenty, pots unknown): refused, says which pot, never 'not enough money'",
+   filled == 0 and "separate pots" in err and "enough money" not in err and not E.order_unsure(T))
 
 # ---- (4) unknown outcomes: "check", never sent again; no double buy on repeated taps
 for what, nxt in (("timeout", requests.Timeout("slow")), ("connection lost", requests.ConnectionError("gone")),

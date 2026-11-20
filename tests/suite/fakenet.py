@@ -131,7 +131,9 @@ def kalshi_live():
 # deprecated_v1_order_endpoint (Kalshi today); "legacy" = an account without V2 yet (404 on the V2 path, legacy works);
 # "both"; "gone" = 404 on V2 and 410 on legacy. ORDERS["next"] = a status code, (status, code), or an exception to
 # answer the next order write with; ORDERS["fill"] = contracts filled (default: all). Every write is in ORDERS["sent"].
-ORDERS = {"mode": None, "sent": [], "next": None, "fill": None, "headers": {}}
+# ORDERS["balance"] = the GET /portfolio/balance answer (with balance_breakdown, the cash in each exchange shard);
+# ORDERS["shards"] = {ticker: exchange_index} for GET /markets/{ticker}.
+ORDERS = {"mode": None, "sent": [], "next": None, "fill": None, "headers": {}, "balance": None, "shards": {}}
 GONE = {"error": {"code": "deprecated_v1_order_endpoint", "message": "This endpoint has been removed. Please switch "
                   "to the V2 endpoints", "details": "https://docs.kalshi.com/getting_started/order_errors"}}
 
@@ -190,6 +192,12 @@ def fake(method, url, params=None, port=18800, data=None):
             return order_desk(method, path, params, data)                   # a test's fake order desk only
         if method != "GET":
             return R({"error": "dev environment: no orders"}, 403)          # never a trade
+        tk = path.split("/")[2] if path.startswith("/markets/") and path.count("/") == 2 else None
+        if tk and tk in (ORDERS.get("shards") or {}):                  # a test's market and its cash pot
+            return R({"market": {"ticker": tk, "exchange_index": ORDERS["shards"][tk], "status": "active"}})
+        if path == "/portfolio/balance" and ORDERS.get("balance") is not None:
+            b = ORDERS["balance"]
+            return b if isinstance(b, R) else R(b)
         if path.startswith("/markets"):
             mk = markets()
             if path.endswith("/orderbook"):
