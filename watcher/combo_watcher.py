@@ -3335,6 +3335,8 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
   <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
+function blockRow(b){if(!b||!b.length)return '';return b.map(x=>{const until=new Date(x.until*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="srow"><div class="l"><b>Order block: ${esc(x.ticker)} · ${x.sell?'sell ':''}${esc(x.side)}</b><small>An order here had no clear answer, so the app sends none on it until ${esc(until)}. Check Kalshi first; the unclear order itself is never resent.</small></div><button class="btn ghost" data-k="${esc(x.key)}" onclick="clearBlock(this)">Clear order block</button></div>`}).join('');}
+function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
  return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
@@ -3720,7 +3722,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+cutCard(S.panelCuts)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+cutCard(S.panelCuts)+blockRow(d.blocks)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -4457,6 +4459,7 @@ def webapp_main():
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
+                             "blocks": A.order_blocks(),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -4641,6 +4644,12 @@ def webapp_main():
             if a == "panel_approve":
                 ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"))
                 return {"ok": ok, "msg": msg}
+            if a == "clear_block":                  # Pete lifts an "unknown outcome" block after checking Kalshi
+                key = str(d.get("key", ""))[:200]
+                if not A.clear_order_block(key):
+                    return {"ok": False, "msg": "That block has already ended."}
+                log("order block cleared from Settings:", key)
+                return {"ok": True, "msg": "Cleared. New orders on that market can go again; the unclear one is never resent."}
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}

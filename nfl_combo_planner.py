@@ -7967,7 +7967,8 @@ ORDERS_V2 = "/portfolio/events/orders"
 ORDERS_LEGACY = "/portfolio/orders"
 ORDER_LEDGER = os.path.join(HERE, "combo_orders.json")   # orders whose outcome is unknown: never sent again
 ORDER_REPEAT_SECS = 10            # the same order again this soon (a double tap) is not sent
-ORDER_UNSURE_SECS = 12 * 3600     # after an unknown outcome, that market and side is left alone this long
+ORDER_UNSURE_SECS = 2 * 3600      # after an unknown outcome, that market and side is left alone this long
+                                  # (Pete can lift it sooner in Settings › Money; the order itself is never resent)
 ORDER_TIF = ("immediate_or_cancel", "good_till_canceled", "fill_or_kill")
 # V2 refuses sell-only (reduce_only) orders unless they fill at once, so standing auto-sell orders (take-profit
 # ladders, a sell-early bet's exit) can't be placed as before. Until Pete decides whether they may rest without
@@ -8249,6 +8250,33 @@ def order_unsure(ticker):
     now = time.time()
     return any(k.split("|")[0] == ticker and now - float(v.get("ts", 0)) < ORDER_UNSURE_SECS
                for k, v in load_json(ORDER_LEDGER, {}).items() if isinstance(v, dict))
+
+
+def order_blocks():
+    """Markets the app won't send orders on because an earlier order's outcome is unknown, for Settings:
+    [{"key", "ticker", "side", "sell", "until", "why"}], soonest to expire first."""
+    now, out = time.time(), []
+    for k, v in load_json(ORDER_LEDGER, {}).items():
+        if not isinstance(v, dict) or now - float(v.get("ts", 0)) >= ORDER_UNSURE_SECS:
+            continue
+        t, side, kind = (k.split("|") + ["", ""])[:3]
+        out.append({"key": k, "ticker": t, "side": "YES" if side == "bid" else "NO", "sell": kind == "r",
+                    "until": int(float(v["ts"]) + ORDER_UNSURE_SECS), "why": str(v.get("why") or "")[:80]})
+    return sorted(out, key=lambda x: x["until"])
+
+
+def clear_order_block(key):
+    """Pete lifts one block (after checking Kalshi). New orders on that market may go again; the order whose outcome
+    was unknown is never sent again (nothing resends it, and a panel bet stays "check"). Logged. Returns True if
+    there was one."""
+    with _ORDER_SHARED.lock:
+        d = load_json(ORDER_LEDGER, {})
+        got = d.pop(str(key), None)
+        if got is None:
+            return False
+        save_json(ORDER_LEDGER, d)
+    print(f"order block cleared by you: {str(key)[:140]} (was: {str((got or {}).get('why', ''))[:80]})", flush=True)
+    return True
 
 
 def _mark_unsure(o, why):

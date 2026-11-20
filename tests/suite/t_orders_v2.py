@@ -238,6 +238,27 @@ f3, _ = E.buy_single(T, 5, 0.52)
 ok("after the double-tap window a new order goes out with a new client order id",
    f3 == 5 and len(D["sent"]) == 3 and D["sent"][-1][2]["client_order_id"] != first)
 
+# ---- (4a) the unknown-outcome block: 2 hours by default; Pete can clear it (the unclear order is never resent)
+reset("v2")
+D["next"] = requests.Timeout("slow")
+try:
+    E.buy_single(T, 5, 0.52)
+except E.OrderUnknown:
+    pass
+bl = E.order_blocks()
+ok("an unknown outcome blocks that market and side for 2 hours, listed for Settings",
+   E.ORDER_UNSURE_SECS == 2 * 3600 and len(bl) == 1 and bl[0]["ticker"] == T and bl[0]["side"] == "YES" and
+   not bl[0]["sell"] and abs(bl[0]["until"] - (time.time() + 7200)) < 5)
+sent_before = len(D["sent"])
+ok("clearing it: logged, the block is gone, and nothing was resent by clearing",
+   E.clear_order_block(bl[0]["key"]) and not E.order_blocks() and not E.order_unsure(T) and len(D["sent"]) == sent_before)
+ok("clearing a block that isn't there says so", not E.clear_order_block(bl[0]["key"]))
+E._ORDER_SHARED.recent.clear()
+f, _ = E.buy_single(T, 5, 0.52)
+ok("after clearing, a new order (Pete's own tap) can go again", f == 5 and len(D["sent"]) == sent_before + 1)
+E.save_json(E.ORDER_LEDGER, {f"{T}|bid|o": {"ts": time.time() - 2 * 3600 - 5, "coid": "x"}})
+ok("a block ends by itself after 2 hours", not E.order_blocks() and not E.order_unsure(T))
+
 # ---- (4b) review fixes: words passed back from the Mac, 404s with a code, no key, standing sells, killer checks
 ok("words from the Mac: a trailing 4xx is a refusal even if they say 'may or may not'; no code = unknown",
    E.order_outcome(RuntimeError("an earlier order may or may not have gone through (409)")) == "refused" and

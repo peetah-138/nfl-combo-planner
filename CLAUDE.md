@@ -183,7 +183,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
   (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
   skips); a timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
-  "check", logged in `combo_orders.json`, and that market+side gets no order for 12 h (killer "check"s alert and count
+  "check", logged in `combo_orders.json`, and that market+side gets no order for 2 h, which Pete can lift sooner with Settings › Money › "Clear order block" (confirm, logged; the unclear order itself is never resent) (killer "check"s alert and count
   toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
   (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
   sell-early exits) are refused before sending, existing ladders are never moved (cancelled), and the panel doesn't
