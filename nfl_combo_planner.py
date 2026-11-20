@@ -5395,6 +5395,113 @@ def sport_teams(code):
 SCORES_MAX_AGE = 45     # seconds; the Mac lowers this so live scores are near real time
 
 
+def _situation_info(sit, lp):
+    """Football live situation off the ESPN scoreboard, for the game strip (display only). Never raises:
+    a missing field is None/empty so the strip just leaves it out. down/distance/yardLine/timeouts and the
+    last play's text and type; possession is filled in per team by the caller."""
+    try:
+        typ = lp.get("type") or {}
+        return {"down": sit.get("down"), "distance": sit.get("distance"),
+                "yardLine": sit.get("yardLine"), "isRedZone": bool(sit.get("isRedZone")),
+                "homeTimeouts": sit.get("homeTimeouts"), "awayTimeouts": sit.get("awayTimeouts"),
+                "downDistanceText": sit.get("downDistanceText") or "",
+                "possessionText": sit.get("possessionText") or "",
+                "lastPlayText": (lp.get("text") or "")[:300],
+                "lastPlayType": typ.get("text") or typ.get("abbreviation") or ""}
+    except (AttributeError, TypeError, ValueError):
+        return {}
+
+
+GAME_DETAIL = {}        # event id -> (fetched at, parsed detail); display only, like league_injuries
+
+
+def game_detail(event_id, code, max_age=6):
+    """Slice-1 game-detail for the live game page (football only): the ESPN summary parsed down to what the
+    field strip, situation line, last play and scoreboard need. Display only, never read by any buy/sell path.
+    Returns {} for non-football sports, a missing feed, or any parse trouble — the page still works without it.
+    Caching/backoff come free from the hub's HubCache when the Mac is up (ESPN GETs route through it)."""
+    import time
+    path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
+    if not event_id or "football/" not in str(path):        # NFL + college football only in slice 1
+        return {}
+    got = GAME_DETAIL.get(event_id)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    out = {}
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
+        r = requests.get(url, params={"event": str(event_id)}, timeout=10)
+        data = r.json() if r.ok else {}
+        out = _parse_game_detail(data) if data else {}
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
+    GAME_DETAIL[event_id] = (time.time(), out)
+    return out
+
+
+def _parse_game_detail(data):
+    """Pull the slice-1 fields out of an ESPN football summary. Every step is defensive: a malformed feed
+    yields {} (or drops just the missing piece), never an exception, so the trading loop is never touched."""
+    try:
+        hdr = (data.get("header") or {})
+        comp = ((hdr.get("competitions") or [{}])[0]) or {}
+        comps = comp.get("competitors") or []
+        if len(comps) != 2:
+            return {}
+        teams = {}
+        for c in comps:
+            tm = c.get("team") or {}
+            side = c.get("homeAway") or ""
+            rec = ""
+            for rr in (c.get("record") or []):
+                if isinstance(rr, dict) and (rr.get("type") == "total" or not rec):
+                    rec = rr.get("summary") or rr.get("displayValue") or rec
+            teams[side] = {"id": str(tm.get("id") or ""), "abbr": tm.get("abbreviation") or "",
+                           "name": tm.get("displayName") or tm.get("name") or "",
+                           "color": "#" + (tm.get("color") or "").lstrip("#") if tm.get("color") else "",
+                           "alt": "#" + (tm.get("alternateColor") or "").lstrip("#") if tm.get("alternateColor") else "",
+                           "score": _to_int(c.get("score")), "record": rec, "homeAway": side}
+        if "home" not in teams or "away" not in teams:
+            return {}
+        st = (comp.get("status") or {})
+        stype = st.get("type") or {}
+        board = {"home": teams["home"], "away": teams["away"],
+                 "period": st.get("period"), "displayClock": st.get("displayClock") or "",
+                 "state": stype.get("state") or "", "completed": bool(stype.get("completed")),
+                 "shortDetail": stype.get("shortDetail") or ""}
+        bcs = comp.get("broadcasts") or data.get("broadcasts") or []
+        for b in bcs:
+            media = (b.get("media") or {}) if isinstance(b, dict) else {}
+            call = media.get("callLetters") or (b.get("names") or [None])[0] if isinstance(b, dict) else None
+            if call:
+                board["broadcast"] = call
+                break
+        out = {"board": board}
+        # current drive: team on offense + ball/first-down spots (yardsToEndzone so the strip can place the ball)
+        cur = ((data.get("drives") or {}).get("current") or {})
+        if cur:
+            dteam = (cur.get("team") or {})
+            plays = cur.get("plays") or []
+            last = plays[-1] if plays else {}
+            start, end = (last.get("start") or {}), (last.get("end") or {})
+            out["drive"] = {"teamId": str(dteam.get("id") or ""), "teamAbbr": dteam.get("abbreviation") or "",
+                            "ballYardsToEndzone": end.get("yardsToEndzone") if end.get("yardsToEndzone") is not None
+                            else start.get("yardsToEndzone"),
+                            "ballYardLine": end.get("yardLine") if end.get("yardLine") is not None
+                            else start.get("yardLine"),
+                            "downDistanceText": (end.get("downDistanceText") or start.get("downDistanceText") or "")}
+        return out
+    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+        return {}
+
+
+def _to_int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_scores(max_age=None, code=None):
     """Live scores for one league (default: the one on screen), by team (ESPN's free scoreboard).
     Keeps the last good copy if ESPN can't be reached."""
@@ -5440,6 +5547,10 @@ def fetch_scores(max_age=None, code=None):
                 detail = typ.get("shortDetail", "")
             sit = comp.get("situation") or {}
             prob = (sit.get("lastPlay") or {}).get("probability") or {}
+            # Football situation for the live game strip (display only; extracted defensively, empty for other sports).
+            lp = sit.get("lastPlay") or {}
+            sit_info = _situation_info(sit, lp) if state == "in" and sp.get("espn") and "football/" in str(
+                sp["espn"]) else {}
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
@@ -5459,6 +5570,11 @@ def fetch_scores(max_age=None, code=None):
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
                         "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
                         "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
+                if sit_info:                      # football live situation (display only), seen from this team's side
+                    info["situation"] = dict(sit_info,
+                                             possession=str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
+                                             myTimeouts=sit_info["homeTimeouts"] if me.get("homeAway") == "home" else sit_info["awayTimeouts"],
+                                             theirTimeouts=sit_info["awayTimeouts"] if me.get("homeAway") == "home" else sit_info["homeTimeouts"])
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
                             norm_team(tm.get("location") or ""),
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:

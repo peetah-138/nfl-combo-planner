@@ -2109,6 +2109,30 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 @media (max-width:900px){.dcard{grid-template-columns:minmax(0,1fr)}.dbtns{grid-row:auto}.dbtns .btn{flex:1}.dkpis{grid-template-columns:repeat(2,minmax(0,1fr))}
  .modal{padding:0;align-items:flex-end}.sheet.wide{max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
  .dlegs .lg{grid-template-columns:minmax(0,1fr) 84px 46px}.dlegs svg{width:84px}.games{grid-template-columns:minmax(0,1fr)}}
+/* live field strip (football game page; our own art). .fld (not .field, which is the login passcode wrapper). */
+.fstrip{margin:0 0 16px}
+.fld{position:relative;height:84px;border-radius:12px;overflow:hidden;box-shadow:inset 0 0 0 1.5px var(--line);background:#0b5d2a}
+.fld .grass{position:absolute;inset:0 8.333% 20px 8.333%;background:repeating-linear-gradient(90deg,#0b5d2a 0,#0b5d2a 10%,#0c6a30 10%,#0c6a30 20%)}
+.fld .ez{position:absolute;top:0;bottom:20px;width:8.333%;display:grid;place-items:center;opacity:.92}
+.fld .ez.l{left:0}.fld .ez.r{right:0}
+.fld .ez span{color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;writing-mode:vertical-rl;transform:rotate(180deg);text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.fld .grass i{position:absolute;top:0;bottom:0;width:0}
+.fld .grass>i:not(.fball):not(.fdir):not(.fdline):not(.frz){border-left:1px solid rgba(255,255,255,.28)}
+.fld .frz{background:rgba(220,40,40,.28);width:auto}
+.fld .fdline{border-left:3px solid #f5d020;box-shadow:0 0 6px rgba(245,208,32,.7);z-index:3}
+.fld .fball{width:24px;height:14px;top:50%;transform:translate(-50%,-50%);z-index:4;transition:left .5s var(--ease)}
+.fstrip.noanim .fball{transition:none}
+.fld .fball svg{width:24px;height:14px}.fld .fball ellipse{fill:#8a4b1e;stroke:#fff;stroke-width:1.2}.fld .fball line{stroke:#fff;stroke-width:1.2}
+.fld .fdir{top:50%;color:#fff;font-size:13px;z-index:4;text-shadow:0 1px 2px rgba(0,0,0,.6);transition:left .5s var(--ease);width:auto}
+.fstrip.noanim .fdir{transition:none}
+.fld .ruler{position:absolute;left:0;right:0;bottom:0;height:20px;background:rgba(0,0,0,.35)}
+.fld .ruler span{position:absolute;transform:translateX(-50%);top:3px;color:#dfe8e0;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.situ{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;font-size:13.5px}
+.situ .dd{font-weight:800}.situ .rzt{color:#fff;background:var(--no);border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.lastplay{display:flex;gap:8px;align-items:baseline;margin-top:8px;font-size:12.5px;color:var(--sub);background:var(--panel2);border-radius:10px;padding:8px 11px}
+.lastplay .lpt{font-weight:800;color:var(--ink);text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;white-space:nowrap}
+.tdots{display:flex;gap:3px;justify-content:center;margin-top:4px}.tdots i{width:7px;height:4px;border-radius:2px;background:var(--line)}.tdots i.on{background:var(--sub)}
+.poss{color:var(--live);font-size:11px;margin-left:4px}
 /* settings */
 .set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
 .sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
@@ -3443,7 +3467,7 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
   if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
-  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif]);
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail]);
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
  }finally{S.gameBusy=false;}}
@@ -3461,8 +3485,9 @@ function paintGame(r){const t=S.gameOpen;
  const plays=st.plays.slice().reverse();
  pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
+  ${fieldStrip(r.detail,l)}
   <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
@@ -3472,6 +3497,66 @@ function paintGame(r){const t=S.gameOpen;
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
   ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);}
+/* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
+   two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
+   arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
+   slides to the new spot when the play changes (CSS transition; prefers-reduced-motion respected). Nothing here is read
+   by any buy/sell path, and a bad or missing feed just returns '' so the page still works. */
+function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
+ const home=b.home||{},away=b.away||{};const hc=home.color||'var(--no)',ac=away.color||'var(--yes)';
+ // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
+ let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
+ // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
+ const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
+ const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
+ const haveBall=ytz!=null;
+ // Field goes 0..100 left→right in the 100-yard playing area, inset inside two end zones (each 1/12 of the width).
+ const EZ=100/12,play=100-2*EZ;
+ // Line of scrimmage as a % of the whole strip. For the away offence (driving right) distance from left goal = 100-ytz.
+ let losYd=homeHas?ytz:(100-ytz);                 // yards from the LEFT goal line (0..100)
+ let losPct=haveBall?EZ+losYd/100*play:50;
+ // First-down line: `distance` yards further toward the offence's target end zone.
+ const dist=(sit.distance!=null)?sit.distance:null;
+ let fdYd=dist!=null?(homeHas?losYd-dist:losYd+dist):null;
+ let fdPct=fdYd!=null?EZ+Math.max(0,Math.min(100,fdYd))/100*play:null;
+ const rz=!!sit.isRedZone;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+ const rulerN=['G','10','20','30','40','50','40','30','20','10','G'];
+ const ruler=rulerN.map((n,i)=>`<span style="left:${(EZ+i*play/10).toFixed(2)}%">${n}</span>`).join('');
+ const ticks=Array.from({length:11},(_,i)=>`<i style="left:${(EZ+i*play/10).toFixed(2)}%"></i>`).join('');
+ // The ball marker + possession arrow point the direction of the drive.
+ const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
+ const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
+   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
+ const fdLine=fdPct!=null?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
+ // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
+ // right end zone (away attacking) covers 80..100.
+ const rzShade=rz?`<i class="frz" style="left:${(dir>0?EZ+80/100*play:EZ).toFixed(2)}%;width:${(20/100*play).toFixed(2)}%"></i>`:'';
+ // The situation line: down & distance, ball spot, who has it; and the last play + its type.
+ const dd=sit.downDistanceText||dr.downDistanceText||'';
+ const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
+ const offName=homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
+ const lastPlay=(sit.lastPlayText||'').trim();const lastType=(sit.lastPlayType||'').trim();
+ return `<div class="fstrip${reduce?' noanim':''}">
+  <div class="fld" role="img" aria-label="Field position">
+   <i class="ez l" style="background:${ac}"><span>${esc(away.abbr||'')}</span></i>
+   <i class="ez r" style="background:${hc}"><span>${esc(home.abbr||'')}</span></i>
+   <div class="grass">${ticks}${rzShade}${fdLine}${ball}</div>
+   <div class="ruler">${ruler}</div>
+  </div>
+  ${haveBall||dd?`<div class="situ"><span class="dd">${esc(dd||(sit.down?ordinal(sit.down)+' & '+(sit.distance??''):''))||'Live'}</span>
+   ${spot?`<span class="m">· ball on ${esc(spot)}</span>`:''}${offName?`<span class="m">· ${esc(offName)} ball</span>`:''}${rz?'<span class="rzt">RED ZONE</span>':''}</div>`:''}
+  ${lastPlay?`<div class="lastplay">${lastType?`<span class="lpt">${esc(lastType)}</span>`:''}<span>${esc(lastPlay)}</span></div>`:''}
+ </div>`;}
+function ordinal(n){n=+n;const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
+// Timeout dots under a team's code on the scoreboard (3 = full). Possession football next to the code with the ball.
+function _teamSide(d,abbr){if(!d||!d.board||!abbr)return null;const a=(abbr||'').toUpperCase();
+ const b=d.board;if((b.home||{}).abbr&&b.home.abbr.toUpperCase()===a)return 'home';if((b.away||{}).abbr&&b.away.abbr.toUpperCase()===a)return 'away';return null;}
+function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situation||{};if(!side)return '';
+ const to=side==='home'?sit.homeTimeouts:sit.awayTimeouts;if(to==null)return '';
+ return `<div class="tdots">${[0,1,2].map(i=>`<i class="${i<to?'on':''}"></i>`).join('')}</div>`;}
+function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
+ const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
+ return has?'<span class="poss" title="has the ball">🏈</span>':'';}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
@@ -4255,7 +4340,21 @@ def webapp_main():
                         c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
                         c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
                         c["now"] = round(c["pays"] * c["p"] * disc, 2)
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "fresh": freshness()})
+        # Live game strip (display only, football only): situation off the scoreboard + a richer ESPN summary.
+        # Wrapped so a bad/missing feed shows nothing and never affects the rest of the page or the trading loop.
+        detail = None
+        try:
+            if leg and leg.get("state") == "live" and A.ticker_sport(t) in ("nfl", "ncaaf"):
+                full = A.leg_score(leg)                 # the full score row (has the ESPN event id and situation)
+                if full and full.get("game"):
+                    summ = A.game_detail(full["game"], A.ticker_sport(t)) or {}
+                    sit = full.get("situation") or {}
+                    if summ or sit:
+                        detail = {"situation": sit, **summ}
+        except Exception:
+            detail = None
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
+                         "detail": detail, "fresh": freshness()})
 
     def api_games():
         d = api_live() or {}
