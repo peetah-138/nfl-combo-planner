@@ -68,7 +68,11 @@ pattern in a local `.git/hooks/pre-commit`.
   Kalshi's order book shapes (`t_orderbook.py`: the new `orderbook_fp` dollar-string answer and the old `orderbook`
   cents answer read identically, from real fixtures `fixtures/kalshi_orderbook.json`/`kalshi_market.json`; garbage never
   raises; the 6¢ gap rule; a single/spread/total panel buy, a hedge re-read and a smart-sell single sale against the
-  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`).
+  fake Kalshi, which serves the new shape by default: `fakenet.BOOK_SHAPE`), Kalshi's V2 orders (`t_orders_v2.py`:
+  every price/count conversion incl. 1¢/99¢, NO prices, fractional counts and reduce-only IOC sells; the fake order
+  desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
+  no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
+  `fixtures/kalshi_orders_v2.json`).
   Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,
