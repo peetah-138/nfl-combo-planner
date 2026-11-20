@@ -2011,7 +2011,7 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .kpis.hero{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:0;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:14px;position:relative}
 .kpis.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 0% 0%,var(--hglow,transparent),transparent 60%);pointer-events:none}
 .hv{padding:18px 20px 12px;position:relative;min-width:0}
-.hv .hl{color:var(--mute);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.hv .hl{color:var(--mute);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .hv .big{display:block;font-size:40px;font-weight:800;letter-spacing:-.045em;line-height:1.05;margin:6px 0 4px;font-variant-numeric:tabular-nums}
 .hv .delta{font-weight:700;font-size:14px;display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px}
 .hv .delta.up{color:var(--yes);background:var(--yesbg)}.hv .delta.down{color:var(--no);background:var(--nobg)}.hv .delta.flat{color:var(--sub);background:var(--panel2)}
@@ -2711,12 +2711,21 @@ function warm(v){/* show the last copy straight away while the fresh one loads *
  if(v==='results'&&!S.res)S.res=cget('results');if(v==='results'&&!S.an)S.an=cget('analytics');
  if(v==='games'&&!S.games)S.games=cget('games');
  if(S.view===v&&(v!=='build'||S.build))render();}
-// ---- freshness: how old the numbers on screen are ("Updated 4s ago"), counted on the phone between loads
+// ---- freshness: how old the numbers on screen are, counted on the phone between loads. Two separate things:
+//   • the snapshot ("prices"): when the dollar numbers on screen were last worked out (the snapshot build) — this is
+//     the age the big number actually has, so the stamp leads with it and goes red when it is stale;
+//   • the scores: how old the live games' scores are (only while a game is on). Shown alongside so a stale snapshot
+//     and stale scores are never conflated into one misleading "Updated N ago".
 S.fr={};
 function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
-function frAge(k){const o=S.fr[k];if(!o)return null;const f=o.f;const at=Math.min(f.built,f.scores!=null?f.now-f.scores:f.built);return Math.max(0,f.now-at+(Date.now()-o.recv)/1000);}
-function frTxt(k){const a=frAge(k);if(a==null)return '';return a<3?'Updated just now':a<90?'Updated '+Math.round(a)+'s ago':'Updated '+Math.round(a/60)+' min ago';}
-function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frAge(k)||0)>60);});}
+function frEl(k){const o=S.fr[k];return o?Math.max(0,(Date.now()-o.recv)/1000):0;}        // seconds since this page got it
+function frBuilt(k){const o=S.fr[k];if(!o)return null;return Math.max(0,o.f.now-o.f.built+frEl(k));}   // snapshot/prices age
+function frScores(k){const o=S.fr[k];if(!o||o.f.scores==null)return null;return Math.max(0,o.f.scores+frEl(k));} // scores age
+function agoTxt(a){return a<3?'just now':a<90?Math.round(a)+'s ago':Math.round(a/60)+' min ago';}
+function frLive(k){const o=S.fr[k];return !!(o&&o.f.live);}                                                   // is a game under way (server says)
+function frTxt(k){const b=frBuilt(k);if(b==null)return '';const s=frScores(k);
+ return(!frLive(k)||s==null)?'Updated '+agoTxt(b):'Prices '+agoTxt(b)+' · scores '+agoTxt(s);}
+function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frBuilt(k)||0)>60);});}
 setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
 setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
 async function load(v,fresh){try{warm(v);
@@ -4303,8 +4312,9 @@ def webapp_main():
                    for infos in list((got.get("by") or {}).values()) for i in (infos if isinstance(infos, list) else [infos])):
                 on.append(now - got["at"])
         scores = max(on) if on else (min(ages) if ages else None)
+        # "live" is the real signal that a game is under way; "scores" alone is just the newest cache age when nothing is on
         return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
-                "fast": bool(LIVE.get("fast"))}
+                "live": bool(on), "fast": bool(LIVE.get("fast"))}
 
     def live_extras(out):
         try:
