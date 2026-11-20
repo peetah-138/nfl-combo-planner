@@ -362,9 +362,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   min; a host answering 429/5xx or timing out is backed off per host (Retry-After honoured, doubling to 60 s) while
   the last good copy is served. **None of this touches trading:** the watcher's `E`/`H` loops, smart sell, auto
   cash-out, the panel and every buy/sell decision read their own data on their own timing.
-  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores,
-  `fast`); the page shows a small freshness stamp (Live hero, Games tab, game sheet) that counts on its own.
-  **It names what it measures (issue #80):** while a game is live it reads "Prices Ns ago · scores Ns ago" — the
+  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores
+  (or, with none live, the newest score cache), `live` = a game is under way, `fast`); the page shows a small freshness stamp (Live hero, Games tab, game sheet) that counts on its own.
+  **It names what it measures (issue #80):** while the server says a game is under way (`fresh.live`, not merely a scores cache) it reads "Prices Ns ago · scores Ns ago" — the
   snapshot/build age (how old the dollar numbers on screen actually are) and the live scores' age, kept separate so a
   stale snapshot and stale scores are never conflated into one misleading "Updated N ago". With no game live it falls
   back to the single "Updated N ago" (build age). It goes red after a minute **on the snapshot/prices age** (the
