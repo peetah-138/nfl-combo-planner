@@ -1337,9 +1337,11 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
-        try:                                              # Sunday "cover the early games" paper test
+        try:                                              # "cover the early games" paper test, over the NFL week
             with odds.lock:
-                did = odds.engine().cover_pass(log=log, alert=notifier.add if notifier else None)
+                H = odds.engine()
+                H.cover_ticks(log=log)                     # game prices for the survivor's smart-sell replay
+                did = H.cover_pass(log=log, alert=notifier.add if notifier else None)
             if did:
                 log("cover test:", "; ".join(did))
         except Exception as err:
@@ -3234,13 +3236,19 @@ function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini
   <p style="margin:0 0 10px;color:var(--ink)">${esc(p.verdict)}</p>${row('Return on stake',p.roi,pc)}${row('Prices vs kickoff',p.clv,pc)}${row('Paper auto-trading',p.paper,pc)}
   <div class="m" style="font-size:12px;margin-top:8px">The $300 full-auto test waits for prices vs kickoff to be positive with confidence and the paper record to be up over 50+ bets.</div></div>`;}
 function coverCard(c){if(!c)return '';const ws=c.weeks||[];
- const rows=ws.slice(0,8).map(w=>w.status==='done'?`<div class="mini">${esc(w.sunday)} · ${w.k} games · ${w.upsets} upset${w.upsets===1?'':'s'}<b class="${w.pl>=0?'up':'down'}">${smoney(w.pl)} <span class="m" style="font-weight:500">of ${money(w.cost)}</span></b></div>`:
-  w.status==='open'?`<div class="mini">${esc(w.sunday)} · ${w.k} games · waiting for results<b class="m">${pct(w.p_ahead)} chance to be ahead</b></div>`:
-  `<div class="mini">${esc(w.sunday)}<b class="m">${w.status==='missed'?'missed (Mac was off before kickoff)':'no result'}</b></div>`).join('');
- return `<div class="card"><h3>Cover the early games <span>paper test · NFL Sundays</span></h3>
-  ${c.n?`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px"><b style="font-size:30px;letter-spacing:-.03em" class="${c.pl>=0?'up':'down'}">${smoney(c.pl)}</b><span class="m">over ${c.n} Sunday${c.n===1?'':'s'}, ${money(c.cost)} on paper</span></div>`:''}
-  ${rows||'<div class="m">Starts this Sunday: the Mac snapshots the early games before kickoff, then works out what the one surviving combo would be worth at midday.</div>'}
-  <div class="m" style="font-size:12px;margin-top:8px">$5 on every possible result of the early games, cashed out at midday. No money is spent. Uses Kalshi's prices and the cut Kalshi usually takes on combos and cash-outs.</div></div>`;}
+ const chk=w=>(w.checkpoints||[]).map(cp=>`<span class="m" style="font-size:11.5px">${esc(cp.label)}: ${cp.worth?money(cp.worth):'—'}${cp.replay_exit?` · sold ${money(cp.replay_exit.exit)}`:''}</span>`).join(' · ');
+ const week=w=>{
+  if(w.status==='done'){const surv=(w.survivor||[]).join(' + ')||'—';
+   return `<div class="mini" style="align-items:flex-start;flex-direction:column;gap:3px"><div style="display:flex;width:100%;align-items:baseline"><span>${esc(w.sunday)} · ${w.k} covered · survivor ${esc(surv)}</span><b class="${w.sim_pl>=0?'up':'down'}" style="margin-left:auto">${smoney(w.sim_pl)} <span class="m" style="font-weight:500">of ${money(w.cost_both)}</span></b></div>`
+    +`<div class="m" style="font-size:11.5px">${w.beat_cost?'✅ smart sell beat the doubled cost':'✕ smart sell did not beat the doubled cost'}${chk(w)?' · '+chk(w):''}</div>`
+    +`<div class="m" style="font-size:11.5px">One-sided combo on the same early games: <b class="${w.one_sided_pl>=0?'up':'down'}" style="font-weight:600">${smoney(w.one_sided_pl)}</b></div></div>`;}
+  if(w.status==='open')return `<div class="mini">${esc(w.sunday)} · ${w.k} games · waiting for results<b class="m">${pct(w.p_ahead)} chance to be ahead</b></div>`;
+  return `<div class="mini">${esc(w.sunday)}<b class="m">${w.status==='missed'?'missed (Mac was off before kickoff)':'no result'}</b></div>`;};
+ const rows=ws.slice(0,8).map(week).join('');
+ return `<div class="card"><h3>Cover the early games <span>paper test · NFL week</span></h3>
+  ${c.n?`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px"><b style="font-size:30px;letter-spacing:-.03em" class="${c.sim_pl>=0?'up':'down'}">${smoney(c.sim_pl)}</b><span class="m">over ${c.n} week${c.n===1?'':'s'}, ${money(c.cost)} on paper · one-sided ${smoney(c.one_sided_pl)} · beat the cost ${c.beat}/${c.n}</span></div>`:''}
+  ${rows||'<div class="m">Starts this NFL week: the Mac covers both sides of the earliest games (Thursday night, Saturday, or Sunday early) before kickoff, then works out what the one surviving full-slate combo would be worth at each later checkpoint and what smart sell would have sold it for.</div>'}
+  <div class="m" style="font-size:12px;margin-top:8px">$5 on both sides of the earliest games — one combo is guaranteed to survive — carried through the later games, with smart sell deciding the exit. No money is spent. Covering both sides adds no expected value (the cut is paid twice); the test measures whether smart sell's exit timing beats the doubled cost.</div></div>`;}
 function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const need=Math.max(0,50-pp.bets);
  return `<div class="card"><h3>Is it working? <span>the daily panel</span></h3>
   <div class="m" style="font-size:12.5px;margin-bottom:8px">A paper copy of each day's panel runs by itself, with no money. When it's ahead over 50+ bets and most days end up, it's ready to be handed $300.</div>
