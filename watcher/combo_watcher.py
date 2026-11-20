@@ -1433,9 +1433,9 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 <div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
 </div><script>
 const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
-/* haptics, the same way as the app (iOS: a hidden switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
-function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
- let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
+/* haptics, the same way as the app (iOS: a tiny see-through switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
+function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(!(/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1))&&navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
+ let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.setAttribute('aria-hidden','true');l.style.cssText='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';l.innerHTML='<input type="checkbox" switch tabindex="-1">';document.body.appendChild(l);}
  (k==='error'?[0,80,160]:[0]).forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
 addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('button,a');if(b&&!b.closest('#hapl'))hap('light');},true);
 if(msg.textContent.trim())box.classList.add('shake');
@@ -2123,6 +2123,10 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
 .srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
 .srow.dim{opacity:.45;pointer-events:none}
+.hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
+.hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
+.hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
+.hxrow .l small{margin-top:6px}
 .rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
 input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
  background:linear-gradient(90deg,var(--acc) var(--p,50%),var(--panel2) var(--p,50%))}
@@ -2504,11 +2508,11 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
 const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
-function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('#hapl')&&!el.disabled?el:null;}
+function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
- addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]'))return;
+ addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
   hap(el.matches('.tabbar button,.nav button,.seg button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
@@ -2849,8 +2853,12 @@ function buildSkel(){/* the panel's shape while it loads: header, a few bet rows
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
 function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
 function _renderBuild(){const d=S.build;const m=$('#main');
- const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
- const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ /* The chip row never changes while a league loads: the list of leagues and the per-league game counts are remembered
+    (also on this phone) instead of read from the data that is cleared on a tap; the built-in list is only for a phone that has never loaded */
+ if(d&&d.leagues&&d.leagues.length>1){S.lgs=d.leagues;try{localStorage.setItem('cw_leagues',JSON.stringify(d.leagues))}catch(e){}}
+ if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
+ const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
+ const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
@@ -2869,6 +2877,8 @@ function _renderBuild(){const d=S.build;const m=$('#main');
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
+try{const l=JSON.parse(localStorage.getItem('cw_leagues')||'null');if(Array.isArray(l)&&l.length>1&&l.every(x=>Array.isArray(x)&&x.length>=3&&/^[a-z0-9_]+$/.test(x[0])&&typeof x[1]==='string'&&typeof x[2]==='string'))S.lgs=l;
+ const g=JSON.parse(localStorage.getItem('cw_gn')||'null');if(g&&typeof g==='object'&&!Array.isArray(g))S.gn=g}catch(e){}
 S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
@@ -3091,17 +3101,71 @@ async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();const na
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
 /* Haptics. light/selection = one tick; success = two quick ticks; warning = two slower; error = three.
-   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS 18+: toggling a hidden <input switch>
-   ticks the Taptic Engine (it has to happen inside the tap, which the global tap listener guarantees).
-   Elsewhere navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests. */
+   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS: toggling an <input switch> ticks the
+   Taptic Engine; it has to happen synchronously inside a real tap (the global tap listener calls hap() from the click
+   event), on an element that is laid out (a tiny, nearly see-through one inside the screen; iOS ignores display:none,
+   visibility:hidden and, it seems, things parked off-screen). iPhones and iPads get the switch even if they report
+   navigator.vibrate; everything else uses navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests.
+   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses (change that one letter
+   once Pete reports which method he feels). The card's Haptics switch is saved on this phone (cw_hapoff). */
 const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
+const APPLE=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const HAPDEF='B';
+const HAPCLICK='ABCDEFJK';   // the methods hap() can run itself (G, H, I need the finger itself; L, M aren't switches)
+const HAPCSS='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';
+const HAPSW='<input type="checkbox" switch tabindex="-1">';
+function hapNode(id,css){let l=document.getElementById(id);if(!l){l=document.createElement('label');l.id=id;l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=css;l.innerHTML=HAPSW;document.body.appendChild(l);}return l;}
+const HT={
+ A(){hapNode('hapA','position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden').click();},   // the old way
+ B(){hapNode('hapl',HAPCSS).click();},
+ C(){hapNode('hapC',HAPCSS).querySelector('input').click();},
+ D(){const l=document.createElement('label');l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=HAPCSS;l.innerHTML=HAPSW;document.body.appendChild(l);l.click();setTimeout(()=>l.remove(),400);},
+ E(){const l=hapNode('hapl',HAPCSS);l.click();l.click();},
+ F(){const l=hapNode('hapl',HAPCSS);l.click();setTimeout(()=>l.click(),120);},
+ G(){},H(){},I(){},   // native: the user's own tap is the toggle, nothing to run
+ J(){HT.B();},K(){HT.B();},
+ L(){if(!navigator.vibrate)return false;navigator.vibrate([20,40,20]);},
+ M(){if(!S.inapp)return false;const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/light';document.body.appendChild(f);setTimeout(()=>f.remove(),300);}
+};
+const HAPM=[   // [id, event, name, what it does]
+ ['A','click','Switch label click (how the app did it)','A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
+ ['B','click','Switch label click, on screen (the app now)','The same, but the switch sits inside the screen, nearly see-through.'],
+ ['C','click','Click the switch itself','Clicks the switch input directly, not its label.'],
+ ['D','click','A brand-new switch each tap','Makes a fresh switch inside your tap, clicks it, removes it.'],
+ ['E','click','Double tick, two clicks at once','Clicks the switch twice, right after each other.'],
+ ['F','click','Double tick, second one 120 ms later','The second click is delayed, so it is outside your tap.'],
+ ['G','native','The button is the switch','Your tap lands on a label wrapped around a real switch. No code involved.'],
+ ['H','native','A real, visible switch','Tap the switch itself. The plain iOS baseline.'],
+ ['I','native','Our toggle with the switch attribute','The same round toggle as Settings uses, with the iOS switch attribute added.'],
+ ['J','pointerdown','Fires when the finger lands','The switch click runs on touch down, before you lift.'],
+ ['K','pointerup','Fires when the finger lifts','The switch click runs on touch up.'],
+ ['L','click','navigator.vibrate (not expected on iPhone)','The standard web vibrate call. iPhones usually have none.'],
+ ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
+function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
+function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
+ if(hapOff())return;
  try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
- if(navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
- let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
- seq.forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
+ if(!APPLE&&navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
+ const f=HAPCLICK.includes(HAPDEF)?HT[HAPDEF]:HT.B;seq.forEach(d=>d?setTimeout(f,d):f());}catch(e){}}
+/* Settings > Test haptics: one button per method. Each runs its method right inside its own tap, never through hap(),
+   and the global tap listener leaves these buttons alone (data-hapt) so only the method under test can buzz. */
+function hapTry(id,b){const t=performance.now();if(hapTry.id===id&&t-hapTry.at<60)return;hapTry.id=id;hapTry.at=t;   // a label's tap clicks twice (label, then its switch): count it once
+ (window.__hapt=window.__hapt||[]).push(id);let ok=true;try{ok=HT[id]();}catch(e){ok=false;}
+ const s=b&&b.closest('.hxrow')&&b.closest('.hxrow').querySelector('.hxs');if(!s)return;
+ s.textContent=ok===false?'not available here':'sent ✓';s.classList.remove('on');void s.offsetWidth;s.classList.add('on');
+ clearTimeout(s._t);s._t=setTimeout(()=>{s.textContent='';s.classList.remove('on');},1500);}
+function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid">${id}</span> ${esc(name)}`;let btn;
+  if(id==='G')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('G',this)"><input type="checkbox" switch class="hxnat" tabindex="-1">${lab}</label>`;
+  else if(id==='H')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('H',this)">${lab}<input type="checkbox" switch data-hapt="1"></label>`;
+  else if(id==='I')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('I',this)">${lab}<input type="checkbox" switch class="tg" data-hapt="1"></label>`;
+  else btn=`<button class="btn hxbtn" type="button" data-hapt="1" ${ev==='click'?'onclick':ev==='pointerdown'?'onpointerdown':'onpointerup'}="hapTry('${id}',this)">${lab}</button>`;
+  return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
+ return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
+  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Which one worked? Tell Claude</b><small>Say the letter. Nothing here changes how the app buys or sells.</small></div></div>`);}
 // ---------------- RESULTS
 function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
@@ -3607,7 +3671,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  const tiers=(d.full?[['full','Full slate','Every game on the slate in one bet. You choose how many underdogs it picks.','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos, more likely to hit.',null,2,8,'games each'],['middle','Middle','The core of the mix.',null,2,12,'games each'],['moonshot','Moonshot','Long shots, big payouts.',null,2,16,'games each']]);
  const mix=`<div class="mixl">${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
   return `<div class="mixr"><div><b>${n}</b><small>${s}</small></div><div class="mixs"><div><span>How many</span>${stp(t+'_count',0,10)}</div><div><span>${alt?'Underdogs':'Games each'}</span>${stp(b+'_min',alt?0:lo,hi)}<span>to</span>${stp(b+'_max',alt?0:lo,hi)}</div></div></div>`;}).join('')}</div>`;
- const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
+ const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['haptics','📳','Haptics'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
@@ -3643,6 +3707,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
+ ${hapCard()}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
