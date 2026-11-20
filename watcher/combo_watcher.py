@@ -1338,10 +1338,15 @@ def shadow_loop(odds, notifier=None, every=600):
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
-            with odds.lock:
-                H = odds.engine()
-                H.cover_ticks(log=log)                     # game prices for the survivor's smart-sell replay
-                did = H.cover_pass(log=log, alert=notifier.add if notifier else None)
+            # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
+            # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
+            # real approved buy (panel_exec). Holding it here could stall a real purchase. The cover path is paper
+            # only and coordinates with the trading loop solely through SQLite (its own `cover` table and state='sim'
+            # ticks), which store_x/store_rows already guard with their own lock + WAL + busy_timeout, so it is safe
+            # off odds.lock. odds.engine() is a ready singleton (the panel passes above already built it).
+            H = odds.engine()
+            H.cover_ticks(log=log)                         # game prices for the survivor's smart-sell replay
+            did = H.cover_pass(log=log, alert=notifier.add if notifier else None)
             if did:
                 log("cover test:", "; ".join(did))
         except Exception as err:
@@ -3247,7 +3252,7 @@ function coverCard(c){if(!c)return '';const ws=c.weeks||[];
   if(w.status==='done'){const surv=(w.survivor||[]).join(' + ')||'—';
    return `<div class="mini" style="align-items:flex-start;flex-direction:column;gap:3px"><div style="display:flex;width:100%;align-items:baseline"><span>${esc(w.sunday)} · ${w.k} covered · survivor ${esc(surv)}</span><b class="${w.sim_pl>=0?'up':'down'}" style="margin-left:auto">${smoney(w.sim_pl)} <span class="m" style="font-weight:500">of ${money(w.cost_both)}</span></b></div>`
     +`<div class="m" style="font-size:11.5px">${w.beat_cost?'✅ smart sell beat the doubled cost':'✕ smart sell did not beat the doubled cost'}${chk(w)?' · '+chk(w):''}</div>`
-    +`<div class="m" style="font-size:11.5px">One-sided combo on the same early games: <b class="${w.one_sided_pl>=0?'up':'down'}" style="font-weight:600">${smoney(w.one_sided_pl)}</b></div></div>`;}
+    +`<div class="m" style="font-size:11.5px">One favourite-side combo on the same early games (highest Kalshi price — a rough proxy; the real panel picks by edge and often takes the underdog): <b class="${w.one_sided_pl>=0?'up':'down'}" style="font-weight:600">${smoney(w.one_sided_pl)}</b></div></div>`;}
   if(w.status==='open')return `<div class="mini">${esc(w.sunday)} · ${w.k} games · waiting for results<b class="m">${pct(w.p_ahead)} chance to be ahead</b></div>`;
   return `<div class="mini">${esc(w.sunday)}<b class="m">${w.status==='missed'?'missed (Mac was off before kickoff)':'no result'}</b></div>`;};
  const rows=ws.slice(0,8).map(week).join('');

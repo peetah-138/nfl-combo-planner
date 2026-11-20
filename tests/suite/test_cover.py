@@ -47,8 +47,8 @@ with sync_playwright() as pw:
     # the beat-cost flag, both true and false
     if "beat the doubled cost" not in t or "did not beat the doubled cost" not in t:
         print("PROBLEMS: beat-cost flag not shown for both weeks:", t[:400])
-    # the one-sided baseline
-    if "One-sided combo on the same early games" not in t:
+    # the one-sided baseline (honestly labelled as a favourite-side proxy, not "the combo the panel would build")
+    if "One favourite-side combo on the same early games" not in t:
         print("PROBLEMS: one-sided baseline missing:", t[:400])
     # the aggregate line (sim_pl, one-sided, beat count)
     if "over 2 weeks" not in t or "beat the cost 1/2" not in t or "one-sided" not in t:

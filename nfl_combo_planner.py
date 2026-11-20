@@ -13389,7 +13389,9 @@ def _cover_resolve(row, now, alert):
     all_done = all(s["slot_key"] in {c["slot_key"] for c in checkpoints} for s in later)
     out = {"cost_both": round(cost_both, 2), "survivor": survivor, "survivor_pays": round(survivor_pays, 2),
            "checkpoints": checkpoints, "k": k, "cost": round(cost_both, 2)}
-    # one-sided baseline: the single $5 value-picked combo the panel would build on the same early games
+    # one-sided baseline: a single $5 favourite-side combo (the highest-p side of each early game) — a rough proxy,
+    # not what the real panel would build: the panel picks by edge (fair - p) and often takes the underdog. The cover
+    # path is p-only (no fair), so the favourite side is the closest stand-in we can measure here.
     one_pe = math.prod(max(g["sides"], key=lambda x: x["p"])["p"] for g in early)
     one_cost = stake
     one_survived = all(w is not None and w["p"] == max(g["sides"], key=lambda x: x["p"])["p"]
