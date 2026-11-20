@@ -152,6 +152,27 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   inside a sport (each soccer league) moves from its sport's the same way. A level with no games gets exactly the one
   above; a sport alone in a band is exactly as before; a band nobody has played keeps the books' chance.
   Leagues marked `require_line` need a sportsbook line (Kalshi alone isn't trusted there).
+- **Spreads and totals (issue #117 part A).** Today's ("old") price: ESPN's line + a normal curve (`MARGIN_SD`/
+  `TOTAL_SD`) or Poisson (`line_fair`). The **margin-shape model** (`margin_pmf`/`margin_prob`) prices each strike from
+  how each league's games really finish: whole-number margins/totals, a fitted width `sd = a + b·|line|`, learned
+  weights (NFL 3/7/10/14, no ties in basketball/college football; hockey = Poisson + overtime goal, soccer = Poisson with
+  the market's draw), anchored on the line and its de-vigged price (`espn_line_prices`: spread/total juice and
+  moneylines from ESPN's scoreboard), shrunk league → sport (AHL/EuroLeague borrow hockey/basketball). Tables and the
+  backtest evidence are a generated block in the engine (`LINE_TABLES`/`LINE_EVIDENCE`, ~tens of KB) built by
+  `tools/build_line_tables.py` (scrape ESPN politely into a cache outside the repo, fit, leave-one-season-out backtest
+  with the engine's own code, `--write`). Then `calib_line`: per league, kind and strike-distance band (`line_bucket`),
+  n/(n+300) borrowing everyone → sport → league, n = games. Every spread/total market's old and new price is logged in
+  `line_fairs` (one row per market per 30 min, pre-game; resolved in `resolve_closes`). **Gate** (`line_gate`, per
+  league and kind): new model only where it beat the old by ≥ 0.002 log loss and ≥ 2 SE on 200+ backtest games, or on
+  the Mac's own settled markets once they cover 200+ games (which also turn it off if worse). Settings › Money
+  "Smarter spread/total pricing" (`line_model`, shared, on = auto) turns it off everywhere. **Only the chance changes**
+  (`_line_pick_model` in `line_candidates`): selection rules, caps, sizing, start rules and approval are untouched, a
+  market the old model doesn't price stays unpriced, any error falls back to the old price, and with the gate off every
+  price is byte for byte the old one (`t_linemodel`). Results › What's working › Bet types shows old vs new per league.
+  Shipped backtest (2023-26, held-out seasons): the gate is on for **NFL spreads, college football spreads, NHL totals
+  and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
+  spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
+  has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.

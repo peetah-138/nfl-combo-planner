@@ -78,6 +78,13 @@ pattern in a local `.git/hooks/pre-commit`.
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,
   and `_fetch_account` capturing the last sell fill as `cashed_at` and a settlement time as `settled_at`.
+  The spread/total margin model (`t_linemodel.py`, issue #117): the shipped tables and their borrowing, the
+  distributions (add up to 1, fall as the strike rises, NFL key numbers, no ties in basketball/college football,
+  whole-number lines set the push aside, half-point lines are exact complements, hockey's moneyline split and soccer's
+  draw kept, anchoring on the line and its price), the tool's shrinkage, real ESPN games (`fixtures/espn_margins.json`),
+  the strike-distance calibration (everyone -> sport -> league, n counts games), the gate per league and kind (backtest
+  evidence, the Mac's own record, the Settings switch), both prices logged, gate off = today's prices byte for byte,
+  and the panel choosing the same bets with only the chances changed when it is on.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
