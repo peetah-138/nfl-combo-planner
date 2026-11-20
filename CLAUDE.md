@@ -402,6 +402,13 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
+  **Haptics on iOS (issue #60, unresolved):** Pete feels none on iOS 27.2.1 in the Home Screen app, and the `<input
+  switch>` trick is only documented for iOS 17.4-18. `hap()` now toggles a tiny see-through switch laid out *inside* the
+  screen (not parked off it), and iPhones/iPads use it even if `navigator.vibrate` exists. Settings › Test haptics
+  (`hapCard`, tests in `test_haptics.py`) has one lettered button per method (the list is `HAPM`, the code is `HT`);
+  the one `hap()` uses is the single letter `HAPDEF` (now `B`): **once Pete reports which letter he feels, change
+  `HAPDEF` to it** (and drop the methods that don't work). The card also has a per-phone Haptics on/off switch
+  (`cw_hapoff`). Helper switches carry class `hapx` (the tap listener ignores them); test buttons carry `data-hapt`.
 - **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
   - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
     (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and
