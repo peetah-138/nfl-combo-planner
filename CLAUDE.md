@@ -483,6 +483,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
     reduced-motion run.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
+## Kalshi API watch (GitHub issue #82)
+
+- `.github/workflows/kalshi-api-watch.yml` runs on GitHub (not the Mac) every 6 hours and runs `tools/kalshi_feed_watch.py`, which reads Kalshi's API changelog RSS feed (`docs.kalshi.com/changelog/rss.xml`) and opens one issue per new entry from the last 14 days (max 5 a run, deduped by the feed id in the body, open or closed), labelled `kalshi-api-change`; two tiers: a removal/deprecation word (deprecat/remov/no longer/sunset/migrat/410...) AND an app area (orders, portfolio, RFQ/quotes, order book, market fields, signing, rate limit, websocket...) in the title/description gets `breaking` + an "ACTION LIKELY NEEDED" first line; everything else is filed as a plain "FYI" issue (2 of the 15 entries at launch were breaking). It never touches `wip:*` labels.
+- **Alerts appear as GitHub issues**: GitHub emails/notifies Pete (the repo owner) for each one. A dead feed exits quietly; after 4 failed runs in a row it opens one "Kalshi API watch is failing" issue (count kept in the `kalshi-watch-failures` label's description). Try it with `python3 tools/kalshi_feed_watch.py --dry-run` (prints, changes nothing).
+- Feed text is untrusted: stripped to plain text, trimmed, fenced, never run. Permissions are only `contents: read` + `issues: write`. Tested by `tests/suite/t_kalshi_feed_watch.py`. Scheduled runs start only once the file is on `main`.
+
 ## Open items
 
 All planned work that isn't built yet (what it's waiting on, and the suggested order) is in **`ROADMAP.md`**.
