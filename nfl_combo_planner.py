@@ -712,7 +712,7 @@ def fetch_results(tickers):
         sub, title = (m.get("yes_sub_title") or "").strip(), (m.get("title") or "").strip()
         MARKET_INFO[m.get("ticker")] = {"status": (m.get("status") or "").lower(),
                                         "exp": m.get("expected_expiration_time") or "",
-                                        "live": live_price(m),
+                                        "live": live_price(m), "at": time.time(),
                                         "name": sub if len(sub) > 3 and not sub.replace(".", "").isdigit() else (title or sub)}
         if m.get("result") in ("yes", "no"):
             out[m["ticker"]] = m["result"]
@@ -5039,6 +5039,9 @@ def open_singles(max_age=30):
     return out
 
 
+LIVE_EST_AGE = 90            # seconds: a leg price older than this is never used for the live-priced estimate
+
+
 def live_offer_est(h, v):
     """Display-only (Refs #80): the "worth now if sold" estimate made to follow the live leg prices,
     so the Live hero's "≈" number moves with the market between leg resolutions instead of sitting on
@@ -5064,6 +5067,7 @@ def live_offer_est(h, v):
         if pays <= 0:
             return None
         prob = 1.0
+        now, events = time.time(), set()
         for lg in v.get("legs") or []:
             res = lg.get("res")
             if res == "yes":
@@ -5071,14 +5075,32 @@ def live_offer_est(h, v):
             if res == "no":
                 prob = 0.0                               # a lost leg sinks the whole combo
                 continue
-            lp = lg.get("live")                          # fresh live Kalshi price (already 1-p for NO legs)
+            lp = lg.get("live")                          # live Kalshi price (already 1-p for NO legs)
             if lp is None:
-                return None                              # an open leg with no fresh price: fall back
+                return None                              # an open leg with no live price: fall back
+            tk = lg.get("ticker") or ""
+            at = (MARKET_INFO.get(tk) or {}).get("at")
+            if at is not None and now - at > LIVE_EST_AGE:
+                return None                              # the price is older than the build: not "fresh", fall back
+            parts = tk.split("-")
+            if len(parts) >= 3:                          # two open picks in one game move together: not independent
+                if parts[1] in events:
+                    return None
+                events.add(parts[1])
             prob *= max(0.0, min(1.0, lp))
         est = kalshi_discount(bool(v.get("live"))) * prob * pays
         return round(max(0.0, min(est, pays)), 2)
     except Exception:
         return None
+
+
+def hero_worth(v):
+    """Display-only: the "worth now if sold" number the Live row and hero show for one combo. The live-priced
+    estimate when there is no fresh real quote and every open leg has a fresh live price, else the frozen
+    `offer`. Used by cash_now and the hero chart's pulse so the row, the hero and the chart agree."""
+    if not v.get("offer_real") and v.get("offer_live") is not None and v.get("offer") is not None:
+        return v["offer_live"]
+    return v.get("offer") or 0
 
 
 def live_view(mine, views, plan, chance_one, balance):
@@ -5173,9 +5195,8 @@ def live_view(mine, views, plan, chance_one, balance):
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
             "chance_one": chance_one, "best": max((v["pays"] for v in alive), default=0),
-            "cash_now": round(sum((v.get("offer_live") if (not v.get("offer_real") and v.get("offer_live") is not None)
-                                    else v.get("offer")) or 0
-                                   for v in views if v["group"] == "pending"), 2),
+            # display-only; same rule as the combo row (SPA rowLive): a row with no offer shows "—", so it adds nothing here
+            "cash_now": round(sum(hero_worth(v) for v in views if v["group"] == "pending"), 2),
             "hold_value": round(sum(h["hold"] for h in MINE["hold"].values()), 2),
             "locked": MINE.get("locked", 0), "week_pl": round(week_pl, 2), "games": games[:30],
             "risk": max(games, key=lambda x: (x["combos"], x["pays"])) if games else None,
@@ -14767,7 +14788,7 @@ def record_view(view):
     try:                                             # the day's value line for the top of Live
         pend = [v for v in view.get("combos") or [] if v.get("group") == "pending"]
         open_s = [x for x in view.get("singles") or [] if x.get("state") in ("live", "pre")]
-        worth = sum(v.get("offer") or 0 for v in pend) + sum(x.get("worth") or 0 for x in open_s)
+        worth = sum(hero_worth(v) for v in pend) + sum(x.get("worth") or 0 for x in open_s)
         staked = sum(v.get("cost") or 0 for v in pend) + sum(x.get("cost") or 0 for x in open_s)
         if (pend or open_s) and now - last.get(("pulse",), 0) >= 120:
             last[("pulse",)] = now

@@ -2828,7 +2828,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
  if(!items.length)return nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'';
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
-  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(c.offer)}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
+  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
   if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
@@ -2948,8 +2948,9 @@ function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won<
   <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
   <div class="num" data-l="Chance">${x.chance!=null?`<span data-num="sc:${x.t}" data-v="${x.chance}" data-f="pct">${pct(x.chance)}</span>`:'—'}${x.chance!=null?`<div class="bar"><i data-bar="sb:${x.t}" style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
   <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>`:'—'}</div></div><div class="verdict"></div></div>`;}
+function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.offer_live:c.offer;}   // display-only; same rule as the hero (hero_worth)
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
- const oLive=(!c.offer_real&&c.offer_live!=null)?c.offer_live:c.offer;const oEst=!c.offer_real;
+ const oLive=offNow(c);const oEst=!c.offer_real;
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>

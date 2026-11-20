@@ -115,27 +115,47 @@ ok("a real quote drives cash_now, not offer_live", close(out["cash_now"], 7.5), 
 import inspect
 TRADING = ["take_profit_reason", "auto_sell_now", "single_sell_reason", "smart_sell_singles",
            "plan_cashout", "accept_offer", "hedge_for", "place_hedge", "fresh_offer", "wait_threshold",
-           "panel_exec", "panel_approve", "panel_add", "build_panel", "choose_panel", "panel_record"]
+           "panel_exec", "panel_approve", "panel_add", "build_panel", "choose_panel", "panel_record",
+           "hedge_guard", "hedge_fresh", "stop_loss_check", "cut_loss_single_check"]
 bad = []
 for name in TRADING:
     fn = getattr(E, name, None)
     if fn is None:
+        bad.append(name + "(missing)")        # a renamed function must not silently drop out of the guard
         continue
     try:
         src = inspect.getsource(fn)
     except (OSError, TypeError):
+        bad.append(name + "(no source)")
         continue
     if "offer_live" in src:
         bad.append(name)
 ok("no trading/selling function references offer_live", not bad, ",".join(bad))
 
 # The watcher's estimate_offers (parallel estimate) must not reference offer_live either.
-wsrc = open(os.path.join(os.environ.get("REPO", "."), "watcher", "combo_watcher.py")).read() \
-    if os.path.exists(os.path.join(os.environ.get("REPO", "."), "watcher", "combo_watcher.py")) else ""
-if wsrc:
-    import re
-    m = re.search(r"def estimate_offers\(.*?\n(?=\S*def |\Z)", wsrc, re.S)
-    body = m.group(0) if m else ""
-    ok("watcher estimate_offers does not read offer_live", "offer_live" not in body)
-else:
-    ok("watcher estimate_offers does not read offer_live (source not found; skipped)", True)
+wpath = os.path.join(os.environ.get("REPO", "."), "watcher", "combo_watcher.py")
+ok("watcher source found for the estimate_offers guard", os.path.exists(wpath), wpath)
+wsrc = open(wpath).read() if os.path.exists(wpath) else ""
+import re
+m = re.search(r"\ndef estimate_offers\(.*?(?=\n(?:def |class )|\Z)", wsrc, re.S)
+ok("watcher estimate_offers found", bool(m))
+ok("watcher estimate_offers does not read offer_live", bool(m) and "offer_live" not in m.group(0))
+
+# ---- review fixes: freshness, shared-game legs, offer-None row, pulse/hero agreement.
+import time
+E.MARKET_INFO["KXNBAGAME-A-BOS"] = {"live": 0.8, "at": time.time() - 600}
+v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-A-BOS"}, leg(live=0.5)], live=True)
+ok("a stale leg price (older than the build) -> None", E.live_offer_est(h, v) is None)
+E.MARKET_INFO["KXNBAGAME-A-BOS"]["at"] = time.time()
+ok("a just-fetched leg price is used", E.live_offer_est(h, v) is not None)
+v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-26NOV19BOSNYK-BOS"},
+             {"res": None, "live": 0.7, "ticker": "KXNBASPREAD-26NOV19BOSNYK-BOS5"}], live=True)
+ok("two open legs in one game -> None (correlated)", E.live_offer_est(h, v) is None)
+v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-26NOV19BOSNYK-BOS"},
+             {"res": None, "live": 0.7, "ticker": "KXNBAGAME-26NOV19DENLAL-DEN"}], live=True)
+ok("two open legs in different games are multiplied", E.live_offer_est(h, v) is not None)
+ok("hero_worth: estimate preferred", E.hero_worth({"offer": 1.8, "offer_live": 3.3, "offer_real": False}) == 3.3)
+ok("hero_worth: real quote wins", E.hero_worth({"offer": 7.5, "offer_live": 3.3, "offer_real": True}) == 7.5)
+ok("hero_worth: no offer -> adds nothing", E.hero_worth({"offer": None, "offer_live": 3.3, "offer_real": False}) == 0)
+ok("the pulse (chart) sum uses hero_worth, same as cash_now", "worth = sum(hero_worth(v) for v in pend)" in
+   open(os.path.join(os.environ.get("REPO", "."), "nfl_combo_planner.py")).read())
