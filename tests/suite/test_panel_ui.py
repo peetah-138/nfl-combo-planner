@@ -55,4 +55,37 @@ with sync_playwright() as pw:
         print(tag, "held chips:", ch[:3])
         if ch[:3] != ["paused · not bought yet", "waiting for a fresh price", "can't trade from here"]: print("PROBLEMS: held cards should say why", ch)
         pg.evaluate("S.pOff=new Set();S.panel="+P+";renderBuild()"); time.sleep(.3)
+        # issue #61: every bet says which game it is on (a spread or total used to say only "Over 7.5")
+        # drafts saved before the change have no game text: the card still names the game from what it does carry
+        old_pg = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].map(e=>[e.dataset.pid,[...e.querySelectorAll('.pg div')].map(d=>d.innerText)])")
+        print(tag, "older drafts:", old_pg)
+        got = dict(old_pg)
+        if got.get("line:D") != ["BOS at LAL"] or got.get("early:A") != ["Avalanche vs Sharks"] or got.get("single:B") != ["Lakers vs Boston Celtics"]:
+            print("PROBLEMS: older drafts should still name the game", old_pg)
+        # new drafts carry the game and league on each bet (and each leg of a combo), long names included
+        pg.evaluate("""(()=>{const q=JSON.parse(JSON.stringify(%s));const g={'early:A':['Avalanche vs Sharks'],'single:B':['Lakers vs Celtics'],
+          'combo:C':['Avalanche vs Sharks','Golden Knights vs Kings'],'line:D':['Boston Celtics at Los Angeles Lakers']};
+          q.panel.items.forEach(c=>{c.league={nhl:'NHL',nba:'NBA'}[c.code];c.game=(g[c.id]||[''])[0];if(c.kind==='combo')c.legs.forEach((l,i)=>l.game=g[c.id][i]);
+          if(c.kind==='line')c.legs[0].pick='Over 220.5 points (Boston Celtics at Los Angeles Lakers)';});
+          q.panel.items.push({id:'line:E',kind:'line',code:'ncaaf',league:'CFB',icon:'🎓',legs:[{ticker:'E',pick:'Temple Owls win by 7.5+'}],game:'Temple Owls at Tulane Green Wave and a very long extra name to test wrapping',chance:.4,ret:.2,price:.3,stake:2,kick:Date.now()/1000+9*3600});
+          S.pOff=new Set();S.panel=q;renderBuild();})()""" % P); time.sleep(.4)
+        new_pg = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].map(e=>[e.dataset.pid,e.querySelector('.pk').innerText,[...e.querySelectorAll('.pg div')].map(d=>d.innerText)])")
+        print(tag, "new drafts:", new_pg)
+        if len(new_pg) != 5 or any(not x[2] for x in new_pg if x[0] != "combo:C"): print("PROBLEMS: every panel card should name its game", new_pg)
+        byid = {x[0]: x for x in new_pg}
+        ctitle = pg.evaluate("document.querySelector('.pitem[data-pid=\"combo:C\"] .pm b').innerText")
+        if ctitle.split("\n") != ["Avalanche vs Sharks", "Golden Knights vs Kings"] or byid["combo:C"][2]: print("PROBLEMS: each leg of a combo should name its game once, in its title", ctitle, byid["combo:C"])
+        if "NHL" not in byid["early:A"][1] or "CFB" not in byid["line:E"][1] or "SPREAD / TOTAL" not in byid["line:D"][1].upper(): print("PROBLEMS: league tag missing", [x[1] for x in new_pg])
+        if byid["line:D"][2] != ["Boston Celtics at Los Angeles Lakers"]: print("PROBLEMS: a total should name its game", byid["line:D"])
+        titles = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].map(e=>[e.dataset.pid,e.querySelector('.pm b').innerText])")
+        if dict(titles)["line:D"] != "Over 220.5 points" or dict(titles)["single:B"] != "Lakers to win": print("PROBLEMS: bet titles", titles)
+        over = pg.evaluate("[...document.querySelectorAll('.panel .pitem')].filter(e=>e.scrollWidth>e.clientWidth+1||e.querySelector('.pm').scrollWidth>e.querySelector('.pm').clientWidth+1).map(e=>e.dataset.pid)")
+        side = pg.evaluate("document.documentElement.scrollWidth>window.innerWidth+1")
+        if over or (tag == "m" and side): print("PROBLEMS: a long game name overflows its card", over, side)
+        pg.screenshot(path=f"panelgame_{tag}.png", full_page=(tag == "m"))
+        # the buy-timing chip: before approval it says when it buys; after, the buy state (never a bare "buys")
+        pg.evaluate("S.pOff=new Set();const q=JSON.parse(JSON.stringify(%s));q.panel.items.forEach(c=>{c.kick=Date.now()/1000+9*3600;delete c.buy_at});S.panel=q;renderBuild()" % P); time.sleep(.3)
+        chips = pg.evaluate("[...document.querySelectorAll('.panel .ps .tag')].map(t=>t.innerText.trim().toLowerCase())")
+        if any(x == "buys" for x in chips) or any(x != "buys when you approve" for x in chips): print("PROBLEMS: chip wording before approval", chips)
+        pg.evaluate("S.pOff=new Set();S.panel="+P+";renderBuild()"); time.sleep(.3)
         print(tag, "errs:", errs)
