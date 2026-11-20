@@ -2679,7 +2679,10 @@ function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT
 function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
-function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
+function closeModal(){const m=$('#modal');
+ /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
+ const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}
+ if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
  clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
 const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
@@ -3706,7 +3709,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
   else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
  const why=r.msg||'It didn\'t go through. Nothing was bought.';
  if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
-function sbClose(){const back=S.sb&&S.sb.back;closeModal();S.sb=null;if(back)setTimeout(()=>openGame(back),300);}
+function sbClose(){closeModal();S.sb=null;}
 function lineFromBoard(t){sbOpen(t,S.lg);}
 function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
  const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
@@ -5436,7 +5439,7 @@ def webapp_main():
                     if lg == BUILD.get("lg") and A.CTX.get("offers"):
                         continue                                # a price you asked for is still open
                     with alock:
-                        cur, saved = BUILD.get("lg"), dict(A.CTX)
+                        cur, saved, was_at = BUILD.get("lg"), dict(A.CTX), BUILD.get("at")
                         try:
                             api_build(lg, rebuild=True, warming=True)
                         finally:
@@ -5447,6 +5450,7 @@ def webapp_main():
                                 s = SNAP.get(cur)
                                 if s:
                                     BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:
                 print("warm-up:", type(err).__name__, err, flush=True)

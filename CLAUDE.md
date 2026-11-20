@@ -435,9 +435,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   under way have none), sizes with `_size` (quarter Kelly, shrunk edge, $2 minimum), warns (thin > 6¢ gap, little for
   sale, live, nearly decided, live price far from the live chance, above fair, no fair price) and blocks (Pause, the
   unknown-outcome block, under one contract, account unreadable, over the cap: `week_spend` (Kalshi's combo record, which
-  never sees singles) **plus** `manual_spend` (every manual single in the last 7 days, an unclear one included, table
-  `manual_buys`), against the cap of the league Build has loaded, via `cap_msg`). The board's fair price is used only while
-  under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
+  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window, `_cap_start`: today for daily
+  slates and the Mix, else the slate week; an unclear one included; table `manual_buys`), against the cap of the league Build
+  has loaded, via `cap_msg`; the cap check, the order and its note run under one lock, `_SQ["buy"]`). The board's fair price
+  is used only while under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`; no read time = stale); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
   on a 30%-shrunk model edge; a finished game (`_game_over`) gets no quote; a start time it can't tell = a warning, yellow. It keeps a
   quote id (16 hex) for 20 s (`_SQ`). `single_buy(qid, ticker, anyway, paused)` checks the quote is the one on screen,
   unused, fresh, not blocked and (unless Buy anyway) clear; marks it used **before** sending (one order per quote, ever);

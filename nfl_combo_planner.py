@@ -11876,7 +11876,7 @@ SINGLE_QUOTE_SECS = 20          # a quote's lifetime (the sheet's draining bar)
 SINGLE_ARM = 25.0               # stakes above this need a second tap ("Tap again to buy")
 SINGLE_MAX = 100.0              # the most one manual single bet may stake
 SINGLE_PRESETS = (3, 5, 10)
-_SQ = {"lock": threading.Lock(), "q": {}}
+_SQ = {"lock": threading.Lock(), "buy": threading.Lock(), "q": {}}
 
 
 def market_open(ticker):
@@ -11905,6 +11905,7 @@ def market_open(ticker):
 
 
 EVENT_SIDES = {}
+EVENT_FAIL = {}
 
 
 def event_sides(event, max_age=15):
@@ -11916,14 +11917,16 @@ def event_sides(event, max_age=15):
     got = EVENT_SIDES.get(event)
     if got and time.time() - got[0] < max_age:
         return got[1]
+    if time.time() - EVENT_FAIL.get(event, 0) < 15:  # Kalshi just failed: don't wait on it again yet
+        return got[1] if got and time.time() - got[0] < 180 else []
     try:
         r = requests.get(f"{KALSHI}/markets", params={"event_ticker": event, "limit": 20}, timeout=10)
         ms = ((r.json() or {}).get("markets") or []) if r.ok else None
     except (requests.RequestException, ValueError, AttributeError):
         ms = None
-    if ms is None:
-        keep = got[1] if got else []
-        EVENT_SIDES[event] = (time.time(), keep)
+    if ms is None:                                     # a failed read: the last good copy while under 3 min old (by its
+        keep = got[1] if got and time.time() - got[0] < 180 else []   # own read time), and no new read for 15 s
+        EVENT_FAIL[event] = time.time()
         return keep
     out = []
     for m in ms:
@@ -11942,6 +11945,8 @@ def event_sides(event, max_age=15):
     if len(EVENT_SIDES) > 300:
         for k in sorted(list(EVENT_SIDES), key=lambda k: (EVENT_SIDES.get(k) or (0,))[0])[:100]:
             EVENT_SIDES.pop(k, None)
+    if len(EVENT_FAIL) > 300:
+        EVENT_FAIL.clear()
     return out
 
 
@@ -11961,14 +11966,28 @@ def _manual_table():
     store_x("create table if not exists manual_buys(ts real, ticker text, cost real)")
 
 
-def manual_spend(days=7, now=None):
-    """What manual single buys (Buy straight) cost over the last `days` days. Kalshi's combo record (week_spend) doesn't
-    see single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through)."""
+def _cap_start(now=None):
+    """When the cap's spending window began, matching week_spend: today for daily slates and the Mix, else the
+    slate week ending on CTX's Sunday (Monday to Sunday); 7 days when the week isn't known."""
+    now = now or time.time()
+    if is_mix() or by_day():
+        return dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
+    sun = CTX.get("sunday")
+    if isinstance(sun, dt.date):
+        return dt.datetime.combine(sun - dt.timedelta(days=6), dt.time()).timestamp()
+    return now - 7 * 86400
+
+
+def manual_spend(now=None):
+    """What manual single buys (Buy straight) cost in the cap's window, for the league loaded (every league in the Mix).
+    Kalshi's combo record (week_spend) doesn't see single bets, so the cap adds these. A buy with an unclear outcome
+    counts too (it may have gone through)."""
     if not STORE["db"]:
         return 0.0
     _manual_table()
-    r = store_rows("select coalesce(sum(cost), 0) s from manual_buys where ts > ?", ((now or time.time()) - days * 86400,))
-    return float(r[0]["s"] if r else 0.0)
+    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (_cap_start(now),))
+    code = LEAGUE["code"]
+    return round(sum(float(r["cost"] or 0) for r in rows if is_mix() or ticker_sport(r["ticker"]) == code), 2)
 
 
 def _manual_note(t, cost):
@@ -11983,13 +12002,26 @@ def _manual_spent():
 
 
 def _game_over(t):
-    """True when the score feed says this pick's game is finished (display or trading feeds alike are fine here:
-    it only ever stops a buy)."""
+    """True when the score feed (refreshed if over 30 s old) says this market's game is finished. A spread or total is
+    matched through its game's team codes (its own ticker ends in a line, not a team). It only ever stops a buy."""
     try:
-        sc = leg_score({"ticker": t, "side": "yes"})
+        fetch_scores(max_age=30, code=ticker_sport(t))
     except Exception:
-        return False
-    return bool(sc) and sc.get("state") == "post"
+        pass
+    parts = t.split("-")
+    cands = [t]
+    if len(parts) >= 3:                                # "KXNBASPREAD-26NOV19DENLAL-DEN5": try DEN/LAL and the like
+        tail = re.sub(r"^\d{2}[A-Z]{3}\d{2}", "", parts[1])
+        cands += [f"{parts[0]}-{parts[1]}-{a}" for k in range(2, max(2, len(tail) - 1))
+                  for a in (tail[:k], tail[k:]) if a.isalpha()]
+    for c in dict.fromkeys(cands):
+        try:
+            sc = leg_score({"ticker": c, "side": "yes"})
+        except Exception:
+            sc = None
+        if sc and sc.get("state") == "post":
+            return True
+    return False
 
 
 def _sq_prune(now):
@@ -12058,8 +12090,9 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.insert(0, {"k": "live", "t": "This game is under way. " + (
             f"Our chance is live ({how}), not the pre-game one." if fair is not None else
             "There's no live fair price, so you'd be going on Kalshi's price alone.")})
-    elif x.get("fair") and x.get("src") and x.get("fair_at") and now - float(x["fair_at"]) > SINGLE_FAIR_AGE:
-        nofair = f"the sportsbook price is {int((now - float(x['fair_at'])) / 60)} minutes old; refresh Build for a new one"
+    elif x.get("fair") and x.get("src") and now - float(x.get("fair_at") or 0) > SINGLE_FAIR_AGE:
+        nofair = "the sportsbook price is " + (f"{int((now - float(x['fair_at'])) / 60)} minutes old" if x.get("fair_at")
+                                               else "of unknown age") + "; refresh Build for a new one"
     elif x.get("fair") and x.get("src"):
         fair = float(x["fair"])
         if kind == "win":
@@ -12158,7 +12191,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if not q["clears"] and not anyway:
             return {"ok": False, "msg": "This one needs Buy anyway: the price isn't clearly better than fair."}
         q["used"] = True                                # from here on this quote can never send a second order
-    t, ask, n = q["t"], q["ask"], q["n"]
+    t, ask = q["t"], q["ask"]
     book = book_depth(t, max_age=0)
     now_ask = (book or {}).get("ask")
     if not now_ask:
@@ -12170,6 +12203,12 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         listed, _ = market_open(t)
         if listed is False or _game_over(t):
             return {"ok": False, "msg": "The game just ended (or Kalshi closed the market). Nothing was bought."}
+    with _SQ["buy"]:                                 # the cap check, the order and its note in one step: two
+        return _single_send(q, qid, now, log)        # taps at once can't both squeeze under the cap
+
+
+def _single_send(q, qid, now, log):
+    t, ask, n = q["t"], q["ask"], q["n"]
     if order_unsure(t):
         return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
     try:
@@ -12203,7 +12242,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     per = ask + single_fee(ask)
     try:
         _manual_note(t, filled * per)
-        store_x("update app_bets set how='manual' where ticker=?", (t,))   # the order itself was noted as 'order'
+        store_x("update app_bets set how='manual' where ticker=? and how='order' and ts >= ?", (t, now - 5))  # this buy's row
     except Exception as err:
         log("manual single: couldn't note the spend:", type(err).__name__)
     log(f"manual single bought: {filled:g} of {t} at {ask:.4f}")

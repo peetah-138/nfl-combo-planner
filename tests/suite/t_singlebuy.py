@@ -10,6 +10,7 @@ spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = impo
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.ORDER_LEDGER = os.path.join(E.HERE, "orders.json")
 E.SIZING_FILE = os.path.join(E.HERE, "sizing.json")
+E.set_league("nba")                       # the fake games are NBA (the cap is the loaded league's)
 E.CFG["kalshi_key_id"] = "fake-key-id"
 E.CFG["budget"] = 100.0
 E.CFG["bankroll"] = 400.0
@@ -18,6 +19,8 @@ E.haptic = lambda *a: None
 import requests
 import fakenet
 fakenet.install(port=1)
+G = fakenet.GAMES["KXNBAGAME"]
+G[1], G[2] = G[2], G[1]                 # Denver-LA third: the fake's scoreboard has it not started (the second is final)
 D = fakenet.ORDERS
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 SPENT = {"v": 10.0}
@@ -29,7 +32,7 @@ LIVE_EV = fakenet.event_ticker("KXNBAGAME", "BOS", "NYK")     # under way (the f
 LT = LIVE_EV + "-BOS"
 mk = {m["ticker"]: m for m in fakenet.markets()}
 X = {"ticker": T, "pick": "Denver Nuggets", "event": EV, "exp": mk[T]["expected_expiration_time"], "fair": 0.80,
-     "src": "pinnacle", "opp": "Los Angeles Lakers"}
+     "src": "pinnacle", "opp": "Los Angeles Lakers", "fair_at": time.time()}
 REAL_BOOK = E.book_depth
 LOG = []
 
@@ -278,3 +281,44 @@ ok(f"event_sides: both teams with their asks ({[(s['name'], s['ask']) for s in s
    len(sides) == 2 and {s["ticker"] for s in sides} == {EV + "-DEN", EV + "-LAL"} and all(s["ask"] for s in sides))
 ok("event_sides refuses a bad code and never raises", E.event_sides("x y") == [] and E.event_sides("") == [])
 ok("every buy was logged", any("manual single bought" in str(x) for x in LOG))
+
+# ---- (8) second review: missing board time, spreads after the final, event_sides filtering and failure caching, the cap window
+q = E.single_buy_quote({k: v for k, v in X.items() if k != "fair_at"}, 10)
+ok("a board price with no read time counts as stale: no fair price", q["ok"] and q["fair"] is None and "unknown age" in q["nofair"])
+real_ls, real_fs = E.leg_score, E.fetch_scores
+E.fetch_scores = lambda max_age=None, code=None: None
+E.leg_score = lambda l: {"state": "post"} if l["ticker"].endswith("-DEN") else None
+ok("a spread's game is found through its team codes: over after the final (either side's line)",
+   E._game_over(f"KXNBASPREAD-{EV.split('-')[1]}-DEN5") and E._game_over(f"KXNBASPREAD-{EV.split('-')[1]}-LAL5"))
+E.leg_score, E.fetch_scores = real_ls, real_fs
+FIN = fakenet.event_ticker("KXNBAGAME", "MIL", "CHI") + "-MIL"
+r = E.single_buy_quote({"ticker": FIN, "fair": 0.6, "src": "pinnacle", "fair_at": time.time()}, 5)
+ok("a game the (fake) scoreboard has as final gets no quote, read fresh from the feed", not r["ok"] and "over" in r["msg"])
+E.fetch_scores = lambda max_age=None, code=None: None
+E.leg_score = lambda l: None
+ok("no score for the game: not 'over'", not E._game_over(f"KXNBASPREAD-{EV.split('-')[1]}-DEN5"))
+E.leg_score, E.fetch_scores = real_ls, real_fs
+real_markets = fakenet.markets
+fakenet.markets = lambda hours=6: real_markets(hours) + [dict(real_markets(hours)[2], ticker="BAD'X<", event_ticker=EV)]
+E.EVENT_SIDES.clear(); E.EVENT_FAIL.clear()
+ok("event_sides drops a market whose ticker isn't a plain code (it would land in an onclick)",
+   [s["ticker"] for s in E.event_sides(EV)] == [EV + "-DEN", EV + "-LAL"])
+CALLS = []
+def boom(hours=6):
+    CALLS.append(1)
+    raise requests.ConnectionError("down")
+fakenet.markets = boom
+good = E.EVENT_SIDES[EV][1]
+E.EVENT_SIDES[EV] = (time.time() - 20, good)
+ok("Kalshi down: the last good copy (under 3 min old) is shown", E.event_sides(EV) == good and len(CALLS) == 1)
+ok("...and Kalshi isn't asked again for 15 s", E.event_sides(EV) == good and len(CALLS) == 1)
+E.EVENT_SIDES[EV] = (time.time() - 200, good)
+ok("a copy over 3 min old isn't shown while Kalshi is down", E.event_sides(EV) == [])
+fakenet.markets = real_markets
+reset()
+E._manual_note(T, 30.0)
+E.store_x("update manual_buys set ts=? where cost=30.0", (time.time() - 30 * 86400,))
+E._manual_note("KXNHLGAME-26NOV19COLSJ-COL", 12.0)
+E._manual_note(T, 5.0)
+ok(f"the cap counts this window's singles for the loaded league only: not last month's, not the NHL's ({E.manual_spend()})",
+   E.LEAGUE["code"] == "nba" and E.manual_spend() == 5.0)
