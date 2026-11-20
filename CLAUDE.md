@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.19.121). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.19.122). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -76,7 +76,7 @@ Real money is involved. Pete uses it daily.
   silence them. Run code review and security review before opening the PR and fix everything they raise.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below). **Standing go-ahead (Pete, 2026-11-19):** Claude may open AND merge release PRs (develop -> main, merge commit) whenever it judges there is enough in develop, without asking each time; all other release gates still apply (reviews, green checks, matching versions, screenshots for visual changes, no new automatic money movement without Pete's opt-in).
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.121`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.19.122`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -174,6 +174,22 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (dollar strings, lowest first); the old `{"orderbook": {"yes": [[52, 3703]...]}}` (cents) is still read. Both give
   the same dollars; an odd answer = no prices, never an error. Ask = 1 − best NO bid. Smart sell for singles reads
   the market's own `yes_bid_dollars`/`yes_ask_dollars` (`GET /markets`), not the book. Test: `t_orderbook`.
+- **Kalshi V2 orders** (issue #81): Kalshi removed the legacy order writes (`POST/DELETE /portfolio/orders` = 410
+  `deprecated_v1_order_endpoint`). Callers still pass the app's order fields to `kalshi_send`; the one adapter there
+  (`order_intent` → `order_v2_body`, `_order_create`/`_order_cancel`, answers read by `order_answer_v2`) sends V2:
+  `POST /portfolio/events/orders` with `side` on the YES book (bid = buy YES / sell NO, ask = sell YES / buy NO),
+  `price` = the YES price as a 4-decimal dollar string (a NO price q goes as 1 − q; cents ÷ 100 exactly, Decimal;
+  rounded so a buy never pays more and a sale never takes less), `count` = a 2-decimal contract string; cancels are
+  `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
+  (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
+  skips); a timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
+  "check", logged in `combo_orders.json`, and that market+side gets no order for 2 h, which Pete can lift sooner with Settings › Money › "Clear order block" (confirm, logged; the unclear order itself is never resent) (killer "check"s alert and count
+  toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
+  (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
+  sell-early exits) are refused before sending, existing ladders are never moved (cancelled), and the panel doesn't
+  draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
+  Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
+  watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -386,6 +402,13 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
+  **Haptics on iOS (issue #60, unresolved):** Pete feels none on iOS 27.2.1 in the Home Screen app, and the `<input
+  switch>` trick is only documented for iOS 17.4-18. `hap()` now toggles a tiny see-through switch laid out *inside* the
+  screen (not parked off it), and iPhones/iPads use it even if `navigator.vibrate` exists. Settings › Test haptics
+  (`hapCard`, tests in `test_haptics.py`) has one lettered button per method (the list is `HAPM`, the code is `HT`);
+  the one `hap()` uses is the single letter `HAPDEF` (now `B`): **once Pete reports which letter he feels, change
+  `HAPDEF` to it** (and drop the methods that don't work). The card also has a per-phone Haptics on/off switch
+  (`cw_hapoff`). Helper switches carry class `hapx` (the tap listener ignores them); test buttons carry `data-hapt`.
 - **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
   - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
     (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and
@@ -407,6 +430,15 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   - **Results**: "Profit by day / week" bars (Day = last 14 days with results, Week = last 12 weeks; remembered),
     drag across for a readout, tap a bar for that day's or week's bets in a sheet. Skeletons for Results and the
     Build panel; empty states point to Build. `test_makeover2.py` covers all of this.
+    **Dated by when the money moved (issue #91, display only):** both bars group each settled bet by when the
+    transaction actually happened — the cash-out sell for a bet cashed early, else Kalshi's settlement time, else the
+    Mac's detection time (`settled`), and only as a last resort the game/slate date — not the NFL game date. The engine
+    captures the last sell fill as `cashed_at` and the settlement time as `settled_at` in `_fetch_account`;
+    `realized_buckets(a, st)` derives the day and the week from that one realized date in the Mac's local tz (the week
+    is `sunday_of` that day, the same rounding `week_of` uses), so day and week can't land in different buckets.
+    `api_results` buckets both the per-day `day` and the per-week grouping with it; the detail sheet shows the buy date
+    and the cash-out/settlement date so the grouping explains itself. No bet, P/L or buy/sell/panel logic changed.
+    `t_realdate.py` and `test_realdate.py` cover it.
 - **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
   motion system.
   - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link
