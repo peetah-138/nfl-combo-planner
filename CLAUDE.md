@@ -212,7 +212,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   and swaps in the new panel by itself. No screen promises a 10-minute wait (the old "check back shortly" card
   waited for the shadow's next round, and a rebuild from a stale pool silently found nothing). After approval the Mac keeps looking
   (every ~2.5 min for sports with games within 2 h) and offers "🆕 New since you approved" extras (one
-  notification each, Add button, inside the remaining budget). A skipped/swapped bet can come back as an extra.
+  notification each, Add button, inside the remaining budget). A skipped/swapped (or left-out) bet can come back as an
+  extra; one that is scheduled, buying, bought, "check" or failed (Kalshi turned it down at buy time) never comes back
+  or gets added again that day (`PANEL_TRIED`), and extras on a game a live panel bet covers are hidden
+  (`panel_extras`/`_extras_filter`, used by the Build page and the rebuild status). **Add is safe to repeat (#62):**
+  `panel_add` checks and adds inside one `panel_tx`, so two taps or two phones at once add a bet once; an added extra
+  is dropped from the extras row at once; the page disables the button ("Adding…" then "✓ Added"), ignores taps while
+  one is on its way (`S.pSend`/`pPost`, gives up waiting after 30 s), and hides just-added extras for 2 min unless
+  today's panel doesn't have them. Approve works the same way (already idempotent in `panel_approve`).
 - **Games already under way (Pete's decision, replaces the old "never buys or approves a game that has started"):**
   the panel picks on the chance of a profit, not on whether a game has started. Settings › Money › **Include games
   already under way** (`panel_live`, shared setting, **on** by default; `live_panel_on()` reads the shared settings
