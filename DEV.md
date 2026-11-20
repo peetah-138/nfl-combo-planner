@@ -10,7 +10,7 @@ without touching your real data, your Kalshi account or the live watcher.
 Ctrl-C            # stops it and deletes the throwaway folder
 ```
 
-It needs only `python3` and `requests` (the same as the watcher). If it says port 18800 is busy, another dev
+It needs a Python 3.10+ with `requests` and `cryptography` (`tests/python_env.sh` picks one or builds `.venv-tests/`; see `tests/README.md`). If it says port 18800 is busy, another dev
 instance is running; stop that one first.
 
 ## What you get

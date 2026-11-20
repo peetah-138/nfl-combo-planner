@@ -14,7 +14,8 @@ cp "$R/watcher/combo_watcher.py" wtest/combo_watcher.py
 cp "$R/nfl_combo_planner.py" run/nfl_combo_planner.py
 cp fixtures/run_settings.json run/combo_settings.json
 cp fixtures/home_settings.json wahome/combo_settings.json
-python3 - <<'P'
+. "$R/tests/python_env.sh"   # sets PY: a Python >= 3.10 with playwright (see tests/README.md); prints which one and its sqlite
+"$PY" - <<'P'
 import base64, os, json
 def fake_key(path):            # a throwaway ed25519 key for the fake Kalshi; never a real one
     der = bytes.fromhex("302e020100300506032b657004220420") + os.urandom(32)
@@ -30,19 +31,29 @@ export REPO="$R"
 # Nothing a test does may touch the real Tailscale (`tailscale serve` re-points Pete's real secure address) or post to a
 # real ntfy topic. The watcher refuses the Tailscale command line when this is set (and outside ~/combowatch anyway).
 export COMBO_NO_TAILSCALE=1 COMBOWATCH_NTFY="http://ntfy.invalid"
-export CW_WEBAPP_PORT=18766              # tests run their own web apps on 18766+, never on the real one (8766)
+PB=${CHECK_PORT_BASE:-18766}               # first test port; set CHECK_PORT_BASE so two runs at once (e.g. two worktrees) do not collide
+case "$PB$CHECK_WORKERS" in *[!0-9]*) echo "CHECK_PORT_BASE and CHECK_WORKERS must be numbers"; exit 2;; esac
+if [ "$PB" -lt 1024 ] || [ "$PB" -gt 65000 ] || { [ "$PB" -le 8766 ] && [ $((PB + ${CHECK_WORKERS:-4})) -ge 8765 ]; }; then
+  echo "CHECK_PORT_BASE=$PB is out of range (use 1024 or more, and never the real app's 8765/8766)"; exit 2
+fi
+export CW_WEBAPP_PORT=$PB             # tests run their own web apps on $PB+ (18766+), never on the real one (8766)
 command -v timeout >/dev/null 2>&1 || timeout(){ perl -e 'alarm shift; exec @ARGV' "$@"; }   # macOS has no timeout
-PY=python3
 fail=0
 ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; echo "$2" | head -12 | sed 's/^/     /'; fail=1; }
 need(){ command -v "$1" >/dev/null 2>&1 || { bad "setup: $1 is missing" "$2"; }; }
 need node "Install Node (e.g. brew install node). It checks the web app's JavaScript."
-$PY -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "pip3 install playwright && python3 -m playwright install chromium"
-$PY -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "pip3 install pyflakes"
+"$PY" -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
+"$PY" -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
 
-$PY -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok compile || bad compile
-if command -v python3.10 >/dev/null 2>&1; then python3.10 -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok "compile (3.10)" || bad "compile (3.10)"; fi
-$PY - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
+"$PY" -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok compile || bad compile
+if command -v python3.10 >/dev/null 2>&1; then python3.10 -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok "compile (3.10)" || bad "compile (3.10)"
+else "$PY" - "$R" <<'P' && ok "compile (3.10 grammar, partial: CI runs a real python3.10)" || bad "compile (3.10 grammar)"   # no python3.10 here: parse with its grammar (feature_version misses some newer syntax, e.g. nested f-string quotes)
+import ast, sys
+for f in ("nfl_combo_planner.py", "watcher/combo_watcher.py"):
+    ast.parse(open(sys.argv[1] + "/" + f).read(), f, feature_version=(3, 10))
+P
+fi
+"$PY" - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
 import re, subprocess, sys, tempfile, os
 s = open(os.path.join(sys.argv[1], "watcher/combo_watcher.py")).read()
 for name in ('SPA = r"""', 'LOGIN_HTML = r"""'):
@@ -50,11 +61,11 @@ for name in ('SPA = r"""', 'LOGIN_HTML = r"""'):
     f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write("\n".join(re.findall(r"<script>(.*?)</script>", h, re.S))); f.close()
     if subprocess.run(["node", "--check", f.name]).returncode: sys.exit(1)
 P
-$PY -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
+"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
 if [ -n "$SECRET_PATTERN" ]; then          # set it (privately, e.g. in your shell profile) to the strings that must never be committed
   (cd "$R" && ! git grep -nIE "$SECRET_PATTERN" >/dev/null) && ok "no secrets in repo" || bad "secrets in repo" "$(cd "$R" && git grep -nlIE "$SECRET_PATTERN")"
 else
-  $PY - "$R" <<'K' && ok "no private keys in repo (set SECRET_PATTERN for the full check)" || bad "a private key is in the repo"
+  "$PY" - "$R" <<'K' && ok "no private keys in repo (set SECRET_PATTERN for the full check)" || bad "a private key is in the repo"
 import re, subprocess, sys
 files = [f for f in subprocess.run(["git", "-C", sys.argv[1], "ls-files", "-z"], capture_output=True, text=True).stdout.split("\0") if f]
 body = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----\s*\n[A-Za-z0-9+/=]{40,}")
@@ -69,24 +80,24 @@ K
 fi
 
 for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook; do
-  o=$($PY $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
+  o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
 # each worker with its own copy of everything and its own port (18766, 18767, ...), so nothing is shared.
 N=${CHECK_WORKERS:-4}
 PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui"
 for w in $(seq 0 $((N-1))); do
-  p=$((18766 + w))
-  $PY -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
+  p=$((PB + w))
+  "$PY" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
 done
-( timeout 200 $PY macsmoke/run.py > out_macsmoke.txt 2>&1; UPD=1 SECS=5 timeout 200 $PY macsmoke/run.py > out_macupd.txt 2>&1 ) &
+( timeout 200 "$PY" macsmoke/run.py > out_macsmoke.txt 2>&1; UPD=1 SECS=5 timeout 200 "$PY" macsmoke/run.py > out_macupd.txt 2>&1 ) &
 lanes=()
 i=0; for t in $PAGE; do lanes[$((i % N))]="${lanes[$((i % N))]} $t"; i=$((i+1)); done
 for w in $(seq 0 $((N-1))); do
   D="$WORK/lane$w"; mkdir -p "$D"
   (cd "$WORK" && tar cf - --exclude='./lane*' --exclude='./out_*' .) | (cd "$D" && tar xf -)
-  ( cd "$D" && export CW_WEBAPP_PORT=$((18766 + w)) && for t in ${lanes[$w]}; do
-      $PY reset.py; timeout 400 $PY $t.py > "$WORK/out_$t.txt" 2>&1; done ) &
+  ( cd "$D" && export CW_WEBAPP_PORT=$((PB + w)) && for t in ${lanes[$w]}; do
+      "$PY" reset.py; timeout 400 "$PY" $t.py > "$WORK/out_$t.txt" 2>&1; done ) &
 done
 wait
 o=$(cat out_macsmoke.txt); echo "$o" | grep -q "no problems in the log" && echo "$o" | grep -q "started: True" && ! echo "$o" | grep -q "PROBLEMS" && ok "simulated Mac runs clean" || bad "simulated Mac" "$o"
