@@ -126,7 +126,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
   own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
   (`t_kalshi_live`; page test `test_klive`), robustness of the display code and tap lock (`t_robust`), per-league learning, the secure address and web
-  push (`t_https_push`: fake Tailscale CLI, push dedupe) and the login page's Face ID tap fallback (`test_login_faceid`).
+  push (`t_https_push`: fake Tailscale CLI, push dedupe), notification tap targets (`t_push_target`: GitHub #79, a tap opens
+  `/`, never `/app`; the service worker maps old `/app` payloads to `/`; the hub redirects a browser navigation to `/app` and
+  `/app/` to `/` and answers any other navigation that finds nothing or has no session with a small HTML page, never an empty
+  file; API routes unchanged) and the login page's Face ID tap fallback (`test_login_faceid`).
 - **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
   `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
   folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do
