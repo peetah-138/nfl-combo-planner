@@ -406,9 +406,19 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   team's ESPN schedule (regular season, plus the postseason in the playoffs; last season in the preseason) and ESPN's
   core-feed season leaders (`game_extras`: a background thread, `GX` cache 30/60 min, a player's name 24 h in `ATH`, any
   failure backs off 30 s doubling to 30 min, Retry-After honoured; these GETs carry an Accept header so they go straight to
-  ESPN, never through the hub's warm cache; only the first open of a game waits, at most `GX_BUDGET` 1.5 s). Last-5 dates
-  are UTC kickoffs shown in the phone's own time zone. Same isolation rule; an absent block hides its tab, an empty one says so ("No injuries listed",
-  "Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
+  ESPN, never through the hub's warm cache; **nothing waits for them**: the first open returns at once with `detail.gxp`
+  (still fetching) and the page shows skeletons on Last 5 / Season leaders, re-polls in ~2.5 s and fills them in quietly;
+  `gxp` ends after `GX_PENDING_MAX` 45 s so a fetch that never lands cannot leave a skeleton forever; a caller may still pass
+  `budget` to wait). **Warm-up (`game_prefetch`, route `/app/api/game_warm`):** the Games tab asks the Mac to warm a LIVE
+  football game when its card is shown or hovered/pressed (`warmGame`: once a minute per game, 2 at a time, 6 per 5 minutes in
+  the page; the Mac again dedupes 30 s, backs off a failed game 60 s doubling to 10 min, 2 at once, 8 a minute); it only runs
+  `game_detail`, nothing that prices, buys or sells. Last-5 dates
+  are UTC kickoffs shown in the phone's own time zone. Same isolation rule. **Injuries:** a side shows a real report (or "No
+  injuries reported") only when ESPN sent that team's own list; a side it sent nothing for says "Injury report isn't available
+  right now" (the tab shows whenever the summary loaded). **Team stats:** rows where fewer is better (turnovers, sacked,
+  penalties; `TS_LOWER`) carry `lo`/`ld` from `_ts_leader`: the side with the lower number leads, its number is emphasised, its
+  bar is the longer one, a tie is neutral (even bar). An absent block hides its tab, an empty one says so
+  ("Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
   The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
   `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
