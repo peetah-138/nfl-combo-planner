@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.18.118"
+VERSION = "2026.11.19.121"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -10888,8 +10888,8 @@ def line_pass(code, alert=None, log=print):
         except ValueError:
             continue
         d = book_depth(x["ticker"])
-        if d and d["thin"]:
-            continue
+        if not d or d["thin"]:
+            continue                                # thin, or Kalshi's book couldn't be read (429/5xx): no idea
         prev = store_rows("select pct, ts from suggestions where legs=? and n=1 order by ts desc limit 1",
                           (json.dumps([x["ticker"]]),))
         pct = x["fair"] / (x["p"] + single_fee(x["p"]))
@@ -11095,8 +11095,8 @@ def single_pass(book_snap, alert=None, log=print):
     for x in single_candidates(games, live_ok)[:4]:
         told = False
         d = book_depth(x["ticker"])
-        if d and d["thin"]:
-            continue                                  # a thin book: the price isn't real
+        if not d or d["thin"]:
+            continue                                  # a thin book (the price isn't real) or an unreadable one (429/5xx)
         try:
             inj, fresh = injury_note(LEAGUE["code"], x["pick"], x.get("opp") or opp_of(games, x))
         except Exception:
