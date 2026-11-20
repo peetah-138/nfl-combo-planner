@@ -86,9 +86,10 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 3. **Charts to drill into:** bet value over time with scrub (combo page), charts for Results › What's working.
    Panel cards' price line is from what the phone has seen; a server-side price history per panel bet would make it
    complete (needs an API field, so it was left out of the UI-only phase).
-- Haptics on the Home Screen app still need checking on Pete's iPhone (the `<input switch>` route; ticks while
-  dragging the chart or the Let it ride slider may need a real device to confirm), and the safe-area / keyboard
-  handling wants a look on the real Home Screen app.
+- Haptics (#60): method N (a see-through switch over every control) needs Pete's confirmation on his iPhone that
+  every tap ticks. On iOS 27 nothing without a tap can tick (chart scrub, pull-to-refresh, sheet drag, tab swipe, the
+  Let it ride slider's steps, a pattern's second tick). The safe-area / keyboard handling wants a look on the real
+  Home Screen app.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
 ### c. Faster live numbers, the rest (GitHub #21; first slice shipped)
