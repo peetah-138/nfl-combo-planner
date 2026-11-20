@@ -89,7 +89,9 @@ def push(conf, msg, title="Combo planner", priority="default", topic=None, pause
     if web and not topic:
         try:
             urgent = priority in ("high", "urgent") if web_urgent is None else web_urgent
-            web_push(web_title or title, web_msg or msg, url=click or "/app", tag=tag, urgent=urgent)
+            base = hub_base(conf)                    # absolute so iOS Home Screen apps can resolve the tap target (#79)
+            web_url = (base + (click or "/app")) if base else (click or "/app")
+            web_push(web_title or title, web_msg or msg, url=web_url, tag=tag, urgent=urgent)
         except Exception as err:
             log("web push skipped:", type(err).__name__, err)
     try:
@@ -1159,7 +1161,7 @@ self.addEventListener('push', e => {
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || '/app';
+  const url = new URL((e.notification.data && e.notification.data.url) || '/app', self.location.origin).href;
   e.waitUntil(self.clients.matchAll({type: 'window', includeUncontrolled: true}).then(cs => {
     for (const c of cs) { if ('focus' in c) { c.navigate(url); return c.focus(); } }
     return self.clients.openWindow(url);
@@ -1433,9 +1435,9 @@ input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(-
 <div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
 </div><script>
 const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
-/* haptics, the same way as the app (iOS: a hidden switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
-function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
- let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
+/* haptics, the same way as the app (iOS: a tiny see-through switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
+function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(!(/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1))&&navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
+ let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.setAttribute('aria-hidden','true');l.style.cssText='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';l.innerHTML='<input type="checkbox" switch tabindex="-1">';document.body.appendChild(l);}
  (k==='error'?[0,80,160]:[0]).forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
 addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('button,a');if(b&&!b.closest('#hapl'))hap('light');},true);
 if(msg.textContent.trim())box.classList.add('shake');
@@ -2109,6 +2111,30 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 @media (max-width:900px){.dcard{grid-template-columns:minmax(0,1fr)}.dbtns{grid-row:auto}.dbtns .btn{flex:1}.dkpis{grid-template-columns:repeat(2,minmax(0,1fr))}
  .modal{padding:0;align-items:flex-end}.sheet.wide{max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
  .dlegs .lg{grid-template-columns:minmax(0,1fr) 84px 46px}.dlegs svg{width:84px}.games{grid-template-columns:minmax(0,1fr)}}
+/* live field strip (football game page; our own art). .fld (not .field, which is the login passcode wrapper). */
+.fstrip{margin:0 0 16px}
+.fld{position:relative;height:84px;border-radius:12px;overflow:hidden;box-shadow:inset 0 0 0 1.5px var(--line);background:#0b5d2a}
+.fld .grass{position:absolute;inset:0 8.333% 20px 8.333%;background:repeating-linear-gradient(90deg,#0b5d2a 0,#0b5d2a 10%,#0c6a30 10%,#0c6a30 20%)}
+.fld .ez{position:absolute;top:0;bottom:20px;width:8.333%;display:grid;place-items:center;opacity:.92}
+.fld .ez.l{left:0}.fld .ez.r{right:0}
+.fld .ez span{color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;writing-mode:vertical-rl;transform:rotate(180deg);text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.fld .grass i{position:absolute;top:0;bottom:0;width:0}
+.fld .grass>i:not(.fball):not(.fdir):not(.fdline):not(.frz){border-left:1px solid rgba(255,255,255,.28)}
+.fld .frz{background:rgba(220,40,40,.28);width:auto}
+.fld .fdline{border-left:3px solid #f5d020;box-shadow:0 0 6px rgba(245,208,32,.7);z-index:3}
+.fld .fball{width:24px;height:14px;top:50%;transform:translate(-50%,-50%);z-index:4;transition:left .5s var(--ease)}
+.fstrip.noanim .fball{transition:none}
+.fld .fball svg{width:24px;height:14px}.fld .fball ellipse{fill:#8a4b1e;stroke:#fff;stroke-width:1.2}.fld .fball line{stroke:#fff;stroke-width:1.2}
+.fld .fdir{top:50%;color:#fff;font-size:13px;z-index:4;text-shadow:0 1px 2px rgba(0,0,0,.6);transition:left .5s var(--ease);width:auto}
+.fstrip.noanim .fdir{transition:none}
+.fld .ruler{position:absolute;left:0;right:0;bottom:0;height:20px;background:rgba(0,0,0,.35)}
+.fld .ruler span{position:absolute;transform:translateX(-50%);top:3px;color:#dfe8e0;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.situ{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;font-size:13.5px}
+.situ .dd{font-weight:800}.situ .rzt{color:#fff;background:var(--no);border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.lastplay{display:flex;gap:8px;align-items:baseline;margin-top:8px;font-size:12.5px;color:var(--sub);background:var(--panel2);border-radius:10px;padding:8px 11px}
+.lastplay .lpt{font-weight:800;color:var(--ink);text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;white-space:nowrap}
+.tdots{display:flex;gap:3px;justify-content:center;margin-top:4px}.tdots i{width:7px;height:4px;border-radius:2px;background:var(--line)}.tdots i.on{background:var(--sub)}
+.poss{color:var(--live);font-size:11px;margin-left:4px}
 /* settings */
 .set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
 .sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
@@ -2123,6 +2149,10 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
 .srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
 .srow.dim{opacity:.45;pointer-events:none}
+.hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
+.hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
+.hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
+.hxrow .l small{margin-top:6px}
 .rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
 input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
  background:linear-gradient(90deg,var(--acc) var(--p,50%),var(--panel2) var(--p,50%))}
@@ -2504,11 +2534,11 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
 const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
-function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('#hapl')&&!el.disabled?el:null;}
+function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
- addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]'))return;
+ addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
   hap(el.matches('.tabbar button,.nav button,.seg button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
@@ -2849,8 +2879,12 @@ function buildSkel(){/* the panel's shape while it loads: header, a few bet rows
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
 function renderBuild(){_renderBuild();rollNums($('#main'));rbWatch();}
 function _renderBuild(){const d=S.build;const m=$('#main');
- const lgs=(d&&d.leagues)||[['mix','Mix sports','🎲'],['nfl','NFL','🏈'],['nba','NBA','🏀'],['nhl','NHL','🏒'],['ncaaf','CFB','🎓']];
- const pv=S.pview||'all';const gameN=S.panel&&S.panel.games;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${i} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ /* The chip row never changes while a league loads: the list of leagues and the per-league game counts are remembered
+    (also on this phone) instead of read from the data that is cleared on a tap; the built-in list is only for a phone that has never loaded */
+ if(d&&d.leagues&&d.leagues.length>1){S.lgs=d.leagues;try{localStorage.setItem('cw_leagues',JSON.stringify(d.leagues))}catch(e){}}
+ if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
+ const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
+ const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  const best=bestBets(d);const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
@@ -2869,6 +2903,8 @@ function _renderBuild(){const d=S.build;const m=$('#main');
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
+try{const l=JSON.parse(localStorage.getItem('cw_leagues')||'null');if(Array.isArray(l)&&l.length>1&&l.every(x=>Array.isArray(x)&&x.length>=3&&/^[a-z0-9_]+$/.test(x[0])&&typeof x[1]==='string'&&typeof x[2]==='string'))S.lgs=l;
+ const g=JSON.parse(localStorage.getItem('cw_gn')||'null');if(g&&typeof g==='object'&&!Array.isArray(g))S.gn=g}catch(e){}
 S.lg=S.pview==='all'?'mix':S.pview;
 const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
 function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
@@ -3091,17 +3127,71 @@ async function buy(i,custom,btn){if(S.buying)return;S.buying=true;hap();const na
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
 /* Haptics. light/selection = one tick; success = two quick ticks; warning = two slower; error = three.
-   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS 18+: toggling a hidden <input switch>
-   ticks the Taptic Engine (it has to happen inside the tap, which the global tap listener guarantees).
-   Elsewhere navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests. */
+   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS: toggling an <input switch> ticks the
+   Taptic Engine; it has to happen synchronously inside a real tap (the global tap listener calls hap() from the click
+   event), on an element that is laid out (a tiny, nearly see-through one inside the screen; iOS ignores display:none,
+   visibility:hidden and, it seems, things parked off-screen). iPhones and iPads get the switch even if they report
+   navigator.vibrate; everything else uses navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests.
+   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses (change that one letter
+   once Pete reports which method he feels). The card's Haptics switch is saved on this phone (cw_hapoff). */
 const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
+const APPLE=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const HAPDEF='B';
+const HAPCLICK='ABCDEFJK';   // the methods hap() can run itself (G, H, I need the finger itself; L, M aren't switches)
+const HAPCSS='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';
+const HAPSW='<input type="checkbox" switch tabindex="-1">';
+function hapNode(id,css){let l=document.getElementById(id);if(!l){l=document.createElement('label');l.id=id;l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=css;l.innerHTML=HAPSW;document.body.appendChild(l);}return l;}
+const HT={
+ A(){hapNode('hapA','position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden').click();},   // the old way
+ B(){hapNode('hapl',HAPCSS).click();},
+ C(){hapNode('hapC',HAPCSS).querySelector('input').click();},
+ D(){const l=document.createElement('label');l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=HAPCSS;l.innerHTML=HAPSW;document.body.appendChild(l);l.click();setTimeout(()=>l.remove(),400);},
+ E(){const l=hapNode('hapl',HAPCSS);l.click();l.click();},
+ F(){const l=hapNode('hapl',HAPCSS);l.click();setTimeout(()=>l.click(),120);},
+ G(){},H(){},I(){},   // native: the user's own tap is the toggle, nothing to run
+ J(){HT.B();},K(){HT.B();},
+ L(){if(!navigator.vibrate)return false;navigator.vibrate([20,40,20]);},
+ M(){if(!S.inapp)return false;const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/light';document.body.appendChild(f);setTimeout(()=>f.remove(),300);}
+};
+const HAPM=[   // [id, event, name, what it does]
+ ['A','click','Switch label click (how the app did it)','A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
+ ['B','click','Switch label click, on screen (the app now)','The same, but the switch sits inside the screen, nearly see-through.'],
+ ['C','click','Click the switch itself','Clicks the switch input directly, not its label.'],
+ ['D','click','A brand-new switch each tap','Makes a fresh switch inside your tap, clicks it, removes it.'],
+ ['E','click','Double tick, two clicks at once','Clicks the switch twice, right after each other.'],
+ ['F','click','Double tick, second one 120 ms later','The second click is delayed, so it is outside your tap.'],
+ ['G','native','The button is the switch','Your tap lands on a label wrapped around a real switch. No code involved.'],
+ ['H','native','A real, visible switch','Tap the switch itself. The plain iOS baseline.'],
+ ['I','native','Our toggle with the switch attribute','The same round toggle as Settings uses, with the iOS switch attribute added.'],
+ ['J','pointerdown','Fires when the finger lands','The switch click runs on touch down, before you lift.'],
+ ['K','pointerup','Fires when the finger lifts','The switch click runs on touch up.'],
+ ['L','click','navigator.vibrate (not expected on iPhone)','The standard web vibrate call. iPhones usually have none.'],
+ ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
+function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
+function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
+ if(hapOff())return;
  try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
- if(navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
- let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.style.cssText='position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden';l.innerHTML='<input type="checkbox" switch>';document.body.appendChild(l);}
- seq.forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
+ if(!APPLE&&navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
+ const f=HAPCLICK.includes(HAPDEF)?HT[HAPDEF]:HT.B;seq.forEach(d=>d?setTimeout(f,d):f());}catch(e){}}
+/* Settings > Test haptics: one button per method. Each runs its method right inside its own tap, never through hap(),
+   and the global tap listener leaves these buttons alone (data-hapt) so only the method under test can buzz. */
+function hapTry(id,b){const t=performance.now();if(hapTry.id===id&&t-hapTry.at<60)return;hapTry.id=id;hapTry.at=t;   // a label's tap clicks twice (label, then its switch): count it once
+ (window.__hapt=window.__hapt||[]).push(id);let ok=true;try{ok=HT[id]();}catch(e){ok=false;}
+ const s=b&&b.closest('.hxrow')&&b.closest('.hxrow').querySelector('.hxs');if(!s)return;
+ s.textContent=ok===false?'not available here':'sent ✓';s.classList.remove('on');void s.offsetWidth;s.classList.add('on');
+ clearTimeout(s._t);s._t=setTimeout(()=>{s.textContent='';s.classList.remove('on');},1500);}
+function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid">${id}</span> ${esc(name)}`;let btn;
+  if(id==='G')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('G',this)"><input type="checkbox" switch class="hxnat" tabindex="-1">${lab}</label>`;
+  else if(id==='H')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('H',this)">${lab}<input type="checkbox" switch data-hapt="1"></label>`;
+  else if(id==='I')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('I',this)">${lab}<input type="checkbox" switch class="tg" data-hapt="1"></label>`;
+  else btn=`<button class="btn hxbtn" type="button" data-hapt="1" ${ev==='click'?'onclick':ev==='pointerdown'?'onpointerdown':'onpointerup'}="hapTry('${id}',this)">${lab}</button>`;
+  return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
+ return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
+  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Which one worked? Tell Claude</b><small>Say the letter. Nothing here changes how the app buys or sells.</small></div></div>`);}
 // ---------------- RESULTS
 function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
@@ -3145,9 +3235,12 @@ function plChart(d){const bars=plBars(d),n=bars.length,tot=bars.reduce((a,b)=>a+
   ${bars.map((b,i)=>{const h=Math.max(2,Math.abs(b.pl)/mx*(mid-8));return `<rect class="brc" x="${(i+.5)*W/n-bw/2}" y="${b.pl>=0?mid-h:mid}" width="${bw}" height="${h}" rx="4" fill="${b.pl>=0?'var(--yes)':'var(--no)'}"/>`;}).join('')}</svg></div>
   <div class="xl"><span>${esc(bars[0].lab)}</span><span>${n>1?esc(bars[n-1].lab):''}</span></div><div class="hint">Drag across the bars, or tap one to see its bets.</div></div>`;}
 function barSheet(b){if(!b)return;const xs=b.items||[];
+ const sd=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'});};
+ /* Issue #91: the bars group by when the money moved. Show the buy date and the cash-out/settlement date so the grouping explains itself. */
+ const when2=h=>{const cd=h.cashed?(h.status==='cashed'?'Cashed out ':'Settled ')+sd(h.cashed):'';const bd=h.bought?'Bought '+sd(h.bought):'';return bd&&cd?bd+' · '+cd:bd||cd;};
  modal(`<h3>${esc(b.lab)}</h3><p><b class="${b.pl>=0?'up':'down'}">${smoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
   <div class="blist">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${esc((h.picks||[]).map(short).slice(0,3).join(' + '))}${(h.picks||[]).length>3?' +'+((h.picks||[]).length-3):''}</b><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
-   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
+   ${when2(h)?`<div class="m" style="font-size:12px;margin:2px 0 4px">${esc(when2(h))}</div>`:''}<div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
   <div class="row"><button class="btn acc" onclick="closeModal()">Done</button></div>`);}
 try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
 function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
@@ -3443,7 +3536,7 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
   if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
-  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif]);
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail]);
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
  }finally{S.gameBusy=false;}}
@@ -3461,8 +3554,9 @@ function paintGame(r){const t=S.gameOpen;
  const plays=st.plays.slice().reverse();
  pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
    <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><span>${esc(sc.abbr)}</span><b>${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b>${sc.opp}</b><span>${esc(sc.opp_abbr)}</span></div>`:
+  <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
+  ${fieldStrip(r.detail,l)}
   <div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
@@ -3472,6 +3566,71 @@ function paintGame(r){const t=S.gameOpen;
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
   ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);}
+/* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
+   two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
+   arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
+   slides to the new spot when the play changes (CSS transition; prefers-reduced-motion respected). Nothing here is read
+   by any buy/sell path, and a bad or missing feed just returns '' so the page still works. */
+/* A team colour, safe to drop into an inline style: a 6-hex-digit colour (with or without a leading #) becomes
+   #rrggbb; anything else (empty, a name, something odd in the feed) falls back to the given CSS variable. The rest
+   of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
+function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
+function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
+ const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
+ // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
+ let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
+ // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
+ const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
+ const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
+ const haveBall=ytz!=null;
+ // Field goes 0..100 left→right in the 100-yard playing area, inset inside two end zones (each 1/12 of the width).
+ const EZ=100/12,play=100-2*EZ;
+ // Line of scrimmage as a % of the whole strip. For the away offence (driving right) distance from left goal = 100-ytz.
+ let losYd=homeHas?ytz:(100-ytz);                 // yards from the LEFT goal line (0..100)
+ let losPct=haveBall?EZ+losYd/100*play:50;
+ // First-down line: `distance` yards further toward the offence's target end zone.
+ const dist=(sit.distance!=null)?sit.distance:null;
+ let fdYd=dist!=null?(homeHas?losYd-dist:losYd+dist):null;
+ let fdPct=fdYd!=null?EZ+Math.max(0,Math.min(100,fdYd))/100*play:null;
+ const rz=!!sit.isRedZone;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+ const rulerN=['G','10','20','30','40','50','40','30','20','10','G'];
+ const ruler=rulerN.map((n,i)=>`<span style="left:${(EZ+i*play/10).toFixed(2)}%">${n}</span>`).join('');
+ const ticks=Array.from({length:11},(_,i)=>`<i style="left:${(EZ+i*play/10).toFixed(2)}%"></i>`).join('');
+ // The ball marker + possession arrow point the direction of the drive.
+ const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
+ const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
+   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
+ // Only draw the first-down line when a ball marker is shown, so a partial feed can't leave a floating line with no ball.
+ const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
+ // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
+ // right end zone (away attacking) covers 80..100.
+ const rzShade=rz?`<i class="frz" style="left:${(dir>0?EZ+80/100*play:EZ).toFixed(2)}%;width:${(20/100*play).toFixed(2)}%"></i>`:'';
+ // The situation line: down & distance, ball spot, who has it; and the last play + its type.
+ const dd=sit.downDistanceText||dr.downDistanceText||'';
+ const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
+ const offName=homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
+ const lastPlay=(sit.lastPlayText||'').trim();const lastType=(sit.lastPlayType||'').trim();
+ return `<div class="fstrip${reduce?' noanim':''}">
+  <div class="fld" role="img" aria-label="Field position">
+   <i class="ez l" style="background:${ac}"><span>${esc(away.abbr||'')}</span></i>
+   <i class="ez r" style="background:${hc}"><span>${esc(home.abbr||'')}</span></i>
+   <div class="grass">${ticks}${rzShade}${fdLine}${ball}</div>
+   <div class="ruler">${ruler}</div>
+  </div>
+  ${haveBall||dd?`<div class="situ"><span class="dd">${esc(dd||(sit.down?ordinal(sit.down)+' & '+(sit.distance??''):''))||'Live'}</span>
+   ${spot?`<span class="m">· ball on ${esc(spot)}</span>`:''}${offName?`<span class="m">· ${esc(offName)} ball</span>`:''}${rz?'<span class="rzt">RED ZONE</span>':''}</div>`:''}
+  ${lastPlay?`<div class="lastplay">${lastType?`<span class="lpt">${esc(lastType)}</span>`:''}<span>${esc(lastPlay)}</span></div>`:''}
+ </div>`;}
+function ordinal(n){n=+n;const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
+// Timeout dots under a team's code on the scoreboard (3 = full). Possession football next to the code with the ball.
+function _teamSide(d,abbr){if(!d||!d.board||!abbr)return null;const a=(abbr||'').toUpperCase();
+ const b=d.board;if((b.home||{}).abbr&&b.home.abbr.toUpperCase()===a)return 'home';if((b.away||{}).abbr&&b.away.abbr.toUpperCase()===a)return 'away';return null;}
+function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situation||{};if(!side)return '';
+ const to=side==='home'?sit.homeTimeouts:sit.awayTimeouts;if(to==null)return '';
+ return `<div class="tdots">${[0,1,2].map(i=>`<i class="${i<to?'on':''}"></i>`).join('')}</div>`;}
+function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
+ const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
+ return has?'<span class="poss" title="has the ball">🏈</span>':'';}
 function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
@@ -3607,7 +3766,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  const tiers=(d.full?[['full','Full slate','Every game on the slate in one bet. You choose how many underdogs it picks.','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos, more likely to hit.',null,2,8,'games each'],['middle','Middle','The core of the mix.',null,2,12,'games each'],['moonshot','Moonshot','Long shots, big payouts.',null,2,16,'games each']]);
  const mix=`<div class="mixl">${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
   return `<div class="mixr"><div><b>${n}</b><small>${s}</small></div><div class="mixs"><div><span>How many</span>${stp(t+'_count',0,10)}</div><div><span>${alt?'Underdogs':'Games each'}</span>${stp(b+'_min',alt?0:lo,hi)}<span>to</span>${stp(b+'_max',alt?0:lo,hi)}</div></div></div>`;}).join('')}</div>`;
- const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
+ const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['haptics','📳','Haptics'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
  const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
  const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
@@ -3643,6 +3802,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
+ ${hapCard()}
  ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
  ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
    <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
@@ -4084,30 +4244,36 @@ def webapp_main():
             bets = bets or []
             done = [a for a in bets if a["status"] in ("won", "lost", "cashed")]
             back = lambda a: a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+            when = {}
+            if A.STORE.get("db"):                       # the day each combo finished, from the Mac's record
+                for r in A.store_rows("select combo, settled, first_seen from bets"):
+                    when[r["combo"]] = (r["settled"], r["first_seen"])
+            # Issue #91: date each bet by when the money actually moved (the cash-out sell, else Kalshi's
+            # settlement, else the Mac's detection time st), not the game/slate date. Day and week come from
+            # the one realized date in the Mac's local tz, so a bet can't land in different buckets.
+            realized = {a["ticker"]: A.realized_buckets(a, when.get(a["ticker"], (None, None))[0]) for a in done}
             weeks = {}
             for a in done:
-                wk = a.get("week") or "?"
+                wk = realized[a["ticker"]][1] or "?"
                 w = weeks.setdefault(wk, {"week": wk, "pl": 0.0, "n": 0, "won": 0})
                 w["pl"] += back(a) - a["cost"]
                 w["n"] += 1
                 w["won"] += a["status"] == "won"
             hist = []
-            when = {}
-            if A.STORE.get("db"):                       # the day each combo finished, from the Mac's record
-                for r in A.store_rows("select combo, settled, first_seen from bets"):
-                    when[r["combo"]] = (r["settled"], r["first_seen"])
-            for a in sorted(done, key=lambda a: (when.get(a["ticker"], (0, 0))[0] or 0, a.get("week") or ""), reverse=True)[:400]:
+            for a in sorted(done, key=lambda a: (realized[a["ticker"]][0] or "", when.get(a["ticker"], (0, 0))[0] or 0), reverse=True)[:400]:
                 names = []
                 for l in a.get("legs") or []:
                     t = l.get("ticker") or ""
                     nm = A.PICK_NAME.get(t) or A.sport_teams(A.ticker_sport(t) or "nfl").get(t.rsplit("-", 1)[-1]) or t.rsplit("-", 1)[-1]
                     names.append(("not " if l.get("side") == "no" else "") + nm)
                 st, fs = when.get(a["ticker"], (None, None))
-                day = time.strftime("%Y-%m-%d", time.localtime(st)) if st else (a.get("week") or "")
+                day, week = realized[a["ticker"]]    # money-moved day and its week, one local-tz date (issue #91)
+                cashed = A.realized_ts(a, st)         # the moment the money moved, for the detail sheet
                 sports = sorted({A.ticker_sport(l.get("ticker") or "") or "" for l in a.get("legs") or []} - {""}) or (a.get("lgs") or [])
                 hist.append({"t": a["ticker"], "status": a["status"], "cost": a["cost"], "back": round(back(a), 2),
-                             "pl": round(back(a) - a["cost"], 2), "pays": a["pays"], "week": a.get("week"), "day": day,
+                             "pl": round(back(a) - a["cost"], 2), "pays": a["pays"], "week": week, "day": day,
                              "bought": time.strftime("%Y-%m-%d", time.localtime(fs)) if fs else None,
+                             "cashed": time.strftime("%Y-%m-%d", time.localtime(cashed)) if cashed else None,
                              "picks": names, "sports": sports})
             staked = sum(a["cost"] for a in done)
             ret = sum(back(a) for a in done)
@@ -4255,7 +4421,24 @@ def webapp_main():
                         c["if_up"] = round(c["pays"] * c["p"] * wi["up"] / ch * disc, 2)
                         c["if_down"] = round(c["pays"] * c["p"] * wi["down"] / ch * disc, 2)
                         c["now"] = round(c["pays"] * c["p"] * disc, 2)
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "fresh": freshness()})
+        # Live game strip (display only, football only): situation off the scoreboard + a richer ESPN summary.
+        # Wrapped so a bad/missing feed shows nothing and never affects the rest of the page or the trading loop.
+        detail = None
+        try:
+            if leg and leg.get("state") == "live" and A.ticker_sport(t) in ("nfl", "ncaaf"):
+                full = A.leg_score(leg)                 # the full score row (has the ESPN event id and situation)
+                if full and full.get("game"):
+                    summ = A.game_detail(full["game"], A.ticker_sport(t)) or {}
+                    sit = full.get("situation") or {}
+                    if summ or sit:
+                        detail = {"situation": sit, **summ}
+        except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as err:
+            # Narrowed so a genuine programming bug (NameError etc.) surfaces instead of being hidden; a bad/missing
+            # feed just drops the strip. Logged once per game like the engine's live-score paths.
+            A.klive_log_once("gamedetail", t, err)
+            detail = None
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
+                         "detail": detail, "fresh": freshness()})
 
     def api_games():
         d = api_live() or {}

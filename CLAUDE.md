@@ -391,6 +391,13 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
+  **Haptics on iOS (issue #60, unresolved):** Pete feels none on iOS 27.2.1 in the Home Screen app, and the `<input
+  switch>` trick is only documented for iOS 17.4-18. `hap()` now toggles a tiny see-through switch laid out *inside* the
+  screen (not parked off it), and iPhones/iPads use it even if `navigator.vibrate` exists. Settings › Test haptics
+  (`hapCard`, tests in `test_haptics.py`) has one lettered button per method (the list is `HAPM`, the code is `HT`);
+  the one `hap()` uses is the single letter `HAPDEF` (now `B`): **once Pete reports which letter he feels, change
+  `HAPDEF` to it** (and drop the methods that don't work). The card also has a per-phone Haptics on/off switch
+  (`cw_hapoff`). Helper switches carry class `hapx` (the tap listener ignores them); test buttons carry `data-hapt`.
 - **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
   - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
     (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and
@@ -412,6 +419,15 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   - **Results**: "Profit by day / week" bars (Day = last 14 days with results, Week = last 12 weeks; remembered),
     drag across for a readout, tap a bar for that day's or week's bets in a sheet. Skeletons for Results and the
     Build panel; empty states point to Build. `test_makeover2.py` covers all of this.
+    **Dated by when the money moved (issue #91, display only):** both bars group each settled bet by when the
+    transaction actually happened — the cash-out sell for a bet cashed early, else Kalshi's settlement time, else the
+    Mac's detection time (`settled`), and only as a last resort the game/slate date — not the NFL game date. The engine
+    captures the last sell fill as `cashed_at` and the settlement time as `settled_at` in `_fetch_account`;
+    `realized_buckets(a, st)` derives the day and the week from that one realized date in the Mac's local tz (the week
+    is `sunday_of` that day, the same rounding `week_of` uses), so day and week can't land in different buckets.
+    `api_results` buckets both the per-day `day` and the per-week grouping with it; the detail sheet shows the buy date
+    and the cash-out/settlement date so the grouping explains itself. No bet, P/L or buy/sell/panel logic changed.
+    `t_realdate.py` and `test_realdate.py` cover it.
 - **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
   motion system.
   - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link

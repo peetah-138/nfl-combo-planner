@@ -1641,13 +1641,57 @@ def winners_only(legs):
     return all((l["ticker"] or "").startswith(WINNER_SERIES) for l in legs)
 
 
+def sunday_of(d):
+    """The Sunday that labels d's week (Monday maps back to the day before, every other day forward
+    to the coming Sunday). Shared by week_of and the Results "Profit by week" bucketing so a date always
+    lands in one week the same way."""
+    if not d:
+        return None
+    return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
+
+
 def week_of(ticker):
     d = game_date({"event_ticker": ticker})
     if not d:
         return None
     if (ticker or "").upper().startswith(("KXNCAAMB", "KXNBA", "KXNHL", "KXAHL", "KXNCAAWB", "KXEUROLEAGUE", "KXATP")):
         return d                                  # daily leagues: the game's own day
-    return d - dt.timedelta(days=1) if d.weekday() == 0 else d + dt.timedelta(days=(6 - d.weekday()) % 7)
+    return sunday_of(d)
+
+
+def iso_unix(s):
+    """A Kalshi ISO time (e.g. "2026-11-19T14:03:00Z") as a unix timestamp, or None if it won't parse."""
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def realized_ts(a, st=None):
+    """When the money actually moved for a settled bet, as a unix timestamp (issue #91): the cash-out
+    sell for a bet sold early, else Kalshi's settlement time for a won/lost bet, else when the Mac first
+    noticed it settle (st). None when nothing is timestamped (then the caller falls back to the game date)."""
+    return a.get("cashed_at") or a.get("settled_at") or st
+
+
+def realized_buckets(a, st=None):
+    """(day, week_key) for the Results "Profit by day/week" bars, both from ONE realized date in ONE
+    local timezone so a bet can't land in different buckets (issue #91). Precedence: the realized
+    transaction time (realized_ts), else the game-date "week" already on the bet. The week is the Sunday
+    of the realized local day (sunday_of), the same rounding weeks always used."""
+    ts = realized_ts(a, st)
+    if ts:
+        d = dt.date.fromtimestamp(ts)             # the Mac's local day the money moved
+        return d.isoformat(), sunday_of(d).isoformat()
+    wk = a.get("week") or ""                      # last resort: an un-timestamped bet still lands somewhere
+    if wk:                                        # round the game date to its week too (daily leagues' week
+        try:                                      # is their game day), so timestamped and un-timestamped
+            wk = sunday_of(dt.date.fromisoformat(wk)).isoformat()   # bets from one week share a bar
+        except ValueError:
+            pass
+    return (a.get("week") or ""), wk
 
 
 ACCT_CACHE = {"at": 0, "value": None}
@@ -1710,7 +1754,7 @@ def _fetch_account():
         return None, None, f"Couldn't reach your Kalshi account just now ({why}). Showing what's saved."
 
     held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0,
-                                "bought_n": 0.0, "first": None})
+                                "bought_n": 0.0, "first": None, "cashed_at": None})
     for f in fills:
         t = f.get("ticker") or f.get("market_ticker")
         if not is_combo(t):
@@ -1731,6 +1775,9 @@ def _fetch_account():
             held[t]["sold"] += n * yes_px
             held[t]["sold_n"] += n
             held[t]["contracts"] -= n
+            sold_ts = iso_unix(f.get("created_time"))  # when the cash-out money moved (issue #91)
+            if sold_ts and (not held[t]["cashed_at"] or sold_ts > held[t]["cashed_at"]):
+                held[t]["cashed_at"] = sold_ts     # the LAST sell fill is when it finished cashing out
         held[t]["fees"] += dollars(f, "fee_cost")
         when = str(f.get("created_time") or "")[:10]
         if when and (not held[t]["first"] or when < held[t]["first"]):
@@ -1782,10 +1829,16 @@ def _fetch_account():
                 weeks = [week_of("X-" + dt.date.fromisoformat(h["first"]).strftime("%y%b%d").upper())]
             except ValueError:
                 pass
+        # When the money actually moved, for the Results "Profit by day/week" bars (issue #91, display only):
+        # a bet cashed early is dated by its last sell fill; a won/lost bet by Kalshi's settlement time.
+        # field name TBC from a real Kalshi settlement record
+        settled_at = iso_unix(s.get("settled_time") or s.get("settlement_time")) if s else None
         bets.append({"ticker": t, "legs": legs, "cost": round(h["cost"] + h["fees"], 2),
                      "pays": round(max(h["contracts"], 0), 2), "status": status, "back": round(back, 2),
                      "week": max(weeks).isoformat() if weeks else None,
                      "first_week": min(weeks).isoformat() if weeks else None,
+                     "cashed_at": h["cashed_at"] if status == "cashed" else None,
+                     "settled_at": settled_at if status in ("won", "lost") else None,
                      "full_pays": round(h["bought_n"] or h["contracts"] or h["sold_n"], 2),
                      "winners": winners_only(legs),
                      "lg": lg if lg in LEAGUES else "nfl",    # other combos are shown with the NFL
@@ -5421,6 +5474,120 @@ def sport_teams(code):
 SCORES_MAX_AGE = 45     # seconds; the Mac lowers this so live scores are near real time
 
 
+def _situation_info(sit, lp):
+    """Football live situation off the ESPN scoreboard, for the game strip (display only). Never raises:
+    a missing field is None/empty so the strip just leaves it out. down/distance/yardLine/timeouts and the
+    last play's text and type; possession is filled in per team by the caller."""
+    try:
+        typ = lp.get("type") or {}
+        return {"down": sit.get("down"), "distance": sit.get("distance"),
+                "yardLine": sit.get("yardLine"), "isRedZone": bool(sit.get("isRedZone")),
+                "homeTimeouts": sit.get("homeTimeouts"), "awayTimeouts": sit.get("awayTimeouts"),
+                "downDistanceText": sit.get("downDistanceText") or "",
+                "possessionText": sit.get("possessionText") or "",
+                "lastPlayText": (lp.get("text") or "")[:300],
+                "lastPlayType": typ.get("text") or typ.get("abbreviation") or ""}
+    except (AttributeError, TypeError, ValueError):
+        return {}
+
+
+GAME_DETAIL = {}        # event id -> (fetched at, parsed detail); display only, like league_injuries
+
+
+def game_detail(event_id, code, max_age=6):
+    """Slice-1 game-detail for the live game page (football only): the ESPN summary parsed down to what the
+    field strip, situation line, last play and scoreboard need. Display only, never read by any buy/sell path.
+    Returns {} for non-football sports, a missing feed, or any parse trouble — the page still works without it.
+    Caching/backoff come free from the hub's HubCache when the Mac is up (ESPN GETs route through it)."""
+    import time
+    path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
+    # football only (slice 1); the event id must be the plain numeric ESPN id (defence in depth: a bad value is
+    # already handled below, but guard it explicitly so a surprising id never reaches the ESPN fetch).
+    if not event_id or "football/" not in str(path) or not re.match(r"^\d+$", str(event_id)):
+        return {}
+    got = GAME_DETAIL.get(event_id)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    out = {}
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
+        r = requests.get(url, params={"event": str(event_id)}, timeout=10)
+        data = r.json() if r.ok else {}
+        out = _parse_game_detail(data) if data else {}
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as err:
+        # Keep serving the last good copy, but log it once per game (like kalshi_score/display_score) so a
+        # persistent feed break is visible instead of silently falling back forever.
+        klive_log_once("gamedetail", event_id, err)
+        out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
+    GAME_DETAIL[event_id] = (time.time(), out)
+    return out
+
+
+def _parse_game_detail(data):
+    """Pull the slice-1 fields out of an ESPN football summary. Every step is defensive: a malformed feed
+    yields {} (or drops just the missing piece), never an exception, so the trading loop is never touched."""
+    try:
+        hdr = (data.get("header") or {})
+        comp = ((hdr.get("competitions") or [{}])[0]) or {}
+        comps = comp.get("competitors") or []
+        if len(comps) != 2:
+            return {}
+        teams = {}
+        for c in comps:
+            tm = c.get("team") or {}
+            side = c.get("homeAway") or ""
+            rec = ""
+            for rr in (c.get("record") or []):
+                if isinstance(rr, dict) and (rr.get("type") == "total" or not rec):
+                    rec = rr.get("summary") or rr.get("displayValue") or rec
+            teams[side] = {"id": str(tm.get("id") or ""), "abbr": tm.get("abbreviation") or "",
+                           "name": tm.get("displayName") or tm.get("name") or "",
+                           "color": "#" + (tm.get("color") or "").lstrip("#") if tm.get("color") else "",
+                           "alt": "#" + (tm.get("alternateColor") or "").lstrip("#") if tm.get("alternateColor") else "",
+                           "score": _to_int(c.get("score")), "record": rec, "homeAway": side}
+        if "home" not in teams or "away" not in teams:
+            return {}
+        st = (comp.get("status") or {})
+        stype = st.get("type") or {}
+        board = {"home": teams["home"], "away": teams["away"],
+                 "period": st.get("period"), "displayClock": st.get("displayClock") or "",
+                 "state": stype.get("state") or "", "completed": bool(stype.get("completed")),
+                 "shortDetail": stype.get("shortDetail") or ""}
+        bcs = comp.get("broadcasts") or data.get("broadcasts") or []
+        for b in bcs:
+            media = (b.get("media") or {}) if isinstance(b, dict) else {}
+            call = media.get("callLetters") or (b.get("names") or [None])[0] if isinstance(b, dict) else None
+            if call:
+                board["broadcast"] = call
+                break
+        out = {"board": board}
+        # current drive: team on offense + ball/first-down spots (yardsToEndzone so the strip can place the ball)
+        cur = ((data.get("drives") or {}).get("current") or {})
+        if cur:
+            dteam = (cur.get("team") or {})
+            plays = cur.get("plays") or []
+            last = plays[-1] if plays else {}
+            start, end = (last.get("start") or {}), (last.get("end") or {})
+            out["drive"] = {"teamId": str(dteam.get("id") or ""), "teamAbbr": dteam.get("abbreviation") or "",
+                            "ballYardsToEndzone": end.get("yardsToEndzone") if end.get("yardsToEndzone") is not None
+                            else start.get("yardsToEndzone"),
+                            "ballYardLine": end.get("yardLine") if end.get("yardLine") is not None
+                            else start.get("yardLine"),
+                            "downDistanceText": (end.get("downDistanceText") or start.get("downDistanceText") or "")}
+        return out
+    except (AttributeError, TypeError, ValueError):
+        # The explicit guards above (len==2, "home"/"away" present, plays[-1] only when non-empty) make KeyError
+        # and IndexError unreachable for feed data; catching them too would only hide a future programming bug.
+        return {}
+
+
+def _to_int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_scores(max_age=None, code=None):
     """Live scores for one league (default: the one on screen), by team (ESPN's free scoreboard).
     Keeps the last good copy if ESPN can't be reached."""
@@ -5466,6 +5633,10 @@ def fetch_scores(max_age=None, code=None):
                 detail = typ.get("shortDetail", "")
             sit = comp.get("situation") or {}
             prob = (sit.get("lastPlay") or {}).get("probability") or {}
+            # Football situation for the live game strip (display only; extracted defensively, empty for other sports).
+            lp = sit.get("lastPlay") or {}
+            sit_info = _situation_info(sit, lp) if state == "in" and sp.get("espn") and "football/" in str(
+                sp["espn"]) else {}
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
@@ -5485,6 +5656,11 @@ def fetch_scores(max_age=None, code=None):
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
                         "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
                         "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
+                if sit_info:                      # football live situation (display only), seen from this team's side
+                    info["situation"] = dict(sit_info,
+                                             possession=str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
+                                             myTimeouts=sit_info["homeTimeouts"] if me.get("homeAway") == "home" else sit_info["awayTimeouts"],
+                                             theirTimeouts=sit_info["awayTimeouts"] if me.get("homeAway") == "home" else sit_info["homeTimeouts"])
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),
                             norm_team(tm.get("location") or ""),
                             "@" + (tm.get("abbreviation") or "").upper()} - {"", "@"}:
