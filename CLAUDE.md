@@ -430,6 +430,15 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   - **Results**: "Profit by day / week" bars (Day = last 14 days with results, Week = last 12 weeks; remembered),
     drag across for a readout, tap a bar for that day's or week's bets in a sheet. Skeletons for Results and the
     Build panel; empty states point to Build. `test_makeover2.py` covers all of this.
+    **Dated by when the money moved (issue #91, display only):** both bars group each settled bet by when the
+    transaction actually happened — the cash-out sell for a bet cashed early, else Kalshi's settlement time, else the
+    Mac's detection time (`settled`), and only as a last resort the game/slate date — not the NFL game date. The engine
+    captures the last sell fill as `cashed_at` and the settlement time as `settled_at` in `_fetch_account`;
+    `realized_buckets(a, st)` derives the day and the week from that one realized date in the Mac's local tz (the week
+    is `sunday_of` that day, the same rounding `week_of` uses), so day and week can't land in different buckets.
+    `api_results` buckets both the per-day `day` and the per-week grouping with it; the detail sheet shows the buy date
+    and the cash-out/settlement date so the grouping explains itself. No bet, P/L or buy/sell/panel logic changed.
+    `t_realdate.py` and `test_realdate.py` cover it.
 - **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
   motion system.
   - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link

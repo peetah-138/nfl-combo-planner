@@ -73,6 +73,10 @@ pattern in a local `.git/hooks/pre-commit`.
   desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
   no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
   `fixtures/kalshi_orders_v2.json`).
+  Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
+  `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
+  a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,
+  and `_fetch_account` capturing the last sell fill as `cashed_at` and a settlement time as `settled_at`.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
@@ -98,6 +102,9 @@ pattern in a local `.git/hooks/pre-commit`.
   `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.
+  `test_realdate.py` (issue #91): a combo cashed out early (game Sunday Nov 22, cashed Wed Nov 18) buckets by its
+  Nov 18 cash-out, not the game date, in both the Profit-by-day and Profit-by-week bars, and the day and week detail
+  sheets show the buy date and the cash-out date.
 
 ## Writing tests
 
