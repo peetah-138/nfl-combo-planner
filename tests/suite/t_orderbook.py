@@ -1,0 +1,151 @@
+# Kalshi changed its public order book answer (issue #70): GET /markets/<ticker>/orderbook now returns
+# {"orderbook_fp": {"yes_dollars": [["0.52", "3703.51"], ...], "no_dollars": [...]}} (dollar strings, lowest price
+# first) instead of {"orderbook": {"yes": [[52, 3703], ...], "no": [...]}} (whole cents). The app read only the old
+# key, so every book looked empty and every single/spread/total panel buy failed with "no price on Kalshi right now".
+# book_depth reads both shapes the same, in dollars, and never raises on an odd answer. Real-shape fixtures:
+# fixtures/kalshi_orderbook.json and fixtures/kalshi_market.json. No real orders: every trading call is faked here.
+import os, json, time, tempfile, importlib.util
+os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
+spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
+E.HEDGES = os.path.join(E.HERE, "hedges.json"); E.SELL_LOG = os.path.join(E.HERE, "sells.jsonl")
+import fakenet
+ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+FX = json.load(open("fixtures/kalshi_orderbook.json"))
+MK = json.load(open("fixtures/kalshi_market.json"))["market"]
+NYK, LAC = "KXNBAGAME-26NOV19NYKMIN-NYK", "KXNBAGAME-26NOV19LACSAS-LAC"
+
+
+def old_book_depth(payload):
+    """What book_depth worked out before the fix (copied as it was), for the old-shape answer."""
+    ob = (payload or {}).get("orderbook") or {}
+
+    def levels(side):
+        rows = ob.get(f"{side}_dollars") or [[x[0] / 100, x[1]] for x in (ob.get(side) or [])]
+        out = []
+        for row in rows:
+            try:
+                out.append((float(row[0]), float(row[1])))
+            except (TypeError, ValueError, IndexError):
+                pass
+        return sorted(out)
+    yes, no = levels("yes"), levels("no")
+    if not yes or not no:
+        return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
+                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
+    bid, ask = yes[-1][0], 1 - no[-1][0]
+    return {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
+            "thin": ask - bid > 0.04 or no[-1][1] < 100}
+
+
+# ---- the real shapes: the new answer reads exactly like the old one did
+for t in (NYK, LAC):
+    new, old = E.book_info(FX[t]["new"]), E.book_info(FX[t]["old"])
+    ok(f"{t[-3:]}: new shape reads the same as the old shape", new == old)
+    ok(f"{t[-3:]}: old shape reads exactly as before the fix", old == old_book_depth(FX[t]["old"]))
+    ok(f"{t[-3:]}: the old code saw nothing in the new shape (the bug)", old_book_depth(FX[t]["new"])["ask"] is None)
+nyk = E.book_info(FX[NYK]["new"])
+ok("NYK: best bid 52c, ask 53c (1 - best NO bid 47c), in dollars not cents",
+   abs(nyk["bid"] - 0.52) < 1e-9 and abs(nyk["ask"] - 0.53) < 1e-9 and nyk["spread"] == 0.01)
+ok("NYK: matches the market's own yes_bid/yes_ask from GET /markets/<ticker>",
+   abs(nyk["bid"] - float(MK["yes_bid_dollars"])) < 1e-9 and abs(nyk["ask"] - float(MK["yes_ask_dollars"])) < 1e-9)
+ok("NYK: size at the best ask read from the quantity string, not thin", abs(nyk["ask_size"] - 143646.29) < 1e-6 and not nyk["thin"])
+lac = E.book_info(FX[LAC]["new"])
+ok("LAC: bid 11c, ask 12c", abs(lac["bid"] - 0.11) < 1e-9 and abs(lac["ask"] - 0.12) < 1e-9)
+shuffled = {"orderbook_fp": {k: list(reversed(v)) for k, v in FX[NYK]["new"]["orderbook_fp"].items()}}
+ok("rows in any order: the best price still wins", E.book_info(shuffled) == nyk)
+lv = E.book_levels(FX[NYK]["new"]["orderbook_fp"], "yes")
+ok("book_levels: dollars, lowest first", lv[0] == (0.01, 1598443.56) and lv[-1] == (0.52, 3703.51))
+
+# ---- odd answers never raise and never invent a price
+empty = {"bid": None, "ask": None, "spread": None, "ask_size": 0, "thin": True}
+odd = [None, [], "x", 5, {}, {"orderbook_fp": None}, {"orderbook_fp": []}, {"orderbook_fp": {"yes_dollars": "x"}},
+       {"orderbook": {"yes": None, "no": None}}, {"orderbook_fp": {"yes_dollars": [[None, 1], ["abc", "2"], [0.5], "x", None]}},
+       {"orderbook_fp": {"yes_dollars": [["nan", "5"], ["inf", "5"], ["1.5", "5"], ["0", "5"], ["-0.2", "5"]]}},
+       {"orderbook_fp": {"no_dollars": [["0.40", "nan"], ["0.40", "0"], ["0.40", "-3"], ["0.40", "inf"]]}},
+       {"orderbook": {"yes": [[150, 10], [0, 10]], "no": [["x", 1]]}}]
+res = []
+for o in odd:
+    try:
+        res.append(E.book_info(o))
+    except Exception as err:                 # noqa: BLE001 (any raise is a failure)
+        res.append(repr(err))
+ok("garbage answers: no prices, thin, never raises", all(r == empty for r in res))
+one = E.book_info({"orderbook_fp": {"yes_dollars": [["0.40", "10"]], "no_dollars": []}})
+ok("one side only: the bid, no ask, thin", one["bid"] == 0.40 and one["ask"] is None and one["thin"])
+mixed = E.book_info({"orderbook_fp": {"yes_dollars": [], "no_dollars": []}, "orderbook": {"yes": [[45, 200]], "no": [[50, 200]]}})
+ok("empty new key but a filled old one: reads the old one", abs(mixed["bid"] - 0.45) < 1e-9 and abs(mixed["ask"] - 0.50) < 1e-9)
+ds = E.book_info({"orderbook": {"yes": [["0.45", "200"]], "no": [["0.50", "200"]]}})
+ok("old key with dollar strings: read as dollars, not divided by 100", abs(ds["bid"] - 0.45) < 1e-9 and abs(ds["ask"] - 0.50) < 1e-9)
+both = E.book_info({"orderbook_fp": {"yes_dollars": [["0.30", "200"]], "no_dollars": [["0.60", "200"]]},
+                    "orderbook": {"yes": [[45, 200]], "no": [[50, 200]]}})
+ok("both keys: the new one wins", abs(both["bid"] - 0.30) < 1e-9)
+
+# ---- book_depth over the (fake) network: Kalshi's new shape by default, the old one too, identical
+fakenet.install()
+mk = fakenet.markets()
+m0 = next(m for m in mk if m["ticker"].startswith("KXNBAGAME"))
+T = m0["ticker"]
+seen = {}
+for shape in ("fp", "old"):
+    fakenet.BOOK_SHAPE["v"] = shape
+    E.BOOK_DEPTH.clear()
+    seen[shape] = E.book_depth(T, max_age=0)
+fakenet.BOOK_SHAPE["v"] = "fp"
+ok("book_depth: new-shape answer gives the market's bid and ask",
+   seen["fp"] and abs(seen["fp"]["ask"] - float(m0["yes_ask_dollars"])) < 1e-9 and abs(seen["fp"]["bid"] - float(m0["yes_bid_dollars"])) < 1e-9)
+ok("book_depth: old-shape answer reads identically", seen["fp"] == seen["old"])
+E.BOOK_DEPTH.clear()
+ok("book_depth: an unknown ticker = no prices (not an error)", E.book_depth("KXNOPE-1", max_age=0)["ask"] is None)
+
+# ---- the 6c gap rule on the parsed book
+wide = {"orderbook_fp": {"yes_dollars": [["0.40", "500"]], "no_dollars": [["0.53", "500"]]}}   # 40c bid, 47c ask
+ok("a 7c gap: spread 0.07, thin", E.book_info(wide)["spread"] == 0.07 and E.book_info(wide)["thin"])
+ok("the gap rule: 7c is over LIVE_SPREAD and HEDGE_GAP (6c), 1c is not",
+   E.book_info(wide)["spread"] > E.LIVE_SPREAD and E.book_info(wide)["spread"] > E.HEDGE_GAP and nyk["spread"] <= E.LIVE_SPREAD)
+
+# ---- a single / spread / total panel bet buys against the new-shape book (no real order: buy_single is faked)
+BOUGHT = []
+E.buy_single = lambda t, n, px: (BOUGHT.append((t, n, px)) or (n, None))
+E.post_sell = lambda *a, **k: None
+ask0 = float(m0["yes_ask_dollars"])
+for kind in ("single", "line", "early"):
+    BOUGHT.clear(); E.BOOK_DEPTH.clear()
+    c = {"kind": kind, "code": "nba", "stake": 10.0, "exit": 0.9, "legs": [{"ticker": T, "pick": "x", "fair": ask0 + 0.1, "p": ask0}]}
+    good, note, d = E._buy_panel_bet(c)
+    ok(f"panel {kind}: bought at Kalshi's ask from the new-shape book ({note})",
+       good and BOUGHT and BOUGHT[0][0] == T and abs(BOUGHT[0][2] - ask0) < 1e-9 and BOUGHT[0][1] == int(10 // (ask0 + E.single_fee(ask0))))
+BOUGHT.clear(); E.BOOK_DEPTH.clear()
+good, note, _ = E._buy_panel_bet({"kind": "single", "code": "nba", "stake": 10.0, "legs": [{"ticker": "KXNOPE-1", "fair": 0.9}]})
+ok("panel single, empty book: skipped with 'no price', nothing bought", good is False and "no price" in note and not BOUGHT)
+
+# ---- auto-hedge re-reads the hedge side's book (new shape) and buys at that ask
+other = next(m for m in mk if m["event_ticker"] == m0["event_ticker"] and m["ticker"] != T)
+E.MINE["all_games"] = {"g": [{"ticker": T, "pick": "A", "p": 0.7}, {"ticker": other["ticker"], "pick": "B", "p": 0.2}]}
+E.MINE["hold"] = {"C1": {"need": [(("yes", T), "A")], "cost": 5.0, "pays": 20}}
+E.CFG.update(hedge_cap=100, prefer_hedge=True)
+E.BOOK_DEPTH.clear()
+hg, why = E.hedge_fresh("C1", E.MINE["hold"]["C1"], 10.0)
+ok(f"hedge_fresh: priced on the hedge side's fresh new-shape book ({why or 'ok'})",
+   hg is not None and hg["ticker"] == other["ticker"] and abs(hg["price"] - float(other["yes_ask_dollars"])) < 1e-9)
+
+# ---- smart sell for a single: it sells at the market's bid (GET /markets fields, which kept their shape), in cents
+SENT = []
+E.kalshi_send = lambda m, p, b=None, params=None: (SENT.append((m, p, b)), {"order": {"fill_count_fp": f"{b['count']:.2f}"}})[1]
+E.hands_off = lambda t: False
+E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
+E.smart_params = lambda ts: {"loss": None}
+E.resting_single_sells = lambda: set()
+E.sold_today = lambda: 0
+E.log_decision = lambda rec: None
+E.CFG["auto_cap"] = 5
+real = dict(MK)
+E.SINGLES.update(at=time.time(), mk={real["ticker"]: real},
+                 items=[{"t": real["ticker"], "side": "yes", "state": "live", "label": "Knicks", "n": 10, "cost": 4.0, "chance": 0.5, "kind": "win"}])
+msgs = E.smart_sell_singles()
+ok("smart sell single: sold into the bid from the real market fields (52c, sent as 52 cents)",
+   len(SENT) == 1 and SENT[0][2]["yes_price"] == 52 and SENT[0][2]["count"] == 10 and SENT[0][2]["reduce_only"] and msgs)
+SENT.clear()
+E.SINGLES.update(at=time.time(), mk={real["ticker"]: dict(real, yes_bid_dollars="0.4400", yes_ask_dollars="0.5300")})
+E.smart_sell_singles()
+ok("smart sell single: a 9c gap is too thin, nothing sold", not SENT)

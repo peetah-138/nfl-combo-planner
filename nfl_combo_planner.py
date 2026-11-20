@@ -13371,6 +13371,46 @@ def shadow_html(sm):
 BOOK_DEPTH = {}
 
 
+def book_levels(ob, side):
+    """One side of a Kalshi order book as [(price in dollars, contracts)], lowest price first. Reads the dollar
+    rows ('yes_dollars': [["0.45", "120.00"], ...]) or, failing that, the old whole-cent rows ('yes': [[45, 120]]).
+    Rows it can't read, prices outside 0-1 dollars and empty sizes are skipped; never raises."""
+    if not isinstance(ob, dict):
+        return []
+    rows, cents = ob.get(f"{side}_dollars"), False
+    if not rows:
+        rows, cents = ob.get(side), True
+    out = []
+    for row in rows if isinstance(rows, (list, tuple)) else ():
+        try:
+            p, q = row[0], float(row[1])
+            # old rows are whole cents (45); a dollar string ("0.45") in them is already dollars
+            p = float(p) if not cents or (isinstance(p, str) and "." in p) else float(p) / 100
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if 0 < p < 1 and 0 < q < float("inf"):
+            out.append((p, q))
+    return sorted(out)
+
+
+def book_info(payload):
+    """{'bid', 'ask', 'spread', 'ask_size', 'thin'} from a Kalshi order book answer, in dollars. Kalshi now sends
+    {'orderbook_fp': {'yes_dollars': [...], 'no_dollars': [...]}} (dollar strings); it used to send
+    {'orderbook': {'yes': [[cents, n]...], 'no': [...]}}. Both read the same. An empty or odd answer = no prices."""
+    yes = no = []
+    for key in ("orderbook_fp", "orderbook"):
+        ob = payload.get(key) if isinstance(payload, dict) else None
+        yes, no = book_levels(ob, "yes"), book_levels(ob, "no")
+        if yes or no:
+            break
+    if not yes or not no:
+        return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
+                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
+    bid, ask = yes[-1][0], 1 - no[-1][0]
+    return {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
+            "thin": ask - bid > 0.04 or no[-1][1] < 100}
+
+
 def book_depth(ticker, max_age=60):
     """Kalshi's order book for one pick: {'bid', 'ask', 'spread', 'ask_size' (contracts at the best
     ask), 'thin'}. Thin = wide spread or little size, so the price isn't reliable. None if unknown."""
@@ -13380,27 +13420,9 @@ def book_depth(ticker, max_age=60):
         return got[1]
     try:
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
-        ob = ((r.json() or {}).get("orderbook") or {}) if r.ok else {}
+        info = book_info(r.json() if r.ok else {})
     except (requests.RequestException, ValueError):
         return None
-
-    def levels(side):
-        rows = ob.get(f"{side}_dollars") or [[x[0] / 100, x[1]] for x in (ob.get(side) or [])]
-        out = []
-        for row in rows:
-            try:
-                out.append((float(row[0]), float(row[1])))
-            except (TypeError, ValueError, IndexError):
-                pass
-        return sorted(out)
-    yes, no = levels("yes"), levels("no")
-    if not yes or not no:
-        info = {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
-                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
-    else:
-        bid, ask = yes[-1][0], 1 - no[-1][0]
-        info = {"bid": bid, "ask": ask, "spread": round(ask - bid, 4), "ask_size": no[-1][1],
-                "thin": ask - bid > 0.04 or no[-1][1] < 100}
     BOOK_DEPTH[ticker] = (now, info)
     if len(BOOK_DEPTH) > 3000:
         for k in sorted(BOOK_DEPTH, key=lambda k: BOOK_DEPTH[k][0])[:1000]:
