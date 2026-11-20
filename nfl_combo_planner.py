@@ -5586,8 +5586,8 @@ def game_detail(event_id, code, max_age=6):
         klive_log_once("gamedetail", event_id, err)
         out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
     now = time.time()
-    for k in [k for k, v in GAME_DETAIL.items() if now - v[0] > GAME_DETAIL_KEEP]:
-        del GAME_DETAIL[k]                                  # forget games nobody has opened for an hour, so the cache stays small
+    for k in [k for k, v in list(GAME_DETAIL.items()) if now - v[0] > GAME_DETAIL_KEEP]:
+        GAME_DETAIL.pop(k, None)                                # forget games nobody has opened for an hour, so the cache stays small
     GAME_DETAIL[event_id] = (now, out)
     return out
 
@@ -14185,15 +14185,33 @@ def _cover_pass(log=print, alert=None):
                     store_x("insert or ignore into cover values(?,?,?,?,?,?,?,?)",
                             (key, now, json.dumps(slots), None, 0, 0, "missed", None))
     for row in store_rows("select * from cover where status='open'"):
-        did += _cover_resolve(row, now, alert)
+        try:                                          # one bad row must not stop the other open weeks
+            did += _cover_resolve(row, now, alert)
+        except Exception as err:
+            log("cover week skipped:", row["sunday"], type(err).__name__, err)
     return did
+
+
+def _cover_row_slots(row, now):
+    """The checkpoints saved in an open cover row, or None. A row saved by an older version (a plain list of
+    games, no checkpoints) or one still open 10 days on (a postponed game never settled) is marked stale, so it
+    stops being re-read every round."""
+    try:
+        slots = json.loads(row["early"])
+    except (TypeError, ValueError):
+        slots = None
+    if not slots or not isinstance(slots, list) or not isinstance(slots[0], dict) or "games" not in slots[0] \
+            or now - row["ts"] > 10 * 86400:
+        store_x("update cover set status='stale' where sunday=? and status='open'", (row["sunday"],))
+        return None
+    return slots
 
 
 def _cover_resolve(row, now, alert):
     """One open week: as each later checkpoint settles, record the surviving combo's worth there and its smart-sell
     replay exit; when the whole week is settled, decide whether the exits beat the cost of covering both sides."""
     did = []
-    slots = json.loads(row["early"])
+    slots = _cover_row_slots(row, now)
     if not slots:
         return did
     stake, r_buy, r_sell = COVER["stake"], row["r_buy"], row["r_sell"]
@@ -14300,7 +14318,7 @@ def _cover_ticks(log=print):
         return 0
     want = set()
     for row in store_rows("select * from cover where status='open'"):
-        slots = json.loads(row["early"])
+        slots = _cover_row_slots(row, time.time())
         if not slots:
             continue
         early = slots[0]["games"]
