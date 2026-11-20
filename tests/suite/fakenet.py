@@ -1,7 +1,7 @@
 """A fake internet for the dev environment (tests/dev_webapp.py): Kalshi, ESPN, GitHub, ntfy and the odds service
 answered from memory, patched over `requests`. Same shapes as the fakes in macsmoke/run.py and test_webapp_pw.py.
 Nothing here ever opens a real connection: any URL it does not know gets an empty answer, any non-GET Kalshi call
-is refused, and any local address except the dev web app's own port is refused (so the real hub on 8765 and the
+is refused (unless an engine test turns on the fake order desk, ORDERS["mode"]), and any local address except the dev web app's own port is refused (so the real hub on 8765 and the
 real app on 8766 can't be reached)."""
 import json, time, datetime as dt, requests
 from urllib.parse import urlsplit
@@ -126,7 +126,54 @@ def kalshi_live():
     return {ms["related_event_tickers"][0]: ms for ms, _ in out}, {ld["milestone_id"]: ld for _, ld in out}
 
 
-def fake(method, url, params=None, port=18800):
+# A fake Kalshi order desk, OFF unless a test turns it on (the dev web app never places orders). Modes, from the
+# OpenAPI spec (docs.kalshi.com/openapi.yaml): "v2" = V2 at /portfolio/events/orders, the legacy writes answer 410
+# deprecated_v1_order_endpoint (Kalshi today); "legacy" = an account without V2 yet (404 on the V2 path, legacy works);
+# "both"; "gone" = 404 on V2 and 410 on legacy. ORDERS["next"] = a status code, (status, code), or an exception to
+# answer the next order write with; ORDERS["fill"] = contracts filled (default: all). Every write is in ORDERS["sent"].
+ORDERS = {"mode": None, "sent": [], "next": None, "fill": None, "headers": {}}
+GONE = {"error": {"code": "deprecated_v1_order_endpoint", "message": "This endpoint has been removed. Please switch "
+                  "to the V2 endpoints", "details": "https://docs.kalshi.com/getting_started/order_errors"}}
+
+
+def order_desk(method, path, params, data):
+    try:
+        body = json.loads(data) if data else None
+    except (TypeError, ValueError):
+        body = None
+    ORDERS["sent"].append((method, path, body, dict(params or {})))
+    mode, v2 = ORDERS["mode"], path.startswith("/portfolio/events/orders")
+    nxt, ORDERS["next"] = ORDERS["next"], None
+    if isinstance(nxt, BaseException):
+        raise nxt
+    if isinstance(nxt, R):
+        return nxt
+    if nxt:
+        st, code = nxt if isinstance(nxt, tuple) else (nxt, "")
+        return R({"error": {"code": code, "message": f"fake {st}"}} if code else {"message": f"fake {st}"}, st)
+    if v2 and mode in ("legacy", "gone"):
+        return R({"message": "404 page not found"}, 404)
+    if not v2 and mode in ("v2", "gone"):
+        return R(GONE, 410)
+    if method == "DELETE":
+        oid = path.rsplit("/", 1)[-1]
+        return R({"order_id": oid, "reduced_by": "5.00", "ts_ms": 1} if v2 else {"order": {"order_id": oid, "status": "canceled"}})
+    n = float(body.get("count") or body.get("count_fp") or 0)
+    f = n if ORDERS["fill"] is None else min(n, ORDERS["fill"])
+    if v2:
+        ans = {"order_id": f"ord-{len(ORDERS['sent'])}", "client_order_id": body.get("client_order_id"),
+               "fill_count": f"{f:.2f}", "remaining_count": "0.00", "ts_ms": 1715793600123}
+        if f:
+            ans["average_fill_price"] = body.get("price")
+        r = R(ans, 201)
+    else:
+        r = R({"order": {"order_id": f"ord-{len(ORDERS['sent'])}", "status": "executed" if f else "canceled",
+                         "fill_count_fp": f"{f:.2f}", "remaining_count_fp": "0.00"}}, 201)
+    r.headers = dict(ORDERS["headers"])
+    return r
+
+
+def fake(method, url, params=None, port=18800, data=None):
     """The answer for one call, or None for the dev app's own address (the caller makes that one for real)."""
     try:
         parts = urlsplit(url)
@@ -139,6 +186,8 @@ def fake(method, url, params=None, port=18800):
         raise requests.ConnectionError(f"dev environment: refused local address {url.split('?')[0]}")
     if "kalshi" in url:
         path = url.split("/trade-api/v2")[-1].split("?")[0]
+        if method != "GET" and ORDERS["mode"] and path.startswith(("/portfolio/orders", "/portfolio/events/orders")):
+            return order_desk(method, path, params, data)                   # a test's fake order desk only
         if method != "GET":
             return R({"error": "dev environment: no orders"}, 403)          # never a trade
         if path.startswith("/markets"):
@@ -191,7 +240,7 @@ def install(port=18800):
     requests.delete = over("DELETE", real["post"])
 
     def req(method, url, **k):
-        r = fake(method.upper(), url, k.get("params"), port)
+        r = fake(method.upper(), url, k.get("params"), port, k.get("data"))
         return r if r is not None else real["request"](method, url, **k)
     requests.request = req
 
