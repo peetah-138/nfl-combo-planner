@@ -378,6 +378,12 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+- **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
+  labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
+  asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
+  puts the same DOM node back across any redraw (refresh, rebuild, load), so the button is never replaced, flickers or
+  loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
+  quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
