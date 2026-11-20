@@ -76,7 +76,7 @@ def raises(data):
 # ---- parsing the real feed
 items = K.parse_feed(FIXTURE)
 by = {i["guid"]: i for i in items}
-ok("fixture: parses all six items", len(items) == 6)
+ok("fixture: parses all 15 items of the real feed", len(items) == 15)
 x = by["b81510679af390a1"]
 ok("fixture: title, guid, link, date read", x["title"] == "Listener mode on KalshiRFQ sessions" and x["link"].startswith("https://docs.kalshi.com/changelog")
    and x["date"] == datetime(2026, 11, 19, 16, 47, 30, tzinfo=timezone.utc))
@@ -86,29 +86,35 @@ ok("fixture: summary keeps the words and the line breaks stay plain", "listener 
 ok("fixture: every item has a summary within the length limit", all(0 < len(i["summary"]) <= K.SUMMARY_MAX for i in items))
 
 # ---- keyword flagging
-ok("flag: 'removed' in the real feed is flagged", by["87e8e0c610c83644"]["breaking"])
-ok("flag: rate limit headers entry is flagged", by["714421dc1a050e02"]["breaking"])
-ok("flag: a plain addition is not flagged", not by["6c952087f58b2bc5"]["breaking"])
-words = ["deprecated", "sunset", "removed", "breaking change", "discontinued", "migrate", "will be disabled", "no longer works", "orders", "portfolio",
-         "RFQ", "quote", "fixed-point", "order book", "websocket", "authentication", "signing", "rate limit"]
-miss = [w for w in words if not K.parse_feed(rss(item(title="Thing", desc=f"We changed the {w} today")))[0]["breaking"]]
-ok("flag: every keyword flags (case-insensitive)", not miss and K.parse_feed(rss(item(desc="We changed the ORDER BOOK")))[0]["breaking"])
-ok("flag: a keyword only in the title also flags", K.parse_feed(rss(item(title="Websocket changes", desc="nothing")))[0]["breaking"])
-ok("flag: no keyword, no flag", not K.parse_feed(rss(item(title="New markets", desc="Weather markets for more cities")))[0]["breaking"])
+# the two tiers on the real feed: "breaking" needs a removal/deprecation word AND an area the app uses; the rest are FYI
+BREAKING_NOW = {"87e8e0c610c83644": "Market expiration_time removed", "134dba02718b875a": "User hosts for fill and order updates"}
+ok("tiers: the real feed has exactly these breaking items", {g: i["title"] for g, i in by.items() if i["breaking"]} == BREAKING_NOW)
+ok("tiers: the other 13 real entries are FYI (incl. rate limit headers, orderbook market_id, RFQ listener mode)", sum(1 for i in items if not i["breaking"]) == 13
+   and not any(by[g]["breaking"] for g in ("714421dc1a050e02", "575fe7489c4e90a2", "b81510679af390a1", "6c952087f58b2bc5")))
+print("TIER breaking:", sorted(i["title"] for i in items if i["breaking"]))
+print("TIER fyi:", sorted(i["title"] for i in items if not i["breaking"]))
+strong = ["deprecated", "sunset", "will be removed", "removed", "no longer works", "discontinued", "will be disabled", "migrate", "returns 410"]
+areas = ["orders", "portfolio", "RFQ", "quotes", "communications", "order book", "orderbook", "market_id", "market fields", "authentication", "signing", "rate limit", "websocket", "fills"]
+mk = lambda t, d="": K.parse_feed(rss(item(title=t, desc=d)))[0]["breaking"]
+ok("tiers: every strong term with an app area is breaking (any case)", not [w for w in strong if not mk("Thing", f"The {w} for orders")] and mk("X", "REMOVED: ORDER BOOK field"))
+ok("tiers: every app area with a removal word is breaking", not [a for a in areas if not mk("Thing", f"The {a} endpoint is removed")])
+ok("tiers: a strong term alone (no app area) is FYI", not mk("Weather markets", "The old weather field is removed") and not mk("Concerts", "Deprecated concert flag"))
+ok("tiers: an app area alone (no removal word) is FYI", not mk("Orders get a new field", "POST /orders now also returns created_at") and not mk("Websocket changes", "nothing"))
+ok("tiers: strong in the title, area in the description still counts", mk("Endpoint removed", "It was used for orders"))
 b = K.issue_body(by["87e8e0c610c83644"]); p = K.issue_body(by["6c952087f58b2bc5"])
-ok("body: flagged issue starts with ACTION LIKELY NEEDED", b.startswith("**ACTION LIKELY NEEDED**"))
-ok("body: unflagged issue has no ACTION line", "ACTION LIKELY NEEDED" not in p)
+ok("body: breaking issue starts with ACTION LIKELY NEEDED", b.startswith("**ACTION LIKELY NEEDED**"))
+ok("body: FYI issue starts with FYI and has no ACTION line", p.startswith("**FYI**") and "ACTION LIKELY NEEDED" not in p)
 ok("body: link, date and the dedupe marker are in", "https://docs.kalshi.com/changelog" in b and "2026-11-12" in b and "kalshi-feed-id: 87e8e0c610c83644" in b)
 ok("title: prefix and the entry title", K.issue_title(by["87e8e0c610c83644"]) == "Kalshi API change: Market expiration_time removed")
 
 # ---- the 14-day window, cap, ordering
 known = set()
 todo, waiting = K.pick_new(items, known, NOW)
-ok("window: first run takes only what the cap allows (5) and says one waits", len(todo) == 5 and waiting == 1)
-ok("window: flagged entries come first, then newest", [i["breaking"] for i in todo] == sorted([i["breaking"] for i in todo], reverse=True))
+ok("window: first run takes only what the cap allows (5) and says 10 wait", len(todo) == 5 and waiting == 10)
+ok("window: breaking entries come first, then newest", [i["guid"] for i in todo][:2] == ["134dba02718b875a", "87e8e0c610c83644"] and [i["breaking"] for i in todo][:2] == [True, True])
 late = datetime(2026, 11, 28, 0, 0, tzinfo=timezone.utc)      # cutoff 14 Nov: only the 16, 19, 19 and 20 Nov entries
-todo, _ = K.pick_new(items, known, late)
-ok("window: entries older than 14 days are never filed", {i["guid"] for i in todo} == {i["guid"] for i in items if i["date"] >= late - timedelta(days=14)} and len(todo) == 3)
+todo, _ = K.pick_new(items, known, late, cap=50)
+ok("window: entries older than 14 days are never filed", {i["guid"] for i in todo} == {i["guid"] for i in items if i["date"] >= late - timedelta(days=14)} and 0 < len(todo) < 15)
 todo, _ = K.pick_new(items, known, datetime(2027, 3, 1, tzinfo=timezone.utc))
 ok("window: an old feed files nothing (no flood)", todo == [])
 odd = K.parse_feed(rss(item(guid="a", date="not a date"), item(guid="b", date=""), item(guid="c")))
@@ -127,11 +133,14 @@ ok("run: first run opens 5 issues, exits 0, creates the labels", rc == 0 and len
 ok("run: issues carry the labels (breaking only where flagged)", all(l[0] == K.LABEL for _, _, l in gh.created)
    and all((K.LABEL_BREAKING in l) == ("ACTION LIKELY NEEDED" in b) for _, b, l in gh.created))
 rc = K.run(lambda: FIXTURE, gh, now=NOW)
-ok("run: second run files the last one only", rc == 0 and len(gh.created) == 6)
+ok("run: second run files the next 5", rc == 0 and len(gh.created) == 10)
 rc = K.run(lambda: FIXTURE, gh, now=NOW)
-ok("run: a third run changes nothing (no duplicates)", rc == 0 and len(gh.created) == 6 and len({K.ids_in([{'body': b}]).pop() for _, b, _ in gh.created}) == 6)
+ok("run: third run files the last 5", rc == 0 and len(gh.created) == 15)
+rc = K.run(lambda: FIXTURE, gh, now=NOW)
+ok("run: a fourth run changes nothing (no duplicates)", rc == 0 and len(gh.created) == 15 and len({K.ids_in([{'body': b}]).pop() for _, b, _ in gh.created}) == 15)
 gh2 = FakeGh([{"number": 9, "title": "x", "state": "closed", "labels": [K.LABEL], "body": "hello\nkalshi-feed-id: 6c952087f58b2bc5\n"}])
-K.run(lambda: FIXTURE, gh2, now=NOW)
+K.run(lambda: FIXTURE, gh2, now=NOW, cap=50)
+ok("dedupe: with the cap lifted every other entry is filed (14 of 15)", len(gh2.created) == 14)
 ok("dedupe: a CLOSED issue still counts as filed", not any("6c952087f58b2bc5" in b for _, b, _ in gh2.created))
 ok("dedupe: ids_in reads markers from many bodies", K.ids_in([{"body": "x\nkalshi-feed-id: aa1\nz"}, {"body": None}, {"body": "kalshi-feed-id: bb2"}]) == {"aa1", "bb2"})
 gh3 = FakeGh(fail_list=True)

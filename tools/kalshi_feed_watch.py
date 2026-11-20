@@ -3,8 +3,9 @@
 
 Runs on GitHub (.github/workflows/kalshi-api-watch.yml, every 6 hours), never on the Mac. It reads Kalshi's API
 changelog RSS feed and opens one GitHub issue for each new entry from the last 14 days (at most 5 per run). GitHub
-then notifies the repo owner by email / the app. Entries that look like they break something get the `breaking`
-label and an "ACTION LIKELY NEEDED" first line.
+then notifies the repo owner by email / the app. Entries that retire or remove something in an area the app uses
+(a removal/deprecation word AND orders, order book, market fields, signing, rate limits...) get the `breaking` label
+and an "ACTION LIKELY NEEDED" first line; every other entry is filed as a plain "FYI" issue.
 
 Standard library only (plus the `gh` CLI that GitHub runners already have). The feed is untrusted text: it is parsed
 as data, stripped of HTML, trimmed, put inside a code fence in the issue (so no @mentions, links or markdown are
@@ -49,9 +50,12 @@ LABEL_FAILING = "kalshi-watch-failing"
 LABEL_COUNT = "kalshi-watch-failures"
 FAILING_TITLE = "Kalshi API watch is failing"
 MARKER = "kalshi-feed-id:"          # a line in each issue body: the dedupe key
-BREAKING_RE = re.compile(
-    r"deprecat|sunset|remov|breaking|discontinu|migrat|will be disabled|no longer|orders|portfolio|rfq|quote"
-    r"|fixed-point|order book|orderbook|websocket|authentication|signing|rate limit", re.I)
+# Two tiers. "breaking" (label + ACTION LIKELY NEEDED) needs BOTH a strong removal/deprecation word AND something this
+# app uses, found in the entry's title or description. Everything else is still filed, as a plain "FYI" issue.
+STRONG_RE = re.compile(r"deprecat|sunset|remov|no longer|discontinu|will be disabled|migrat|\b410\b", re.I)
+AREA_RE = re.compile(
+    r"\borders?\b|portfolio|\brfq|\bquotes?\b|communications|order ?book|market[_ ]?id|market (?:objects?|fields?)"
+    r"|expiration_time|authentication|\bsigning\b|signature|rate[- ]limit|websocket|\bfills?\b", re.I)
 CTRL_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]")
 GUID_BAD = re.compile(r"[^A-Za-z0-9._:/#-]")
 TAG_BAD = re.compile(r"[^A-Za-z0-9 ._/+-]")                 # tags sit outside the code fence: plain characters only
@@ -152,6 +156,10 @@ def parse_date(s):
     return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d.astimezone(timezone.utc)
 
 
+def is_breaking(text):
+    return bool(STRONG_RE.search(text) and AREA_RE.search(text))
+
+
 def parse_feed(data):
     """RSS bytes -> list of items (newest feed order kept). Raises FeedError if it is not an RSS feed with items."""
     if not isinstance(data, (bytes, bytearray)) or not data.strip():
@@ -184,7 +192,7 @@ def parse_feed(data):
             "title": title, "guid": guid0, "link": safe_link(link0), "pub": pub, "date": parse_date(pub),
             "summary": summary or short or "(no summary in the feed)",
             "tags": [t for t in (TAG_BAD.sub("", one_line(c.text, 30)).strip() for c in it.findall("category")) if t][:6],
-            "breaking": bool(BREAKING_RE.search(" ".join([title, short, summary]))),
+            "breaking": is_breaking(title + " " + clean_text(desc, 2000)),
         })
     if not items:
         raise FeedError("feed has no items")
@@ -217,8 +225,10 @@ def issue_body(item):
     summary = item["summary"].replace("```", "'''")
     lines = []
     if item["breaking"]:
-        lines += ["**ACTION LIKELY NEEDED**: this entry mentions something that can break the app (orders, order book, "
-                  "signing, rate limits, removals...). Read it and check the app against it.", ""]
+        lines += ["**ACTION LIKELY NEEDED**: this entry removes or retires something in an area the app uses (orders, "
+                  "order book, market fields, signing, rate limits, websocket...). Read it and check the app against it.", ""]
+    else:
+        lines += ["**FYI**: nothing here looks like it removes anything the app relies on. Skim it and close it.", ""]
     when = item["date"].strftime("%Y-%m-%d %H:%M UTC") if item["date"] else item["pub"][:40]
     lines += ["Kalshi posted a change to its API.", "",
               f"- Link: {item['link']}",

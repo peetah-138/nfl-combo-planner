@@ -20,6 +20,57 @@
 <code>ticker</code> query parameter. A single ticker still works.</p>]]></content:encoded>
         </item>
         <item>
+            <title><![CDATA[Breached exit-trigger prices get their own error codes]]></title>
+            <description><![CDATA[Exit-trigger writes reject a take profit or stop loss the mark has already passed by more than 2% with take_profit_already_breached or stop_loss_already_breached.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-26-2026</link>
+            <guid isPermaLink="false">b847cd81dbae61b1</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Margin]]></category>
+            <pubDate>Thu, 19 Nov 2026 20:21:47 GMT</pubDate>
+            <content:encoded><![CDATA[<p>Margin exit-trigger writes reject a <code>take_profit_price</code> or <code>stop_loss_price</code> the current mark
+has already passed by more than 2% with <code>400</code> and error code <code>take_profit_already_breached</code> or
+<code>stop_loss_already_breached</code>. These were <code>400</code> responses whose <code>code</code> was not a stable
+identifier.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Weather point markets are described in the location's time zone]]></title>
+            <description><![CDATA[New weather point markets have their title, rules and local dates written in the time zone of the market's location, whatever timezone the POST /weather_point_markets request used. The max_window_days limit goes by the location's dates.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-26-2026</link>
+            <guid isPermaLink="false">d9af0dcff5bf8660</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Thu, 19 Nov 2026 16:37:46 GMT</pubDate>
+            <content:encoded><![CDATA[<p>A new weather point market is now described in the time zone of its
+location, which Kalshi determines from the coordinates. The <code>timezone</code> in
+<code>POST /weather_point_markets</code> still decides which span of time your <code>date</code>
+and hours mean, and the request body, the response and tickers are
+unchanged. What changes, for markets created from now on:</p>
+<ul>
+<li><code>title</code> and <code>rules_primary</code>, as returned by <code>GET /markets</code> and
+<code>GET /events</code>, give the window in the location's zone, whatever zone
+created the market. A request for 11pm to 3am in <code>America/New_York</code> at a
+point in Portland, Oregon used to produce a market reading in Eastern
+time, "from 11pm EST Thu, Nov 19 to 3am EST Fri, Nov 20, 2026"; it now
+reads "on Thu, Nov 19, 2026, 8pm–12am PST", and its rules "from 8pm to
+12am PST (America/Los_Angeles) starting Thu, Nov 19, 2026". A market
+requested in its location's own zone reads as before.</li>
+<li>Where <code>GET /weather_point_markets/availability</code> returns
+<code>max_window_days: 1</code>, a new market is refused with 409
+<code>weather_point_market_unavailable</code> when its window crosses midnight at
+the location, and accepted when it doesn't, even if your request sets
+<code>end_date</code>. It no longer depends on the dates of the first request for
+the event, which replaces what the entry below says.</li>
+<li>A window that crosses midnight at the location and is longer than 24
+hours there returns 400 <code>invalid_parameters</code>, even when your request
+names it within one date of another zone.</li>
+<li>A location whose time zone can't be determined returns 409
+<code>weather_point_market_unavailable</code>.</li>
+</ul>
+<p>Events that already exist keep their description, and a new threshold on
+one of them reads like the rest of that event. See
+<a href="https://docs.kalshi.com/getting_started/weather_rfqs#the-markets-own-time-zone">On-Request Weather Markets</a>.</p>]]></content:encoded>
+        </item>
+        <item>
             <title><![CDATA[Listener mode on KalshiRFQ sessions]]></title>
             <description><![CDATA[A KalshiRFQ session that logs on with ListenerSession<20126>=Y also receives your account's execution reports.]]></description>
             <link>https://docs.kalshi.com/changelog#november-26-2026</link>
@@ -31,6 +82,81 @@
 <code>ListenerSession&#x3C;20126>=Y</code>. The session keeps quoting and also receives your
 account's execution reports, including the fills of your accepted quotes.
 See <a href="https://docs.kalshi.com/fix/listener-sessions">Listener Sessions</a>.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Weather point markets can cross midnight]]></title>
+            <description><![CDATA[POST /weather_point_markets takes an optional end_date, the day after date, for a window that runs from one local day into the next, up to 24 hours long. GET /weather_point_markets/availability returns max_window_days and max_window_hours.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-26-2026</link>
+            <guid isPermaLink="false">ae7c7f1e146c19d7</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Thu, 19 Nov 2026 03:46:01 GMT</pubDate>
+            <content:encoded><![CDATA[<p>A weather point market's window can now run from one local day into the
+next, for example 11pm to 3am:</p>
+<ul>
+<li><code>POST /weather_point_markets</code> takes an optional <code>end_date</code>. Left out, or
+equal to <code>date</code>, the request means what it did before. Set to the day
+after <code>date</code>, the window runs from <code>start_hour</code> on <code>date</code> to <code>end_hour</code>
+on <code>end_date</code>. Such a window is at most 24 hours long, so <code>end_hour</code> must
+not be after <code>start_hour</code>; a longer window, or any other <code>end_date</code>,
+returns 400 <code>invalid_parameters</code>.</li>
+<li><code>end_hour</code> no longer has to be after <code>start_hour</code> when <code>end_date</code> is the
+day after <code>date</code>. For a window on one day it still must be.</li>
+<li><code>GET /weather_point_markets/availability</code> returns <code>max_window_days</code> (2
+where a window may cross midnight, otherwise 1) and <code>max_window_hours</code>
+(the longest such window, 24). Where <code>max_window_days</code> is 1, a new
+market whose window is stored across two local dates returns 409
+<code>weather_point_market_unavailable</code>. A market stores the dates of the
+first request for its variable, point and window, normally your own. When
+that event already exists, its dates decide: a one-date request from
+another time zone for an event stored across midnight returns the 409,
+and a request with <code>end_date</code> for an event stored on one date succeeds.
+Markets that already exist are returned either way.</li>
+</ul>
+<p>Tickers keep their shape: the window is still its UTC start and its length
+in hours, so 11pm November 23 to 3am November 24 in New York is
+<code>…-26NOV2404Z-4H-…</code>. Existing markets and requests without <code>end_date</code> are
+unchanged. See <a href="https://docs.kalshi.com/getting_started/weather_rfqs">On-Request Weather Markets</a>.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Weather point markets use your exact coordinates]]></title>
+            <description><![CDATA[POST /weather_point_markets no longer snaps the location to the center of its weather grid cell. The market's location is the requested coordinates rounded to three decimal places, so two points in the same grid cell are now two markets.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">c256976946329f82</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Wed, 18 Nov 2026 02:40:57 GMT</pubDate>
+            <content:encoded><![CDATA[<p><code>POST /weather_point_markets</code> no longer snaps the location to the center of
+the NOAA MRMS grid cell containing it. The market's location is now the
+requested <code>latitude</code> and <code>longitude</code> rounded to three decimal places (about
+100 m), and the response's <code>latitude</code> and <code>longitude</code> return that point.</p>
+<ul>
+<li>Requests share a market only when their coordinates agree to three
+decimal places. Two points in the same grid cell used to resolve to one
+market and now resolve to two.</li>
+<li>A rounded location that lies exactly on the boundary between two grid
+cells is moved 0.001° north or east, into one of them.</li>
+<li>Tickers keep their format. The location segment (<code>40785N73965W</code>) is the
+market's point, which is no longer always a cell center.</li>
+<li>Markets created before this change keep their location and stay
+reachable by requesting those coordinates.</li>
+</ul>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Orderbook snapshots can have an empty market_id]]></title>
+            <description><![CDATA[An orderbook_snapshot for a market with no recorded change can have an empty market_id and has clock 0, whether the market was created before or after your WebSocket server started.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">575fe7489c4e90a2</guid>
+            <category><![CDATA[WebSocket]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Tue, 17 Nov 2026 03:03:59 GMT</pubDate>
+            <content:encoded><![CDATA[<p>An <code>orderbook_snapshot</code> for a market with no recorded change, such as a new
+market that hasn't had an order yet, can have an empty <code>market_id</code>, and its
+<code>clock</code> is 0. Markets created before the WebSocket server you're connected
+to started already worked this way. Markets created after it started used
+to get their UUID and creation clock instead.</p>
+<p>Identify these markets by <code>market_ticker</code>. The first <code>orderbook_delta</code> for
+the market carries its <code>market_id</code>.</p>]]></content:encoded>
         </item>
         <item>
             <title><![CDATA[Requests with a NUL byte or invalid UTF-8 return 400]]></title>
@@ -54,6 +180,36 @@ decode and return the first page.</p>
 unchanged.</p>]]></content:encoded>
         </item>
         <item>
+            <title><![CDATA[Create on-request concert markets]]></title>
+            <description><![CDATA[POST /concert_cancellation_markets returns or creates the market on whether a concert is postponed or canceled; three GET endpoints list what can be created and the concerts on offer.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">0e288ab43ec5d4eb</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Fri, 13 Nov 2026 04:51:55 GMT</pubDate>
+            <content:encoded><![CDATA[<p>Four endpoints for on-request concert markets (series starting with
+<code>KXRFQCONCERT</code>), which pay when a show is postponed, canceled or either:</p>
+<ul>
+<li><code>POST /concert_cancellation_markets</code> returns the market for a show, its
+scheduled date and a cover (<code>postponed</code>, <code>cancelled</code> or <code>either</code>),
+creating it if it doesn't exist yet. <code>created</code> says whether it is new.
+Send an RFQ for the returned <code>market_ticker</code> with
+<code>POST /communications/rfqs</code> to trade it. A valid request that can't be
+offered (for example a show that has moved to another date) returns 409
+<code>concert_cancellation_market_unavailable</code>, and reaching the creation
+limit returns 429 <code>concert_cancellation_market_limit_exceeded</code>, which is
+not request-rate limiting.</li>
+<li><code>GET /concert_cancellation_markets/availability</code> returns the covers that
+can be created and the metros whose concerts are listed. It needs no
+authentication.</li>
+<li><code>GET /concert_cancellation_markets/concerts</code> lists a metro's upcoming
+concerts, and <code>GET /concert_cancellation_markets/concerts/search</code> finds
+them by name. Both return the show id and date the create request takes.</li>
+</ul>
+<p>See <a href="https://docs.kalshi.com/getting_started/concert_rfqs">On-Request Concert Markets</a>. These
+markets are not live yet.</p>]]></content:encoded>
+        </item>
+        <item>
             <title><![CDATA[Rate limit headers on REST responses]]></title>
             <description><![CDATA[REST responses now carry X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset and X-RateLimit-Cost for the bucket each request was charged to.]]></description>
             <link>https://docs.kalshi.com/changelog#november-19-2026</link>
@@ -70,6 +226,21 @@ responses, which include most market data, carry none of them. See
 <a href="https://docs.kalshi.com/getting_started/rate_limits#rate-limit-headers">Rate limit headers</a>.</p>]]></content:encoded>
         </item>
         <item>
+            <title><![CDATA[Market expected_expiration_time is never later than latest_expiration_time]]></title>
+            <description><![CDATA[expected_expiration_time on market objects is now capped at latest_expiration_time; some markets in multi-date events previously reported a later value.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">cbb1176710f7bed8</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Thu, 12 Nov 2026 19:14:03 GMT</pubDate>
+            <content:encoded><![CDATA[<p><code>expected_expiration_time</code> on market objects, including markets nested in
+events, is now capped at the market's <code>latest_expiration_time</code>. Some
+markets in events with several date strikes reported the last strike's
+date, which could fall after their own latest expiration. Markets whose
+expected expiration was already at or before the latest expiration are
+unchanged.</p>]]></content:encoded>
+        </item>
+        <item>
             <title><![CDATA[Market expiration_time removed]]></title>
             <description><![CDATA[The deprecated expiration_time field is removed from market objects; latest_expiration_time carries the same value.]]></description>
             <link>https://docs.kalshi.com/changelog#november-19-2026</link>
@@ -81,6 +252,17 @@ responses, which include most market data, carry none of them. See
 including markets nested in events. Read <code>latest_expiration_time</code> instead:
 it has always carried the same value. Order <code>expiration_time</code> is unrelated
 and unchanged.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Overnight settlement price band for equities perps]]></title>
+            <description><![CDATA[Overnight, equities perps orders must be within 20% of that day's 4 PM ET settlement price; resting orders outside the band are canceled with reason SettlementBoundsCancel.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">a59308952a2af803</guid>
+            <category><![CDATA[WebSocket]]></category>
+            <category><![CDATA[FIX]]></category>
+            <category><![CDATA[Margin]]></category>
+            <pubDate>Thu, 12 Nov 2026 06:21:47 GMT</pubDate>
+            <content:encoded><![CDATA[<p>During the overnight session (8 PM to 4 AM ET), every equities perps order must be priced within 20% of the market's 4 PM ET settlement price from the day the session opened. Orders outside the band are rejected with <code>invalid price</code>. When the band takes effect or moves, resting orders outside it are canceled: margin <a href="https://docs.kalshi.com/websockets/user-orders">user_orders</a> and orderbook delta messages report <code>last_update_reason: "SettlementBoundsCancel"</code>, and FIX ExecutionReports (35=8) carry a Text (58) of <code>SETTLEMENT_BOUNDS_CANCEL</code>. See <a href="https://docs.kalshi.com/margin/price-banding">Price Banding</a>.</p>]]></content:encoded>
         </item>
         <item>
             <title><![CDATA[Incentive schedules, and incentive programs by series or event]]></title>
@@ -100,6 +282,25 @@ authentication.</li>
 <li><code>GET /incentive_programs</code> takes <code>series_ticker</code> and <code>event_ticker</code> filters,
 and each program now carries its <code>series_ticker</code> and <code>event_ticker</code>.</li>
 </ul>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[User hosts for fill and order updates]]></title>
+            <description><![CDATA[The lower-latency fill and user_orders hosts are now user-ws and margin-user-ws. The warp-ws and margin-warp-ws hosts are deprecated and keep working for now.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-12-2026</link>
+            <guid isPermaLink="false">134dba02718b875a</guid>
+            <category><![CDATA[WebSocket]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <category><![CDATA[Margin]]></category>
+            <pubDate>Thu, 12 Nov 2026 22:18:22 GMT</pubDate>
+            <content:encoded><![CDATA[<p>The lower-latency hosts for <code>fill</code> and <code>user_orders</code> updates are now:</p>
+<ul>
+<li>Production Predictions: <code>wss://user-ws.kalshi.com/trade-api/ws/v2</code></li>
+<li>Production Margin: <code>wss://margin-user-ws.kalshi.com/trade-api/ws/v2/margin</code></li>
+<li>Demo Predictions: <code>wss://user-ws.demo.kalshi.co/trade-api/ws/v2</code></li>
+<li>Demo Margin: <code>wss://margin-user-ws.demo.kalshi.co/trade-api/ws/v2/margin</code></li>
+</ul>
+<p>The user hosts serve <code>fill</code> and <code>user_orders</code> today, and more per-user channels will be added over time. See <a href="https://docs.kalshi.com/getting_started/api_environments#fill-and-order-updates">API Environments and Endpoints</a>.</p>
+<p>The <code>warp-ws</code> and <code>margin-warp-ws</code> hosts are deprecated. They keep working and serve the same channels for now. Move to the user hosts above.</p>]]></content:encoded>
         </item>
     </channel>
 </rss>
