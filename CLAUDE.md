@@ -113,7 +113,9 @@ Real money is involved. Pete uses it daily.
 
 Run `ruff check .` (config in `ruff.toml`: correctness rules only, no style rules) and `bash tests/run_checks.sh`
 before every push; the latter must end with `ALL CHECKS PASSED`. CI runs both on every PR. See `tests/README.md`
-for the one-time Mac setup (node, pyflakes, ruff, playwright + chromium). It runs in a temp folder with fake services and a fake
+for the one-time Mac setup. The checks and `dev.sh` run on a **Python 3.10+** picked by `tests/python_env.sh` (`$CHECK_PYTHON`, else
+the watcher's venv if it has the modules, else a git-ignored `.venv-tests/` it builds itself); never Apple's Command Line Tools 3.9,
+whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the test ports when two runs overlap. It runs in a temp folder with fake services and a fake
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money. What it covers:
 - Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
   pyflakes for undefined names, secret grep.

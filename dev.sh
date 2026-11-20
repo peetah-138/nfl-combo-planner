@@ -11,6 +11,7 @@ fi
 DEVHOME="$(mktemp -d "$HOME/combodev.XXXX")" || exit 1
 case "$DEVHOME" in "$HOME"/combodev.*) ;; *) echo "unexpected dev home $DEVHOME"; exit 2;; esac
 [ "$(cd "$DEVHOME" && pwd -P)" = "$(cd "$HOME/combowatch" 2>/dev/null && pwd -P)" ] && { echo "dev home is the real home. Refusing."; exit 2; }
+PY_MODS="requests, cryptography"; . "$R/tests/python_env.sh"   # sets PY: a Python >= 3.10 (Apple's 3.9 has a crashing sqlite)
 PID=""
 cleanup() {
   trap - EXIT INT TERM HUP
@@ -25,12 +26,12 @@ cp "$R/tests/suite/fixtures/home_settings.json" "$DEVHOME/combo_settings.json"
 # No topic/secret on purpose: without them the web app never configures a hub or posts settings anywhere.
 echo '{"hub": false, "webapp": false, "shadow": false, "auto_update": false, "web_pass": "dev"}' > "$DEVHOME/watcher.json"
 # The fixture's fake Key ID is removed: with no key id and no key file, can_trade() is false.
-python3 - "$DEVHOME/combo_settings.json" <<'P' || exit 1
+"$PY" - "$DEVHOME/combo_settings.json" <<'P' || exit 1
 import json, sys
 s = json.load(open(sys.argv[1])); s["kalshi_key_id"] = ""; s["watcher_code"] = ""; s["odds_key"] = ""; s["auto_sell"] = False
 json.dump(s, open(sys.argv[1], "w"))
 P
 export COMBOWATCH_HOME="$DEVHOME" COMBOWATCH_NTFY="http://127.0.0.1:9" CW_WEBAPP_PORT="$PORT" COMBO_NO_TAILSCALE=1
-python3 "$R/tests/dev_webapp.py" &
+"$PY" "$R/tests/dev_webapp.py" &
 PID=$!
 wait "$PID"

@@ -14,7 +14,8 @@ cp "$R/watcher/combo_watcher.py" wtest/combo_watcher.py
 cp "$R/nfl_combo_planner.py" run/nfl_combo_planner.py
 cp fixtures/run_settings.json run/combo_settings.json
 cp fixtures/home_settings.json wahome/combo_settings.json
-python3 - <<'P'
+. "$R/tests/python_env.sh"   # sets PY: a Python >= 3.10 with playwright (see tests/README.md); prints which one and its sqlite
+$PY - <<'P'
 import base64, os, json
 def fake_key(path):            # a throwaway ed25519 key for the fake Kalshi; never a real one
     der = bytes.fromhex("302e020100300506032b657004220420") + os.urandom(32)
@@ -30,18 +31,24 @@ export REPO="$R"
 # Nothing a test does may touch the real Tailscale (`tailscale serve` re-points Pete's real secure address) or post to a
 # real ntfy topic. The watcher refuses the Tailscale command line when this is set (and outside ~/combowatch anyway).
 export COMBO_NO_TAILSCALE=1 COMBOWATCH_NTFY="http://ntfy.invalid"
-export CW_WEBAPP_PORT=18766              # tests run their own web apps on 18766+, never on the real one (8766)
+PB=${CHECK_PORT_BASE:-18766}               # first test port; set CHECK_PORT_BASE so two runs at once (e.g. two worktrees) do not collide
+export CW_WEBAPP_PORT=$PB              # tests run their own web apps on $PB+ (18766+), never on the real one (8766)
 command -v timeout >/dev/null 2>&1 || timeout(){ perl -e 'alarm shift; exec @ARGV' "$@"; }   # macOS has no timeout
-PY=python3
 fail=0
 ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; echo "$2" | head -12 | sed 's/^/     /'; fail=1; }
 need(){ command -v "$1" >/dev/null 2>&1 || { bad "setup: $1 is missing" "$2"; }; }
 need node "Install Node (e.g. brew install node). It checks the web app's JavaScript."
-$PY -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "pip3 install playwright && python3 -m playwright install chromium"
-$PY -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "pip3 install pyflakes"
+$PY -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
+$PY -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
 
 $PY -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok compile || bad compile
-if command -v python3.10 >/dev/null 2>&1; then python3.10 -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok "compile (3.10)" || bad "compile (3.10)"; fi
+if command -v python3.10 >/dev/null 2>&1; then python3.10 -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok "compile (3.10)" || bad "compile (3.10)"
+else $PY - "$R" <<'P' && ok "compile (3.10 grammar)" || bad "compile (3.10 grammar)"   # no python3.10 here: parse with 3.10's grammar
+import ast, sys
+for f in ("nfl_combo_planner.py", "watcher/combo_watcher.py"):
+    ast.parse(open(sys.argv[1] + "/" + f).read(), f, feature_version=(3, 10))
+P
+fi
 $PY - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
 import re, subprocess, sys, tempfile, os
 s = open(os.path.join(sys.argv[1], "watcher/combo_watcher.py")).read()
@@ -76,7 +83,7 @@ done
 N=${CHECK_WORKERS:-4}
 PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui"
 for w in $(seq 0 $((N-1))); do
-  p=$((18766 + w))
+  p=$((PB + w))
   $PY -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
 done
 ( timeout 200 $PY macsmoke/run.py > out_macsmoke.txt 2>&1; UPD=1 SECS=5 timeout 200 $PY macsmoke/run.py > out_macupd.txt 2>&1 ) &
@@ -85,7 +92,7 @@ i=0; for t in $PAGE; do lanes[$((i % N))]="${lanes[$((i % N))]} $t"; i=$((i+1));
 for w in $(seq 0 $((N-1))); do
   D="$WORK/lane$w"; mkdir -p "$D"
   (cd "$WORK" && tar cf - --exclude='./lane*' --exclude='./out_*' .) | (cd "$D" && tar xf -)
-  ( cd "$D" && export CW_WEBAPP_PORT=$((18766 + w)) && for t in ${lanes[$w]}; do
+  ( cd "$D" && export CW_WEBAPP_PORT=$((PB + w)) && for t in ${lanes[$w]}; do
       $PY reset.py; timeout 400 $PY $t.py > "$WORK/out_$t.txt" 2>&1; done ) &
 done
 wait
