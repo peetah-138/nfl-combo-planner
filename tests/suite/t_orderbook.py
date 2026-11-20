@@ -140,12 +140,14 @@ BOUGHT = []
 E.buy_single = lambda t, n, px: (BOUGHT.append((t, n, px)) or (n, None))
 E.post_sell = lambda *a, **k: None
 ask0 = float(m0["yes_ask_dollars"])
+E.RESTING_SELLS_OK = True     # sell-early bets wait for Pete's call on resting exits (issue #81); priced the same way
 for kind in ("single", "line", "early"):
     BOUGHT.clear(); E.BOOK_DEPTH.clear()
     c = {"kind": kind, "code": "nba", "stake": 10.0, "exit": 0.9, "legs": [{"ticker": T, "pick": "x", "fair": ask0 + 0.1, "p": ask0}]}
     good, note, d = E._buy_panel_bet(c)
     ok(f"panel {kind}: bought at Kalshi's ask from the new-shape book ({note})",
        good and BOUGHT and BOUGHT[0][0] == T and abs(BOUGHT[0][2] - ask0) < 1e-9 and BOUGHT[0][1] == int(10 // (ask0 + E.single_fee(ask0))))
+E.RESTING_SELLS_OK = False
 BOUGHT.clear(); E.BOOK_DEPTH.clear()
 good, note, _ = E._buy_panel_bet({"kind": "single", "code": "nba", "stake": 10.0, "legs": [{"ticker": "KXNOPE-1", "fair": 0.9}]})
 ok("panel single, empty book: skipped with 'no price', nothing bought", good is False and "no price" in note and not BOUGHT)

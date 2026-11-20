@@ -1,0 +1,45 @@
+{
+  "_source": "Examples copied from Kalshi's OpenAPI spec (https://docs.kalshi.com/openapi.yaml, CreateOrderV2Request, CreateOrderV2Response, CancelOrderV2Response) and the Order Errors page (https://docs.kalshi.com/getting_started/order_errors), fetched 2026-11-19.",
+  "create_request": {
+    "ticker": "HIGHNY-24JAN01-T60",
+    "client_order_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+    "side": "bid",
+    "count": "10.00",
+    "price": "0.5600",
+    "time_in_force": "good_till_canceled",
+    "self_trade_prevention_type": "taker_at_cross",
+    "post_only": false,
+    "cancel_order_on_pause": false,
+    "reduce_only": false,
+    "subaccount": 0,
+    "exchange_index": 0
+  },
+  "create_response": {
+    "order_id": "3b23c1c7-f4ef-4f0d-8b9a-9e53c61f1a0d",
+    "client_order_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+    "fill_count": "0.00",
+    "remaining_count": "10.00",
+    "ts_ms": 1715793600123
+  },
+  "cancel_response": {
+    "order_id": "3b23c1c7-f4ef-4f0d-8b9a-9e53c61f1a0d",
+    "client_order_id": "8c35ecb3-328f-4f52-8c7c-0f4b9862f8d1",
+    "reduced_by": "10.00",
+    "ts_ms": 1715793660456
+  },
+  "error_410": {
+    "error": {
+      "code": "deprecated_v1_order_endpoint",
+      "message": "This endpoint has been removed. Please switch to the V2 endpoints",
+      "details": "https://docs.kalshi.com/getting_started/order_errors"
+    }
+  },
+  "error_400_top_level": {
+    "code": "bad_request",
+    "message": "bad request",
+    "details": "..."
+  },
+  "error_400_insufficient": {
+    "error": {"code": "insufficient_balance", "message": "insufficient balance"}
+  }
+}
