@@ -362,9 +362,16 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   min; a host answering 429/5xx or timing out is backed off per host (Retry-After honoured, doubling to 60 s) while
   the last good copy is served. **None of this touches trading:** the watcher's `E`/`H` loops, smart sell, auto
   cash-out, the panel and every buy/sell decision read their own data on their own timing.
-  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores,
-  `fast`); the page shows a small "Updated Ns ago" stamp (Live hero, Games tab, game sheet) that counts on its own
-  and goes red after a minute. The open **game sheet redraws itself**: on every Mac tick, and on a 2 s timer when the
+  `/app/api/live`, `/game` and `/games` carry `fresh` (`now`, `built`, `scores` = age of the live leagues' scores
+  (or, with none live, the newest score cache), `live` = a game is under way, `fast`); the page shows a small freshness stamp (Live hero, Games tab, game sheet) that counts on its own.
+  **It names what it measures (issue #80):** while the server says a game is under way (`fresh.live`, not merely a scores cache) it reads "Prices Ns ago · scores Ns ago" — the
+  snapshot/build age (how old the dollar numbers on screen actually are) and the live scores' age, kept separate so a
+  stale snapshot and stale scores are never conflated into one misleading "Updated N ago". With no game live it falls
+  back to the single "Updated N ago" (build age). It goes red after a minute **on the snapshot/prices age** (the
+  number's own age), not on the scores age (`frBuilt`/`frScores`/`frTxt`, `frTick` toggles `.old`). (The "worth now if
+  sold" dollar number is a model estimate that in the web app only moves when a leg resolves, not on every price tick —
+  driving it off live leg prices was investigated under #80 and is a separate, larger change, not done here.)
+  The open **game sheet redraws itself**: on every Mac tick, and on a 2 s timer when the
   link is down; it repaints only when something changed and keeps its scroll place. Between updates the clock counts
   down by itself, only for NBA/college basketball/NHL/AHL, and only once two polls showed it running (a clock that
   hasn't moved for 25 s is treated as stopped); football and soccer show the last value. Tests: `t_hubcache.py`,
