@@ -79,13 +79,13 @@ print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_cover; do
+for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2 t_capmsg t_kalshi_feed_watch t_cover; do
   o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
 # each worker with its own copy of everything and its own port (18766, 18767, ...), so nothing is shared.
 N=${CHECK_WORKERS:-4}
-PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui test_haptics test_cover test_chips_stay"
+PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui test_haptics test_chips_stay test_fieldstrip test_gamedetail_api test_realdate test_tabbar_stays test_orderblock test_buildbuttons test_cover"
 for w in $(seq 0 $((N-1))); do
   p=$((PB + w))
   "$PY" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."

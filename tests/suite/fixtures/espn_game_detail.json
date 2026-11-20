@@ -1,0 +1,70 @@
+{
+  "_note": "Trimmed ESPN NFL responses for the live game page (slice 1). Shapes follow the paths in issue #72's Data verification comment: scoreboard competitions[0].situation, summary header...competitors[], summary.drives.current. Values are illustrative (Colts @ Texans, in-progress), captured with plain unauthenticated GETs.",
+  "scoreboard": {
+    "events": [
+      {
+        "id": "401873066",
+        "date": "2026-11-20T18:00Z",
+        "competitions": [
+          {
+            "status": {
+              "period": 1,
+              "displayClock": "6:50",
+              "type": {"state": "in", "name": "STATUS_IN_PROGRESS", "shortDetail": "6:50 - 1st"}
+            },
+            "situation": {
+              "down": 1,
+              "distance": 10,
+              "yardLine": 27,
+              "isRedZone": false,
+              "homeTimeouts": 3,
+              "awayTimeouts": 2,
+              "possession": "11",
+              "downDistanceText": "1st & 10 at IND 27",
+              "possessionText": "IND 27",
+              "lastPlay": {
+                "text": "C.Stroud pass intended for N.Collins INTERCEPTED by A.Smith at IND 40.",
+                "type": {"text": "Interception", "abbreviation": "INT"},
+                "probability": {"homeWinPercentage": 0.76, "awayWinPercentage": 0.24}
+              }
+            },
+            "competitors": [
+              {"id": "34", "homeAway": "home", "score": "0", "team": {"id": "34", "abbreviation": "HOU", "displayName": "Houston Texans", "color": "03202f", "alternateColor": "a71930"}},
+              {"id": "11", "homeAway": "away", "score": "3", "team": {"id": "11", "abbreviation": "IND", "displayName": "Indianapolis Colts", "color": "002c5f", "alternateColor": "a2aaad"}}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "summary": {
+    "header": {
+      "competitions": [
+        {
+          "status": {
+            "period": 1,
+            "displayClock": "6:50",
+            "type": {"state": "in", "completed": false, "shortDetail": "6:50 - 1st"}
+          },
+          "broadcasts": [{"media": {"callLetters": "CBS"}, "names": ["CBS"]}],
+          "competitors": [
+            {"id": "34", "homeAway": "home", "score": "0", "record": [{"type": "total", "summary": "7-3"}], "team": {"id": "34", "abbreviation": "HOU", "displayName": "Houston Texans", "name": "Texans", "color": "03202f", "alternateColor": "a71930"}},
+            {"id": "11", "homeAway": "away", "score": "3", "record": [{"type": "total", "summary": "3-7"}], "team": {"id": "11", "abbreviation": "IND", "displayName": "Indianapolis Colts", "name": "Colts", "color": "002c5f", "alternateColor": "a2aaad"}}
+          ]
+        }
+      ]
+    },
+    "drives": {
+      "current": {
+        "team": {"id": "11", "abbreviation": "IND"},
+        "start": {"yardLine": 27},
+        "plays": [
+          {
+            "start": {"down": 1, "distance": 10, "yardLine": 27, "yardsToEndzone": 73, "downDistanceText": "1st & 10 at IND 27"},
+            "end": {"down": 2, "distance": 6, "yardLine": 31, "yardsToEndzone": 69, "downDistanceText": "2nd & 6 at IND 31"}
+          }
+        ]
+      }
+    }
+  }
+}
