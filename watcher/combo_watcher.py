@@ -3560,8 +3560,12 @@ function paintGame(r){const t=S.gameOpen;
    arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
    slides to the new spot when the play changes (CSS transition; prefers-reduced-motion respected). Nothing here is read
    by any buy/sell path, and a bad or missing feed just returns '' so the page still works. */
+/* A team colour, safe to drop into an inline style: a 6-hex-digit colour (with or without a leading #) becomes
+   #rrggbb; anything else (empty, a name, something odd in the feed) falls back to the given CSS variable. The rest
+   of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
+function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
- const home=b.home||{},away=b.away||{};const hc=home.color||'var(--no)',ac=away.color||'var(--yes)';
+ const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
  // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
  let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
  // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
@@ -3585,7 +3589,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
  const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
    <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
- const fdLine=fdPct!=null?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
+ // Only draw the first-down line when a ball marker is shown, so a partial feed can't leave a floating line with no ball.
+ const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
  // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
  // right end zone (away attacking) covers 80..100.
  const rzShade=rz?`<i class="frz" style="left:${(dir>0?EZ+80/100*play:EZ).toFixed(2)}%;width:${(20/100*play).toFixed(2)}%"></i>`:'';
@@ -4410,7 +4415,10 @@ def webapp_main():
                     sit = full.get("situation") or {}
                     if summ or sit:
                         detail = {"situation": sit, **summ}
-        except Exception:
+        except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as err:
+            # Narrowed so a genuine programming bug (NameError etc.) surfaces instead of being hidden; a bad/missing
+            # feed just drops the strip. Logged once per game like the engine's live-score paths.
+            A.klive_log_once("gamedetail", t, err)
             detail = None
         return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
                          "detail": detail, "fresh": freshness()})

@@ -5422,7 +5422,9 @@ def game_detail(event_id, code, max_age=6):
     Caching/backoff come free from the hub's HubCache when the Mac is up (ESPN GETs route through it)."""
     import time
     path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
-    if not event_id or "football/" not in str(path):        # NFL + college football only in slice 1
+    # football only (slice 1); the event id must be the plain numeric ESPN id (defence in depth: a bad value is
+    # already handled below, but guard it explicitly so a surprising id never reaches the ESPN fetch).
+    if not event_id or "football/" not in str(path) or not re.match(r"^\d+$", str(event_id)):
         return {}
     got = GAME_DETAIL.get(event_id)
     if got and time.time() - got[0] < max_age:
@@ -5433,7 +5435,10 @@ def game_detail(event_id, code, max_age=6):
         r = requests.get(url, params={"event": str(event_id)}, timeout=10)
         data = r.json() if r.ok else {}
         out = _parse_game_detail(data) if data else {}
-    except (requests.RequestException, ValueError, TypeError, AttributeError):
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as err:
+        # Keep serving the last good copy, but log it once per game (like kalshi_score/display_score) so a
+        # persistent feed break is visible instead of silently falling back forever.
+        klive_log_once("gamedetail", event_id, err)
         out = (got[1] if got else {})                       # keep the last good copy if ESPN hiccups
     GAME_DETAIL[event_id] = (time.time(), out)
     return out
@@ -5491,7 +5496,9 @@ def _parse_game_detail(data):
                             else start.get("yardLine"),
                             "downDistanceText": (end.get("downDistanceText") or start.get("downDistanceText") or "")}
         return out
-    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+    except (AttributeError, TypeError, ValueError):
+        # The explicit guards above (len==2, "home"/"away" present, plays[-1] only when non-empty) make KeyError
+        # and IndexError unreachable for feed data; catching them too would only hide a future programming bug.
         return {}
 
 
