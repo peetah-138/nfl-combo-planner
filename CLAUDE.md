@@ -378,6 +378,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
+- **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
+  is left, and the setting to change ("Settings > Money > Weekend cap/Daily cap/Mix cap for <league>"). Its window word
+  (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
+  college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
+  "on games still to play" for the Mix. The rule and the cap amount are unchanged.
 - **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
   labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
   asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`

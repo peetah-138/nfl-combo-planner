@@ -4713,7 +4713,7 @@ def webapp_main():
                         return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
                     spent = A.week_spend() if A.can_trade() else 0
                     if spent + n * (ask + fee) > A.CFG["budget"] + 0.01:
-                        return {"ok": False, "msg": f"That would go over your {A.money(A.CFG['budget'])} cap."}
+                        return {"ok": False, "msg": A.cap_msg(spent, n * (ask + fee))}
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
                                      "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
