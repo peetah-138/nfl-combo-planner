@@ -45,11 +45,12 @@ with sync_playwright() as pw:
         print(name, "chips at rest:", [c["t"] for c in base])
         if len(base) < 8: bad(f"{name}: only {len(base)} chips at rest; the test needs the full row")
         if sum(c["on"] for c in base) != 1 or not base[0]["on"]: bad(f"{name}: All should be the one selected chip at rest")
-        for target in ("NBA", "Soccer", "All"):
+        for target, wipe in (("NBA", "localStorage.clear()"), ("Soccer", "localStorage.clear()"), ("All", "localStorage.clear()"),
+                             ("NHL", "Object.keys(localStorage).filter(k=>k.startsWith('cw_c_')).forEach(k=>localStorage.removeItem(k))")):
             i = next((k for k, c in enumerate(base) if target in c["t"]), None)
             if i is None: bad(f"{name}: no {target} chip"); continue
             # nothing cached for the new league, its data held back 1.2 s: the loading state is on screen
-            pg.evaluate("localStorage.clear();window.__hold=1200")
+            pg.evaluate(wipe + ";window.__hold=1200")
             pg.evaluate(f"[...document.querySelectorAll('#main > .chips:first-child .chip')][{i}].click()")
             t0 = time.time()
             for t in (0, 100, 300):
