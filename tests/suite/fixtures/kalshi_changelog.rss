@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?><rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+    <channel>
+        <title><![CDATA[API Changelog]]></title>
+        <description><![CDATA[Stay updated with API changes and version history]]></description>
+        <link>https://docs.kalshi.com</link>
+        <generator>Mintlify</generator>
+        <lastBuildDate>Fri, 20 Nov 2026 01:34:09 GMT</lastBuildDate>
+        <atom:link href="https://docs.kalshi.com/changelog/rss.xml" rel="self" type="application/rss+xml"/>
+        <copyright><![CDATA[API Documentation]]></copyright>
+        <docs>https://docs.kalshi.com</docs>
+        <item>
+            <title><![CDATA[Filter historical fills by multiple market tickers]]></title>
+            <description><![CDATA[GET /historical/fills accepts up to 100 comma-separated market tickers in the ticker query parameter.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-26-2026</link>
+            <guid isPermaLink="false">6c952087f58b2bc5</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Fri, 20 Nov 2026 01:33:41 GMT</pubDate>
+            <content:encoded><![CDATA[<p><code>GET /historical/fills</code> accepts up to 100 comma-separated market tickers in the
+<code>ticker</code> query parameter. A single ticker still works.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Listener mode on KalshiRFQ sessions]]></title>
+            <description><![CDATA[A KalshiRFQ session that logs on with ListenerSession<20126>=Y also receives your account's execution reports.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-26-2026</link>
+            <guid isPermaLink="false">b81510679af390a1</guid>
+            <category><![CDATA[FIX]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Thu, 19 Nov 2026 16:47:30 GMT</pubDate>
+            <content:encoded><![CDATA[<p>KalshiRFQ sessions can now choose listener mode with
+<code>ListenerSession&#x3C;20126>=Y</code>. The session keeps quoting and also receives your
+account's execution reports, including the fills of your accepted quotes.
+See <a href="https://docs.kalshi.com/fix/listener-sessions">Listener Sessions</a>.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Requests with a NUL byte or invalid UTF-8 return 400]]></title>
+            <description><![CDATA[A request whose path or query string contains a NUL byte (%00) or bytes that are not valid UTF-8 now returns 400 instead of 500; a cursor carrying such text is handled as a malformed cursor.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">87746860632eb04b</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <category><![CDATA[Margin]]></category>
+            <pubDate>Mon, 16 Nov 2026 17:52:43 GMT</pubDate>
+            <content:encoded><![CDATA[<p>A request whose path or query string contains a NUL byte (<code>%00</code>) or bytes
+that are not valid UTF-8, for example <code>GET /markets?tickers=KX%00TEST</code> or
+<code>GET /historical/trades?ticker=%ff%fe</code>, now returns 400
+<code>invalid_parameters</code>. It previously returned 500 <code>internal_server_error</code>
+on endpoints that looked the value up.</p>
+<p>A <code>cursor</code> carrying such text is now handled the way each endpoint already
+handles a cursor it cannot decode, instead of returning 500. Most endpoints
+return 400. A few, including <code>GET /markets</code>, ignore a cursor they cannot
+decode and return the first page.</p>
+<p>No valid request is affected, and cursors returned by the API are
+unchanged.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Rate limit headers on REST responses]]></title>
+            <description><![CDATA[REST responses now carry X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset and X-RateLimit-Cost for the bucket each request was charged to.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">714421dc1a050e02</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <category><![CDATA[Margin]]></category>
+            <pubDate>Thu, 12 Nov 2026 23:33:31 GMT</pubDate>
+            <content:encoded><![CDATA[<p>REST responses now describe the rate limit bucket each request was charged
+to: <code>X-RateLimit-Limit</code> (its capacity in tokens), <code>X-RateLimit-Remaining</code>,
+<code>X-RateLimit-Reset</code> (seconds until it is full) and <code>X-RateLimit-Cost</code>.
+429 responses carry them too, but not <code>Retry-After</code>. Publicly cacheable
+responses, which include most market data, carry none of them. See
+<a href="https://docs.kalshi.com/getting_started/rate_limits#rate-limit-headers">Rate limit headers</a>.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Market expiration_time removed]]></title>
+            <description><![CDATA[The deprecated expiration_time field is removed from market objects; latest_expiration_time carries the same value.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">87e8e0c610c83644</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Thu, 12 Nov 2026 17:58:31 GMT</pubDate>
+            <content:encoded><![CDATA[<p>The deprecated <code>expiration_time</code> field is removed from market objects,
+including markets nested in events. Read <code>latest_expiration_time</code> instead:
+it has always carried the same value. Order <code>expiration_time</code> is unrelated
+and unchanged.</p>]]></content:encoded>
+        </item>
+        <item>
+            <title><![CDATA[Incentive schedules, and incentive programs by series or event]]></title>
+            <description><![CDATA[GET /incentive_schedules lists the recurring incentive schedules; GET /incentive_programs takes series_ticker and event_ticker and returns each program's series and event.]]></description>
+            <link>https://docs.kalshi.com/changelog#november-19-2026</link>
+            <guid isPermaLink="false">e2bbac1e0e20ca82</guid>
+            <category><![CDATA[REST]]></category>
+            <category><![CDATA[Predictions]]></category>
+            <pubDate>Wed, 11 Nov 2026 15:55:52 GMT</pubDate>
+            <content:encoded><![CDATA[<ul>
+<li><code>GET /incentive_schedules</code> lists the recurring incentive schedules that
+have not ended: what each market of a series (or of one event) earns per
+window, how long a window is, and when the schedule ends. <code>all_markets</code>
+says whether the terms are promised to every market the schedule covers,
+including markets listed later, or only anticipated. It needs no
+authentication.</li>
+<li><code>GET /incentive_programs</code> takes <code>series_ticker</code> and <code>event_ticker</code> filters,
+and each program now carries its <code>series_ticker</code> and <code>event_ticker</code>.</li>
+</ul>]]></content:encoded>
+        </item>
+    </channel>
+</rss>

@@ -79,7 +79,7 @@ print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook; do
+for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_kalshi_feed_watch; do
   o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
