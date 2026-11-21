@@ -15245,6 +15245,9 @@ def _alert(alert, msg, kind, url):
         alert(msg, kind)
 
 
+_SID = {"n": 0, "start": random.randint(0, 899)}   # store_suggestion's id counter
+
+
 def store_suggestion(c, r, pct):
     """Remember a combo Kalshi just priced at or above your cut-off, so Live can offer it. Returns its id."""
     if not STORE["db"]:
@@ -15252,7 +15255,10 @@ def store_suggestion(c, r, pct):
     now = time.time()
     live = any(started(l) for l in c["legs"])
     kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x and x > now]   # the next game still to start
-    sid = f"{int(now)}{random.randint(100, 999)}"
+    # The 3 digits after the second count up from a random start, so two ideas stored in the same second never share an id
+    # (a random pick collided now and then: "UNIQUE constraint failed: suggestions.id", and the idea was silently lost).
+    _SID["n"] = (_SID["n"] + 1) % 900
+    sid = f"{int(now)}{100 + (_SID['start'] + _SID['n']) % 900}"
     try:                                              # what the card says about each game (display only)
         info = json.dumps(idea_legs_info(c["legs"]))
     except Exception:
