@@ -1,5 +1,5 @@
 // ---------------- combo detail
-async function openCombo(t){S.gameOpen=null;S.comboOpen=t;pushOpen('Combo');
+async function openCombo(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOpen('Combo');
  const [r]=await Promise.all([api('/app/api/combo?t='+encodeURIComponent(t)).catch(()=>null),pushWait()]);if(S.comboOpen!==t)return;const c=r&&r.combo;
  if(!c){pushFill('<h3>Not found</h3><p>That combo isn\'t live any more.</p>','Combo');return;}
  const h=r.history||{offers:[],ticks:{}};const [vc,vt]=verdictOf(c);

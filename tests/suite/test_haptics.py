@@ -100,6 +100,7 @@ with sync_playwright() as pw:
     # L and M say so when they can't work here
     pg.locator('.hxrow[data-m="L"] button').click(); l_ok = pg.evaluate("document.querySelector('.hxrow[data-m=L] .hxs').textContent")
     pg.evaluate("Object.defineProperty(navigator,'vibrate',{value:undefined,configurable:true})")
+    time.sleep(.15)                                   # hapTry counts two taps within 60 ms as one (a label clicks twice); on a fast runner the second click came sooner
     pg.locator('.hxrow[data-m="L"] button').click(); l_no = pg.evaluate("document.querySelector('.hxrow[data-m=L] .hxs').textContent")
     pg.locator('.hxrow[data-m="M"] button').click(); m_no = pg.evaluate("document.querySelector('.hxrow[data-m=M] .hxs').textContent")
     print("L:", l_ok, "/", l_no, " M:", m_no)

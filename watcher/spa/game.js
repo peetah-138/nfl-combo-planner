@@ -1,5 +1,5 @@
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gxWant=false;clearTimeout(S.gxT);S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.ideaOpen=null;S.gameOpen=t;S.gxWant=false;clearTimeout(S.gxT);S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
 // The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
 // live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
 // down between updates while it is running. Only the first draw waits for the slide-in to finish.

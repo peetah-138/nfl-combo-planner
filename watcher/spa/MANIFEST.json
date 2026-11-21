@@ -5,6 +5,7 @@
   "js": [
     "common.js",
     "live.js",
+    "ideas.js",
     "build.js",
     "haptics.js",
     "results.js",

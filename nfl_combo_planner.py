@@ -52,6 +52,7 @@ CFG = {
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
+    "ideas_shown": 3,     # Live Buy ideas: how many show at once (best by expected dollars); the rest fold under "N more"
     "line_model": True,   # spreads/totals: the margin-shape model where its league's gate is on (False = old model everywhere)
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
@@ -253,7 +254,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown")
 
 
 def next_league():
@@ -14177,11 +14178,12 @@ def store_suggestion(c, r, pct):
     return sid
 
 
-def live_suggestions(max_age=3600, limit=6):
-    """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks."""
+def live_suggestions(max_age=3600, limit=6, newest=False):
+    """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks (newest=True:
+    the newest quote of each, which is what the Live page ranks and dates)."""
     now = time.time()
     rows = store_rows("select * from suggestions where ts > ? and (kick is null or kick > ?) "
-                      "and (coalesce(live, 0) = 0 or ts > ?) order by pct desc",
+                      "and (coalesce(live, 0) = 0 or ts > ?) order by " + ("ts desc" if newest else "pct desc"),
                       (now - max_age, now + 300, now - 600))      # in-progress ideas go stale in 10 minutes
     seen, out = set(), []
     for r in rows:
@@ -14194,6 +14196,208 @@ def live_suggestions(max_age=3600, limit=6):
         r.update(idea_describe(r))
         r.pop("info", None)
     return out
+
+
+# ---- Live "Buy ideas": ranked by expected dollars, rationed, and dismissable (GitHub #141). Display and filtering
+# only: nothing here prices, buys or sizes anything, and a bad row can never raise into the caller.
+IDEA_DISMISS = os.path.join(HERE, "combo_idea_dismiss.json")   # today's dismissals + bought ideas (gitignored: combo_*.json)
+IDEA_FRESH_SECS = 120          # a price older than this is shown as "refreshing" until a newer one comes in
+IDEA_POOL = 40                 # ideas ranked each time (the old list took the best 6 by price share, then cut)
+IDEA_KEEP = 15                 # the most that go to the page: the top few, then "N more ideas"
+IDEA_SHOWN_DEFAULT = 3
+IDEA_RE_EDGE = 0.03            # a dismissed idea comes back when its edge improves by this much (3 points)...
+IDEA_RE_PRICE = 2.0            # ...or its price drops by this many cents
+IDEA_BOUGHT_DAYS = 3           # a bought idea never comes back (kept this long; its games are over by then)
+
+
+def idea_key(legs):
+    """The market behind an idea: its leg tickers, sorted. The same on every re-offer, unlike the row's own id."""
+    return "|".join(sorted(str(t) for t in legs))
+
+
+def idea_id(legs):
+    """A short stable id for an idea's market (what the page sends back to dismiss or undo it)."""
+    return "i" + hashlib.sha1(idea_key(legs).encode()).hexdigest()[:12]
+
+
+def ideas_shown():
+    """The Settings 'Buy ideas shown' number (top this many; the rest fold under 'N more'), 1 to 10. Read from the
+    shared settings file too, so the web app and the Mac's engines agree."""
+    v = load_json(MAIN_SAVED, {}).get("ideas_shown") if os.path.exists(MAIN_SAVED) else None
+    v = CFG.get("ideas_shown", IDEA_SHOWN_DEFAULT) if v is None else v
+    try:
+        return max(1, min(10, int(v)))
+    except (TypeError, ValueError):
+        return IDEA_SHOWN_DEFAULT
+
+
+def _idea_state(now=None):
+    """The dismissal file, for today: {'day', 'items': {key: baseline}, 'bought': {key: when}}. A new day starts the
+    dismissals over ('Not now' means until tomorrow); a bought idea stays gone for a few days."""
+    now = now or time.time()
+    st = load_json(IDEA_DISMISS, {})
+    if not isinstance(st, dict):
+        st = {}
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    if st.get("day") != day:
+        st["day"], st["items"] = day, {}
+    if not isinstance(st.get("items"), dict):
+        st["items"] = {}
+    bought = st.get("bought") if isinstance(st.get("bought"), dict) else {}
+    st["bought"] = {k: v for k, v in bought.items() if isinstance(v, (int, float)) and now - v < IDEA_BOUGHT_DAYS * 86400}
+    return st
+
+
+def _idea_better(row, base):
+    """True when an idea is now meaningfully better than when it was dismissed: its edge up 3 points or more, or its
+    price down 2 cents or more (a missing number never counts as better)."""
+    try:
+        e, e0 = row.get("edge"), base.get("edge")
+        p, p0 = row.get("price_c"), base.get("price_c")
+        return bool((e is not None and e0 is not None and e - e0 >= IDEA_RE_EDGE - 1e-9)
+                    or (p is not None and p0 is not None and p0 - p >= IDEA_RE_PRICE - 1e-9))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _idea_below_bar(row):
+    """Under the bar the idea was offered at: a combo below the green Buy's bar (green_bar: your 'price you'll accept'
+    setting and the league's cut-off), a single or spread/total with no edge left after Kalshi's fee. Marked, never hidden (they sort last)."""
+    pct = row.get("pct")
+    if pct is None:
+        return False
+    try:
+        if (row.get("n") or 1) > 1:                          # a combo: the green Buy's own bar (your setting, and the league's cut-off)
+            return pct < green_bar([{"ticker": t} for t in row.get("legs") or []]) - 1e-9
+        return pct <= 1.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _idea_history(keys, now):
+    """For each idea's market, the Kalshi price (cents per $1 paid out) at each quote in the last day, oldest first;
+    drawn on the detail page when there are two or more."""
+    out = {}
+    try:
+        rows = store_rows("select legs, ts, stake, pays from suggestions where ts > ? and pays > 0 order by ts",
+                          (now - 86400,))
+        want = set(keys)
+        for r in rows:
+            try:
+                k = idea_key(json.loads(r["legs"]))
+                if k in want and r["stake"]:
+                    out.setdefault(k, []).append([round(r["ts"]), round(r["stake"] / r["pays"] * 100, 1)])
+            except (ValueError, TypeError, KeyError):
+                continue                                         # one odd row never loses everyone's price line
+    except Exception:
+        return {}
+    return {k: v[-30:] for k, v in out.items() if len(v) >= 2}
+
+
+def _held_idea_markets():
+    """(single tickers, combo leg sets) you already hold, from the Live snapshot the app last built (no lookups), so an
+    idea you bought another way (Build, another phone, the panel) doesn't stay offered. Empty when unknown."""
+    singles, combos = set(), set()
+    try:
+        view = MINE.get("view") or {}
+        for x in view.get("singles") or []:
+            if x.get("t") or x.get("ticker"):
+                singles.add(x.get("t") or x.get("ticker"))
+        for c in view.get("combos") or []:
+            if c.get("group") == "pending":
+                combos.add(frozenset(l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")))
+    except Exception:
+        pass
+    return singles, combos
+
+
+def live_ideas(now=None, info=None, keep=IDEA_KEEP):
+    """The Buy ideas for Live: ranked by expected profit in dollars at the suggested stake (edge x stake after the
+    fee, from fields the idea already holds), best first, ideas under the quality bar last. Each carries a stable
+    `idea_id` and `key`, `rank`, `ep` (expected dollars), `below_bar`, `age` and `stale` (a price older than
+    IDEA_FRESH_SECS shows 'refreshing'). Left out: ones Pete dismissed (until the edge or price improves, or
+    tomorrow), ones he bought, and pre-game ideas whose game has started. The page shows the top few and folds the
+    rest; nothing is hidden by the ranking itself. `info` (a dict) gets {'hidden': how many dismissed ones are
+    waiting}. Never raises."""
+    now = now or time.time()
+    try:
+        rows = live_suggestions(limit=IDEA_POOL, newest=True)
+        st = _idea_state(now)
+        held_s, held_c = _held_idea_markets()
+        gone, hidden, out = [], 0, []
+        for r in rows:
+            r["key"], r["idea_id"] = idea_key(r["legs"]), idea_id(r["legs"])
+            if r["key"] in st["bought"]:
+                continue
+            if (len(r["legs"]) == 1 and r["legs"][0] in held_s) or frozenset(r["legs"]) in held_c:
+                continue                                         # already yours (bought somewhere else)
+            if not r.get("live") and any(li.get("live") for li in r.get("legs_info") or []):
+                continue                                         # a pre-game idea whose game has started
+            base = st["items"].get(r["key"])
+            if base is not None:
+                if _idea_better(r, base):
+                    gone.append(r["key"])                        # it earned another look
+                else:
+                    hidden += 1
+                    continue
+            r["age"] = max(0, round(now - (r.get("ts") or now)))
+            r["stale"] = r["age"] > IDEA_FRESH_SECS
+            r["below_bar"] = _idea_below_bar(r)
+            r["ep"] = r.get("profit") if r.get("profit") is not None else 0.0
+            out.append(r)
+        if gone:
+            with file_lock(IDEA_DISMISS):
+                st2 = _idea_state(now)
+                for k in gone:
+                    st2["items"].pop(k, None)
+                save_json(IDEA_DISMISS, st2)
+        out.sort(key=lambda r: (r["below_bar"], -r["ep"], -(r.get("pct") or 0), -(r.get("ts") or 0)))
+        out = out[:keep]
+        hist = _idea_history([r["key"] for r in out], now)
+        for i, r in enumerate(out):
+            r["rank"] = i + 1
+            if r["key"] in hist:
+                r["hist"] = hist[r["key"]]
+        if info is not None:
+            info["hidden"] = hidden
+        return out
+    except Exception as err:
+        console_note(f"buy ideas: {type(err).__name__}: {err}")
+        return []
+
+
+def idea_dismiss(ids=None, everything=False, bought=False, now=None):
+    """Hide ideas Pete passed on: each stays hidden until its edge improves by 3 points or its price drops 2 cents, or
+    until tomorrow. `bought` ideas never come back. `everything` = every idea on the list (Clear all). Only ideas
+    currently on the list can be dismissed (an id the Mac doesn't know is ignored). Returns {'n', 'ids'}."""
+    now = now or time.time()
+    ids = {str(i) for i in (ids or [])}
+    cur = live_ideas(now, keep=IDEA_POOL)                  # Clear all clears the whole pool, not just the top few
+    take = [r for r in cur if everything or r["idea_id"] in ids]
+    if not take:
+        return {"n": 0, "ids": []}
+    with file_lock(IDEA_DISMISS):
+        st = _idea_state(now)
+        for r in take:
+            if bought:
+                st["bought"][r["key"]] = now
+            else:
+                st["items"][r["key"]] = {"at": now, "edge": r.get("edge"), "price_c": r.get("price_c")}
+        save_json(IDEA_DISMISS, st)
+    return {"n": len(take), "ids": [r["idea_id"] for r in take]}
+
+
+def idea_undismiss(ids=None, everything=False, now=None):
+    """Take dismissals back (the Undo on the toast, or 'show them again'). Ids are the ideas' stable ids."""
+    now = now or time.time()
+    ids = {str(i) for i in (ids or [])}
+    with file_lock(IDEA_DISMISS):
+        st = _idea_state(now)
+        keep = {} if everything else {k: v for k, v in st["items"].items() if idea_id(k.split("|")) not in ids}
+        n = len(st["items"]) - len(keep)
+        st["items"] = keep
+        save_json(IDEA_DISMISS, st)
+    return {"n": n}
 
 
 IDEA_AT = ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl", "ahl")    # Kalshi lists these "away at home"
