@@ -2,6 +2,7 @@ import os,sys,time,tempfile,random,types
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 import importlib.util
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 ok=lambda name,cond: print(("PASS " if cond else "FAIL ")+name)
 now=time.time()
 def leg(t,ev,pick,p,fair): return {"ticker":t,"event":ev,"pick":pick,"p":p,"fair":fair}

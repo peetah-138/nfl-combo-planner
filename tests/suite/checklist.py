@@ -1,4 +1,5 @@
 # The check list's test names and how they are split up. run_checks.sh reads this; so does CI (one job per shard).
+#   python checklist.py static                -> the static checks written as scripts (st_*.py; the static group)
 #   python checklist.py engine                -> every engine test (t_*.py)
 #   python checklist.py page [i/N]            -> the page tests (test_*.py), or only shard i of N
 #   python checklist.py lanes K name ...      -> the names spread over K lanes, one line per lane
@@ -6,6 +7,8 @@
 # Splits are deterministic: longest first, each to the lightest bin (ties: lowest bin), using the seconds below.
 # Every test lands in exactly one shard and one lane (t_shards.py checks it). Add every new test to a list here.
 import sys
+
+STATIC = ["st_hermetic"]   # no test reaches the real internet; the fake-network guard works (GitHub #189)
 
 ENGINE = """t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores
 t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss
@@ -74,7 +77,9 @@ def shard(names, spec):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if a[:1] == ["engine"]:
+    if a[:1] == ["static"]:
+        print(" ".join(STATIC))
+    elif a[:1] == ["engine"]:
         print(" ".join(ENGINE))
     elif a[:1] == ["page"]:
         print(" ".join(shard(PAGE, a[1] if len(a) > 1 else "")))
@@ -84,4 +89,4 @@ if __name__ == "__main__":
     elif a[:1] == ["retry"]:
         print(" ".join(RETRY))
     else:
-        sys.exit("usage: checklist.py engine | page [i/N] | lanes K names... | retry")
+        sys.exit("usage: checklist.py static | engine | page [i/N] | lanes K names... | retry")

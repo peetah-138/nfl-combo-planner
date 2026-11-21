@@ -10,6 +10,26 @@ exec(open("test_settings.py").read().split("with sync_playwright() as pw:")[0])
 problems = []
 def bad(m): problems.append(m); print("PROBLEM:", m)
 
+import upwait
+# Counts the page's view transitions in flight (a tab change paints inside one; until it ends, a tap or elementFromPoint
+# hits the transition's overlay, not the controls)
+VT = r"""(()=>{const s=document.startViewTransition;if(!s)return;window.__vt=0;document.startViewTransition=function(cb){const t=s.call(document,cb);window.__vt++;
+  const end=()=>{window.__vt--};t.finished.then(end,end);return t;};})()"""
+
+def frames(pg, n=2):
+    """n animation frames, then every finite CSS animation/transition finished (the header tucking in after a scroll,
+    a tab's entrance stagger): the box checks compare positions, and WebKit moves a running transition along between
+    two reads in the same script. Endless ones (a spinner, the live dot) don't count."""
+    pg.evaluate("n=>new Promise(z=>{const f=k=>k?requestAnimationFrame(()=>f(k-1)):z();f(n)})", n)
+    pg.wait_for_function("""document.getAnimations().every(a=>a.playState!=='running'||!isFinite(a.effect.getComputedTiming().endTime))""", timeout=15000)
+
+def show(pg, view):
+    """Opens a tab and waits for state, not a fixed time: its own loads done (Results' analytics included), the tab's
+    view transition over; then the page is held still (no background refresh), so the checks below never race a redraw
+    that swaps every control for a new one (the old fixed sleeps lost that race now and then on a busy runner)."""
+    upwait.go_and_hold(pg, view)
+    pg.wait_for_function("!(window.__vt>0)", timeout=30000); frames(pg)
+
 def wait(pg, js, secs=12):
     for _ in range(int(secs / .2)):
         if pg.evaluate(js): return True
@@ -59,14 +79,16 @@ with sync_playwright() as pw:
         pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.route("**/app/api/act", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "msg": "Got it."})))
         pg.add_init_script(INIT + ("" if tag != "desk" else "window.__hswForce=1;") + "localStorage.setItem('cw_view','live');localStorage.removeItem('cw_hapoff')")
+        pg.add_init_script(upwait.COUNT_FETCHES); pg.add_init_script(VT)
         pg.goto(B + "/app")
-        wait(pg, "document.querySelectorAll('.hsw').length>3", 25); time.sleep(2)
+        show(pg, "live")
+        if not wait(pg, "document.querySelectorAll('.hsw').length>3", 25): bad(f"{tag}: the switches never went in")
         if not pg.evaluate("hswOn()&&document.documentElement.classList.contains('hswon')"): bad(f"{tag}: method N isn't on")
         for view in ("live", "games", "build", "results", "settings"):
-            pg.evaluate(f"go('{view}')"); time.sleep(5 if view == "build" else 3)
-            if view == "build": pg.evaluate("S.adv=true;renderBuild()"); time.sleep(.8)
+            show(pg, view)
+            if view == "build": pg.evaluate("S.adv=true;renderBuild()"); frames(pg)
             for sy in (0, 650, 1300, 0):   # the whole page, a screen at a time (back to the top last)
-                pg.evaluate(f"window.scrollTo(0,{sy})"); time.sleep(.4)
+                pg.evaluate(f"window.scrollTo(0,{sy})"); frames(pg)
                 c = pg.evaluate(COVER)
                 if c["bigsw"]: bad(f"{tag} {view}: a big card/row carries a switch (it can catch a scroll): {c['bigsw']}")
                 print(tag, view, sy, "controls:", c["n"], "big (no switch):", c["big"], "in view:", c["inview"], "| no switch:", c["miss"], "| two:", c["twice"], "| box off:", c["box"], "| misses:", c["nhit"], c["hit"][:4])
@@ -94,11 +116,11 @@ with sync_playwright() as pw:
             print(tag, view, "tapped once each:", len(keys))
             # Games: its cards are big scroll surfaces (no switch, #151); the COVER check above asserts that
             if len(keys) < (0 if view == "games" else 1 if view == "results" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
-            pg.evaluate(f"go('{view}')"); time.sleep(.5)
+            pg.evaluate(f"go('{view}')"); frames(pg)   # (held: a redraw from what the page has, no load)
 
         # the pushed game page (a sheet) is covered too
-        pg.evaluate("go('games')"); time.sleep(3)
-        g = pg.locator(".gc").first.bounding_box()
+        show(pg, "games")
+        g = pg.locator(".gc").first.bounding_box(timeout=10000)
         if not g: bad(f"{tag}: no game card to open")
         else:
             pg.mouse.click(g["x"] + 30, g["y"] + 20) if tag == "desk" else pg.touchscreen.tap(g["x"] + 30, g["y"] + 20)
@@ -110,7 +132,7 @@ with sync_playwright() as pw:
 
         # links: no switch (it would take their navigation and long-press menu), still open once; disabled: nothing;
         # a nested button wins over its row; a field appearing inside a control takes its switch away
-        pg.evaluate("go('live')"); time.sleep(2)
+        show(pg, "live")
         pg.evaluate("""(()=>{const d=document.createElement('div');d.id='tz';d.style.cssText='position:fixed;left:10px;top:120px;z-index:99;background:var(--panel);padding:8px';
           d.innerHTML=`<a id="la" href="#zz" onclick="__hit(this,event)" data-hk="la" style="display:inline-block;padding:10px">hash link</a>
            <a id="lb" href="/app?popup=1" target="_blank" onclick="__hit(this,event)" data-hk="lb" style="display:inline-block;padding:10px">new tab</a>
@@ -143,7 +165,7 @@ with sync_playwright() as pw:
 
         # a scroll that starts on a control clicks nothing and flips nothing
         if tag == "phone":   # (CDP touch: Chromium only)
-            pg.evaluate("go('build')"); time.sleep(4); pg.evaluate("S.adv=true;renderBuild()"); time.sleep(.8)
+            show(pg, "build"); pg.evaluate("S.adv=true;renderBuild()"); frames(pg)
             pg.evaluate("""(()=>{let k=0;document.querySelectorAll('[onclick]').forEach(e=>{e.dataset.hk=++k;e.setAttribute('onclick','__hit(this,event)');});window.__hits.length=0;window.__swc=0;
               addEventListener('click',e=>{if(e.target.classList.contains('hsw'))window.__swc++;},true);window.scrollTo(0,0);})()""")
             pt = pg.evaluate("""(()=>{for(const s of document.querySelectorAll('main .hsw')){const r=s.getBoundingClientRect();if(r.top>250&&r.bottom<700&&r.height>20&&r.width>60&&document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===s)return [r.left+r.width/2,r.top+r.height/2];}return null;})()""")
@@ -170,7 +192,7 @@ with sync_playwright() as pw:
         if tag == "phone":
             cdp = ctx.new_cdp_session(pg)
             for view, sel in (("live", "main .trow"), ("games", "main .gc"), ("build", "main [onclick]:not(.sech),main .trow")):
-                pg.evaluate(f"go('{view}')"); time.sleep(4 if view == "build" else 3)
+                show(pg, view)
                 pg.evaluate("""(()=>{let k=0;document.querySelectorAll('[onclick]').forEach(e=>{e.dataset.hk=++k;e.setAttribute('onclick','__hit(this,event)');});window.__hits.length=0;window.__swc=0;
                   if(!window.__swl){window.__swl=1;addEventListener('click',e=>{if(e.target.classList.contains('hsw'))window.__swc++;},true);}
                   document.querySelector('main').style.paddingBottom='1600px';window.scrollTo(0,0);})()""")
@@ -207,10 +229,21 @@ with sync_playwright() as pw:
             time.sleep(.3)
             cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 200, "y": 100}]})
             cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": 200, "y": 70}]})
-            pg.evaluate("window.scrollBy(0,40)"); time.sleep(.06); mid = pg.evaluate(pe)
+            # each reading is taken in the page right after its scroll event, in one evaluate: the class lives ~150 ms
+            # past the last scroll and a momentum scroll counts within 200 ms of the finger's, so readings taken over
+            # Python round trips (sleep, then evaluate) went stale on a busy runner. The finger lifting is the page's
+            # own touchend listener seeing a touchend (the real one from CDP follows, to release the touch point).
+            seq = pg.evaluate("""(async()=>{const PE=%s;const scr=()=>new Promise(z=>{addEventListener('scroll',()=>z(),{once:true,capture:true});window.scrollBy(0,40);});
+              await scr();const mid=PE();
+              dispatchEvent(new TouchEvent('touchend',{bubbles:true}));await scr();const still=PE();   // momentum after the finger lifts
+              return {mid,still};})()""" % ("()=>" + pe))
             cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-            pg.evaluate("window.scrollBy(0,40)"); time.sleep(.08); still = pg.evaluate(pe)   # momentum after the finger lifts
-            time.sleep(.35); after = pg.evaluate(pe)
+            # once the finger is up and the page has had no scroll for 350 ms (the browser may still apply the drag's
+            # own scroll after the touchend), the switches take taps again
+            after = pg.evaluate("""(async()=>{let last=performance.now();const on=()=>{last=performance.now()};addEventListener('scroll',on,{capture:true});
+              const t0=performance.now();while(performance.now()-last<350&&performance.now()-t0<8000)await new Promise(z=>setTimeout(z,50));
+              removeEventListener('scroll',on,{capture:true});return Object.assign((%s)(),{waited:Math.round(performance.now()-t0)});})()""" % ("()=>" + pe))
+            mid, still = seq["mid"], seq["still"]
             pg.evaluate("document.querySelector('main').style.paddingBottom='';window.scrollTo(0,0)"); time.sleep(.3)
             sc = {"idle": idle, "app": app, "mid": mid, "still": still, "after": after}
             print("phone scrolling class:", sc)

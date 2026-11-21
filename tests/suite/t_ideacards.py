@@ -7,6 +7,8 @@
 import os, time, tempfile, importlib.util, json
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
+E.game_context = lambda code, *teams: []   # no back-to-back/weather notes from ESPN's real scoreboard (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 # An idea's id is the second it was saved plus a random 100-999, so ideas this test saves within one second could
