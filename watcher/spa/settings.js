@@ -1,10 +1,15 @@
 // ---------------- settings
 const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$',''],ideas_shown:['','']};
-const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25],ideas_shown:[1,10,1]};
-function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
-function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
+const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,11,1],hedge_cap:[25,500,25],ideas_shown:[1,10,1]};
+/* Auto cash-outs a day: the slider's top stop (11) is "Unlimited", stored as AUTO_CAP_UNL (issue #217; an older
+   process reads 1000 as a cap it never reaches). Anything over 10 shows and saves as Unlimited. */
+const AUTO_CAP_MAX=10,AUTO_CAP_UNL=1000;
+function rngPos(k,v){return k==='auto_cap'&&+v>AUTO_CAP_MAX?AUTO_CAP_MAX+1:v;}
+function rngVal(k,v){return k==='auto_cap'&&+v>AUTO_CAP_MAX?AUTO_CAP_UNL:+v;}
+function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';if(k==='auto_cap'&&+v>AUTO_CAP_MAX)return 'Unlimited';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
+function rng(k,label,sub,dis){const v=rngPos(k,S.set.values[k]),[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
-  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
+  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',rngVal('${k}',this.value))"><output>${fmtv(k,v)}</output></div></div>`;}
 function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" switch class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
 function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
 /* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
