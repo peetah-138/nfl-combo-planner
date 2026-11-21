@@ -232,7 +232,7 @@ ok("Settings › Money: 'Kalshi balance by pot', says Kalshi's own app shows one
 ok("Settings saves don't wait on the pots (read only on a plain read)", "pots = _pots() if vals is None else None" in src)
 esrc = open("wahome/engine.py").read()
 j = esrc.index("def single_buy(")
-sb = esrc[j:esrc.index("\ndef ", j + 10)]
+sb = esrc[j:j + 9000]
 ok("Buy straight (single_buy) buys through buy_single and shows its words as they are (the same honest text)",
    "buy_single(t, n, ask, coid=coid, exact=True)" in sb and 'return {"ok": False, "msg": err}' in sb
    and "enough money" not in sb)
