@@ -82,6 +82,15 @@ pattern in a local `.git/hooks/pre-commit`.
   sent, a timeout or 5xx = check and never resent, 410 = a clean refusal, a game under way never priced on its pre-game
   chance; `test_singlebuy_ui.py`: the slip's Single bet / Combo switch, the game page's pinned buttons and the buy sheet
   in every state (scripted answers), at phone (dark and light) and desktop sizes.
+  Money-safety hardening (`t_safety.py`, issue #143; every check failed on the code before it): the Pi (backup role)
+  never sends an order and a synced Auto cash-out can't switch it on; a combo accept whose status poll fails (429, 5xx,
+  timeout, unreadable) or that is never confirmed, or whose accept itself got a 5xx/timeout, is "check" in the web
+  app, the panel and killer deals, recorded in the order ledger, never re-quoted or re-bought; a clear 4xx is still a
+  refusal; a cash-out accept with an unknown outcome stops (one accept, no fresh offer) and auto cash-out leaves it
+  alone; killer deals skip on an unreadable history and record before buying; the hub's proxy answers a slow tap with
+  JSON 504 "may or may not"; updates wait for a tap mid-order; two processes writing the ledger and hedges file at
+  once lose nothing; a failed money-state write is loud and still blocks; Pause covers combo buys and killer deals;
+  an unreadable balance never sizes or approves a panel.
   Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,

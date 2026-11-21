@@ -49,6 +49,30 @@ Real money is involved. Pete uses it daily.
 7. Never price or buy a combo other than the one on Pete's screen (the quote API checks the leg tickers the page sends).
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
 
+**How these are enforced in code (money-safety hardening, issue #143; tested by `t_safety.py`):**
+- *The Pi:* the watcher's `backup_safe(conf, E)` forces `auto_sell`/`auto_hedge` off and killer/maker `off` at
+  start, after every settings copy (`fetch_settings`, the listener thread) and before `live_check`/`autosell_pass`;
+  `COMBO_ROLE=backup` / `E.ROLE_BACKUP` make the engine's `can_trade()` False and `kalshi_send`/`_signed` refuse every
+  non-GET before anything is sent (`has_kalshi_key()` is the plain "has a key" check for reads).
+- *Combo accepts (buy and cash-out):* only a definite refusal **before** Kalshi took the accept (a 4xx other than 408,
+  the key, Pause) is "refused". Once the accept PUT was sent (or its send timed out / 5xx'd / the Mac was lost), any
+  unclear answer, a failed status poll or no confirmation within `ACCEPT_WAIT` (15 s) is **unknown**: marked in the
+  order ledger (`mark_rfq_unsure`, keys `<market>|rfq-buy|o` / `<market>|rfq-sell|r`, with the leg tickers), the
+  panel/killer get `None` = "check", the web app answers `check` with `COMBO_UNSURE_MSG`, `get_offer` won't re-quote
+  the same legs, a cash-out stops (no second accept; `CASH_RETRIES` only after a definite refusal) and auto cash-out
+  leaves that combo alone (`rfq_unsure(t, "sell")`, like `hedge_unsure`). Settings › Money lists them as order blocks.
+- *Ledger and hedges across processes:* `combo_orders.json` and `combo_hedges.json` are read-modify-written under an
+  `fcntl` lock (`file_lock`), with `save_json(..., strict=True)` (raises and logs "MONEY STATE NOT SAVED"); a mark
+  that couldn't be written stays in that process's memory and still blocks.
+- *Killer deals:* the dedupe and caps are read with `store_rows_strict` (unreadable = skip), the row goes in as
+  "buying" **before** `buy()` and counts toward the caps until updated.
+- *Pause:* `E.TRADING_PAUSED` (watcher: `watcher_paused`, the live `conf["paused"]`; web app: `paused_now`) is read
+  by `accept_offer`, `killer_act` and `maker_pass`; the web app's combo quote/idea/Buy refuse while paused; turning
+  killer/standing orders/Auto cash-out on while paused is undone if `send_synced` failed.
+- *Taps and updates:* the hub's proxy gives `/app/api/act` `PROXY_ACT_TIMEOUT` (150 s) and answers a timeout with
+  JSON 504 "may or may not have gone through"; order taps write `combo_tap_busy.json` (`tap_mark`) and `update_loop`
+  waits while it's fresh; the web app's `orphan_check` waits (≤ 120 s) for the tap lock before exiting.
+
 ## How Pete wants work done
 
 - **Check thoroughly before pushing.** He was fed up with bugs reaching him. Every release goes through the full
@@ -304,7 +328,9 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
   predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
-  immediately; half of each month's profit is set aside (reminder until Pete says he moved it).
+  immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
+  that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it
+  can't be approved or added; approved bets wait (`hold: "balance"`) until the balance reads again.
 - Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
   (80–85, 85–90, 90–95, 95–100, 100+% of fair) from real quotes, $5 each, separate from the gate.
 
