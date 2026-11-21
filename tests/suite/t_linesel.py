@@ -348,9 +348,9 @@ def t_review():
     E.book_asks = real
     E.BOOK_LADDER["Z"] = (time.time(), [(0.4, 3)])
     ok("review: a book read in the last minute is used as is", E.books_now(["Z"], budget=0)["Z"] == [(0.4, 3)])
-    js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build_sections.js")).read()
-    ok("review: the ticker reaches the tap through a data attribute, not a quoted JS string",
-       "lineFromBoard(this.dataset.t,this)" in js and "lineFromBoard('" not in js)
+    js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build.js")).read()
+    ok("review: the ticker reaches the tap through the escaped ticker, not an unescaped JS string",
+       "sbOpen('${esc(x.ticker)}'" in js and "lineFromBoard('${x.ticker}'" not in js)
 
 
 safe("review", t_review)
@@ -365,8 +365,10 @@ def t_wiring():
     ab = w[w.index("    def api_build("):]
     ok("wiring: Build's spreads/totals are worked out off the app lock (taps never wait on order books)",
        ab.index("lines_kick(lg") < ab.index("with alock:") and "A.line_recommend(" not in ab[:ab.index("def ", 10)])
-    js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build_sections.js")).read()
-    ok("wiring: the empty state says so plainly", "No spread or total clears your bar right now." in js)
+    js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build.js")).read()
+    js += open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build_sections.js")).read()
+    ok("wiring: spreads/totals show inside Best bets (#63); its empty state explains a quiet day",
+       "bestFeed(d)" in js and "Nothing clears your bar right now" in js and "linesBlock" not in js)
     ok("wiring: the old table of every strike is gone", "lrow2" not in js)
     src = inspect.getsource(E.single_buy_quote)
     ok("wiring: the buy sheet's green Buy for a spread/total uses the learned bar (never looser)", "line_min_edge(" in src and "max(need" in src)

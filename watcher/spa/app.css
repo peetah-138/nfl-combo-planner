@@ -757,6 +757,10 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 .stkw{background:color-mix(in srgb,#f5b544 14%,transparent)}.stkm{background:color-mix(in srgb,var(--sub) 12%,transparent)}
 .pstb{display:flex;flex-direction:column;align-items:flex-end;gap:1px;border:0;background:none;color:var(--ink);padding:4px 6px;margin:-4px -6px;border-radius:10px;cursor:pointer;min-height:44px;justify-content:center}
 .pstb b{font-size:15px}.pstb small{font-size:11px;color:var(--acc,var(--sub));font-weight:600;white-space:nowrap}.pstb.mine small{color:#f5b544}
+/* Best bets today (#63) */
+.bfrow .bnums{grid-template-columns:repeat(auto-fit,minmax(68px,1fr))}
+.bfwarn{font-size:12.5px;line-height:1.45;border-radius:10px;padding:8px 10px;background:color-mix(in srgb,var(--warn,#f5a623) 16%,transparent);color:var(--ink)}
+.bfwarn.h{background:color-mix(in srgb,var(--no,#ff5a5f) 16%,transparent)}
 
 /* Kalshi's refusals (issue #134): a calm banner under the header while the Mac waits out a region/account refusal */
 .rsban{margin:10px 16px 0;max-width:1100px}@media (min-width:901px){.rsban{margin:12px auto 0;padding:0 24px}}

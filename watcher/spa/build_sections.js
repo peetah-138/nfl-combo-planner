@@ -24,15 +24,6 @@ function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setIt
  requestAnimationFrame(()=>requestAnimationFrame(()=>{if(c)c.classList.remove('from-open','from-shut');}));
  if(secOpen(k)){let n=h.nextElementSibling;for(let i=0;i<2&&n&&!n.classList.contains('sech');i++,n=n.nextElementSibling)n.classList.add('unfold');}}
 function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" data-k="${k}" onclick="secTog('${k}')"><span class="chev ${S.secJust===k?(o?'from-shut':'from-open'):''}">▾</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
-/* Spreads & totals (issue #117): recommendations only. A strike shows when it clears the league's learned bar after
-   Kalshi's fee, isn't a kind that keeps losing to the close, fills inside the edge, and Smart Buy sees a likely route
-   to profit under smart sell's own exit policy. Ranked by expected dollars at the size that fills. */
+/* Spreads & totals (issue #117) are recommendations only and now live in Best bets (#63): a strike shows when it clears the
+   league's learned bar after the fee, fills inside the edge and has a likely route to profit; build.js draws them. */
 function lineRoute(x){return x.route==='sell'?`Likely to cash out early for a profit: <b>${pct(x.p_exit)}</b>`:`Profit if it holds: <b>${pct(x.win)}</b> to win, +${(x.edge*100).toFixed(1)}¢ edge`;}
-function lineRec(x){return `<div class="bet lrec"><div class="bt"><div><span class="kind">${x.kind==='spread'?'📏 Spread':'➕ Total'} · ${esc(x.game||'')}</span><b>${esc(String(x.pick||'').replace(/ \(.*\)$/,''))}</b></div><span class="ret"><span data-num="lx:${esc(x.ticker)}" data-v="${x.exp}" data-pre="+">+${money(x.exp)}</span><small>expected</small></span></div>
-  <div class="bnums"><div>Kalshi price<b data-num="lp:${esc(x.ticker)}" data-v="${x.p}" data-f="cent">${Math.round(x.p*100)}¢</b></div><div>Fair chance<b>${pct(x.fair)}</b></div><div>Edge after fee<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">${lineRoute(x)}. Stake ${money(x.stake)} for ${Number(x.n).toLocaleString()} contract${x.n===1?'':'s'}${x.capped==='depth'?`, all Kalshi has inside the edge right now`:''}. Your bar here: ${(x.min_edge*100).toFixed(1)}¢.</div>
-  <button class="btn acc" style="width:100%;min-height:44px" data-t="${esc(x.ticker)}" onclick="lineFromBoard(this.dataset.t,this)">Get a price</button></div>`;}
-function linesBlock(d){const ls=d.lines||[];if(!ls.length&&!d.lines_priced)return '';
- return secHead('lines','Spreads &amp; totals',ls.length,'only the ones worth buying')+(!secOpen('lines')?'':ls.length?`<div class="bets">${ls.map(lineRec).join('')}</div>
-  <div class="m" style="font-size:12px;margin:6px 2px 0">Priced from the sportsbook line. Expected profit counts Kalshi's fee and what you can really buy at these prices.</div>`
-  :`<div class="empty lempty" role="status"><b>No spread or total clears your bar right now.</b><div class="m" style="font-size:12.5px;margin-top:4px">${d.lines_nobook?`Kalshi's order book didn't answer for ${d.lines_nobook}; it tries again on the next refresh.`:`${Number(d.lines_priced).toLocaleString()} checked. They show up here when one is priced well and has a likely way to a profit.`}</div></div>`);}
