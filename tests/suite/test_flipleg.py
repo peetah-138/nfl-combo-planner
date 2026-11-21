@@ -138,7 +138,7 @@ with sync_playwright() as pw:
             near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 1 for p_, q_ in zip(a, b) for x, y in zip(p_, q_))
             # -- layout: nothing moves between idle, loading and arrived (the note's space is reserved up front)
             pg.evaluate("window.__load0=window.load;window.load=async()=>{}")   # no background refresh may reshape the card while it is measured
-            reset(); r0 = rects(); tap_flip(); r1 = rects(); release_flip(); wait(pg, f"document.querySelector('{card}').dataset.ph==='idle'", 5); pg.evaluate("Promise.all(document.getAnimations().filter(a=>a.effect&&a.effect.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>0)))"); r2 = rects()
+            reset(); r0 = rects(); tap_flip(); r1 = rects(); release_flip("JSON.parse(" + json.dumps(ORIG) + ")"); wait(pg, f"document.querySelector('{card}').dataset.ph==='idle'", 5); pg.evaluate("Promise.all(document.getAnimations().filter(a=>a.effect&&a.effect.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>0)))"); r2 = rects()
             print(tag, "button boxes idle/loading/arrived:", r0, r1, r2)
             if not near(r0, r1) or not near(r0, r2): bad(f"{tag}: the buttons moved during the flip: {r0} {r1} {r2}")
             pg.evaluate("window.load=window.__load0")
