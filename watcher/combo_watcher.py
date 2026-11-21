@@ -423,25 +423,33 @@ def update_if_newer(E, conf):
             log(f"update {latest} skipped: couldn't write the new files ({err}); keeping this version")
             return False
         prev = ENGINE + ".prev"                      # the running engine, kept until both files are in place
+        copied = False
         try:
+            if os.path.isfile(prev):
+                os.remove(prev)                       # never a leftover from an earlier, interrupted update
             if os.path.isfile(ENGINE):
                 shutil.copy2(ENGINE, prev)
+                copied = True
             os.replace(ENGINE + ".new", ENGINE)
             os.replace(me + ".new", me)
         except OSError as err:
             try:
-                if os.path.isfile(prev):
+                if copied:
                     os.replace(prev, ENGINE)          # never a new engine next to the old watcher
             except OSError:
                 pass
             for path in (ENGINE + ".new", me + ".new"):
-                if os.path.isfile(path):
+                try:
                     os.remove(path)
+                except OSError:
+                    pass
             spa_restore(old_spa)
             log(f"update {latest} failed while installing ({err}); the old files were put back")
             return False
-        if os.path.isfile(prev):
+        try:
             os.remove(prev)
+        except OSError:
+            pass
         spa_drop(old_spa)
     conf.pop("waiting", None)
     log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
@@ -743,7 +751,9 @@ def spa_repair(conf=None):
 
 def spa_repair_start(conf):
     def run():
-        spa_repair_loop(conf)
+        spa_repair_loop(conf)                       # returns only once the files are installed
+        if not UPDATED.get("now"):
+            return
         time.sleep(20)                              # the main loop exits on UPDATED; if it's stuck, exit anyway
         log("restarting for the web app files")
         os._exit(0)
