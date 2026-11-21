@@ -23,7 +23,7 @@ def load():
     A.MINE["cash"]["KXMVE-1"] = {"rfq": "estimate", "offer": 9.1, "frac": 1.0, "at": time.time()}
     return A
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 VW, VH = int(os.environ.get("VW", 1440)), int(os.environ.get("VH", 900)); TAG = os.environ.get("TAG", "d")
@@ -32,9 +32,9 @@ CS=[cb(1,"cashed",3.15,0,4.43,19,"tennis","2026-11-18"),cb(8,"lost",5,16,0,16,"n
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for W,H,tag in ((1280,900,"desk"),(390,844,"phone")):
-        pg = br.new_page(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
+        pg = br.new_page(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
         errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(4); pg.evaluate("window.load=async()=>{}")
+        pg.goto(B + "/app"); __import__("upwait").go_and_hold(pg, "live")   # waits for Live's own load, then holds still
         pg.evaluate("localStorage.removeItem('cw_sf');S.sf={o:'all',sp:'all',sort:'new'};S.live={at:Date.now()/1000,combos:"+json.dumps(CS)+",riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{},auto_sell:true,singles:[],pulse:[]};S.filter='done';renderLive()"); time.sleep(1)
         t = pg.locator(".tbl").inner_text()
         print(tag, "pills:", [x for x in ("+$1.28","−$5","+$84","−$2.82","+$9.00") if x in t], "| net:", pg.locator(".snet").inner_text())

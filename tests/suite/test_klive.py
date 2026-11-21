@@ -73,7 +73,7 @@ def load():
 
 
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 
@@ -120,7 +120,8 @@ with sync_playwright() as pw:
         if any(set(h) - {"Accept"} for _, h in KCALLS) or not KCALLS:
             print("PROBLEMS: Kalshi live-data calls missing or carrying more than an Accept header", KCALLS[:2])
         # the page itself
-        pg.evaluate("go('live')"); time.sleep(1.5)
+        pg.evaluate("go('live')")             # wait for the drawn page (it renders on a later frame), not a fixed 1.5 s
+        until(pg, "S.view==='live'&&['0–2 · 40–15','Q3 4:18','fight over','not started yet'].every(w=>document.body.innerText.toLowerCase().includes(w.toLowerCase()))", 20)
         txt = pg.evaluate("document.body.innerText")
         for want in ("0–2 · 40–15", "Q3 4:18", "fight over", "not started yet"):
             if want.lower() not in txt.lower():
@@ -146,7 +147,7 @@ with sync_playwright() as pw:
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"):
             print("PROBLEMS: sideways scroll on games")
         pg.screenshot(path=f"klive_games_{tag}.png")
-        pg.evaluate("go('live')"); time.sleep(1)
+        pg.evaluate("go('live')"); until(pg, "S.view==='live'&&!!document.querySelector('main')", 10)
         # the game sheet says where the score came from
         pg.evaluate("openGame('KXATPMATCH-26NOV19DEBBLA-DEB')")
         if not until(pg, "!!document.querySelector('#sheet .board2')", 15):

@@ -131,4 +131,24 @@ pattern in a local `.git/hooks/pre-commit`.
 - Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
   for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
   `window.load=async()=>{}` after the page has loaded.
-- Add every new test to the lists in `run_checks.sh`.
+- Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
+  is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
+- Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
+- Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can
+  overwrite it: `pg.add_init_script(upwait.COUNT_FETCHES)` before `goto`, then `upwait.go_and_hold(pg, "live")`
+  (waits for every request, the boot load included, then stops the page refreshing itself).
+- A partial run (`CHECK_GROUPS`, `CHECK_SHARD` or `CHECK_ONLY`, e.g. `CHECK_ONLY="test_klive"` while fixing one test)
+  ends with `PART PASSED (...)`, never `ALL CHECKS PASSED`.
+
+## In CI: parallel jobs
+
+`.github/workflows/ci.yml` runs the same `run_checks.sh` in parallel jobs, each with part of it:
+`CHECK_GROUPS=static` (ruff, compile on 3.10 and 3.12, JavaScript, names, secrets, versions), `engine`, `sim`
+(the simulated Mac and the update install), and `pages` split into shards with `CHECK_SHARD=i/N` (each shard on its
+own runner, 3 lanes, its own ports). `suite/checklist.py` does the split: deterministic, longest tests first, every
+test in exactly one shard (checked by `t_shards.py`, which also checks CI runs every shard and every group). A final
+job named `checks` (the one branch protection requires) passes only when all of them passed. pip and the Playwright
+browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test listed in `checklist.RETRY` once and the log says
+`RETRIED`; it holds only `test_rebuild_ui` (see why there): fix a flaky test instead of adding it. Locally, `bash tests/run_checks.sh` still runs everything, and
+you can run one part the same way, e.g. `CHECK_GROUPS=pages CHECK_SHARD=2/5 bash tests/run_checks.sh`. Each page
+test's PASS line shows its seconds.
