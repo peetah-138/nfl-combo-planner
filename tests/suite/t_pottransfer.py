@@ -43,6 +43,7 @@ def reset(**k):
     T.update(on=True, sent=[], next=None, status="complete", ids={}, active=True, moved={})
     T.update(k)
     E._POT_SHARED.recent.clear()
+    E._POT_SHARED.unsure.clear()
     E._POT_SHARED.names["at"] = 0
     E.save_json(E.POT_LEDGER, {})
     E.note_pots(D["balance"])
@@ -116,6 +117,17 @@ ok(f"the source pot short on a fresh read: refused, nothing sent ({r['msg']})", 
 r = move(1, 3, "5.00", paused=True)
 ok("Pause: refused with the Pause words, nothing sent", not r["ok"] and r.get("paused") and "Paused" in r["msg"]
    and not T["sent"])
+E.TRADING_PAUSED = lambda: True
+r = move(1, 3, "5.00")
+E.TRADING_PAUSED = lambda: 1 / 0
+r2 = move(1, 3, "5.00")
+E.TRADING_PAUSED = None
+ok("Pause as the watcher holds it (read fresh; a failed read counts as paused): refused, nothing sent",
+   r.get("paused") and r2.get("paused") and not T["sent"])
+E.ROLE_BACKUP = True
+r = move(1, 3, "5.00")
+E.ROLE_BACKUP = False
+ok("the Pi (alerts-only backup) never moves money", not r["ok"] and "backup" in r["msg"] and not T["sent"])
 reset(active=False)
 r = move(1, 3, "5.00")
 ok("Kalshi has paused moves between pots: refused, nothing sent", not r["ok"] and not T["sent"])
@@ -163,6 +175,30 @@ ok("clearing it: logged, not resent", E.pot_clear(cid) and any("pot move cleared
    and len(T["sent"]) == n0 and not E.pot_clear(cid))
 r = move(1, 3, "4.00")
 ok("after clearing, a new move goes", r["ok"] and len(T["sent"]) == n0 + 1)
+reset(next=500)
+real_save = E.save_json
+cid = str(uuid.uuid4())
+
+
+def flaky(path, data, strict=False):          # the write-ahead works, then the disk fails
+    if path == E.POT_LEDGER and any(m.get("status") == "check" for m in data.get("moves", [])):
+        raise OSError("disk full")
+    return real_save(path, data, strict)
+
+
+E.save_json = flaky
+r = move(1, 3, "5.00", cid=cid)
+E.save_json = real_save
+r2 = move(1, 3, "4.00")
+ok("a 'check' that can't be written to disk is kept in memory: still check, still blocks the next move",
+   r.get("check") and r2.get("blocked") and len(T["sent"]) == 1 and any("MONEY STATE NOT SAVED: pot move" in x for x in LOGS))
+E._POT_SHARED.unsure.clear()
+reset()
+E.save_json = lambda path, data, strict=False: (_ for _ in ()).throw(OSError("disk full")) if path == E.POT_LEDGER \
+    else real_save(path, data, strict)
+r = move(1, 3, "5.00")
+E.save_json = real_save
+ok("the write-ahead record can't be saved: nothing is sent", not r["ok"] and not T["sent"])
 reset()
 E.save_json(E.POT_LEDGER, {"moves": [{"cid": "c-crash", "ts": 1, "from": 1, "to": 3, "amount": 5, "status": "sending"}]})
 r = move(1, 3, "5.00")

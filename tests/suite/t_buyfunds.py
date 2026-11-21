@@ -133,8 +133,11 @@ from wsrc import watcher_text   # the watcher file plus its web app files (watch
 src = watcher_text()
 i = src.index('if a == "singlebuy":')
 seg = src[i:src.index('if a == "buy":', i)]
-ok("api_act singlebuy shows buy_single's words as they are (no money words of its own)",
-   'return {"ok": False, "msg": err}' in seg and "enough money" not in seg)
+esrc = open("wahome/engine.py").read()
+j = esrc.index("def idea_single_buy(")
+eseg = esrc[j:esrc.index("\ndef ", j + 10)]
+ok("api_act singlebuy (via idea_single_buy) shows buy_single's words as they are (no money words of its own)",
+   "A.idea_single_buy(" in seg and '"msg": err or f"Nobody was selling' in eseg and "enough money" not in seg + eseg)
 
 # ---- (5) every order error code in Kalshi's docs -> its own true words (never "not enough money")
 WANT = {

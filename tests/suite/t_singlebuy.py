@@ -217,12 +217,19 @@ qs = E.single_buy_quote(dict(X, fair_at=time.time() - 20 * 60))
 ok(f"a board price 20 minutes old isn't used: no fair price, yellow ({qs.get('nofair')})",
    qs["ok"] and qs["fair"] is None and not qs["clears"] and "minutes old" in (qs["nofair"] or ""))
 ok("a fresh board price is used", E.single_buy_quote(dict(X, fair_at=time.time() - 60))["fair"] == 0.8)
-LX = dict(X, kind="spread", src="model")
+SPT0 = f"KXNBASPREAD-{EV.split('-')[1]}-DEN5"      # a real spread ticker (its kind comes from the ticker, #136)
+real_mo0 = E.market_open
+E.market_open = lambda t: ((True, {"event_ticker": EV.replace("GAME", "SPREAD"), "expected_expiration_time": X["exp"]})
+                           if "SPREAD" in t else real_mo0(t))
+book(0.72, 0.70)
+LX = dict(X, ticker=SPT0, kind="spread", src="model")
 ok("a spread 6.6c under the model: green", E.single_buy_quote(dict(LX, fair=0.80))["clears"])
 s2 = E.single_buy_quote(dict(LX, fair=0.76))
 ok("a spread only 2.6c under the model: yellow (the board's 4c margin), and sized on a shrunk edge",
    not s2["clears"] and E.single_buy_quote(dict(X, fair=0.76))["clears"] and
    s2["sug"] <= E.single_buy_quote(dict(X, fair=0.76))["sug"])
+E.market_open = real_mo0
+E.book_depth = REAL_BOOK
 real_ls = E.leg_score
 E.leg_score = lambda l: {"state": "post", "me": 100, "opp": 90}
 r = E.single_buy_quote(X, 10)
@@ -429,11 +436,214 @@ r = buy(q)
 ok("the read fails between the quote and the tap: refused with the cap words, nothing sent",
    q["ok"] and not q["blocked"] and not r["ok"] and "Couldn't check your weekly cap" in r["msg"] and not D["sent"])
 E.ACCT_CACHE.update(at=0, value=None)
-print("INFO known gap (listed in the PR, unchanged here): the combo cap's week_spend counts a failed read as "
-      f"${REAL_WS():g}")
+
+# ---- (10) issue #136: every other cap fails closed too, Live-idea singles have a cap, singles use their own league's
+# cap (never the Mix's). The account read still fails here (429), with no good read in the last 120 s.
+try:
+    REAL_WS()
+    ok("week_spend on a failed read with no recent good one: CapUnknown", False)
+except E.CapUnknown:
+    ok("week_spend on a failed read with no recent good one: CapUnknown (never $0)", True)
+ok("Build's display copy still answers (never used for a cap)", E.week_spend_shown() == 0)
+E.week_spend = REAL_WS
+real_ks = E.kalshi_send
+KS = []
+E.kalshi_send = lambda *a, **k: (KS.append(a), (_ for _ in ()).throw(AssertionError("must not reach Kalshi")))[1]
+saved_ctx = dict(E.CTX)
+E.CTX.update(combos=[{"legs": [{"ticker": T, "event": EV, "pick": "Denver Nuggets", "fair": 0.8}], "fair": 2.0, "min": 1}],
+             stake=5, sunday=KEY, offers={1: {"stake": 5.0, "rfq": "r1", "quote": "q1", "market": "M", "pays": 9.0}})
+r = E.get_offer(1)
+ok(f"combo Get price (Build, and Live's combo ideas) on an unreadable spend: refused with the cap words ({r.get('error')})",
+   "Couldn't check your weekly cap" in (r.get("error") or "") and not KS)
+r = E.accept_offer(1)
+ok("combo Buy on an unreadable spend: refused, nothing sent to Kalshi, no 'check'",
+   "Couldn't check your weekly cap" in (r.get("error") or "") and not KS and 1 in E.CTX["offers"])
+E.CTX.update(offers={1: {"stake": 5.0, "rfq": "r1", "quote": "q1", "market": "M", "pays": 9.0}})
+GOOD90 = ([{"cost": 9.0, "lgs": ["nba"], "first_week": KEY.isoformat(), "week": KEY.isoformat()}], None, None)
+E.ACCT_CACHE.update(at=time.time() - 90, value=GOOD90)
+ok("a failed read with a good one 90 s ago: the combo cap uses it ($9)", REAL_WS() == 9.0)
+E.CFG["budget"] = 12.0
+r = E.get_offer(1)
+ok(f"...and over the cap on that read the old cap words still answer ({(r.get('error') or '')[:60]})",
+   "over your $12 cap" in (r.get("error") or "") and not KS)
+E.CFG["budget"] = 100.0
+E.ACCT_CACHE.update(at=0, value=None)
+E.CTX.clear(); E.CTX.update(saved_ctx)
+E.kalshi_send = real_ks
+E.CFG["killer_mode"] = "on"
+BOUGHT = []
+line = E.killer_act("combo", [{"ticker": T, "pick": "Denver Nuggets"}], 5.0, 9.0, 1.3,
+                    lambda: (BOUGHT.append(1), (True, "bought"))[1])
+krow = E.store_rows("select status, why from killer order by ts desc limit 1")
+ok(f"a killer deal on an unreadable spend: skipped, never bought ({krow and dict(krow[0])})",
+   not BOUGHT and krow and krow[0]["status"] == "skipped" and "spending cap" in krow[0]["why"])
+E.CFG["killer_mode"] = "watch"
+
+# Live's single-game buy idea: the market's own league cap, fail closed, Pause, and noted for every manual cap
+reset()
+E.week_spend = lambda: SPENT["v"]
+E.cap_combo_spend = REAL_CCS
+no, sp, bud = E.single_cap_block(T, 3.0)
+ok(f"a Live-idea single on an unreadable spend: refused with the cap words ({no})",
+   no and "Couldn't check your weekly cap" in no and sp is None)
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("...and its Buy is refused, nothing sent", not r["ok"] and "Couldn't check your weekly cap" in r["msg"]
+   and not D["sent"] and not r.get("check"))
+E.ACCT_CACHE.update(at=time.time(), value=([{"cost": 95.0, "lgs": ["nba"], "first_week": KEY.isoformat(),
+                                             "week": KEY.isoformat()}], None, None))
+r = E.idea_single_buy(T, 10, 0.72, log=LOG.append)
+ok(f"a Live-idea single over the NBA's daily cap: refused, names the window, the setting and the room left ({r['msg'][:90]}...)",
+   not r["ok"] and not D["sent"] and "NBA" in r["msg"] and "that day" in r["msg"] and "Daily cap" in r["msg"]
+   and "$5.00 left" in r["msg"].replace("$5 left", "$5.00 left") and "$100" in r["msg"])
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+r = E.idea_single_buy(T, 4, 0.72, paused=True, log=LOG.append)
+ok("a Live-idea single while paused: refused, nothing sent", not r["ok"] and "Paused" in r["msg"] and not D["sent"])
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea1")
+ok(f"a Live-idea single inside the cap: one V2 order ({r.get('msg')})", r["ok"] and len(D["sent"]) == 1)
+r2 = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea1")
+ok("...a double tap (or a retry) on the same idea sends nothing", not r2["ok"] and len(D["sent"]) == 1)
+ok("...noted in manual_buys, so Buy straight's cap sees it", abs(E.manual_spend(T) - 4 * (0.72 + E.single_fee(0.72))) < 0.02)
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+book(0.455, 0.45)
+r = E.idea_single_buy(T, 2, 0.455, log=LOG.append, key="idea2")
+sent = D["sent"][-1][2] if D["sent"] else {}
+sent = sent if isinstance(sent, dict) else {}
+ok(f"a sub-cent idea price is sent rounded down, never up ({ {k: v for k, v in sent.items() if 'price' in k} })",
+   r["ok"] and "46" not in str({k: v for k, v in sent.items() if "price" in k}) and "45" in str(sent))
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+D["next"] = requests.Timeout("slow")
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("a Live-idea single with no clear answer: 'check', the market blocked, never resent",
+   not r["ok"] and r.get("check") and E.order_unsure(T))
+n0 = len(D["sent"])
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("...a second tap sends nothing", not r["ok"] and len(D["sent"]) == n0)
+WSRC = open("wtest/combo_watcher.py").read()
+iq = WSRC.index('if a == "idea":')
+seg_q = WSRC[iq:WSRC.index('if row["kick"]', iq)]
+ib = WSRC.index('if a == "singlebuy":')
+seg_b = WSRC[ib:WSRC.index('if a == "buy":', ib)]
+ok("the web app's idea single quote checks its own league's cap (not the loaded league's week_spend)",
+   "A.single_cap_block(tk" in seg_q and "week_spend" not in seg_q and "A.NO_TRADE_MSG" in seg_q)
+ok("the web app's idea single buy goes through idea_single_buy (cap, Pause, block) and never buy_single directly",
+   "A.idea_single_buy(" in seg_b and "paused_now()" in seg_b and "buy_single" not in seg_b and "key=" in seg_b)
+ok("Build's 'spent' line uses the display-only copy", "A.week_spend_shown()" in WSRC)
+
+# manual singles use their own league's cap even with the Mix loaded (Mix combos keep the Mix cap)
+reset()
+E.set_league("mix")
+E.ACCT_CACHE.update(at=time.time(), value=([{"cost": 8.0, "lgs": ["mix"], "first_week": KEY.isoformat(),
+                                             "week": KEY.isoformat()}], None, None))
+E.CFG["budget"] = 5.0                     # a tiny Mix cap, already used up by a Mix combo
+E.CFG["kalshi_key_id"] = "fake-key-id"
+q = E.single_buy_quote(X, 10)
+NBA_CAP = float(E.league_cfg("nba")["budget"])
+ok(f"Mix loaded with its cap used up: an NBA single is checked against the NBA's own cap (${NBA_CAP:g}), not the "
+   f"Mix's $5 ({q.get('budget')}, {q.get('blocked')})", q["ok"] and q["budget"] == NBA_CAP > 5 and not q["blocked"])
+no, sp, bud = E.single_cap_block(T, 3.0)
+ok("...and so is a Live-idea single (the same check)", no is None and bud == NBA_CAP)
+_json.dump({"budget": 2}, open(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]), "w"))
+no, _, _ = E.single_cap_block(T, 3.0)
+ok(f"...a small NBA cap still limits it while the Mix is loaded ({(no or '')[:60]})", no and "NBA" in no and "$2" in no)
+os.remove(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]))
+ok("Mix combos keep the Mix cap", E.cap_label() == "Mix cap" and REAL_WS() == 8.0)
+E.set_league("nba")
+E.CFG["budget"] = 100.0
+E.CFG["kalshi_key_id"] = "fake-key-id"
+E.ACCT_CACHE.update(at=0, value=None)
 E._fetch_account = real_fa
 E.ACCT_CACHE.update(at=0, value=None)
 E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]
+
+# release 125 review, for #136: the manual-buy record fails closed too, and a note that can't be saved is never lost
+reset()
+real_db = E.STORE["db"]
+E.STORE["db"] = None
+try:
+    E.manual_spend(T)
+    ok("manual_spend with no history database: CapUnknown", False)
+except E.CapUnknown:
+    ok("manual_spend with no history database: CapUnknown (never $0)", True)
+no, _, _ = E.single_cap_block(T, 3.0)
+ok("...so a single's cap check refuses (the history file isn't open)", no and "history file" in no)
+q = E.single_buy_quote(X, 10)
+ok("...and Buy straight's quote is blocked", q["ok"] and q["blocked"] and "history file" in q["blocked"])
+E.STORE["db"] = real_db
+# real sqlite failures through the real helpers (store_x would swallow them; the money records must not)
+E.store_x("drop table if exists manual_buys")
+E.store_x("create table broken_src(x)")
+E.store_x("create view manual_buys as select ts, ticker, cost from broken_src")
+E.store_x("drop table broken_src")                 # the view now fails on every read, as a corrupt table would
+try:
+    E.manual_spend(T)
+    ok("manual_spend when the database read really fails: CapUnknown", False)
+except E.CapUnknown:
+    ok("manual_spend when the database read really fails: CapUnknown (never $0)", True)
+no, _, _ = E.single_cap_block(T, 3.0)
+ok("...so the single's cap check refuses", no and "Couldn't check" in no)
+E.store_x("drop view manual_buys")
+E._manual_table()
+E.store_x("create trigger no_notes before insert on manual_buys begin select raise(abort, 'disk I/O error'); end")
+ALERTS = []
+E.MANUAL_ALERT = ALERTS.append
+E._SQ["ideas"] = {}
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea-note")
+time.sleep(0.3)                                    # the alert goes from its own thread
+ok("a filled buy whose note the database refuses: still reported bought", r["ok"])
+ok("...logged loudly and Pete told once", any("MANUAL BUY NOT SAVED" in str(x) for x in LOG) and len(ALERTS) == 1)
+E.store_x("drop trigger no_notes")
+ok(f"...and the cap still counts it from memory ({E.manual_spend(T)})", E.manual_spend(T) >= 4 * 0.72)
+E.store_x("create trigger no_notes before insert on manual_buys begin select raise(abort, 'disk I/O error'); end")
+E._SQ["ideas"] = {}
+E.idea_single_buy(T, 1, 0.72, log=LOG.append, key="idea-note2")
+time.sleep(0.3)
+E.store_x("drop trigger no_notes")
+ok("...a second unsaved note doesn't notify again", len(ALERTS) == 1)
+E.MANUAL_MEM.clear()
+E.MANUAL_ALERT = None
+E._CAP_LOGGED.pop("manual_note", None)
+# one order per idea and per market for a while, but a definite no-buy frees the next tap
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+r1 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-A")
+r2 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-B")
+ok("two idea cards for the same market: only the first sends an order", r1["ok"] and not r2["ok"] and len(D["sent"]) == 1)
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+D["fill"] = 0
+r1 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-C")
+D["fill"] = None
+E._ORDER_SHARED.recent.clear()                     # (the order desk's own same-order guard is a separate check)
+r2 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-C")
+ok(f"nothing filled: the next tap may go again ({r1.get('msg')} / {r2.get('msg')})",
+   not r1["ok"] and r2["ok"] and len(D["sent"]) == 2)
+# a history file that isn't open says so (retrying won't help)
+real_db2 = E.STORE["db"]
+E.STORE["db"] = None
+no, _, _ = E.single_cap_block(T, 3.0)
+E.STORE["db"] = real_db2
+ok(f"no history file: its own words, not 'try again' ({(no or '')[:50]})", no and "history file" in no and "try again" not in no)
+# a winner ticker whose side carries a spread's fair: no fair price (never priced as a winner on a line's chance)
+reset()
+qk2 = E.single_buy_quote(dict(X, kind="spread", src="model", fair=0.95), 10)
+ok("a winner ticker with a spread's fair: no fair price, no edge", qk2["ok"] and qk2["fair"] is None and not qk2["clears"])
+E._SQ["ideas"] = {}
+reset()
+import datetime as _d2
+TODAY_T = "KXNBAGAME-" + _d2.date.today().strftime("%y%b%d").upper() + "DENLAL-DEN"
+E._manual_note(TODAY_T, 7.0)
+ok(f"manual_spend() with no ticker on a daily league counts today's singles ({E.manual_spend()})",
+   E.by_day() and E.manual_spend() == 7.0)
+# the market's own kind comes from its ticker: a side that says "spread" can't make a game-winner a spread
+reset()
+qk = E.single_buy_quote(dict(X, kind="spread"), 10)
+ok(f"a game-winner ticker stays a game-winner whatever kind the side says ({qk.get('kind')})", qk["ok"] and qk["kind"] == "win")
 
 # a single bought weeks before its game still counts in that game's slate; a market with no date says so
 reset()
