@@ -13,6 +13,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 files_t = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "t_*.py")))
 files_p = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "test_*.py")) if not f.endswith("test_webapp_pw.py"))
 check("every engine test file is listed once", sorted(C.ENGINE) == files_t and len(set(C.ENGINE)) == len(C.ENGINE))
+files_s = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "st_*.py")))
+check("every static check file is listed once", sorted(C.STATIC) == files_s and len(set(C.STATIC)) == len(C.STATIC) and files_s)
 check("every page test file is listed once", sorted(C.PAGE) == files_p and len(set(C.PAGE)) == len(C.PAGE))
 check("retry list only names page tests", set(C.RETRY) <= set(C.PAGE))
 
@@ -47,7 +49,7 @@ check("five shards are balanced within the longest test (%s s)" % w, max(w) - mi
 
 repo = os.environ.get("REPO") or os.path.abspath(os.path.join(here, "..", ".."))
 rc = open(os.path.join(repo, "tests", "run_checks.sh")).read()
-check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc
+check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc and "checklist.py static" in rc
       and not re.search(r"\bt_review t_review2\b|PAGE=\"test_", rc))
 ci = open(os.path.join(repo, ".github", "workflows", "ci.yml")).read()
 m = re.search(r"shard:\s*\[([\d,\s]+)\]", ci); tot = re.search(r"CHECK_SHARD:\s*\$\{\{\s*matrix\.shard\s*\}\}/(\d+)", ci)

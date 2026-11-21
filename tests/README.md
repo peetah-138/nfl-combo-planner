@@ -16,11 +16,6 @@ It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0
 - The page tests start their own web apps on ports **18766–18769** (the real Combo Hub uses 8765/8766), so a test can
   never reach the real app. If any of those ports is busy, the run fails instead of guessing.
 - Kalshi, ESPN and GitHub are faked; anything that slips past the fakes carries a throwaway key Kalshi rejects.
-- The engine tests run offline: `suite/netguard/sitecustomize.py` (put on `PYTHONPATH` by `run_checks.sh`) refuses every
-  request to a host outside this machine with a plain ConnectionError, so no check can depend on today's real ESPN or
-  Kalshi data (GitHub #189: real injury news made `t_live_panel` fail in CI at some hours of the day). Set
-  `CHECK_NETLOG=/some/file` to list what was refused.
-  `t_netguard` only passes under `bash tests/run_checks.sh` (it needs that netguard `PYTHONPATH`).
   Nothing is bought or sold.
 
 ## One-time setup on a Mac
@@ -52,7 +47,7 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## What's in it
 
-- **compile, JavaScript syntax, undefined names, secret grep.** JavaScript: `node --check` on every
+- **compile, JavaScript syntax, undefined names, secret grep, hermetic tests** (`suite/st_hermetic.py`, see Writing tests). JavaScript: `node --check` on every
   `watcher/spa/*.js` file and on the assembled page and login page (the watcher's own `spa_assemble`).
 - **The web app's files** (`t_spa_files.py`): every file in `watcher/spa/` is listed once in `MANIFEST.json`,
   non-empty, each script parses, the assembly is deterministic and complete, and a missing or broken folder never
@@ -159,6 +154,22 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## Writing tests
 
+Three rules (GitHub #189: every CI flake so far broke one of them):
+
+1. **Hermetic.** A test never reads the real internet: stub what it calls (`E.injury_note`, `E.book_depth`,
+   `E.game_context`, `E.requests.get` ...) or use `fakenet`. Every engine test runs under `suite/netguard/`
+   (`PYTHONPATH`, a `sitecustomize.py`): any connection to anything but this machine is refused and prints
+   `FAIL hermetic: ... <host> from <engine function>`, so a leak fails at once instead of depending on what ESPN
+   says that hour. `NETGUARD_OFF=1` turns it off while debugging. `st_hermetic.py` (static group) checks the guard
+   works, the harness keeps its flags, and no test calls a real address directly.
+2. **Wait for state, never a fixed time.** Poll for the thing you expect (`page.evaluate(...)` in a loop,
+   `wait_for_function`), hold the page still before drawing your own data in (`upwait.go_and_hold`, below), and do
+   timing-bound checks inside one `page.evaluate` (an `await` on the event) rather than across round trips: a busy
+   runner stretches every sleep.
+3. **Nothing shared.** Use your lane's port (`CW_WEBAPP_PORT`, from `CHECK_PORT_BASE`), `tempfile.mkdtemp()` for files
+   and databases, ids that can't collide (two rows stored in the same second must still differ), and dates from the
+   fake clock or `fakenet.us_day` (CI runs on UTC).
+
 - Engine tests print `PASS ...`/`FAIL ...` lines. Page tests print `PROBLEMS: ...` on any failure and their JS
   errors as `errs: [...]`; the runner fails on either, or on any traceback other than a dropped connection.
 - Page tests share `test_settings.py`'s setup (everything before `with sync_playwright() as pw:`), which starts the
@@ -166,7 +177,7 @@ pattern in a local `.git/hooks/pre-commit`.
 - Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
   for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
   `window.load=async()=>{}` after the page has loaded.
-- Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
+- Add every new test to the lists in `suite/checklist.py` (`STATIC` for `st_*.py`, `ENGINE` or `PAGE`; `t_shards.py` fails if a test file
   is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
 - Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
 - Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can

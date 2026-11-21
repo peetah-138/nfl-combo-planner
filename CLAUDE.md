@@ -206,6 +206,9 @@ whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the tes
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
 and the test lists are in `tests/suite/checklist.py`) plus an aggregate job named `checks` (the required one). What it covers:
+- **Writing tests** (`tests/README.md`): hermetic (engine tests run under `suite/netguard/`, which fails any real
+  connection; `st_hermetic` checks it), wait for state not sleeps (`upwait.go_and_hold` before drawing data in), own
+  port/temp files/unique ids.
 - Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
   `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
@@ -216,10 +219,6 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   `/`, never `/app`; the service worker maps old `/app` payloads to `/`; the hub redirects a browser navigation to `/app` and
   `/app/` to `/` and answers any other navigation that finds nothing or has no session with a small HTML page, never an empty
   file; API routes unchanged) and the login page's Face ID tap fallback (`test_login_faceid`).
-- **Engine tests run offline (issue #189).** `run_checks.sh` puts `tests/suite/netguard/` on `PYTHONPATH`; its
-  `sitecustomize.py` refuses every `requests` call to a non-local host (ConnectionError), so a check can never depend on
-  real ESPN/Kalshi data (real injury news once failed `t_live_panel` in CI only, by time of day). Page tests wait on page
-  state, not fixed sleeps, after a request (`test_singlebuy_ui`'s `settle`).
 - **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
   `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
   folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do
@@ -676,6 +675,16 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
+  sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
+  (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
+  `timeValid: false` "TBD" dates ignored), then the old estimate (Kalshi's `expected_expiration_time` minus the sport's
+  hours). Kalshi's expected settle time is a placeholder for many college football games (23:00 UTC for most of a
+  Saturday's slate, noon and night kickoffs alike), so the estimate alone put Kentucky at Missouri five hours early.
+  `start_dt`, `leg_start` and `started` all use it; `started` is also True whenever the feed shows the game in play or
+  over. `EVENT_TICK` (filled in `week_games`/`fetch_results`) finds a game's market from its event code. Pre-game panel
+  buys still need the sportsbooks' kickoff (`_kick_ts`) and live-priced ones a fresh in-play score (`live_side_fair`),
+  so a wrong estimate never bought anything. Test: `t_gamestart` (fixture `game_start_223.json`, real shapes).
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
@@ -716,7 +725,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   at most `PBP_MAX_PLAYS` newest plays, short keys) and a generic **game-page tab framework** in the SPA (`GAME_TABS`: a per-sport
   list of `{k, l, has(r), html(r, ov)}`; football = Overview + Play-by-play; a sport with no spec, or a tab whose data is missing,
   shows no tab row and the page is as before; the chosen tab, stepped play and collapsed sections live in `S.gtab`/`S.pbpStep`/
-  `S.pbpOpen` and survive the 2 s redraws). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
+  `S.pbpOpen` and survive the 2 s redraws; a redraw puts the tab row back where the finger left it and only scrolls to the chosen tab when the tab changes, and no redraw happens while a finger is on the row or for 0.5 s after it glides, `gtabHeld`, #218). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
   the ball as it stood after that play, from the play's `yardsToEndzone` and the team whose end zone it is), Back to live,
   collapsible quarters and drives, and tinted scoring/turnover plays, newest first. Stepping (and a new live play) plays a small
   illustration (pass arc, run trail, sack, kick, flag, touchdown, turnover) driven only by play type and yardage: **illustrations
@@ -971,7 +980,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   controls hide theirs; a field appearing inside a control removes its switch (`hswFix`); the switches' change/input
   events never reach the app. Skipped (`HSWNO`/`HSWIN`): links (no tick: a switch would take their navigation and
   long-press menu), labels (their checkboxes carry `switch` themselves, method I), selects, sliders,
-  text fields, scrub charts, sideways strips, the test card's other buttons. A MutationObserver adds them to new content
+  text fields, scrub charts, sideways strips, the test card's other buttons. **Controls inside a sideways-scrolling strip get no switch either** (`HSWX`: the game page's tab row `.gtabs`, the scoreboard's `.pbt`, wide tables `.gtw`, the Settings index `.sidx`; GitHub #218): WebKit's switch grabs a drag that starts on it as a slide of its knob, so a row of tabs that each carried one couldn't be scrolled sideways on Pete's iPhone. They keep press feedback and their tap (no iOS tick); a new sideways strip must be added to `HSWX` (`test_gtabscroll` fails on any overflowing strip with switches inside). A MutationObserver adds them to new content
   (never two per control). Only on iPhones/iPads, not in the Pythonista app, and off with the Haptics switch or reduced
   motion (`hswSync`). `hap()` still tries the scripted switch for a pattern's extra ticks and for gestures with no tap
   (chart scrub, pull-to-refresh, sheet drag, tab swipe, slider steps): iOS 27 ignores those, so they stay silent there.

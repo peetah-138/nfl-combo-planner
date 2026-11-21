@@ -641,21 +641,78 @@ def game_date(m):
 
 PICK_NAME = {}   # market ticker -> team name as Kalshi shows it
 GAME_EXP = {}    # game -> when Kalshi expects it to settle
+EVENT_TICK = {}  # game -> one of its market tickers (to find the game on the score feed)
 
 
-def start_dt(event):
-    """When a game starts: the sportsbook's kickoff time, else an estimate from Kalshi's
-    expected settle time. None if unknown."""
-    kick = KICKOFF.get(event)
+def _iso_dt(x):
     try:
-        if kick:
-            return dt.datetime.fromisoformat(kick.replace("Z", "+00:00"))
-        if GAME_EXP.get(event):
-            return (dt.datetime.fromisoformat(GAME_EXP[event].replace("Z", "+00:00"))
-                    - dt.timedelta(hours=game_hours(event)))
+        return dt.datetime.fromisoformat(str(x).replace("Z", "+00:00")) if x else None
     except ValueError:
-        pass
+        return None
+
+
+def note_event_ticker(event, ticker):
+    """Remember a game-winner market of this game, so its start can be found on the score feed (issue #223)."""
+    if event and ticker and "GAME-" in event and str(ticker).startswith(event + "-"):
+        EVENT_TICK.setdefault(event, ticker)
+
+
+FEED_MEMO = {}   # ticker -> (score cache stamps, its game on the feed)
+
+
+def _feed_of(t):
+    code = ticker_sport(t) or LEAGUE["code"]
+    stamp = ((SCORES_BY.get(code) or {}).get("at"), SCORES.get("at") if code == LEAGUE["code"] else None)
+    hit = FEED_MEMO.get(t)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    try:
+        sc = leg_score({"ticker": t, "side": "yes"})
+    except Exception:
+        sc = None
+    if len(FEED_MEMO) > 5000:
+        FEED_MEMO.clear()
+    FEED_MEMO[t] = (stamp, sc)
+    return sc
+
+
+def feed_game(event, ticker=None):
+    """This exact game on the score feed (ESPN, or the AHL's own feed), from the cached scores only (no request),
+    or None. Its 'start' is the league's scheduled start and 'state' says pre / in / post."""
+    for t in dict.fromkeys(x for x in (ticker, EVENT_TICK.get(event or ""), EVENT_TICK.get(game_event(event))) if x):
+        sc = _feed_of(t)
+        if sc:
+            return sc
     return None
+
+
+def _game_start(event, ticker=None, exp=None):
+    t = _iso_dt(KICKOFF.get(event or "")) or _iso_dt(KICKOFF.get(game_event(event)))
+    if t:
+        return t, "book", None
+    sc = feed_game(event, ticker)
+    t = None if (sc or {}).get("tbd") else _iso_dt((sc or {}).get("start"))
+    if t:
+        return t, "feed", sc
+    exp = exp or GAME_EXP.get(event or "") or (MARKET_INFO.get(ticker or "") or {}).get("exp")
+    t = _iso_dt(exp)
+    if t:
+        return t - dt.timedelta(hours=game_hours(event or ticker or "")), "estimate", sc
+    return None, None, sc
+
+
+def game_start(event, ticker=None, exp=None):
+    """(when the game starts, where that came from) or (None, None). In order of trust: the sportsbooks' kickoff
+    ("book"), the score feed's scheduled start for this exact game ("feed"), else an estimate from Kalshi's expected
+    settle time minus a typical game length ("estimate"). Kalshi's expected settle time is often a placeholder: on
+    a college football Saturday most games carry 23:00 UTC whether they kick off at noon or late at night, so the
+    estimate can be hours off either way (issue #223); it is only ever the last resort."""
+    return _game_start(event, ticker, exp)[:2]
+
+
+def start_dt(event, ticker=None):
+    """When a game starts (see game_start). None if unknown."""
+    return _game_start(event, ticker)[0]
 
 
 def start_label(event):
@@ -755,6 +812,7 @@ def week_games(markets, loose=False, weeks=1):
         day = day_of.get(game_date(m))
         if day:
             PICK_NAME[m["ticker"]] = m.get("yes_sub_title") or m["ticker"]
+            note_event_ticker(m["event_ticker"], m["ticker"])
             if m.get("expected_expiration_time"):
                 GAME_EXP[m["event_ticker"]] = m["expected_expiration_time"]
             days[m["event_ticker"]] = day
@@ -805,6 +863,7 @@ def fetch_results(tickers):
             return
         seen.add(m.get("ticker"))
         sub, title = (m.get("yes_sub_title") or "").strip(), (m.get("title") or "").strip()
+        note_event_ticker(m.get("event_ticker"), m.get("ticker"))
         MARKET_INFO[m.get("ticker")] = {"status": (m.get("status") or "").lower(),
                                         "exp": m.get("expected_expiration_time") or "",
                                         "live": live_price(m), "at": time.time(),
@@ -2433,20 +2492,19 @@ def game_hours(ticker):
 
 
 def started(side):
-    """Has this game kicked off? Uses the real kickoff time from the sportsbook feed
-    when we have it; otherwise estimates it as 3.5 hours before Kalshi expects to settle."""
-    now = dt.datetime.now(dt.timezone.utc)
-    kick = KICKOFF.get(side.get("event") or "")
-    if kick:
-        try:
-            return now >= dt.datetime.fromisoformat(kick.replace("Z", "+00:00"))
-        except ValueError:
-            pass
-    try:
-        end = dt.datetime.fromisoformat(side["exp"].replace("Z", "+00:00"))
-    except (KeyError, ValueError, AttributeError):
-        return False
-    return now >= end - dt.timedelta(hours=game_hours(side.get("event") or side.get("ticker") or ""))
+    """Has this game kicked off? True once the score feed shows it in play or over; otherwise by its start time
+    (game_start: the sportsbooks' kickoff, else the score feed's scheduled start, else an estimate from Kalshi's
+    expected settle time). No time at all = not started; every pre-game panel buy also needs the sportsbooks'
+    kickoff (_kick_ts), and every live-priced one a fresh score in play (live_side_fair)."""
+    ev = side.get("event") or ""
+    tk = side.get("ticker") or ""
+    own = tk if tk and (not ev or tk.startswith(ev + "-")) else None     # the side's own market, if it is this game's
+    t, src, sc = _game_start(ev, own, side.get("exp"))
+    if src == "book":                                  # the sportsbooks' time skipped the feed: still ask it
+        sc = feed_game(ev, own)
+    if sc and sc.get("state") in ("in", "post"):
+        return True
+    return bool(t) and dt.datetime.now(dt.timezone.utc) >= t
 
 
 CLOSING = os.path.join(HERE, "closing_chances.json")   # each pick's last chance seen before kickoff
@@ -5645,7 +5703,7 @@ def open_singles(max_age=30):
                 ksc = None
         if state == "pre":
             ks_detail = (ksc or {}).get("detail", "") if ksc and (ksc.get("me") is None or ksc["state"] == "post") else ""
-            rs = safe_run_status(code, start_dt(game_event(m.get("event_ticker") or "")),
+            rs = safe_run_status(code, start_dt(game_event(m.get("event_ticker") or ""), t if kind == "win" else None),
                             score_state=(sc or ksc or {}).get("state"), detail=ks_detail)
         dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
@@ -7076,6 +7134,7 @@ def fetch_scores(max_age=None, code=None):
                         "opp_abbr": (opp.get("team") or {}).get("abbreviation", ""),
                         "opp_name": (opp.get("team") or {}).get("displayName", ""),
                         "state": state, "detail": detail, "start": ev.get("date") or "",
+                        "tbd": comp.get("timeValid") is False,      # ESPN: date known, kick-off time not yet
                         "ball": str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
                         "redzone": bool(sit.get("isRedZone")), "sport": code,
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
@@ -7302,27 +7361,12 @@ def legs_left_of(legs, inf, side_of):
 
 
 def leg_start(l, side_of):
-    """When this pick's game starts (any sport), or None."""
+    """When this pick's game starts (any sport), or None: game_start's order (the sportsbooks' kickoff, the score
+    feed's scheduled start, then Kalshi's settle-time estimate), never the estimate over a better source."""
     s = side_of.get(l["ticker"])
-    if s:
-        t = start_dt(s["event"])
-        if t:
-            return t
-    else:                                      # a game outside the sport on screen (tennis in an NBA view)
-        t = start_dt(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
-        if t:
-            return t
-    sc = leg_score(l)
-    try:
-        if sc and sc.get("start"):
-            return dt.datetime.fromisoformat(sc["start"].replace("Z", "+00:00"))
-        exp = (MARKET_INFO.get(l["ticker"]) or {}).get("exp")
-        if exp:
-            hours = (SPORTS.get(ticker_sport(l["ticker"])) or {}).get("hours", 3)
-            return dt.datetime.fromisoformat(exp.replace("Z", "+00:00")) - dt.timedelta(hours=hours)
-    except ValueError:
-        pass
-    return None
+    ev = (s or {}).get("event") or l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0]
+    t, _ = game_start(ev, l["ticker"], (s or {}).get("exp"))
+    return t
 
 
 # Hours after the start when we stop calling a game "on" if nothing says it is: sports with no live score source
