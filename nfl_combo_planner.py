@@ -18949,7 +18949,12 @@ def _paths(c):
 def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None):
     """Replays smart sell on a bet's path with the given settings. Returns (profit, why) when it would have
     sold, else None (it rides to the end). A loss cut happens only at the times in `cut_at` (when the live loss
-    guards would have held: _cut_guard_ts); with none given, never."""
+    guards would have held: _cut_guard_ts); with none given, never.
+    The decision is exit_policy's, the one live smart sell uses (issue #228); this only gathers its inputs from the
+    recorded prices. The replay's estimate stands in for Kalshi's offer, and a sale goes through only when it reaches
+    the least exit_policy says to accept (`threshold`), as live only sells at or above it; otherwise the bet rides on
+    to the next recorded price. Take profit stays off and Kalshi's real offer is not known here (see
+    docs/changes/228-pr0-replay.md for what still differs from live)."""
     stake = c["stake"]
     if c["kind"] == "combo":
         P = c.get("pays") or 0
@@ -18959,26 +18964,27 @@ def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None):
     if not P or len(path) < 3:
         return None
     tks = [l["ticker"] for l in c["legs"]]
+    kind = "combo" if c["kind"] == "combo" else "single"
+    cut_at = cut_at or ()
     peak = 0.0
     for ts, cur in path:
         q = math.prod(cur[t] for t in tks)
         open_ = [t for t in tks if 0.02 < cur[t] < 0.98]
         if not open_:
             return None
-        if c["kind"] == "combo":
+        if kind == "combo":
             est = kalshi_discount(True) * q * P
         else:
             x = cur[tks[0]]
             est = P * max(x - single_fee(x) - 0.01, 0)
         lam = 0.35 * lm * sum(SWING.get(ticker_sport(t) or "", 1.0) for t in open_) / len(open_)
-        floor = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), fl * stake)
-        if q >= 0.5 and est >= floor:
-            return round(est - stake, 2), "smart"
-        if loss and q <= loss and est > 0.02 * stake and round(ts) in (cut_at or ()):
-            return round(est - stake, 2), "cut loss"
         peak = max(peak, est)
-        if trail and peak >= max(TRAIL_ARM * P, fl * stake) and est <= (1 - TRAIL_DROP) * peak and est >= 1.1 * stake:
-            return round(est - stake, 2), "lock in"
+        d = exit_policy({"kind": kind, "value": est, "real": 0.0, "peak": peak, "pays": P, "cost": stake, "q": q,
+                         "live": True},
+                        {"tp": 0, "trail": trail, "smart": True, "lam": lam, "floor": fl, "loss": loss,
+                         "checkpoint": False, "cut_ok": round(ts) in cut_at})
+        if d["sell"] and est >= d["threshold"]:
+            return round(est - stake, 2), d["reason"]
     return None
 
 
