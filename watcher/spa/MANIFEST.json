@@ -9,6 +9,7 @@
     "build.js",
     "haptics.js",
     "results.js",
+    "scoreboard.js",
     "access.js",
     "build_cards.js",
     "buy_straight.js",

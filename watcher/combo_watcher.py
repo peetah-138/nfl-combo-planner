@@ -1884,7 +1884,8 @@ def shadow_loop(odds, notifier=None, every=600):
             with odds.lock:
                 H = odds.engine()
                 did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()] \
-                    + [f"smart sell {m}" for m in H.smart_tune()]
+                    + [f"smart sell {m}" for m in H.smart_tune()] \
+                    + [f"spread/total bar {m}" for m in H.line_edge_tune()]      # never raises (logs instead)
                 n_lab = H.lab_pass()
             if n_lab:
                 log(f"combo lab: paper-bought {n_lab} at different price levels")
@@ -1895,6 +1896,12 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
+            n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
+            if n_out:
+                log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
+        except Exception as err:
+            log("smart-sell scorecard skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
             # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
             # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
@@ -2676,6 +2683,42 @@ def webapp_main():
         return out[:8]
 
     SNAP = {}                                           # sport -> its last Build, ready to switch to
+    LINES = {}                                          # sport -> its last spread/total recommendations (issue #117)
+    LINES_BUSY = set()
+
+    def lines_work(lg):
+        """Spreads and totals for one Build sport, worked out OFF the app lock (they read Kalshi's order books and run
+        Smart Buy's simulator), so taps never wait on them. Recommend-only: nothing here buys. Never raises."""
+        try:
+            codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
+            recs, priced, nobook = [], 0, 0
+            for c in codes:
+                got, info = A.line_recommend(c)
+                recs += got
+                priced += info.get("priced") or 0
+                nobook += (info.get("skipped") or {}).get("book") or 0
+            got = {"at": time.time(), "lines": sorted(recs, key=lambda x: -(x.get("exp") or 0))[:12],
+                   "priced": priced, "nobook": nobook}
+            LINES[lg] = got
+            if BUILD.get("lg") == lg:                   # Buy straight reads the board's lines (single_side)
+                BUILD.update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+            if lg in SNAP:
+                SNAP[lg].update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+        except Exception as err:
+            print("lines:", type(err).__name__, err, flush=True)
+        finally:
+            LINES_BUSY.discard(lg)
+
+    def lines_kick(lg, wait=0.0):
+        """Start working out a sport's spreads/totals in the background when its copy is over a minute old (one at a
+        time per sport); wait up to `wait` seconds for it. The page shows the last good copy meanwhile."""
+        got = LINES.get(lg)
+        if lg not in LINES_BUSY and (not got or time.time() - got["at"] > 60):
+            LINES_BUSY.add(lg)
+            th = threading.Thread(target=lines_work, args=(lg,), daemon=True)
+            th.start()
+            if wait:
+                th.join(wait)
 
     def use_snap(lg):
         s = SNAP.get(lg)
@@ -2684,7 +2727,8 @@ def webapp_main():
         A.set_league(lg)
         A.CTX.clear()
         A.CTX.update(s["ctx"])
-        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"])
+        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"],
+                     lines_priced=s.get("lines_priced") or 0, lines_nobook=s.get("lines_nobook") or 0)
         return True
 
     def api_build(lg, rebuild=True, warming=False):
@@ -2692,6 +2736,7 @@ def webapp_main():
         BUILD.setdefault("seen", {})[lg] = time.time()
         if not warming:
             BUILD["touched"] = time.time()
+        lines_kick(lg, wait=0 if warming else 1.5)     # before the lock: never holds it
         with alock:
             gone = not A.CTX.get("all_games")              # Settings for another sport clears the build's games
             if not rebuild and (BUILD["lg"] != lg or gone) and use_snap(lg):
@@ -2724,13 +2769,11 @@ def webapp_main():
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
                 BUILD.update(lg=lg, last=lg, note=note, at=time.time(), days=days)
-                try:                                    # spreads and totals, priced with the score model
-                    codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
-                    BUILD["lines"] = [x for c in codes for x in A.line_candidates(c, everything=True)][:40]
-                except Exception as err:
-                    print("lines:", err, flush=True)
-                    BUILD["lines"] = []
-                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"]}
+                lc = LINES.get(lg) or {}                # spreads and totals: recommendations only (issue #117),
+                BUILD.update(lines=lc.get("lines") or [], lines_priced=lc.get("priced") or 0,   # worked out off the lock
+                             lines_nobook=lc.get("nobook") or 0)
+                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"],
+                            "lines_priced": BUILD["lines_priced"], "lines_nobook": BUILD["lines_nobook"]}
             games = A.CTX.get("all_games") or {}
             board = []
             on = {e for e, sides in games.items() if any(A.started(x) for x in sides)}
@@ -2763,10 +2806,11 @@ def webapp_main():
             board.sort(key=lambda g: (g["started"], str(g["start"])))
             own_sets = owned_sets()
             cviews = [combo_view(i, c, own_sets) for i, c in enumerate(A.CTX.get("combos") or [], 1)]
+            lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
             try:                                        # Best bets today (#63): recommend-only, display only
                 best = A.best_bets_feed(
                     {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)},
-                    BUILD.get("lines") or [],
+                    lines_now,
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
                      for v, c in zip(cviews, A.CTX.get("combos") or []) if not v.get("bought")])
             except Exception as err:
@@ -2776,7 +2820,9 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": singles_view(games), "lines": BUILD.get("lines") or [],
+                             "singles": singles_view(games), "lines": lines_now,
+                             "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
+                             "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
                                       "wed": sum(1 for x in (BUILD.get("days") or {}).values() if x == "Wednesday"),
@@ -2841,7 +2887,15 @@ def webapp_main():
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
-                             "panel": A.panel_record() if A.STORE.get("db") else None})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+
+    def board():
+        """The profit scoreboard (#138), read-only from the history file; None when it can't be read (the page says so)."""
+        try:
+            return A.profit_board() if A.STORE.get("db") else None
+        except Exception as err:
+            log("profit scoreboard:", type(err).__name__, err)
+            return None
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
@@ -3624,7 +3678,9 @@ def webapp_main():
                                 A.CTX.update(saved)
                                 s = SNAP.get(cur)
                                 if s:
-                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"],
+                                                 lines_priced=s.get("lines_priced") or 0,
+                                                 lines_nobook=s.get("lines_nobook") or 0)
                                 BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:

@@ -24,3 +24,6 @@ function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setIt
  requestAnimationFrame(()=>requestAnimationFrame(()=>{if(c)c.classList.remove('from-open','from-shut');}));
  if(secOpen(k)){let n=h.nextElementSibling;for(let i=0;i<2&&n&&!n.classList.contains('sech');i++,n=n.nextElementSibling)n.classList.add('unfold');}}
 function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" data-k="${k}" onclick="secTog('${k}')"><span class="chev ${S.secJust===k?(o?'from-shut':'from-open'):''}">▾</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
+/* Spreads & totals (issue #117) are recommendations only and now live in Best bets (#63): a strike shows when it clears the
+   league's learned bar after the fee, fills inside the edge and has a likely route to profit; build.js draws them. */
+function lineRoute(x){return x.route==='sell'?`Likely to cash out early for a profit: <b>${pct(x.p_exit)}</b>`:`Profit if it holds: <b>${pct(x.win)}</b> to win, +${(x.edge*100).toFixed(1)}¢ edge`;}

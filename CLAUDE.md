@@ -259,6 +259,30 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
+- **Spreads and totals (issue #117 part B): recommend-only selection.** Build › Spreads & totals no longer lists every
+  strike: `line_recommend` (the watcher's Build runs it **off the app lock** in `lines_work`/`lines_kick`, a thread per
+  sport, copy ≤ 60 s old, waits ≤ 1.5 s, last good copy otherwise; order books read side by side within
+  `LINE_REC["budget"]` 3 s by `books_now`; `everything=True` is no longer used there) shows a strike only
+  when (1) its edge after the fee clears the league's **learned bar** (`line_min_edge`: own once 30+ settled games,
+  else its sport's (`LINE_SPORT`), else everyone's, else `LINE_MIN_EDGE`; never under `LINE_MIN_EDGE`, max 10¢; file
+  `combo_line_edge.json`), (2) its kind of strike isn't **losing to the close** (`line_clv_block`: table `line_clv`,
+  price at recommendation `rec` or panel buy `buy` vs Kalshi's last price before the start, read within 90 min of it
+  (`line_clv_seen` in `line_candidates`); blocked at ≥ 30 games, mean ≤ −0.5¢ and ≤ −2 SE, per league/kind/band; the
+  sport/everyone level may only block), (3) it **fills inside the edge** (`line_fill` walks every ask level of the book,
+  `book_asks`/`_ask_ladder` filled by `book_depth`'s same call, fee rounded up per order; stake = the buy sheet's
+  `_size` on the 30%-shrunk edge, capped by what fills; unreadable book = not shown), (4) Smart Buy's
+  `simulate_exit` (smart sell's exit policy, `_sb_sim`) passes `smart_buy_ok` (route sell or hold, ≥ `SB_EV_MIN`), and
+  (5) expected dollars at the fillable size (hold EV after fees + the policy's adjustment) ≥ `SB_EV_MIN`. Ranked by
+  expected dollars; cards show route ("Likely to cash out early for a profit: 58%" / "Profit if it holds"), stake,
+  contracts, expected profit, the bar. They are shown as the spread/total rows of **Best bets today** (no separate board
+  since #63; `lines_priced`/`lines_nobook` still ride on the Build answer; Best bets' own empty state explains a quiet day). **Weekly** `line_edge_tune` (watcher, with `smart_tune`):
+  one 0.5¢ step per league/sport/all and kind when the strikes it adds/drops cover 10+ games and move the result ≥ 2%
+  of everything staked at the bar ($1 a strike, 30+ games at the bar; settled `line_fairs` rows); ties stay; never
+  under the start. **Panel: only stricter** (`_line_ok` after the raw `line_edge`: learned bar, CLV block, and
+  `fill_cap` < $2 = out; `_size` never over `fill_cap`; book unread = today's rule, the buy-time recheck still
+  applies). The buy sheet's green Buy for a spread/total uses `max(LINE_MIN_EDGE, learned bar)`. Results › What's
+  working › Bet types: "Spreads & totals: your bar and the close" (`analytics()["line_sel"]`). Nothing here buys or
+  sells; Pause, caps and rule 8 untouched. Tests: `t_linesel`, `test_linesel_ui`.
 - **Odds API credits (issue #175).** Every odds-service answer's `x-requests-remaining/-used/-last` headers are
   recorded (`odds_credits_note`, in `fetch_book_odds_one` and `tennis_keys`; no extra calls) in `combo_odds_credits.json`
   (newest numbers plus a small history, under `file_lock`). `odds_credits()` gives remaining, burn per day (needs 6 h of
@@ -719,8 +743,11 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   period, clock for games under way), more combo ideas — each section folds separately (remembered). The old all-strikes
   "Spreads & totals" board is gone (Pete, #63: only recommendations).
 - **Best bets today (issue #63, recommend-only, display only).** `best_bets_feed` (engine; called by the web app's
-  `api_build`, answer key `best`) ranks single games (`single_candidates`), spreads/totals (`line_candidates`, edge ≥
-  `LINE_MIN_EDGE`) and value combos (predicted share of fair ≥ 100% and the cut-off) in **one list by expected dollars**:
+  `api_build`, answer key `best`) ranks single games (`single_candidates`), spreads/totals (the **already vetted** `line_recommend` rows, issue
+  #117: learned bar, CLV block, fillable stake, exit route; listed with their own fillable stake and expected dollars, never
+  re-priced or loosened; the feed adds only the injury-news guard and the held-combo exposure trim, which can only shrink or
+  drop a row; they show even when the balance can't be read for sizing singles/combos, since their stake comes from what fills)
+  and value combos (predicted share of fair ≥ 100% and the cut-off) in **one list by expected dollars**:
   each must have an edge at a fair price after fees **and** a likely route to profit, i.e. `smart_buy_ok(simulate_exit)`
   (same exit policy as Smart Sell: a good chance to cash out at +10%, or a hold with `SB_WIN_MIN` win chance and
   `SB_EV_MIN` dollars). Expected dollars = the simulator's `ev` on $5 scaled to the suggested stake (`_size`, quarter
@@ -801,6 +828,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **Profit scoreboard (issue #138, read-only).** Top of Results (`pbBlock` in `watcher/spa/scoreboard.js`; it replaces
+  the old combo-only KPI row once it has data). Source of truth is the **`ledger` table**: one row per finished market
+  (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and
+  settlements, read as a signed YES position so NO bets and closing by buying the other side are right), written by
+  `ledger_note` at the end of every direct Kalshi account read (only changed rows; never raises into the read).
+  cost = money paid to open + every fee (incl. a settlement `fee_cost`), back = sale proceeds + settlement payout;
+  `sold_back`/`sell_fees`/`n_sold` for sales; `closed` = Kalshi's sell/settle time, else the Mac's `bets.settled`, else
+  when first seen. `profit_board()` (cached 2 min; `api_results` → `board`): week (from Monday) / month / all time with
+  profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
+  (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
+  gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
+  predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
+  `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
+  standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
+- **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
+  and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)
+  other lines but **never trims sales, hedges or "check"s** (`_trim_sell_log`, at 1.5 MB), labels `by` as
+  mac/phone/pi (`device_label`), and copies every sale-type line into the **`sell_log` table** (`sale_store`;
+  `sale_import` copies the file's older ones once). Sale records now carry `frac`, `kind`, `side`.
+  `sale_outcomes()` (the watcher's shadow loop, outside `odds.lock`, at most every 10 min; public `GET /markets`, ≤ 200
+  markets) records what holding would have paid for each sale (`sell_log.outcome/held`) and each sold ledger row, for
+  60 days. `sell_scorecard()` (in the board; What's working › Selling, `scoreCard`): per league and reason, sold for
+  (the ledger's proceeds after the sale fee, else the logged offer net of the single fee) vs holding paid, too early vs
+  right and dollars left on the table; your own sales; ridden combos' best real offer vs payout. Not yet fed to
+  `smart_tune` (that would change selling).
 - **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
   rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
   $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the

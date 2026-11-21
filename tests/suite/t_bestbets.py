@@ -125,32 +125,39 @@ for k in list(EVS):
 f = E.best_bets_feed(games, [], [], now)
 ok("C: edges but no route: the empty message names how many were checked", f["items"] == [] and "checked" in f["why"])
 
-# ---- spreads and totals: only a real edge, then the route test
+# ---- spreads and totals: they arrive already vetted by line_recommend (#117: learned bar, fillable size, exit route)
 EVS.clear()
 E.SB_GATE.pop("sims", None)
 ev = f"KXNBASPREAD-{TAG}GGGHHH"
 E.KICKOFF[f"KXNBAGAME-{TAG}GGGHHH"] = E.dt.datetime.fromtimestamp(now + 20 * 3600, E.dt.timezone.utc).isoformat()
 
 
-def line(strike, p, fair):
+def line(strike, p, fair, stake=14.6, exp=2.31, rec=True, route="sell"):
     e = round(fair - p - E.single_fee(p), 4)
-    return {"ticker": f"{ev}-GGG{strike}", "event": ev, "pick": f"Gnus win by {strike}+ (Gnus at Hogs)", "fair": fair, "p": p,
-            "edge": e, "kind": "spread", "line": strike, "game": "Gnus at Hogs", "start": E.dt.datetime.fromtimestamp(
-                now + 20 * 3600, E.dt.timezone.utc).isoformat()}
+    return {"ticker": f"{ev}-GGG{strike}", "event": ev, "pick": f"Gnus win by {strike}+", "fair": fair, "p": p, "rec": rec,
+            "edge": e, "kind": "spread", "line": strike, "game": "Gnus at Hogs", "min_edge": 0.04, "stake": stake, "n": 31,
+            "exp": exp, "capped": "stake", "route": route, "p_exit": 0.58, "win": fair, "exit_mins": 30.0,
+            "start": E.dt.datetime.fromtimestamp(now + 20 * 3600, E.dt.timezone.utc).isoformat()}
 
 
-good, bad, thin = line(3.5, 0.40, 0.50), line(5.5, 0.30, 0.285), line(7.5, 0.40, 0.43)
-for x in (good, bad, thin):
-    EVS["line:" + x["ticker"]] = (0.8, "sell")           # even a great exit chance can't rescue a losing price
-f = E.best_bets_feed({}, [good, bad, thin], [], now)
+good, notrec, nostake, noexp = line(3.5, 0.40, 0.50), line(5.5, 0.30, 0.285, rec=False), line(6.5, 0.40, 0.50, stake=0), line(7.5, 0.40, 0.50, exp=0)
+f = E.best_bets_feed({}, [good, notrec, nostake, noexp], [], now)
 lt = [x["ticker"] for x in f["items"]]
-ok("D: a spread/total with no edge after fees never appears, whatever the exit chance", bad["ticker"] not in lt)
-ok("D: an edge under the 4¢ bar for model prices never appears", thin["ticker"] not in lt)
-ok("D: a real spread edge with an exit route is listed and says what it is", lt == [good["ticker"]]
-   and f["items"][0]["kind"] == "line" and f["items"][0]["game"] == "Gnus at Hogs")
-EVS["line:" + good["ticker"]] = (0.8, "none")
-E.SB_GATE.pop("sims", None)
-ok("D: with no route to profit even that one is out", E.best_bets_feed({}, [good], [], now)["items"] == [])
+ok("D: only vetted recommendations are listed (not a raw strike, no stake, no expected dollars)", lt == [good["ticker"]])
+it = f["items"][0]
+ok("D: a vetted spread keeps its own fillable stake, expected dollars, route and bar (no re-pricing)",
+   it["kind"] == "line" and it["game"] == "Gnus at Hogs" and it["stake"] == 14.6 and it["ev"] == 2.31 and it["route"] == "sell"
+   and it["n"] == 31 and it["min_edge"] == 0.04 and it["edge"] == good["edge"] and "(Gnus at Hogs)" in it["pick"])
+f = E.best_bets_feed({}, [good], [], now)
+ok("D: ranked with the rest by expected dollars", f["items"][0]["ev"] == 2.31)
+ok("D: the 'looked' count includes every row seen", E.best_bets_feed({}, [good, notrec], [], now)["looked"]["line"] == 2)
+E.sizing_base = lambda *a, **k: (None, {"guess": True})
+f = E.best_bets_feed(games, [good], [(1, {"kind": "value", "legs": [side("KKKLLL", "Kites", 0.60, 0.64)], "fair": 3.0}, 1.08)], now)
+ok("D: with an unreadable balance only the vetted line shows (its stake is its own); singles and combos are out",
+   [x["kind"] for x in f["items"]] == ["line"])
+f = E.best_bets_feed(games, [], [], now)
+ok("D: unreadable balance and nothing vetted says so plainly", f["items"] == [] and "balance" in f["why"])
+E.sizing_base = lambda *a, **k: (1000.0, {})
 
 # ---- combos: value combos only, priced at or above fair and above the cut-off
 E.SB_GATE.pop("sims", None)
