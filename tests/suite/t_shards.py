@@ -55,6 +55,7 @@ nums = sorted(int(x) for x in m.group(1).split(",")) if m else []
 check("CI runs every page shard once (1..N)", bool(tot) and nums == list(range(1, int(tot.group(1)) + 1)))
 groups = set(g for line in re.findall(r"CHECK_GROUPS:\s*\"?([a-z ,]+)\"?", ci) for g in re.split(r"[ ,]+", line) if g)
 check("CI runs the static, engine, sim and pages groups", {"static", "engine", "sim", "pages"} <= groups)
+check("CI never narrows the run (no CHECK_ONLY)", "CHECK_ONLY" not in ci)
 check("CI keeps the required check named exactly 'checks'", re.search(r"(?m)^  checks:\n    name: checks\n", ci) is not None)
 need = re.search(r"(?ms)^  checks:\n.*?needs:\s*\[([^\]]+)\]", ci)
 jobs = set(re.findall(r"(?m)^  ([a-z0-9_-]+):\n", ci.split("\njobs:\n", 1)[-1])) - {"checks"}

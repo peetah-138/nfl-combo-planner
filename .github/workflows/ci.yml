@@ -96,16 +96,16 @@ jobs:
         run: bash tests/run_checks.sh
 
   pages:
-    name: page tests ${{ matrix.shard }}/6
+    name: page tests ${{ matrix.shard }}/5
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5]
     env:
       CHECK_GROUPS: pages
-      CHECK_SHARD: ${{ matrix.shard }}/6
+      CHECK_SHARD: ${{ matrix.shard }}/5
       CHECK_WORKERS: 3          # lanes inside the shard; 3 suits a 4-core runner
       SHARD_NO: ${{ matrix.shard }}
       CHECK_RETRY: "1"          # only tests listed in checklist.RETRY, once, and the log says so

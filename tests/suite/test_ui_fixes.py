@@ -56,7 +56,7 @@ with sync_playwright() as pw:
         if n < 1: print("PROBLEMS: no Reload the page button in Settings")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: sideways scroll in settings")
         # ---- #24: honest status for sports with no score source
-        pg.evaluate("go('live')"); time.sleep(2.5); pg.evaluate("window.load=async()=>{}")
+        __import__("upwait").go_and_hold(pg, "live")   # waits for Live's own load, then holds still
         pg.evaluate(LIVE); time.sleep(1)
         t = pg.locator(".tbl").inner_text(); print(tag, "rows:", t.replace("\n", " | ")[:300])
         if "probably finished" not in t.lower(): print("PROBLEMS: finished-looking tennis combo doesn't say so")

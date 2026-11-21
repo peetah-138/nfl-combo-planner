@@ -94,6 +94,7 @@ fi   # static
 # the test lists and their split live in suite/checklist.py (t_shards.py checks every test is in exactly one shard)
 if on engine; then
   ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
+  if [ -n "$CHECK_ONLY" ]; then ENG=$(for t in $ENG; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done); fi
   for t in $ENG; do
     o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
   done
@@ -103,6 +104,7 @@ fi
 N=${CHECK_WORKERS:-4}
 PAGE=""
 if on pages; then PAGE=$("$PY" checklist.py page "$CHECK_SHARD") || bad "page test list" "checklist.py page '$CHECK_SHARD' failed"; fi
+if [ -n "$CHECK_ONLY" ]; then PAGE=$(for t in $PAGE; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done); fi   # e.g. CHECK_ONLY="test_klive" while fixing one
 RETRY=" $("$PY" checklist.py retry) "
 page_bad(){   # $1 = a page test's output; succeeds (= the test failed) on no output, a real traceback, JS errors or PROBLEMS
   local o tb benign

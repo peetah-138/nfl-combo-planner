@@ -21,10 +21,22 @@ test_haptics test_hsw test_chips_stay test_fieldstrip test_gamedetail_api test_r
 test_orderblock test_buildbuttons test_cover test_pbptabs test_gamecard_opp test_offerlive test_gametabs
 test_singlebuy_ui test_ideacards""".split()
 
-# Rough seconds each page test takes on a CI runner (measured; only the balance of the split depends on them, a
-# missing or stale number never drops or doubles a test). Unknown tests count as DEFAULT.
+# Rough seconds each page test takes on a CI runner (measured on PR #157's run; only the balance of the split
+# depends on them, a missing or stale number never drops or doubles a test). Unknown tests count as DEFAULT.
+# The longest test (test_hsw, ~160 s) sets the floor for a shard's time, so 5 shards of 3 lanes is about as fast as
+# it gets: more shards would only add runners.
 DEFAULT = 45
-SECS = {}
+SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedetail_api": 94, "test_motion": 93,
+        "test_gametabs": 66, "test_singlebuy_ui": 65, "test_ui_fixes": 61, "test_ideacards": 55,
+        "test_loadwidth": 53, "test_buildbuttons": 52, "test_makeover2": 49, "test_settings": 46, "test_tap": 40,
+        "test_pbptabs": 39, "test_panel_ui": 37, "test_allchip": 37, "test_days": 37, "test_panel_ui2": 31,
+        "test_updbtn": 31, "test_chips_stay": 30, "test_tabbar_stays": 29, "test_spa": 24, "test_speed": 23,
+        "test_settled": 23, "test_extra_ui": 22, "test_restart2": 21, "test_livefresh": 20, "test_adv": 20,
+        "test_addonce_ui": 20, "test_mix": 19, "test_buildsec": 19, "test_haptics": 18, "test_fun": 17,
+        "test_chips": 17, "test_hist": 16, "test_rebuild_ui": 16, "test_cover": 13, "test_https": 12,
+        "test_realdate": 11, "test_analytics": 11, "test_fieldstrip": 10, "test_klive": 9, "test_singles_live": 8,
+        "test_orderblock": 8, "test_gamecard_opp": 8, "test_buildguard": 6, "test_login_faceid": 6,
+        "test_offerlive": 4, "test_web3": 1}
 
 # Page tests allowed ONE automatic rerun in CI (CHECK_RETRY=1), logged as "passed on retry". Keep it empty unless a
 # test is timing-bound by nature; a flaky test should be fixed at the root first.

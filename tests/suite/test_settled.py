@@ -34,7 +34,7 @@ with sync_playwright() as pw:
     for W,H,tag in ((1280,900,"desk"),(390,844,"phone")):
         pg = br.new_page(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
         errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(4); pg.evaluate("window.load=async()=>{}")
+        pg.goto(B + "/app"); __import__("upwait").go_and_hold(pg, "live")   # waits for Live's own load, then holds still
         pg.evaluate("localStorage.removeItem('cw_sf');S.sf={o:'all',sp:'all',sort:'new'};S.live={at:Date.now()/1000,combos:"+json.dumps(CS)+",riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{},auto_sell:true,singles:[],pulse:[]};S.filter='done';renderLive()"); time.sleep(1)
         t = pg.locator(".tbl").inner_text()
         print(tag, "pills:", [x for x in ("+$1.28","−$5","+$84","−$2.82","+$9.00") if x in t], "| net:", pg.locator(".snet").inner_text())

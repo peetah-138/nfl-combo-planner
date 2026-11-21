@@ -20,3 +20,27 @@ def wait_up(secs=90, at_least=3.0, port=None):
     else:
         print("PROBLEMS: the web app never started listening on port %d within %ds" % (port, secs), flush=True)
     time.sleep(max(0.0, at_least - (time.time() - t0)))
+
+
+def go_and_hold(pg, view, secs=60):
+    """Opens `view`, waits until the page's own load for it has finished (none still in flight), then stops the
+    page refreshing itself, so data a test draws in next is never overwritten by a load that was still on its way
+    (a fixed sleep before `window.load=async()=>{}` lost that race on a slow runner). Returns False on a timeout."""
+    pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=secs * 1000)
+    pg.evaluate("""(()=>{if(window.__ldw){window.load=window.__ldw;return;}const L=window.load;window.__loads=0;window.__done=0;
+      window.load=window.__ldw=async(...a)=>{window.__loads++;try{return await L(...a)}finally{window.__loads--;window.__done++}};})()""")
+    n0 = pg.evaluate("window.__done")
+    pg.evaluate("v=>go(v)", view)
+    t0, ok = time.time(), False
+    while time.time() - t0 < secs:
+        try:
+            if pg.evaluate("n=>window.__done>n&&window.__loads===0&&S.view===%s" % repr(view), n0):
+                ok = True
+                break
+        except Exception:
+            pass
+        time.sleep(.1)
+    if not ok:
+        print("PROBLEMS: the %s page never finished loading" % view, flush=True)
+    pg.evaluate("window.load=async()=>{}")
+    return ok
