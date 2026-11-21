@@ -1,7 +1,7 @@
 # The web app's files (GitHub #124): watcher/spa/ holds the page as plain files, MANIFEST.json lists them in load
 # order, and combo_watcher.py joins them at import into the same SPA and LOGIN_HTML strings as before. This checks
 # every file is there, listed exactly once and non-empty, each script parses, the assembly is deterministic and
-# complete, and that missing or broken files never stop the watcher from importing (it serves a holding page and
+# complete, and that missing or broken files never stop the watcher from importing (it serves its built-in copy and
 # knows it must fetch them). The one-time proof that the split was a pure move is tools/verify_spa_split.py.
 import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 ok = lambda n, c, *a: print(("PASS " if c else "FAIL ") + n, *(a if not c else ()))
@@ -81,12 +81,14 @@ def broken(how):
 for how in ("no folder", "missing file", "empty file", "bad manifest", "path in manifest", "no placeholder", "placeholder in a piece"):
     n0 = len(LOGS)
     B = broken(how)
-    ok(f"{how}: the watcher still imports, serves the holding page and knows to fetch the files",
-       B.SPA_PROBLEM and B.SPA == B.SPA_FALLBACK and B.LOGIN_HTML == B.SPA_FALLBACK and callable(B.main), B.SPA_PROBLEM)
+    ok(f"{how}: the watcher still imports, serves its built-in copy of the app (never a blank page) and knows to fetch the files",
+       B.SPA_PROBLEM and (B.SPA, B.LOGIN_HTML) == B.spa_legacy() and "__CWTOK__" in B.SPA and callable(B.main), B.SPA_PROBLEM)
     ok(f"{how}: it says so loudly in the log", any("WEB APP FILES MISSING OR BROKEN" in x for x in LOGS[n0:]), LOGS[n0:])
 B = broken("no folder")
+B.SPA_LEGACY_Z = "not base64!"
+ok("a damaged built-in copy is refused (then the holding page is the last resort)", B.spa_legacy() is None)
 ok("the holding page works with the login page's placeholder replacing (nothing to fill, nothing breaks)",
-   B.LOGIN_HTML.replace("__MSG__", "x").replace("__FID__", "") == B.SPA_FALLBACK and "finishing an update" in B.SPA_FALLBACK)
+   B.SPA_FALLBACK.replace("__MSG__", "x").replace("__FID__", "") == B.SPA_FALLBACK and "finishing an update" in B.SPA_FALLBACK)
 src = open(os.path.join(HERE, "combo_watcher.py")).read()
 ok("main() starts the repair only when the files were missing or broken",
    "if SPA_PROBLEM or SPA_STALE:" in src.split("\ndef main():")[1][:400] and "spa_repair_start(conf)" in src.split("\ndef main():")[1][:400])

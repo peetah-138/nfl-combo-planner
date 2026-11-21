@@ -37,7 +37,8 @@ def new_strings():
     spa, login = W.spa_assemble()
     if W.SPA != spa or W.LOGIN_HTML != login:
         sys.exit("the module's SPA/LOGIN_HTML aren't what spa_assemble builds")
-    return {"SPA": spa, "LOGIN_HTML": login}
+    legacy = W.spa_legacy() if hasattr(W, "spa_legacy") else None
+    return {"SPA": spa, "LOGIN_HTML": login, "legacy": legacy}
 
 
 def main():
@@ -50,6 +51,10 @@ def main():
         bad += not same
         print(f"{k}: before {hashlib.sha256(a).hexdigest()} ({len(a)} bytes)")
         print(f"{' ' * len(k)}  after  {hashlib.sha256(b).hexdigest()} ({len(b)} bytes)  {'IDENTICAL' if same else 'DIFFERENT'}")
+    if new["legacy"] is not None:              # the one-release built-in copy (SPA_LEGACY_Z) must be the same source
+        same = new["legacy"] == (old["SPA"], old["LOGIN_HTML"])
+        bad += not same
+        print("built-in copy (SPA_LEGACY_Z):", "IDENTICAL" if same else "DIFFERENT")
     print("BYTE-IDENTICAL" if not bad else "NOT IDENTICAL")
     sys.exit(1 if bad else 0)
 

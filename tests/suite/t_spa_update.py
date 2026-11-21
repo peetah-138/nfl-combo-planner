@@ -211,7 +211,8 @@ _print = builtins.print; builtins.print = lambda *a, **k: None
 spec.loader.exec_module(W)
 builtins.print = _print
 W.log = lambda *a: LOG.append(" ".join(str(x) for x in a))
-ok("no spa folder at start: the watcher imported and knows it", bool(W.SPA_PROBLEM) and W.SPA == W.SPA_FALLBACK)
+ok("no spa folder at start: the watcher imported, knows it, and serves its built-in copy", bool(W.SPA_PROBLEM)
+   and (W.SPA, W.LOGIN_HTML) == W.spa_legacy())
 mine = open(os.path.join(h, "combo_watcher.py"), "rb").read()
 github(W, spa_files(b""), watcher=mine + b"# a newer one\n")
 ok("repair: refuses when GitHub's newest watcher isn't this file (the update brings both)",

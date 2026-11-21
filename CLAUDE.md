@@ -51,7 +51,13 @@ Real money is involved. Pete uses it daily.
   A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
   MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
   newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.21.126
-  (whose updater only knows the two Python files) gets its spa folder.
+  (whose updater only knows the two Python files) gets its spa folder. Until it has, the watcher serves the real
+  app from **`SPA_LEGACY_Z`** (end of `combo_watcher.py`: zlib+base64 of the SPA and login page as they were when
+  they moved out, develop 395a7f4; the holding page only if that copy can't be read), so the first start is never
+  blank, even with GitHub down. **Remove `SPA_LEGACY_Z` and `spa_legacy` in the release after the split**, with
+  `t_spa_transition` (it runs the verbatim 126 updater, `tests/suite/fixtures/updater_126.py.txt`, against a fake
+  GitHub through first start, GitHub down, repair, restart; and the Pi's approved path). Rollback: revert the split
+  merge; the reverted watcher has the strings inline again and ignores any spa folder.
   The Raspberry Pi is an **alerts-only backup; it never trades**.
 - `version.txt` — what the Macs update to.
 - History lives in SQLite `~/combowatch/combo_history.db` (WAL; many processes; use `store_x`/`store_rows`,
