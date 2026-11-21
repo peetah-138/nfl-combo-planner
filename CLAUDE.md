@@ -801,13 +801,16 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
   quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
 - **Flipping a leg on a combo idea (issue #104, display only; `flip`/`swap` acts, quotes and buys unchanged).** Tapping a leg row
-  (`flipLeg`) drops any fetched Kalshi quote on that card **at once** (not when the answer is back: Buy can't be tapped on a price
-  for other legs) and puts the card in phase `flip` (`S.fpend`, `ccPhase`, kept across redraws like `ask`/`buy`): the row folds, the
-  numbers that depend on the flip (`.dep`: fair payout, chance, estimate/suggested bet) shimmer, Get price is a disabled "Updating
-  price…" (`data-stale`), Not this one is off, a second tap does nothing. After at least `FLIP_MIN` (220 ms) the new row turns in
-  (`.lrow.turn`), the numbers roll, the note slides in (`.flipnote.in`, inside an `aria-live="polite"` box) and Get price is back.
-  Undo is the same tap. Reduced motion = a crossfade. No haptic call in the flip (the global tap tick only). Leg rows are
-  keyboard buttons (44 px high, focus ring). Test: `test_flipleg.py`.
+  (`flipLeg`) drops any fetched Kalshi quote on that card **at once** (Buy can't be tapped on a price for other legs; `buy()` and
+  `quote()` also return early in the phase) and puts the card in phase `flip` (`S.fpend[i]` is the flip's own token object, kept across
+  redraws like `ask`/`buy`): the row folds, the numbers that depend on the flip (`.dep`: fair payout, chance, estimate line and the
+  previous "Good flip" note) shimmer, Get price is a disabled "Updating…" (`data-stale`), Not this one is off, a second tap does
+  nothing. The quote line's space is kept (`.qgap`) and the note box and button widths are fixed, so nothing jumps. After at least
+  `FLIP_MIN` (220 ms) the answer is applied **only if** this flip still owns the card (token), the league (`S.lg`) is the same and the
+  card still has the tapped legs (`ccSig`); otherwise it is dropped and the card just redraws. Applied: the new row turns in, numbers
+  roll, the note slides in. Failed: a short shake on the row, an inline "Couldn't flip" note and a toast. One page-level polite
+  announcer (`#flipsay`, `flipSay`) says "Updating…" then the verdict. Reduced motion = a crossfade. No `hap()` in the flip (the global
+  tap tick only; iOS ignores later ones). Leg rows are keyboard buttons (44 px, focus ring). Test: `test_flipleg.py`.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 

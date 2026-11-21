@@ -773,6 +773,11 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 .pb .seg.pbt{-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
 /* Flipping a leg on a combo idea (issue #104). The tapped row folds away while the new numbers are worked out, the numbers that
    depend on it shimmer, then the new row turns in, the numbers roll and the note slides in. */
+.ccard .brow .btn.pri{flex:3 1 58%}
+.fnw{min-height:3.7em}.qgap{border-radius:10px}.qgap.out{height:0;animation:qout .28s ease-out}
+@keyframes qout{from{height:var(--h)}to{height:0}}
+.lrow.shake{animation:lshake .3s ease-in-out}
+@keyframes lshake{20%{transform:translateX(-6px)}45%{transform:translateX(5px)}70%{transform:translateX(-3px)}}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .lrow.flip{min-height:44px;transform-origin:50% 50%}
 .lrow.flip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
@@ -784,6 +789,6 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 .ccard[data-ph=flip] .dep{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
 .flipnote.in{animation:fnin .32s cubic-bezier(.2,.8,.2,1) both}
 @keyframes fnin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
+@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.shake{animation:none!important}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
  .ccard[data-ph=flip] .dep{animation:none!important}}
 @keyframes lfade{from{opacity:0}to{opacity:1}}
