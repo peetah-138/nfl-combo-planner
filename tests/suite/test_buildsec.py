@@ -28,7 +28,7 @@ B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 VW, VH = int(os.environ.get("VW", 1440)), int(os.environ.get("VH", 900)); TAG = os.environ.get("TAG", "d")
 with sync_playwright() as pw:
-    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark")
+    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
     errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(B + "/app"); pg.wait_for_function("typeof S==='object'", timeout=60000); pg.evaluate("localStorage.removeItem('cw_bsec');S.bsec={}")
     __import__("upwait").go_and_hold(pg, "build")   # waits for Build's own load (was a fixed 9 s), then holds still

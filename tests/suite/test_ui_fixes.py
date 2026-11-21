@@ -40,9 +40,10 @@ LIVE = ("S.sf={o:'all',sp:'all',sort:'new'};S.filter='all';S.live={at:Date.now()
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for W_, H, tag in ((390, 844, "phone"), (1280, 900, "desk")):
-        pg = br.new_page(viewport={"width": W_, "height": H}, device_scale_factor=2, color_scheme="dark")
+        pg = br.new_page(viewport={"width": W_, "height": H}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
         errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(4)
+        pg.goto(B + "/app"); pg.wait_for_function("typeof S==='object'&&typeof go==='function'", timeout=60000)
+        pg.evaluate("go('live')"); __import__("upwait").quiet(pg, "S.view==='live'&&!!S.live", 40)   # was fixed 3 s + 4 s
         # ---- #26: no header menu, no classic screens, Reload lives in Settings
         html = pg.content()
         menus = pg.locator(".menu, #menu, [onclick*=menuSheet]").count()
@@ -51,7 +52,8 @@ with sync_playwright() as pw:
         if pg.evaluate("typeof menu!=='undefined'||typeof menuSheet!=='undefined'||typeof admin!=='undefined'"): print("PROBLEMS: menu code still defined")
         r = pg.evaluate("fetch('/app/classic').then(r=>r.status)"); print(tag, "/app/classic status:", r)
         if r == 200: print("PROBLEMS: /app/classic still served")
-        pg.evaluate("go('settings')"); time.sleep(3)
+        pg.evaluate("go('settings')")         # wait for Settings to draw (was a fixed 3 s; a slow runner needed more)
+        __import__("upwait").quiet(pg, "S.view==='settings'&&document.body.innerText.includes('Reload the page')", 40)
         n = pg.get_by_text("Reload the page").count(); print(tag, "reload buttons in Settings:", n)
         if n < 1: print("PROBLEMS: no Reload the page button in Settings")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: sideways scroll in settings")

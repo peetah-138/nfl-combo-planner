@@ -49,17 +49,18 @@ def wait(pg, js, secs=30):           # wait for a state on the page, not a fixed
 def saved(key, want, secs=15):        # the Mac's copy of a setting, polled until it says `want`
     t = time.time(); v = None
     while time.time() - t < secs:
-        v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get(key)
+        try:
+            v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}, timeout=5).json().get("values", {}).get(key)
+        except Exception as e:
+            v = "unreachable: %s" % type(e).__name__
         if v is want: break
         time.sleep(.2)
     return v
 with sync_playwright() as pw:
-    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark")
+    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
     errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.route("**/app/api/analytics", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(AN)))
     pg.goto(B + "/app"); pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=30000)
-    pg.evaluate("""(()=>{const L=window.load;window.__loads=0;window.__done=0;
-      window.load=async(...a)=>{window.__loads++;try{return await L(...a)}finally{window.__loads--;window.__done++}};})()""")
     pg.evaluate("go('results')"); wait(pg, "document.querySelectorAll('.an .anrow:not(.h)').length>=2", 40)
     print("card:", pg.locator(".an").count(), "| rows:", pg.locator(".an .anrow:not(.h)").count())
     if pg.locator("text=What's working").count() != 1 or pg.locator(".an .anrow:not(.h)").count() != 2: print("PROBLEMS: analytics card missing")
@@ -93,7 +94,8 @@ with sync_playwright() as pw:
     else:
         row.locator("input").click(); v = saved("panel_live", False)
         if v is not False: print("PROBLEMS: turning off 'Include games already under way' didn't save:", v)
-        row.locator("input").click(); saved("panel_live", True)
+        row.locator("input").click()
+        if saved("panel_live", True) is not True: print("PROBLEMS: turning 'Include games already under way' back on didn't save")
     row = pg.locator("label.srow", has_text="Smarter spread/total pricing")
     if row.count() != 1 or not row.locator("input").is_checked() or "beaten the old model" not in row.inner_text():
         print("PROBLEMS: Settings › Money has no 'Smarter spread/total pricing' switch (auto by default)")
@@ -102,9 +104,7 @@ with sync_playwright() as pw:
         if v is not False: print("PROBLEMS: turning off 'Smarter spread/total pricing' didn't save:", v)
         row.locator("input").click(); time.sleep(1.5)
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
-    n0 = pg.evaluate("window.__done"); pg.evaluate("go('live')")
-    if not wait(pg, "window.__done>%d&&window.__loads===0&&S.view==='live'" % n0, 60): print("PROBLEMS: Live never finished loading")
-    pg.evaluate("window.load=async()=>{}")
+    __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s
     k = pg.locator(".kpis").inner_text().replace("\n"," | "); print("kpis:", k)
     if "2 bets" not in k or "$8.20" not in k or "$9.94" not in k or "$29" not in k: print("PROBLEMS: Live top numbers don't include singles")

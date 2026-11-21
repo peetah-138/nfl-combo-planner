@@ -134,8 +134,11 @@ pattern in a local `.git/hooks/pre-commit`.
 - Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
   is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
 - Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
-- Before drawing your own data into a screen, wait for the page's own load to finish (count `window.load` calls in
-  flight, as `test_singles_live.py` does), or a load still in flight can overwrite it.
+- Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can
+  overwrite it: `pg.add_init_script(upwait.COUNT_FETCHES)` before `goto`, then `upwait.go_and_hold(pg, "live")`
+  (waits for every request, the boot load included, then stops the page refreshing itself).
+- A partial run (`CHECK_GROUPS`, `CHECK_SHARD` or `CHECK_ONLY`, e.g. `CHECK_ONLY="test_klive"` while fixing one test)
+  ends with `PART PASSED (...)`, never `ALL CHECKS PASSED`.
 
 ## In CI: parallel jobs
 

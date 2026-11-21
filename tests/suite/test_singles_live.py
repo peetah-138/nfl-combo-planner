@@ -37,21 +37,15 @@ def wait(pg, js, secs=20):           # wait for a state on the page, not a fixed
         except Exception: pass
         time.sleep(.1)
     return False
-# Count the page's own loads; once the first Live load is over, stop the page refreshing itself, so the bets this
-# test draws are never replaced by a load that was still in flight (the old flake: a fixed 6 s was sometimes short).
-SETTLE = """(()=>{const L=window.load;window.__loads=0;window.__done=0;
-  window.load=async(...a)=>{window.__loads++;try{return await L(...a)}finally{window.__loads--;window.__done++}};})()"""
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for W,H,tag in ((390,844,"phone"),(1280,900,"desk")):
-        pg = br.new_page(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark")
+        pg = br.new_page(viewport={"width": W, "height": H}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
         errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
         ACTS=[]
         pg.route("**/app/api/act", lambda r: (ACTS.append(r.request.post_data), r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok":True,"msg":"Got it."}))))
         pg.goto(B + "/app"); pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=30000)
-        pg.evaluate(SETTLE); pg.evaluate("go('live')")
-        if not wait(pg, "window.__done>0&&window.__loads===0", 60): print("PROBLEMS: Live never finished loading")
-        pg.evaluate("window.load=async()=>{}")
+        __import__("upwait").go_and_hold(pg, "live")   # waits for every load (the boot one too), then holds still
         pg.evaluate("(s=>{if(!S.live||S.live.error)S.live={at:Date.now()/1000,combos:[],riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{}};S.live.singles=s;S.live.auto_sell=true;if(S.live.combos[0])S.live.combos[0].own=true;S.filter='all';renderLive()})("+json.dumps(SING)+")"); wait(pg, "document.querySelectorAll('.srow1').length===2", 5)
         n=pg.locator(".srow1").count(); txt=pg.locator(".stbl").inner_text() if pg.locator(".stbl").count() else ""
         print(tag,"single rows:",n,"| covering shown:","Covering now" in txt,"| tags:", "You, on Kalshi" in txt and "From the app" in txt, "| note:", pg.locator("text=leave them alone").count())

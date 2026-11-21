@@ -46,6 +46,10 @@ G=" $(echo "${CHECK_GROUPS:-static engine sim pages}" | tr ',' ' ') "
 for g in $G; do case "$g" in static|engine|sim|pages) ;; *) echo "CHECK_GROUPS: unknown group '$g' (use static engine sim pages)"; exit 2;; esac; done
 on(){ case "$G" in *" $1 "*) return 0;; esac; return 1; }
 case "$CHECK_SHARD" in ""|[1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;; *) echo "CHECK_SHARD must look like 2/5"; exit 2;; esac
+[ -n "$CHECK_SHARD" ] && ! on pages && { echo "CHECK_SHARD splits the page tests: add pages to CHECK_GROUPS"; exit 2; }
+keep(){ local t; for t in $1; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done; }   # CHECK_ONLY filter
+PARTIAL=""; [ "$G" != " static engine sim pages " ] && PARTIAL="groups:$G"
+[ -n "$CHECK_SHARD" ] && PARTIAL="$PARTIAL shard $CHECK_SHARD"; [ -n "$CHECK_ONLY" ] && PARTIAL="$PARTIAL only: $CHECK_ONLY"
 fail=0
 ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; echo "$2" | head -12 | sed 's/^/     /'; fail=1; }
 need(){ command -v "$1" >/dev/null 2>&1 || { bad "setup: $1 is missing" "$2"; }; }
@@ -94,7 +98,7 @@ fi   # static
 # the test lists and their split live in suite/checklist.py (t_shards.py checks every test is in exactly one shard)
 if on engine; then
   ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
-  if [ -n "$CHECK_ONLY" ]; then ENG=$(for t in $ENG; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done); fi
+  [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")
   for t in $ENG; do
     o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
   done
@@ -104,7 +108,8 @@ fi
 N=${CHECK_WORKERS:-4}
 PAGE=""
 if on pages; then PAGE=$("$PY" checklist.py page "$CHECK_SHARD") || bad "page test list" "checklist.py page '$CHECK_SHARD' failed"; fi
-if [ -n "$CHECK_ONLY" ]; then PAGE=$(for t in $PAGE; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done); fi   # e.g. CHECK_ONLY="test_klive" while fixing one
+[ -n "$CHECK_ONLY" ] && PAGE=$(keep "$PAGE")   # e.g. CHECK_ONLY="test_klive" while fixing one
+[ -n "$CHECK_ONLY" ] && [ -z "$PAGE$ENG" ] && bad "CHECK_ONLY" "'$CHECK_ONLY' names no engine or page test in the groups being run"
 RETRY=" $("$PY" checklist.py retry) "
 page_bad(){   # $1 = a page test's output; succeeds (= the test failed) on no output, a real traceback, JS errors or PROBLEMS
   local o tb benign
@@ -112,7 +117,7 @@ page_bad(){   # $1 = a page test's output; succeeds (= the test failed) on no ou
   tb=$(echo "$o" | grep -c Traceback); benign=$(echo "$o" | grep -cE "BrokenPipeError|ConnectionResetError|ConnectionAbortedError")
   [ -z "$o" ] || [ "$tb" -gt "$benign" ] || echo "$o" | grep -qE "JS errors: \[.+\]|errs: \[.+\]|PROBLEMS"
 }
-if [ -n "$PAGE" ]; then
+if [ -n "$PAGE" ] || on sim; then
   for w in $(seq 0 $((N-1))); do
     p=$((PB + w))
     "$PY" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
@@ -151,4 +156,6 @@ for t in $PAGE; do
     [ -f "retried_$t.txt" ] && grep -v Deprecation "first_$t.txt" | grep -E 'Traceback|errs: \[.+|PROBLEMS|JS errors' | head -6 | sed 's/^/     first try: /'
   fi
 done
-[ $fail = 0 ] && echo "ALL CHECKS PASSED" || { echo "SOME CHECKS FAILED"; exit 1; }
+[ $fail = 0 ] || { echo "SOME CHECKS FAILED"; exit 1; }
+# only a run of the whole list may say ALL CHECKS PASSED (a part of it, e.g. one CI shard, says which part it was)
+if [ -n "$PARTIAL" ]; then echo "PART PASSED ($PARTIAL ): not the full check list"; else echo "ALL CHECKS PASSED"; fi

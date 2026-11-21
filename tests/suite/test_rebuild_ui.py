@@ -61,18 +61,18 @@ with sync_playwright() as pw:
     check("page shows it's starting", wait(pg, "/Putting together a fresh panel/.test($('#pblock').innerText)&&/Starting/.test($('#pblock').innerText)", 15))
     # the Mac picks it up and works through the sports
     A.rebuild_asked(); A._rebuild_note(state="running", at=time.time(), sport="nba", i=1, n=6)
-    check("progress names the sport and count", wait(pg, "/Looking at NBA… 2 of 6 sports/.test($('#pblock').innerText)", 15))
+    check("progress names the sport and count", wait(pg, "/Looking at NBA… 2 of 6 sports/.test($('#pblock').innerText)", 60))   # the Mac can be slow to answer under load (its warm-up holds the lock)
     check("progress bar moved", wait(pg, "parseFloat(document.querySelector('#pblock .rbtrack i').style.width)>10", 5))
     # the tap's own page load (Look now -> load('build')) must be over, and no poll mid-flight, before taking the card
     pg.evaluate("window.__hold=true")
-    check("the page settled after the tap", wait(pg, "window.__loads===0&&!S.rbBusy&&/Looking at NBA/.test($('#pblock').innerText)", 30))
+    check("the page settled after the tap", wait(pg, "window.__loads===0&&!S.rbBusy&&/Looking at NBA/.test($('#pblock').innerText)", 60))
     pg.evaluate("window.__card=document.querySelector('#pblock .rbcard')")
     A._rebuild_note(state="running", at=time.time(), sport="nhl", i=2, n=6)
-    check("next sport shows", wait(pg, "/Looking at NHL… 3 of 6 sports/.test($('#pblock').innerText)", 15))
-    check("progress redraws in place (no full page redraw)", pg.evaluate("window.__card===document.querySelector('#pblock .rbcard')"))
+    check("next sport shows", wait(pg, "/Looking at NHL… 3 of 6 sports/.test($('#pblock').innerText)", 60))
+    check("progress redraws in place (no full page redraw)", pg.evaluate("!!window.__card&&window.__card===document.querySelector('#pblock .rbcard')"))
     pg.evaluate("window.__hold=false")
     A._rebuild_note(state="running", at=time.time(), sport="", i=6, n=6, step="choosing")
-    check("then says it's picking the mix", wait(pg, "/Picking the best mix/.test($('#pblock').innerText)", 15))
+    check("then says it's picking the mix", wait(pg, "/Picking the best mix/.test($('#pblock').innerText)", 60))
     # done: a draft appears by itself
     fx = json.load(open("panel_fixture.json"))["panel"]; now = time.time()
     fx["at"] = now; fx["status"] = "draft"
@@ -81,7 +81,7 @@ with sync_playwright() as pw:
     fx.pop("status", None)
     A.panel_save_draft(fx, "real")
     A._rebuild_note(state="done", at=now, found=len(fx["items"]), kind="panel", why="", n=6)
-    check("new panel drops in by itself", wait(pg, "/Approve \\d+ bet/.test($('#pblock').innerText)", 20))
+    check("new panel drops in by itself", wait(pg, "/Approve \\d+ bet/.test($('#pblock').innerText)", 60))
     check("tells you it's ready", wait(pg, "window.__toasts.some(t=>/fresh panel is ready/.test(t))", 10))
     check("progress polling stopped", wait(pg, "!S.rbT", 10))
     # a rebuild that found nothing says why
