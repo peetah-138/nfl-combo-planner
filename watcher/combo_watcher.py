@@ -2578,6 +2578,30 @@ main.ptrd{transition:none!important}
 .qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
 .pickbtn.pop{animation:chipon .34s var(--spring)}
 .slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
+/* Buy straight (#113): the slip's Single bet / Combo switch, the buy sheet, the game page's pinned buttons */
+.sbtog{display:inline-flex;background:rgba(0,0,0,.18);border-radius:9px;padding:2px;gap:2px;flex:none}
+.sbtog button{border:0;background:none;color:inherit;opacity:.8;font-weight:800;font-size:12px;padding:5px 9px;border-radius:7px}
+.sbtog button.on{background:#fff;color:var(--acc);opacity:1}
+.slipbar .sbtog button{padding:5px 9px;background:none;color:#fff}.slipbar .sbtog button.on{background:#fff;color:var(--acc)}
+@media (max-width:900px){.slipbar{flex-wrap:wrap;row-gap:8px}.slipbar .sbtog{flex-basis:auto;margin-right:auto}.slipbar .sbrow{display:flex;align-items:center;gap:10px;flex-basis:100%;min-width:0}}
+.slip .sbtog{background:var(--panel2);color:var(--sub)}.slip .sbtog button.on{background:var(--acc);color:#fff}
+.sb h3{margin:2px 0 2px;font-size:20px;letter-spacing:-.01em;overflow-wrap:anywhere}.sb .sbk{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0 12px}
+.sbn>div{background:var(--panel2);border-radius:12px;padding:10px 10px 9px;min-width:0}.sbn span{display:block;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn b{display:block;font-size:21px;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}.sbn small{display:block;font-size:11px;color:var(--mute);margin-top:2px;line-height:1.3;overflow-wrap:anywhere}
+.sbst{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px}.sbst .chip{min-width:52px;justify-content:center}
+.sbst input{width:92px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-weight:700}
+.sbw{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,#f5b544 14%,transparent);color:var(--ink);margin:6px 0}
+.sbw i{font-style:normal;flex:none}.sbx{background:color-mix(in srgb,var(--no) 14%,transparent)}
+.sbgo{display:flex;gap:8px;margin-top:14px}.sbgo .btn{justify-content:center;padding:12px 14px;font-size:14.5px}.sbgo .pri{flex:1;min-width:0;white-space:normal}
+.sbleft{font-size:12px;color:var(--mute);text-align:right;margin-top:6px}
+.gbuy{position:sticky;bottom:0;z-index:3;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin:16px -16px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+ background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-top:1px solid var(--line)}
+.gbuy button{border:0;border-radius:12px;padding:11px 8px;font-weight:800;font-size:15px;color:#fff;background:var(--acc);display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
+.gbuy button:nth-child(2){background:var(--no)}.gbuy button:nth-child(3){background:var(--panel2);color:var(--ink)}
+.gbuy button b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.gbuy button small{font-size:12px;font-weight:700;opacity:.9}
+@media (min-width:901px){.gbuy{margin:16px -22px 0;padding:10px 22px 12px}}
+.pbody:has(>.gbuy){display:flex;flex-direction:column;min-height:calc(100% - 64px - env(safe-area-inset-top))}.pbody>.gbuy{margin-top:auto}
 .sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
 .unfold{animation:rise .38s var(--ease)}
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
@@ -2685,7 +2709,10 @@ function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT
 function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
-function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
+function closeModal(){const m=$('#modal');
+ /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
+ const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}
+ if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
  clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
 const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
@@ -2726,7 +2753,7 @@ function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentEleme
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
  addEventListener('click',e=>{const tg=e.target;if(tg&&tg.matches&&(tg.matches('.hsw,input[switch]')||tg.matches('label')&&tg.querySelector('input[switch]')))S.hswAt=performance.now();   // the finger's own switch ticked
   const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
-  hap(el.matches('.tabbar button,.nav button,.seg button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
+  hap(el.matches('.tabbar button,.nav button,.seg button,.sbtog button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
@@ -3260,18 +3287,27 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>
    <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
+/* The slip's Single bet / Combo switch (#113): Single bet keeps one team and its button buys it straight (the buy sheet);
+   Combo is the slip as before. */
+function slipTog(){const one=S.slipMode==='single';return `<div class="sbtog" role="tablist"><button type="button" role="tab" class="${one?'on':''}" aria-selected="${one}" onclick="slipMode('single')">Single bet</button><button type="button" role="tab" class="${one?'':'on'}" aria-selected="${!one}" onclick="slipMode('combo')">Combo</button></div>`;}
+function slipMode(m){S.slipMode=m==='single'?'single':'combo';if(S.slipMode==='single'&&S.slip.length>1)S.slip=[S.slip[S.slip.length-1]];S.custom=null;renderBuild();}
 function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);const was=S.slipWas;S.slipWas=legs.length;if(!legs.length)return '';
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
- return `<div class="slipbar ${was?'':'in'}"><span>${legs.length<2?`${ICON[legWhere(legs[0]).sp]||''} ${esc(short(legs[0].pick))}${legWhere(legs[0]).opp?' vs '+esc(short(legWhere(legs[0]).opp.pick)):''} picked · tap 1 more team`:`${legs.map(l=>ICON[legWhere(l).sp]||'').join('')} ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
+ if(S.slipMode==='single'){const l=legs[legs.length-1],w=legWhere(l);
+  return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${ICON[w.sp]||''} ${esc(short(l.pick))}${w.opp?' vs '+esc(short(w.opp.pick)):''} · ${l.p!=null?Math.round(l.p*100)+'¢':''}</span><button onclick="sbOpen('${esc(l.ticker)}',S.lg)">Buy straight ›</button><button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
+ return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${legs.length<2?`${ICON[legWhere(legs[0]).sp]||''} ${esc(short(legs[0].pick))}${legWhere(legs[0]).opp?' vs '+esc(short(legWhere(legs[0]).opp.pick)):''} picked · tap 1 more team`:`${legs.map(l=>ICON[legWhere(l).sp]||'').join('')} ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
 try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
- if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
+ if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slipMode==='single'?[]:S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
 function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
 function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
  const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
- return `<div class="card slip"><h3>Your combo <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
-  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):'<div class="m" style="padding:6px 0 10px">Tap teams on the board to build your own combo, or use a suggestion below.</div>'}
+ const one=S.slipMode==='single';
+ return `<div class="card slip"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
+  <div style="margin:-2px 0 8px">${slipTog()}</div>
+  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use a suggestion below.'}</div>`}
+  ${legs.length===1?`<button class="btn ${one?'acc':'ghost'}" id="sbslip" style="width:100%;margin-top:10px;justify-content:center" onclick="sbOpen('${esc(legs[0].ticker)}',S.lg)">Buy ${esc(short(legs[0].pick))} straight${legs[0].p!=null?' · '+Math.round(legs[0].p*100)+'¢':''}</button>`:''}
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
    ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
@@ -3682,9 +3718,70 @@ function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
   <div class="sgt"><span></span><span>Win</span><span>Up 10¢</span><span>Expected</span>${rows.map(x=>`<b>${esc(short(x.pick))}<small class="m" style="display:block">${Math.round(x.p*100)}¢, wins +${Math.round(x.profit*100)}¢</small></b><span>${pct(x.win)}</span><span>${pct(x.touch)}</span><span class="${x.ev>=0?'up':'down'}">${x.ev>=0?'+':'−'}${Math.abs(x.ev*100).toFixed(1)}%</span>`).join('')}</div>
   <div class="m" style="font-size:12px;margin-top:8px">Read honestly: a likely winner pays little, and a price that's up 10¢ often comes back down. Selling early doesn't create profit on its own; the expected column is what you make on average, and it's only positive when Kalshi's price is below fair.</div>
   <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='';renderBuild()">Back to best prices</button></div>`;}
-async function singleFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'singleidea',t}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
- const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
+function singleFromBoard(t){sbOpen(t,S.lg);}
+/* ---- Buy straight (issue #113): one team, or a spread/total, bought on its own by Pete's tap. The sheet asks the Mac
+   for a price (Kalshi's order book read right now, our fair chance, the edge, a suggested stake, the cap), which is good
+   for 20 seconds (the draining bar). Buy sends that exact quote once; the Mac re-reads the book and refuses a higher price,
+   so it never pays more than shown. Stakes over the quote's `arm` need a second tap. Nothing here buys by itself. */
+const m2=x=>x==null?'—':'$'+(+x).toFixed(2);
+function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null,back:S.gameOpen||null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
+function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi for its price now…</div>`;}
+async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
+ const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
+ if(S.sb!==s)return;s.busy=false;
+ if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';hap('error');sbPaint();return;}
+ r.at=Date.now()/1000;s.q=r;s.stake=r.stake;hap(r.blocked||!r.clears?'warning':'success');sbPaint();
+ clearInterval(S.sbT);S.sbT=setInterval(sbTick,1000);}
+function sbTick(){const s=S.sb,q=s&&s.q,box=$('#sbx');if(!q||!box||!$('#modal').classList.contains('on')){clearInterval(S.sbT);return;}
+ const left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));const e=box.querySelector('.sbs');if(e&&e.textContent!==String(left))e.textContent=left;
+ if(left<=0&&!q.x&&!s.sending){q.x=1;clearInterval(S.sbT);sbPaint();}}
+function sbKind(q){return q.kind==='spread'?'📏 Spread':q.kind==='total'?'➕ Total':'🎯 Single game';}
+function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
+ if(!s.q){box.innerHTML=s.busy?sbSkel():`<div class="sbk">Buy straight</div><h3>No price right now</h3><div class="sbw sbx"><i>✕</i><span>${esc(s.err||'No price came in.')}</span></div>
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Close</button><button class="btn acc pri" onclick="sbQuote()">Try again</button></div>`;return;}
+ const q=s.q,dead=q.x||Date.now()/1000-q.at>=q.secs,left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));
+ const ret=q.ret,ok=q.clears&&!q.blocked;
+ const chips=(q.presets||[3,5,10]).map(v=>`<button class="chip ${Math.abs(q.stake-v)<.005?'on':''}" onclick="sbQuote(${v})">$${v}</button>`).join('');
+ const custom=(q.presets||[]).every(v=>Math.abs(q.stake-v)>=.005);
+ box.innerHTML=`<div class="sbk">${ICON[q.sport]||''} ${sbKind(q)}${q.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">LIVE</span>':''}</div>
+  <h3>${esc(q.pick)}</h3>${q.opp||q.game?`<div class="m" style="font-size:13px">${q.opp?'vs '+esc(q.opp):esc(q.game)}</div>`:''}
+  <div class="sbn"><div><span>Kalshi now</span><b data-num="sb:ask" data-v="${q.ask}" data-f="cent">${Math.round(q.ask*100)}¢</b><small>${q.gap!=null?Math.round(q.gap*100)+'¢ gap':'no bids'} · ${q.depth>=1000?Math.round(q.depth/1000)+'k':Math.floor(q.depth)} for sale</small></div>
+   <div><span>Our chance</span><b>${q.fair!=null?pct(q.fair):'—'}</b><small>${q.fair!=null?esc(q.how||''):'no fair price'}</small></div>
+   <div><span>Edge</span><b class="${ret==null?'':ret>=0?'up':'down'}">${ret==null?'—':(ret>=0?'+':'−')+Math.abs(Math.round(ret*100))+'%'}</b><small>${ret==null?'Kalshi\'s price only':'expected · '+(q.edge>=0?'+':'−')+Math.abs(q.edge*100).toFixed(1)+'¢ a contract'}</small></div></div>
+  <div class="sbk" style="margin-top:2px">Stake</div>
+  <div class="sbst">${chips}<input id="sbin" type="number" inputmode="decimal" min="1" max="${q.max}" step="1" placeholder="Custom" value="${custom?q.stake:''}" onkeydown="if(event.key==='Enter'){this.blur()}" onchange="sbCustom(this)" aria-label="Custom stake in dollars">
+   ${Math.abs(q.sug-q.stake)>=.005?`<button class="chip" onclick="sbQuote(${q.sug})">Suggested $${(+q.sug).toFixed(2).replace(/\.00$/,'')}</button>`:'<span class="m" style="font-size:12px">suggested size</span>'}</div>
+  <div class="sum">Contracts<b>${q.n} at ${Math.round(q.ask*100)}¢</b></div><div class="sum">You pay (with Kalshi's fee)<b>${m2(q.cost)}</b></div>
+  <div class="sum">Pays if it wins<b class="up">${m2(q.pays)} <span class="m" style="font-weight:600">(${smoney(q.profit)})</span></b></div>
+  ${q.room!=null?`<div class="sum">Room under your cap<b>${m2(q.room)} of ${m2(q.budget)}</b></div>`:''}
+  ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
+  ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
+  ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
+   q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
+   `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
+  <div class="sbleft">${dead||s.fail||q.used?'Prices move. Get a fresh one to buy.':`Price good for <span class="sbs">${left}</span>s · fills now at ${Math.round(q.ask*100)}¢ or better, or not at all`}</div>`;
+ rollNums(box);}
+function sbCustom(el){const v=parseFloat(el.value);if(!(v>0)){toast('Type a stake in dollars.');return;}const s=S.sb;const mx=(s&&s.q&&s.q.max)||100;
+ if(v>mx){toast(`One straight bet is at most $${mx}.`,4000,'bad');el.value=mx;}sbQuote(Math.min(v,mx));}
+async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)return;
+ if(q.x||Date.now()/1000-q.at>=q.secs){sbQuote();return;}
+ if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
+  setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
+ let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
+ catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
+ s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
+ /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
+    must never go unseen): on this sheet, else as a sheet of its own, else (another sheet is up) as a long toast */
+ const here=S.sb===s&&!!$('#sbx')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
+ if(r.ok||r.check){if(S.sb===s)S.sb=null;const sub=r.ok?`${q.pick}. ${r.msg} It shows on Live under Single bets & spreads within a minute; smart sell watches it from there.`:r.msg;
+  if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
+  else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
+ const why=r.msg||'It didn\'t go through. Nothing was bought.';
+ if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
+function sbClose(){closeModal();S.sb=null;}
+function lineFromBoard(t){sbOpen(t,S.lg);}
 function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
  const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Standing orders</b><small>The Mac keeps buy orders ${Math.round((r.discount||.03)*100)}¢ under the sharp books' chance, so you only buy when someone sells to you cheap. Watch only records what would have filled.</small></div>
@@ -3717,9 +3814,6 @@ function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games=
    ${xs.sort((a,b)=>a.kind.localeCompare(b.kind)||a.line-b.line).map(x=>`<div class="lrow2"><span>${x.kind==='spread'?'📏':'➕'} ${esc(x.pick.replace(/ \(.*\)$/,''))}</span><span class="num">${Math.round(x.p*100)}¢</span><span class="num m">${pct(x.fair)}</span>
     <button class="btn ${x.edge>=0.04?'acc':'ghost'}" onclick="lineFromBoard('${x.ticker}',this)">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</button></div>`).join('')}`).join('')}</div>
   <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`);}
-async function lineFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'lineidea',t}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
- const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -3824,7 +3918,7 @@ async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.conta
   if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
   S.gxWant=!!(r.detail&&r.detail.gxp);clearTimeout(S.gxT);gxAgain();   // last 5 / season leaders still being fetched: look again soon, quietly
-  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail]);
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail,r.buy]);
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
  }finally{S.gameBusy=false;}}
@@ -3854,7 +3948,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
   <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   ${fieldStrip(gameStepDetail(r),l)}
-  ${gameTabsHtml(r,ov)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
+  ${gameTabsHtml(r,ov)}${gameBuyBar(r)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
 /* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
    two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
    arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
@@ -3863,6 +3957,10 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
 /* A team colour, safe to drop into an inline style: a 6-hex-digit colour (with or without a leading #) becomes
    #rrggbb; anything else (empty, a name, something odd in the feed) falls back to the given CSS variable. The rest
    of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
+/* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
+   fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
+function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
@@ -4438,6 +4536,38 @@ def webapp_main():
     def jsonable(x):
         return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
 
+    def paused_now():
+        """The Pause switch (from an alert), read fresh for every manual buy. No settings file = no watcher to pause;
+        a file that can't be read counts as paused (never buy on a guess)."""
+        if not os.path.exists(CONF):
+            return False
+        try:
+            return bool(load_conf().get("paused"))
+        except (OSError, ValueError, AttributeError):
+            return True
+
+    def single_side(t, lg):
+        """The board's side for one market (its fair chance, game and kind, and when that price was read), from the
+        board on screen or another sport's saved board. Read only: never rebuilds or switches the board (that would
+        hold the tap lock and change what Build shows). A market no board has is priced from Kalshi alone."""
+        def find(ctx, lines, at):
+            for x in lines or []:
+                if x.get("ticker") == t:
+                    return dict(x, fair_at=at)
+            games = (ctx or {}).get("all_games") or {}
+            for e, sd in games.items():
+                for x in sd:
+                    if x.get("ticker") == t:
+                        return dict(x, event=x.get("event") or e, opp=A.opp_of(games, x), fair_at=at)
+            return None
+        x = find(A.CTX, BUILD.get("lines"), BUILD.get("at") or 0)
+        for k in sorted(list(SNAP), key=lambda k: (k != lg, -((SNAP.get(k) or {}).get("at") or 0))) if x is None else ():
+            sn = SNAP.get(k) or {}
+            x = find(sn.get("ctx"), sn.get("lines"), sn.get("at") or 0)
+            if x is not None:
+                break
+        return x or {"ticker": t}
+
     # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
     # every buy/sell decision read their own data and are untouched by any of this).
     LIVE_FAST, LIVE_SLOW = 8, 30             # seconds a Live snapshot is served before a new one is built
@@ -4919,8 +5049,20 @@ def webapp_main():
             # feed just drops the strip. Logged once per game like the engine's live-score paths.
             A.klive_log_once("gamedetail", t, err)
             detail = None
+        buy = []                                         # the two pinned Buy buttons: each team's Kalshi price now
+        try:
+            if leg and leg.get("kind") in (None, "win") and leg.get("state") != "over" and leg.get("phase") != "over" \
+                    and "-" in t:
+                sides = A.event_sides(t.rsplit("-", 1)[0])
+                if 2 <= len(sides) <= 3 and all(s["ask"] and s["ticker"] for s in sides):
+                    buy = [{"t": s["ticker"], "name": s["name"], "ask": s["ask"],
+                            "mult": round(1 / (s["ask"] + A.single_fee(s["ask"])), 2)} for s in sides]
+                    buy.sort(key=lambda s: s["t"] != t)  # the team of your pick first
+        except Exception as err:                         # display only: no buttons, never a broken page
+            A.klive_log_once("gamebuy", t, err)
+            buy = []
         return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
-                         "detail": detail, "fresh": freshness()})
+                         "detail": detail, "buy": buy, "fresh": freshness()})
 
     def api_game_warm(t):
         """Warm one live football game's page data in the background (display only; the Games tab calls this when a card
@@ -5166,30 +5308,17 @@ def webapp_main():
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                                  "clears": r.get("ok")})
-            if a == "lineidea":                         # a spread or total from the Build board, as a buy idea
-                x = next((x for x in BUILD.get("lines") or [] if x["ticker"] == str(d.get("t", ""))), None)
-                if not x:
-                    return {"ok": False, "msg": "That line isn't on the board any more."}
-                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
-                stake = A.edge_stake(1 + (pct - 1) * 0.7, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
-                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
-                sid = A.store_suggestion({"legs": [dict(x, event=x.get("event") or "")], "fair": stake / x["fair"]},
-                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
-                if sid:
-                    A.store_x("update suggestions set note=? where id=?",
-                              (f"Priced from the sportsbook {x['kind']} of {x['book_line']:g} with a score model", sid))
-                return {"ok": bool(sid), "id": sid}
-            if a == "singleidea":                       # a single game from the Build board, as a buy idea
-                tk = str(d.get("t", ""))
-                x = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
-                if not x or not x.get("fair") or not x.get("p"):
-                    return {"ok": False, "msg": "That team isn't on the board any more."}
-                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
-                stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
-                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
-                sid = A.store_suggestion({"legs": [x], "fair": stake / x["fair"]},
-                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
-                return {"ok": bool(sid), "id": sid}
+            if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                    return {"ok": False, "msg": "That market isn't recognized."}
+                lg = str(d.get("lg") or A.ticker_sport(t) or "")
+                return jsonable(A.single_buy_quote(single_side(t, lg), d.get("stake"), paused=paused_now()))
+            if a == "singlebuy" and d.get("q"):          # Buy straight: the quote on screen, once
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q"))):
+                    return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
+                LIVE["at"] = 0
+                return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
@@ -5434,7 +5563,7 @@ def webapp_main():
                     if lg == BUILD.get("lg") and A.CTX.get("offers"):
                         continue                                # a price you asked for is still open
                     with alock:
-                        cur, saved = BUILD.get("lg"), dict(A.CTX)
+                        cur, saved, was_at = BUILD.get("lg"), dict(A.CTX), BUILD.get("at")
                         try:
                             api_build(lg, rebuild=True, warming=True)
                         finally:
@@ -5445,6 +5574,7 @@ def webapp_main():
                                 s = SNAP.get(cur)
                                 if s:
                                     BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:
                 print("warm-up:", type(err).__name__, err, flush=True)

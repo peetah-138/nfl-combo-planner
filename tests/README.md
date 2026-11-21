@@ -74,6 +74,12 @@ pattern in a local `.git/hooks/pre-commit`.
   desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
   no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
   `fixtures/kalshi_orders_v2.json`).
+  Manual single buys (`t_singlebuy.py`, issue #113): the quote's math from the fake order book (ask, gap, depth, fair,
+  edge, the panel's sizing, contracts, the cap), one V2 IOC order at the quoted price per quote (never more; sub-cent
+  prices exact), a higher price / thin book / over the cap / Pause / closed or unlisted market refused before anything is
+  sent, a timeout or 5xx = check and never resent, 410 = a clean refusal, a game under way never priced on its pre-game
+  chance; `test_singlebuy_ui.py`: the slip's Single bet / Combo switch, the game page's pinned buttons and the buy sheet
+  in every state (scripted answers), at phone (dark and light) and desktop sizes.
   Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,
