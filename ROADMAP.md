@@ -102,6 +102,20 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   Home Screen app.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
+### b. Smart Buy, stages 2 to 5 (issue #137; stage 1, the foundation, shipped: see CLAUDE.md)
+1. **Calibrate the simulator** on the price recorder's paths (`price_path`) and `exit_calibration`: the pre-game
+   drift (`SB_PRE_VOL`), how much of the gap to fair closes before the start (`SB_PRE_CLOSE`), in-play gap widening
+   (`SB_LIVE_WIDEN`) and jump sizes, per league with borrowing; replay combos too (today only singles/spreads/totals).
+2. **The gate, behind the Smart Buy switch, old vs new logged** (`exit_shadow.old/new`): Build "Best bets", Live Buy
+   ideas and the panel's single/spread/total pool need an edge AND a route (cash-out chance or a hold with an
+   acceptable win chance, learned per league), ranked by expected dollars; the empty states (#137 comments).
+3. **A purchase carries a plan** (exit chance, target bid band, window, policy version), read by smart sell.
+4. **Scoreboard and plan audit** (#138, #115), dollar regret per league/rule.
+5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
+- Finding from stage 1 to put to Pete: at the 1.5x profit floor, a single bought above ~67c can never be sold for a
+  profit by smart sell (only held), and on modest-edge bets selling at the bid gives up part of the edge (the
+  simulator's blended EV is below hold EV). Stage 5's continuation-value rule is meant to fix both.
+
 ### c. Faster live numbers, the rest (GitHub #21; first slice shipped)
 - Shipped: 8 s score cache and Live snapshot while a game is on, the fresh snapshot served, a game sheet that redraws
   itself with a ticking clock, "Updated Ns ago" stamps, polite caching with backoff. See CLAUDE.md, Live page.

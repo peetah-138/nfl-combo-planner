@@ -1,0 +1,81 @@
+# The live smart-sell functions exactly as they were before exit_policy (develop 2305375), renamed *_old.
+# t_exitpolicy.py runs them next to the refactored ones on a corpus of states: the answers must be identical.
+
+def take_profit_reason_old(t, h, cut_ok=False):
+    """Whether Pete's profit rules say sell this combo now: "take profit" when the offer reaches his
+    take-profit % of the payout, or "lock in" when, after a big run-up, it has fallen 20% from its
+    high but is still a clear profit. A learned "cut loss" also needs `cut_ok`: the loss guards held
+    (stop_loss_check under "cut:<ticker>", run once per check by auto_sell_now); without it, never. Tracked on a steady estimate (live chance x payout x Kalshi's
+    usual discount) so a one-off quote can't fake a high or a drop; the real offer is checked before
+    any sale. Returns (reason, the least whole-combo offer to accept) or (None, 0)."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None, 0.0
+    live = any(lv for _, lv, _ in h.get("legs_left") or [])
+    est = kalshi_discount(live) * h["p"] * h["pays"]
+    o = MINE["cash"].get(t) or {}
+    real = o["offer"] / max(o.get("frac", 1.0), 0.01) if o.get("offer") and o.get("rfq") not in (None, "estimate") \
+        and time.time() - o.get("at", 0) <= offer_life() else 0.0
+    peak = MINE.setdefault("peak", {})
+    peak[t] = max(peak.get(t, 0.0), est)
+    tp = float(CFG.get("take_profit") or 0) / 100
+    floor = max(tp * h["pays"], TP_MIN_GAIN * h["cost"])
+    hits = []
+    if tp and max(est / 0.9, real) >= floor:
+        hits.append(("take profit", floor))
+    pr = smart_params([tk for (_, tk), _ in h.get("need") or []])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:  # nimble: lock in when that beats the risk of holding
+        q, P = h["p"], h["pays"]
+        lam, why_note = swing_lambda(h)
+        lam *= pr["lam"] * rl
+        hold_risky = q * P - lam * P * math.sqrt(max(q * (1 - q), 0))
+        floor2 = max(hold_risky, pr["floor"] * h["cost"])
+        if q >= 0.5 and max(est / 0.95, real) >= floor2:
+            hits.append(("checkpoint" if why_note else "smart", floor2))
+        if pr["loss"] and live and h["p"] <= pr["loss"] and cut_ok:  # learned for this league, and every loss guard held
+            hits.append(("cut loss", 0.02 * h["cost"]))
+    if hits:
+        return min(hits, key=lambda x: x[1])
+    if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
+            and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= 1.1 * h["cost"]:
+        return "lock in", 1.1 * h["cost"]
+    return None, 0.0
+
+
+def single_sell_reason_old(x, bid, ask, track=True, cut_ok=False):
+    """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book. A learned
+    "cut loss" also needs `cut_ok` (cut_loss_single_check: every loss guard held); without it, never.
+    Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
+    n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
+    if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
+        return None, 0.0
+    net = n * (bid - single_fee(bid))
+    t = x["t"]
+    peak = MINE.setdefault("peak", {})
+    if track:
+        peak[t] = max(peak.get(t, 0.0), net)
+    hits = []
+    tp = float(CFG.get("take_profit") or 0) / 100
+    if tp:
+        f = max(tp * n, TP_MIN_GAIN * cost)
+        if net >= f:
+            hits.append(("take profit", f))
+    floor2 = 0.0
+    pr = smart_params([t])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:
+        leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
+        lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
+        lam *= pr["lam"] * rl
+        floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
+        if q >= 0.5 and net >= floor2:
+            hits.append(("smart", floor2))
+        if pr["loss"] and x.get("state") == "live" and q <= pr["loss"] and net > 0 and cut_ok:
+            hits.append(("cut loss", 0.0))
+    if hits:
+        return min(hits, key=lambda h: h[1])
+    pk = peak.get(t, 0.0)
+    if CFG.get("lock_trail", True) and pk >= max(TRAIL_ARM * n, 1.5 * cost) and net <= (1 - TRAIL_DROP) * pk \
+            and net >= 1.1 * cost:
+        return "lock in", 1.1 * cost
+    return None, floor2

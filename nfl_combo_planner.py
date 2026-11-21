@@ -54,6 +54,9 @@ CFG = {
     "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
     "ideas_shown": 3,     # Live Buy ideas: how many show at once (best by expected dollars); the rest fold under "N more"
     "line_model": True,   # spreads/totals: the margin-shape model where its league's gate is on (False = old model everywhere)
+    "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
+    "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
+    "smart_buy": False,   # Smart Buy (preview, issue #137 stage 1): shows the exit-chance preview only; changes no buy or sale
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -251,7 +254,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "ideas_shown", "tp_v2")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown")
 
 
 def next_league():
@@ -583,6 +586,7 @@ def fetch_series(series):
         out += data.get("markets", [])
         cursor = data.get("cursor")
         if not cursor:
+            price_seen_markets(out)                    # Smart Buy's price recorder: what we just read, no new call
             return out
 
 
@@ -841,8 +845,38 @@ def sharp_snapshot(key):
             "opp": dict(BOOK_OPP), "kick": dict(TEAM_KICKOFF), "note": note}
 
 
-def merge_books(sharp, free):
-    """Sharp lines win; free sources fill in games the odds service doesn't list."""
+PRE_LINE_AGE = 45 * 60       # a pre-game sportsbook line read longer ago than this (the Mac re-reads the odds service
+                              # every 40 min near games, so a line past this missed its refresh: empty answer, outage)...
+PRE_LINE_NEAR = 4 * 3600      # ...is too old to price a game starting within this (injury and lineup news lands late)
+
+
+def _start_ts(start):
+    try:
+        return dt.datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def line_stale(at, kick, now=None):
+    """A pre-game line too old to price on: its game starts within PRE_LINE_NEAR (or has started, or its start is
+    unknown) and the line was read more than PRE_LINE_AGE ago, or we don't know when it was read."""
+    now = now or time.time()
+    if kick is not None and kick - now >= PRE_LINE_NEAR:
+        return False
+    return not at or now - float(at) > PRE_LINE_AGE
+
+
+def merge_books(sharp, free, now=None):
+    """Sharp lines win; free sources fill in games the odds service doesn't list. A sharp line too old for a game
+    starting soon (line_stale) gives way to a fresh free line for that team, so a stale snapshot never outranks
+    a 3-minute-old free line (injury news moves the free line first)."""
+    now = now or time.time()
+    fresher = set()
+    for t, gs in (sharp.get("games") or {}).items():
+        fg = (free.get("games") or {}).get(t)
+        if gs and fg and t in free["fair"] and line_stale(gs[0].get("at"), _start_ts(gs[0].get("start")), now) \
+                and not line_stale(fg[0].get("at"), _start_ts(fg[0].get("start")), now):
+            fresher.add(t)
     out = empty_snapshot()
     out["parts"] = {t: dict(v) for t, v in (free.get("parts") or {}).items()}
     for t, v in sharp["fair"].items():
@@ -852,8 +886,13 @@ def merge_books(sharp, free):
         out["games"].update(part["games"])
         out["opp"].update(part["opp"])
         out["kick"].update(part["kick"])
+    for t in fresher:                              # ...unless its line is too old for a game this close
+        out["fair"][t] = free["fair"][t]
+        out["games"][t] = free["games"][t]
     n_free = len(set(free["fair"]) - set(sharp["fair"]))
     notes = [sharp["note"]] if sharp["note"] else []
+    if fresher:
+        notes.append(f"{len(fresher)} teams use fresher free lines (the odds service's were too old for games this close).")
     if free["fair"]:
         notes.append(f"Free lines ({free['note']}) cover {len(free['fair'])} teams"
                      + (f", {n_free} the odds service didn't list." if sharp["fair"] else "."))
@@ -984,6 +1023,7 @@ def free_snapshot(codes):
         if not sp or not sp.get("espn"):
             continue
         poly = poly_games(code)
+        fetched = time.time()                         # when these lines were read (merge_books, panel_collect check it)
         today = dt.date.today()
         for path in (sp["espn"] if isinstance(sp["espn"], list) else [sp["espn"]]):
             q = dict(sp.get("q") or {}, limit=400)
@@ -1027,7 +1067,7 @@ def free_snapshot(codes):
                     nm, op = me["displayName"], other["displayName"]
                     snap.setdefault("parts", {})[nm] = parts[side]
                     snap["fair"].setdefault(nm, [p, src])
-                    snap["games"].setdefault(nm, []).append({"fair": [p, src], "start": start,
+                    snap["games"].setdefault(nm, []).append({"fair": [p, src], "start": start, "at": fetched,
                                                              "day": str(espn_day(start) or "") or None, "opp": op})
                     snap["opp"].setdefault(nm, op)
                     snap["kick"].setdefault(nm, start)
@@ -4445,6 +4485,47 @@ def recap(day=None):
 
 TP_MIN_GAIN = 1.25       # take profit only with at least 25% over what you paid
 TRAIL_ARM, TRAIL_DROP = 0.60, 0.20   # lock in: armed once the offer reached 60% of the payout (and 1.5x cost)
+EXIT_POLICY_VERSION = 1
+
+
+def exit_policy(s, prm):
+    """Smart sell's decision, in one place (issue #137: Smart Sell runs it, Smart Buy simulates it). Pure: it reads
+    nothing but its two arguments (and the fixed constants above), so the live sellers and the simulator get the
+    same answer for the same state.
+    s: kind 'combo' or 'single'; value = what selling now brings (a combo: the steady estimate, live chance x payout
+       x Kalshi's discount; a single: contracts x (bid - fee)); real = a combo's real Kalshi offer for the whole
+       combo (0 = none); peak = the highest value seen so far (including now); pays = payout if it wins; cost = what
+       was paid; q = the live chance; live = a game under way.
+    prm: tp = take-profit share of the payout (0 = off); smart = smart sell is on (Let it ride isn't Ride it out),
+       with lam = the risk weight (swing x league x Let it ride), floor = the league's profit floor (x cost),
+       loss = the league's own learned loss cut (None = never), checkpoint = between a slate's games; cut_ok = every
+       loss guard held; trail = lock in after a run-up.
+    Returns {'sell', 'reason', 'threshold' (the least to accept), 'floor' (smart sell's hold value, shown on Live)}."""
+    combo = s.get("kind") == "combo"
+    val, real, peak = s["value"], s.get("real") or 0.0, s["peak"]
+    P, cost, q, live = s["pays"], s["cost"], s["q"], s["live"]
+    hits = []
+    tp = prm.get("tp") or 0
+    if tp:
+        f = max(tp * P, TP_MIN_GAIN * cost)
+        if (max(val / 0.9, real) if combo else val) >= f:
+            hits.append(("take profit", f))
+    floor2 = 0.0
+    if prm.get("smart"):
+        lam = prm["lam"]
+        floor2 = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), prm["floor"] * cost)
+        if q >= 0.5 and (max(val / 0.95, real) if combo else val) >= floor2:
+            hits.append(("checkpoint" if prm.get("checkpoint") else "smart", floor2))
+        loss = prm.get("loss")
+        if loss and live and q <= loss and prm.get("cut_ok") and (combo or val > 0):
+            hits.append(("cut loss", 0.02 * cost if combo else 0.0))   # learned for this league, every guard held
+    if hits:
+        why, thr = min(hits, key=lambda x: x[1])
+        return {"sell": True, "reason": why, "threshold": thr, "floor": floor2}
+    if prm.get("trail") and peak >= max(TRAIL_ARM * P, 1.5 * cost) and val <= (1 - TRAIL_DROP) * peak \
+            and (max(val, real) if combo else val) >= 1.1 * cost:
+        return {"sell": True, "reason": "lock in", "threshold": 1.1 * cost, "floor": floor2}
+    return {"sell": False, "reason": None, "threshold": 0.0, "floor": floor2}
 
 
 def take_profit_reason(t, h, cut_ok=False):
@@ -4463,29 +4544,16 @@ def take_profit_reason(t, h, cut_ok=False):
         and time.time() - o.get("at", 0) <= offer_life() else 0.0
     peak = MINE.setdefault("peak", {})
     peak[t] = max(peak.get(t, 0.0), est)
-    tp = float(CFG.get("take_profit") or 0) / 100
-    floor = max(tp * h["pays"], TP_MIN_GAIN * h["cost"])
-    hits = []
-    if tp and max(est / 0.9, real) >= floor:
-        hits.append(("take profit", floor))
+    prm = {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "cut_ok": cut_ok}
     pr = smart_params([tk for (_, tk), _ in h.get("need") or []])
     rl = ride_lam()
     if CFG.get("smart_sell", True) and rl is not None:  # nimble: lock in when that beats the risk of holding
-        q, P = h["p"], h["pays"]
         lam, why_note = swing_lambda(h)
         lam *= pr["lam"] * rl
-        hold_risky = q * P - lam * P * math.sqrt(max(q * (1 - q), 0))
-        floor2 = max(hold_risky, pr["floor"] * h["cost"])
-        if q >= 0.5 and max(est / 0.95, real) >= floor2:
-            hits.append(("checkpoint" if why_note else "smart", floor2))
-        if pr["loss"] and live and h["p"] <= pr["loss"] and cut_ok:  # learned for this league, and every loss guard held
-            hits.append(("cut loss", 0.02 * h["cost"]))
-    if hits:
-        return min(hits, key=lambda x: x[1])
-    if CFG.get("lock_trail", True) and peak[t] >= max(TRAIL_ARM * h["pays"], 1.5 * h["cost"]) \
-            and est <= (1 - TRAIL_DROP) * peak[t] and max(est, real) >= 1.1 * h["cost"]:
-        return "lock in", 1.1 * h["cost"]
-    return None, 0.0
+        prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"], checkpoint=bool(why_note))
+    d = exit_policy({"kind": "combo", "value": est, "real": real, "peak": peak[t], "pays": h["pays"],
+                     "cost": h["cost"], "q": h["p"], "live": live}, prm)
+    return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
 
 
 def auto_sell_now(plan):
@@ -4843,31 +4911,17 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
     peak = MINE.setdefault("peak", {})
     if track:
         peak[t] = max(peak.get(t, 0.0), net)
-    hits = []
-    tp = float(CFG.get("take_profit") or 0) / 100
-    if tp:
-        f = max(tp * n, TP_MIN_GAIN * cost)
-        if net >= f:
-            hits.append(("take profit", f))
-    floor2 = 0.0
+    prm = {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "cut_ok": cut_ok}
     pr = smart_params([t])
     rl = ride_lam()
     if CFG.get("smart_sell", True) and rl is not None:
         leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
         lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
         lam *= pr["lam"] * rl
-        floor2 = max(q * n - lam * n * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
-        if q >= 0.5 and net >= floor2:
-            hits.append(("smart", floor2))
-        if pr["loss"] and x.get("state") == "live" and q <= pr["loss"] and net > 0 and cut_ok:
-            hits.append(("cut loss", 0.0))
-    if hits:
-        return min(hits, key=lambda h: h[1])
-    pk = peak.get(t, 0.0)
-    if CFG.get("lock_trail", True) and pk >= max(TRAIL_ARM * n, 1.5 * cost) and net <= (1 - TRAIL_DROP) * pk \
-            and net >= 1.1 * cost:
-        return "lock in", 1.1 * cost
-    return None, floor2
+        prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"])
+    d = exit_policy({"kind": "single", "value": net, "peak": peak.get(t, 0.0), "pays": n, "cost": cost, "q": q,
+                     "live": x.get("state") == "live"}, prm)
+    return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
 
 
 SINGLE_RESTING = {"at": 0, "t": set()}
@@ -5055,15 +5109,19 @@ def open_singles(max_age=30):
         n = float(p.get("position_fp") or p.get("position") or 0)
         if t and not is_combo(t) and abs(n) > 0.005:
             held.append((t, n, p))
-    mk = {}
+    mk, got = {}, []
     for i in range(0, len(held), 50):
         chunk = [t for t, _, _ in held[i:i + 50]]
         try:
             r = requests.get(f"{KALSHI}/markets", params={"tickers": ",".join(chunk)}, timeout=15)
             r.raise_for_status()
-            mk.update({m.get("ticker"): m for m in r.json().get("markets", [])})
+            ms = r.json().get("markets", [])
+            got += ms
+            mk.update({m.get("ticker"): m for m in ms})
         except (requests.RequestException, ValueError):
             mk.update({t: SINGLES["mk"][t] for t in chunk if t in SINGLES["mk"]})
+    price_watch_held(held, mk)                         # Smart Buy's price recorder: the singles you hold
+    price_seen_markets(got)                            # only prices read just now, never the fallback copy
     try:                                             # display only: scores for tennis, EuroLeague, UFC
         kalshi_live_kick(klive_events([{"ticker": t, "event": game_event((mk.get(t) or {}).get("event_ticker") or "")}
                                           for t, _, _ in held if not (mk.get(t) or {}).get("result")]))
@@ -7576,7 +7634,8 @@ NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
-                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
+                  "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
+                  "panel_rank_dollars", "idea_bar_strict")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -10358,8 +10417,49 @@ def est_offer(c, stake=None):
     return pays, pays / (c["fair"] * k)
 
 
+def _combo_code(legs):
+    """The league a combo's cut-off and calibration come from: its picks' own sport when they share one, else the
+    league on screen."""
+    sps = {ticker_sport(l.get("ticker") or "") for l in legs or []}
+    sps.discard(None)
+    sps.discard("")
+    return next(iter(sps)) if len(sps) == 1 else LEAGUE["code"]
+
+
+def green_bar(legs, code=None):
+    """The share of fair (the books' chance, as the combo was built) a Kalshi quote needs for the green Buy: your
+    cut-off setting, and (Settings switch 'Stricter green Buy', on) at least the league's panel cut-off
+    (combo_cutoff, 95% to start), so the app never calls a combo good that the panel itself would pass over."""
+    bar = CFG["accept_pct"] / 100
+    if not shared_flag("idea_bar_strict"):
+        return bar
+    try:
+        return max(bar, combo_cutoff(code or _combo_code(legs), len(legs or []), legs))
+    except Exception:
+        return max(bar, CUT_START / 100)
+
+
+def notify_bar(legs, code=None):
+    """The share of fair a quote needs before the Mac sends a buy idea: the green Buy's bar and (switch on) at
+    least 100% of the fair chance corrected by your own record (calib_fair), so an alert never goes out for a combo
+    worth less than it costs on the record. A chance that can't be corrected keeps the green bar."""
+    bar = green_bar(legs, code)
+    if not shared_flag("idea_bar_strict"):
+        return bar
+    try:
+        shown = math.prod(l["fair"] for l in legs)
+        cal = math.prod(calib_fair(code or ticker_sport(l["ticker"]) or LEAGUE["code"], l.get("fair_book") or l["fair"],
+                                   l.get("ticker")) for l in legs)
+        if shown > 0 and cal > 0:
+            return max(bar, shown / cal)           # pays / (stake / shown) >= shown / cal  <=>  pays >= stake / cal
+    except Exception:
+        pass
+    return bar
+
+
 def get_offer(i, amount=None, check_cap=True):
-    """Steps 1-3: make the combo market, ask for a price, wait for the best offer."""
+    """Steps 1-3: make the combo market, ask for a price, wait for the best offer. The green Buy ("ok") needs the
+    combo's own minimum and, for every combo but the panel's (which carries its own cut-off), green_bar."""
     import time
     c = CTX["combos"][i - 1]
     stake = round(float(amount), 2) if amount else CTX["stake"]
@@ -10406,6 +10506,10 @@ def get_offer(i, amount=None, check_cap=True):
     yes_price, q = best
     pays = stake / yes_price
     minimum = c["min"] * stake / CTX["stake"]
+    bar = None
+    if c.get("kind") != "panel" and c.get("fair"):
+        bar = green_bar(c["legs"])
+        minimum = max(minimum, c["fair"] * stake / CTX["stake"] * bar)
     if c.get("kalshi"):
         note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
     pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
@@ -10417,7 +10521,8 @@ def get_offer(i, amount=None, check_cap=True):
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
                         "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None,
                         "legs": [l["ticker"] for l in c["legs"]]}
-    return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct}
+    return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct,
+            "bar": round(bar * 100) if bar else None}
 
 
 COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No retry: the app won't buy this combo "
@@ -11938,13 +12043,13 @@ def shadow_pass(book_snap, log=print, alert=None):
             continue
         pct = r["pct"]
         key = "|".join(sorted(l["ticker"] for l in c["legs"]))
-        cut = CFG["accept_pct"] / 100
+        cut = notify_bar(c["legs"])                   # a buy idea only at the league's cut-off and fair on the record
         if cut - 0.03 <= pct < cut and key not in st.setdefault("reasked", []):
             st["reask"][key] = time.time() + 300     # just under the cut-off: a fresh price in a few minutes
             st["reasked"] = (st["reasked"] + [key])[-200:]
         before = st.setdefault("seen", {}).get(key)
         st["seen"][key] = round(pct, 4)
-        if pct * 100 >= CFG["accept_pct"] and (before is None or pct - before >= 0.05) and not c.get("same_game"):
+        if pct >= cut and (before is None or pct - before >= 0.05) and not c.get("same_game"):
             sid = store_suggestion(c, r, pct)            # a buy idea: Live shows it, one tap gets your price
             picks = " + ".join(l["pick"] for l in c["legs"])
             url = f"/#s={sid}" if sid else "/"
@@ -12042,8 +12147,20 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=()):
 SINGLE_MIN_EDGE = 0.025           # at least 2.5 cents a contract better than fair, after the fee
 
 
-def single_fee(p):
-    return FEE_RATE * p * (1 - p)
+def single_fee(p, n=None):
+    """Kalshi's taking fee per contract at price p. With n (the order's contracts): Kalshi rounds each order's fee
+    up to the cent, so this is that order's rounded fee spread over its contracts (small orders pay a bit more)."""
+    f = FEE_RATE * p * (1 - p)
+    if not n or n <= 0:
+        return f
+    return math.ceil(round(n * f * 100, 6)) / 100 / n
+
+
+def order_contracts(stake, p):
+    """(contracts, fee per contract) for spending about `stake` at price p, with the order's fee rounded up to the
+    cent: whole contracts are what an order buys, the fee is what Kalshi charges for that order."""
+    n = max(1, int(stake // (p + single_fee(p))))
+    return n, single_fee(p, n)
 
 
 def opp_of(games, x):
@@ -14143,14 +14260,14 @@ def _idea_better(row, base):
 
 
 def _idea_below_bar(row):
-    """Under the bar the idea was offered at: a combo below the 'price you'll accept' setting, a single or spread/total
-    with no edge left after Kalshi's fee. Marked, never hidden (they sort last)."""
+    """Under the bar the idea was offered at: a combo below the green Buy's bar (green_bar: your 'price you'll accept'
+    setting and the league's cut-off), a single or spread/total with no edge left after Kalshi's fee. Marked, never hidden (they sort last)."""
     pct = row.get("pct")
     if pct is None:
         return False
     try:
-        if (row.get("n") or 1) > 1:
-            return pct * 100 < float(CFG.get("accept_pct", 95)) - 1e-9
+        if (row.get("n") or 1) > 1:                          # a combo: the green Buy's own bar (your setting, and the league's cut-off)
+            return pct < green_bar([{"ticker": t} for t in row.get("legs") or []]) - 1e-9
         return pct <= 1.0
     except (TypeError, ValueError):
         return False
@@ -14725,6 +14842,19 @@ def combo_cutoff(code, n, legs=None):
     return _cut_level(load_json(CUTOFF_FILE, {}), code, n, legs)[0] / 100
 
 
+CUT_BAND = 0.03          # adjust_cutoffs moves a cut-off only when combos near it were worth over 3% more (lower it)
+CUT_BIG = 0.15           # or under 3% less (raise it) than they cost, the same distance either way; 15% = a bigger step
+
+
+def _by_games(rs):
+    """One value per set of games: re-quotes of the same games (overlapping legs asked again minutes later) count
+    once, at their average, so they can't make a thin record look like 25 independent quotes."""
+    by = defaultdict(list)
+    for r in rs:
+        by[r.get("games") or id(r)].append(r["val"])
+    return [sum(v) / len(v) for v in by.values()]
+
+
 def adjust_cutoffs(force=False):
     """Once a week: move each group's cut-off a step from its own evidence. Up if combos bought just above
     the bar have been returning well under what they cost; down (never below 85%) if the ones it would have
@@ -14745,8 +14875,9 @@ def adjust_cutoffs(force=False):
     kind = {}                                          # key -> (0 everyone | 1 sport | 2 league, sport, n)
     for r in rows:
         legs = json.loads(r["legs"] or "[]")
-        cl = close_prices([x[0] for x in legs])
+        cl = close_prices([x[0] for x in legs], mid=True)
         r = dict(r)
+        r["games"] = frozenset(x[0].rsplit("-", 1)[0] for x in legs) or frozenset([("quote", r["ts"])])
         if legs and len(cl) == len(legs) and all(x[1] for x in legs):
             # the faster signal: what the combo was worth at game time (Kalshi's own prices then), after the trip
             r["val"] = r["pays"] / r["stake"] * math.prod(cl[x[0]] for x in legs) * trip
@@ -14778,15 +14909,15 @@ def adjust_cutoffs(force=False):
         else:
             cur = float((e or {}).get("level", 95))
         L = cur / 100
-        above = [r["val"] for r in rs if L <= r["pct"] < L + 0.05]
-        below = [r["val"] for r in rs if L - 0.05 <= r["pct"] < L]
+        above = _by_games([r for r in rs if L <= r["pct"] < L + 0.05])
+        below = _by_games([r for r in rs if L - 0.05 <= r["pct"] < L])
         avg = lambda xs: sum(xs) / len(xs)
         new, why = cur, ""
-        if len(above) >= 25 and avg(above) < 0.97:
-            step = 3 if len(above) >= 40 and avg(above) < 0.85 else 2
+        if len(above) >= 25 and avg(above) < 1 - CUT_BAND:
+            step = 3 if len(above) >= 40 and avg(above) < 1 - CUT_BIG else 2
             new, why = min(cur + step, 110), f"raised: combos just over the bar were worth {avg(above):.0%} of their cost by game time"
-        elif len(below) >= 25 and avg(below) >= 1.0 and cur > 85:
-            step = 3 if len(below) >= 40 and avg(below) >= 1.05 else 2
+        elif len(below) >= 25 and avg(below) > 1 + CUT_BAND and cur > 85:
+            step = 3 if len(below) >= 40 and avg(below) > 1 + CUT_BIG else 2
             new, why = max(cur - step, 85), f"lowered: combos it skipped just under the bar were worth {avg(below):.0%} of their cost by game time"
         if new != cur:
             d[key] = {"level": new, "why": why, "at": int(time.time()), "n": len(rs)}
@@ -15059,6 +15190,19 @@ def slate_combos(games, code, k=3):
 def _close_table():
     store_x("create table if not exists closes(ticker text primary key, sport text, event text, fair real, "
             "price real, kick real, ts real, outcome text)")
+    store_x("create table if not exists close_mids(ticker text primary key, mid real, ts real)")
+
+
+CLOSE_MID_GAP = 0.10      # a bid/ask gap wider than this isn't a market to read a mid from: the ask is kept alone
+
+
+def close_mid(x):
+    """The middle of Kalshi's bid and ask for a side (what it was worth, not what it cost), or None when there's no
+    bid or the gap is too wide to mean much."""
+    p, b = x.get("p"), x.get("bid")
+    if not p or b is None or not 0 < b <= p or p - b > CLOSE_MID_GAP:
+        return None
+    return round((p + b) / 2, 4)
 
 
 def record_closes(games, code):
@@ -15075,6 +15219,11 @@ def record_closes(games, code):
                 continue
             store_x("insert or replace into closes values(?,?,?,?,?,?,?,coalesce((select outcome from closes where ticker=?),null))",
                     (x["ticker"], code, e, x["fair"], x["p"], _kick_ts(x), now, x["ticker"]))
+            m = close_mid(x)                           # the old price column (the ask) stays as it was, for history
+            if m is not None:
+                store_x("insert or replace into close_mids values(?,?,?)", (x["ticker"], m, now))
+            else:
+                store_x("delete from close_mids where ticker=?", (x["ticker"],))
 
 
 def resolve_closes(limit=150):
@@ -15103,14 +15252,17 @@ def resolve_closes(limit=150):
     return n
 
 
-def close_prices(tickers):
-    """{ticker: last Kalshi price before its game started} for games that have started."""
+def close_prices(tickers, mid=False):
+    """{ticker: last Kalshi price before its game started} for games that have started: the ask, or with mid=True
+    the middle of the bid and ask then (what it was worth; the ask when no mid was recorded)."""
     if not STORE["db"] or not tickers:
         return {}
     _close_table()
     q = ",".join("?" * len(tickers))
-    rows = store_rows(f"select ticker, price, kick from closes where ticker in ({q})", tuple(tickers))
-    return {r["ticker"]: r["price"] for r in rows if r["kick"] and r["kick"] < time.time() and r["price"]}
+    rows = store_rows(f"select c.ticker, c.price, c.kick, m.mid from closes c left join close_mids m on m.ticker = c.ticker "
+                      f"where c.ticker in ({q})", tuple(tickers))
+    return {r["ticker"]: (r["mid"] if mid and r["mid"] else r["price"]) for r in rows
+            if r["kick"] and r["kick"] < time.time() and r["price"]}
 
 
 def exit_factor():
@@ -15409,6 +15561,23 @@ def _start_ok(c, now, margin):
     return (c.get("kick") or 0) >= now + margin
 
 
+def drop_stale_lines(games, now=None):
+    """Games not started yet whose sportsbook line is too old for how soon they start (line_stale): the line is
+    dropped (src None, so no single, combo or closing price uses it; the chance falls back to Kalshi's own).
+    Returns how many games."""
+    now = now or time.time()
+    n = 0
+    for sd in games.values():
+        two = [x for x in sd if x.get("src") and not x.get("live") and not x.get("tie")]
+        if not two or not any(line_stale(x.get("line_at"), _kick_ts(x), now) for x in two):
+            continue
+        n += 1
+        tot = sum(x["p"] for x in sd if x.get("p")) or 1
+        for x in sd:
+            x.update(src=None, edge=None, stale_line=True, fair=(x["p"] / tot) if x.get("p") else x.get("fair"))
+    return n
+
+
 def panel_collect(book_snap, code, log=print):
     """Gather this league's panel candidates. Called for each league by the Mac. Games not started yet use the
     sportsbooks' chances; games already under way (when switched on) only with a fresh live chance
@@ -15418,6 +15587,10 @@ def panel_collect(book_snap, code, log=print):
     attach_fair(games, book)
     every = games
     games = {e: sd for e, sd in every.items() if not any(started(x) for x in sd)}
+    stale = drop_stale_lines(games)
+    if stale:
+        log(f"panel {code}: {stale} game(s) left on Kalshi's prices: their sportsbook line was too old for a game "
+            f"this close")
     live, LIVE_WHY[code] = ({}, {})
     if live_panel_on():
         try:
@@ -15485,6 +15658,7 @@ def panel_collect(book_snap, code, log=print):
             far, _, _ = week_games(fetch_markets(), weeks=2)
             attach_fair(far, book)
             far = {e: sd for e, sd in far.items() if not any(started(x) for x in sd)}
+            drop_stale_lines(far)
             stamp_games(code, far)
             weeks = {e: week_of(e) for e in far}
             if len(set(weeks.values())) >= 2:
@@ -15500,6 +15674,8 @@ def panel_collect(book_snap, code, log=print):
         except Exception as err:
             log("two-week NFL:", type(err).__name__, err)
     PANEL_POOL[code] = (time.time(), cands)
+    smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
+    smart_buy_shadow_ideas()
     return cands
 
 
@@ -15536,20 +15712,50 @@ def _sim_panel(items, n=3000, seed=7):
                 l = c["legs"][0]
                 touched = wins(l, u) or rng.random() < max(c["chance"] - l["fair"], 0) / max(1 - l["fair"], 1e-6)
                 p = c["price"]
-                n_ = s / (p + single_fee(p))
-                tot += n_ * (c["exit"] - p - single_fee(p) - single_fee(c["exit"])) if touched else -s
+                k, fee = order_contracts(s, p)
+                n_ = s / (p + fee)
+                tot += n_ * (c["exit"] - p - fee - single_fee(c["exit"], k)) if touched else -s
             else:
                 p = c["price"]
-                n_ = s / (p + single_fee(p))
+                n_ = s / (p + order_contracts(s, p)[1])     # the order's fee rounded up to the cent, as Kalshi charges
                 tot += n_ * 1.0 - s if wins(c["legs"][0], u) else -s
         totals.append(tot)
     return totals
 
 
+PANEL_AHEAD_FLOOR = 0.55   # the panel's chance of finishing the day ahead stays at or over this (the $300 gate's "most days up")
+PANEL_AHEAD_GIVE = 0.10    # ...and never more than this far under the best chance the bets could reach together
+
+
+def shared_flag(key, default=True):
+    """A Settings switch read from the shared settings file too (like live_panel_on), so the Mac's engines and the
+    web app agree without waiting for a reload."""
+    v = load_json(MAIN_SAVED, {}).get(key) if os.path.exists(MAIN_SAVED) else None
+    return bool(CFG.get(key, default) if v is None else v)
+
+
+def rank_dollars():
+    """Settings switch 'Pick the panel by expected dollars' (on unless turned off): the panel picks on expected
+    profit in dollars, with the chance the day finishes ahead as a floor. Off = the old rule (picks on that chance,
+    profit breaking ties)."""
+    return shared_flag("panel_rank_dollars")
+
+
+def _ahead_floor(top):
+    """The lowest chance of finishing ahead a panel may have, given the best chance any panel of these bets reached:
+    55%, but within 10 points of the best; when even the best is under 55%, within 5 points of it (as before)."""
+    return max(min(PANEL_AHEAD_FLOOR, top - 0.05), top - PANEL_AHEAD_GIVE)
+
+
 def choose_panel(cands, budget, base, size=None):
-    """Greedy: keep adding the bet that most raises the chance the panel finishes ahead (expected profit
-    breaks ties), inside the overlap rules and the budget."""
+    """Greedy, inside the overlap rules and the budget. By default (rank_dollars) it keeps adding the bet that adds
+    the most expected profit in dollars (fees counted, from the same simulation) among the bets that keep the chance
+    the day finishes ahead at or over the floor; when none does (or the panel is still under it), the bet that leaves
+    the best chance goes in. Then the prefix with the most expected profit whose chance is still over the floor
+    (_ahead_floor) is kept, so bets that dragged it under are trimmed off. With the switch off: the old rule (the bet that most
+    raises the chance of finishing ahead, profit breaking ties; prefixes within 5 points of the best chance)."""
     size = size or PANEL["size"]
+    dollars = rank_dollars()
     picked, spent, per_game = [], 0.0, defaultdict(int)
     solo = set()                                       # games that already carry a single, spread or total
     pool = [dict(c, stake=_size(c, base)) for c in cands if _qualifies(c)]
@@ -15568,7 +15774,11 @@ def choose_panel(cands, budget, base, size=None):
             tot = _sim_panel(picked + [c], n=1500)
             pr = sum(1 for t in tot if t > 0) / len(tot)
             ev = sum(tot) / len(tot)
-            score = pr + 0.05 * ev / max(budget, 1) + c.get("prio", 0)
+            if dollars:                                        # over the floor first, then the most dollars expected;
+                over = pr >= PANEL_AHEAD_FLOOR                 # under it: the chance (dollars break ties)
+                score = (1, ev + c.get("prio", 0) * 0.25 * max(budget, 1)) if over else (0, pr + 0.05 * ev / max(budget, 1))
+            else:
+                score = pr + 0.05 * ev / max(budget, 1) + c.get("prio", 0)
             if best is None or score > best[0]:
                 best = (score, c, pr, ev)
         if not best:
@@ -15581,11 +15791,10 @@ def choose_panel(cands, budget, base, size=None):
             per_game[e] += 1
             if c["kind"] != "combo":
                 solo.add(e)
-    # every prefix of that order is a candidate panel. Pete's goal: the best chance the day ends up ahead,
-    # with the money secondary. The chance is lumpy (one or two heavy favorites can look "safest" while
-    # making almost nothing), so: find the best chance any prefix reaches, keep every prefix within 5 points
-    # of it, and of those take the one that expects to make the most. That uses the budget on good bets
-    # while giving up almost none of the chance of finishing ahead.
+    # every prefix of that order is a candidate panel. Find the best chance of finishing ahead any prefix reaches;
+    # keep the prefixes whose chance is over the floor, and of those take the one that expects to make the most.
+    # (Old rule: within 5 points of the best chance.) That spends the budget on the bets worth the most dollars
+    # while the day still most likely ends up ahead.
     floor_n = min(len(picked), 3)
     stats = {}
     for k in range(floor_n, len(picked) + 1):
@@ -15593,12 +15802,14 @@ def choose_panel(cands, budget, base, size=None):
         stats[k] = (sum(1 for t in tot if t > 0) / len(tot), sum(tot) / len(tot))
     if stats:
         top = max(v[0] for v in stats.values())
-        ok_k = [k for k, v in stats.items() if v[0] >= top - 0.05]
+        floor = _ahead_floor(top) if dollars else top - 0.05
+        ok_k = [k for k, v in stats.items() if v[0] >= floor - 1e-9]
         picked = picked[:max(ok_k, key=lambda k: stats[k][1])]
     spent = sum(c["stake"] for c in picked)
     tot = _sim_panel(picked) if picked else [0]
     return picked, {"p_ahead": round(sum(1 for t in tot if t > 0) / len(tot), 3), "ev": round(sum(tot) / len(tot), 2),
-                    "stake": round(spent, 2), "worst": round(min(tot), 2), "best": round(max(tot), 2)}
+                    "stake": round(spent, 2), "worst": round(min(tot), 2), "best": round(max(tot), 2),
+                    "rank": "dollars" if dollars else "chance"}
 
 
 def sport_pay_index():
@@ -15981,9 +16192,46 @@ def _fresh(c):
     return next((x for x in cands if x["id"] == c["id"] and _qualifies(x)), None)
 
 
+NEWS_GAP = 0.06          # a pick this many points under its chance right after fresh injury news is usually the news
+
+
+def _leg_teams(l):
+    """The team names a pick is about, for the injury report: the pick and its opponent, or both sides of the game
+    ('Bears at Lions') for a spread or total."""
+    out = [l.get("pick"), l.get("vs")]
+    g = str(l.get("game") or "")
+    for sep in (" at ", " vs "):
+        if sep in g:
+            out += g.split(sep, 1)
+            break
+    return [t for t in dict.fromkeys(out) if t and not re.match(r"(?i)^(over|under)\b", t)]
+
+
+def news_gap(x, ask=None):
+    """Why a panel bet waits (or None): a pick priced NEWS_GAP or more under its chance while one of its teams has
+    fresh injury news (reported in the last 3 hours), the same rule single ideas use: the price is probably
+    catching up with news the line already has (or the line hasn't caught up yet). ask: a fresh price for a
+    one-pick bet. A report that can't be read never blocks (as with single ideas)."""
+    for l in x.get("legs") or []:
+        p = ask if ask is not None and len(x["legs"]) == 1 else l.get("p")
+        if not p or not l.get("fair") or l["fair"] - p < NEWS_GAP:
+            continue
+        try:
+            code = ticker_sport(l.get("ticker") or "") or x.get("code") or LEAGUE["code"]   # Mix: each pick's own league
+            _, fresh = injury_note(code, *_leg_teams(l), hours=3)
+        except Exception:
+            fresh = False
+        if fresh:
+            return f"fresh injury news for {l.get('pick') or 'a pick'} and a {(l['fair'] - p) * 100:.0f}-point gap"
+    return None
+
+
 def _qualifies(x):
     """The panel's bar for one bet: combos at or over their cut-off; sell-early favorites at fair or better;
-    singles, spreads and totals at least 2% better than fair."""
+    singles, spreads and totals at least 2% better than fair. Never a pick with a big gap right after fresh
+    injury news (news_gap)."""
+    if news_gap(x):
+        return False
     if x["kind"] == "combo":
         return x.get("pct", 0) >= combo_cutoff(x["code"], len(x["legs"]), x["legs"])
     if x["kind"] == "early":
@@ -16057,9 +16305,17 @@ def _buy_panel_bet(c):
         edge_needed = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask
         if ask + single_fee(ask) + edge_needed > l["fair"] + 1e-9:
             return False, f"the price moved to {ask * 100:.0f}¢, no longer good enough against its {l['fair']:.0%} chance", {}
+        news = news_gap(c, ask=ask)
+        if news:
+            return False, news, {}
         n = int(c["stake"] // (ask + single_fee(ask)))
+        while n > 1 and n * (ask + single_fee(ask, n)) > c["stake"] + 1e-9:
+            n -= 1                                       # the order's fee is rounded up: stay inside the stake
         if n < 1:
             return False, "the stake is under one contract", {}
+        if ask + single_fee(ask, n) + edge_needed > l["fair"] + 1e-9:   # this order's fee, rounded up to the cent
+            return False, (f"at {ask * 100:.0f}¢ the fee on {n:g} contract{'s' * (n != 1)} (rounded up to the cent) "
+                           f"leaves no edge against its {l['fair']:.0%} chance"), {}
         if c["kind"] == "early" and not RESTING_SELLS_OK:
             return False, ("Kalshi no longer takes the standing sell-only order a sell-early bet needs, so it wasn't "
                            "bought"), {}
@@ -16152,6 +16408,16 @@ def _set_items(day, mode, changes):
     return panel_tx(day, mode, fn)
 
 
+def _swap_stake(alt, c, p):
+    """The stake for a bet swapped in for c: sized for itself (_size, from the panel's base), never more than the
+    stake c held in the day's budget. No base to size from: c's stake, as before."""
+    base = p.get("base")
+    try:
+        return round(min(float(c["stake"]), _size(alt, float(base))), 2) if base else c["stake"]
+    except (TypeError, ValueError, KeyError):
+        return c["stake"]
+
+
 def panel_exec(alert=None, log=print, paused=False, may_trade=True):
     """On the Mac every minute, and within seconds of an Approve/Add (ask_buy): buy every approved panel bet still
     waiting (rechecked first, swapped if needed), and run the paper panel the same way without money. There's no
@@ -16220,7 +16486,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             if f is None:
                 alt = _replacement(c, p)
                 if alt:
-                    alt = dict(alt, stake=c["stake"], state="scheduled", swapped_for=picks)
+                    alt = dict(alt, stake=_swap_stake(alt, c, p), state="scheduled", swapped_for=picks)
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
                     ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
@@ -16295,7 +16561,7 @@ def panel_settle():
                 ch = {}
                 if c.get("state") in ("bought", "paper") and c.get("clv") is None and (c.get("kick") or 9e12) < time.time() \
                         and not c.get("live"):                 # bought during the game: the closing price came before it
-                    cl = close_prices([l["ticker"] for l in c["legs"]])
+                    cl = close_prices([l["ticker"] for l in c["legs"]], mid=True)   # worth at game time vs the ask paid
                     if len(cl) == len(c["legs"]) and all(l.get("p") for l in c["legs"]):
                         ch["clv"] = round(math.prod(cl[l["ticker"]] for l in c["legs"]) /
                                           math.prod(l["p"] for l in c["legs"]) - 1, 4)
@@ -16557,6 +16823,11 @@ def analytics(max_age=600):
         out["lines"] = line_accuracy()
     except Exception:
         out["lines"] = []
+    try:                                               # Smart Buy (preview): read-only, shown only with its switch on
+        out["smart_buy"] = smart_buy_summary() if smart_buy_on() else {"on": False}   # off: no work at all
+    except Exception as err:
+        print("smart buy summary:", type(err).__name__, err)
+        out["smart_buy"] = None
     # 4. exits: your real combos (Kalshi record) ridden vs cashed, and what automatic selling did
     ex = defaultdict(lambda: {"n": 0, "cost": 0.0, "back": 0.0})
     for r in store_rows("select cost, pays, back, status from bets where status in ('won','lost','cashed') and settled > ?",
@@ -17515,6 +17786,7 @@ def book_depth(ticker, max_age=60):
     except (requests.RequestException, ValueError):
         return None
     BOOK_DEPTH[ticker] = (now, info)
+    price_seen_book(ticker, info)                     # Smart Buy's price recorder (no new call)
     if len(BOOK_DEPTH) > 3000:
         for k in sorted(BOOK_DEPTH, key=lambda k: BOOK_DEPTH[k][0])[:1000]:
             BOOK_DEPTH.pop(k, None)
@@ -18019,6 +18291,587 @@ def combo_history(t):
             ticks[tk] = store_rows("select ts, chance, state, score from ticks where ticker=? and ts > ? order by ts",
                                    (tk, time.time() - 3 * 86400))
     return {"offers": offers[-600:], "ticks": {k: v[-400:] for k, v in ticks.items()}}
+
+
+# ================================================================ Smart Buy, stage 1 (issue #137): the foundation
+# Smart Buy and Smart Sell are one strategy: a buy should have an edge AND a likely route to profit, either cashing
+# out through the same exit policy smart sell uses (exit_policy) or holding with a decent chance to win. Stage 1
+# builds the parts and only WATCHES: nothing here buys, sells, ranks or hides a bet.
+#   simulate_exit      Monte Carlo of a bet's game path, smart sell's exit_policy applied at every step
+#   price recorder     the bid/ask path of every market we consider or hold, from prices already fetched
+#   exit_shadow        what the simulator predicted for each panel candidate and Buy idea, for calibration
+#   exit_calibration   did the exit rule really fire on the recorded prices? (predicted vs actual, per league)
+# Settings › Money › 'Smart Buy (preview)' (smart_buy, off) only shows the preview in Results › What's working.
+SB_PATHS, SB_GAIN, SB_STAKE = 120, 0.10, 5.0   # paths per candidate; a cash-out counts at +10% net; dollars per $5
+SB_PRE_VOL = 0.12          # pre-game line movement over a day, in probit units (until the recorder can tune it)
+SB_PRE_CLOSE = 0.5         # share of the price gap (our fair vs Kalshi) that closes before the start (CLV)
+SB_SPREAD = (0.02, 0.04)   # bid-ask gap assumed when none was seen: pre-game, in play
+SB_LIVE_WIDEN = 1.5        # gaps widen in play
+SB_WIN_MIN = 0.40          # hold route: a win chance at least this (placeholder until it is learned per league)
+SB_EV_MIN = 0.25           # dollars: the smallest expected profit at the reference stake worth a recommendation
+SB_SCORE_UNIT = {"nfl": 7 / 13.5, "ncaaf": 7 / 16.0, "nhl": 1 / 2.4, "ahl": 1 / 2.5, "soccer": 1 / 1.9}  # jump sizes
+SB_SHADOW_EVERY = 1800     # one exit_shadow row per candidate per half hour
+SB_BUDGET = 0.15           # seconds of simulation per shadow pass, at most (panel_collect can run under odds.lock)
+SB_CACHE = {"seen": {}, "ideas": 0, "on": None}
+
+
+def smart_buy_on():
+    """Settings › Money › 'Smart Buy (preview)' (off unless Pete turned it on). Read from the shared settings file too,
+    so the Mac's engines and the web app agree. Stage 1: it only shows the preview; it never changes a buy or a sale."""
+    v = load_json(MAIN_SAVED, {}).get("smart_buy") if os.path.exists(MAIN_SAVED) else None
+    return bool(CFG.get("smart_buy", False) if v is None else v)
+
+
+def _phi_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / 1.4142135623730951))
+
+
+def _probit(p):
+    return statistics.NormalDist().inv_cdf(min(max(p, 1e-4), 1 - 1e-4))
+
+
+def exit_settings(tickers):
+    """Smart sell's settings for a bet, as exit_policy takes them (the same reads take_profit_reason makes), plus
+    the parts the simulator needs to rebuild the risk weight step by step."""
+    pr = smart_params(list(tickers))
+    rl = ride_lam()
+    smart = bool(CFG.get("smart_sell", True) and rl is not None)
+    sl = stoploss_params(list(tickers))
+    return {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "smart": smart,
+            "floor": pr["floor"], "loss": pr["loss"], "lam_mult": pr["lam"] * (rl or 0), "prog": sl["prog"],
+            "drop": sl["drop"], "key": pr.get("key")}
+
+
+def _sb_game_secs(code):
+    return 3600 * ((SPORTS.get(code) or {}).get("hours") or 2.75)
+
+
+def exit_spec(c, now=None):
+    """A panel candidate (or a Buy idea) as the simulator's input, or None when it can't be modelled (sell-early
+    favorites, a missing price). Uses only what is already known: the candidate's prices, fair chances and kickoff
+    times, the recorder's latest bid/ask for each market, the cached scores. Never fetches anything."""
+    now = now or time.time()
+    kind = c.get("kind")
+    if kind not in ("single", "line", "combo") or not c.get("legs"):
+        return None
+    legs = []
+    for l in c["legs"]:
+        t = l.get("ticker") or ""
+        q0, ask = l.get("fair"), l.get("p")
+        if not t or not q0 or not ask or not 0 < ask < 1 or not 0 < q0 < 1:
+            return None
+        code = ticker_sport(t) or c.get("code") or ""
+        kick = _kick_ts(l) or (c.get("kick") if len(c["legs"]) == 1 else None)
+        dur = _sb_game_secs(code)
+        seen = PRICE_SEEN.get(t)
+        bid = seen[1] if seen and now - seen[0] < 900 and seen[1] else None
+        f0 = 1.0
+        if kick and kick <= now:
+            sc = None
+            try:
+                sc = leg_score({"ticker": t, "side": "yes"}) if _bet_kind(t) == "win" else None
+            except Exception:
+                sc = None
+            f0 = sc["frac"] if sc and sc.get("state") == "in" and sc.get("frac") is not None else \
+                max(1 - (now - kick) / dur, 0.02)
+        legs.append({"ticker": t, "code": code, "q0": float(q0), "ask": float(ask), "bid": bid,
+                     "start": (kick - now) if kick else 3600.0, "f0": min(max(f0, 0.02), 1.0), "dur": dur})
+    out = {"kind": "combo" if kind == "combo" else "single", "legs": legs, "tickers": [l["ticker"] for l in legs],
+           "id": c.get("id") or "+".join(l["ticker"] for l in legs), "league": bet_key([l["ticker"] for l in legs]),
+           "type": {"line": "line"}.get(kind, kind)}
+    if kind == "combo":
+        pct, fm = c.get("pct"), c.get("fair_mult")
+        if not pct or not fm:
+            return None
+        out["pays_per"] = float(pct) * float(fm)          # payout per $1 staked
+    return out
+
+
+def _sb_step_times(legs):
+    """The simulation's clock: for each leg a few pre-game checks and ~14 in-game ones, merged (seconds from now)."""
+    pts = {0.0}
+    for l in legs:
+        if l["start"] > 0:
+            for k in (1, 2, 3):
+                pts.add(l["start"] * k / 3)
+        g0 = max(l["start"], 0.0)
+        left = l["f0"] * l["dur"]
+        for k in range(1, 15):
+            pts.add(g0 + left * k / 14)
+    return sorted(pts)[1:]
+
+
+def simulate_exit(spec, n_paths=SB_PATHS, stake=SB_STAKE, seed=None, prm=None, fee_rate=None, gain=SB_GAIN):
+    """Monte Carlo of a bet's path to settlement with smart sell's own exit_policy at every step.
+    Each pick has a hidden 'lead' that moves like a score: pre-game the line drifts a little (SB_PRE_VOL); in play it
+    moves in scoring jumps (a touchdown, a goal; small steady moves in basketball), so the fair chance is
+    Φ(lead / √(time left)) (the live model's shape, PR #122). Kalshi's price starts at its own mid and closes the gap
+    to our fair as the game is played (half by the start, SB_PRE_CLOSE). The sellable price is the BID (mid minus half
+    the gap, wider in play), after the exit fee; a gap over 6¢ or too little depth = can't sell then.
+    Returns dollars at `stake`: p_exit (chance smart sell cashes out at least +gain), p_sell (any sale), exit_profit
+    (average profit of those cash-outs), hold_profit (riding every path to the end, on our fair chance), ev (sell when
+    the rule fires, else hold), exit_mins (average minutes to that cash-out), win (the fair chance to win)."""
+    t0 = time.perf_counter()
+    legs = spec["legs"]
+    combo = spec["kind"] == "combo"
+    prm = prm or exit_settings(spec["tickers"])
+    fr = FEE_RATE if fee_rate is None else fee_rate
+    fee = lambda p: fr * p * (1 - p)                    # noqa: E731
+    seed = int(hashlib.md5(spec.get("id", "").encode()).hexdigest()[:8], 16) if seed is None else seed
+    rng = random.Random(seed)
+    times = _sb_step_times(legs)
+    win = math.prod(l["q0"] for l in legs)
+    if combo:
+        cost, P = stake, stake * spec["pays_per"]
+        disc = (kalshi_discount(False), kalshi_discount(True))
+    else:
+        a = legs[0]["ask"]
+        cost = stake
+        P = stake / (a + fee(a))                         # contracts bought
+    depth = spec.get("depth")
+    # per leg: probit offsets, pre-game variance, the gap to close, jump size
+    pre = []
+    for l in legs:
+        v_pre = (SB_PRE_VOL ** 2) * min(max(l["start"], 0) / 86400, 1.0) if l["start"] > 0 else 0.0
+        z0 = _probit(l["q0"]) * math.sqrt(l["f0"] + v_pre)     # lead, so Φ(z0 / √(rest)) = q0
+        gap0 = (l["bid"] + l["ask"]) / 2 if l["bid"] else l["ask"] - (SB_SPREAD[1] if l["start"] <= 0 else SB_SPREAD[0]) / 2
+        sp0 = (l["ask"] - l["bid"]) if l["bid"] else (SB_SPREAD[1] if l["start"] <= 0 else SB_SPREAD[0])
+        d = _probit(l["q0"]) - _probit(min(max(gap0, 0.01), 0.99))
+        pre.append((v_pre, z0, d, max(sp0, 0.01), SB_SCORE_UNIT.get(l["code"])))
+    sold_n = prof_n = 0
+    prof_sum = ev_sum = mins_sum = 0.0
+    swing = [SWING.get(l["code"], 1.0) for l in legs]
+    for _ in range(n_paths):
+        lead = [p[1] for p in pre]
+        peak, last_t, done = 0.0, 0.0, None
+        outcome = [None] * len(legs)
+        for t in times:
+            mids, fairs, live_any, vols, open_n, spreads, played = [], [], False, [], 0, [], 0.0
+            for i, l in enumerate(legs):
+                v_pre, z0, d, sp0, unit = pre[i]
+                if outcome[i] is not None:
+                    mids.append(1.0 if outcome[i] else 0.0)
+                    fairs.append(mids[-1])
+                    continue
+                g0 = max(l["start"], 0.0)
+                if t <= g0:                                  # before the start: the line drifts
+                    dv = v_pre * (min(t, g0) - min(last_t, g0)) / g0 if g0 else 0.0
+                    if dv > 0:
+                        lead[i] += rng.gauss(0.0, math.sqrt(dv))
+                    rest = (v_pre * (1 - t / g0) if g0 else 0.0) + l["f0"]
+                    w = 1 - SB_PRE_CLOSE * (t / g0 if g0 else 1.0)
+                    state, f = "pre", 1.0
+                else:
+                    if last_t < g0 and v_pre:                # the rest of the pre-game drift, once
+                        dv = v_pre * (g0 - last_t) / g0
+                        lead[i] += rng.gauss(0.0, math.sqrt(dv))
+                    span = l["f0"] * l["dur"]
+                    f_prev = l["f0"] - (max(last_t, g0) - g0) / l["dur"]
+                    f = max(l["f0"] - (t - g0) / l["dur"], 0.0)
+                    du = max(f_prev - f, 0.0)
+                    if du > 0:
+                        if unit and unit > 0.25:             # scoring jumps (football, hockey, soccer)
+                            lam_j = du / (unit * unit)
+                            k, acc, lim = 0, rng.random(), math.exp(-lam_j)
+                            while acc > lim and k < 20:      # Poisson count (Knuth)
+                                k += 1
+                                acc *= rng.random()
+                            lead[i] += unit * sum(1 if rng.random() < 0.5 else -1 for _ in range(k))
+                        else:
+                            lead[i] += rng.gauss(0.0, math.sqrt(du))
+                    rest = f
+                    w = (1 - (SB_PRE_CLOSE if l["start"] > 0 else 0.0)) * (f / l["f0"] if l["f0"] else 0.0)
+                    state = "live"
+                    if f <= 1e-9 or span <= 0:
+                        outcome[i] = lead[i] > 0
+                        mids.append(1.0 if outcome[i] else 0.0)
+                        fairs.append(mids[-1])
+                        continue
+                qf = _phi_cdf(lead[i] / math.sqrt(max(rest, 1e-9)))
+                m = _phi_cdf(_probit(qf) - d * w)            # Kalshi's price: our fair, minus what's left of the gap
+                mids.append(m)
+                fairs.append(qf)
+                open_n += 1
+                live_any = live_any or state == "live"
+                if state == "live":
+                    played = max(played, 1 - f)
+                vols.append(swing[i] * (math.sqrt(max(f, 0.02)) if state == "live" else 1.0))
+                spreads.append(sp0 * (SB_LIVE_WIDEN if state == "live" and l["start"] > 0 else 1.0))
+            last_t = t
+            if any(o is False for o in outcome):
+                break
+            if not open_n:
+                break
+            q = math.prod(mids)
+            lam = 0.35 * (sum(vols) / len(vols)) * prm["lam_mult"]
+            checkpoint = combo and not live_any and any(o for o in outcome)
+            if checkpoint:
+                lam *= 1.3
+            if combo:
+                val = disc[1 if live_any else 0] * q * P
+                ok_sell = True
+            else:
+                gap = spreads[0]
+                bid = math.floor((mids[0] - gap / 2) * 100 + 1e-9) / 100
+                ok_sell = bid > 0 and round(gap, 4) <= LIVE_SPREAD and (depth is None or depth >= P)
+                val = P * (bid - fee(bid)) if bid > 0 else 0.0
+            peak = max(peak, val)
+            if not ok_sell:
+                continue
+            # the learned loss cut's guards, simplified: late enough in the game and far enough below the start
+            cut_ok = bool(prm.get("loss")) and live_any and played >= prm["prog"] and q <= win - prm["drop"]
+            dec = exit_policy({"kind": "combo" if combo else "single", "value": val, "real": 0.0, "peak": peak,
+                               "pays": P, "cost": cost, "q": q, "live": live_any},
+                              dict(prm, lam=lam, checkpoint=checkpoint, cut_ok=cut_ok))
+            if dec["sell"]:
+                done = (t, val, math.prod(fairs))
+                break
+        if done:                           # EV by optional stopping: holding on from the sale is worth fair x payout,
+            t_s, v, qf_t = done            # so only the sale's gain over that is simulated (far less noise)
+            sold_n += 1
+            ev_sum += v - qf_t * P
+            if v >= cost * (1 + gain):
+                prof_n += 1
+                prof_sum += v - cost
+                mins_sum += t_s / 60
+    hold = win * P - cost
+    out = {"n": n_paths, "win": round(win, 4), "p_exit": round(prof_n / n_paths, 4), "p_sell": round(sold_n / n_paths, 4),
+           "exit_profit": round(prof_sum / prof_n, 2) if prof_n else None, "hold_profit": round(hold, 2),
+           "ev": round(hold + ev_sum / n_paths, 2), "exit_mins": round(mins_sum / prof_n, 1) if prof_n else None,
+           "stake": stake, "ms": round((time.perf_counter() - t0) * 1000, 2)}
+    out["route"] = "sell" if out["p_exit"] >= 0.5 else "hold" if hold > 0 and win >= SB_WIN_MIN else "none"
+    return out
+
+
+def predict_exit_chance(c, now=None, n_paths=SB_PATHS):
+    """Smart Buy's read on one candidate: the simulator's answer, or None when it can't be modelled. Display and
+    logging only in stage 1."""
+    spec = exit_spec(c, now)
+    if not spec:
+        return None
+    return simulate_exit(spec, n_paths=n_paths)
+
+
+def smart_buy_ok(sim):
+    """The stage-2 gate as it would stand today (logged as 'new', never applied): a likely cash-out for a profit, or a
+    hold with a decent chance to win, and at least SB_EV_MIN dollars expected at the reference stake."""
+    return bool(sim) and sim["route"] != "none" and sim["ev"] >= SB_EV_MIN
+
+
+# ---- the shadow price recorder: prices the engine already fetched, never a new request
+PRICE_SEEN = {}            # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
+PRICE_WATCH = {}           # ticker -> (watch until, kickoff) for markets we consider or hold
+PRICE_LAST = {}            # ticker -> (time, bid, ask) last written
+PRICE_STATE = {"flush": 0.0, "prune": 0.0}
+PRICE_NEAR, PRICE_FAR, PRICE_BEAT = 60, 300, 900   # seconds between rows near/far from a game; a row at least this often
+PRICE_KEEP_DAYS, PRICE_MAX_ROWS = 30, 250000
+
+
+def _price_table():
+    store_x("create table if not exists price_path(ts real, ticker text, bid real, ask real, mid real, depth real, "
+            "score text)")
+    store_x("create index if not exists price_path_t on price_path(ticker, ts)")
+    store_x("create index if not exists price_path_ts on price_path(ts)")       # pruning by age without a full scan
+
+
+def price_seen_markets(ms):
+    """Note the bid/ask of markets the engine just read from Kalshi (a series list, a held-markets refresh). Cheap,
+    never raises, never fetches."""
+    try:
+        now = time.time()
+        for m in ms or ():
+            t = m.get("ticker") if isinstance(m, dict) else None
+            if not t:
+                continue
+            try:
+                bid, ask = dollars(m, "yes_bid") or None, dollars(m, "yes_ask") or None
+            except (TypeError, ValueError):
+                continue                               # an odd price field: skip this market
+            if bid or ask:
+                PRICE_SEEN[t] = (now, bid, ask, None)
+        if len(PRICE_SEEN) > 30000:
+            for k in sorted(PRICE_SEEN, key=lambda k: PRICE_SEEN[k][0])[:15000]:
+                PRICE_SEEN.pop(k, None)
+        if PRICE_WATCH and now - PRICE_STATE["flush"] >= 20:
+            price_flush(now)
+    except Exception as err:
+        print("price recorder:", type(err).__name__, err)
+
+
+def price_seen_book(ticker, info):
+    """The same from an order book the engine just read (book_depth): best bid/ask and the size at the best ask
+    (book_info's ask_size; the column is that, not the bid side's size, and nothing reads it as sellable depth yet)."""
+    try:
+        if ticker and info and (info.get("bid") or info.get("ask")):
+            PRICE_SEEN[ticker] = (time.time(), info.get("bid"), info.get("ask"), info.get("ask_size"))
+    except Exception:
+        pass
+
+
+def price_watch(tickers, kick=None, hours=8):
+    """Record these markets' price paths from now until a few hours after their game (or `hours` from now)."""
+    try:
+        now = time.time()
+        until = max(now + hours * 3600, (kick or 0) + 6 * 3600)
+        for t in tickers or ():
+            if t:
+                old = PRICE_WATCH.get(t)
+                PRICE_WATCH[t] = (max(until, old[0]) if old else until, kick or (old[1] if old else None))
+        if len(PRICE_WATCH) > 4000:
+            for k, _ in sorted(list(PRICE_WATCH.items()), key=lambda kv: kv[1][0])[:1000]:
+                PRICE_WATCH.pop(k, None)
+    except Exception as err:                          # never in the way of the caller (open_singles, the panel)
+        print("price recorder:", type(err).__name__, err)
+
+
+def price_watch_held(held, mk):
+    """Watch the singles you hold, each with its game's kickoff (so it is recorded every minute near the game)."""
+    try:
+        for t, _, _ in held:
+            ev = game_event((mk.get(t) or {}).get("event_ticker") or "") or "-".join(t.split("-")[:2])
+            price_watch([t], _kick_ts({"event": ev}))
+    except Exception as err:
+        print("price recorder:", type(err).__name__, err)
+
+
+def _price_every(kick, now):
+    return PRICE_NEAR if kick and kick - 3 * 3600 <= now <= kick + 6 * 3600 else PRICE_FAR
+
+
+def price_flush(now=None):
+    """Write one row per watched market whose price is due (every minute near its game, 5 minutes otherwise, and
+    only when it changed unless 15 minutes passed). Prunes old rows now and then. Returns the rows written."""
+    now = now or time.time()
+    PRICE_STATE["flush"] = now
+    if not STORE.get("db"):
+        return 0
+    rows = []
+    for t, (until, kick) in list(PRICE_WATCH.items()):
+        if until < now:
+            PRICE_WATCH.pop(t, None)
+            continue
+        seen = PRICE_SEEN.get(t)
+        if not seen or now - seen[0] > 600:
+            continue
+        last = PRICE_LAST.get(t)
+        if last and (seen[0] <= last[0] or now - last[0] < _price_every(kick, now)):
+            continue
+        ts, bid, ask, depth = seen
+        if last and (bid, ask) == (last[1], last[2]) and now - last[0] < PRICE_BEAT:
+            continue
+        mid = round((bid + ask) / 2, 4) if bid and ask else None
+        score = None
+        if kick and kick <= now and _bet_kind(t) == "win":
+            try:
+                sc = leg_score({"ticker": t, "side": "yes"})        # cached scores only: never fetched here
+                if sc and sc.get("state") in ("in", "post"):
+                    score = f"{sc.get('me')}-{sc.get('opp')} {sc.get('detail') or ''}".strip()[:40]
+            except Exception:
+                score = None
+        rows.append((round(ts, 1), t, bid, ask, mid, depth, score))
+        PRICE_LAST[t] = (ts, bid, ask)
+    if rows:
+        _price_table()
+        for r in rows:
+            store_x("insert into price_path(ts, ticker, bid, ask, mid, depth, score) values(?,?,?,?,?,?,?)", r)
+    if now - PRICE_STATE["prune"] > 6 * 3600:
+        price_prune(now)
+    return len(rows)
+
+
+def price_prune(now=None):
+    """Keep the recorder small: 30 days, and at most PRICE_MAX_ROWS rows (oldest go first). Same for exit_shadow."""
+    now = now or time.time()
+    PRICE_STATE["prune"] = now
+    if not STORE.get("db"):
+        return
+    _price_table()
+    _exit_shadow_table()
+    for tbl, keep, cap in (("price_path", PRICE_KEEP_DAYS, PRICE_MAX_ROWS), ("exit_shadow", 60, 200000)):
+        store_x(f"delete from {tbl} where ts < ?", (now - keep * 86400,))
+        n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        if n > cap:
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+
+
+# ---- exit_shadow: old (today's rules) vs new (Smart Buy) for every candidate, for later calibration
+def _exit_shadow_table():
+    store_x("create table if not exists exit_shadow(ts real, cand text, source text, league text, kind text, "
+            "tickers text, kick real, price real, fair real, edge real, win real, exit_chance real, sell_chance real, "
+            "exit_profit real, hold_profit real, ev real, exit_mins real, route text, old int, new int, ver int)")
+    store_x("create index if not exists exit_shadow_t on exit_shadow(ts)")
+
+
+def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
+    """Log what Smart Buy would say about each candidate next to what today's rules did (old = it's a candidate
+    today; new = smart_buy_ok), and start recording its markets' prices. One row per candidate per half hour, at
+    most `budget` seconds of simulation a call. Never changes, reorders or drops a candidate; never raises."""
+    now = now or time.time()
+    n = 0
+    try:
+        if not STORE.get("db"):
+            return 0
+        seen = SB_CACHE["seen"]
+        if len(seen) > 5000:
+            for k in [k for k, v in seen.items() if now - v > SB_SHADOW_EVERY]:
+                seen.pop(k, None)
+        t_end = time.perf_counter() + budget
+        made = False
+        for c in cands or ():
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            price_watch(tks, c.get("kick"))
+            key = source + ":" + (c.get("id") or "+".join(tks))
+            if now - seen.get(key, 0) < SB_SHADOW_EVERY or time.perf_counter() > t_end:
+                continue
+            spec = exit_spec(c, now)
+            if not spec:
+                continue
+            sim = simulate_exit(spec)
+            seen[key] = now
+            if not made:
+                _exit_shadow_table()
+                made = True
+            l0 = c["legs"][0]
+            price = l0.get("p") if len(c["legs"]) == 1 else None
+            fair = l0.get("fair") if len(c["legs"]) == 1 else c.get("chance")
+            edge = (fair - price - single_fee(price)) if price and fair else c.get("ret")
+            store_x("insert into exit_shadow(ts, cand, source, league, kind, tickers, kick, price, fair, edge, win, "
+                    "exit_chance, sell_chance, exit_profit, hold_profit, ev, exit_mins, route, old, new, ver) "
+                    "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (now, key[:200], source, spec["league"], spec["type"], json.dumps(tks), c.get("kick"), price, fair,
+                     round(edge, 4) if edge is not None else None, sim["win"], sim["p_exit"], sim["p_sell"],
+                     sim["exit_profit"], sim["hold_profit"], sim["ev"], sim["exit_mins"], sim["route"], 1,
+                     int(smart_buy_ok(sim)), EXIT_POLICY_VERSION))
+            n += 1
+    except Exception as err:
+        print("smart buy shadow:", type(err).__name__, err)
+    return n
+
+
+def smart_buy_shadow_ideas(now=None):
+    """The same for Live's Buy ideas (the suggestions table, last hour), every 10 minutes. Read-only on ideas."""
+    now = now or time.time()
+    if not STORE.get("db") or now - SB_CACHE["ideas"] < 600:
+        return 0
+    SB_CACHE["ideas"] = now
+    cands = []
+    for r in store_rows("select id, legs, n, pct, pays, stake, pfair, kick from suggestions where ts > ?", (now - 3600,)):
+        try:
+            tks = json.loads(r["legs"] or "[]")
+            chance = r["stake"] * r["pct"] / r["pays"] if r["pays"] and r["pct"] and r["stake"] else None
+        except (ValueError, TypeError):
+            continue
+        if not tks or not chance or not 0 < chance < 1:
+            continue
+        seen = [PRICE_SEEN.get(t) for t in tks]
+        if any(not s or not s[2] or now - s[0] > 900 for s in seen):
+            continue                                   # no ask read in the last 15 min for a pick: can't model it
+        if len(tks) > 1:                               # the combo's chance shared out in proportion to each pick's price
+            k = (chance / math.prod(s[2] for s in seen)) ** (1 / len(tks))
+            fairs = [min(max(s[2] * k, 0.01), 0.99) for s in seen]
+        else:
+            fairs = [r["pfair"] or chance]
+        legs = [{"ticker": t, "p": s[2], "fair": f, "event": "-".join(t.split("-")[:2])} for t, s, f in zip(tks, seen, fairs)]
+        c = {"id": "idea:" + str(r["id"]), "kind": "combo" if len(tks) > 1 else "single", "legs": legs, "kick": r["kick"],
+             "chance": chance}
+        if len(tks) > 1:
+            fm = 1 / math.prod(l["fair"] for l in legs)
+            c.update(pct=r["pays"] / r["stake"] / fm, fair_mult=fm)
+        cands.append(c)
+    return smart_buy_shadow(cands, source="idea", now=now, budget=0.1)
+
+
+# ---- calibration: did the exit rule really fire on the recorded prices?
+def exit_replay(row, path, prm=None, gain=SB_GAIN):
+    """Replays smart sell's exit_policy on a recorded bid/ask path (a single, spread or total bought at row['price']
+    at the reference stake). path: [(ts, bid, ask, mid)], oldest first, from the time it was considered. Returns
+    True (a cash-out of at least +gain would have fired), False (it never would), or None (too little to judge)."""
+    price = row.get("price")
+    if not price or not 0 < price < 1 or len(path) < 3:
+        return None
+    tks = json.loads(row.get("tickers") or "[]") if isinstance(row.get("tickers"), str) else row.get("tickers") or []
+    prm = prm or exit_settings(tks)
+    P = SB_STAKE / (price + single_fee(price))
+    cost, peak = SB_STAKE, 0.0
+    code = ticker_sport(tks[0]) if tks else ""
+    kick = row.get("kick")
+    q_start = row.get("fair") or next(((b + a) / 2 for _, b, a, _ in path if b and a), None)
+    for ts, bid, ask, mid in path:
+        if not bid or not ask:
+            continue
+        q = mid or (bid + ask) / 2
+        live = bool(kick and ts >= kick)
+        net = P * (bid - single_fee(bid))
+        peak = max(peak, net)
+        if round(ask - bid, 4) > LIVE_SPREAD:
+            continue
+        f = max(1 - (ts - kick) / _sb_game_secs(code), 0.02) if live else 1.0
+        lam = 0.35 * SWING.get(code, 1.0) * (math.sqrt(f) if live else 1.0) * prm["lam_mult"]
+        cut_ok = bool(prm.get("loss")) and live and 1 - f >= prm["prog"] and q_start is not None and \
+            q <= q_start - prm["drop"]                 # the same simplified loss-cut guard as simulate_exit
+        d = exit_policy({"kind": "single", "value": net, "peak": peak, "pays": P, "cost": cost, "q": q, "live": live},
+                        dict(prm, lam=lam, cut_ok=cut_ok))
+        if d["sell"]:
+            return net >= cost * (1 + gain)
+    return False
+
+
+def exit_calibration(days=30, now=None, limit=1500):
+    """Predicted vs actual cash-out chance for singles, spreads and totals whose games are over, per league and type:
+    [{'league', 'kind', 'n', 'pred', 'actual'}]. Combos aren't replayed yet (stage 2)."""
+    now = now or time.time()
+    if not STORE.get("db"):
+        return []
+    _price_table()
+    _exit_shadow_table()
+    rows = store_rows("select min(ts) ts, league, kind, tickers, kick, price, fair, exit_chance from exit_shadow "
+                      "where ts > ? and kind in ('single','line') and kick is not null and kick < ? "
+                      "group by cand order by ts desc limit ?",                 # one bet once: its first check
+                      (now - days * 86400, now - 6 * 3600, limit))
+    by = defaultdict(lambda: {"n": 0, "pred": 0.0, "hit": 0})
+    for r in rows:
+        try:
+            t = json.loads(r["tickers"] or "[]")[0]
+        except (ValueError, IndexError):
+            continue
+        path = [(p["ts"], p["bid"], p["ask"], p["mid"]) for p in
+                store_rows("select ts, bid, ask, mid from price_path where ticker=? and ts >= ? and ts <= ? order by ts",
+                           (t, r["ts"], (r["kick"] or r["ts"]) + 6 * 3600))]
+        got = exit_replay(r, path)
+        if got is None:
+            continue
+        g = by[(r["league"], r["kind"])]
+        g["n"] += 1
+        g["pred"] += r["exit_chance"] or 0
+        g["hit"] += bool(got)
+    return [{"league": k[0], "kind": k[1], "n": g["n"], "pred": round(g["pred"] / g["n"], 3),
+             "actual": round(g["hit"] / g["n"], 3)} for k, g in sorted(by.items(), key=lambda kv: -kv[1]["n"])]
+
+
+def smart_buy_summary(days=7, now=None):
+    """Results › What's working › 'Smart Buy (preview)': per league and type, how many candidates were checked in the
+    last week, how many today's rules took vs how many Smart Buy would, the average chance to cash out for a profit
+    and the expected dollars at $5; plus predicted vs actual where the games are over. Read-only."""
+    now = now or time.time()
+    out = {"on": smart_buy_on(), "rows": [], "calib": [], "stake": SB_STAKE, "days": days}
+    if not STORE.get("db"):
+        return out
+    _exit_shadow_table()
+    _price_table()
+    names = {"single": "Single games", "line": "Spreads & totals", "combo": "Combos"}
+    for r in store_rows("select league, kind, count(distinct cand) n, count(distinct case when new=1 then cand end) ok, "
+                        "avg(exit_chance) pe, avg(ev) ev, count(distinct case when route='sell' then cand end) s, "
+                        "count(distinct case when route='hold' then cand end) h from exit_shadow where ts > ? "
+                        "group by league, kind order by n desc limit 30", (now - days * 86400,)):
+        out["rows"].append({"name": league_label(r["league"] or "other"), "kind": names.get(r["kind"], r["kind"]),
+                            "n": r["n"], "ok": r["ok"] or 0, "p_exit": round(r["pe"] or 0, 3),
+                            "ev": round(r["ev"] or 0, 2), "sell": r["s"] or 0, "hold": r["h"] or 0})
+    out["calib"] = [dict(x, name=league_label(x["league"] or "other"), kind=names.get(x["kind"], x["kind"]))
+                    for x in exit_calibration(now=now)]
+    got = store_rows("select count(*) n, count(distinct ticker) m from price_path where ts > ?", (now - days * 86400,))
+    out["prices"] = got[0]["n"] if got else 0
+    out["markets"] = got[0]["m"] if got else 0
+    return out
 
 
 def _as_auto(fn):
