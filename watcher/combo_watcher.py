@@ -2323,6 +2323,8 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .hsw::before,.hsw::after{display:none!important}
 .hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
 html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
+.hsw,:where(html.hswon) :where(button,[onclick],.chip,.trow){touch-action:manipulation}   /* #151: a drag that starts on a switch still scrolls the page (pan both ways, pinch; no double-tap zoom) */
+html.hswscr .hsw{pointer-events:none!important}   /* #151: mid-scroll a touch goes past the switches, so it keeps scrolling */
 :where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
 .hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
 .hxrow .l small{margin-top:6px}
@@ -3498,14 +3500,35 @@ const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,
 const HSWIN='input:not(.hsw),select,textarea,label,.sparkw,.scrub,.chartbox,.chips,.gtabs,.board,.antbl';   // fields, scrub charts and sideways strips stay reachable
 const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
 function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
-function hswAdd(el){if(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN))return;
- const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
+/* #151: a switch under the finger can keep iOS from scrolling, so big scroll surfaces (whole cards and rows: taller
+   than 64px or wider than 70% of the screen) get none; their own buttons and chips inside keep theirs, and the card's
+   tap still works (no tick). Real buttons, chips and tabs count as compact unless taller than 64px. A control not laid
+   out yet (size unknown) waits until it is (HSWP, rechecked each frame and on every change). Sizes are all read
+   before any switch goes in, so a batch costs one layout. */
+const HSWC='button,.chip,[role=tab],[role=button]';
+function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const r=el.getBoundingClientRect();if(!r.width&&!r.height)return null;return r.height>64||!el.matches(HSWC)&&r.width>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
+function hswOk(el){return !(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN));}
+function hswPut(el){const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
  el.insertBefore(i,el.firstChild);}
-function hswScan(n){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))hswAdd(n);if(n.firstElementChild)n.querySelectorAll(HSWQ).forEach(hswAdd);}
+const HSWP=new Set();let hswF=0,hswN=0;
+function hswRun(els){const put=[];for(const el of new Set(els)){if(!hswOk(el)){HSWP.delete(el);continue;}
+  const b=el.isConnected?hswBig(el):(el.matches(HSWC)?false:null);if(b===null){HSWP.add(el);continue;}HSWP.delete(el);if(!b)put.push(el);}
+ put.forEach(hswPut);hswWait();}
+function hswWait(){if(HSWP.size&&!hswF&&hswN<30)hswF=requestAnimationFrame(()=>{hswF=0;hswN++;for(const e of HSWP)if(!e.isConnected)HSWP.delete(e);if(hswOn())hswRun([...HSWP]);});}   // up to 30 frames, again after each change or scroll
+function hswAdd(el){hswRun([el]);}
+function hswList(n,out){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))out.push(n);if(n.firstElementChild)out.push(...n.querySelectorAll(HSWQ));}
+function hswScan(n){const out=[];hswList(n,out);hswRun(out);}
 function hswFix(t){const h=t.closest&&t.closest(HSWQ);if(!h)return;const s=h.querySelector(':scope>.hsw');if(s&&h.querySelector(HSWIN))s.remove();}   // a field arrived inside: its switch goes
-const HSWMO=new MutationObserver(ms=>{for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;if(t.matches(HSWQ))hswAdd(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(hswScan);}});
+const HSWMO=new MutationObserver(ms=>{const out=[];for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;if(t.matches(HSWQ))out.push(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(n=>hswList(n,out));}
+ hswN=0;hswRun(out);});
+/* #151: while the finger scrolls the page (or any list in it), momentum included, the switches let touches through
+   (html.hswscr), so a finger that lands mid-scroll keeps scrolling; back ~150 ms after the last scroll event. Only a
+   scroll the finger started counts (one during a touch, or chained within 200 ms of one); the app's own scrolls don't. */
+let hswST=0,hswT=false,hswUS=-1e9;['touchstart','touchend','touchcancel'].forEach(k=>addEventListener(k,e=>{hswT=e.touches.length>0;},{capture:true,passive:true}));
+addEventListener('scroll',()=>{const now=performance.now();if(!hswT&&now-hswUS>200)return;hswUS=now;const d=document.documentElement;if(!d.classList.contains('hswscr'))d.classList.add('hswscr');
+ clearTimeout(hswST);hswST=setTimeout(()=>{d.classList.remove('hswscr');hswN=0;hswWait();},150);},{capture:true,passive:true});
 function hswSync(){const on=hswOn();document.documentElement.classList.toggle('hswon',on);HSWMO.disconnect();
- if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true});}else document.querySelectorAll('.hsw').forEach(i=>i.remove());}
+ if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true});}else{HSWP.clear();document.querySelectorAll('.hsw').forEach(i=>i.remove());}}
 addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('hsw'))return;const h=t.parentElement;
  if(!h||h.disabled||h.getAttribute('aria-disabled')==='true'){e.preventDefault();e.stopImmediatePropagation();}},true);
 ['change','input'].forEach(k=>addEventListener(k,e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))e.stopImmediatePropagation();},true));

@@ -21,7 +21,9 @@ INIT = r"""window.__hits=[];window.__hit=(el,e)=>{window.__hits.push({k:el.datas
 
 # every visible control: covered by exactly one switch of its own, and a tap at its centre lands on a switch inside it
 COVER = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden'&&!e.closest('[hidden]')&&!(e.closest('#modal')&&!$('#modal').classList.contains('on'));};
- const hosts=[...document.querySelectorAll(HSWQ)].filter(e=>vis(e)&&!e.closest(HSWNO)&&!e.querySelector(HSWIN)&&!e.disabled&&getComputedStyle(e).pointerEvents!=='none');
+ const all=[...document.querySelectorAll(HSWQ)].filter(e=>vis(e)&&!e.closest(HSWNO)&&!e.querySelector(HSWIN)&&!e.disabled&&getComputedStyle(e).pointerEvents!=='none');
+ // #151: big scroll surfaces (whole cards and rows) carry no switch, so a scroll that starts on them is never caught
+ const bigs=all.filter(e=>hswBig(e)),hosts=all.filter(e=>!hswBig(e)),bigsw=bigs.filter(e=>e.querySelector(':scope>.hsw')).map(e=>e.tagName+'.'+e.className+':'+(e.innerText||'').trim().slice(0,18));
  const miss=[],twice=[],box=[],hit=[];let inview=0;
  hosts.forEach(h=>{const sw=h.querySelectorAll(':scope>.hsw'),nm=h.tagName+'.'+h.className+':'+(h.innerText||'').trim().slice(0,18);
   if(sw.length!==1){(sw.length?twice:miss).push(nm);return;}
@@ -32,9 +34,10 @@ COVER = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width
   if(a.right<0||a.bottom<70||a.left>innerWidth||a.top>innerHeight-90)return;inview++;
   // the centre and four inner points: each must land on a switch inside this control (its own or a nested control's)
   for(const [fx,fy] of [[.5,.5],[.2,.3],[.8,.3],[.2,.7],[.8,.7]]){const x=a.left+a.width*fx,y=a.top+a.height*fy;if(x<0||x>innerWidth||y<70||y>innerHeight-90)continue;const t=document.elementFromPoint(x,y);
-   if(!t||t===h||!h.contains(t))continue;   // something outside the control covers that point (a sticky bar): not this test's business
+   if(!t||t===h||!h.contains(t))continue;
+   if(bigs.some(g=>g!==h&&h.contains(g)&&g.contains(t)))continue;   // a big card inside this control: that point is scroll surface   // something outside the control covers that point (a sticky bar): not this test's business
    if(!t.classList.contains('hsw')){hit.push(nm+' @'+fx+','+fy+' -> '+t.tagName+'.'+(t.getAttribute('class')||''));break;}}});
- return {n:hosts.length,inview,miss:miss.slice(0,6),twice:twice.slice(0,6),box:box.slice(0,6),hit:hit.slice(0,8),nhit:hit.length};})()"""
+ return {n:hosts.length,big:bigs.length,bigsw:bigsw.slice(0,6),inview,miss:miss.slice(0,6),twice:twice.slice(0,6),box:box.slice(0,6),hit:hit.slice(0,8),nhit:hit.length};})()"""
 
 # nothing moves when the switches go in: every element's box with the switches off vs on
 MOVE = r"""(()=>{const els=[...document.querySelectorAll('header *,main *,.tabbar *,#sheet *')].filter(e=>!e.classList.contains('hsw'));
@@ -65,7 +68,8 @@ with sync_playwright() as pw:
             for sy in (0, 650, 1300, 0):   # the whole page, a screen at a time (back to the top last)
                 pg.evaluate(f"window.scrollTo(0,{sy})"); time.sleep(.4)
                 c = pg.evaluate(COVER)
-                print(tag, view, sy, "controls:", c["n"], "in view:", c["inview"], "| no switch:", c["miss"], "| two:", c["twice"], "| box off:", c["box"], "| misses:", c["nhit"], c["hit"][:4])
+                if c["bigsw"]: bad(f"{tag} {view}: a big card/row carries a switch (it can catch a scroll): {c['bigsw']}")
+                print(tag, view, sy, "controls:", c["n"], "big (no switch):", c["big"], "in view:", c["inview"], "| no switch:", c["miss"], "| two:", c["twice"], "| box off:", c["box"], "| misses:", c["nhit"], c["hit"][:4])
                 if c["n"] < 5: bad(f"{tag} {view}: found almost no controls ({c['n']})")
                 if c["miss"] or c["twice"]: bad(f"{tag} {view}: controls without exactly one switch: {c['miss']} {c['twice']}")
                 if c["box"]: bad(f"{tag} {view}: a switch doesn't cover its control's box: {c['box']}")
@@ -88,7 +92,7 @@ with sync_playwright() as pw:
                 mine = [x for x in h if x["k"] == k]
                 if len(mine) != 1 or mine[0]["t"] != "hsw" or not mine[0]["tr"]: bad(f"{tag} {view}: a tap on control {k} reached its handler {len(mine)} times (target {mine[:1]})")
             print(tag, view, "tapped once each:", len(keys))
-            if len(keys) < (1 if view in ("games", "results") else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
+            if len(keys) < (0 if view == "games" else 1 if view == "results" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
             pg.evaluate(f"go('{view}')"); time.sleep(.5)
 
         # the pushed game page (a sheet) is covered too
@@ -159,15 +163,77 @@ with sync_playwright() as pw:
                 if tp != {"hits": 1, "sw": 1}: bad(f"phone: a plain tap where the scroll started should click once: {tp}")
             pg.evaluate("go('build')"); time.sleep(1)
 
-        # performance: 300 new controls get one switch each, in one batch, quickly; a re-render never doubles them
-        perf = pg.evaluate("""(async()=>{const d=document.createElement('div');d.id='pz';d.innerHTML=Array.from({length:300},(_,i)=>`<div class="trow" onclick="__hit(this,event)"><span>row ${i}</span><button class="btn">b${i}</button></div>`).join('');
+        # #151: a vertical drag that starts on a big card or row (a Live combo row, a Games card, a Build card) scrolls
+        # the page and clicks nothing: those carry no switch; their compact buttons inside keep theirs. Chromium can't
+        # copy iOS's switch catching the touch, so the CSS and DOM that prevent it are checked too.
+        if tag == "phone":
+            cdp = ctx.new_cdp_session(pg)
+            for view, sel in (("live", "main .trow"), ("games", "main .gc"), ("build", "main [onclick]:not(.sech),main .trow")):
+                pg.evaluate(f"go('{view}')"); time.sleep(4 if view == "build" else 3)
+                pg.evaluate("""(()=>{let k=0;document.querySelectorAll('[onclick]').forEach(e=>{e.dataset.hk=++k;e.setAttribute('onclick','__hit(this,event)');});window.__hits.length=0;window.__swc=0;
+                  if(!window.__swl){window.__swl=1;addEventListener('click',e=>{if(e.target.classList.contains('hsw'))window.__swc++;},true);}
+                  document.querySelector('main').style.paddingBottom='1600px';window.scrollTo(0,0);})()""")
+                time.sleep(.4)
+                info = pg.evaluate("""(sel=>{const nm=e=>e.tagName+'.'+e.className+':'+(e.innerText||'').trim().slice(0,16);
+                  const bigs=[...document.querySelectorAll(sel)].filter(e=>e.matches(HSWQ)&&!e.closest(HSWNO)&&hswBig(e));
+                  for(const g of bigs){let r=g.getBoundingClientRect();window.scrollTo(0,0);window.scrollTo(0,Math.max(0,scrollY+r.top-160));r=g.getBoundingClientRect();if(r.top<90||r.top>560)continue;
+                   // a point on the card's own surface (not on a compact control inside it)
+                   for(const [fx,fy] of [[.5,.5],[.15,.5],[.85,.5],[.5,.2],[.5,.8]]){const x=r.left+r.width*fx,y=r.top+Math.min(r.height,180)*fy;const t=document.elementFromPoint(x,y);
+                    if(!t||!g.contains(t)||t.classList.contains('hsw'))continue;const h=t.closest(HSWQ);if(h!==g)continue;
+                    const inner=[...g.querySelectorAll(HSWQ)].filter(e=>!hswBig(e)&&e.getBoundingClientRect().width>0);
+                    return {pt:[x,y],y0:scrollY,name:nm(g),names:bigs.slice(0,6).map(nm),own:g.querySelectorAll(':scope>.hsw').length,inner:inner.length,innersw:inner.filter(e=>e.querySelector(':scope>.hsw')||e.closest(HSWNO)||e.querySelector(HSWIN)).length,n:bigs.length};}}
+                  return {pt:null,n:bigs.length,names:bigs.slice(0,4).map(nm)};})""", sel)
+                print("phone", view, "big card to scroll from:", info)
+                if not info["pt"]: bad(f"phone {view}: no big card or row to start a scroll on ({info})"); continue
+                if info["own"]: bad(f"phone {view}: the big card carries a switch: {info}")
+                if info["inner"] != info["innersw"]: bad(f"phone {view}: a compact control inside the card lost its switch: {info}")
+                time.sleep(.3); x, y = info["pt"]; y0 = pg.evaluate("scrollY")
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+                for i in range(1, 13):
+                    cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y - i * 18}]}); time.sleep(.016)
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []}); time.sleep(.6)
+                sc = pg.evaluate("({dy:scrollY-%f,hits:__hits.length,sw:__swc})" % y0)
+                print("phone", view, "scroll from a big card:", sc)
+                if sc["dy"] < 40: bad(f"phone {view}: a drag from a big card didn't scroll the page ({sc})")
+                if sc["hits"] or sc["sw"]: bad(f"phone {view}: a scroll from a big card clicked something ({sc})")
+                pg.evaluate("document.querySelector('main').style.paddingBottom='';window.scrollTo(0,0)"); time.sleep(.3)
+            # while the finger scrolls, the switches let touches through (html.hswscr), back ~150 ms after the last
+            # scroll; the app's own scrolls (no finger) leave them alone
+            pg.evaluate("document.querySelector('main').style.paddingBottom='1600px';window.scrollTo(0,0)"); time.sleep(.4)
+            pe = "(()=>{const sw=document.querySelector('main .hsw');return {pe:getComputedStyle(sw).pointerEvents,cls:document.documentElement.classList.contains('hswscr'),ta:getComputedStyle(sw).touchAction,hta:getComputedStyle(sw.parentElement).touchAction};})()"
+            idle = pg.evaluate(pe)
+            app = pg.evaluate("(async()=>{window.scrollBy(0,40);await new Promise(z=>setTimeout(z,60));return document.documentElement.classList.contains('hswscr');})()")
+            time.sleep(.3)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 200, "y": 100}]})
+            pg.evaluate("window.scrollBy(0,40)"); time.sleep(.06); mid = pg.evaluate(pe)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            pg.evaluate("window.scrollBy(0,40)"); time.sleep(.08); still = pg.evaluate(pe)   # momentum after the finger lifts
+            time.sleep(.35); after = pg.evaluate(pe)
+            pg.evaluate("document.querySelector('main').style.paddingBottom='';window.scrollTo(0,0)"); time.sleep(.3)
+            sc = {"idle": idle, "app": app, "mid": mid, "still": still, "after": after}
+            print("phone scrolling class:", sc)
+            if idle["pe"] == "none" or after["pe"] == "none" or after["cls"]: bad(f"phone: switches should take taps when the page is still: {sc}")
+            if app: bad(f"phone: the app's own scroll (no finger) shouldn't turn the switches off: {sc}")
+            if mid["pe"] != "none" or still["pe"] != "none" or not mid["cls"]: bad(f"phone: switches should let touches through while the finger scrolls: {sc}")
+            if idle["ta"] != "manipulation" or idle["hta"] != "manipulation": bad(f"phone: switches and their controls must allow native panning (touch-action): {sc}")
+            src = pg.evaluate("document.documentElement.outerHTML")
+            blk = src[src.index("const HSWQ="):src.index("hswSync();", src.index("const HSWQ="))]
+            tl = re.search(r"\['touchstart','touchend','touchcancel'\]\.forEach\(k=>addEventListener\(k,[^\n]*passive:true", blk)
+            if blk.count("preventDefault") != 1 or re.search(r"addEventListener\('(?:touch|pointer)", blk) or "'pointerdown'" in blk or not tl:
+                bad("phone: the switch code's touch listeners must be passive and must never block the browser's scrolling")
+
+        # performance: 300 new buttons get one switch each, in one batch, quickly; a re-render never doubles them;
+        # their 300 card-sized rows (#151: scroll surfaces) get none, also once laid out
+        perf = pg.evaluate("""(async()=>{const d=document.createElement('div');d.id='pz';d.innerHTML=Array.from({length:300},(_,i)=>`<div class="trow" style="min-height:80px" onclick="__hit(this,event)"><span>row ${i}</span><button class="btn">b${i}</button></div>`).join('');
           const t0=performance.now();hswScan(d);const sync=performance.now()-t0;const n1=d.querySelectorAll('.hsw').length;
           d.querySelectorAll('.hsw').forEach(s=>s.remove());document.querySelector('main').appendChild(d);const t1=performance.now();await new Promise(z=>setTimeout(z,0));const obs=performance.now()-t1;
           const n2=d.querySelectorAll('.hsw').length;d.querySelectorAll('button').forEach(b=>{b.textContent=b.textContent;});await new Promise(z=>setTimeout(z,0));
-          hswScan(d);hswScan(d);const n3=d.querySelectorAll('.hsw').length,dup=[...d.querySelectorAll('.trow,button')].filter(e=>e.querySelectorAll(':scope>.hsw').length!==1).length;d.remove();
+          hswScan(d);hswScan(d);const n3=d.querySelectorAll('.hsw').length,dup=[...d.querySelectorAll('button')].filter(e=>e.querySelectorAll(':scope>.hsw').length!==1).length+[...d.querySelectorAll('.trow')].filter(e=>e.querySelector(':scope>.hsw')).length;d.remove();
           return {sync:Math.round(sync),obs:Math.round(obs),n1,n2,n3,dup,total:document.querySelectorAll('.hsw').length};})()""")
         print(tag, "300 rows + 300 buttons:", perf)
-        if perf["n1"] != 600 or perf["n2"] != 600 or perf["n3"] != 600 or perf["dup"]: bad(f"{tag}: switches missing or doubled on 600 new controls: {perf}")
+        if perf["n1"] != 300 or perf["n2"] != 300 or perf["n3"] != 300 or perf["dup"]: bad(f"{tag}: switches missing, doubled or on big rows among 600 new controls: {perf}")
+        dbl = pg.evaluate("(()=>{const b=document.createElement('button');b.textContent='x';document.querySelector('main').appendChild(b);hswRun([b,b]);const n=b.querySelectorAll('.hsw').length;b.remove();return n;})()")
+        if dbl != 1: bad(f"{tag}: a control listed twice in one batch got {dbl} switches")
         if perf["sync"] > 150: bad(f"{tag}: wrapping 600 controls took {perf['sync']} ms")
         if perf["total"] > 1500: bad(f"{tag}: too many switches in the page ({perf['total']})")
 
