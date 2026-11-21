@@ -4,6 +4,7 @@
   "css": ["app.css"],
   "js": [
     "common.js",
+    "stake.js",
     "live.js",
     "ideas.js",
     "build.js",

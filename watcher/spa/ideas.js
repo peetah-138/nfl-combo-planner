@@ -26,10 +26,14 @@ function ideaBar(x){return (x.below_bar?'<span class="tag" style="background:var
 function ideaAgeNote(x){return ideaAge(x.ts)+(x.stale?' · refreshing':'');}
 function ideaButtons(x,q,fresh,left,det){const one=x.n===1;
  return `<div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${one&&!(q.edge>0)?'disabled':''} onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
-  `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}</button>`}</div>`;}
-function ideaQuote(x,q,fresh){if(!fresh)return '';
- return x.n===1?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>`
-  :`<div class="dnums"><div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div></div>`;}
+  `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
+/* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
+function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
+ const rec=m.rec||x.stake||5;return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null})
+  +(fresh&&q.note?`<div class="stkm" data-w="depth">${esc(q.note)}</div>`:'');}
+function ideaQuote(x,q,fresh){if(!fresh)return ideaStake(x,q,false);
+ return x.n===1?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>${ideaStake(x,q,true)}`
+  :`<div class="dnums"><div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div></div>${ideaStake(x,q,true)}`;}
 function ideaCard(x){const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;const k=x.idea_id||x.id;
  if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
@@ -46,7 +50,7 @@ function ideaCard(x){const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<2
    ${(x.legs_info||[]).map(li=>ideaLeg(li)).join('')}
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    ${ideaFacts(x)}
-   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
+   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div>${ideaStake(x,q,fresh)}</div>
    ${ideaButtons(x,q,fresh,left,false)}${xb}</div></div>`;}
 function ideaSection(d){if(!Array.isArray(d.ideas))return '';S.ideaq=S.ideaq||{};
  const all=ideaList(d),lim=+d.ideas_limit>0?+d.ideas_limit:(all.length||1),top=all.slice(0,lim),more=all.slice(lim),open=!!S.ideasMore;
@@ -114,7 +118,7 @@ function undoHide(){const b=$('#undo');if(!b)return;clearTimeout(b._t);b._fn=nul
  addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',()=>{if(c&&lock==='x'){S.scrub=false;}reset();if(S.liveDirty){S.liveDirty=false;if(S.view==='live')renderLive();}},{passive:true});})();
 
 /* ---- the detail page: tap a card (not a button) */
-function ideaOpen(e,id){if(e&&e.target&&e.target.closest('button,a,input,select,.ileg'))return;if(Date.now()-(S.swAt||0)<450)return;openIdea(id);}
+function ideaOpen(e,id){if(e&&e.target&&e.target.closest('button,a,input,select,.ileg,.stk'))return;if(Date.now()-(S.swAt||0)<450)return;openIdea(id);}
 const IKIND={win:'Single game',spread:'Spread',total:'Total'};
 function ideaTk(li){return li&&/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';}
 function openIdea(id){const x=ideaFind(id);if(!x)return;id=x.idea_id||x.id;S.gameOpen=null;S.comboOpen=null;S.ideaOpen=id;S.ideaReady=null;S.ideaSig=null;S.ideaDepth=null;
@@ -153,18 +157,20 @@ function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').
  const x=ideaFind(id),sh=$('#sheet');
  if(!x){const sig='gone';if(S.ideaSig===sig)return;S.ideaSig=sig;pushFill('<h3>Not on the list any more</h3><p>This idea was bought, dismissed or has expired. New ones show up on Live.</p>','Buy idea');return;}
  const q=S.ideaq[x.id],fresh=q&&Date.now()/1000-q.at<20,left=fresh?Math.round(20-(Date.now()/1000-q.at)):0;
- const sig=JSON.stringify([x.id,x.price_c,x.edge,x.stale,x.below_bar,Math.floor(Date.now()/15000),x.hist&&x.hist.length,fresh?q.at:0,left,S.ideaDepth&&S.ideaDepth.id===id?S.ideaDepth.d:0]);
+ const sig=JSON.stringify([x.id,x.price_c,x.edge,x.stale,x.below_bar,Math.floor(Date.now()/15000),x.hist&&x.hist.length,fresh?q.at:0,left,S.ideaDepth&&S.ideaDepth.id===id?S.ideaDepth.d:0,stkGet('id:'+x.id)]);
  if(S.ideaSig===sig)return;S.ideaSig=sig;const top=sh.scrollTop;pushFill(ideaBody(x),'Buy idea');sh.scrollTop=top;}
 
 /* ---- getting a price and buying: the same guarded Mac paths as always */
 async function priceIdea(id){document.querySelectorAll(`[data-ib="${id}"]`).forEach(b=>{b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';});
- const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
+ const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
+ if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
+ S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note};
+ S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
  clearInterval(S.ideaT);S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
-async function buyIdea(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
+async function buyIdea(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;if(r.ok&&S.stk)delete S.stk['id:'+id];
  toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
-async function buySingle(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
+async function buySingle(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;if(r.ok&&S.stk)delete S.stk['id:'+id];
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
  setTimeout(()=>{delete S.ideaGone[id];ideaDrop(id,'gone');},4500);}
