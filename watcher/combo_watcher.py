@@ -4387,7 +4387,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'week (Wed to Mon)'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'week (Tue to Mon)'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -4537,6 +4537,13 @@ def webapp_main():
     A.window_open = lambda: False                   # there is no phone window in this copy
     A.open_outside = lambda url: None
     A.tap_haptic = lambda *a, **k: None
+
+    def manual_alert(msg):                          # a manual buy whose spend couldn't be saved: tell Pete (once a run)
+        try:
+            push(load_conf(), msg, title="Combo planner", priority="high", click="/")
+        except Exception as err:
+            log("manual buy alert failed:", type(err).__name__)
+    A.MANUAL_ALERT = manual_alert
     try:                                            # get data, odds and trades through the hub like the phone
         c = json.load(open(CONF))                   # does: one shared cache, one set of odds credits
         hub = {"topic": c["topic"], "secret": c["secret"], "hub": f"http://127.0.0.1:{c.get('hub_port', 8765)}"}
@@ -5317,6 +5324,8 @@ def webapp_main():
                         n = min(n, int(dpt["ask_size"]))
                     if n < 1:
                         return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
+                    if not A.can_trade():
+                        return {"ok": False, "msg": A.NO_TRADE_MSG}
                     no, _, _ = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
                     if no:
                         return {"ok": False, "msg": no}
@@ -5369,7 +5378,7 @@ def webapp_main():
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
                     return {"ok": False, "msg": "That market isn't recognized."}
                 # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
-                r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log)
+                r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log, key=str(d.get("id", "")))
                 LIVE["at"] = 0
                 return jsonable(r)
             if a == "buy":

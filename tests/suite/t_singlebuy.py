@@ -217,12 +217,19 @@ qs = E.single_buy_quote(dict(X, fair_at=time.time() - 20 * 60))
 ok(f"a board price 20 minutes old isn't used: no fair price, yellow ({qs.get('nofair')})",
    qs["ok"] and qs["fair"] is None and not qs["clears"] and "minutes old" in (qs["nofair"] or ""))
 ok("a fresh board price is used", E.single_buy_quote(dict(X, fair_at=time.time() - 60))["fair"] == 0.8)
-LX = dict(X, kind="spread", src="model")
+SPT0 = f"KXNBASPREAD-{EV.split('-')[1]}-DEN5"      # a real spread ticker (its kind comes from the ticker, #136)
+real_mo0 = E.market_open
+E.market_open = lambda t: ((True, {"event_ticker": EV.replace("GAME", "SPREAD"), "expected_expiration_time": X["exp"]})
+                           if "SPREAD" in t else real_mo0(t))
+book(0.72, 0.70)
+LX = dict(X, ticker=SPT0, kind="spread", src="model")
 ok("a spread 6.6c under the model: green", E.single_buy_quote(dict(LX, fair=0.80))["clears"])
 s2 = E.single_buy_quote(dict(LX, fair=0.76))
 ok("a spread only 2.6c under the model: yellow (the board's 4c margin), and sized on a shrunk edge",
    not s2["clears"] and E.single_buy_quote(dict(X, fair=0.76))["clears"] and
    s2["sug"] <= E.single_buy_quote(dict(X, fair=0.76))["sug"])
+E.market_open = real_mo0
+E.book_depth = REAL_BOOK
 real_ls = E.leg_score
 E.leg_score = lambda l: {"state": "post", "me": 100, "opp": 90}
 r = E.single_buy_quote(X, 10)
@@ -491,10 +498,22 @@ ok(f"a Live-idea single over the NBA's daily cap: refused, names the window, the
 E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
 r = E.idea_single_buy(T, 4, 0.72, paused=True, log=LOG.append)
 ok("a Live-idea single while paused: refused, nothing sent", not r["ok"] and "Paused" in r["msg"] and not D["sent"])
-r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea1")
 ok(f"a Live-idea single inside the cap: one V2 order ({r.get('msg')})", r["ok"] and len(D["sent"]) == 1)
+r2 = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea1")
+ok("...a double tap (or a retry) on the same idea sends nothing", not r2["ok"] and len(D["sent"]) == 1)
 ok("...noted in manual_buys, so Buy straight's cap sees it", abs(E.manual_spend(T) - 4 * (0.72 + E.single_fee(0.72))) < 0.02)
 reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+book(0.455, 0.45)
+r = E.idea_single_buy(T, 2, 0.455, log=LOG.append, key="idea2")
+sent = D["sent"][-1][2] if D["sent"] else {}
+sent = sent if isinstance(sent, dict) else {}
+ok(f"a sub-cent idea price is sent rounded down, never up ({ {k: v for k, v in sent.items() if 'price' in k} })",
+   r["ok"] and "46" not in str({k: v for k, v in sent.items() if "price" in k}) and "45" in str(sent))
+reset()
+E._SQ["ideas"] = {}
 E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
 D["next"] = requests.Timeout("slow")
 r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
@@ -509,9 +528,9 @@ seg_q = WSRC[iq:WSRC.index('if row["kick"]', iq)]
 ib = WSRC.index('if a == "singlebuy":')
 seg_b = WSRC[ib:WSRC.index('if a == "buy":', ib)]
 ok("the web app's idea single quote checks its own league's cap (not the loaded league's week_spend)",
-   "A.single_cap_block(tk" in seg_q and "week_spend" not in seg_q)
+   "A.single_cap_block(tk" in seg_q and "week_spend" not in seg_q and "A.NO_TRADE_MSG" in seg_q)
 ok("the web app's idea single buy goes through idea_single_buy (cap, Pause, block) and never buy_single directly",
-   "A.idea_single_buy(" in seg_b and "paused_now()" in seg_b and "buy_single" not in seg_b)
+   "A.idea_single_buy(" in seg_b and "paused_now()" in seg_b and "buy_single" not in seg_b and "key=" in seg_b)
 ok("Build's 'spent' line uses the display-only copy", "A.week_spend_shown()" in WSRC)
 
 # manual singles use their own league's cap even with the Mix loaded (Mix combos keep the Mix cap)
@@ -539,6 +558,66 @@ E.ACCT_CACHE.update(at=0, value=None)
 E._fetch_account = real_fa
 E.ACCT_CACHE.update(at=0, value=None)
 E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]
+
+# release 125 review, for #136: the manual-buy record fails closed too, and a note that can't be saved is never lost
+reset()
+real_db = E.STORE["db"]
+E.STORE["db"] = None
+try:
+    E.manual_spend(T)
+    ok("manual_spend with no history database: CapUnknown", False)
+except E.CapUnknown:
+    ok("manual_spend with no history database: CapUnknown (never $0)", True)
+no, _, _ = E.single_cap_block(T, 3.0)
+ok("...so a single's cap check refuses with the cap words", no and "Couldn't check your weekly cap" in no)
+q = E.single_buy_quote(X, 10)
+ok("...and Buy straight's quote is blocked", q["ok"] and q["blocked"] and "Couldn't check your weekly cap" in q["blocked"])
+E.STORE["db"] = real_db
+real_rows = E.store_rows
+E.store_rows = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked"))
+try:
+    E.manual_spend(T)
+    ok("manual_spend when the read fails: CapUnknown", False)
+except E.CapUnknown:
+    ok("manual_spend when the read fails: CapUnknown (never $0)", True)
+E.store_rows = real_rows
+ALERTS = []
+E.MANUAL_ALERT = ALERTS.append
+real_sx = E.store_x
+TRIES = []
+
+
+def bad_insert(sql, *a, **k):
+    if "insert into manual_buys" in sql:
+        TRIES.append(1)
+        raise RuntimeError("disk I/O error")
+    return real_sx(sql, *a, **k)
+
+
+E.store_x = bad_insert
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea-note")
+E.store_x = real_sx
+ok(f"a filled buy whose note won't save: still reported bought, tried twice ({len(TRIES)})", r["ok"] and len(TRIES) == 2)
+ok("...logged loudly and Pete told once", any("MANUAL BUY NOT SAVED" in str(x) for x in LOG) and len(ALERTS) == 1)
+ok(f"...and the cap still counts it from memory ({E.manual_spend(T)})", E.manual_spend(T) >= 4 * 0.72)
+E.store_x = bad_insert
+E.idea_single_buy(T, 1, 0.72, log=LOG.append, key="idea-note2")
+E.store_x = real_sx
+ok("...a second unsaved note doesn't notify again", len(ALERTS) == 1)
+E.MANUAL_MEM.clear()
+E.MANUAL_ALERT = None
+E._CAP_LOGGED.pop("manual_note", None)
+E._SQ["ideas"] = {}
+reset()
+import datetime as _d2
+TODAY_T = "KXNBAGAME-" + _d2.date.today().strftime("%y%b%d").upper() + "DENLAL-DEN"
+E._manual_note(TODAY_T, 7.0)
+ok(f"manual_spend() with no ticker on a daily league counts today's singles ({E.manual_spend()})",
+   E.by_day() and E.manual_spend() == 7.0)
+# the market's own kind comes from its ticker: a side that says "spread" can't make a game-winner a spread
+reset()
+qk = E.single_buy_quote(dict(X, kind="spread"), 10)
+ok(f"a game-winner ticker stays a game-winner whatever kind the side says ({qk.get('kind')})", qk["ok"] and qk["kind"] == "win")
 
 # a single bought weeks before its game still counts in that game's slate; a market with no date says so
 reset()

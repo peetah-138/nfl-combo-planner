@@ -305,13 +305,14 @@ def cap_label():
 
 def cap_window(today=None):
     """Plain words for the stretch of time the cap counts (it follows `week_spend`): today / tomorrow for a daily
-    league, "this week (Wed to Mon)" for a league whose cap counts the Wed-Mon slate week (football, soccer, UFC:
-    never "this weekend", which would undersell the window), and "on games still to play" for the Mix."""
+    league, "this week (Tue to Mon)" for a league whose cap counts the slate week (`sunday_of`: Tuesday to Monday;
+    football, soccer, UFC; never "this weekend", which would undersell the window), and "on games still to play" for
+    the Mix. `today` is ignored (the words no longer change by weekday); kept so older callers still work."""
     if is_mix():
         return "on games still to play"
     if by_day():
         return "tomorrow" if CFG.get("next_day") else "today"
-    return "this week (Wed to Mon)"
+    return "this week (Tue to Mon)"
 
 
 def cap_msg(spent, add):
@@ -12767,7 +12768,8 @@ def _manual_table():
 
 
 MANUAL_LOOKBACK = 120 * 86400  # manual buys read back this far: Kalshi lists some games (UFC, football) weeks ahead
-CAP_READ_AGE = 120            # a manual buy's cap check trusts Kalshi's combo record only this fresh (seconds)
+CAP_READ_AGE = 120            # every cap check (cap_bets: combos, ideas, Buy straight, killer deals, standing orders)
+#                               trusts Kalshi's combo record only this fresh (seconds) after a failed read
 
 
 _CAP_LOGGED = {}              # when an automatic path last logged that it couldn't check the cap (said once)
@@ -12845,26 +12847,65 @@ def cap_combo_spend(code, key, now=None):
 def manual_spend(ticker=None, now=None):
     """What manual single buys (Buy straight) cost in the cap's window: the slate of `ticker`'s game for its own
     league (or the loaded league's slate when no ticker is given). Kalshi's combo record (week_spend) doesn't see
-    single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through)."""
+    single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through), and so
+    does one whose note couldn't be saved (kept in memory, MANUAL_MEM). Fails closed: no history database, or a read
+    that fails, raises CapUnknown (never $0)."""
     if not STORE["db"]:
-        return 0.0
+        raise CapUnknown("no history database")
     now = now or time.time()
+    mix = False
     if ticker:
         code, key = market_league(ticker), week_of(ticker)
-    else:
+    else:                                               # the loaded league's own window
         code = LEAGUE["code"]
-        key = CTX.get("sunday") if isinstance(CTX.get("sunday"), dt.date) else week_of(
-            "X-" + dt.date.today().strftime("%y%b%d").upper())
-    _manual_table()
-    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))
-    return round(sum(float(r["cost"] or 0) for r in rows if ticker_sport(r["ticker"]) == code
-                     and in_cap_window(week_of(r["ticker"]), key)), 2)
-
-
-def _manual_note(t, cost):
-    if STORE["db"]:
+        today = dt.date.today() + dt.timedelta(days=1 if by_day() and CFG.get("next_day") else 0)
+        mix = is_mix()
+        key = (CTX["sunday"] if isinstance(CTX.get("sunday"), dt.date) and not by_day() and not mix else
+               today if by_day() or mix else sunday_of(today))
+    try:
         _manual_table()
-        store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", (time.time(), t, round(float(cost), 2)))
+        rows = [(r["ticker"], r["cost"]) for r in
+                store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))]
+    except Exception as err:
+        raise CapUnknown(f"manual buys unreadable ({type(err).__name__})") from None
+    rows += [(m[1], m[2]) for m in list(MANUAL_MEM) if m[0] >= now - MANUAL_LOOKBACK]
+    return round(sum(float(c or 0) for tk, c in rows
+                     if (mix or ticker_sport(tk) == code) and in_cap_window(week_of(tk), key, mix=mix)), 2)
+
+
+MANUAL_MEM = []                 # manual buys whose note couldn't be saved: (ts, ticker, cost), still counted by the cap
+MANUAL_ALERT = None             # the web app sets this to a phone notification (said once per run)
+
+
+def _manual_note(t, cost, log=print):
+    """Note a manual buy's spend so every manual cap sees it. Tried twice; if the history database still won't take
+    it, it's kept in memory (MANUAL_MEM, counted by manual_spend until the app restarts), logged loudly, and Pete is
+    told once. Never raises: a bought order is never reported as failed because its note couldn't be saved."""
+    row = (time.time(), str(t), round(float(cost), 2))
+    why = None
+    for _ in range(2):
+        try:
+            if not STORE["db"]:
+                raise RuntimeError("no history database")
+            _manual_table()
+            store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", row)
+            return True
+        except Exception as err:
+            why = f"{type(err).__name__}: {str(err)[:80]}"
+    MANUAL_MEM.append(row)
+    msg = (f"⚠️ A manual buy ({t}, {money(row[2])}) couldn't be saved to the history ({why}). The cap still counts it "
+           "until the app restarts; check Kalshi before buying more.")
+    try:
+        log("MANUAL BUY NOT SAVED: " + msg)
+    except Exception:
+        pass
+    if MANUAL_ALERT and not _CAP_LOGGED.get("manual_note"):
+        _CAP_LOGGED["manual_note"] = row[0]
+        try:
+            MANUAL_ALERT(msg)
+        except Exception:
+            pass
+    return False
 
 
 def manual_cap(t, now=None):
@@ -12900,7 +12941,7 @@ def manual_cap_msg(code, spent, add, budget):
     lg = LEAGUES[code]
     daily = lg["slate"] == "day"
     left = max(0.0, budget - spent)
-    return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week (Wed to Mon)'} to "
+    return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week (Tue to Mon)'} to "
             f"{money(spent + add)}, over your {money(budget)} cap. You have {money(left)} left. To go ahead, raise "
             f"it to at least {money(spent + add)} in Settings > Money > {'Daily cap' if daily else 'Weekly cap'} "
             f"(for {lg['name']}).")
@@ -12995,7 +13036,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     per = ask + fee
     gap = round(ask - bid, 4) if bid is not None else None
     depth = float(book.get("ask_size") or 0)
-    kind = x.get("kind") if x.get("kind") in ("spread", "total") else tk_kind
+    kind = tk_kind or (x.get("kind") if x.get("kind") in ("spread", "total") else None)   # the ticker's own kind wins
     line_gone = kind in ("spread", "total") and x.get("kind") != kind    # a line the board no longer has: its fair
     if not x.get("event") and "-" in t:
         x["event"] = t.rsplit("-", 1)[0]
@@ -13156,10 +13197,7 @@ def _single_send(q, qid, now, log):
             _mark_unsure({"ticker": t, "side": "bid", "reduce_only": False, "coid": coid}, err)
         except Exception:
             pass
-        try:
-            _manual_note(t, q["cost"])
-        except Exception:
-            pass
+        _manual_note(t, q["cost"], log)
         log(f"manual single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
         return {"ok": False, "check": True,
                 "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi (or Live in a "
@@ -13170,23 +13208,28 @@ def _single_send(q, qid, now, log):
         return {"ok": False, "msg": f"Nobody was selling at {ask * 100:.0f}¢ any more. Nothing was bought."}
     mark_app(t, "manual")
     per = ask + single_fee(ask)
+    _manual_note(t, filled * per, log)                 # before the answer goes back; never lost (see _manual_note)
     try:
-        _manual_note(t, filled * per)
         store_x("update app_bets set how='manual' where ticker=? and how='order' and ts >= ?", (t, now - 5))  # this buy's row
     except Exception as err:
-        log("manual single: couldn't note the spend:", type(err).__name__)
+        log("manual single: couldn't tag the bet as manual:", type(err).__name__)
     log(f"manual single bought: {filled:g} of {t} at {ask:.4f}")
     part = f" of {n}" if filled < n else ""
     return {"ok": True, "filled": filled, "price": ask, "cost": round(filled * per, 2), "pays": filled,
             "pick": q["pick"], "msg": f"Bought {filled:g}{part} at {ask * 100:.0f}¢: pays {money(filled)} if it wins."}
 
 
-def idea_single_buy(t, n, price, paused=False, log=print):
+IDEA_TAP_SECS = 120            # one order per Live single-game idea in this long (a double tap or a retry sends nothing)
+
+
+def idea_single_buy(t, n, price, paused=False, log=print, key=None):
     """Buy a Live buy idea's single game (Pete's tap on the idea card): n contracts at `price`, fill now or cancel.
     Checked first, in this order: Pause, trading access, the unknown-outcome block, then the market's own league cap
     (its budget and its game's slate, combos + manual singles; an unreadable spend refuses). The cap check, the order
     and its note in manual_buys happen under Buy straight's lock, so the two can't squeeze past the cap together, and
-    every manual cap sees this buy. An unclear answer is "check": the market is blocked and it's never resent (rule 8)."""
+    every manual cap sees this buy. An unclear answer is "check": the market is blocked and it's never resent (rule 8).
+    key (the idea's id): one order per idea per IDEA_TAP_SECS, marked before the order goes, so a double tap or a retry
+    after a slow answer can't buy it twice. The price goes as shown, a sub-cent one rounded down (never more)."""
     import uuid
     if paused:
         return {"ok": False, "msg": PAUSE_MSG}
@@ -13200,18 +13243,23 @@ def idea_single_buy(t, n, price, paused=False, log=print):
         no, _, _ = single_cap_block(t, n * per)
         if no:
             return {"ok": False, "msg": no}
+        now = time.time()
+        taps = _SQ.setdefault("ideas", {})
+        for k in [k for k, v in taps.items() if now - v > IDEA_TAP_SECS]:
+            taps.pop(k, None)
+        tap = str(key or t)
+        if tap in taps:
+            return {"ok": False, "msg": "This idea was just bought (or tried). Check Live before buying it again."}
+        taps[tap] = now                                 # from here on this idea can't send a second order for a while
         coid = f"cw-ib-{uuid.uuid4().hex[:16]}"
         try:
-            filled, err = buy_single(t, n, price, coid=coid)
+            filled, err = buy_single(t, n, price, coid=coid, exact=True)
         except Exception as err:                       # no clear answer: it may have gone through. Never resent.
             try:
                 _mark_unsure({"ticker": t, "side": "bid", "reduce_only": False, "coid": coid}, err)
             except Exception:
                 pass
-            try:
-                _manual_note(t, n * per)
-            except Exception:
-                pass
+            _manual_note(t, n * per, log)
             log(f"idea single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
             return {"ok": False, "check": True,
                     "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi before "
@@ -13220,10 +13268,7 @@ def idea_single_buy(t, n, price, paused=False, log=print):
             return {"ok": False, "msg": err}
         if filled <= 0:
             return {"ok": False, "msg": f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
-        try:
-            _manual_note(t, filled * per)
-        except Exception as e:
-            log("idea single: couldn't note the spend:", type(e).__name__)
+        _manual_note(t, filled * per, log)            # before the answer goes back; never lost (see _manual_note)
     log(f"single bought: {filled:g} of {t} at {price:.2f}")
     return {"ok": True, "pays": filled, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
                                                f"pays {money(filled)} if it wins."}

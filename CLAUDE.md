@@ -472,7 +472,7 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
   is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
   "Weekend cap" to **Weekly cap** on #71). Its window word (`cap_window`) matches what `week_spend` counts:
-  "today"/"tomorrow" for daily leagues, "this week (Wed to Mon)" for the slate-week leagues (football, soccer, UFC;
+  "today"/"tomorrow" for daily leagues, "this week (Tue to Mon)" for the slate-week leagues (football, soccer, UFC;
   never "this weekend"), "on games still to play" for the Mix. The rule, the windows and the cap amount are unchanged.
 - **Caps fail closed (issue #136).** Every cap check reads spend through `cap_bets` (a fresh Kalshi account read, or
   after a failed one the last good read only while ≤ `CAP_READ_AGE` = 120 s old; else `CapUnknown`). `week_spend` raises
@@ -483,8 +483,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   **Single bets use their own league's cap** (`single_cap_block` → `manual_cap`: the market's league from its ticker,
   that league's budget and slate, its combos + manual singles), never the loaded league's or the Mix's: Buy straight
   and Live's single-game buy ideas (`api_act` "idea" quote and "singlebuy" by idea → `idea_single_buy`, which also
-  checks Pause, trading access and the unknown-outcome block, notes the buy in `manual_buys`, and marks an unclear
-  answer "check"). Mix combos keep the Mix cap.
+  checks Pause, trading access and the unknown-outcome block, allows one order per idea per 2 min (`IDEA_TAP_SECS`,
+  marked before the order), sends a sub-cent price rounded down, notes the buy in `manual_buys`, and marks an unclear
+  answer "check"). Mix combos keep the Mix cap. `manual_spend` fails closed too (no history database or a failed read
+  = `CapUnknown`, never $0; with no ticker it counts the loaded league's own window, today for daily leagues).
+  `_manual_note` never loses a filled buy: tried twice, then kept in memory (`MANUAL_MEM`, still counted by the cap until
+  the app restarts), logged "MANUAL BUY NOT SAVED" and pushed to Pete once (`MANUAL_ALERT`, set by the web app). A
+  market's kind (win/spread/total) comes from its ticker; a side's `kind` only fills in when the ticker can't tell. The window words say "Tue to Mon" because `sunday_of` puts a Tuesday
+  game in the coming Sunday's week (Pete's #71 note said Wed to Mon; the counting itself was not changed).
 - **Buy straight (manual single buys, issue #113; Pete's tap only, no automatic buying).** With one team picked the slip
   has a **Single bet / Combo** switch (`slipMode`; Single bet keeps one pick and its button is "Buy straight"); the slip
   card offers "Buy <team> straight" too; spreads & totals rows, Best bets and the Single games card open the same sheet;
@@ -498,9 +504,10 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   under way have none), sizes with `_size` (quarter Kelly, shrunk edge, $2 minimum), warns (thin > 6¢ gap, little for
   sale, live, nearly decided, live price far from the live chance, above fair, no fair price) and blocks (Pause, the
   unknown-outcome block, under one contract, account unreadable, over the cap: `week_spend` (Kalshi's combo record, which
-  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window, `_cap_start`: today for daily
-  slates and the Mix, else the slate week; an unclear one included; table `manual_buys`), against the cap of the league Build
-  has loaded, via `cap_msg`; the cap check, the order and its note run under one lock, `_SQ["buy"]`). The board's fair price
+  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window; an unclear one included;
+  table `manual_buys`), against the cap of **the market's own league** (from its ticker, never the one Build has loaded
+  or the Mix), via `single_cap_block` → `manual_cap`/`manual_cap_msg` (issues #133, #136); the cap check, the order and
+  its note run under one lock, `_SQ["buy"]`). The board's fair price
   is used only while under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`; no read time = stale); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
   on a 30%-shrunk model edge; a finished game (`_game_over`) gets no quote; a start time it can't tell = a warning, yellow. It keeps a
   quote id (16 hex) for 20 s (`_SQ`). `single_buy(qid, ticker, anyway, paused)` checks the quote is the one on screen,

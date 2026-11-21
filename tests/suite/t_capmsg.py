@@ -11,17 +11,20 @@ E.HERE = tempfile.mkdtemp(); E.SAVED = E.MAIN_SAVED = os.path.join(E.HERE, "comb
 
 THU, FRI, SAT, MON, WED = (dt.date(2026, 11, d) for d in (19, 20, 21, 23, 18))
 E.set_league("nfl")
-ok("NFL on a Thursday says this week (Wed to Mon)", E.cap_window(THU) == "this week (Wed to Mon)")
-ok("NFL on a Wednesday says this week", E.cap_window(WED) == "this week (Wed to Mon)")
-ok("NFL on Friday, Saturday and Monday also says this week (Wed to Mon), never this weekend",
-   all(E.cap_window(d) == "this week (Wed to Mon)" for d in (FRI, SAT, MON)))
+ok("NFL on a Thursday says this week (Tue to Mon)", E.cap_window(THU) == "this week (Tue to Mon)")
+ok("NFL on a Wednesday says this week", E.cap_window(WED) == "this week (Tue to Mon)")
+ok("NFL on Friday, Saturday and Monday also says this week (Tue to Mon), never this weekend",
+   all(E.cap_window(d) == "this week (Tue to Mon)" for d in (FRI, SAT, MON)))
 ok("NFL cap is called the Weekly cap", E.cap_label() == "Weekly cap")
+ok("the words match the counting: a Tuesday game is in the coming Sunday's week, Monday's in the one before",
+   E.sunday_of(dt.date(2026, 11, 24)) == dt.date(2026, 11, 29) and E.sunday_of(MON) == dt.date(2026, 11, 22)
+   and E.sunday_of(WED) == dt.date(2026, 11, 22))
 E.set_league("ncaaf")
-ok("college football on a Saturday says this week (Wed to Mon)", E.cap_window(SAT) == "this week (Wed to Mon)")
+ok("college football on a Saturday says this week (Tue to Mon)", E.cap_window(SAT) == "this week (Tue to Mon)")
 E.set_league("soccer")
-ok("soccer on a Saturday says this week (Wed to Mon)", E.cap_window(SAT) == "this week (Wed to Mon)")
+ok("soccer on a Saturday says this week (Tue to Mon)", E.cap_window(SAT) == "this week (Tue to Mon)")
 E.set_league("ufc")
-ok("UFC says this week (Wed to Mon) and the Weekly cap", E.cap_window(FRI) == "this week (Wed to Mon)"
+ok("UFC says this week (Tue to Mon) and the Weekly cap", E.cap_window(FRI) == "this week (Tue to Mon)"
    and E.cap_label() == "Weekly cap")
 E.set_league("nba")
 ok("NBA says today and calls it the Daily cap", E.cap_window(THU) == "today" and E.cap_label() == "Daily cap")
@@ -37,11 +40,11 @@ m = E.cap_msg(49.0, 5.0)
 ok("message says the new total and the cap", "$54" in m and "$50 cap" in m)
 ok("message says how much room is left", "$1 left" in m)
 ok("message names the Settings item and the league", "Settings > Money > Weekly cap" in m and "NFL" in m)
-ok("message names the real window (this week, Wed to Mon) and never says weekend",
-   "spending this week (Wed to Mon) to" in m and "weekend" not in m.lower())
+ok("message names the real window (this week, Tue to Mon) and never says weekend",
+   "spending this week (Tue to Mon) to" in m and "weekend" not in m.lower())
 mm = E.manual_cap_msg("nfl", 49.0, 5.0, 50.0)
 ok("a manual buy's message (Buy straight, Live-idea singles) says the Weekly cap and the window too",
-   "Weekly cap" in mm and "that week (Wed to Mon)" in mm and "weekend" not in mm.lower() and "$1 left" in mm)
+   "Weekly cap" in mm and "that week (Tue to Mon)" in mm and "weekend" not in mm.lower() and "$1 left" in mm)
 ok("room left is never negative", "$0 left" in E.cap_msg(60.0, 5.0))
 ok("message says how far to raise the cap", "raise it to at least $54" in m)
 E.set_league("nba"); E.CFG["budget"] = 50
@@ -74,4 +77,4 @@ ok("old wording is gone from the engine", "take this {slate_word()}" not in src 
 ok("the web app's single-bet idea uses its own league's cap message", "A.single_cap_block(tk" in W
    and "That would go over your" not in W)
 ok("no screen calls the cap the Weekend cap any more", "Weekend cap" not in W and "Weekend cap" not in src
-   and "'Weekly cap'" in W and "spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'week (Wed to Mon)')" in W)
+   and "'Weekly cap'" in W and "spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'week (Tue to Mon)')" in W)
