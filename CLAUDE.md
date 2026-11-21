@@ -460,6 +460,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   guards hold back is logged once per bet and reason (`note_cut_held`, `result: "held"`); `analytics()["cut_held"]`
   counts them for Results › Selling, which also shows the guard settings per league. Pause / Auto cash-out off /
   Ride it out still stop it (it runs only inside `auto_sell_now`).
+- **Smart Buy, stage 1: the foundation (issue #137; watches only, changes no buy, sale or pick).**
+  - `exit_policy(state, params)` is smart sell's decision in one pure function (risk-adjusted hold value, profit
+    floor, take profit, lock-in, the learned loss cut with `cut_ok`); `take_profit_reason` and `single_sell_reason`
+    now only gather their inputs and call it (`EXIT_POLICY_VERSION`). `t_exitpolicy` runs the old functions verbatim
+    (`fixtures/exit_policy_old.py.txt`) beside the new ones on 8,000 states: identical answers and peak tracking.
+    (`_replay`, the weekly tuner's replay, still has its own copy of the rule; aligning it is stage 5.)
+  - `simulate_exit(spec)` (spec from `exit_spec(candidate)`; `predict_exit_chance(c)`): Monte Carlo (120 paths,
+    seeded from the candidate id) of each pick's hidden lead (pre-game drift `SB_PRE_VOL`, in play scoring jumps per
+    sport `SB_SCORE_UNIT`, fair = Φ(lead/√time left) as the live model), Kalshi's mid closing the gap to fair
+    (`SB_PRE_CLOSE`), the sellable bid (half the gap, wider in play, cents, the exit fee; a gap over 6¢ or too little
+    depth = can't sell), `exit_policy` at every step with the league's settings (`exit_settings`). Returns at a $5
+    stake: `p_exit` (cash out ≥ +10%), `p_sell`, `exit_profit`, `hold_profit`, blended `ev` (optional stopping:
+    hold value from the sale on = fair × payout), `exit_mins`, `route` (sell / hold / none). ~5 ms a single, ~12 ms a
+    2-pick combo. `smart_buy_ok` is the stage-2 gate as it would stand (logged only).
+  - **Price recorder** (`price_path` table: ts, ticker, bid, ask, mid, depth, score): `price_seen_markets` (from
+    `fetch_series` and the held-singles refresh in `open_singles`) and `price_seen_book` (`book_depth`) note prices the
+    engine already read: **no new Kalshi request**. `price_watch` marks markets to record (panel candidates, Buy ideas,
+    held singles); `price_flush` writes every 60 s near a game (3 h before to 6 h after), 5 min otherwise, only on a
+    change unless 15 min passed; `price_prune` keeps 30 days and ≤ 250k rows (exit_shadow: 60 days, 200k).
+  - **exit_shadow** (`smart_buy_shadow`, called at the end of `panel_collect`; `smart_buy_shadow_ideas` from the
+    suggestions table every 10 min): one row per candidate per 30 min with edge, win chance, cash-out chance, dollars,
+    route, `old` (today's rules took it) and `new` (`smart_buy_ok`), ≤ 0.35 s of simulation a pass, never raises,
+    never changes a candidate. `exit_replay`/`exit_calibration` replay `exit_policy` on recorded paths: predicted vs
+    actual cash-out rate per league and type (singles/spreads/totals; combos in stage 2).
+  - Settings › Money › **Smart Buy (preview)** (`smart_buy`, shared, off; `smart_buy_on()` reads the shared file):
+    on = Results › What's working shows a folded "🧠 Smart Buy (preview)" card (`sbCard`, `analytics()["smart_buy"]` =
+    `smart_buy_summary()`, the route re-reads the switch). Off or on, panel candidates, picks and sells are identical
+    (`t_smartbuy`). Next stages: `ROADMAP.md`.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
