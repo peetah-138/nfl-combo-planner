@@ -194,15 +194,16 @@ ok("exit_calibration: predicted vs actual for finished games, per league and typ
    any(x["league"] == "nba" and x["kind"] == "single" and x["n"] == 1 and x["pred"] == 0.6 and x["actual"] == 1.0 for x in cal))
 
 # ---- Results › What's working preview
+E.save_json(E.MAIN_SAVED, {"smart_buy": False, "smart_buy_v2": True})       # Pete switched it off (stage 2: on by default)
 s = E.smart_buy_summary(now=now)
-ok("the preview summary lists leagues with sample sizes, and is marked off by default", s["on"] is False and s["rows"]
+ok("the summary lists leagues with sample sizes, and is marked off when switched off", s["on"] is False and s["rows"]
    and all(k in s["rows"][0] for k in ("name", "kind", "n", "ok", "p_exit", "ev")) and s["calib"])
 E.save_json(E.MAIN_SAVED, {"smart_buy": True})
 ok("...and on once the switch is on", E.smart_buy_summary(now=now)["on"] is True)
 E.ANALYTICS.update(at=0, v=None)
 an = E.analytics(max_age=0)
 ok("analytics() carries it for the page when the switch is on", isinstance(an.get("smart_buy"), dict) and "rows" in an["smart_buy"])
-E.save_json(E.MAIN_SAVED, {})
+E.save_json(E.MAIN_SAVED, {"smart_buy": False, "smart_buy_v2": True})
 E.ANALYTICS.update(at=0, v=None)
 real_cal = E.exit_calibration
 E.exit_calibration = lambda **k: (_ for _ in ()).throw(AssertionError("calibration ran with the switch off"))
@@ -278,7 +279,7 @@ E.SB_CACHE["seen"].clear()
 real_shadow = E.smart_buy_shadow
 outs = []
 for on, shadow in ((False, real_shadow), (True, real_shadow), (False, lambda *a, **k: 0)):
-    E.save_json(E.MAIN_SAVED, {"smart_buy": on})
+    E.save_json(E.MAIN_SAVED, {"smart_buy": on, "smart_buy_v2": True})
     E.smart_buy_shadow = shadow
     cs = E.panel_collect({}, "nhl", log=lambda *a: None)
     picked, st = E.choose_panel(cs, 40, 300.0, size=6)

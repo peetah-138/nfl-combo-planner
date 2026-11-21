@@ -56,7 +56,8 @@ CFG = {
     "line_model": True,   # spreads/totals: the margin-shape model where its league's gate is on (False = old model everywhere)
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
-    "smart_buy": False,   # Smart Buy (preview, issue #137 stage 1): shows the exit-chance preview only; changes no buy or sale
+    "smart_buy": True,    # Smart Buy (issue #137 stage 2): skips panel bets and Buy ideas unlikely to be profitable (skip-only)
+    "smart_buy_v2": False,  # set once the old preview switch (off by default) has been moved to Smart Buy's default (on)
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
     "hedge_cap": 100,     # ...spending at most this much on one hedge; above it, cash out instead
     "notify_value": True, # Mac: tell me when a combo quotes at a fair price (bundled, max 1 per 30 min)
@@ -254,7 +255,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown", "smart_buy_v2")
 
 
 def next_league():
@@ -386,6 +387,10 @@ def set_league(code):
         if CFG.get("take_profit") == 75:          # the old default goes to Off; a level he picks himself stays
             CFG["take_profit"] = 0
         CFG["tp_v2"] = True
+    if not CFG.get("smart_buy_v2"):               # the old preview switch was off by default and only showed a card:
+        CFG["smart_buy"] = True                   # Smart Buy itself is on by default; a choice made after this is kept
+        CFG["smart_buy_v2"] = True
+        _smart_buy_migrate()
     if not CFG.get("cut_v2"):                     # the fair-price cut-off moved from 80% to 90% of fair
         if CFG.get("accept_pct") == 80:
             CFG["accept_pct"] = 90
@@ -399,6 +404,21 @@ def set_league(code):
 
 
 KEY_FIELDS = ("kalshi_key_id", "odds_key", "watcher_code")
+
+
+def _smart_buy_migrate():
+    """Once: the shared settings file's 'smart_buy' was the preview's default (off), not a choice. Mark it moved to
+    Smart Buy's default (on), so every process and every reload of the file agree; a choice saved later is kept."""
+    try:
+        if not os.path.exists(MAIN_SAVED):
+            return
+        with file_lock(MAIN_SAVED):
+            main = load_json(MAIN_SAVED, {})
+            if isinstance(main, dict) and not main.get("smart_buy_v2"):
+                main.update(smart_buy=True, smart_buy_v2=True)
+                save_json(MAIN_SAVED, main)
+    except Exception as err:
+        print("smart buy setting:", type(err).__name__, err)
 
 
 def save_cfg(cleared=()):
@@ -14353,6 +14373,7 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
                 save_json(IDEA_DISMISS, st2)
         out.sort(key=lambda r: (r["below_bar"], -r["ep"], -(r.get("pct") or 0), -(r.get("ts") or 0)))
         out = out[:keep]
+        out, sb_skipped = smart_buy_ideas_gate(out, now)   # after the cut: Smart Buy only ever takes ideas away
         hist = _idea_history([r["key"] for r in out], now)
         for i, r in enumerate(out):
             r["rank"] = i + 1
@@ -14360,6 +14381,7 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
                 r["hist"] = hist[r["key"]]
         if info is not None:
             info["hidden"] = hidden
+            info["sb_skipped"] = sb_skipped
         return out
     except Exception as err:
         console_note(f"buy ideas: {type(err).__name__}: {err}")
@@ -15905,6 +15927,13 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     for c in today:
         c["prio"] = c.get("prio", 0.0) + (0.03 if (nfl_day and c["code"] == "nfl") else 0.0)
     picked, stats = choose_panel(today, budget, base, size=size)
+    # Smart Buy (stage 2): only AFTER the choice, and only ever leaving bets out. Nothing is picked in a skipped bet's
+    # place and every other bet keeps its stake, so the panel is always a subset of what it would have been.
+    picked, sb_skipped = smart_buy_filter(picked, now)
+    if sb_skipped:
+        tot = _sim_panel(picked) if picked else [0]     # the card's numbers describe the bets actually on it
+        stats.update(p_ahead=round(sum(1 for t in tot if t > 0) / len(tot), 3), ev=round(sum(tot) / len(tot), 2),
+                     stake=round(sum(c["stake"] for c in picked), 2), worst=round(min(tot), 2), best=round(max(tot), 2))
     pool = defaultdict(int)
     for c in today:
         if _qualifies(c):
@@ -15913,8 +15942,12 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     used = {e for c in picked for e in _events_of(c)}
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
+    longer, sb_long = smart_buy_filter(longer, now)    # after the cut too: nothing moves up in a skipped one's place
+    sb_skipped += sb_long
     out = {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
+    if sb_skipped:
+        out["sb_skipped"] = sb_skipped
     if guess:
         out["base_guess"] = True
     return out
@@ -16285,6 +16318,8 @@ def _replacement(c, p):
                 continue
             if best is None or x["ret"] > best["ret"]:
                 best = x
+    if best is not None and not smart_buy_gate(best)[0]:
+        return None                                    # Smart Buy: the swap it would make is skipped, never a second pick
     return best
 
 
@@ -16848,7 +16883,8 @@ def analytics(max_age=600):
     except Exception:
         out["lines"] = []
     try:                                               # Smart Buy (preview): read-only, shown only with its switch on
-        out["smart_buy"] = smart_buy_summary() if smart_buy_on() else {"on": False}   # off: no work at all
+        out["smart_buy"] = dict(smart_buy_summary(), gate=smart_buy_gate_summary()) if smart_buy_on() else \
+            {"on": False}                                                      # off: no work at all
     except Exception as err:
         print("smart buy summary:", type(err).__name__, err)
         out["smart_buy"] = None
@@ -17336,14 +17372,17 @@ def panel_pass(log=print):
     prune_drafts()
     for code in list(PANEL_POOL):                      # one-sport panels for the sport chips
         v = build_panel(codes=[code])
-        if v["items"] or v["longer"]:
+        if v["items"] or v["longer"] or v.get("sb_skipped"):   # a panel Smart Buy emptied replaces the old draft
             panel_save_draft(v, f"view:{code}")
     out = []
     real = panel_get("real")
     if real and real["status"] == "approved":          # still looking: good bets that turned up since you approved
         active = [c for c in real["items"] if c.get("state") in ("scheduled", "buying", "bought", "check")]
         left = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
-        x = build_panel(budget=max(left, 0), exclude={e for c in active for e in _events_of(c)})
+        sk = [x for x in real.get("sb_skipped") or [] if isinstance(x, dict)]   # Smart Buy's skips keep their budget
+        left -= sum(float(x.get("stake") or 0) for x in sk)                     # and their games: a skip never makes
+        ex = {e for c in active for e in _events_of(c)} | {e for x in sk for e in x.get("events") or []}   # room
+        x = build_panel(budget=max(left, 0), exclude=ex)
         # only a skipped, swapped or left-out bet may come back if it's good again; today's panel is read again
         # here because building took a while and an Add may have landed meanwhile
         x["items"] = _extras_filter(x["items"], panel_get("real") or real)
@@ -17363,6 +17402,8 @@ def panel_pass(log=print):
         return out
     p = build_panel()
     if not p["items"]:
+        if p.get("sb_skipped"):                        # Smart Buy left everything out: no older draft stays approvable
+            panel_save_draft(p, "real")
         return []
     panel_save_draft(p, "real")
     q = dict(p, items=[dict(c, state="scheduled") for c in p["items"]])
@@ -18340,10 +18381,14 @@ SB_CACHE = {"seen": {}, "ideas": 0, "on": None}
 
 
 def smart_buy_on():
-    """Settings › Money › 'Smart Buy (preview)' (off unless Pete turned it on). Read from the shared settings file too,
-    so the Mac's engines and the web app agree. Stage 1: it only shows the preview; it never changes a buy or a sale."""
-    v = load_json(MAIN_SAVED, {}).get("smart_buy") if os.path.exists(MAIN_SAVED) else None
-    return bool(CFG.get("smart_buy", False) if v is None else v)
+    """Settings › Money › 'Smart Buy' (on by default). Read from the shared settings file too, so the Mac's engines and
+    the web app agree. A value saved before Smart Buy left preview (no smart_buy_v2 mark) was the preview's default,
+    not a choice, so it reads as the new default (on). Off: the gate is fully off and nothing is skipped."""
+    main = load_json(MAIN_SAVED, {}) if os.path.exists(MAIN_SAVED) else {}
+    v = main.get("smart_buy") if isinstance(main, dict) and main.get("smart_buy_v2") else None
+    if v is None:
+        v = CFG.get("smart_buy", True) if CFG.get("smart_buy_v2") else True
+    return bool(v)
 
 
 def _phi_cdf(x):
@@ -18582,6 +18627,373 @@ def smart_buy_ok(sim):
     return bool(sim) and sim["route"] != "none" and sim["ev"] >= SB_EV_MIN
 
 
+# ================================================================ Smart Buy, stage 2 (issue #137): the gate
+# SKIP-ONLY. The gate may leave a panel bet or a Buy idea out when the exit simulator expects it to make too little
+# under smart sell's own exit policy. It never adds a bet, never changes a stake, never lets the chooser pick a
+# different bet in a skipped one's place (it runs AFTER choose_panel, on its output), never loosens a cap or a
+# cut-off, and never touches selling. Pause, claim-before-buy, rule 8 and every cap are untouched.
+# How strict it is comes from a dial per league that learns from results:
+#   * a league with fewer than SB_LEARN_N checked bets with known results is 'Learning (12 of 30)': strictness 0,
+#     which passes everything exactly as before (no simulation is even run);
+#   * from then on each settled result can move the dial one step: up when the bets the next level would skip lost
+#     money (in dollars at the $5 reference stake, held to the end), down toward 0 when the bets the current level
+#     skips turned out profitable. A step needs a clear gain (SB_DIAL_GAIN of the stake per bet), at least
+#     SB_DIAL_BAND bets that the step changes, and SB_DIAL_NEW new results since the last move; on a tie it stays.
+#   * borrowing: a league short of results uses its sport's dial, else everyone's (borrowed levels are only ever
+#     at or above the start, 0); when it reaches SB_LEARN_N of its own it starts from what it borrowed, and from
+#     then on only its own record moves it (including down, below what its sport has).
+# Strictness k skips a bet whose expected profit under the exit policy, on a $5 bet (simulate_exit's 'ev'), is under
+# SB_DIAL_BARS[k] dollars. Higher k only ever skips more (the bars rise), so the dial is easy to read and to learn.
+# Every candidate keeps being simulated and logged to exit_shadow whatever the gate says (with the reason it would
+# skip and the level then), and its result is filled in after the game, so the gate learns from its own misses.
+SB_DIAL_FILE = os.path.join(HERE, "combo_smartbuy.json")   # gitignored (combo_*.json)
+SB_LEARN_N = 30            # checked bets with known results a group needs before its dial counts
+SB_DIAL_BARS = (None, -0.20, -0.10, 0.0, 0.10, 0.20, 0.30, 0.45, 0.60)   # dollars on $5; level 0 = no bar
+SB_DIAL_MAX = len(SB_DIAL_BARS) - 1
+SB_DIAL_GAIN = 0.02        # a step must gain at least 2% of the $5 stake per bet in the group (like smart_tune)
+SB_DIAL_BAND = 5           # ...and change the verdict on at least this many bets
+SB_DIAL_NEW = 5            # ...and come at least this many new results after the last step
+SB_LEARN_DAYS = 60         # results older than this no longer count
+SB_LEARN_EVERY = 3600      # the dial is looked at again at most hourly (results arrive in the history loop)
+SB_OPTIN = {"n": 50, "days_up": 0.55}   # the bar for a later, separate opt-in (bigger stakes); shown only, never used
+SB_GATE = {"dial": None, "dial_at": 0.0, "learn_at": 0.0, "cols": False, "err": 0.0}
+
+
+def _sb_load_dial(now=None):
+    now = now or time.time()
+    if SB_GATE["dial"] is None or now - SB_GATE["dial_at"] > 60:
+        d = load_json(SB_DIAL_FILE, {})
+        SB_GATE.update(dial=d if isinstance(d, dict) else {}, dial_at=now)
+    return SB_GATE["dial"]
+
+
+def _sb_groups(tickers):
+    """(league key, sport key) of a bet; the sport is None for a mix of sports."""
+    tks = [t for t in tickers or () if t]
+    k = bet_key(tks) if tks else "mix"
+    sport = ticker_sport(tks[0]) if tks and k != "mix" else None
+    return k, (sport if sport and sport != k else None)
+
+
+def sb_dial(tickers, now=None):
+    """The gate's strictness for a bet: {'level', 'key' (whose record set it), 'own' (results of the league's own),
+    'state': 'active' (its own record) or 'learning' (borrowed, or the start, 0)}."""
+    k, sport = _sb_groups(tickers)
+    return _sb_dial_of(k, sport, now)
+
+
+def _sb_dial_of(k, sport, now=None):
+    d = _sb_load_dial(now)
+    own = d.get(k) if isinstance(d.get(k), dict) else {}
+    n_own = int(own.get("n") or 0)
+    if n_own >= SB_LEARN_N:
+        return {"level": max(0, min(SB_DIAL_MAX, int(own.get("level") or 0))), "key": k, "own": n_own,
+                "state": "active", "league": k}
+    for g in (sport, "all"):
+        e = d.get(g) if g else None
+        if isinstance(e, dict) and int(e.get("n") or 0) >= SB_LEARN_N:
+            lvl = max(0, min(SB_DIAL_MAX, int(e.get("level") or 0)))     # borrowed: never under the start (0)
+            return {"level": lvl, "key": g, "own": n_own, "state": "learning", "league": k}
+    return {"level": 0, "key": None, "own": n_own, "state": "learning", "league": k}
+
+
+def _sb_pass(ev, level):
+    """Strictness `level` keeps a bet expected to make `ev` dollars on $5 (None = can't tell: kept)."""
+    return level <= 0 or ev is None or ev >= SB_DIAL_BARS[min(level, SB_DIAL_MAX)] - 1e-9
+
+
+def _sb_why(ev, level, league):
+    bar = SB_DIAL_BARS[min(level, SB_DIAL_MAX)]
+    exp = (f"expects to lose about ${abs(ev):.2f}" if ev < 0 else f"expects only about ${ev:.2f}")
+    return (f"{exp} per $5, even selling smartly; {league_label(league or 'all')}'s bar right now is "
+            f"{'+' if bar >= 0 else '−'}${abs(bar):.2f} (strictness {level})")
+
+
+def smart_buy_gate(c, now=None, sim=None):
+    """(keep, reason) for one panel bet or Buy idea. Keep = True whenever Smart Buy is off, the league's dial is at 0
+    (learning, or its record says skip nothing), the bet can't be simulated (sell-early favorites), or anything goes
+    wrong (the bet then goes through today's rules, exactly as before). Never raises."""
+    try:
+        if not smart_buy_on():
+            return True, None
+        tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+        dial = sb_dial(tks, now)
+        if dial["level"] <= 0:
+            return True, None
+        if sim is None:
+            spec = exit_spec(c, now)
+            if not spec:
+                return True, None
+            sim = simulate_exit(spec)
+        if _sb_pass(sim.get("ev"), dial["level"]):
+            return True, None
+        return False, _sb_why(sim["ev"], dial["level"], dial["key"])
+    except Exception as err:
+        if time.time() - SB_GATE["err"] > 600:
+            SB_GATE["err"] = time.time()
+            console_note(f"smart buy gate: {type(err).__name__}: {err}")
+        return True, None
+
+
+def smart_buy_filter(items, now=None):
+    """(kept, skipped): kept = the same bet dicts, same order, same stakes, minus the ones the gate skips; skipped =
+    [{'id', 'text', 'why', 'stake', 'events'}] for the page and for the extras budget. Skip-only by construction."""
+    kept, skipped = [], []
+    for c in items or []:
+        ok, why = smart_buy_gate(c, now)
+        if ok:
+            kept.append(c)
+            continue
+        try:
+            text = bet_text(c)
+        except Exception:
+            text = ""
+        text = text or " + ".join(str(l.get("pick") or l.get("ticker") or "") for l in c.get("legs") or [])
+        skipped.append({"id": c.get("id"), "text": text, "why": why, "stake": c.get("stake") or 0,
+                        "events": _events_of(c), "league": c.get("league") or c.get("code")})
+    return kept, skipped
+
+
+def _sb_pays(spec, sim=None):
+    """What a bet pays at the $5 reference stake if it wins (what its result is scored on)."""
+    if spec["kind"] == "combo":
+        return round(SB_STAKE * spec["pays_per"], 4)
+    a = spec["legs"][0]["ask"]
+    return round(SB_STAKE / (a + single_fee(a)), 4)
+
+
+def sb_resolve(now=None, limit=150):
+    """Fill in each checked bet's result once its games are over: res 'won'/'lost' and outcome = dollars on the $5
+    reference stake held to the end (payout less stake). Reads Kalshi's settled results (fetch_results, public). Runs
+    in the history loop; never raises."""
+    now = now or time.time()
+    n = 0
+    try:
+        if not STORE.get("db"):
+            return 0
+        _exit_shadow_table()
+        rows = store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and kick < ? "
+                          "and ts > ? group by tickers order by k desc limit ?",   # newest first: a void market can't
+                          (now - 4 * 3600, now - SB_LEARN_DAYS * 86400, limit))    # hold the others up
+        sets = {}
+        for r in rows:
+            try:
+                tks = json.loads(r["tickers"] or "[]")
+            except ValueError:
+                tks = []
+            if tks:
+                sets[r["tickers"]] = tks
+        if not sets:
+            return 0
+        res = fetch_results(sorted({t for v in sets.values() for t in v}))
+        for key, tks in sets.items():
+            got = [res.get(t) for t in tks]
+            if "no" in got:
+                won = False
+            elif all(g == "yes" for g in got):
+                won = True
+            else:
+                continue                                   # not all settled yet
+            for r in store_rows("select rowid id, kind, price, pays from exit_shadow where tickers=? and res is null", (key,)):
+                pays = r["pays"]
+                if pays is None and r["kind"] in ("single", "line") and r["price"] and 0 < r["price"] < 1:
+                    pays = SB_STAKE / (r["price"] + single_fee(r["price"]))   # rows logged before 'pays' existed
+                out = None if pays is None else round((pays if won else 0.0) - SB_STAKE, 4)
+                store_x("update exit_shadow set res=?, outcome=? where rowid=?", ("won" if won else "lost", out, r["id"]))
+                n += 1
+    except Exception as err:
+        print("smart buy results:", type(err).__name__, err)
+    return n
+
+
+def _sb_results(now=None):
+    """One row per checked bet with a known result (last 60 days): its last check before its game (or its first check
+    when it was only ever seen in play), as {'league', 'sport', 'ev', 'out', 'day', 'tickers', 'price', 'kind'}."""
+    now = now or time.time()
+    _exit_shadow_table()
+    first, last_pre = {}, {}
+    for r in store_rows("select ts, league, kind, tickers, kick, price, ev, outcome, skip from exit_shadow where outcome is not "
+                        "null and ts > ? order by ts", (now - SB_LEARN_DAYS * 86400,)):
+        first.setdefault(r["tickers"], r)
+        if r["kick"] is None or r["ts"] <= r["kick"]:
+            last_pre[r["tickers"]] = r
+    by = {k: last_pre.get(k, r) for k, r in first.items()}
+    out = []
+    for key, r in by.items():
+        try:
+            tks = json.loads(key or "[]")
+        except ValueError:
+            continue
+        lg, sport = _sb_groups(tks)
+        day = dt.datetime.fromtimestamp(r["kick"] or r["ts"], PACIFIC).date().isoformat()
+        out.append({"league": lg, "sport": sport, "ev": r["ev"], "out": r["outcome"], "day": day, "tickers": tks,
+                    "price": r["price"], "kind": r["kind"], "skip": bool(r["skip"])})
+    return out
+
+
+def _sb_step(rs, cur):
+    """One small step of the dial on one group's results [(ev, dollars)], or (cur, None) when nothing clearly wins.
+    Tightens when the bets the next level up would skip lost money; relaxes when the bets the current level skips
+    made money. Ties (or both directions equally good) keep the current level."""
+    tot = lambda k: sum(o for ev, o in rs if _sb_pass(ev, k))           # noqa: E731
+    base, margin = tot(cur), SB_DIAL_GAIN * SB_STAKE * len(rs)
+    best, best_v, why = cur, base, None
+    for k in (cur + 1, cur - 1):
+        if not 0 <= k <= SB_DIAL_MAX:
+            continue
+        band = [o for ev, o in rs if _sb_pass(ev, k) != _sb_pass(ev, cur)]
+        if len(band) < SB_DIAL_BAND:
+            continue
+        v = tot(k)
+        if v > base + margin + 1e-9 and v > best_v + 1e-9:
+            best, best_v = k, v
+            why = (f"the {len(band)} bets it would skip lost ${-sum(band):.2f} on $5 each" if k > cur else
+                   f"the {len(band)} bets it was skipping would have made ${sum(band):.2f} on $5 each")
+        elif best != cur and abs(v - best_v) <= 1e-9:
+            best, why = cur, None                       # both ways equally good: the smallest change (none) wins
+    return best, why
+
+
+def smart_buy_learn(now=None, force=False):
+    """In the history loop: fill in results, then let each group's dial take at most one step (everyone, each sport,
+    each league; a league reaching SB_LEARN_N of its own starts from what it borrowed). Saves combo_smartbuy.json.
+    Never raises."""
+    now = now or time.time()
+    try:
+        if not STORE.get("db"):
+            return {}
+        sb_resolve(now)
+        if not force and now - SB_GATE["learn_at"] < SB_LEARN_EVERY:
+            return _sb_load_dial(now)
+        SB_GATE["learn_at"] = now
+        rs = _sb_results(now)
+        old = load_json(SB_DIAL_FILE, {})
+        old = old if isinstance(old, dict) else {}
+        groups = defaultdict(list)
+        for r in rs:
+            groups["all"].append(r)
+            if r["sport"]:
+                groups[r["sport"]].append(r)
+            groups[r["league"]].append(r)
+        lg_of = {r["league"]: r["sport"] for r in rs}
+        new = {}
+        order = ["all"] + sorted({r["sport"] for r in rs if r["sport"]}) + sorted({r["league"] for r in rs})
+        for g in dict.fromkeys(order):
+            xs = groups[g]
+            e = dict(old.get(g) or {}) if isinstance(old.get(g), dict) else {}
+            n = len(xs)
+            e.update(n=n)
+            lvl = int(e.get("level") or 0)
+            if n >= SB_LEARN_N and not e.get("own"):
+                if g != "all":                            # first time on its own record: start from what it borrowed
+                    for b in (lg_of.get(g), "all"):
+                        be = new.get(b) if b and b != g else None
+                        if be and be.get("n", 0) >= SB_LEARN_N:
+                            lvl = max(0, int(be.get("level") or 0))
+                            break
+                e.update(own=True, last_n=n, at=now, why=(f"started at strictness {lvl}, borrowed" if lvl else
+                                                          "started at 0: skips nothing until results say so"))
+            elif n >= SB_LEARN_N and n - int(e.get("last_n") or 0) >= SB_DIAL_NEW:
+                k, why = _sb_step([(x["ev"], x["out"]) for x in xs], lvl)
+                if k != lvl:
+                    e.update(last_n=n, at=now, why=why, prev=lvl)
+                    lvl = k
+            e["level"] = lvl if n >= SB_LEARN_N else 0
+            new[g] = e
+        for g, e in old.items():                          # groups with no recent results keep their record
+            new.setdefault(g, e)
+        save_json(SB_DIAL_FILE, new)
+        SB_GATE.update(dial=new, dial_at=now)
+        return new
+    except Exception as err:
+        print("smart buy learn:", type(err).__name__, err)
+        return {}
+
+
+def _sb_league_card(lg, rs, d, now):
+    """One league's line for Results: learning progress, or the dial, skips and what the skips saved, plus the
+    progress toward the bar for a later opt-in (bigger stakes). Display only."""
+    dial = _sb_dial_of(lg, rs[0]["sport"] if rs else None, now)
+    lvl = dial["level"]
+    skipped = [r for r in rs if r["skip"]]             # what the gate really said at the time (logged with each check)
+    passed = [r for r in rs if not r["skip"]]
+    days = defaultdict(float)
+    for r in passed:
+        days[r["day"]] += r["out"]
+    clv = []
+    singles = [r for r in passed if r["kind"] in ("single", "line") and r["price"]]
+    if singles:
+        cl = close_prices(sorted({r["tickers"][0] for r in singles}), mid=True)
+        clv = [cl[r["tickers"][0]] / r["price"] - 1 for r in singles if cl.get(r["tickers"][0])]
+    e = d.get(lg) if isinstance(d.get(lg), dict) else {}
+    ahead = sum(r["out"] for r in passed)
+    up = sum(1 for v in days.values() if v > 0) / len(days) if days else 0.0
+    saved = -sum(r["out"] for r in skipped)
+    bar = {"n": len(passed), "n_need": SB_OPTIN["n"], "ahead": round(ahead, 2), "days_up": round(up, 3),
+           "days": len(days), "clv": round(sum(clv) / len(clv), 4) if clv else None, "beats": saved > 0 if skipped else None}
+    bar["met"] = bool(bar["n"] >= SB_OPTIN["n"] and ahead > 0 and up >= SB_OPTIN["days_up"] and
+                      (bar["clv"] is None or bar["clv"] >= 0) and bar["beats"])
+    return {"league": lg, "name": league_label(lg), "state": dial["state"], "own": dial["own"], "need": SB_LEARN_N,
+            "level": lvl, "from": league_label(dial["key"]) if dial.get("key") and dial["key"] != lg else None,
+            "skipped": len(skipped), "saved": round(saved, 2), "why": e.get("why"), "optin": bar}
+
+
+def smart_buy_gate_summary(now=None):
+    """Results › What's working › Smart Buy: one line per league (see _sb_league_card). Read-only, never raises."""
+    now = now or time.time()
+    try:
+        if not STORE.get("db"):
+            return []
+        rs = _sb_results(now)
+        d = _sb_load_dial(now)
+        by = defaultdict(list)
+        for r in rs:
+            by[r["league"]].append(r)
+        seen = set(by)
+        _exit_shadow_table()
+        for r in store_rows("select distinct league from exit_shadow where ts > ? limit 40", (now - 7 * 86400,)):
+            if r["league"] and r["league"] not in seen:
+                by[r["league"]] = []
+                seen.add(r["league"])
+        out = [_sb_league_card(lg, xs, d, now) for lg, xs in by.items() if lg]
+        return sorted(out, key=lambda x: (x["state"] != "active", -x["own"], x["name"]))
+    except Exception as err:
+        print("smart buy gate summary:", type(err).__name__, err)
+        return []
+
+
+def smart_buy_ideas_gate(ideas, now=None):
+    """(kept, skipped) for Live's Buy ideas, from what the shadow pass last simulated for each idea's market (its
+    expected dollars on $5) and the league's dial now. An idea the shadow hasn't simulated yet, or in a league whose
+    dial is at 0, is kept, as before. Skip-only; never raises."""
+    now = now or time.time()
+    if not ideas or not smart_buy_on() or not STORE.get("db"):
+        return list(ideas or []), []
+    try:
+        active = [r for r in ideas if sb_dial(r.get("legs") or [], now)["level"] > 0]
+        if not active:
+            return list(ideas), []
+        _exit_shadow_table()
+        keys = sorted({json.dumps(list(r.get("legs") or [])) for r in active})
+        q = ",".join("?" * len(keys))
+        evs = {}
+        for x in store_rows(f"select tickers, ev from exit_shadow where source='idea' and ts > ? and tickers in ({q}) "
+                            f"order by ts", (now - 2 * 3600, *keys)):
+            evs[x["tickers"]] = x["ev"]                    # the newest check of each market
+        kept, skipped = [], []
+        for r in ideas:
+            dial = sb_dial(r.get("legs") or [], now)
+            ev = evs.get(json.dumps(list(r.get("legs") or [])))
+            if dial["level"] <= 0 or _sb_pass(ev, dial["level"]):
+                kept.append(r)
+            else:
+                skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": _sb_why(ev, dial["level"], dial["key"])})
+        return kept, skipped
+    except Exception as err:
+        console_note(f"smart buy ideas gate: {type(err).__name__}: {err}")
+        return list(ideas), []
+
+
 # ---- the shadow price recorder: prices the engine already fetched, never a new request
 PRICE_SEEN = {}            # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
 PRICE_WATCH = {}           # ticker -> (watch until, kickoff) for markets we consider or hold
@@ -18748,6 +19160,13 @@ def _exit_shadow_table():
             "tickers text, kick real, price real, fair real, edge real, win real, exit_chance real, sell_chance real, "
             "exit_profit real, hold_profit real, ev real, exit_mins real, route text, old int, new int, ver int)")
     store_x("create index if not exists exit_shadow_t on exit_shadow(ts)")
+    if not SB_GATE.get("cols"):                       # stage 2: the gate's verdict then, and the result once known
+        have = {r["name"] for r in store_rows("pragma table_info(exit_shadow)")}
+        for col, typ in (("pays", "real"), ("skip", "text"), ("strict", "int"), ("res", "text"), ("outcome", "real")):
+            if col not in have:
+                store_x(f"alter table exit_shadow add column {col} {typ}")
+        store_x("create index if not exists exit_shadow_k on exit_shadow(tickers)")
+        SB_GATE["cols"] = True
 
 
 def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
@@ -18765,6 +19184,7 @@ def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
                 seen.pop(k, None)
         t_end = time.perf_counter() + budget
         made = False
+        on = smart_buy_on()
         for c in cands or ():
             tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
             price_watch(tks, c.get("kick"))
@@ -18783,13 +19203,16 @@ def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
             price = l0.get("p") if len(c["legs"]) == 1 else None
             fair = l0.get("fair") if len(c["legs"]) == 1 else c.get("chance")
             edge = (fair - price - single_fee(price)) if price and fair else c.get("ret")
+            dl = sb_dial(tks, now)
+            lvl = dl["level"] if on else 0                # what the gate says now (logged either way)
+            skip = None if _sb_pass(sim["ev"], lvl) else _sb_why(sim["ev"], lvl, dl["key"])
             store_x("insert into exit_shadow(ts, cand, source, league, kind, tickers, kick, price, fair, edge, win, "
-                    "exit_chance, sell_chance, exit_profit, hold_profit, ev, exit_mins, route, old, new, ver) "
-                    "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "exit_chance, sell_chance, exit_profit, hold_profit, ev, exit_mins, route, old, new, ver, pays, "
+                    "skip, strict) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (now, key[:200], source, spec["league"], spec["type"], json.dumps(tks), c.get("kick"), price, fair,
                      round(edge, 4) if edge is not None else None, sim["win"], sim["p_exit"], sim["p_sell"],
                      sim["exit_profit"], sim["hold_profit"], sim["ev"], sim["exit_mins"], sim["route"], 1,
-                     int(smart_buy_ok(sim)), EXIT_POLICY_VERSION))
+                     int(smart_buy_ok(sim)), EXIT_POLICY_VERSION, _sb_pays(spec), skip, lvl))
             n += 1
     except Exception as err:
         print("smart buy shadow:", type(err).__name__, err)

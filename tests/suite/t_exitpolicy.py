@@ -157,9 +157,9 @@ x = {"t": "KXNBASPREAD-26NOV21BOSNYK-BOS5", "kind": "spread", "sport": "nba", "s
      "chance": .9, "state": "live"}
 outs = []
 for on in (False, True):
-    E.save_json(E.MAIN_SAVED, {"smart_buy": on})
+    E.save_json(E.MAIN_SAVED, {"smart_buy": on, "smart_buy_v2": True})
     E.MINE["peak"] = {}
     outs.append((E.smart_buy_on(), E.single_sell_reason(x, .88, .89)))
-ok("Smart Buy (preview) on or off: smart sell decides the same", outs[0][1] == outs[1][1] and outs[0][0] is False and outs[1][0] is True)
+ok("Smart Buy on or off: smart sell decides the same", outs[0][1] == outs[1][1] and outs[0][0] is False and outs[1][0] is True)
 E.save_json(E.MAIN_SAVED, {})
-ok("Smart Buy (preview) is off by default", E.smart_buy_on() is False and E.CFG.get("smart_buy") is False)
+ok("Smart Buy is on by default (stage 2), and the gate never touches selling", E.smart_buy_on() is True and E.CFG.get("smart_buy") is True)

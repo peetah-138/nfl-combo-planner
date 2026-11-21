@@ -104,26 +104,33 @@ with sync_playwright() as pw:
         if v is not False: print("PROBLEMS: turning off 'Smarter spread/total pricing' didn't save:", v)
         row.locator("input").click(); time.sleep(1.5)
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
-    # Smart Buy (preview, issue #137 stage 1): a switch in Settings › Money, off by default; on = a folded card in What's working
-    row = pg.locator("label.srow", has_text="Smart Buy (preview)")
-    if row.count() != 1 or row.locator("input").is_checked() or "doesn't change what gets picked" not in row.inner_text():
-        print("PROBLEMS: Settings › Money has no 'Smart Buy (preview)' switch (off by default, saying it changes nothing yet)")
+    # Smart Buy (issue #137 stage 2): a switch in Settings › Money, on by default; on = a folded card in What's working
+    row = pg.locator("label.srow", has_text="Smart Buy")
+    if row.count() != 1 or not row.locator("input").is_checked() or "Skips bets that are unlikely to be profitable" not in row.inner_text() \
+            or "keeps learning from every result" not in row.inner_text() or "preview" in row.inner_text():
+        print("PROBLEMS: Settings › Money has no 'Smart Buy' switch (on by default, saying it skips unlikely bets and keeps learning)")
     else:
-        row.locator("input").click(); v = saved("smart_buy", True)
-        if v is not True: print("PROBLEMS: turning on 'Smart Buy (preview)' didn't save:", v)
+        row.locator("input").click(); v = saved("smart_buy", False)
+        if v is not False: print("PROBLEMS: turning off 'Smart Buy' didn't save:", v)
         row.locator("input").click()
-        if saved("smart_buy", False) is not False: print("PROBLEMS: turning 'Smart Buy (preview)' back off didn't save")
+        if saved("smart_buy", True) is not True: print("PROBLEMS: turning 'Smart Buy' back on didn't save")
     SBP = {"on": False, "days": 7, "stake": 5, "markets": 42, "prices": 900,
            "rows": [{"name": "NBA", "kind": "Single games", "n": 48, "ok": 20, "p_exit": 0.52, "ev": 0.41, "sell": 25, "hold": 10},
                     {"name": "NFL", "kind": "Spreads & totals", "n": 12, "ok": 3, "p_exit": 0.31, "ev": -0.2, "sell": 2, "hold": 4}],
-           "calib": [{"name": "NBA", "kind": "Single games", "n": 9, "pred": 0.5, "actual": 0.44}]}
+           "calib": [{"name": "NBA", "kind": "Single games", "n": 9, "pred": 0.5, "actual": 0.44}],
+           "gate": [{"league": "nba", "name": "NBA", "state": "active", "own": 41, "need": 30, "level": 2, "from": None,
+                     "skipped": 7, "saved": 12.5, "why": "the 7 bets it would skip lost $12.50 on $5 each",
+                     "optin": {"n": 34, "n_need": 50, "ahead": 8.2, "days_up": 0.6, "days": 5, "clv": 0.012, "beats": True, "met": False}},
+                    {"league": "nfl", "name": "NFL", "state": "learning", "own": 12, "need": 30, "level": 0, "from": None,
+                     "skipped": 0, "saved": 0, "why": None,
+                     "optin": {"n": 12, "n_need": 50, "ahead": -3.0, "days_up": 0.4, "days": 3, "clv": None, "beats": None, "met": False}}]}
     AN["smart_buy"] = SBP
     pg.evaluate("go('results')"); wait(pg, "document.querySelectorAll('.an .anrow:not(.h)').length>=2", 40)
     if pg.locator(".an .sbp").count(): print("PROBLEMS: the Smart Buy preview shows with its switch off")
     AN["smart_buy"] = dict(SBP, on=True); pg.evaluate("S.an=null"); pg.evaluate("load('results',true)")
     wait(pg, "!!document.querySelector('.an .sbp')", 20)
     hd = pg.locator(".an .sbp .sbh")
-    if hd.count() != 1 or hd.get_attribute("aria-expanded") != "false" or "60 checked · 23 would pass" not in hd.inner_text() \
+    if hd.count() != 1 or hd.get_attribute("aria-expanded") != "false" or "1 league active" not in hd.inner_text() \
             or pg.locator(".an .sbp .antbl").count():
         print("PROBLEMS: the Smart Buy preview isn't a folded card with the counts:", hd.inner_text() if hd.count() else "missing")
     else:
@@ -131,7 +138,9 @@ with sync_playwright() as pw:
         if bb["height"] < 44: print("PROBLEMS: the Smart Buy preview's header is under 44pt tall:", bb)
         hd.click(); wait(pg, "!!document.querySelector('.an .sbp .antbl')", 5)
         sb = pg.locator(".an .sbp").inner_text()
-        if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "nothing is picked, bought or sold differently" not in sb \
+        if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "Learning (12 of 30)" not in sb \
+                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes: not yet · 34 of 50 settled" not in sb \
+                or "It only ever skips" not in sb or "preview" in sb.lower() \
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: the Smart Buy preview scrolls sideways on a phone")
@@ -146,4 +155,13 @@ with sync_playwright() as pw:
         print("PROBLEMS: a panel bet priced live on a game under way shows as 'Game started · won't buy':", h[:200])
     h = pg.evaluate("c=>panelItem(c,'scheduled',true)", dict(item, live=False))
     if "won't buy" not in h: print("PROBLEMS: a pre-game-priced bet on a started game no longer says it won't be bought")
+    # Smart Buy's calm skipped line under the panel and the Buy ideas, with a tap to see the plain reasons
+    h = pg.evaluate("()=>sbSkipLine([{text:'Bruins vs Flyers',why:'expects to lose about $0.05 per $5, even selling smartly'}],'panel')")
+    if "Smart Buy skipped 1 bet today" not in h or pg.evaluate("()=>sbSkipLine([],'ideas')") != "":
+        print("PROBLEMS: the Smart Buy skipped line is wrong (or shows with nothing skipped):", h[:200])
+    pg.evaluate("()=>{sbSkipLine([{text:'<b>x</b>',why:'w <i>y</i>'}],'ideas');sbSkipOpen('ideas')}")
+    wait(pg, "!!document.querySelector('#sheet .sbrow')", 5)
+    if pg.locator("#sheet .sbrow b").inner_text() != "<b>x</b>" or "still tracked" not in pg.locator("#sheet").inner_text():
+        print("PROBLEMS: the Smart Buy reasons sheet doesn't list the skipped bets safely (escaped) with a plain note")
+    pg.evaluate("closeModal()")
     print("errs:", errs)

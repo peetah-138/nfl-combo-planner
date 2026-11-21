@@ -106,9 +106,11 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 1. **Calibrate the simulator** on the price recorder's paths (`price_path`) and `exit_calibration`: the pre-game
    drift (`SB_PRE_VOL`), how much of the gap to fair closes before the start (`SB_PRE_CLOSE`), in-play gap widening
    (`SB_LIVE_WIDEN`) and jump sizes, per league with borrowing; replay combos too (today only singles/spreads/totals).
-2. **The gate, behind the Smart Buy switch, old vs new logged** (`exit_shadow.old/new`): Build "Best bets", Live Buy
-   ideas and the panel's single/spread/total pool need an edge AND a route (cash-out chance or a hold with an
-   acceptable win chance, learned per league), ranked by expected dollars; the empty states (#137 comments).
+2. **The gate: first slice shipped** (skip-only, learning dial per league, on by default: see CLAUDE.md). Still to
+   do: Build "Best bets" and the Buy straight list as recommend-only (#137 comments), ranking by expected dollars under
+   the exit policy, scoring results under the policy (not only held to the end), and the graduation stages Pete opted
+   into (own suggestions, then bigger stakes and extra auto-buys inside every cap with a losing-streak brake; Hard
+   rule 2 in CLAUDE.md), which the Results card's "Bigger stakes: not yet" line tracks.
 3. **A purchase carries a plan** (exit chance, target bid band, window, policy version), read by smart sell.
 4. **Scoreboard and plan audit** (#138, #115), dollar regret per league/rule.
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
