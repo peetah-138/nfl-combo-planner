@@ -259,6 +259,30 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
+- **Spreads and totals (issue #117 part B): recommend-only selection.** Build › Spreads & totals no longer lists every
+  strike: `line_recommend` (the watcher's Build runs it **off the app lock** in `lines_work`/`lines_kick`, a thread per
+  sport, copy ≤ 60 s old, waits ≤ 1.5 s, last good copy otherwise; order books read side by side within
+  `LINE_REC["budget"]` 3 s by `books_now`; `everything=True` is no longer used there) shows a strike only
+  when (1) its edge after the fee clears the league's **learned bar** (`line_min_edge`: own once 30+ settled games,
+  else its sport's (`LINE_SPORT`), else everyone's, else `LINE_MIN_EDGE`; never under `LINE_MIN_EDGE`, max 10¢; file
+  `combo_line_edge.json`), (2) its kind of strike isn't **losing to the close** (`line_clv_block`: table `line_clv`,
+  price at recommendation `rec` or panel buy `buy` vs Kalshi's last price before the start, read within 90 min of it
+  (`line_clv_seen` in `line_candidates`); blocked at ≥ 30 games, mean ≤ −0.5¢ and ≤ −2 SE, per league/kind/band; the
+  sport/everyone level may only block), (3) it **fills inside the edge** (`line_fill` walks every ask level of the book,
+  `book_asks`/`_ask_ladder` filled by `book_depth`'s same call, fee rounded up per order; stake = the buy sheet's
+  `_size` on the 30%-shrunk edge, capped by what fills; unreadable book = not shown), (4) Smart Buy's
+  `simulate_exit` (smart sell's exit policy, `_sb_sim`) passes `smart_buy_ok` (route sell or hold, ≥ `SB_EV_MIN`), and
+  (5) expected dollars at the fillable size (hold EV after fees + the policy's adjustment) ≥ `SB_EV_MIN`. Ranked by
+  expected dollars; cards show route ("Likely to cash out early for a profit: 58%" / "Profit if it holds"), stake,
+  contracts, expected profit, the bar. Empty: "No spread or total clears your bar right now." (`lines_priced` = how many
+  were checked; no section when a sport has no markets). **Weekly** `line_edge_tune` (watcher, with `smart_tune`):
+  one 0.5¢ step per league/sport/all and kind when the strikes it adds/drops cover 10+ games and move the result ≥ 2%
+  of everything staked at the bar ($1 a strike, 30+ games at the bar; settled `line_fairs` rows); ties stay; never
+  under the start. **Panel: only stricter** (`_line_ok` after the raw `line_edge`: learned bar, CLV block, and
+  `fill_cap` < $2 = out; `_size` never over `fill_cap`; book unread = today's rule, the buy-time recheck still
+  applies). The buy sheet's green Buy for a spread/total uses `max(LINE_MIN_EDGE, learned bar)`. Results › What's
+  working › Bet types: "Spreads & totals: your bar and the close" (`analytics()["line_sel"]`). Nothing here buys or
+  sells; Pause, caps and rule 8 untouched. Tests: `t_linesel`, `test_linesel_ui`.
 - **Odds API credits (issue #175).** Every odds-service answer's `x-requests-remaining/-used/-last` headers are
   recorded (`odds_credits_note`, in `fetch_book_odds_one` and `tennis_keys`; no extra calls) in `combo_odds_credits.json`
   (newest numbers plus a small history, under `file_lock`). `odds_credits()` gives remaining, burn per day (needs 6 h of
