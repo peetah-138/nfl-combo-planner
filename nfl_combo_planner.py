@@ -9353,7 +9353,8 @@ def order_cost(o):
     return n * p + math.ceil(round(n * single_fee(p) * 100, 6)) / 100
 
 
-POTS_WAIT = 3                     # seconds for each diagnostic read (the phone's relay gives up after 40 s in all)
+POTS_WAIT = 1.6                   # seconds for the diagnostic read (inside POTS_BUDGET, so no read is cut off early)
+POTS_BUDGET = 1.8                 # the most balance_words ever waits in all: it can run inside a buy's order lock
 
 
 def balance_words(o):
@@ -9365,8 +9366,18 @@ def balance_words(o):
     if o.get("reduce_only"):                      # a sale: its cost isn't a purchase, so no money sums
         return base
     try:
-        r = _signed("GET", "/portfolio/balance", timeout=POTS_WAIT)
-        bal = r.json() if r.ok else None
+        box = {}
+
+        def read():                               # on its own thread: a slow Kalshi can't hold the caller's lock
+            try:
+                r = _signed("GET", "/portfolio/balance", timeout=POTS_WAIT)
+                box["bal"] = r.json() if r.ok else None
+            except Exception:
+                box["bal"] = None
+        th = threading.Thread(target=read, name="pots-read", daemon=True)
+        th.start()
+        th.join(POTS_BUDGET)
+        bal = box.get("bal")                      # still waiting after the budget: the plain words, no numbers
         if not isinstance(bal, dict) or (bal.get("balance") in (None, "") and bal.get("balance_dollars") in (None, "")):
             return base
         note_pots(bal)
@@ -9543,10 +9554,10 @@ def week_spend():
     """What you've already spent on this week's NFL combos (from your account)."""
     acct, _, _ = fetch_account()
     if is_mix():                                   # mixed combos still to play or playing today
-        today = dt.date.today().isoformat()
-        return sum(a["cost"] for a in acct or [] if (a.get("week") or "") >= today)
+        return sum(a["cost"] for a in acct or [] if in_cap_window(a.get("week"), None, mix=True))
     week = CTX.get("sunday").isoformat() if CTX.get("sunday") else None
-    return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
+    return sum(a["cost"] for a in acct or [] if in_cap_window(a.get("first_week") or a["week"], week)
+               or (week is None and not (a.get("first_week") or a["week"])))
 
 
 QUOTE_LOG = os.path.join(HERE, "combo_quote_times.json")   # each quote's % of fair and hours before its first game
@@ -12721,28 +12732,88 @@ def _manual_table():
     store_x("create table if not exists manual_buys(ts real, ticker text, cost real)")
 
 
-def _cap_start(now=None):
-    """When the cap's spending window began, matching week_spend: today for daily slates and the Mix, else the
-    slate week ending on CTX's Sunday (Monday to Sunday); 7 days when the week isn't known."""
+MANUAL_LOOKBACK = 120 * 86400  # manual buys read back this far: Kalshi lists some games (UFC, football) weeks ahead
+CAP_READ_AGE = 120            # a manual buy's cap check trusts Kalshi's combo record only this fresh (seconds)
+
+
+class CapUnknown(Exception):
+    """What's been spent can't be told from fresh-enough data: a manual buy is refused, never let through.
+    `words` is what the buy sheet says (a retry helps for a failed read, never for a market with no date)."""
+
+    def __init__(self, why, words=None):
+        super().__init__(why)
+        self.words = words or CAP_UNKNOWN_MSG
+
+
+def cap_refusal(err):
+    """The plain words for a cap check that couldn't be done (anything unexpected reads as a failed check)."""
+    return getattr(err, "words", None) or CAP_UNKNOWN_MSG
+
+
+def league_cfg(code):
+    """A league's own settings, read only (the loaded league's live copy; another league's saved file over its
+    defaults). None for a code that isn't a league."""
+    if code == LEAGUE["code"]:
+        return CFG
+    lg = LEAGUES.get(code)
+    if not lg:
+        return None
+    c = json.loads(json.dumps(DEFAULTS))
+    c.update(lg["defaults"])
+    saved = load_json(os.path.join(HERE, lg["settings"]), {})
+    if isinstance(saved, dict):
+        c.update({k: v for k, v in saved.items() if k in c})
+    return c
+
+
+def in_cap_window(a_week, key, mix=False):
+    """The cap's window, one rule for combos and manual singles: a bet's slate (its first game's `week_of`) is the
+    window's slate; in the Mix, any slate from today on."""
+    a_week = a_week.isoformat() if isinstance(a_week, dt.date) else (a_week or "")
+    if mix:
+        return a_week >= dt.date.today().isoformat()
+    key = key.isoformat() if isinstance(key, dt.date) else key
+    return bool(key) and a_week == key
+
+
+def market_league(t):
+    """The league a market belongs to, from its own ticker (the panel's SPORT_PREFIX mapping), or None."""
+    code = ticker_sport(t)
+    return code if code in LEAGUES and code != "mix" else None
+
+
+def cap_combo_spend(code, key, now=None):
+    """What the league's combos cost in the slate `key` (Kalshi's record, every league read, then this league's).
+    Raises CapUnknown when no account read is fresh enough (a failed read never counts as $0 here)."""
     now = now or time.time()
-    if is_mix() or by_day():
-        return dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
-    sun = CTX.get("sunday")
-    if isinstance(sun, dt.date):
-        return dt.datetime.combine(sun - dt.timedelta(days=6), dt.time()).timestamp()
-    return now - 7 * 86400
+    bets, _, _ = fetch_account(max_age=60, every_league=True)
+    if bets is None:                                    # the read failed: the last good one, only while recent
+        old = ACCT_CACHE.get("value")
+        if old and old[0] is not None and ACCT_CACHE.get("at") and now - ACCT_CACHE["at"] <= CAP_READ_AGE:
+            bets = old[0]
+        else:
+            raise CapUnknown("no fresh account read")
+    return sum(float(a.get("cost") or 0) for a in bets
+               if code in a.get("lgs", [a.get("lg", "nfl")]) and in_cap_window(a.get("first_week") or a.get("week"), key))
 
 
-def manual_spend(now=None):
-    """What manual single buys (Buy straight) cost in the cap's window, for the league loaded (every league in the Mix).
-    Kalshi's combo record (week_spend) doesn't see single bets, so the cap adds these. A buy with an unclear outcome
-    counts too (it may have gone through)."""
+def manual_spend(ticker=None, now=None):
+    """What manual single buys (Buy straight) cost in the cap's window: the slate of `ticker`'s game for its own
+    league (or the loaded league's slate when no ticker is given). Kalshi's combo record (week_spend) doesn't see
+    single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through)."""
     if not STORE["db"]:
         return 0.0
+    now = now or time.time()
+    if ticker:
+        code, key = market_league(ticker), week_of(ticker)
+    else:
+        code = LEAGUE["code"]
+        key = CTX.get("sunday") if isinstance(CTX.get("sunday"), dt.date) else week_of(
+            "X-" + dt.date.today().strftime("%y%b%d").upper())
     _manual_table()
-    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (_cap_start(now),))
-    code = LEAGUE["code"]
-    return round(sum(float(r["cost"] or 0) for r in rows if is_mix() or ticker_sport(r["ticker"]) == code), 2)
+    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))
+    return round(sum(float(r["cost"] or 0) for r in rows if ticker_sport(r["ticker"]) == code
+                     and in_cap_window(week_of(r["ticker"]), key)), 2)
 
 
 def _manual_note(t, cost):
@@ -12751,9 +12822,49 @@ def _manual_note(t, cost):
         store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", (time.time(), t, round(float(cost), 2)))
 
 
-def _manual_spent():
-    """The cap's spending for a manual buy: the league's combos (Kalshi's record) plus every manual single lately."""
-    return float(week_spend() if can_trade() else 0.0) + manual_spend()
+def manual_cap(t, now=None):
+    """(spent, budget, code) for a manual buy of market t: its own league's cap and that league's spending in its
+    game's slate (combos + manual singles). Raises CapUnknown when that can't be told safely."""
+    code, key = market_league(t), week_of(t)
+    if not code:
+        raise CapUnknown("league unknown", NO_LEAGUE_MSG)
+    if not key:
+        raise CapUnknown("slate unknown", NO_SLATE_MSG)
+    try:
+        budget = float((league_cfg(code) or {})["budget"])
+    except (KeyError, TypeError, ValueError):
+        raise CapUnknown("no cap for that league") from None
+    return float(cap_combo_spend(code, key, now)) + manual_spend(t, now), budget, code
+
+
+def manual_cap_msg(code, spent, add, budget):
+    """cap_msg for a manual buy, in the market's own league's words (its cap, its setting)."""
+    lg = LEAGUES[code]
+    daily = lg["slate"] == "day"
+    left = max(0.0, budget - spent)
+    return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week'} to "
+            f"{money(spent + add)}, over your {money(budget)} cap. You have {money(left)} left. To go ahead, raise "
+            f"it to at least {money(spent + add)} in Settings > Money > {'Daily cap' if daily else 'Weekend cap'} "
+            f"(for {lg['name']}).")
+
+
+CAP_UNKNOWN_MSG = "Couldn't check your weekly cap right now, try again in a minute. Nothing was bought."
+NO_LEAGUE_MSG = ("Couldn't tell which league this market is in, so its spending cap can't be checked. "
+                 "Nothing can be bought straight here.")
+NO_SLATE_MSG = ("Couldn't tell which day this game is on, so its spending cap can't be checked. "
+                "Nothing can be bought straight here.")
+NO_TRADE_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be bought."
+PAUSE_MSG = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
+DRAW_MSG = ("A draw can't be bought straight here: the app's fair prices are for teams, not draws. "
+            "Buy it on Kalshi if you want it.")
+
+
+def single_kind(t):
+    """What a market is from its own ticker: "win" (a game-winner series), "spread", "total", or None."""
+    k = _bet_kind(t)
+    if k in ("spread", "total"):
+        return k
+    return "win" if (t or "").upper().startswith(WINNER_SERIES) else None
 
 
 def _game_over(t):
@@ -12796,9 +12907,22 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     t = str(x.get("ticker") or "")
     if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
         return {"ok": False, "msg": "That market isn't recognized."}
+    if paused:                                          # Pause and trading access first: nothing is read or quoted
+        return {"ok": False, "paused": True, "blocked": PAUSE_MSG, "msg": PAUSE_MSG}
+    if not can_trade():
+        return {"ok": False, "msg": NO_TRADE_MSG}
+    if not market_league(t):                            # the cap is the market's own league's, never the loaded one's
+        return {"ok": False, "msg": NO_LEAGUE_MSG}
+    tk_kind = single_kind(t)
+    if tk_kind is None and x.get("kind") not in ("spread", "total"):
+        return {"ok": False, "msg": "That kind of market can't be bought straight here."}
+    if is_tie_market({"ticker": t}):
+        return {"ok": False, "msg": DRAW_MSG}
     listed, m = market_open(t)
     if listed is False:
         return {"ok": False, "gone": True, "msg": m}
+    if isinstance(m, dict) and is_tie_market(m):
+        return {"ok": False, "msg": DRAW_MSG}
     if isinstance(m, dict) and m:
         x.setdefault("pick", m.get("yes_sub_title") or m.get("title") or t)
         x.setdefault("event", m.get("event_ticker"))
@@ -12813,7 +12937,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     per = ask + fee
     gap = round(ask - bid, 4) if bid is not None else None
     depth = float(book.get("ask_size") or 0)
-    kind = x.get("kind") if x.get("kind") in ("spread", "total") else "win"
+    kind = x.get("kind") if x.get("kind") in ("spread", "total") else tk_kind
+    line_gone = kind in ("spread", "total") and x.get("kind") != kind    # a line the board no longer has: its fair
     if not x.get("event") and "-" in t:
         x["event"] = t.rsplit("-", 1)[0]
     warn, fair, how, nofair = [], None, None, None
@@ -12845,6 +12970,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.insert(0, {"k": "live", "t": "This game is under way. " + (
             f"Our chance is live ({how}), not the pre-game one." if fair is not None else
             "There's no live fair price, so you'd be going on Kalshi's price alone.")})
+    elif line_gone:                                     # (if any) is never a moneyline chance: no fair price at all
+        nofair = "that line isn't on the board right now"
     elif x.get("fair") and x.get("src") and now - float(x.get("fair_at") or 0) > SINGLE_FAIR_AGE:
         nofair = "the sportsbook price is " + (f"{int((now - float(x['fair_at'])) / 60)} minutes old" if x.get("fair_at")
                                                else "of unknown age") + "; refresh Build for a new one"
@@ -12885,9 +13012,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.append({"k": "above", "t": f"Kalshi's price ({ask * 100:.0f}¢ plus its fee) is above our "
                                         f"{fair:.0%} chance. On average this loses money."})
     blocked = None
-    if paused:
-        blocked = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
-    elif order_unsure(t):
+    if order_unsure(t):
         blocked = ("An earlier order on this market had no clear answer, so the app won't send another for now. "
                    "Check Kalshi; you can lift the block in Settings › Money.")
     elif n < 1:
@@ -12896,16 +13021,13 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     spent = budget = room = None
     if not blocked:
         try:
-            spent = _manual_spent()
-        except Exception:
-            spent = None
-        budget = float(CFG.get("budget") or 0)
-        if spent is None:
-            blocked = "Couldn't read what you've spent this week, so the cap can't be checked. Try again in a moment."
-        else:
+            spent, budget, code = manual_cap(t, now)
+        except Exception as err:                        # CapUnknown, or anything else: refused, never $0
+            spent, blocked = None, cap_refusal(err)
+        if spent is not None:
             room = round(max(0.0, budget - spent), 2)
             if spent + cost > budget + 0.01:
-                blocked = cap_msg(spent, cost)
+                blocked = manual_cap_msg(code, spent, cost, budget)
     need = SINGLE_MIN_EDGE * 0.6 if kind == "win" else LINE_MIN_EDGE   # a score model's small edges count as zero
     clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
     qid = secrets.token_hex(8)
@@ -12915,7 +13037,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
                          "live": live, "kind": kind, "pick": x.get("pick") or t, "used": False,
                          "x": {k: x.get(k) for k in ("ticker", "event", "exp", "pre", "pick")}}
     return {"ok": True, "q": qid, "t": t, "pick": x.get("pick") or t, "opp": x.get("opp") or "",
-            "game": x.get("game") or "", "sport": ticker_sport(t) or "", "kind": kind, "live": live,
+            "game": x.get("game") or "", "sport": market_league(t) or "", "kind": kind, "live": live,
             "ask": ask, "bid": bid, "gap": gap, "depth": depth, "fee": round(fee, 4), "per": round(per, 4),
             "fair": fair, "how": how, "nofair": nofair, "edge": edge, "ret": ret, "sug": round(sug, 2),
             "stake": want, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
@@ -12930,6 +13052,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     quoted price, never more. {"ok", "msg", "filled", "price", "cost", "pays"} or {"ok": False, "check": True} when
     Kalshi's answer was unclear (it may have gone through: never resent, the market is blocked for 2 hours)."""
     now = now or time.time()
+    trade_ok = can_trade()                            # may ping the hub: never while holding the quote lock
     with _SQ["lock"]:
         q = _SQ["q"].get(str(qid or ""))
         if not q or q["t"] != str(ticker or ""):
@@ -12941,6 +13064,8 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if paused:
             return {"ok": False, "msg": "Paused from an alert, so nothing was bought. To resume, save Settings with "
                                         "Auto cash-out on."}
+        if not trade_ok:
+            return {"ok": False, "msg": NO_TRADE_MSG}
         if q["blocked"]:
             return {"ok": False, "msg": q["blocked"]}
         if not q["clears"] and not anyway:
@@ -12967,11 +13092,11 @@ def _single_send(q, qid, now, log):
     if order_unsure(t):
         return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
     try:
-        spent = _manual_spent()
-    except Exception:
-        return {"ok": False, "msg": "Couldn't read what you've spent this week, so nothing was bought. Try again."}
-    if spent + q["cost"] > float(CFG.get("budget") or 0) + 0.01:
-        return {"ok": False, "msg": cap_msg(spent, q["cost"])}
+        spent, budget, code = manual_cap(t, now)
+    except Exception as err:                           # CapUnknown (or anything else): refused, nothing sent
+        return {"ok": False, "msg": cap_refusal(err)}
+    if spent + q["cost"] > budget + 0.01:
+        return {"ok": False, "msg": manual_cap_msg(code, spent, q["cost"], budget)}
     coid = f"cw-sb-{qid}"
     log(f"manual single: buying {n} of {t} at {ask:.4f} (IOC, quote {qid})")
     try:
@@ -13021,11 +13146,15 @@ def store_suggestion(c, r, pct):
     live = any(started(l) for l in c["legs"])
     kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x and x > now]   # the next game still to start
     sid = f"{int(now)}{random.randint(100, 999)}"
-    store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live) "
-            "values(?,?,?,?,?,?,?,?,?,?,?,?)",
+    try:                                              # what the card says about each game (display only)
+        info = json.dumps(idea_legs_info(c["legs"]))
+    except Exception:
+        info = None
+    store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live, info) "
+            "values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, now, LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
              " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
-             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live)))
+             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live), info))
     if len(c["legs"]) == 1 and c["legs"][0].get("fair"):
         store_x("update suggestions set pfair=? where id=?", (c["legs"][0]["fair"], sid))
     try:                                              # who's out, for the card (from ESPN's injury report)
@@ -13051,7 +13180,177 @@ def live_suggestions(max_age=3600, limit=6):
             continue
         seen.add(r["legs"])
         out.append(dict(r, legs=json.loads(r["legs"]), sport=LEAGUES.get(r["lg"], {}).get("short", r["lg"])))
-    return out[:limit]
+    out = out[:limit]
+    for r in out:
+        r.update(idea_describe(r))
+        r.pop("info", None)
+    return out
+
+
+IDEA_AT = ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl", "ahl")    # Kalshi lists these "away at home"
+IDEA_UNIT = {"nfl": "points", "ncaaf": "points", "nba": "points", "ncaamb": "points", "ncaawb": "points",
+             "euroleague": "points", "nhl": "goals", "ahl": "goals", "soccer": "goals"}
+
+
+def _idea_kind(leg):
+    ev = str(leg.get("event") or (leg.get("ticker") or "").rsplit("-", 1)[0]).upper()
+    return leg.get("kind") or ("spread" if "SPREAD" in ev else "total" if "TOTAL" in ev else "win")
+
+
+def _idea_matchup(code, leg, kind):
+    """('Baylor at TCU', away, home), or ('Baylor vs TCU', None, None) when home and away aren't known, or ('', None,
+    None). From what the idea already holds: the game text a spread/total search found, else the pick's team and its
+    opponent read off the event code and the team names already cached. No lookups."""
+    g = str(leg.get("game") or "").strip()
+    if " at " in g:
+        a, _, h = g.partition(" at ")
+        return g, a.strip(), h.strip()
+    t = str(leg.get("ticker") or "")
+    ev, _, suf = t.rpartition("-")
+    m = re.search(r"-\d{2}[A-Z]{3}\d{2}(?:\d{4})?([A-Z0-9]+)$", ev)
+    tail, ab = (m.group(1) if m else ""), re.sub(r"\d+$", "", suf.upper())
+    if kind in ("win", "spread") and tail and ab:
+        other, mine_away = None, None
+        if tail.startswith(ab) and not tail.endswith(ab):
+            other, mine_away = tail[len(ab):], True
+        elif tail.endswith(ab) and not tail.startswith(ab):
+            other, mine_away = tail[:-len(ab)], False
+        names = sport_teams(code)
+        mine = leg.get("me") or (leg.get("pick") if kind == "win" else None) or names.get(ab) or PICK_NAME.get(t)
+        if kind == "spread" and mine:
+            mine = re.sub(r"\s+(win|lose)\b.*$", "", str(mine), flags=re.I).strip()
+        opp = leg.get("vs") or ((names.get(other) or PICK_NAME.get(f"{ev}-{other}")) if other else None)
+        if mine and opp:
+            mine, opp = team_short(code, mine), team_short(code, opp)
+            if code in IDEA_AT and mine_away is not None:
+                a, h = (mine, opp) if mine_away else (opp, mine)
+                return f"{a} at {h}", a, h
+            return f"{mine} vs {opp}", None, None
+    m2 = re.search(r"\(([^()]+ (?:at|vs) [^()]+)\)\s*$", str(leg.get("pick") or ""))
+    if m2:
+        g = m2.group(1)
+        if " at " in g:
+            a, _, h = g.partition(" at ")
+            return g, a.strip(), h.strip()
+        return g, None, None
+    return "", None, None
+
+
+def _idea_plain(code, leg, kind):
+    """The pick in plain words: 'Baylor wins by 8 or more', 'Over 7.5 total goals'. Empty when it can't be told."""
+    pick = str(leg.get("pick") or "")
+    if kind == "total":
+        m = re.match(r"\s*(Over|Under)\s+(\d+(?:\.\d+)?)", pick, re.I)
+        if not m:
+            return ""
+        unit = IDEA_UNIT.get(code, "")
+        return f"{m.group(1).title()} {float(m.group(2)):g} total" + (f" {unit}" if unit else "")
+    if kind == "spread":
+        m = re.match(r"^(.*?)\s+win by\s+(\d+(?:\.\d+)?)\+?\s*$", pick, re.I)
+        if m:
+            n = float(m.group(2))
+            by = f"{int(n + 0.5)} or more" if n % 1 == 0.5 else f"more than {n:g}"
+            return f"{m.group(1).strip()} wins by {by}"
+        m = re.match(r"^(.*?)\s+lose by under\s+(\d+(?:\.\d+)?)\s*$", pick, re.I)
+        if m:
+            return f"{m.group(1).strip()} wins, or loses by fewer than {float(m.group(2)):g}"
+        return ""
+    name = team_short(code, pick)
+    return f"{name} to win" if name else ""
+
+
+def idea_legs_info(legs):
+    """Per-leg descriptive facts stored with a buy idea (display only): plain pick, matchup, start time."""
+    out = []
+    for l in legs:
+        t = l.get("ticker") or ""
+        code = ticker_sport(t) or LEAGUE["code"]
+        kind = _idea_kind(l)
+        game, away, home = _idea_matchup(code, l, kind)
+        kick = _kick_ts(l)
+        if kick is None and l.get("start"):
+            try:
+                kick = dt.datetime.fromisoformat(str(l["start"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                kick = None
+        out.append({"ticker": t, "kind": kind, "pick": l.get("pick"), "game": game, "away": away, "home": home,
+                    "plain": _idea_plain(code, l, kind), "kick": kick})
+    return out
+
+
+def _idea_score(t):
+    """Score and clock for a game under way, from the scores already cached (nothing is fetched here), or ''."""
+    try:
+        sc = display_score({"ticker": t})
+        if sc and sc.get("me") is not None and str(sc.get("state") or "") in ("in", "live", "post"):
+            return f"{sc.get('abbr') or ''} {sc['me']}–{sc['opp']} {sc.get('opp_abbr') or ''} · {sc.get('detail') or ''}".strip(" ·")
+    except Exception:
+        pass
+    return ""
+
+
+def idea_game_leg(t):
+    """A game page's top block for a game you hold nothing on yet, built from the buy idea that names it (display
+    only; only a game in a current idea, never an arbitrary ticker). None when no idea names it."""
+    for r in live_suggestions():
+        for li in r.get("legs_info") or []:
+            if li.get("ticker") != t:
+                continue
+            code = ticker_sport(t) or r.get("lg") or ""
+            sides = re.split(r" at | vs ", li.get("game") or "")
+            plain = li.get("plain") or ""
+            name = max((s for s in sides if s and plain.startswith(s)), key=len, default=sides[0] if sides[0:1] else plain)   # longest: "Michigan State" over "Michigan"
+            opp = next((s for s in sides if s and s != name), "")
+            kind = li.get("kind") or "win"
+            if kind == "total":                         # a total has no side: the page is headed by the game itself
+                name, opp = li.get("game") or plain, ""
+            sc = display_score({"ticker": t})
+            on = bool(li.get("live"))
+            return {"ticker": t, "t": t, "name": name, "opp": opp, "sport": code, "kind": kind,
+                    "label": plain, "state": "live" if on else "pre", "phase": "", "res": None,
+                    "chance": r.get("chance") if len(r.get("legs") or []) == 1 and not on else None, "live": None,
+                    "sc": {k: sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if sc and sc.get("me") is not None else None,
+                    "note": "", "short": "", "idea": True,
+                    "starts": when_label(dt.datetime.fromtimestamp(li["kick"], dt.timezone.utc)) if li.get("kick") and not on else ""}
+    return None
+
+
+def idea_describe(row):
+    """What a Live buy-idea card says beyond the pick: league, each leg's matchup, plain pick and start (or live
+    score), the prices, the edge, and what the stake is expected to earn. All from the idea itself and caches; a
+    fact that can't be told is left out, never guessed. Never raises."""
+    out = {}
+    try:
+        legs = row["legs"] if isinstance(row["legs"], list) else json.loads(row["legs"])
+        try:
+            info = json.loads(row.get("info") or "[]")
+        except (ValueError, TypeError):
+            info = []
+        if len(info) != len(legs):                     # an older idea: work it out from the tickers
+            picks = str(row.get("picks") or "").split(" + ")
+            info = idea_legs_info([{"ticker": tk, "pick": picks[i] if len(picks) == len(legs) else ""}
+                                   for i, tk in enumerate(legs)])
+        now, rows = time.time(), []
+        for tk, i in zip(legs, info):
+            code = ticker_sport(tk) or row.get("lg") or ""
+            kick = i.get("kick") or (row.get("kick") if len(legs) == 1 else None)
+            under_way = bool(kick and kick <= now) or (bool(row.get("live")) and len(legs) == 1)
+            spec = LEAGUES.get(code) or SPORTS.get(code) or {}
+            rows.append({"ticker": tk, "game": i.get("game") or "", "plain": i.get("plain") or "", "kind": i.get("kind"),
+                         "league_name": LEAGUE_NAME.get(league_key(tk), "Soccer") if code == "soccer" else spec.get("name", ""),
+                         "icon": spec.get("icon", ""), "kick": kick, "live": under_way,
+                         "score": _idea_score(tk) if under_way else ""})
+        out["legs_info"] = rows
+        if rows:
+            out["league_name"], out["icon"] = rows[0]["league_name"], rows[0]["icon"]
+        stake, pays, pct = row.get("stake"), row.get("pays"), row.get("pct")
+        if stake and pays and pct and pays > 0:
+            chance = min(0.999, stake * pct / pays)       # pct = pays / fair payout, so stake*pct/pays = the chance
+            out.update(chance=round(chance, 4), price_c=round(stake / pays * 100, 1), fair_c=round(chance * 100, 1),
+                       edge=round(pct - 1, 4), profit=round(stake * (pct - 1), 2))
+    except Exception:
+        out = {}
+    return out
 
 
 def _killer_combo(i):
@@ -16270,7 +16569,7 @@ def store_open(path=None):
             db.execute("alter table suggestions add column live int")   # added after the first release
         except Exception:
             pass
-        for col in ("note text", "pfair real"):
+        for col in ("note text", "pfair real", "info text"):
             try:
                 db.execute(f"alter table suggestions add column {col}")
             except Exception:
