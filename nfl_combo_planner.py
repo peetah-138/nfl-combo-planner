@@ -9353,7 +9353,8 @@ def order_cost(o):
     return n * p + math.ceil(round(n * single_fee(p) * 100, 6)) / 100
 
 
-POTS_WAIT = 3                     # seconds for each diagnostic read (the phone's relay gives up after 40 s in all)
+POTS_WAIT = 1.6                   # seconds for the diagnostic read (inside POTS_BUDGET, so no read is cut off early)
+POTS_BUDGET = 1.8                 # the most balance_words ever waits in all: it can run inside a buy's order lock
 
 
 def balance_words(o):
@@ -9365,8 +9366,18 @@ def balance_words(o):
     if o.get("reduce_only"):                      # a sale: its cost isn't a purchase, so no money sums
         return base
     try:
-        r = _signed("GET", "/portfolio/balance", timeout=POTS_WAIT)
-        bal = r.json() if r.ok else None
+        box = {}
+
+        def read():                               # on its own thread: a slow Kalshi can't hold the caller's lock
+            try:
+                r = _signed("GET", "/portfolio/balance", timeout=POTS_WAIT)
+                box["bal"] = r.json() if r.ok else None
+            except Exception:
+                box["bal"] = None
+        th = threading.Thread(target=read, name="pots-read", daemon=True)
+        th.start()
+        th.join(POTS_BUDGET)
+        bal = box.get("bal")                      # still waiting after the budget: the plain words, no numbers
         if not isinstance(bal, dict) or (bal.get("balance") in (None, "") and bal.get("balance_dollars") in (None, "")):
             return base
         note_pots(bal)
@@ -9543,10 +9554,10 @@ def week_spend():
     """What you've already spent on this week's NFL combos (from your account)."""
     acct, _, _ = fetch_account()
     if is_mix():                                   # mixed combos still to play or playing today
-        today = dt.date.today().isoformat()
-        return sum(a["cost"] for a in acct or [] if (a.get("week") or "") >= today)
+        return sum(a["cost"] for a in acct or [] if in_cap_window(a.get("week"), None, mix=True))
     week = CTX.get("sunday").isoformat() if CTX.get("sunday") else None
-    return sum(a["cost"] for a in acct or [] if (a.get("first_week") or a["week"]) == week)
+    return sum(a["cost"] for a in acct or [] if in_cap_window(a.get("first_week") or a["week"], week)
+               or (week is None and not (a.get("first_week") or a["week"])))
 
 
 QUOTE_LOG = os.path.join(HERE, "combo_quote_times.json")   # each quote's % of fair and hours before its first game
@@ -12721,28 +12732,88 @@ def _manual_table():
     store_x("create table if not exists manual_buys(ts real, ticker text, cost real)")
 
 
-def _cap_start(now=None):
-    """When the cap's spending window began, matching week_spend: today for daily slates and the Mix, else the
-    slate week ending on CTX's Sunday (Monday to Sunday); 7 days when the week isn't known."""
+MANUAL_LOOKBACK = 120 * 86400  # manual buys read back this far: Kalshi lists some games (UFC, football) weeks ahead
+CAP_READ_AGE = 120            # a manual buy's cap check trusts Kalshi's combo record only this fresh (seconds)
+
+
+class CapUnknown(Exception):
+    """What's been spent can't be told from fresh-enough data: a manual buy is refused, never let through.
+    `words` is what the buy sheet says (a retry helps for a failed read, never for a market with no date)."""
+
+    def __init__(self, why, words=None):
+        super().__init__(why)
+        self.words = words or CAP_UNKNOWN_MSG
+
+
+def cap_refusal(err):
+    """The plain words for a cap check that couldn't be done (anything unexpected reads as a failed check)."""
+    return getattr(err, "words", None) or CAP_UNKNOWN_MSG
+
+
+def league_cfg(code):
+    """A league's own settings, read only (the loaded league's live copy; another league's saved file over its
+    defaults). None for a code that isn't a league."""
+    if code == LEAGUE["code"]:
+        return CFG
+    lg = LEAGUES.get(code)
+    if not lg:
+        return None
+    c = json.loads(json.dumps(DEFAULTS))
+    c.update(lg["defaults"])
+    saved = load_json(os.path.join(HERE, lg["settings"]), {})
+    if isinstance(saved, dict):
+        c.update({k: v for k, v in saved.items() if k in c})
+    return c
+
+
+def in_cap_window(a_week, key, mix=False):
+    """The cap's window, one rule for combos and manual singles: a bet's slate (its first game's `week_of`) is the
+    window's slate; in the Mix, any slate from today on."""
+    a_week = a_week.isoformat() if isinstance(a_week, dt.date) else (a_week or "")
+    if mix:
+        return a_week >= dt.date.today().isoformat()
+    key = key.isoformat() if isinstance(key, dt.date) else key
+    return bool(key) and a_week == key
+
+
+def market_league(t):
+    """The league a market belongs to, from its own ticker (the panel's SPORT_PREFIX mapping), or None."""
+    code = ticker_sport(t)
+    return code if code in LEAGUES and code != "mix" else None
+
+
+def cap_combo_spend(code, key, now=None):
+    """What the league's combos cost in the slate `key` (Kalshi's record, every league read, then this league's).
+    Raises CapUnknown when no account read is fresh enough (a failed read never counts as $0 here)."""
     now = now or time.time()
-    if is_mix() or by_day():
-        return dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
-    sun = CTX.get("sunday")
-    if isinstance(sun, dt.date):
-        return dt.datetime.combine(sun - dt.timedelta(days=6), dt.time()).timestamp()
-    return now - 7 * 86400
+    bets, _, _ = fetch_account(max_age=60, every_league=True)
+    if bets is None:                                    # the read failed: the last good one, only while recent
+        old = ACCT_CACHE.get("value")
+        if old and old[0] is not None and ACCT_CACHE.get("at") and now - ACCT_CACHE["at"] <= CAP_READ_AGE:
+            bets = old[0]
+        else:
+            raise CapUnknown("no fresh account read")
+    return sum(float(a.get("cost") or 0) for a in bets
+               if code in a.get("lgs", [a.get("lg", "nfl")]) and in_cap_window(a.get("first_week") or a.get("week"), key))
 
 
-def manual_spend(now=None):
-    """What manual single buys (Buy straight) cost in the cap's window, for the league loaded (every league in the Mix).
-    Kalshi's combo record (week_spend) doesn't see single bets, so the cap adds these. A buy with an unclear outcome
-    counts too (it may have gone through)."""
+def manual_spend(ticker=None, now=None):
+    """What manual single buys (Buy straight) cost in the cap's window: the slate of `ticker`'s game for its own
+    league (or the loaded league's slate when no ticker is given). Kalshi's combo record (week_spend) doesn't see
+    single bets, so the cap adds these. A buy with an unclear outcome counts too (it may have gone through)."""
     if not STORE["db"]:
         return 0.0
+    now = now or time.time()
+    if ticker:
+        code, key = market_league(ticker), week_of(ticker)
+    else:
+        code = LEAGUE["code"]
+        key = CTX.get("sunday") if isinstance(CTX.get("sunday"), dt.date) else week_of(
+            "X-" + dt.date.today().strftime("%y%b%d").upper())
     _manual_table()
-    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (_cap_start(now),))
-    code = LEAGUE["code"]
-    return round(sum(float(r["cost"] or 0) for r in rows if is_mix() or ticker_sport(r["ticker"]) == code), 2)
+    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))
+    return round(sum(float(r["cost"] or 0) for r in rows if ticker_sport(r["ticker"]) == code
+                     and in_cap_window(week_of(r["ticker"]), key)), 2)
 
 
 def _manual_note(t, cost):
@@ -12751,9 +12822,49 @@ def _manual_note(t, cost):
         store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", (time.time(), t, round(float(cost), 2)))
 
 
-def _manual_spent():
-    """The cap's spending for a manual buy: the league's combos (Kalshi's record) plus every manual single lately."""
-    return float(week_spend() if can_trade() else 0.0) + manual_spend()
+def manual_cap(t, now=None):
+    """(spent, budget, code) for a manual buy of market t: its own league's cap and that league's spending in its
+    game's slate (combos + manual singles). Raises CapUnknown when that can't be told safely."""
+    code, key = market_league(t), week_of(t)
+    if not code:
+        raise CapUnknown("league unknown", NO_LEAGUE_MSG)
+    if not key:
+        raise CapUnknown("slate unknown", NO_SLATE_MSG)
+    try:
+        budget = float((league_cfg(code) or {})["budget"])
+    except (KeyError, TypeError, ValueError):
+        raise CapUnknown("no cap for that league") from None
+    return float(cap_combo_spend(code, key, now)) + manual_spend(t, now), budget, code
+
+
+def manual_cap_msg(code, spent, add, budget):
+    """cap_msg for a manual buy, in the market's own league's words (its cap, its setting)."""
+    lg = LEAGUES[code]
+    daily = lg["slate"] == "day"
+    left = max(0.0, budget - spent)
+    return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week'} to "
+            f"{money(spent + add)}, over your {money(budget)} cap. You have {money(left)} left. To go ahead, raise "
+            f"it to at least {money(spent + add)} in Settings > Money > {'Daily cap' if daily else 'Weekend cap'} "
+            f"(for {lg['name']}).")
+
+
+CAP_UNKNOWN_MSG = "Couldn't check your weekly cap right now, try again in a minute. Nothing was bought."
+NO_LEAGUE_MSG = ("Couldn't tell which league this market is in, so its spending cap can't be checked. "
+                 "Nothing can be bought straight here.")
+NO_SLATE_MSG = ("Couldn't tell which day this game is on, so its spending cap can't be checked. "
+                "Nothing can be bought straight here.")
+NO_TRADE_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be bought."
+PAUSE_MSG = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
+DRAW_MSG = ("A draw can't be bought straight here: the app's fair prices are for teams, not draws. "
+            "Buy it on Kalshi if you want it.")
+
+
+def single_kind(t):
+    """What a market is from its own ticker: "win" (a game-winner series), "spread", "total", or None."""
+    k = _bet_kind(t)
+    if k in ("spread", "total"):
+        return k
+    return "win" if (t or "").upper().startswith(WINNER_SERIES) else None
 
 
 def _game_over(t):
@@ -12796,9 +12907,22 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     t = str(x.get("ticker") or "")
     if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
         return {"ok": False, "msg": "That market isn't recognized."}
+    if paused:                                          # Pause and trading access first: nothing is read or quoted
+        return {"ok": False, "paused": True, "blocked": PAUSE_MSG, "msg": PAUSE_MSG}
+    if not can_trade():
+        return {"ok": False, "msg": NO_TRADE_MSG}
+    if not market_league(t):                            # the cap is the market's own league's, never the loaded one's
+        return {"ok": False, "msg": NO_LEAGUE_MSG}
+    tk_kind = single_kind(t)
+    if tk_kind is None and x.get("kind") not in ("spread", "total"):
+        return {"ok": False, "msg": "That kind of market can't be bought straight here."}
+    if is_tie_market({"ticker": t}):
+        return {"ok": False, "msg": DRAW_MSG}
     listed, m = market_open(t)
     if listed is False:
         return {"ok": False, "gone": True, "msg": m}
+    if isinstance(m, dict) and is_tie_market(m):
+        return {"ok": False, "msg": DRAW_MSG}
     if isinstance(m, dict) and m:
         x.setdefault("pick", m.get("yes_sub_title") or m.get("title") or t)
         x.setdefault("event", m.get("event_ticker"))
@@ -12813,7 +12937,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     per = ask + fee
     gap = round(ask - bid, 4) if bid is not None else None
     depth = float(book.get("ask_size") or 0)
-    kind = x.get("kind") if x.get("kind") in ("spread", "total") else "win"
+    kind = x.get("kind") if x.get("kind") in ("spread", "total") else tk_kind
+    line_gone = kind in ("spread", "total") and x.get("kind") != kind    # a line the board no longer has: its fair
     if not x.get("event") and "-" in t:
         x["event"] = t.rsplit("-", 1)[0]
     warn, fair, how, nofair = [], None, None, None
@@ -12845,6 +12970,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.insert(0, {"k": "live", "t": "This game is under way. " + (
             f"Our chance is live ({how}), not the pre-game one." if fair is not None else
             "There's no live fair price, so you'd be going on Kalshi's price alone.")})
+    elif line_gone:                                     # (if any) is never a moneyline chance: no fair price at all
+        nofair = "that line isn't on the board right now"
     elif x.get("fair") and x.get("src") and now - float(x.get("fair_at") or 0) > SINGLE_FAIR_AGE:
         nofair = "the sportsbook price is " + (f"{int((now - float(x['fair_at'])) / 60)} minutes old" if x.get("fair_at")
                                                else "of unknown age") + "; refresh Build for a new one"
@@ -12885,9 +13012,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         warn.append({"k": "above", "t": f"Kalshi's price ({ask * 100:.0f}¢ plus its fee) is above our "
                                         f"{fair:.0%} chance. On average this loses money."})
     blocked = None
-    if paused:
-        blocked = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
-    elif order_unsure(t):
+    if order_unsure(t):
         blocked = ("An earlier order on this market had no clear answer, so the app won't send another for now. "
                    "Check Kalshi; you can lift the block in Settings › Money.")
     elif n < 1:
@@ -12896,16 +13021,13 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     spent = budget = room = None
     if not blocked:
         try:
-            spent = _manual_spent()
-        except Exception:
-            spent = None
-        budget = float(CFG.get("budget") or 0)
-        if spent is None:
-            blocked = "Couldn't read what you've spent this week, so the cap can't be checked. Try again in a moment."
-        else:
+            spent, budget, code = manual_cap(t, now)
+        except Exception as err:                        # CapUnknown, or anything else: refused, never $0
+            spent, blocked = None, cap_refusal(err)
+        if spent is not None:
             room = round(max(0.0, budget - spent), 2)
             if spent + cost > budget + 0.01:
-                blocked = cap_msg(spent, cost)
+                blocked = manual_cap_msg(code, spent, cost, budget)
     need = SINGLE_MIN_EDGE * 0.6 if kind == "win" else LINE_MIN_EDGE   # a score model's small edges count as zero
     clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
     qid = secrets.token_hex(8)
@@ -12915,7 +13037,7 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
                          "live": live, "kind": kind, "pick": x.get("pick") or t, "used": False,
                          "x": {k: x.get(k) for k in ("ticker", "event", "exp", "pre", "pick")}}
     return {"ok": True, "q": qid, "t": t, "pick": x.get("pick") or t, "opp": x.get("opp") or "",
-            "game": x.get("game") or "", "sport": ticker_sport(t) or "", "kind": kind, "live": live,
+            "game": x.get("game") or "", "sport": market_league(t) or "", "kind": kind, "live": live,
             "ask": ask, "bid": bid, "gap": gap, "depth": depth, "fee": round(fee, 4), "per": round(per, 4),
             "fair": fair, "how": how, "nofair": nofair, "edge": edge, "ret": ret, "sug": round(sug, 2),
             "stake": want, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
@@ -12930,6 +13052,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     quoted price, never more. {"ok", "msg", "filled", "price", "cost", "pays"} or {"ok": False, "check": True} when
     Kalshi's answer was unclear (it may have gone through: never resent, the market is blocked for 2 hours)."""
     now = now or time.time()
+    trade_ok = can_trade()                            # may ping the hub: never while holding the quote lock
     with _SQ["lock"]:
         q = _SQ["q"].get(str(qid or ""))
         if not q or q["t"] != str(ticker or ""):
@@ -12941,6 +13064,8 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if paused:
             return {"ok": False, "msg": "Paused from an alert, so nothing was bought. To resume, save Settings with "
                                         "Auto cash-out on."}
+        if not trade_ok:
+            return {"ok": False, "msg": NO_TRADE_MSG}
         if q["blocked"]:
             return {"ok": False, "msg": q["blocked"]}
         if not q["clears"] and not anyway:
@@ -12967,11 +13092,11 @@ def _single_send(q, qid, now, log):
     if order_unsure(t):
         return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
     try:
-        spent = _manual_spent()
-    except Exception:
-        return {"ok": False, "msg": "Couldn't read what you've spent this week, so nothing was bought. Try again."}
-    if spent + q["cost"] > float(CFG.get("budget") or 0) + 0.01:
-        return {"ok": False, "msg": cap_msg(spent, q["cost"])}
+        spent, budget, code = manual_cap(t, now)
+    except Exception as err:                           # CapUnknown (or anything else): refused, nothing sent
+        return {"ok": False, "msg": cap_refusal(err)}
+    if spent + q["cost"] > budget + 0.01:
+        return {"ok": False, "msg": manual_cap_msg(code, spent, q["cost"], budget)}
     coid = f"cw-sb-{qid}"
     log(f"manual single: buying {n} of {t} at {ask:.4f} (IOC, quote {qid})")
     try:

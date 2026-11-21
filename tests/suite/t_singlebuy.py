@@ -24,7 +24,10 @@ G[1], G[2] = G[2], G[1]                 # Denver-LA third: the fake's scoreboard
 D = fakenet.ORDERS
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 SPENT = {"v": 10.0}
+REAL_WS = E.week_spend
 E.week_spend = lambda: SPENT["v"]
+REAL_CCS = E.cap_combo_spend
+E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]    # the market's own league's combos (tested on its own below)
 E.can_trade = lambda: True
 EV = fakenet.event_ticker("KXNBAGAME", "DEN", "LAL")          # not started (the fake's third game after the swap above)
 T = EV + "-DEN"
@@ -198,7 +201,7 @@ SPENT["v"] = 70.0
 r = buy(E.single_buy_quote(X, 10))
 q = E.single_buy_quote(X, 10)
 ok(f"a manual single counts toward the cap afterwards (Kalshi's combo record doesn't see it): room {q.get('room')}",
-   r["ok"] and abs(E.manual_spend() - r["cost"]) < 0.01 and abs(q["room"] - round(100 - 70 - r["cost"], 2)) < 0.011)
+   r["ok"] and abs(E.manual_spend(T) - r["cost"]) < 0.01 and abs(q["room"] - round(100 - 70 - r["cost"], 2)) < 0.011)
 SPENT["v"] = 81.0
 q = E.single_buy_quote(X, 10)
 ok("two $10 singles on top of $81: the second is over the cap", q["blocked"] and "cap" in q["blocked"])
@@ -207,7 +210,7 @@ reset()
 D["next"] = requests.Timeout("slow")
 q = E.single_buy_quote(X, 10)
 buy(q)
-ok("an unclear buy counts toward the cap too (it may have gone through)", abs(E.manual_spend() - q["cost"]) < 0.01)
+ok("an unclear buy counts toward the cap too (it may have gone through)", abs(E.manual_spend(T) - q["cost"]) < 0.01)
 E.save_json(E.ORDER_LEDGER, {})
 reset()
 qs = E.single_buy_quote(dict(X, fair_at=time.time() - 20 * 60))
@@ -326,9 +329,171 @@ E.EVENT_SIDES[EV] = (time.time() - 200, good)
 ok("a copy over 3 min old isn't shown while Kalshi is down", E.event_sides(EV) == [])
 fakenet.markets = real_markets
 reset()
-E._manual_note(T, 30.0)
+E._manual_note("KXNBAGAME-26OCT01DENLAL-DEN", 30.0)          # last month's game (its own slate, not this one)
 E.store_x("update manual_buys set ts=? where cost=30.0", (time.time() - 30 * 86400,))
 E._manual_note("KXNHLGAME-26NOV19COLSJ-COL", 12.0)
 E._manual_note(T, 5.0)
-ok(f"the cap counts this window's singles for the loaded league only: not last month's, not the NHL's ({E.manual_spend()})",
-   E.LEAGUE["code"] == "nba" and E.manual_spend() == 5.0)
+ok(f"the cap counts this window's singles for the loaded league only: not last month's, not the NHL's ({E.manual_spend(T)})",
+   E.LEAGUE["code"] == "nba" and E.manual_spend(T) == 5.0)
+
+# ---- (9) release review of 2026.11.20.125: the cap is the market's own league's and fails closed; no false edge on a
+# spread/total that left the board; Pause and trading access are checked before anything is quoted; draws refused;
+# the balance diagnostics never hold the order lock for long.
+import json as _json
+reset()
+_json.dump({"budget": 30}, open(os.path.join(E.HERE, E.LEAGUES["nhl"]["settings"]), "w"))
+NHL_T = "KXNHLGAME-26NOV19COLSJ-COL"
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+sp, bud, code = E.manual_cap(NHL_T)
+ok(f"an NHL market while NBA is loaded: NHL's own cap ($30 from its settings), not NBA's $100 ({bud}, {code})",
+   code == "nhl" and bud == 30.0)
+KEY = E.week_of(T)
+E.ACCT_CACHE.update(at=time.time(), value=([{"cost": 7.0, "lgs": ["nhl"], "first_week": KEY.isoformat(), "week": KEY.isoformat()},
+                                             {"cost": 9.0, "lgs": ["nba"], "first_week": KEY.isoformat(), "week": KEY.isoformat()},
+                                             {"cost": 4.0, "lgs": ["nba"], "first_week": "2020-01-05", "week": "2020-01-05"}],
+                                            None, None))
+ok("combo spend is the market's league's, in its game's slate (NBA $9, not NHL's $7, not an old week's $4)",
+   REAL_CCS("nba", KEY) == 9.0 and REAL_CCS("nhl", KEY) == 7.0)
+E._manual_note(NHL_T, 6.0)
+ok("manual spend is the market's league's too: the NHL single doesn't count for NBA",
+   E.manual_spend(T) == 0.0 and E.manual_spend(NHL_T) == 6.0)
+E.set_league("nhl")                       # Build has the NHL loaded with a big cap; the NBA's is small
+E.CFG["budget"] = 1000.0
+E.CFG["kalshi_key_id"] = "fake-key-id"
+_json.dump({"budget": 15}, open(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]), "w"))
+q = E.single_buy_quote(X, 10)
+ok(f"an NBA buy while the NHL is loaded: blocked by the NBA's $15 cap, in the NBA's words ({(q.get('blocked') or '')[:70]})",
+   q["ok"] and q["blocked"] and "$15 cap" in q["blocked"] and "NBA" in q["blocked"] and q["budget"] == 15.0)
+r = buy(q, anyway=True)
+ok("...and the tap is refused, nothing sent", not r["ok"] and "cap" in r["msg"] and not D["sent"])
+E.set_league("nba")
+E.CFG["budget"] = 100.0
+E.CFG["kalshi_key_id"] = "fake-key-id"
+os.remove(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]))
+CALLS = []
+real_mo = E.market_open
+E.market_open = lambda t: (CALLS.append(t), real_mo(t))[1]
+r = E.single_buy_quote({"ticker": "KXFOOGAME-26NOV19AAABBB-AAA", "fair": 0.8, "src": "pinnacle"}, 10)
+ok(f"a market whose league can't be told: refused in plain words before anything is read ({r['msg'][:50]}...)",
+   not r["ok"] and "which league" in r["msg"] and not CALLS)
+try:
+    E.manual_cap("KXFOOGAME-26NOV19AAABBB-AAA")
+    ok("manual_cap refuses an unknown league", False)
+except E.CapUnknown:
+    ok("manual_cap refuses an unknown league (never the loaded one's cap)", True)
+r = E.single_buy_quote({"ticker": "KXEPLGAME-26NOV19ARSCHE-TIE"}, 10)
+ok("a soccer draw market: refused in plain words (the panel never prices draws)", not r["ok"] and "draw" in r["msg"].lower())
+q = E.single_buy_quote(X, 10, paused=True)
+ok("Pause: refused at quote time with the Pause message, nothing read", not q["ok"] and "Paused" in q["msg"] and not CALLS)
+E.can_trade = lambda: False
+q = E.single_buy_quote(X, 10)
+ok("no trading access: refused at quote time", not q["ok"] and "can't trade" in q["msg"])
+E.can_trade = lambda: True
+q = E.single_buy_quote(X, 10)
+E.can_trade = lambda: False
+r = buy(q)
+E.can_trade = lambda: True
+ok("trading access lost between the quote and the tap: refused, nothing sent",
+   not r["ok"] and "can't trade" in r["msg"] and not D["sent"])
+E.market_open = real_mo
+
+# the cap fails closed: an account read that fails (429 / timeout) never counts as $0
+reset()
+E.cap_combo_spend = REAL_CCS
+real_fa = E._fetch_account
+E._fetch_account = lambda: (None, None, "Couldn't reach your Kalshi account just now (Kalshi asked us to slow down).")
+E.ACCT_CACHE.update(at=0, value=None)
+try:
+    REAL_CCS("nba", KEY)
+    ok("a failed account read with no earlier one: CapUnknown", False)
+except E.CapUnknown:
+    ok("a failed account read with no earlier one: CapUnknown (not $0)", True)
+q = E.single_buy_quote(X, 10)
+ok(f"...the quote is blocked with 'Couldn't check your weekly cap' ({q.get('blocked')})",
+   q["ok"] and q["blocked"] and "Couldn't check your weekly cap" in q["blocked"] and not q["clears"])
+r = buy(q, anyway=True)
+ok("...and Buy anyway is refused, nothing sent", not r["ok"] and not D["sent"])
+GOOD = ([{"cost": 9.0, "lgs": ["nba"], "first_week": KEY.isoformat(), "week": KEY.isoformat()}], None, None)
+E.ACCT_CACHE.update(at=time.time() - 90, value=GOOD)
+ok("a failed read with a good one 90 s ago: that one is used ($9)", REAL_CCS("nba", KEY) == 9.0)
+E.ACCT_CACHE.update(at=time.time() - 200, value=GOOD)
+try:
+    REAL_CCS("nba", KEY)
+    ok("a failed read with only a 200 s old one: CapUnknown", False)
+except E.CapUnknown:
+    ok("a failed read with only a 200 s old one: CapUnknown (too old to trust)", True)
+E.ACCT_CACHE.update(at=time.time(), value=GOOD)
+q = E.single_buy_quote(X, 10)
+E.ACCT_CACHE.update(at=0, value=None)
+r = buy(q)
+ok("the read fails between the quote and the tap: refused with the cap words, nothing sent",
+   q["ok"] and not q["blocked"] and not r["ok"] and "Couldn't check your weekly cap" in r["msg"] and not D["sent"])
+E.ACCT_CACHE.update(at=0, value=None)
+print("INFO known gap (listed in the PR, unchanged here): the combo cap's week_spend counts a failed read as "
+      f"${REAL_WS():g}")
+E._fetch_account = real_fa
+E.ACCT_CACHE.update(at=0, value=None)
+E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]
+
+# a single bought weeks before its game still counts in that game's slate; a market with no date says so
+reset()
+E._manual_note(T, 20.0)
+E.store_x("update manual_buys set ts=? where cost=20.0", (time.time() - 12 * 86400,))
+ok("a manual single bought 12 days before its game still counts toward that game's cap", E.manual_spend(T) == 20.0)
+try:
+    E.manual_cap("KXNBAGAME-NODATE-DEN")
+    ok("a market with no date: CapUnknown", False)
+except E.CapUnknown as err:
+    ok(f"a market with no date: refused with its own words, not 'try again' ({err.words[:45]}...)",
+       "which day" in err.words and "try again" not in err.words)
+LOCKED = []
+E.can_trade = lambda: (LOCKED.append(E._SQ["lock"].locked()), True)[1]
+buy(E.single_buy_quote(X, 10))
+E.can_trade = lambda: True
+ok("can_trade (it may ping the hub) is never called while the quote lock is held", LOCKED and not any(LOCKED))
+
+# a spread/total that's no longer on the board never borrows a moneyline chance
+reset()
+book(0.50, 0.49)
+SPT = f"KXNBASPREAD-{EV.split('-')[1]}-DEN5"
+E.market_open = lambda t: (True, {"event_ticker": EV.replace("GAME", "SPREAD"), "expected_expiration_time": X["exp"],
+                                  "yes_sub_title": "Denver wins by over 5.5"})
+s0 = E.single_buy_quote({"ticker": SPT, "fair": 0.80, "src": "pinnacle", "fair_at": time.time()}, 5)
+ok(f"a spread with no line on the board (only a moneyline-style fair): no fair price, no edge, yellow ({s0.get('nofair')})",
+   s0["ok"] and s0["kind"] == "spread" and s0["fair"] is None and s0["edge"] is None and not s0["clears"]
+   and any(w["k"] == "nofair" for w in s0["warn"]))
+s1 = E.single_buy_quote({"ticker": SPT, "kind": "spread", "fair": 0.62, "src": "model", "fair_at": time.time()}, 5)
+ok(f"the same spread still on the board: priced from its own line ({s1.get('fair')})", s1["ok"] and s1["fair"] == 0.62)
+LSPT = f"KXNBASPREAD-{LIVE_EV.split('-')[1]}-BOS5"
+E.market_open = lambda t: (True, {"event_ticker": LIVE_EV.replace("GAME", "SPREAD"),
+                                  "expected_expiration_time": mk[LT]["expected_expiration_time"]})
+s2 = E.single_buy_quote({"ticker": LSPT, "event": LIVE_EV, "pre": 0.62, "fair": 0.8, "src": "pinnacle"}, 5)
+ok(f"a spread on a game under way with no board line: never the live moneyline model (fair {s2.get('fair')}, {s2.get('how')})",
+   s2["ok"] and s2["live"] and s2["fair"] is None and s2["how"] is None and s2["edge"] is None)
+E.market_open = real_mo
+
+# the balance diagnostics are time-boxed (they can run inside the buy's order lock)
+real_signed = E._signed
+
+
+def slow_signed(method, path, *a, **k):
+    if method == "GET" and str(path).startswith("/portfolio/balance"):
+        time.sleep(4)
+    return real_signed(method, path, *a, **k)
+
+
+E._signed = slow_signed
+t0 = time.time()
+w = E.balance_words({"ticker": T, "side": "bid", "yes": 0.5, "count": 10, "reduce_only": False})
+took = time.time() - t0
+ok(f"a slow balance read: balance_words gives up after ~{E.POTS_BUDGET}s with plain words ({took:.1f}s)",
+   took < 2.5 and "insufficient_balance" in w)
+reset()
+D["next"] = (400, "insufficient_balance")
+t0 = time.time()
+r = buy(E.single_buy_quote(X, 10))
+took = time.time() - t0
+ok(f"a manual buy refused for funds with a slow balance read: answered in {took:.1f}s (the order lock isn't held long)",
+   not r["ok"] and "enough money" in r["msg"] and took < 3.5 and not E.order_unsure(T))
+E._signed = real_signed
+time.sleep(2.5)                           # let the abandoned slow reads finish before the file ends
