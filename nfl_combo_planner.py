@@ -7,7 +7,7 @@ from the-odds-api.com). It never places a bet.
 Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
-import csv, datetime as dt, html, itertools, json, math, os, random, re, statistics, sys, threading, time
+import csv, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
 from collections import defaultdict
 from urllib.parse import quote, unquote
 import requests
@@ -425,18 +425,72 @@ def load_json(path, default):
         return default
 
 
-def save_json(path, data):
-    """Write all at once (temp file, then swap), so another copy reading it never sees half a file."""
+def save_json(path, data, strict=False):
+    """Write all at once (temp file, then swap), so another copy reading it never sees half a file. strict: money
+    state (the order ledger, hedges): a failed write is logged loudly and raised, never swallowed."""
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
+            if strict:
+                f.flush()
+                os.fsync(f.fileno())
         os.replace(tmp, path)
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as err:
         try:
             os.remove(tmp)
         except OSError:
             pass
+        if strict:
+            print(f"MONEY STATE NOT SAVED: {os.path.basename(str(path))}: {type(err).__name__}: {err}", flush=True)
+            raise
+
+
+class file_lock:
+    """An exclusive lock on `path` + ".lock" across processes (fcntl), for read-modify-write of money state shared
+    by the watcher, the shadow and the web app. Where fcntl is missing (never on the Mac or the Pi), a no-op."""
+
+    def __init__(self, path):
+        self.path, self.f = str(path) + ".lock", None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            return self
+        self.f = open(self.path, "a+")
+        fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self.f is not None:
+            try:
+                import fcntl
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.f.close()
+                self.f = None
+        return False
+
+
+# ---- the device's role and the Pause switch, as the watcher sets them (issue #143)
+ROLE_BACKUP = os.environ.get("COMBO_ROLE") == "backup"   # the Pi: alerts only, never an order from this copy
+TRADING_PAUSED = None             # the watcher / web app set a callable: True while Pause (from an alert) is on
+
+
+def role_backup():
+    return bool(ROLE_BACKUP) or os.environ.get("COMBO_ROLE") == "backup"
+
+
+def trading_paused():
+    """Pause, read fresh. A Pause check that fails counts as paused (never buy on a guess)."""
+    f = TRADING_PAUSED
+    if f is None:
+        return False
+    try:
+        return bool(f())
+    except Exception:
+        return True
 
 
 def money(x):
@@ -4288,8 +4342,24 @@ def hedge_beats(hg, whole):
 
 def hedge_unsure(t):
     """A hedge on this combo whose outcome is unknown: marked 'check', never retried, and auto cash-out leaves the
-    combo alone until you look."""
-    return bool((load_json(HEDGES, {}).get(t) or {}).get("check"))
+    combo alone until you look. A mark this process couldn't write to the file still counts (kept in memory)."""
+    return bool((load_json(HEDGES, {}).get(t) or {}).get("check")) or t in _HEDGE_UNSURE_MEM
+
+
+_HEDGE_UNSURE_MEM = sys.modules.setdefault("_combo_hedge_mem", type(sys)("_combo_hedge_mem")).__dict__.setdefault("d", {})
+
+
+def hedges_update(combo, **fields):
+    """Read-change-write one combo's entry in combo_hedges.json under its file lock (the watcher and the web app
+    both write it). A failed write is logged loudly and raised; a "check" mark is kept in memory first."""
+    if fields.get("check"):
+        _HEDGE_UNSURE_MEM[combo] = dict(fields)
+    with file_lock(HEDGES):
+        d = load_json(HEDGES, {})
+        d[combo] = dict(d.get(combo) or {}, **fields)
+        save_json(HEDGES, d, strict=True)
+    if fields.get("check"):
+        _HEDGE_UNSURE_MEM.pop(combo, None)
 
 
 def swing_lambda(h):
@@ -4454,8 +4524,8 @@ def auto_sell_now(plan):
                 cands.append((t, 1.0, why))
         for t, f, why in cands:
             h = MINE["hold"].get(t)
-            if hedge_unsure(t):
-                continue                                  # a hedge with an unknown outcome: hands off until checked
+            if hedge_unsure(t) or rfq_unsure(t, "sell"):
+                continue                                  # a hedge or cash-out with an unknown outcome: hands off until checked
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
             if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
@@ -4534,7 +4604,11 @@ def auto_sell_now(plan):
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
             msg = accept_cash(t)
-            log_decision(dict(rec, result="sold" if msg.startswith("✅") else "failed", note=msg[:140]))
+            log_decision(dict(rec, result="sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed",
+                              note=msg[:140]))
+            if msg.startswith("⚠️"):                     # may or may not have sold: no "took the profit" words
+                out.append("🤖 Auto cash-out: " + msg)
+                continue
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
                     "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. ",
                     "smart": "🤖 Took the profit: locking it in now beats the risk of holding. ",
@@ -5463,9 +5537,10 @@ def place_hedge(ticker, hg=None, auto=False):
         return "Nothing to hedge on this combo now."
 
     def unsure(err):
-        d = load_json(HEDGES, {})
-        d[ticker] = dict(d.get(ticker) or {}, check=int(time.time()), check_ticker=hg["ticker"], name=hg["name"])
-        save_json(HEDGES, d)
+        try:
+            hedges_update(ticker, check=int(time.time()), check_ticker=hg["ticker"], name=hg["name"])
+        except Exception:
+            _HEDGE_UNSURE_MEM[ticker] = {"check": int(time.time())}   # logged loudly; still marked in memory
         ACCT_CACHE["at"] = 0
         return (f"⚠️ The hedge on {h.get('label', 'the combo')} ({hg['name']}) may or may not have gone through "
                 f"({type(err).__name__}). Check Kalshi. It won't be tried again"
@@ -5483,9 +5558,11 @@ def place_hedge(ticker, hg=None, auto=False):
     ACCT_CACHE["at"] = 0
     if filled <= 0:
         return f"No one was selling {hg['name']} at {hg['price'] * 100:.0f}¢ just now. Nothing was bought."
-    d = load_json(HEDGES, {})
-    d[ticker] = dict(d.get(ticker) or {}, n=round(hg["done"] + filled, 2), ticker=hg["ticker"], name=hg["name"])
-    save_json(HEDGES, d)
+    try:
+        hedges_update(ticker, n=round(hg["done"] + filled, 2), ticker=hg["ticker"], name=hg["name"])
+    except Exception as err:                            # bought, but not remembered: hands off this combo until checked
+        print(f"MONEY STATE NOT SAVED: hedge on {ticker[:80]}: {type(err).__name__}: {err}", flush=True)
+        _HEDGE_UNSURE_MEM[ticker] = {"check": int(time.time()), "why": "hedge bought but not saved"}
     haptic("success")
     locked = filled * (1 - hg["price"]) - hg["fee"] * filled / hg["n"]
     if filled + 0.01 < hg["n"]:
@@ -8062,6 +8139,8 @@ def accept_cash(ticker):
         label = "Half of " + label
     if not o or not o.get("rfq") or time.time() - o["at"] > offer_life():
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
+    if rfq_unsure(ticker, "sell"):
+        return f"⚠️ {label}: {CASH_UNSURE_MSG}"
     agreed = o["offer"]
     MINE.setdefault("selling", set()).add(ticker)   # the auto-sell keeper keeps its hands off
     try:
@@ -8086,7 +8165,10 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed):
                 MINE["cash"][ticker] = o
                 why = "new"
                 break
-        status = accept_once(o)
+        status = accept_once(o, ticker)
+        if status == "unknown":
+            ACCT_CACHE["at"] = 0
+            return f"⚠️ {label}: {CASH_UNSURE_MSG}"
         if status == "executed":
             ACCT_CACHE["at"] = 0
             haptic("success")
@@ -8107,27 +8189,41 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed):
             "Try again in a minute." + (" Your auto-sell order is back on." if had_tp else ""))
 
 
-def accept_once(o):
-    """Accept one quote. Returns 'executed', 'cancelled', 'failed' or 'waiting'."""
+CASH_UNSURE_MSG = ("Kalshi didn't answer clearly, so this cash-out may or may not have gone through. Check your Kalshi "
+                   "account. No retry: the app (auto cash-out too) leaves this combo alone until you've checked "
+                   "(Settings › Money lists it).")
+
+
+def accept_once(o, ticker=None):
+    """Accept one cash-out quote. Returns 'executed', 'cancelled', 'failed' (a definite refusal before anything was
+    taken, e.g. the quote expired: a fresh offer may be tried) or 'unknown' (a timeout, a 5xx, no confirmation: it may
+    have sold, so it is marked "check" in the order ledger and never accepted again)."""
     import time
+
+    def unsure(why):
+        mark_rfq_unsure(ticker or o.get("ticker"), "sell", why)
+        return "unknown"
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "yes"})
-    except (RuntimeError, PermissionError, requests.RequestException):
-        return "failed"
+    except Exception as err:
+        if order_outcome(err) == "refused":
+            return "failed"
+        return unsure(f"cash-out accept: {type(err).__name__}: {order_words(err)[:60]}")
     status, start = "accepted", time.time()
-    while time.time() - start < 15 and status not in ("executed", "cancelled"):
+    while time.time() - start < ACCEPT_WAIT and status not in ("executed", "cancelled"):
         time.sleep(1)
         try:
             q = kalshi_send("GET", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}") or {}
-            status = (q.get("quote") or q).get("status", status)
+            got = (q.get("quote") or q).get("status") if isinstance(q, dict) else None
+            status = got if isinstance(got, str) and got else status
         except Exception:
             pass
     try:
         kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
     except Exception:
         pass
-    return status if status in ("executed", "cancelled") else "waiting"
+    return status if status in ("executed", "cancelled") else unsure("no confirmation from Kalshi")
 
 
 def cash_action(action, ticker):
@@ -8956,6 +9052,8 @@ CTX = {}   # this session's slate: games, combos, build id, pending offers
 def kalshi_send(method, path, body=None, params=None):
     """Signed request with your key (used for buying). Returns JSON or None. Order writes go through the V2
     adapter below (same fields in, same answer shape out)."""
+    if method != "GET" and role_backup():
+        raise KalshiRefused("this device is the alerts-only backup, so it never trades", 403, "app_backup")
     if hub_up():
         return hub_kalshi(method, path, body, params)
     confirm_backup_trade(method, path)
@@ -8978,6 +9076,8 @@ def kalshi_send(method, path, body=None, params=None):
 def _signed(method, path, body=None, params=None, timeout=20):
     """One signed request to Kalshi with this device's key. Returns the response, whatever its status."""
     import base64
+    if method != "GET" and role_backup():           # the Pi: nothing that could trade ever leaves this device
+        raise KalshiRefused("this device is the alerts-only backup, so it never trades", 403, "app_backup")
     key_id = CFG.get("kalshi_key_id", "").strip()
     full = "/trade-api/v2" + path
     ts = str(int(time.time() * 1000))
@@ -9048,6 +9148,7 @@ _ORDER_SHARED = sys.modules.setdefault("_combo_order_shared", type(sys)("_combo_
 _ORDER_SHARED.__dict__.setdefault("lock", threading.Lock())
 _ORDER_SHARED.__dict__.setdefault("recent", {})
 _ORDER_SHARED.__dict__.setdefault("told", set())
+_ORDER_SHARED.__dict__.setdefault("unsure", {})   # ledger entries kept in memory too, in case the file can't be written
 DEPRECATION_HOOK = None           # the watcher sets this: one push a day for each retirement notice
 
 
@@ -9303,22 +9404,34 @@ def _ledger_key(o):
     return f"{o['ticker']}|{o['side']}|{'r' if o['reduce_only'] else 'o'}"
 
 
+def ledger():
+    """The order ledger (unknown outcomes): the file, plus any entry this process couldn't write to it (kept in
+    memory, so a failed write still blocks a resend). Entries older than ORDER_UNSURE_SECS are left out."""
+    now = time.time()
+    d = {k: v for k, v in load_json(ORDER_LEDGER, {}).items()
+         if isinstance(v, dict) and now - float(v.get("ts", 0) or 0) < ORDER_UNSURE_SECS}
+    for k, v in list(_ORDER_SHARED.unsure.items()):
+        if now - float(v.get("ts", 0)) >= ORDER_UNSURE_SECS:
+            _ORDER_SHARED.unsure.pop(k, None)
+        else:
+            d.setdefault(k, v)
+    return d
+
+
 def order_unsure(ticker):
     """Whether an order on this market had an unknown outcome lately (then the app sends no more on it)."""
-    now = time.time()
-    return any(k.split("|")[0] == ticker and now - float(v.get("ts", 0)) < ORDER_UNSURE_SECS
-               for k, v in load_json(ORDER_LEDGER, {}).items() if isinstance(v, dict))
+    return any(k.split("|")[0] == ticker for k in ledger())
 
 
 def order_blocks():
     """Markets the app won't send orders on because an earlier order's outcome is unknown, for Settings:
-    [{"key", "ticker", "side", "sell", "until", "why"}], soonest to expire first."""
-    now, out = time.time(), []
-    for k, v in load_json(ORDER_LEDGER, {}).items():
-        if not isinstance(v, dict) or now - float(v.get("ts", 0)) >= ORDER_UNSURE_SECS:
-            continue
+    [{"key", "ticker", "side", "sell", "until", "why"}], soonest to expire first. A combo buy or cash-out whose
+    outcome is unknown shows as "combo buy" / "combo cash-out"."""
+    out = []
+    for k, v in ledger().items():
         t, side, kind = (k.split("|") + ["", ""])[:3]
-        out.append({"key": k, "ticker": t, "side": "YES" if side == "bid" else "NO", "sell": kind == "r",
+        word = {"bid": "YES", "rfq-buy": "combo buy", "rfq-sell": "combo cash-out"}.get(side, "NO")
+        out.append({"key": k, "ticker": t, "side": word, "sell": kind == "r" and not side.startswith("rfq"),
                     "until": int(float(v["ts"]) + ORDER_UNSURE_SECS), "why": str(v.get("why") or "")[:80]})
     return sorted(out, key=lambda x: x["until"])
 
@@ -9326,23 +9439,75 @@ def order_blocks():
 def clear_order_block(key):
     """Pete lifts one block (after checking Kalshi). New orders on that market may go again; the order whose outcome
     was unknown is never sent again (nothing resends it, and a panel bet stays "check"). Logged. Returns True if
-    there was one."""
-    with _ORDER_SHARED.lock:
+    there was one. Read-change-write under the ledger's file lock (the watcher, the shadow and the web app share it)."""
+    key = str(key)
+    with _ORDER_SHARED.lock, file_lock(ORDER_LEDGER):
         d = load_json(ORDER_LEDGER, {})
-        got = d.pop(str(key), None)
-        if got is None:
+        got = d.pop(key, None)
+        mem = _ORDER_SHARED.unsure.pop(key, None)
+        if got is None and mem is None:
             return False
-        save_json(ORDER_LEDGER, d)
-    print(f"order block cleared by you: {str(key)[:140]} (was: {str((got or {}).get('why', ''))[:80]})", flush=True)
+        if got is not None:
+            save_json(ORDER_LEDGER, d, strict=True)
+    print(f"order block cleared by you: {key[:140]} (was: {str((got or mem or {}).get('why', ''))[:80]})", flush=True)
     return True
 
 
-def _mark_unsure(o, why):
+def mark_unsure_key(key, why, **extra):
+    """Write one unknown-outcome entry to the ledger, read-change-write under its file lock (so two processes never
+    lose each other's entries). If the write fails, the entry is kept in this process's memory (still blocking a
+    resend here) and the error is raised (save_json logs it loudly)."""
+    ent = dict(extra, ts=time.time(), why=str(why)[:80])
     with _ORDER_SHARED.lock:
-        d = {k: v for k, v in load_json(ORDER_LEDGER, {}).items()
-             if isinstance(v, dict) and time.time() - float(v.get("ts", 0)) < ORDER_UNSURE_SECS}
-        d[_ledger_key(o)] = {"ts": time.time(), "coid": o["coid"], "why": str(why)[:80]}
-        save_json(ORDER_LEDGER, d)
+        try:
+            with file_lock(ORDER_LEDGER):
+                d = {k: v for k, v in load_json(ORDER_LEDGER, {}).items()
+                     if isinstance(v, dict) and time.time() - float(v.get("ts", 0) or 0) < ORDER_UNSURE_SECS}
+                d[key] = ent
+                save_json(ORDER_LEDGER, d, strict=True)
+        except BaseException as err:
+            _ORDER_SHARED.unsure[key] = ent
+            print(f"MONEY STATE NOT SAVED: order ledger entry {key[:80]} kept in memory only: "
+                  f"{type(err).__name__}: {err}", flush=True)
+            raise
+        _ORDER_SHARED.unsure.pop(key, None)
+
+
+def _mark_unsure(o, why):
+    try:
+        mark_unsure_key(_ledger_key(o), why, coid=o["coid"])
+    except Exception:
+        pass                                     # logged loudly by save_json; this process still remembers it
+
+
+def rfq_key(ticker, kind):
+    """The ledger key for a combo RFQ accept (kind "buy" or "sell") whose outcome is unknown."""
+    return f"{ticker}|rfq-{kind}|{'r' if kind == 'sell' else 'o'}"
+
+
+def rfq_unsure(ticker=None, kind="buy", legs=None):
+    """Whether a combo buy (or cash-out) on this market, or on this exact set of picks, had an unknown outcome
+    lately: then no fresh quote or accept goes out for it until the block ends or Pete clears it."""
+    want = sorted(legs) if legs else None
+    for k, v in ledger().items():
+        t, side = (k.split("|") + [""])[:2]
+        if side != f"rfq-{kind}":
+            continue
+        if ticker and t == ticker:
+            return True
+        if want and sorted(v.get("legs") or []) == want:
+            return True
+    return False
+
+
+def mark_rfq_unsure(ticker, kind, why, legs=None):
+    """A combo accept went out and no clear answer came back: remember it (never resent, never re-quoted)."""
+    try:
+        tk = ticker or "?" + hashlib.sha1("|".join(sorted(legs or [])).encode()).hexdigest()[:12]
+        mark_unsure_key(rfq_key(tk, kind), why, legs=sorted(legs or []))
+    except Exception:
+        pass                                     # logged loudly; still blocked in this process
+    print(f"combo {kind} outcome unknown, marked check: {str(ticker)[:80]} ({str(why)[:80]})", flush=True)
 
 
 def _route_missing(r):
@@ -9470,8 +9635,8 @@ def _order_create(body):
     key, sh = _ledger_key(o), _ORDER_SHARED
     with sh.lock:
         now = time.time()
-        u = load_json(ORDER_LEDGER, {}).get(key)
-        if isinstance(u, dict) and now - float(u.get("ts", 0)) < ORDER_UNSURE_SECS:
+        u = ledger().get(key)
+        if isinstance(u, dict):
             raise KalshiRefused("an earlier order on this market had no clear answer, so the app won't send "
                                 "another; check Kalshi", 409, "app_unsure")
         same = f"{key}|{o['count']}|{o['yes']}"
@@ -9540,9 +9705,15 @@ def is_order_write(method, path):
     return method == "DELETE" and bool(re.fullmatch(r"/portfolio/(events/)?orders/[^/]+", p))
 
 
+def has_kalshi_key():
+    """This device has a Kalshi key of its own (reading the account; on the Pi, never trading)."""
+    return bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)
+
+
 def can_trade():
-    return (bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)) or \
-        (hub_up() and bool(HUB["info"].get("trade")))
+    if role_backup():                               # the Pi is alerts-only: no code path there may place an order
+        return False
+    return has_kalshi_key() or (hub_up() and bool(HUB["info"].get("trade")))
 
 
 def combo_rules(events):
@@ -9756,11 +9927,15 @@ def get_offer(i, amount=None, check_cap=True):
         return {"error": cap_refusal(err)}
     if check_cap and spent + stake > CFG["budget"] + 0.01:
         return {"error": cap_msg(spent, stake)}
+    if rfq_unsure(legs=[l["ticker"] for l in c["legs"]]):
+        return {"error": COMBO_UNSURE_MSG, "check": True}
     legs = [{"market_ticker": l["ticker"], "event_ticker": l["event"], "side": "yes"} for l in c["legs"]]
     coll = find_collection(c["legs"])
     made = kalshi_send("POST", f"/multivariate_event_collections/{coll}",
                        {"selected_markets": legs, "with_market_payload": False})
     market = made["market_ticker"]
+    if rfq_unsure(market):
+        return {"error": COMBO_UNSURE_MSG, "check": True}
     clear_my_rfqs(market)
     rfq = kalshi_send("POST", "/communications/rfqs",
                       {"market_ticker": market, "target_cost_dollars": f"{stake:.2f}",
@@ -9793,57 +9968,90 @@ def get_offer(i, amount=None, check_cap=True):
     except Exception:
         pass
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
-                        "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None}
+                        "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None,
+                        "legs": [l["ticker"] for l in c["legs"]]}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": pays >= minimum, "stake": stake, "pct": pct}
+
+
+COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No retry: the app won't buy this combo "
+                    "again or get a fresh price for it until you've checked (Settings › Money lists it).")
+ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted combo quote
 
 
 def accept_offer(i, skip_cap=False):
     """Step 4: accept. 'no' is correct: it hits the seller's NO bid, which buys you YES. skip_cap: the daily
-    panel, whose own budget was checked when you approved it."""
+    panel, whose own budget was checked when you approved it. Only a definite refusal before Kalshi took the accept
+    (a 4xx, the key, Pause) is a plain error. Once the accept has gone out, anything unclear (a timeout, a 5xx, a
+    429 or unreadable status, no confirmation within ACCEPT_WAIT) returns {"error", "check": True}: the combo is
+    marked in the order ledger and never re-bought or re-quoted until the block ends or Pete clears it (rule 8)."""
     import time
     o = CTX["offers"].get(i)
     if not o:
         return {"error": "That offer expired. Tap New price for a fresh one."}
+    if trading_paused():
+        CTX["offers"].pop(i, None)
+        try:
+            kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+        except Exception:
+            pass
+        return {"error": PAUSE_MSG, "paused": True}
     try:
         spent = 0 if skip_cap else week_spend()
     except Exception as err:                       # CapUnknown (or anything else): refused, nothing sent
         return {"error": cap_refusal(err)}
     if not skip_cap and spent + o["stake"] > CFG["budget"] + 0.01:
         return {"error": cap_msg(spent, o["stake"])}
+    if rfq_unsure(o.get("market"), legs=o.get("legs")):
+        CTX["offers"].pop(i, None)
+        return {"error": COMBO_UNSURE_MSG, "check": True}
     CTX["offers"].pop(i, None)
+
+    def unsure(why):
+        mark_rfq_unsure(o.get("market"), "buy", why, o.get("legs"))
+        ACCT_CACHE["at"] = 0
+        return {"error": COMBO_UNSURE_MSG, "check": True}
     try:
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "no"})
-    except RuntimeError as err:
+    except Exception as err:
+        if order_outcome(err) != "refused":            # a timeout, a 5xx, a lost Mac: it may have gone through
+            return unsure(f"accept: {type(err).__name__}: {order_words(err)[:60]}")
         if "insufficient_balance" in str(err):          # Kalshi's own code: not an expired quote
             return {"error": f"Kalshi didn't take the combo: {order_words(err)}"}
-        return {"error": f"Couldn't accept, probably expired. Get a fresh offer. ({err})"}
-    status, start = "accepted", time.time()
-    while time.time() - start < 15 and status not in ("executed", "cancelled"):
+        return {"error": f"Kalshi turned the accept down ({order_words(err)}), so nothing was bought. "
+                         "Get a fresh offer."}
+    status, start, bad = "accepted", time.time(), ""
+    while time.time() - start < ACCEPT_WAIT and status not in ("executed", "cancelled"):
         time.sleep(1)
-        q = kalshi_send("GET", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}") or {}
-        status = (q.get("quote") or q).get("status", status)
+        try:                                           # a failed status read is not an answer: keep asking
+            q = kalshi_send("GET", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}") or {}
+            got = (q.get("quote") or q).get("status") if isinstance(q, dict) else None
+            status = got if isinstance(got, str) and got else status
+        except Exception as err:
+            bad = f"{type(err).__name__}: {order_words(err)[:60]}"
     try:
         kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
     except Exception:
         pass
     if status == "executed":
         ACCT_CACHE["at"] = 0
-        haptic("success")
-        if AUTOSELL and CFG.get("tp_auto"):
-            place_take_profit(o["market"], o["pays"], o["stake"], p=o.get("p"))
-        hist = load_json(HISTORY, {"builds": []})
-        b = next((x for x in hist["builds"] if x["id"] == CTX.get("build_id")), None)
-        if b is not None:
-            if i not in b["placed"]:
-                b["placed"].append(i)
-            b.setdefault("quotes", {})[str(i)] = round(o["pays"], 2)
-            save_json(HISTORY, hist)
+        try:                                           # bought: the bookkeeping after can't turn it into an error
+            haptic("success")
+            if AUTOSELL and CFG.get("tp_auto"):
+                place_take_profit(o["market"], o["pays"], o["stake"], p=o.get("p"))
+            hist = load_json(HISTORY, {"builds": []})
+            b = next((x for x in hist["builds"] if x["id"] == CTX.get("build_id")), None)
+            if b is not None:
+                if i not in b["placed"]:
+                    b["placed"].append(i)
+                b.setdefault("quotes", {})[str(i)] = round(o["pays"], 2)
+                save_json(HISTORY, hist)
+        except Exception as err:
+            print(f"combo bought; its bookkeeping failed: {type(err).__name__}: {err}", flush=True)
         return {"done": True, "pays": o["pays"]}
     if status == "cancelled":
         return {"error": "The seller backed out before confirming, so nothing was bought. Try again."}
-    return {"error": "Still waiting on Kalshi. Check Show my Kalshi combos in a minute before "
-                     "trying again, so you don't buy it twice."}
+    return unsure("no confirmation from Kalshi" + (f" ({bad})" if bad else ""))
 
 
 def decline_offer(i):
@@ -11524,9 +11732,11 @@ KILLER = {"single_edge": 0.08, "single_rel": 0.15, "combo_pct": 1.15, "combo_leg
 
 
 def killer_today():
+    """(buys, dollars) today. A "check" or one still "buying" may have been bought: they count. Raises if the history
+    can't be read (the caller skips: never "0 bought today" on a guess)."""
     start = time.mktime(dt.date.today().timetuple())
-    rows = store_rows("select stake from killer where mode='on' and status in ('bought', 'check') and ts >= ?",
-                      (start,))                     # a "check" may have been bought: it counts
+    rows = store_rows_strict("select stake from killer where mode='on' and status in ('bought', 'check', 'buying') "
+                             "and ts >= ?", (start,))
     return len(rows), sum(r["stake"] for r in rows)
 
 
@@ -11583,11 +11793,19 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
         return None
     picks = " + ".join(l["pick"] for l in legs)
     key = json.dumps(sorted(l["ticker"] for l in legs))
-    if store_rows("select 1 from killer where legs=? and ts > ?", (key, time.time() - 6 * 3600)):
-        return None                                   # one per deal
+    held = mode == "on" and trading_paused()
+    if mode == "on" and (held or not can_trade()):
+        mode = "watch"                                # Pause (read live) or a device that never trades: watch only
+    try:                                              # the dedupe and the caps must be read, or nothing is bought
+        if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?)",
+                             (key, time.time() - 6 * 3600, 1 if held else 0)):
+            return None                               # one per deal (one seen while paused can still buy after)
+        n, dollars = killer_today() if mode == "on" else (0, 0.0)
+    except Exception as err:
+        log(f"killer deal skipped: its history couldn't be read ({type(err).__name__}: {err})")
+        return None
     status, why = "watched", ""
     if mode == "on":
-        n, dollars = killer_today()
         try:
             spent = week_spend() if can_trade() else 0
         except Exception:                             # unreadable spend: skipped, never counted as $0
@@ -11599,10 +11817,25 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
         elif spent + stake > CFG["budget"] + 0.01:
             status, why = "skipped", "over your spending cap"
         else:
+            try:                                      # the record goes in BEFORE the order: a crash can't buy it twice
+                cur = store_x_strict("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) "
+                                     "values(?,?,?,?,?,?,?,?,?,?)", (time.time(), kind, key, picks, mode, "buying",
+                                                                    stake, pays, round(pct, 4), ""))
+                rid = cur.lastrowid
+            except Exception as err:
+                log(f"killer deal skipped: couldn't record it before buying ({type(err).__name__}: {err})")
+                return None
             ok, msg = buy()
             status, why = ("bought", msg) if ok else ("check", msg) if ok is None else ("failed", msg)
-    store_x("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) values(?,?,?,?,?,?,?,?,?,?)",
-            (time.time(), kind, key, picks, mode, status, stake, pays, round(pct, 4), why))
+            try:
+                store_x_strict("update killer set status=?, why=? where rowid=?", (status, why, rid))
+            except Exception as err:                  # stays "buying": counted in the caps, never bought again
+                log(f"killer deal: result not saved ({type(err).__name__}: {err}); it stays counted as bought")
+    if held:
+        status, why = "paused", "Pause is on"
+    if mode != "on" or status == "skipped":
+        store_x("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) values(?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), kind, key, picks, mode, status, stake, pays, round(pct, 4), why))
     if alert:
         if status == "bought":
             _alert(alert, f"🔥 Auto-bought a killer deal: {picks} for {money(stake)} to win {money(pays)} "
@@ -11610,11 +11843,27 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
         elif status == "check":
             _alert(alert, f"⚠️ Killer deal {picks}: Kalshi didn't answer clearly, so it may or may not have been "
                           f"bought ({money(stake)}). Check Kalshi; it won't be tried again.", "cash", "/")
+        elif status == "paused":
+            _alert(alert, f"🔥 Killer deal (paused, nothing bought): {picks} at {pct:.0%} of fair, {money(stake)} to "
+                          f"win {money(pays)}. Buying stays off while Pause is on.", "value", "/")
         elif status == "watched":
             _alert(alert, f"🔥 Killer deal (watch mode, nothing bought): {picks} at {pct:.0%} of fair, "
                           f"{money(stake)} to win {money(pays)}. Tap to buy it yourself.", "value", "/")
     log(f"killer deal {status}: {picks} at {pct:.0%} {why}")
     return status
+
+
+def killer_sweep(older=300):
+    """Killer deals left "buying" (the Mac stopped mid-order) become "check": may or may not have been bought,
+    never bought again. Returns the alerts for Pete."""
+    out = []
+    for r in store_rows("select rowid, picks, stake from killer where status='buying' and ts < ?",
+                        (time.time() - older,)):
+        store_x("update killer set status='check', why=? where rowid=?",
+                ("the Mac stopped mid-purchase; check Kalshi", r["rowid"]))
+        out.append(f"⚠️ Killer deal {r['picks']}: the Mac stopped while buying it, so it may or may not have been "
+                   f"bought ({money(r['stake'] or 0)}). Check Kalshi; it won't be tried again.")
+    return out
 
 
 def killer_resolve():
@@ -12482,6 +12731,8 @@ def maker_pass(games, book_snap, alert=None, log=print):
     """Keep standing buy orders a few cents under fair for the league on screen: post, re-price when the
     fair chance moves, cancel near game time or on news, and record fills. Watch mode only simulates."""
     mode = CFG.get("maker_mode", "watch")
+    if mode == "on" and (trading_paused() or role_backup()):
+        mode = "watch"                                 # Pause, read live (not the settings file): real ones are cancelled
     now, did = time.time(), []
     sides = {x["ticker"]: x for sd in games.values() for x in sd}
     for row in maker_open():                           # switched modes: what the old mode left out there goes
@@ -12908,10 +13159,10 @@ def manual_spend(ticker=None, now=None):
         mix = is_mix()
         key = (CTX["sunday"] if isinstance(CTX.get("sunday"), dt.date) and not by_day() and not mix else
                today if by_day() or mix else sunday_of(today))
-    try:                                                # store_strict: a failed read raises, never reads as empty
-        store_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
+    try:                                                # store_rows_strict: a failed read raises, never reads as empty
+        store_x_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
         rows = [(r["ticker"], r["cost"]) for r in
-                store_strict("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,), rows=True)]
+                store_rows_strict("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))]
     except Exception as err:
         raise CapUnknown(f"manual buys unreadable ({type(err).__name__})") from None
     rows += [(m[1], m[2]) for m in list(MANUAL_MEM) if m[0] >= now - MANUAL_LOOKBACK]
@@ -12930,9 +13181,9 @@ def _manual_note(t, cost, log=print):
     row = (time.time(), str(t), round(float(cost), 2))
     why = None
     for _ in range(2):
-        try:                                            # store_strict: a failed write raises (store_x would hide it)
-            store_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
-            store_strict("insert into manual_buys(ts, ticker, cost) values(?,?,?)", row)
+        try:                                            # store_x_strict: a failed write raises (store_x would hide it)
+            store_x_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
+            store_x_strict("insert into manual_buys(ts, ticker, cost) values(?,?,?)", row)
             return True
         except Exception as err:
             why = f"{type(err).__name__}: {str(err)[:80]}"
@@ -13552,6 +13803,8 @@ def _killer_combo(i):
     if i not in CTX["offers"]:
         return False, "the quote expired"
     r = accept_offer(i)
+    if r.get("check"):                                 # may have gone through: "check", never bought again
+        return None, r["error"]
     if r.get("error"):
         return False, r["error"]
     return True, "Bought at Kalshi's quote."
@@ -13953,11 +14206,23 @@ def month_profit(month):
 
 def sizing_base(balance=None):
     """The bankroll the panel sizes from: what's in Kalshi minus the profit set aside (until you say you've
-    moved it out), and when it has grown, only 10% more a week than last time (losses count right away)."""
+    moved it out), and when it has grown, only 10% more a week than last time (losses count right away). A balance
+    that can't be read is never guessed for real money: the base is then None (the panel isn't sized or bought) and
+    s["guess"] is True; the paper panel alone may size from the bankroll setting."""
     s = load_json(SIZING_FILE, {})
     if balance is None:
         balance = fetch_account(max_age=600, every_league=True)[1]
-    bal = float(balance) if balance is not None else float(CFG.get("bankroll", 300))
+    try:
+        bal = float(balance) if balance is not None else None
+    except (TypeError, ValueError):
+        bal = None
+    if bal is None:
+        if not SIZING_TOLD.get("no_balance"):
+            SIZING_TOLD["no_balance"] = True
+            print("panel sizing: your Kalshi balance couldn't be read, so no panel bet is sized or bought until it can",
+                  flush=True)
+        return None, dict(s, guess=True)
+    SIZING_TOLD.pop("no_balance", None)
     now = time.time()
     month = dt.datetime.now(PACIFIC).strftime("%Y-%m")
     if s.get("month") != month:                       # new month: set aside half of last month's profit
@@ -13976,6 +14241,9 @@ def sizing_base(balance=None):
         s.update(base=round(base, 2), base_at=now)
     save_json(SIZING_FILE, s)
     return base, s
+
+
+SIZING_TOLD = {}          # logged once until the balance reads again
 
 
 def skim_moved():
@@ -14745,6 +15013,9 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     now = now or time.time()
     budget = float(budget) if budget is not None else float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today(now)
     base, _ = sizing_base()
+    guess = base is None                               # no balance: a draft to look at only, never approved or bought
+    if guess:
+        base = float(CFG.get("bankroll", 300))
     day_end, nfl_end = _local_day_end(now), _nfl_week_end(now)
     idx = sport_pay_index()
     today, longer = [], []
@@ -14781,8 +15052,11 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     used = {e for c in picked for e in _events_of(c)}
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
-    return {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
-            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
+    out = {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
+           "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
+    if guess:
+        out["base_guess"] = True
+    return out
 
 
 # ---- storage, approval and the Mac's buying (right after approval)
@@ -14862,6 +15136,8 @@ def panel_approve(ids=None, view="all", at=None):
         return False, "There's no panel yet. Give it a few minutes."
     if at and abs(float(at) - src["at"]) > 1:
         return False, "The panel was just updated with new prices. Take another look, then approve."
+    if src.get("base_guess") or sizing_base()[0] is None:
+        return False, BALANCE_UNREAD_MSG
     msg = {}
 
     def fn(cur, st):
@@ -14900,6 +15176,10 @@ def panel_approve(ids=None, view="all", at=None):
                   f"checking each price again first (not while Pause is on).")
 
 
+BALANCE_UNREAD_MSG = ("The Mac couldn't read your Kalshi balance, so this panel's bet sizes would be a guess. Nothing "
+                      "was approved or bought; it tries again on its own once the balance reads.")
+
+
 # A panel bet in one of these states is riding, being bought, or was turned down by Kalshi at buy time today: it's
 # never added or offered again the same day, so a second Add tap (or two at once) can't buy it twice and a bet Kalshi
 # wouldn't sell isn't retried on every tap. A bet skipped or swapped out before any order (or left out at approval)
@@ -14933,6 +15213,8 @@ def panel_add(ids, view):
     src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
+    if src.get("base_guess"):                         # sized without the balance: never added to the real panel
+        return False, BALANCE_UNREAD_MSG
     ids = set(ids or [])
     msg = {}
 
@@ -15172,7 +15454,7 @@ def _buy_panel_bet(c):
         except (RuntimeError, PermissionError, requests.RequestException) as err:
             return False, f"Kalshi wouldn't price it ({str(err)[:120]})", {}
         if q.get("error"):
-            return False, q["error"], {}
+            return False, q["error"], {}                 # (a combo already marked "check" is never re-quoted)
         if not q.get("ok"):
             o = CTX["offers"].pop(1, None)
             if o:
@@ -15183,6 +15465,10 @@ def _buy_panel_bet(c):
             return False, f"Kalshi offered {q['pct']:.0%} of fair, under the {cut:.0%} cut-off", {}
         market = (CTX["offers"].get(1) or {}).get("market")
         r = accept_offer(1, skip_cap=True)               # the panel's own budget was checked when it was built
+        if r.get("check"):                               # it may have gone through: "check", never retried
+            return None, r["error"], {"market": market}
+        if r.get("paused"):                              # Pause came on mid-pass: nothing sent, it waits
+            return False, r["error"], {"paused": True}
         if r.get("error"):
             return False, r["error"], {"market": market}
         return True, f"bought for {money(c['stake'])}, pays {money(q['pays'])} ({q['pct']:.0%} of fair)", \
@@ -15283,6 +15569,10 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                         out.append(f"⏭️ Panel: skipped {picks}: " + ("games under way are switched off." if c.get("live")
                                                                      else "its game starts too soon to buy safely."))
                     continue
+            if mode == "real" and not paused and may_trade and (p.get("base_guess") or sizing_base()[0] is None):
+                if c.get("hold") != "balance":            # never buy on a guessed bankroll: wait for the balance
+                    _set_items(day, mode, {c["id"]: {"hold": "balance"}})
+                continue
             if mode == "real" and (paused or not may_trade):
                 hold = "paused" if paused else "no key"   # the card says why it isn't bought yet
                 if c.get("hold") != hold:
@@ -15343,6 +15633,12 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                 ok, note, d = _buy_panel_bet(dict(c, **upd))
             except Exception as err:
                 ok, note, d = None, f"{type(err).__name__}: {err}", {}
+            if ok is False and d.get("paused"):             # Pause came on during this pass: back to waiting
+                try:
+                    _set_items(day, mode, {c["id"]: {"state": "scheduled", "hold": "paused"}})
+                except Exception as err:
+                    log("panel: couldn't put a paused bet back:", type(err).__name__, err)
+                continue
             state = "bought" if ok else ("skipped" if c.get("live") else "failed") if ok is False else "check"
             try:
                 _set_items(day, mode, {c["id"]: dict(d, state=state, note=note, at=int(time.time()))})
@@ -16785,15 +17081,18 @@ def store_x(sql, args=()):
             return None
 
 
-def store_strict(sql, args=(), rows=False):
-    """store_x for the money records (manual buys): an error raises instead of being swallowed, so a cap check or a
-    buy's note can tell a failed read/write from an empty one. rows=True returns the rows as dicts."""
+def store_x_strict(sql, args=()):
+    """Like store_x, for money paths (killer deals): no history open or any error raises, never swallowed."""
     db = STORE["db"]
     if not db:
-        raise RuntimeError("no history database")
+        raise RuntimeError("history file not open")
     with _SLOCK:
-        cur = db.execute(sql, args)
-        return [dict(r) for r in cur.fetchall()] if rows else cur
+        return db.execute(sql, args)
+
+
+def store_rows_strict(sql, args=()):
+    with _SLOCK:
+        return [dict(r) for r in store_x_strict(sql, args).fetchall()]
 
 
 def store_rows(sql, args=()):
