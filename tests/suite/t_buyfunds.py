@@ -230,9 +230,11 @@ ok("the webapp asks the Mac for the pots (hub op 'pots'), and an older Mac witho
     A.kalshi_pots() == E.kalshi_pots()) and
    (setattr(A, "hub_call", lambda op, timeout=0, **k: {"err": "kalshi", "msg": "unknown request"}) or A.kalshi_pots() is None))
 ok("the hub answers 'pots' from the Mac's engine", 'if op == "pots":' in src and 'E.kalshi_pots()' in src)
-ok("Settings › Money: 'Kalshi balance by pot', says Kalshi's own app shows one total, no button (read-only)",
-   "potRow(d.pots)" in src and "Kalshi balance by pot" in src and "Kalshi's own app shows one total" in src and
-   "onclick" not in src[src.index("function potRow"):src.index("function clearBlock")] and "As of " in src)
+ok("Settings › Money: 'Kalshi balance by pot', says Kalshi's own app shows one total; the only button is Pete's own "
+   "'Move money between pots' (issue #144: moves happen only on his tap)",
+   "potRow(d.pots,d.potnames,d.potmoves)" in src and "Kalshi balance by pot" in src
+   and "Kalshi's own app shows one total" in src and "Money only moves when you tap and confirm" in src
+   and "onclick=\"potTool()\"" in src and "As of " in src)
 ok("Settings saves don't wait on the pots (read only on a plain read)", "pots = _pots() if vals is None else None" in src)
 esrc = open("wahome/engine.py").read()
 j = esrc.index("def single_buy(")

@@ -2999,6 +2999,11 @@ def webapp_main():
 
     def api_settings(lg, vals=None):
         pots = _pots() if vals is None else None       # reads only, outside the lock (it may ask the Mac)
+        try:                                            # pot names (public exchange status) and recent moves
+            potnames = {str(k): v for k, v in A.pot_names().items()} if vals is None else None
+            potmoves = A.pot_moves(refresh=True) if vals is None else None
+        except Exception:
+            potnames = potmoves = None
         with alock:
             if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
                 A.set_league(lg)
@@ -3055,10 +3060,19 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "blocks": A.order_blocks(),
-                             "pots": pots,
+                             "pots": pots, "potnames": potnames, "potmoves": potmoves,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
+    def pot_plan(t, msg, cost=None):
+        """The move that would let a buy refused for its pot fill (pot_shortfall), from what the order needed: the
+        refusal's own words ("needs about $9.90"), else the cost on the sheet. Never raises; reads only."""
+        try:
+            m = re.search(r"needs about \$([0-9][0-9,]*\.?[0-9]*)", str(msg or ""))
+            need = float(m.group(1).replace(",", "")) if m else float(cost or 0)
+            return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
+        except Exception:
+            return None
     class tap_mark:
         """While a tap is placing an order: a mark the watcher's update loop reads (it installs only after), so an
         update never restarts the web app mid-order."""
@@ -3212,6 +3226,8 @@ def webapp_main():
                 with tap_mark():
                     r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
                 LIVE["at"] = 0
+                if not r.get("ok") and not r.get("check") and "market's pot has" in str(r.get("msg") or ""):
+                    r = dict(r, pot=pot_plan(t, r.get("msg"), d.get("cost")))   # offer a move (a refusal: nothing bought)
                 return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
@@ -3255,6 +3271,19 @@ def webapp_main():
                     return {"ok": False, "msg": "That block has already ended."}
                 log("order block cleared from Settings:", key)
                 return {"ok": True, "msg": "Cleared. New orders on that market can go again; the unclear one is never resent."}
+            if a == "pot_quote":                    # the move sheet's numbers (reads only)
+                return jsonable(A.pot_transfer_quote(d.get("from"), d.get("to"), str(d.get("amount", ""))[:12]))
+            if a == "pot_move":                     # Pete's second tap on the move sheet: one move, never automatic
+                with tap_mark():                    # an update never restarts the web app mid-move
+                    r = A.pot_transfer(d.get("from"), d.get("to"), str(d.get("amount", ""))[:12],
+                                       cid=str(d.get("cid") or "")[:40], paused=paused_now())
+                log("pot move from the app:", r.get("status") or ("refused" if not r.get("check") else "check"))
+                return jsonable(r)
+            if a == "pot_clear":                    # Pete clears an open move after checking Kalshi
+                if not A.pot_clear(str(d.get("cid", ""))[:40]):
+                    return {"ok": False, "msg": "That move isn't open any more."}
+                log("pot move cleared from Settings")
+                return {"ok": True, "msg": "Cleared. Moves between pots can go again; the unclear one is never resent."}
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
@@ -3706,6 +3735,18 @@ def start_hub(conf, E, odds=None):
             return {"value": list(E.fetch_account(max_age=15, every_league=True))}
         if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
             return {"pots": E.kalshi_pots()}
+        if op == "pot_move":                             # Pete's confirmed tap: move cash between pots (never automatic)
+            paused = bool(req.get("paused"))
+            try:
+                paused = paused or (os.path.exists(CONF) and bool(load_conf().get("paused")))
+            except (OSError, ValueError, AttributeError):
+                paused = True                            # can't read the Pause switch: never move on a guess
+            log("phone pot move:", str(req.get("amount"))[:12], str(req.get("frm"))[:4], "->", str(req.get("to"))[:4])
+            return E.pot_transfer(req.get("frm"), req.get("to"), req.get("amount"), cid=req.get("cid"), paused=paused)
+        if op == "pot_clear":
+            return {"ok": E.pot_clear(str(req.get("cid") or "")[:40])}
+        if op == "pot_moves":                            # read-only: recent moves, pending ones checked with Kalshi
+            return {"moves": E.pot_moves(refresh=True)}
         if op == "get":
             url = str(req.get("url", ""))
             if not url.startswith(E.HUB_GET_HOSTS):
@@ -3720,8 +3761,10 @@ def start_hub(conf, E, odds=None):
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
             method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
-            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path):
-                return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}
+            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path) or \
+                    (method != "GET" and (not re.fullmatch(r"[A-Za-z0-9_/.:-]+", path) or ".." in path or
+                                          re.search(r"transfer|balance_allocation|subaccount", path.lower()))):
+                return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}   # moves: pot_move only
             if method != "GET":
                 log("phone order:" if "/accept" in path or path.endswith("/orders") else "phone request:", method, path)
             try:
