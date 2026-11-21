@@ -516,7 +516,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
-  It only acts while Auto cash-out is on; daily cap applies; singles sell into the order book (IOC at the bid,
+  It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5; λ from the sport's swing and time left (×1.3 at a slate
@@ -1040,6 +1040,19 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     visible switch track), and a fix for Settings › Accounts showing "Not connected" as a label.
   - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
     reduced-motion run.
+- **Settings folds, jump chips, search and the Mac line (GitHub #212, UI only; no setting, switch, save or Mac action changed).**
+  Every Settings section (`scard`, `watcher/spa/settings.js`) folds with a chevron: the header is one real button
+  (`.sfold`, 56 pt, under `hswBig`'s 64 pt so it keeps its iOS tick) and the body is the same `.fold` grid as Live's
+  sections, remembered per phone as `cw_fold_set_<id>` (`sOpen`/`sShow`/`sTog`; Money and The Mac start open, the rest
+  folded). A folded card's badge (`sBadges`: "N of M on" switches, Watching/Off for Killer and Standing orders, the version
+  on The Mac, Kalshi connected) updates on every change. The body stays in the page (hidden), so nothing re-renders to open
+  it; a test that needs a folded control calls `sShow('<id>', true)` first. The chips (`.sidx` buttons, never links, so they
+  get the haptic tick) jump to a section and open it: a sticky row under the header on a phone (`--toph`, kept by
+  `sAfter`), the side index on a desktop. The search box (`sFind`, `S.sq`, the input keeps focus across redraws) filters
+  rows (`.srow`, `.kv>div`, `.mixr`, `.sact`) by name and description across every section **in the DOM, without
+  touching the saved folds** (`.set.sq` forces sections open; clearing restores them; "No settings match" when empty). The
+  "The Mac · version X · up to date / update available" line (`macLine`) sits under the title and opens The Mac. Test:
+  `test_settingsfold`.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
 ## Kalshi API watch (GitHub issue #82)
