@@ -2530,9 +2530,11 @@ def webapp_main():
 
     def live_extras(out):
         try:
-            ideas = jsonable(A.live_suggestions()) if A.STORE.get("db") else []
+            info = {}
+            ideas = jsonable(A.live_ideas(info=info)) if A.STORE.get("db") else []
+            ideas_extra = {"ideas_limit": A.ideas_shown(), "ideas_hidden": info.get("hidden", 0)}
         except Exception:
-            ideas = []
+            ideas, ideas_extra = [], {}
         try:
             orders = jsonable(A.maker_summary()["open"]) if A.STORE.get("db") else []
         except Exception:
@@ -2541,7 +2543,7 @@ def webapp_main():
             pulse = A.pulse_series() if A.STORE.get("db") else []
         except Exception:
             pulse = []
-        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(),
+        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(), **ideas_extra,
                     auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
 
     def recent_sales(hours=3):
@@ -3008,7 +3010,7 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "ideas_shown")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3128,6 +3130,30 @@ def webapp_main():
 
     SHUT = {"on": False}
 
+    def idea_act(a, d, t):
+        """Live Buy ideas, no orders: hide ideas (X, swipe, Not now, Clear all, a bought one), bring them back (Undo,
+        'show them again'), and a read of the order book for the detail page (only a market that is in an idea on the
+        list). Not a money action: no app lock, no Pause check, nothing is priced or bought here."""
+        ok_id = lambda i: isinstance(i, str) and re.fullmatch(r"i[0-9a-f]{12}", i)
+        ids = [i for i in (d.get("ids") or []) if ok_id(i)][:40] if isinstance(d.get("ids"), list) else []
+        try:
+            if a == "idea_dismiss":
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought")
+                return {"ok": True, "n": r["n"], "ids": r["ids"]}
+            if a == "idea_undo":
+                r = A.idea_undismiss(ids, everything=d.get("all") is True)
+                return {"ok": True, "n": r["n"]}
+            tk = t if re.fullmatch(r"[A-Z0-9._-]{3,120}", t) else ""
+            if not tk or not any(tk in (x.get("legs") or []) for x in A.live_ideas()):
+                return {"ok": False, "msg": "That market isn't in an idea right now."}
+            dpt = A.book_depth(tk)                      # Kalshi's public order book, cached for a minute
+            if not dpt:
+                return {"ok": False, "msg": "Couldn't read Kalshi's book just now."}
+            return jsonable({"ok": True, **{k: dpt.get(k) for k in ("bid", "ask", "spread", "ask_size", "thin")}})
+        except Exception as err:
+            log("idea action failed:", a, type(err).__name__, err)
+            return {"ok": False, "msg": "Couldn't do that just now. Try again."}
+
     def api_act(d):
         if SHUT["on"] or restarting():
             msg = "The Mac is restarting. Nothing was done; try again in a moment."
@@ -3158,6 +3184,8 @@ def webapp_main():
             LIVE["at"] = 0
             return {"ok": True, "msg": "Got it. This one waits for you to sell it." if d.get("on") else
                     "Smart sell is watching this one now."}
+        if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
+            return idea_act(a, d, t)
         with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
