@@ -83,7 +83,12 @@ function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid"
    Haptics on and reduced motion off (as briefed). A MutationObserver adds switches to new content once per batch (a
    control never gets two) and takes a control's switch away if a field appears inside it. */
 const HSWQ='button,[onclick],.chip,.trow';
-const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,svg,[data-hapt]:not([data-hsw]),[data-hsw="0"]';
+/* #218: sideways-scrolling strips (the game page's tab row, the scoreboard's segments, wide tables, the Settings index):
+   WebKit's switch takes a sideways drag that starts on it as a slide of its own knob (it grabs the finger), so a row of
+   tabs that each carry a switch could not be scrolled sideways at all on an iPhone. Controls inside them get no switch
+   (scrolling first, as in #151); they keep their press feedback, and their tap still works. */
+const HSWX='.gtabs,.pbt,.gtw,.sidx';
+const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,svg,[data-hapt]:not([data-hsw]),[data-hsw="0"],'+HSWX;
 const HSWIN='input:not(.hsw),select,textarea,label,.sparkw,.scrub,.chartbox,.chips,.gtabs,.board,.antbl';   // fields, scrub charts and sideways strips stay reachable
 const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
 function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
