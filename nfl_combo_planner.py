@@ -4987,6 +4987,31 @@ def take_profit_reason(t, h, cut_ok=False):
     return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
 
 
+def cash_nudge(t, h, tp=None):
+    """Whether a "time to cash out" alert (the Live toast, the moment bar, a Do now card, the phone's push) may go out
+    for this live combo (#210). Alerts only: it reads, never sells, and auto cash-out does not look at it. All of:
+      - smart sell's own rule says sell now (exit_policy via take_profit_reason; tp = its answer when already worked
+        out this refresh), not the older Let it ride plan, which also says "sell" for a long shot on an estimate;
+      - a real Kalshi offer that is still fresh (never the watcher's estimate);
+      - that offer is at least what was paid, and at least 97% of the line the rule sells at;
+      - one of the games still to play is under way (between games nothing changes, so nothing to say).
+    Returns {'why', 'offer' (whole combo)} or None."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None
+    why, floor = tp if tp is not None else take_profit_reason(t, h)
+    if not why:
+        return None
+    o = MINE["cash"].get(t) or {}
+    if o.get("rfq") in (None, "estimate") or not o.get("offer") or not fresh_offer(t):
+        return None
+    whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+    if whole < (h.get("cost") or 0) or whole < 0.97 * (floor or 0):
+        return None
+    if not any(lv for _, lv, _ in h.get("legs_left") or []):
+        return None
+    return {"why": why, "offer": round(whole, 2)}
+
+
 def auto_sell_now(plan):
     """Auto cash-out (Settings, off by default): sells what the plan says to cash out, by itself,
     the same advice the card shows as Cash out. That already means a pick has won and Kalshi's
@@ -5748,8 +5773,9 @@ def live_view(mine, views, plan, chance_one, balance):
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
+            v["nudge"] = cash_nudge(t, h, (why, floor))     # the only thing that may say "time to cash out" (#210)
         except Exception:
-            v["moment"] = None
+            v["moment"] = v["nudge"] = None
         try:
             hg = hedge_for(t)
             v["hedge"] = {k: hg.get(k) for k in ("name", "cost", "locked", "price", "done")} if hg else None
@@ -8894,6 +8920,8 @@ def cash_alerts(plan):
     so the alert and the buttons always agree). It needs all of:
       - the plan recommends cashing something out, judged after the latest refresh;
       - each combo in it has a pick already won (before that, you hold: it was bought for the upside);
+      - smart sell's own rule would sell it now, on a real offer at or above cost, with a game under way
+        (cash_nudge, #210);
       - it's worth at least $2, or 3% of what it locks in, more to you than holding;
       - it's new: same advice again only if the offer rose 20%+ or half became all, and never
         within 10 minutes of the last alert for that combo."""
@@ -8907,8 +8935,8 @@ def cash_alerts(plan):
     news = []
     for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
         o, h = fresh_offer(t), MINE["hold"].get(t)
-        if not (f and o and h):
-            continue
+        if not (f and o and h) or not cash_nudge(t, h):
+            continue                   # smart sell wouldn't sell it now: no "cash out" push (#210)
         amt = acts_price(t) * h["pays"] * f
         last = told.get(t)
         if last and (time.time() - last["at"] < 600 or (amt < last["amt"] * 1.2 and f <= last["f"])):
@@ -20053,6 +20081,27 @@ def resolve_quotes(limit=200):
     return n
 
 
+NUDGE_GAP = 600          # seconds: one "time to cash out" toast per combo at most this often (#210)
+
+
+def nudge_event(t, v, view, last, now):
+    """The Live toast "Combo N: time to cash out" (#210). It used to follow the Let it ride plan's verdict, which
+    flips between hold and sell on the watcher's estimated offer, so a long shot that smart sell would never sell
+    (a 12-pick combo on an estimate below cost, games days away) got the toast every few minutes. Now it goes out
+    only when the combo's `nudge` (cash_nudge: smart sell's rule says sell, on a real offer at or above cost, a game
+    under way) turns on, at most once per NUDGE_GAP. Tapping it opens the combo (the SPA's moments.js)."""
+    nd = v.get("nudge")
+    was = last.get(("nudge", t))
+    last[("nudge", t)] = bool(nd)
+    if not nd or was or now - last.get(("nudge_at", t), 0) < NUDGE_GAP:
+        return []
+    last[("nudge_at", t)] = now
+    amt = money(nd.get("offer") or v.get("offer") or 0)
+    smart = view.get("auto_sell") and not v.get("self")
+    return [{"kind": "advice", "combo": t,
+             "text": f"{v['label']}: smart sell is cashing out at {amt}" if smart else f"{v['label']}: time to cash out ({amt})"}]
+
+
 def record_view(view):
     """Called each time the Mac refreshes Live: writes ticks and offers that changed, notes new bets and
     results, and returns the events worth pushing to open screens (scores, big swings, settled combos)."""
@@ -20130,8 +20179,7 @@ def record_view(view):
                 store_x("insert into offers values(?,?,?,?,?,?,?,?)",
                         (now, t, v.get("p"), v.get("pays"), v.get("hold_value"), v.get("offer"),
                          int(bool(v.get("offer_real"))), v.get("verdict")))
-                if prev and prev[1][2] != sig[2] and sig[2] in ("sell", "half"):
-                    ev.append({"kind": "advice", "combo": t, "text": f"{v['label']}: time to {'cash out' if sig[2] == 'sell' else 'cash out half'}"})
+            ev += nudge_event(t, v, view, last, now)
             _legs(t, v["legs"])
         elif ("done", t) not in last:
             last[("done", t)] = 1

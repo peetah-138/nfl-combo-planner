@@ -1,8 +1,18 @@
 // ---------------- refresh loop
 window.__inapp=function(){S.inapp=true;hswSync();if(S.view==='settings')renderSettings();};
 function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{if(typeof ideaReveal==='function')ideaReveal(S.hl);const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
-ideaFromHash(false);
-addEventListener('hashchange',()=>ideaFromHash(true));
+/* A notification or toast about one combo opens that combo's page (#210): its link is '/#c=<ticker>'. The page
+   opens Live, waits for the Live data, and pushes the combo only when it is one of yours; an unknown, old or
+   malformed one just leaves you on Live. */
+function comboOk(t){return typeof t==='string'&&/^[A-Za-z0-9._-]{3,120}$/.test(t);}
+async function comboFromHash(open){if(!location.hash.startsWith('#c='))return;let t='';try{t=decodeURIComponent(location.hash.slice(3));}catch(e){}
+ S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();render();}
+ if(!comboOk(t)){if(open)load('live',true);return;}
+ if(open)await load('live',true);
+ for(let i=0;i<40&&!(S.live&&S.liveNet);i++)await new Promise(r=>setTimeout(r,250));   // first start: wait for Live's own load
+ if(S.view==='live'&&((S.live&&S.live.combos)||[]).some(c=>c.t===t))openCombo(t);}
+ideaFromHash(false);comboFromHash(false);
+addEventListener('hashchange',()=>{ideaFromHash(true);comboFromHash(true);});
 chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
  if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
