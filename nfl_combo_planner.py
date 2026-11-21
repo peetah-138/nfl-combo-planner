@@ -842,8 +842,8 @@ def sharp_snapshot(key):
     BOOK_OPP.clear()
     TEAM_KICKOFF.clear()
     fair, note = _sharp_book_odds(key)
-    games = {t: [dict(g, fair=list(g["fair"]), day=str(g["day"]) if g.get("day") else None) for g in gs]
-             for t, gs in BOOK_GAMES.items()}
+    games = {t: [dict(g, fair=list(g["fair"]), day=str(g["day"]) if g.get("day") else None, sharp=True) for g in gs]
+             for t, gs in BOOK_GAMES.items()}           # sharp=True: the odds service's line (low-credit mode reads it)
     return {"fair": {k: list(v) for k, v in fair.items()}, "games": games,
             "opp": dict(BOOK_OPP), "kick": dict(TEAM_KICKOFF), "note": note}
 
@@ -1391,6 +1391,79 @@ def odds_worth_reading(code, interest, now=None):
     return False
 
 
+LOW_CREDIT_WHY = "Saving odds credits: this game is more than 4 hours away and only has free lines, not a sharp one"
+
+
+def _free_only_far(legs, now, fallback=None):
+    """Low-credit mode: does any game-winner pick (not priced live) rest on free lines only (no odds-service line) for
+    a game more than CREDIT_NEAR away (or at an unknown time)? Spreads and totals are left alone: they are always
+    priced on free lines, so low-credit mode doesn't change them."""
+    for l in legs or []:
+        if l.get("live") or _idea_kind(l) != "win" or l.get("sharp_line") or l.get("sharp"):
+            continue
+        k = _num(l.get("kick")) if "kick" in l else _kick_ts(l)
+        k = k if k is not None else _num(fallback)
+        if k is None or k > now + CREDIT_NEAR:
+            return True
+    return False
+
+
+def low_credit_filter(items, now=None, saving=None):
+    """(kept, dropped) for panel bets: while credits are low (odds_saving), bets with a pick that _free_only_far
+    catches are left out. REMOVE-ONLY: kept = the same dicts, same order, same stakes; normal mode returns everything.
+    Anything unreadable keeps the bet, exactly as before."""
+    items = list(items or [])
+    now = now or time.time()
+    try:
+        if not items or not (odds_saving(now)[0] if saving is None else saving):
+            return items, []
+    except Exception:
+        return items, []
+    kept, dropped = [], []
+    for c in items:
+        try:
+            far = _free_only_far(c.get("legs"), now, c.get("last"))
+        except Exception:
+            far = False
+        if not far:
+            kept.append(c)
+            continue
+        try:
+            text = bet_text(c)
+        except Exception:
+            text = ""
+        dropped.append({"id": c.get("id"), "text": text or " + ".join(str(l.get("pick") or l.get("ticker") or "")
+                                                                       for l in c.get("legs") or []),
+                        "why": LOW_CREDIT_WHY, "stake": c.get("stake") or 0, "events": _events_of(c),
+                        "league": c.get("league") or c.get("code"), "credits": True})
+    return kept, dropped
+
+
+def low_credit_ideas(ideas, now=None, saving=None):
+    """(kept, dropped) for Live's Buy ideas, the same rule as low_credit_filter, from each idea's stored leg facts
+    (an older idea with no record of its line counts as free lines only). Remove-only; normal mode unchanged."""
+    ideas = list(ideas or [])
+    now = now or time.time()
+    try:
+        if not ideas or not (odds_saving(now)[0] if saving is None else saving):
+            return ideas, []
+    except Exception:
+        return ideas, []
+    kept, dropped = [], []
+    for r in ideas:
+        try:
+            info = r.get("legs_info") or []
+            legs = [dict(li, kick=li.get("kick")) for li in info] if info else []
+            far = bool(legs) and _free_only_far(legs, now, r.get("kick"))
+        except Exception:
+            far = False
+        if far:
+            dropped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": LOW_CREDIT_WHY, "credits": True})
+        else:
+            kept.append(r)
+    return kept, dropped
+
+
 def odds_saving(now=None):
     """(saving credits now?, the numbers). Turns on as soon as credits are low; turns off only once they are
     comfortably back (half again over the floor and lasting 2+ days past the reset), so it doesn't flap as the
@@ -1503,6 +1576,7 @@ def attach_fair(games, book):
             s["book_name"] = n if src else None
             g = bg[i] if src and BOOK_GAMES and all(bg) else None   # a line read after the start is a live line
             s["line_at"], s["line_live"] = (g.get("at"), bool(g.get("inplay"))) if g else (None, False)
+            s["sharp_line"] = bool(g and g.get("sharp"))   # priced on the odds service's line, not free lines only
         news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
@@ -14655,7 +14729,9 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
                 save_json(IDEA_DISMISS, st2)
         out.sort(key=lambda r: (r["below_bar"], -r["ep"], -(r.get("pct") or 0), -(r.get("ts") or 0)))
         out = out[:keep]
+        out, lc_skipped = low_credit_ideas(out, now)       # low on odds credits: far games on free lines only go
         out, sb_skipped = smart_buy_ideas_gate(out, now)   # after the cut: Smart Buy only ever takes ideas away
+        sb_skipped = lc_skipped + sb_skipped
         hist = _idea_history([r["key"] for r in out], now)
         for i, r in enumerate(out):
             r["rank"] = i + 1
@@ -14791,7 +14867,7 @@ def idea_legs_info(legs):
             except ValueError:
                 kick = None
         out.append({"ticker": t, "kind": kind, "pick": l.get("pick"), "game": game, "away": away, "home": home,
-                    "plain": _idea_plain(code, l, kind), "kick": kick})
+                    "plain": _idea_plain(code, l, kind), "kick": kick, "sharp": bool(l.get("sharp_line"))})
     return out
 
 
@@ -14855,7 +14931,7 @@ def idea_describe(row):
             spec = LEAGUES.get(code) or SPORTS.get(code) or {}
             rows.append({"ticker": tk, "game": i.get("game") or "", "plain": i.get("plain") or "", "kind": i.get("kind"),
                          "league_name": LEAGUE_NAME.get(league_key(tk), "Soccer") if code == "soccer" else spec.get("name", ""),
-                         "icon": spec.get("icon", ""), "kick": kick, "live": under_way,
+                         "icon": spec.get("icon", ""), "kick": kick, "live": under_way, "sharp": i.get("sharp"),
                          "score": _idea_score(tk) if under_way else ""})
         out["legs_info"] = rows
         if rows:
@@ -15430,7 +15506,7 @@ def _cand(kind, code, legs, chance, ret, why, **extra):
     pre = [k for k in (_kick_ts(l) for l in legs if not l.get("live")) if k]
     out = dict({"id": kind + ":" + "+".join(sorted(l["ticker"] for l in legs)), "kind": kind, "code": code,
                 "icon": (LEAGUES.get(code) or SPORTS.get(code) or {}).get("icon", ""),
-                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs", "me")} for l in legs],
+                "legs": [{k: l.get(k) for k in ("ticker", "event", "pick", "p", "fair", "game", "vs", "me", "sharp_line")} for l in legs],
                 "league": league_tag(code, legs[0]["ticker"] if legs else ""),
                 "chance": round(chance, 4), "ret": round(ret, 4), "why": why,
                 "kick": min(kicks) if kicks else None, "last": max(kicks) if kicks else None}, **extra)
@@ -16212,11 +16288,17 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     # Smart Buy (stage 2): only AFTER the choice, and only ever leaving bets out. Nothing is picked in a skipped bet's
     # place and every other bet keeps its stake, so the panel is always a subset of what it would have been.
     used0 = {e for c in picked for e in _events_of(c)}   # longer plays: as if nothing were skipped (no room made)
+    picked, lc_skipped = low_credit_filter(picked, now)   # low on odds credits: far games on free lines only go
     picked, sb_skipped = smart_buy_filter(picked, now)
+    sb_skipped = lc_skipped + sb_skipped
     if sb_skipped:
-        tot = _sim_panel(picked) if picked else [0]     # the card's numbers describe the bets actually on it
-        stats.update(p_ahead=round(sum(1 for t in tot if t > 0) / len(tot), 3), ev=round(sum(tot) / len(tot), 2),
-                     stake=round(sum(c["stake"] for c in picked), 2), worst=round(min(tot), 2), best=round(max(tot), 2))
+        try:
+            tot = _sim_panel(picked) if picked else [0]     # the card's numbers describe the bets actually on it
+            stats.update(p_ahead=round(sum(1 for t in tot if t > 0) / len(tot), 3), ev=round(sum(tot) / len(tot), 2),
+                         stake=round(sum(c["stake"] for c in picked), 2), worst=round(min(tot), 2), best=round(max(tot), 2))
+        except Exception as err:                       # can't redo the numbers: keep the skips (never put a bet
+            console_note(f"panel stats not redone after skips: {type(err).__name__}: {err}")   # back), old numbers
+            stats["stale"] = True
     pool = defaultdict(int)
     for c in today:
         if _qualifies(c):
@@ -16225,7 +16307,9 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     used = used0
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
+    longer, lc_long = low_credit_filter(longer, now)
     longer, sb_long = smart_buy_filter(longer, now)    # after the cut too: nothing moves up in a skipped one's place
+    sb_long = lc_long + sb_long
     sb_skipped += [dict(x, longer=True) for x in sb_long]
     out = {"at": now, "items": sorted(picked, key=lambda c: c["kick"] or 0), "longer": longer, "stats": stats,
            "budget": budget, "base": round(base, 2), "codes": codes or sorted(PANEL_POOL), "games": dict(PANEL_GAMES)}
@@ -16602,7 +16686,7 @@ def _replacement(c, p):
                 continue
             if best is None or x["ret"] > best["ret"]:
                 best = x
-    if best is not None and not smart_buy_gate(best)[0]:
+    if best is not None and (not smart_buy_gate(best)[0] or not low_credit_filter([best])[0]):
         return None                                    # Smart Buy: the swap it would make is skipped, never a second pick
     return best
 
@@ -18234,7 +18318,9 @@ def panel_pass(log=print):
         left = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
         sk = [x for x in real.get("sb_skipped") or [] if isinstance(x, dict) and not x.get("longer")]   # Smart Buy's skips keep their budget
         left -= sum(float(x.get("stake") or 0) for x in sk)                     # and their games: a skip never makes
-        ex = {e for c in active for e in _events_of(c)} | {e for x in sk for e in x.get("events") or []}   # room
+        ex = {e for c in active for e in _events_of(c)} | {e for x in sk if not x.get("credits")
+                                                            for e in x.get("events") or []}   # room; a credits skip's
+        # game may come back as an extra (Pete's Add) once it is near or has a sharp line, inside the same budget
         x = build_panel(budget=max(left, 0), exclude=ex)
         # only a skipped, swapped or left-out bet may come back if it's good again; today's panel is read again
         # here because building took a while and an Add may have landed meanwhile
