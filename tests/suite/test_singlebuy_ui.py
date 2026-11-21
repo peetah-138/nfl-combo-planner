@@ -177,7 +177,8 @@ with sync_playwright() as pw:
         # ---- (5) a refusal stays in the sheet; an unclear answer is Check Kalshi
         ST["quote"] = Q(); ST["buy"] = {"ok": False, "moved": True, "msg": "The price moved to 75¢ (you saw 72¢). Nothing was bought. Get a fresh price."}
         pg.evaluate(f"sbOpen('{tk}','nba')"); wait(pg, "!!document.querySelector('#sbx #sbbuy')", 6); time.sleep(.3)
-        pg.locator("#sbbuy").click(); time.sleep(.8)
+        pg.locator("#sbbuy").click()
+        wait(pg, "!!document.querySelector('#sbx .sbw[data-w=failed]')", 8); time.sleep(.3)   # wait for the answer, not a fixed time
         s = sheet(pg)
         if not s or "failed" not in s["warn"] or "price moved" not in s["txt"] or "fresh price" not in (s["btn"] or ""): bad(f"{tag}: a refusal should show why and offer a fresh price: {s}")
         shot(pg, f"7_refused_{tag}.png")
