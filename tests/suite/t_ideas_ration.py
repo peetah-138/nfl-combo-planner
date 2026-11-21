@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Live "Buy ideas": ranked by expected dollars, rationed, dismissable (GitHub #141). Display and filtering only.
 # Covers: the order (expected profit in dollars at the suggested stake, best first; ideas under the quality bar last),
 # a stable idea_id/key that survives a re-offer, 'below the bar' marks, the 'Buy ideas shown' setting (default 3,

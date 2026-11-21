@@ -1,3 +1,4 @@
+# CHECK: group=engine
 import os,json,time,tempfile,random
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 import importlib.util

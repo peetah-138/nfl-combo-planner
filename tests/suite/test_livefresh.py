@@ -1,3 +1,4 @@
+# CHECK: group=page secs=20
 """Faster live numbers (display only): the 'Updated Ns ago' stamps, the freshness block from the web app, and the
 game sheet that redraws on its own (score, clock, chance), keeps its scroll place, skips needless redraws, and counts
 the clock down between updates. The game answers are scripted; nothing real is touched."""

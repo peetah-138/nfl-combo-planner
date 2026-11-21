@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Every panel bet names its game in plain English (issue #61): a spread or total ("Over 7.5") used to show nothing about
 # which game it was on. Singles, sell-early favorites, combos (each leg), spreads and totals carry a game label and a
 # league tag, built from data the Mac already has (no lookups); notifications and the recap name the game too; and

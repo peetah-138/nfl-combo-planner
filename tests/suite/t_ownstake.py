@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Pete sets his own bet amount (issue #145). The page only says what he wants; the engine checks every amount again
 # (own_stake: a real, finite number inside the limits, rounded down to the cent) and never trusts the page: negative,
 # zero, NaN, infinite, text, booleans and out-of-range amounts are refused with plain words and nothing is priced or

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=160
 """Method N, the default haptic (GitHub #60): on iOS 27 only the finger's own tap on a real <input type=checkbox switch>
 ticks, so every tappable control carries a see-through switch that covers it (.hsw, its first child).
 Checked on every tab at phone (iPhone, touch) and desktop (forced on) sizes: each control has one switch covering its

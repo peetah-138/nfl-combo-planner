@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Odds service credits: recorded from the headers of answers we already get (no extra calls), the burn rate, run-out
 # and reset date for Settings › The Mac, the one low-credit alert, and low mode (which only changes which leagues'
 # sportsbook lines the Mac reads; never a buy, a sale or a price rule). Everything is faked; nothing touches the network.

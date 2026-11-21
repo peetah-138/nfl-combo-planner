@@ -154,6 +154,9 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## Writing tests
 
+- One-time, per clone: `git config rerere.enabled true`. Git then remembers how you resolved a conflict and replays it
+  on the next rebase of a parallel PR, so a repeated conflict is only ever resolved once.
+
 - Engine tests print `PASS ...`/`FAIL ...` lines. Page tests print `PROBLEMS: ...` on any failure and their JS
   errors as `errs: [...]`; the runner fails on either, or on any traceback other than a dropped connection.
 - Page tests share `test_settings.py`'s setup (everything before `with sync_playwright() as pw:`), which starts the
@@ -161,8 +164,16 @@ pattern in a local `.git/hooks/pre-commit`.
 - Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
   for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
   `window.load=async()=>{}` after the page has loaded.
-- Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
-  is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
+- **Adding a test means adding one file, and nothing else** (so parallel PRs never conflict on a shared list):
+  1. Name it `suite/t_<name>.py` (engine test, run one after another) or `suite/test_<name>.py` (page test, run in
+     parallel lanes and CI shards).
+  2. Put a header comment in its first lines: `# CHECK: group=engine`, or `# CHECK: group=page secs=45` (roughly how
+     many seconds it takes on a CI runner; it only balances the shards, `retry` after it allows one automatic rerun in
+     CI for a test that is timing-bound by nature). Details are at the top of `suite/checklist.py`.
+  3. Describe what it covers in a comment right under the header. Do not add a bullet to "What's in it" above unless
+     the test opens a whole new area: that list is shared, and shared lists are where parallel PRs conflict.
+  `checklist.py` finds the file by globbing; `t_shards.py` fails if a test file has no valid header, and the listed
+  order is simply name order (tests don't depend on each other).
 - Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
 - Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can
   overwrite it: `pg.add_init_script(upwait.COUNT_FETCHES)` before `goto`, then `upwait.go_and_hold(pg, "live")`
@@ -178,7 +189,7 @@ pattern in a local `.git/hooks/pre-commit`.
 own runner, 3 lanes, its own ports). `suite/checklist.py` does the split: deterministic, longest tests first, every
 test in exactly one shard (checked by `t_shards.py`, which also checks CI runs every shard and every group). A final
 job named `checks` (the one branch protection requires) passes only when all of them passed. pip and the Playwright
-browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test listed in `checklist.RETRY` once and the log says
+browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test whose header says `retry` once and the log says
 `RETRIED`; it holds only `test_rebuild_ui` (see why there): fix a flaky test instead of adding it. Locally, `bash tests/run_checks.sh` still runs everything, and
 you can run one part the same way, e.g. `CHECK_GROUPS=pages CHECK_SHARD=2/5 bash tests/run_checks.sh`. Each page
 test's PASS line shows its seconds.

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=93
 """Makeover phase 1: press feedback and a haptic on every interactive thing (audited on every screen), distinct
 haptic patterns, the push transition into a game/combo page (slide, dimmed page behind, skeleton, Back, swipe back),
 the Live hero chart (Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=60
 """Live "Buy ideas" ration, dismiss, collapse and detail page (GitHub #141). The ideas come from the real engine
 (live_ideas: ranked by expected dollars, with stable ids) and the dismissals go through the web app's real
 /app/api/act and the engine's real dismissal file. At phone sizes (390 and 360, touch) and desktop it checks: only the top

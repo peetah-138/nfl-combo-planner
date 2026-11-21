@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The panel buys right after Pete approves it (issue #51), not ~45 minutes before each game. Every safeguard stays:
 # the fresh price recheck (swap or skip), the start rules, Pause, unknown outcome = "check" never retried, no double
 # buy from two passes at once, games under way switched off after approval = skipped. Fake Kalshi throughout.

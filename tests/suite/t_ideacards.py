@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Live "Buy ideas" cards say which game they are for (GitHub #129). The idea's payload now carries the league, each
 # leg's matchup ('Baylor at TCU', 'vs' only when home/away isn't known), the pick in plain words ('wins by 8 or more',
 # 'Over 7.5 total goals'), the start time (or the live score), Kalshi's price vs the fair price, the edge, the chance to

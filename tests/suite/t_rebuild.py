@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # "Build a fresh panel" starts at once: the flag, the progress notes the page reads, the done/why message, and the
 # watcher's rebuild thread picking a request up within seconds. It only makes drafts: never approves or buys.
 import os, sys, time, tempfile, threading, importlib.util

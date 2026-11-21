@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Spreads and totals, the margin-shape model (issue #117, part A): the distributions, the strike-distance
 # calibration (borrowing like the moneylines), the per-league gate and its Settings switch, both prices logged side by
 # side, and the promise that with the gate off every spread/total price is today's, byte for byte, and the panel's

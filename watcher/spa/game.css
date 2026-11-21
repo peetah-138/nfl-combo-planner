@@ -1,0 +1,120 @@
+/* live field strip (football game page; our own art). .fld (not .field, which is the login passcode wrapper). */
+.fstrip{margin:0 0 16px}
+.fld{position:relative;height:84px;border-radius:12px;overflow:hidden;box-shadow:inset 0 0 0 1.5px var(--line);background:#0b5d2a}
+.fld .grass{position:absolute;inset:0 8.333% 20px 8.333%;background:repeating-linear-gradient(90deg,#0b5d2a 0,#0b5d2a 10%,#0c6a30 10%,#0c6a30 20%)}
+.fld .ez{position:absolute;top:0;bottom:20px;width:8.333%;display:grid;place-items:center;opacity:.92}
+.fld .ez.l{left:0}.fld .ez.r{right:0}
+.fld .ez span{color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;writing-mode:vertical-rl;transform:rotate(180deg);text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.fld .grass i{position:absolute;top:0;bottom:0;width:0}
+/* The ball and possession arrow sit on the field's vertical midline (centred by their own translate(..,-50%)); the rule above would pin their box top to 0 and clip the top half, so win the cascade and put them back on 50% (#93). */
+.fld .grass i.fball,.fld .grass i.fdir{top:50%;bottom:auto}
+.fld .grass>i:not(.fball):not(.fdir):not(.fdline):not(.frz){border-left:1px solid rgba(255,255,255,.28)}
+.fld .frz{background:rgba(220,40,40,.28);width:auto}
+.fld .fdline{border-left:3px solid #f5d020;box-shadow:0 0 6px rgba(245,208,32,.7);z-index:3}
+.fld .fball{width:24px;height:14px;top:50%;transform:translate(-50%,-50%);z-index:4;transition:left .5s var(--ease)}
+.fstrip.noanim .fball{transition:none}
+.fld .fball svg{width:24px;height:14px}.fld .fball ellipse{fill:#8a4b1e;stroke:#fff;stroke-width:1.2}.fld .fball line{stroke:#fff;stroke-width:1.2}
+.fld .fdir{top:50%;color:#fff;font-size:13px;z-index:4;text-shadow:0 1px 2px rgba(0,0,0,.6);transition:left .5s var(--ease);width:auto}
+.fstrip.noanim .fdir{transition:none}
+.fld .ruler{position:absolute;left:0;right:0;bottom:0;height:20px;background:rgba(0,0,0,.35)}
+.fld .ruler span{position:absolute;transform:translateX(-50%);top:3px;color:#dfe8e0;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.situ{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;font-size:13.5px}
+.situ .dd{font-weight:800}.situ .rzt{color:#fff;background:var(--no);border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.lastplay{display:flex;gap:8px;align-items:baseline;margin-top:8px;font-size:12.5px;color:var(--sub);background:var(--panel2);border-radius:10px;padding:8px 11px}
+.lastplay .lpt{font-weight:800;color:var(--ink);text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;white-space:nowrap}
+.tdots{display:flex;gap:3px;justify-content:center;margin-top:4px}.tdots i{width:7px;height:4px;border-radius:2px;background:var(--line)}.tdots i.on{background:var(--sub)}
+.poss{color:var(--live);font-size:11px;margin-left:4px}
+/* game page tabs (a horizontally scrolling row with a sliding underline) and the play-by-play tab */
+.gtabs{position:relative;display:flex;gap:2px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;border-bottom:1px solid var(--line);margin:2px 0 14px}
+.gtabs::-webkit-scrollbar{display:none}
+.gtab{flex:0 0 auto;border:0;background:none;color:var(--sub);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;padding:11px 14px;white-space:nowrap;scroll-snap-align:center}
+.gtab.on{color:var(--ink)}
+.gtabind{position:absolute;bottom:0;left:0;width:0;height:3px;border-radius:3px 3px 0 0;background:var(--acc);transition:left .28s var(--spring),width .28s var(--spring);pointer-events:none}
+.gpanel[hidden]{display:none}
+.pcard{background:var(--panel2);border-radius:14px;padding:12px;margin-bottom:6px}
+.pcard.sc{background:var(--yesbg)}.pcard.to{background:var(--nobg)}
+.pch{display:flex;align-items:center;gap:8px}.pcm{flex:1;min-width:0;text-align:center}
+.pct{font-weight:800;font-size:15px;overflow-wrap:anywhere}.pcs{font-size:12px;color:var(--sub);margin-top:2px}
+.pstep{flex:0 0 38px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:20px;line-height:1;display:grid;place-items:center;padding:0}
+.pstep:disabled{opacity:.35}
+.pctx{margin-top:10px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}
+.pcf{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--sub)}
+.plive{border:0;border-radius:99px;background:var(--live);color:#1a1100;font-weight:800;font-size:12px;padding:6px 12px}.plive[hidden]{display:none}
+.pnote{font-size:11.5px;color:var(--mute);margin:2px 2px 12px}
+.pq{width:100%;display:flex;align-items:center;justify-content:space-between;border:0;background:none;color:var(--ink);font-weight:800;font-size:15px;padding:12px 2px;border-top:1px solid var(--line)}
+.pdr{width:100%;display:flex;align-items:center;gap:8px;border:0;background:var(--panel2);border-radius:10px;padding:9px 10px;margin:6px 0 4px;color:var(--ink);text-align:left;font-size:13px;min-width:0}
+.pdr .pres{font-weight:800}.pdr .psum{margin-left:auto;font-size:12px;white-space:nowrap}
+.pdr.sc .pres{color:var(--yes)}.pdr.to .pres{color:var(--no)}
+.pdot{width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 1.5px var(--line);flex:0 0 auto}
+.chev{flex:0 0 auto;transition:transform .2s var(--ease)}[aria-expanded=false]>.chev{transform:rotate(-90deg)}
+.pp{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;padding:9px 8px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
+.pp:last-child{border-bottom:0}.pp.sc{background:var(--yesbg)}.pp.to{background:var(--nobg)}.pp.cur{box-shadow:inset 3px 0 0 var(--acc)}
+.ppm b{display:block;font-size:12.5px}.ppm .m{font-size:11.5px}.ppt{overflow-wrap:anywhere;line-height:1.4}
+.situ .rzt.rpl{background:var(--acc)}
+/* slice 3 tabs: box score, team stats, injury report, last 5 games, season leaders (our own look, team colours as accents) */
+.gtabx{min-width:0}
+:root{--tmix:28%}@media (prefers-color-scheme:light){:root{--tmix:0%}}
+.tdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 6px 1px 0;vertical-align:middle;flex:0 0 auto}
+.ghead{display:flex;align-items:center;gap:4px;margin:14px 2px 6px;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub)}
+.gempty{color:var(--mute);font-size:13px;margin:6px 2px 10px}
+.seg.bxsw{display:inline-flex;flex-wrap:nowrap;position:relative;margin-bottom:2px}
+.seg.bxsw button{display:flex;align-items:center;position:relative;z-index:1;padding:7px 16px}
+.gtw{overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel2);border-radius:12px}
+.gstat{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.gstat th{font-size:10px;font-weight:800;letter-spacing:.04em;color:var(--mute);text-align:right;padding:9px 6px 6px;white-space:nowrap}
+.gstat td{text-align:right;padding:7px 6px;border-top:1px solid var(--line);white-space:nowrap}
+.gstat th:first-child,.gstat td:first-child{text-align:left;padding-left:12px;width:100%;max-width:0}
+.gstat td:first-child>div{display:flex;align-items:center;min-width:0}.gstat th:last-child,.gstat td:last-child{padding-right:12px}
+.gstat .pn{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600}.gstat .jn{flex:0 0 auto}
+.gstat tr.tot td{color:var(--sub);font-weight:700}
+.jn{display:inline-block;margin-left:5px;padding:0 5px;border-radius:6px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font-size:10.5px;font-weight:800;line-height:16px;vertical-align:1px}
+.h2h{display:flex;justify-content:space-between;align-items:center;margin:2px 2px 10px;font-weight:800;font-size:13px}
+.h2h b{display:flex;align-items:center}.h2h b:last-child .tdot{margin:0 0 1px 6px}
+.tsr,.ldr{padding:9px 2px 11px;border-bottom:1px solid var(--line)}.tsr:last-of-type,.ldr:last-of-type{border-bottom:0}
+.tsv{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:baseline;gap:8px;margin-bottom:7px}
+.tsv b{font-size:16px;font-variant-numeric:tabular-nums}.tsv b:last-child{text-align:right}
+.tsv span{font-size:12px;color:var(--sub);text-align:center;white-space:nowrap}
+.h2bar{display:flex;gap:3px;height:6px}
+.h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
+.h2bar.even i{opacity:.35}
+.tsv b.lag{color:var(--mute);font-weight:600}.tsv b.lead{color:var(--ink)}
+.lob{display:block;font-size:10.5px;color:var(--mute);font-weight:500;margin-top:1px}
+.gskr{padding:9px 2px 11px}.gskr i{display:block;height:16px;margin-bottom:7px}.gskr i+i{height:6px;margin:0}
+.gin .h2bar i{animation:sbarIn .7s var(--ease) both}
+.gin .h2bar i:last-child{animation-name:sbarInR}
+@keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
+@keyframes sbarInR{from{transform:scaleX(0);transform-origin:right}to{transform:none;transform-origin:right}}
+.gin .tsr,.gin .ldr,.gin .l5r,.gin .injr,.gin .gtw{animation:rise .38s var(--ease) both;animation-delay:calc(var(--i,0)*28ms)}
+.injr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
+.injr:last-child{border-bottom:0}.injn{min-width:0;display:flex;gap:8px;align-items:baseline}
+.injn b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}.injn .m{font-size:11.5px;white-space:nowrap}
+.injw{grid-column:1;font-size:12px}
+.ist{grid-row:1/span 2;grid-column:2;font-size:11px;font-weight:800;padding:4px 9px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap}
+.ist.bad{background:var(--nobg);color:var(--no)}.ist.warn{background:var(--livebg);color:var(--live)}.ist.q{background:var(--accbg);color:var(--acc)}
+.l5grid,.injgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:4px 18px}
+.l5r{display:grid;grid-template-columns:30px minmax(0,1fr) auto 52px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
+.l5r:last-child{border-bottom:0}
+.wl{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:900;font-size:12px}
+.wl.w{background:var(--yesbg);color:var(--yes)}.wl.l{background:var(--nobg);color:var(--no)}.wl.t{background:var(--panel2);color:var(--sub)}
+.l5o{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.l5s{font-variant-numeric:tabular-nums;font-weight:700}.l5d{text-align:right;font-size:12px}
+.form{display:inline-flex;gap:3px;margin-left:auto}.form i{width:7px;height:7px;border-radius:50%;background:var(--line)}.form i.w{background:var(--yes)}.form i.l{background:var(--no)}
+.ldc{text-align:center;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);margin-bottom:4px}
+.ldg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-bottom:8px}
+.ldp{min-width:0}.ldp.h{text-align:right}
+.ldv{display:block;font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
+.ldn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.ldl{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* play illustrations on the field strip (illustrative only; .noanim / reduced motion turns them all off) */
+.fld .grass .fproj{position:absolute;top:50%;width:11px;height:11px;margin:-5px 0 0 -5px;z-index:6;transition:left var(--dur,600ms) linear}
+.fproj b{display:block;width:100%;height:100%;border-radius:50%;background:#8a4b1e;box-shadow:0 0 0 1.5px #fff;animation:arcY var(--dur,600ms) both}
+@keyframes arcY{0%{transform:translateY(0);animation-timing-function:ease-out}50%{transform:translateY(calc(var(--ah,20px)*-1));animation-timing-function:ease-in}100%{transform:translateY(0)}}
+.fld .grass .ftrail{position:absolute;top:50%;height:5px;margin-top:-2px;border-radius:3px;background:rgba(255,255,255,.8);z-index:3;animation:trailIn .9s ease-out both}
+.fld .grass .ftrail.red{background:rgba(255,80,80,.9)}
+@keyframes trailIn{0%{transform:scaleX(0);opacity:.95}55%{transform:scaleX(1);opacity:.95}100%{transform:scaleX(1);opacity:0}}
+.fld .grass .fflag{position:absolute;top:8px;margin-left:-9px;font-size:18px;z-index:7;transform-origin:bottom center;animation:flagPop 1.4s ease-out both}
+@keyframes flagPop{0%{transform:scale(0) rotate(-30deg);opacity:0}25%{transform:scale(1.3) rotate(8deg);opacity:1}40%{transform:scale(1) rotate(0)}85%{opacity:1}100%{opacity:0}}
+.fld .grass .ftag{position:absolute;left:50%;top:6px;transform:translateX(-50%);z-index:8;padding:2px 9px;border-radius:99px;background:rgba(0,0,0,.7);color:#fff;font-weight:800;font-size:11px;letter-spacing:.06em;white-space:nowrap;animation:tagPop 1.3s ease-out both}
+.fld .grass .ftag.good{background:var(--yes)}.fld .grass .ftag.bad{background:var(--no)}
+@keyframes tagPop{0%{opacity:0;transform:translateX(-50%) scale(.6)}20%{opacity:1;transform:translateX(-50%) scale(1.12)}35%{transform:translateX(-50%) scale(1)}85%{opacity:1}100%{opacity:0}}
+.fld .ez.tdflash{animation:tdf .55s ease-in-out 2}@keyframes tdf{0%,100%{filter:none}50%{filter:brightness(2.1) saturate(1.5)}}
+.fld .fball.turn ellipse{animation:turnf .5s ease-in-out 3}@keyframes turnf{0%,100%{fill:#8a4b1e}50%{fill:#ff3b4a}}

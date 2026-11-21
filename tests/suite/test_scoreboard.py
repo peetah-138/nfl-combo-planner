@@ -1,3 +1,4 @@
+# CHECK: group=page
 # Results › the profit scoreboard (#138) and smart sell's scorecard (#115), at phone size (dark and light) and desktop:
 # real dollars from a seeded ledger through the real profit_board, the period switch rolls the numbers, every breakdown
 # tab shows its rows, small groups say "too few to trust", the Selling tab shows each sale against holding, the empty

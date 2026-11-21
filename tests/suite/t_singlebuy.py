@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Manual single-game buy (issue #113): Pete taps a team (or a spread/total) and buys it straight. The quote reads
 # Kalshi's order book now and is good for 20 s; the buy re-reads the book, refuses a higher price, and sends one
 # fill-now-or-cancel order at the quoted price (never more), once per quote. Pause, the weekly cap and the
