@@ -120,6 +120,32 @@ def save_settings(E, keys=None):
         E.save_json(E.MAIN_SAVED, main)
 
 
+def is_backup(conf):
+    return (conf or {}).get("role") == "backup"
+
+
+def backup_safe(conf, E):
+    """The Pi is alerts-only: every automatic trading switch forced off in its engine, and the engine told it's a
+    backup (its kalshi_send / can_trade refuse anything that could trade). Runs before any trading call and after
+    every settings copy from the phone, so a synced Auto cash-out = on never reaches the Pi's loop."""
+    if not is_backup(conf):
+        return False
+    os.environ["COMBO_ROLE"] = "backup"
+    E.ROLE_BACKUP = True
+    E.CFG["auto_sell"] = False
+    E.CFG["auto_cash"] = False
+    E.CFG["auto_hedge"] = False
+    E.CFG["killer_mode"] = "off"
+    E.CFG["maker_mode"] = "off"
+    return True
+
+
+def watcher_paused():
+    """Pause (from an alert) as the watcher holds it right now (not the settings file); the Pi counts as paused."""
+    conf = DEP.get("conf") or {}
+    return bool(conf.get("paused")) or is_backup(conf)
+
+
 def fetch_settings(conf, E):
     """Apply the latest settings the phone sent, if they carry a valid signature."""
     try:
@@ -164,6 +190,7 @@ def fetch_settings(conf, E):
             E.save_json(E.DISCOUNT_FILE, data["discount"])
         conf["settings_at"] = data["at"]
         applied = True
+    backup_safe(conf, E)                               # the Pi: whatever the phone sent, it never trades
     if applied:
         save_settings(E)
         E.save_json(CONF, conf)
@@ -191,6 +218,7 @@ def listen_for_settings(conf, E, lock):
                                 pause(conf, E)
                             elif fetch_settings(conf, E):
                                 E.CFG["auto_cash"] = False
+                            backup_safe(conf, E)
             except Exception as err:          # dropped connection, Wi-Fi blip: wait and reconnect
                 log("settings listener reconnecting:", type(err).__name__)
                 time.sleep(15)
@@ -457,6 +485,17 @@ def update_if_newer(E, conf):
 
 
 UPDATED = {}
+TAP_BUSY = os.path.join(HOME, "combo_tap_busy.json")   # the web app is mid-order on a tap (updates wait)
+TAP_BUSY_MAX = 240                                     # a mark older than this is stale (a crashed tap)
+
+
+def tap_busy():
+    try:
+        with open(TAP_BUSY, encoding="utf-8") as f:
+            at = float(json.load(f).get("at", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return 0 <= time.time() - at < TAP_BUSY_MAX
 
 
 def update_loop(E, conf):
@@ -468,6 +507,11 @@ def update_loop(E, conf):
         try:
             if conf.pop("update_now", False) or time.time() - last > (600 if auto_updates(conf) else 1800):
                 last = time.time()
+                if tap_busy():                      # a buy or sale tap is mid-order in the web app: install after it
+                    log("update waits: a tap is placing an order")
+                    conf["update_now"] = True
+                    time.sleep(15)
+                    continue
                 if update_if_newer(E, conf):
                     UPDATED["now"] = True
                     time.sleep(20)                  # let the main loop exit cleanly; if it's stuck, exit anyway
@@ -1003,6 +1047,9 @@ class HubOdds:
             except Exception as err:
                 log("history off for the odds engine:", err)
             self.H.console_note = lambda msg: log(msg)
+            self.H.TRADING_PAUSED = watcher_paused     # killer deals and standing orders: Pause read live
+            if is_backup(DEP.get("conf")):
+                self.H.ROLE_BACKUP = True
         return self.H
 
     @staticmethod
@@ -1686,6 +1733,10 @@ def history_loop(E, every=900):
     while True:
         try:
             E.killer_resolve()
+            for m in E.killer_sweep():
+                log(m)
+                if DEP.get("conf"):
+                    push(DEP["conf"], m, priority="high")
             E.maker_resolve()
             got = E.resolve_quotes()
             E.resolve_closes()
@@ -2315,9 +2366,16 @@ def webapp_main():
         if not os.path.exists(CONF):
             return False
         try:
-            return bool(load_conf().get("paused"))
+            c = load_conf()
+            return bool(c.get("paused")) or is_backup(c)
         except (OSError, ValueError, AttributeError):
             return True
+    A.TRADING_PAUSED = paused_now                   # the engine's own buy paths (accept_offer) read it too
+    try:
+        if is_backup(load_conf()):
+            A.ROLE_BACKUP = True                    # a web app on the Pi never trades either
+    except (OSError, ValueError, AttributeError):
+        pass
 
     def single_side(t, lg):
         """The board's side for one market (its fair chance, game and kind, and when that price was read), from the
@@ -2970,6 +3028,16 @@ def webapp_main():
                 LIVE["at"] = 0
                 if before != {k: A.CFG.get(k) for k in A.WATCHER_SYNCED}:
                     synced = send_synced()
+                    if not synced and paused_now():     # the Mac never heard the resume: nothing turns on here
+                        turned = [k for k in ("killer_mode", "maker_mode") if A.CFG.get(k) == "on" and before.get(k) != "on"]
+                        for k in turned:
+                            A.CFG[k] = before.get(k) or "watch"
+                        if A.CFG.get("auto_sell") and not before.get("auto_sell"):
+                            A.CFG["auto_sell"] = False
+                            turned.append("auto_sell")
+                        if turned:
+                            A.save_cfg()
+                            log("settings: couldn't reach the Mac while paused, so these stay off:", turned)
             mode = "mix" if A.is_mix() else "day" if A.by_day() else "week"
             return jsonable({"ok": True, "lg": A.LEAGUE["code"], "name": A.LG()["name"], "mode": mode,
                              "full": bool(A.LG().get("full")), "synced": synced,
@@ -2984,7 +3052,34 @@ def webapp_main():
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
+    class tap_mark:
+        """While a tap is placing an order: a mark the watcher's update loop reads (it installs only after), so an
+        update never restarts the web app mid-order."""
+        def __init__(self, on=True):
+            self.on = on
+
+        def __enter__(self):
+            if self.on:
+                try:
+                    A.save_json(TAP_BUSY, {"at": time.time(), "pid": os.getpid()})
+                except Exception:
+                    pass
+            return self
+
+        def __exit__(self, *exc):
+            if self.on:
+                try:
+                    os.remove(TAP_BUSY)
+                except OSError:
+                    pass
+            return False
+
+    SHUT = {"on": False}
+
     def api_act(d):
+        if SHUT["on"]:
+            msg = "The Mac is restarting. Nothing was done; try again in a moment."
+            return {"ok": False, "msg": msg, "error": msg, "busy": True}
         try:
             return _api_act(d)
         except ActBusy:
@@ -3015,12 +3110,15 @@ def webapp_main():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
-                A.cash_action("drop" if a == "keep" else a, t)
+                with tap_mark(a in ("go", "hedgego")):
+                    A.cash_action("drop" if a == "keep" else a, t)
                 LIVE["at"] = 0
                 o = A.MINE["cash"].get(t) or {}
                 flash = A.MINE.pop("flash", None)
                 msg = A.re.sub("<[^>]+>", "", flash or "") or (o.get("error") or "")
                 return {"ok": not o.get("error"), "msg": msg, "offer": o.get("offer"), "frac": o.get("frac", 1.0)}
+            if a in ("quote", "idea", "buy") and paused_now():
+                return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
             if a == "quote":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")
@@ -3039,7 +3137,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error")}})
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -3102,7 +3200,8 @@ def webapp_main():
             if a == "singlebuy" and d.get("q"):          # Buy straight: the quote on screen, once
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q"))):
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
-                r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
+                with tap_mark():
+                    r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
                 LIVE["at"] = 0
                 return jsonable(r)
             if a == "singlebuy":
@@ -3133,22 +3232,21 @@ def webapp_main():
                 i = int(d.get("i", 0))
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
-                    r = A.accept_offer(i)
+                    with tap_mark():
+                        r = A.accept_offer(i)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
                     if A.order_outcome(err) == "refused":       # a definite refusal: nothing was bought
                         r = {"error": A.order_words(err)}
-                    else:                                       # may have gone through (e.g. after the accept)
-                        w = A.order_words(err) if isinstance(err, RuntimeError) else \
-                            f"Something went wrong ({type(err).__name__})"
-                        r = {"error": w if "may or may not" in w else
-                             w.rstrip(".") + ". It may or may not have been bought: check Kalshi before trying again."}
+                    else:                                       # accept_offer handles everything after the accept
+                        r = {"error": f"That didn't work ({type(err).__name__}), so nothing was bought. Try again."}
                 print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
-                if not r.get("error") and 1 <= i <= len(A.CTX.get("combos") or []):
-                    BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))
-                return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays")})
+                if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
+                    BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
+                return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
+                                 "check": bool(r.get("check"))})
             if a == "panel_approve":
                 ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"))
                 return {"ok": ok, "msg": msg}
@@ -3318,6 +3416,9 @@ def webapp_main():
         while True:
             time.sleep(5)
             if os.getppid() != parent:
+                SHUT["on"] = True                   # no new taps from here on
+                got = alock.acquire(timeout=120)    # a tap mid-order finishes first (bounded), then exit
+                log("web app exiting after the watcher restarted" + ("" if got else " (a tap was still running)"))
                 os._exit(0)
     threading.Thread(target=orphan_check, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", WEBAPP_PORT), H)
@@ -3506,19 +3607,43 @@ def webapp_proxy(handler, tok, method, path, body=b""):
                                  method=method, headers={"Content-Type": handler.headers.get("Content-Type") or "application/json",
                                                          "X-CW-Local": "1" if is_local(handler) else "0"})
     where = ""
+    act = method == "POST" and path.split("?")[0] == "/app/api/act"
     try:
-        with urllib.request.urlopen(req, timeout=40) as r:
+        with urllib.request.urlopen(req, timeout=PROXY_ACT_TIMEOUT if act else 40) as r:
             code, ctype, data = r.status, r.headers.get("Content-Type", "application/json"), r.read()
             where = r.headers.get("X-CW-Where") or ""
     except urllib.error.HTTPError as err:
         code, ctype, data = err.code, "application/json", b"{}"
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError) as err:
+        refused = isinstance(getattr(err, "reason", err), ConnectionRefusedError)   # nothing reached the web app
+        if act:                                     # a tap: maybe mid-order, so never a reload page
+            code, ctype = (503, "application/json") if refused else (504, "application/json")
+            try:
+                order = str((json.loads(body or b"{}") or {}).get("a", "")) in ORDER_ACTS
+            except (ValueError, AttributeError):
+                order = True
+            msg = ("The planner is starting on your Mac, so nothing was done. Try again in a moment." if refused else
+                   "This may or may not have gone through: check Kalshi before trying again." if order else
+                   "Your Mac took too long to answer. Pull to refresh to see whether it went through.")
+            data = json.dumps({"ok": False, "msg": msg, "error": msg, "check": order and not refused}).encode()
+            log("tap proxy:", "web app not running" if refused else f"no answer in {PROXY_ACT_TIMEOUT}s",
+                f"({type(err).__name__})")
+            return _proxy_send(handler, code, ctype, data, where)
         code, ctype = 503, "text/html; charset=utf-8"
         data = (b"<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
                 b"<body style='font:17px -apple-system;padding:40px'>The planner is starting on your Mac. "
                 b"<script>setTimeout(function(){location.reload()},3000)</script>")
     if ctype.startswith("text/html"):
         data = data.replace(b"__CWTOK__", tok.encode())
+    _proxy_send(handler, code, ctype, data, where)
+
+
+PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
+#                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
+ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "quote", "idea", "singlequote", "ask", "askhalf")
+
+
+def _proxy_send(handler, code, ctype, data, where=""):
     handler.send_response(code)
     handler.send_header("Content-Type", ctype)
     handler.send_header("Cache-Control", "no-store")
@@ -3891,7 +4016,10 @@ def main():
         if SPA_STALE:
             log("web app files are for version", spa_stamp(), "- fetching this version's")
         spa_repair_start(conf)
+    if is_backup(conf):
+        os.environ["COMBO_ROLE"] = "backup"           # every engine copy this process loads knows it never trades
     E = load_engine()
+    backup_safe(conf, E)
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here
     E.present = lambda *a, **k: None
     E.loading = lambda *a, **k: None
@@ -3909,7 +4037,7 @@ def main():
         if E.CFG.get("maker_mode") == "on":
             E.CFG["maker_mode"] = "watch"
         save_settings(E, ("auto_sell", "killer_mode", "maker_mode"))
-    if not E.can_trade():
+    if not (E.can_trade() or (is_backup(conf) and E.has_kalshi_key())):
         push(conf, "The watcher can't reach your Kalshi account: check the Key ID and key file on the watcher.",
              priority="high")
         log("no Kalshi access; waiting 10 minutes")
@@ -3933,9 +4061,10 @@ def main():
     E.SCORES_MAX_AGE = 8                    # live scores every few seconds while games are on
     notifier = Notifier(conf, E)
     E.notify = notifier.add
-    backup = conf.get("role") == "backup"            # a Pi kept as alerts-only backup for the Mac
+    backup = is_backup(conf)                         # a Pi kept as alerts-only backup for the Mac
     if backup:
         log("backup mode: alerts only, and only while the Mac is quiet; never trades")
+    E.TRADING_PAUSED = watcher_paused                 # Pause as the watcher holds it, read live
     WATCHER["E"] = E
     try:
         E.store_open(os.path.join(HOME, "combo_history.db"))
@@ -3973,6 +4102,7 @@ def main():
                                "notes": [], "live": True, "last": None})
                 E.ACCT_CACHE["at"] = 0
                 _, E.MINE["snap"] = E.mine_page(live=True)
+            backup_safe(conf, E)                   # the Pi: trading off before anything below can run
             estimate_offers(E)
             E.ACCT_CACHE["at"] = 0
             alerts = E.live_check(None)            # also auto cash-out, if the phone turned it on
@@ -3984,15 +4114,12 @@ def main():
                 BUS.publish({"kind": "tick"})
             except Exception as err:
                 log("record failed:", type(err).__name__, err)
-            if t0 - last["sell"] > 60:
+            if t0 - last["sell"] > 60 and not backup_safe(conf, E):
                 last["sell"] = t0
                 done = E.autosell_pass()
                 if done:
                     log("auto-sell placed or moved:", done)
             if backup:
-                E.CFG["auto_sell"] = False
-                E.CFG["killer_mode"] = "off"
-                E.CFG["maker_mode"] = "off"
                 if t0 - last.get("mac", 0) > 60:
                     last["mac"] = t0
                     quiet = not mac_alive(conf)

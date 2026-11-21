@@ -11,7 +11,7 @@ ENGINE = """t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart
 t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss
 t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2
 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy
-t_ideacards t_shards t_spa_files t_spa_update t_spa_transition""".split()
+t_ideacards t_shards t_spa_files t_spa_update t_spa_transition t_safety""".split()
 
 PAGE = """test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv
 test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2
