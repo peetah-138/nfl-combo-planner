@@ -36,6 +36,7 @@ function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
   ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
+  ${s.fail&&s.pot?`<div class="brow" style="margin:4px 0 6px"><button class="btn acc" id="sbpot" onclick="potConfirm(S.sb&&S.sb.pot)">Move ${m2(s.pot.amount)} from ${esc(s.pot.from_name)} to ${esc(s.pot.to_name)}</button></div><div class="m" style="font-size:12px">Both pots are your own Kalshi money. Then get a fresh price to buy.</div>`:''}
   <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
    q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
    `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
@@ -48,7 +49,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
  if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
  s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
- let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
+ let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked),cost:q.cost});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
  /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
@@ -58,6 +59,6 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
   if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
   else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
  const why=r.msg||'It didn\'t go through. Nothing was bought.';
- if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
+ if(here){s.fail=why;s.pot=r.pot&&r.pot.ok?r.pot:null;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
 function sbClose(){closeModal();S.sb=null;}
 function lineFromBoard(t){sbOpen(t,S.lg);}
