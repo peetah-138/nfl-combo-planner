@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Spreads and totals, part B (issue #117): closing-line value per strike, fillable size after fees, a learned minimum
 # edge per league (start at today's bar, small steps on clear evidence, borrowing league -> sport -> all, never looser),
 # and the Build page's recommendations: only strikes worth buying, with a likely route to profit, ranked by expected

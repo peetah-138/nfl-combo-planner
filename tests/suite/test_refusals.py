@@ -1,3 +1,4 @@
+# CHECK: group=page
 # Kalshi refusals shown honestly (issue #134), in the web app: when Kalshi refuses for the account or region, a calm banner
 # says so under the header ("Kalshi isn't allowing orders for your account right now") and a tap opens Kalshi's own message
 # in FULL, selectable and copyable, with plain words that it is Kalshi's rule and not the app's. A refused tap answers with

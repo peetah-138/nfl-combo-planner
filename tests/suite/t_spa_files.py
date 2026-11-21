@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The web app's files (GitHub #124): watcher/spa/ holds the page as plain files, MANIFEST.json lists them in load
 # order, and combo_watcher.py joins them at import into the same SPA and LOGIN_HTML strings as before. This checks
 # every file is there, listed exactly once and non-empty, each script parses, the assembly is deterministic and

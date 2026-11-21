@@ -1,3 +1,4 @@
+# CHECK: group=page secs=1
 import sys, os, json, time, importlib.util, re
 sys.path.insert(0, "stub"); sys.path.insert(0, "run")
 import nfl_combo_planner as M

@@ -103,7 +103,7 @@ for t in $("$PY" checklist.py static); do   # static checks written as scripts (
 done
 fi   # static
 
-# the test lists and their split live in suite/checklist.py (t_shards.py checks every test is in exactly one shard)
+# the test lists and their split come from suite/checklist.py, which finds every test by its "# CHECK:" header (t_shards.py checks each is in exactly one shard)
 if on engine; then
   ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
   [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")

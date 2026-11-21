@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Tapping a notification must open the Combo Hub page, never an empty file (#79). Covers the service worker text
 (default target '/', legacy '/app' mapped), the engine's alert links, and the hub: a page navigation to /app or /app/
 redirects to '/', any navigation that finds nothing (or no session) gets a small HTML page and never an empty

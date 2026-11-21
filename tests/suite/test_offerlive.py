@@ -1,3 +1,4 @@
+# CHECK: group=page secs=4
 """The Live hero's "worth now if sold" follows the live leg prices (display only, Refs #80). The engine adds a
 separate `offer_live` field to each combo view and sums it into `cash_now` when there is no fresh real quote; the
 page shows it as the hero's "≈" number and on the combo row, keeping the tilde. Here we drive the SPA with scripted

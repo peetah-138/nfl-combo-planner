@@ -1,3 +1,4 @@
+# CHECK: group=static
 # Static check (GitHub #189): the tests never depend on the real internet. A test that reads ESPN, Kalshi or the odds
 # service for real passes or fails with the time of day (t_live_panel read ESPN's live injury report until #220).
 #   1. no test calls requests/urllib/http.client/socket with a literal address that isn't this machine;

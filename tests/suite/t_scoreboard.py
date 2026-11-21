@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The profit scoreboard (#138) and the smart-sell scorecard (#115): read-only analytics and logging, in real dollars.
 #  A  single bets from Kalshi's fills and settlements: fees counted, NO bets and sales before settlement right
 #  B  the ledger: combos and singles, one row each, rewritten only when something changed

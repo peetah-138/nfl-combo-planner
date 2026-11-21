@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Issue #223: a game's start time. Kalshi's expected settle time is a placeholder for most college football games
 # (23:00 UTC on 2026-11-21 whether they kick off at noon or 7:30 PM Eastern), so "settle time minus 3.5 h" put
 # Kentucky at Missouri's kick-off at 19:30 UTC, five hours early: Live said "Not started yet · was due 3h ago",
