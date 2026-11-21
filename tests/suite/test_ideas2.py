@@ -31,6 +31,7 @@ threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait"
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 SHOTS = os.environ.get("SHOTS") or ""
 from playwright.sync_api import sync_playwright
+import upwait
 problems = []
 def bad(m): problems.append(m); print("PROBLEM:", m)
 def until(fn, secs=4):
@@ -99,9 +100,10 @@ with sync_playwright() as pw:
     for W_, H, tag, touch in ((390, 844, "phone390", True), (360, 740, "phone360", True), (1280, 900, "desk", False)):
         ctx = br.new_context(viewport={"width": W_, "height": H}, device_scale_factor=2, color_scheme="dark", has_touch=touch)
         pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.add_init_script("window.__hswForce=1;")
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(2)
-        pg.evaluate("window.load=async()=>{}")
+        pg.add_init_script("window.__hswForce=1;"); pg.add_init_script(upwait.COUNT_FETCHES)
+        # wait for the page's own loads (the boot one too) before drawing test data in, then hold it still: a Live load
+        # still on its way used to land after inject() and replace the seeded ideas with the server's older snapshot
+        pg.goto(B + "/app"); upwait.go_and_hold(pg, "live")
         seed(); inject(pg)
         # ---- the ration: the best three, the rest under 'N more ideas'
         txt = pg.locator(".lsec[data-fk=ideas]").inner_text()
@@ -151,11 +153,11 @@ with sync_playwright() as pw:
         # ---- Not now means dismiss, and a reload keeps it hidden (server side)
         pg.locator(".ilist .iw").first.get_by_text("Not now").click(); time.sleep(.9)
         if not until(lambda: "BBB" not in server_picks()): bad(f"{tag}: Not now should dismiss on the Mac")
-        pg.reload(); time.sleep(3)
+        pg.reload(); upwait.go_and_hold(pg, "live")
         got = pg.evaluate("api('/app/api/live').then(r=>({n:(r.ideas||[]).map(i=>i.picks),lim:r.ideas_limit,hid:r.ideas_hidden,id:(r.ideas||[])[0]&&r.ideas[0].idea_id}))")
         if not isinstance(got, dict) or got.get("lim") != 3 or got.get("hid") != 1 or any("BBB" in p for p in got.get("n", [])) or not str(got.get("id", "")).startswith("i"):
             bad(f"{tag}: after a reload the live data should keep it hidden and carry ideas_limit/ideas_hidden/idea_id: {got}")
-        seed(); pg.evaluate("window.load=async()=>{}"); inject(pg)
+        seed(); inject(pg)
         # ---- swipe left to dismiss (touch), and a vertical drag that starts on a card still scrolls
         if touch:
             cdp = ctx.new_cdp_session(pg)
@@ -209,7 +211,7 @@ with sync_playwright() as pw:
             if pg.evaluate(f"document.querySelector('.fold[data-fk={k}]').getBoundingClientRect().height") > 30: bad(f"{tag}: a folded {k} section should take no room")
             if abs(docy() - top0) > 2: bad(f"{tag}: folding {k} moved its own header (layout jump)")
             if SHOTS and k == "ideas" and tag == "phone390": pg.screenshot(path=os.path.join(SHOTS, "folded_phone390.png"), full_page=False)
-        pg.reload(); time.sleep(3); pg.evaluate("go('live')"); time.sleep(1.5); pg.evaluate("window.load=async()=>{}"); inject(pg)
+        pg.reload(); upwait.go_and_hold(pg, "live"); inject(pg)
         for k in ("ideas", "combos", "singles"):
             if not pg.evaluate(f"document.querySelector('.fold[data-fk={k}]').classList.contains('shut')"): bad(f"{tag}: the {k} fold should survive a reload")
         for k in ("ideas", "combos", "singles"):

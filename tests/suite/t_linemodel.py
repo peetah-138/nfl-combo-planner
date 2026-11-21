@@ -6,6 +6,7 @@
 import os, json, math, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.book_depth = lambda t, max_age=60: None   # no order book (never Kalshi's real one: netguard); a fake ticker read None there too
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.MAIN_SAVED = os.path.join(E.HERE, "none.json")
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
@@ -201,6 +202,7 @@ E.margin_prob = _mp
 
 # ---- the panel: candidate selection unchanged with the gate off; with it on only the prices of line bets move
 spec2 = importlib.util.spec_from_file_location("E2", "wahome/engine.py"); E2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(E2)
+E2.book_depth = E.book_depth
 E2.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E2.HERE = tempfile.mkdtemp(); E2.MAIN_SAVED = os.path.join(E2.HERE, "none.json")
 E2.espn_lines, E2.line_markets, E2.price = E.espn_lines, E.line_markets, E.price
 E2.load_book_state = lambda snap: {}

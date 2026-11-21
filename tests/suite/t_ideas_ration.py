@@ -9,6 +9,8 @@
 import os, time, tempfile, importlib.util, json, fnmatch
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
+E.game_context = lambda code, *teams: []   # no back-to-back/weather notes from ESPN's real scoreboard (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.IDEA_DISMISS = os.path.join(E.HERE, "combo_idea_dismiss.json")
 E.MAIN_SAVED = os.path.join(E.HERE, "no_such_main_settings.json")

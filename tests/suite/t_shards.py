@@ -15,11 +15,13 @@ files_t = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, 
 files_p = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "test_*.py")))
 # tests register themselves: a "# CHECK: group=... [secs=N] [retry]" header in each file (see checklist.py); no list to edit
 check("every t_*.py file has a valid CHECK header (%s)" % "; ".join("%s: %s" % kv for kv in sorted(C.PROBLEMS.items())[:3]), not C.PROBLEMS)
+files_s = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "st_*.py")))
+check("every static check file is discovered once", sorted(C.STATIC) == files_s and len(set(C.STATIC)) == len(C.STATIC) and files_s)
 check("every engine test file is discovered once", sorted(C.ENGINE) == files_t and len(set(C.ENGINE)) == len(C.ENGINE))
 helpers = [t for t in files_p if C.TESTS[t]["group"] == "none"]
 check("every page test file is discovered once (only the helper test_webapp_pw is group=none)",
       sorted(C.PAGE + helpers) == files_p and len(set(C.PAGE)) == len(C.PAGE) and helpers == ["test_webapp_pw"])
-check("every discovered test is in exactly one of engine / page / helper", len(C.TESTS) == len(C.ENGINE) + len(C.PAGE) + len(helpers))
+check("every discovered test is in exactly one of static / engine / page / helper", len(C.TESTS) == len(C.STATIC) + len(C.ENGINE) + len(C.PAGE) + len(helpers))
 check("secs only name page tests", set(C.SECS) <= set(C.PAGE))
 import tempfile
 with tempfile.TemporaryDirectory() as d:        # the header parser itself: what it accepts and what it refuses
@@ -65,7 +67,7 @@ check("five shards are balanced within the longest test (%s s)" % w, max(w) - mi
 
 repo = os.environ.get("REPO") or os.path.abspath(os.path.join(here, "..", ".."))
 rc = open(os.path.join(repo, "tests", "run_checks.sh")).read()
-check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc
+check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc and "checklist.py static" in rc
       and not re.search(r"\bt_review t_review2\b|PAGE=\"test_", rc))
 ci = open(os.path.join(repo, ".github", "workflows", "ci.yml")).read()
 m = re.search(r"shard:\s*\[([\d,\s]+)\]", ci); tot = re.search(r"CHECK_SHARD:\s*\$\{\{\s*matrix\.shard\s*\}\}/(\d+)", ci)

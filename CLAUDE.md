@@ -216,6 +216,9 @@ whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the tes
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
 and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` header, found by `tests/suite/checklist.py`; adding a test is adding one file, see `tests/README.md`) plus an aggregate job named `checks` (the required one). What it covers:
+- **Writing tests** (`tests/README.md`): hermetic (engine tests run under `suite/netguard/`, which fails any real
+  connection; `st_hermetic` checks it), wait for state not sleeps (`upwait.go_and_hold` before drawing data in), own
+  port/temp files/unique ids.
 - Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
   `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
@@ -682,6 +685,16 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
+  sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
+  (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
+  `timeValid: false` "TBD" dates ignored), then the old estimate (Kalshi's `expected_expiration_time` minus the sport's
+  hours). Kalshi's expected settle time is a placeholder for many college football games (23:00 UTC for most of a
+  Saturday's slate, noon and night kickoffs alike), so the estimate alone put Kentucky at Missouri five hours early.
+  `start_dt`, `leg_start` and `started` all use it; `started` is also True whenever the feed shows the game in play or
+  over. `EVENT_TICK` (filled in `week_games`/`fetch_results`) finds a game's market from its event code. Pre-game panel
+  buys still need the sportsbooks' kickoff (`_kick_ts`) and live-priced ones a fresh in-play score (`live_side_fair`),
+  so a wrong estimate never bought anything. Test: `t_gamestart` (fixture `game_start_223.json`, real shapes).
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
