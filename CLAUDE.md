@@ -42,8 +42,12 @@ Real money is involved. Pete uses it daily.
   watcher (spa put back if the rest fails). Anything missing/changed = nothing replaced, the old version keeps running.
   Phone-approved updates (automatic updates off, e.g. the Pi) also need the phone's `spa` digest in its approval
   (engine `spa_approval_digest` = watcher `spa_digest`: sha256 of the assembled SPA, a zero byte, the login page);
-  without it they wait, and the self-repair below needs it too. With automatic updates on, an approval that lacks it
-  never holds an update back.
+  without it they wait, and the self-repair below needs it too (the phone reads the files at the newest commit). With
+  automatic updates on, the digest is never required. Fetch + swap run under `spa_locked()` (thread lock + a
+  `.spa.lock` file, so the installer's `--install-spa` and the watcher never collide); temp folders are only cleared
+  after an hour. An installed spa folder is stamped (`spa/.version`); a folder for another version is still served but
+  marks `SPA_STALE`, so `main()` fetches this version's. node only blocks when it is 18+ and says a script doesn't parse.
+  Both Python files are written to `.new` before anything is swapped.
   A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
   MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
   newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.20.125

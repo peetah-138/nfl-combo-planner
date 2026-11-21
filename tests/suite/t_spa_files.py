@@ -89,5 +89,5 @@ ok("the holding page works with the login page's placeholder replacing (nothing 
    B.LOGIN_HTML.replace("__MSG__", "x").replace("__FID__", "") == B.SPA_FALLBACK and "finishing an update" in B.SPA_FALLBACK)
 src = open(os.path.join(HERE, "combo_watcher.py")).read()
 ok("main() starts the repair only when the files were missing or broken",
-   "if SPA_PROBLEM:" in src.split("\ndef main():")[1][:400] and "spa_repair_start(conf)" in src.split("\ndef main():")[1][:400])
+   "if SPA_PROBLEM or SPA_STALE:" in src.split("\ndef main():")[1][:400] and "spa_repair_start(conf)" in src.split("\ndef main():")[1][:400])
 ok("the installers' --install-spa runs the same repair", '"--install-spa" in sys.argv' in src)

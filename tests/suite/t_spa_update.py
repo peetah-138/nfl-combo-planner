@@ -36,7 +36,7 @@ def snapshot(h):
     out = {}
     for root, _, files in os.walk(h):
         for f in files:
-            if "__pycache__" not in root:
+            if "__pycache__" not in root and f != ".spa.lock":
                 p = os.path.join(root, f)
                 out[os.path.relpath(p, h)] = hashlib.sha256(open(p, "rb").read()).hexdigest()
     return out
@@ -123,8 +123,9 @@ ok("normal update: installed and asks for a restart", r is True, LOG[-3:])
 ok("normal update: engine and watcher are the new version",
    f'VERSION = "{NEW}"' in open(os.path.join(h, "engine.py")).read() and f'WATCHER_VERSION = "{NEW}"' in open(os.path.join(h, "combo_watcher.py")).read())
 ok("normal update: the web app's files are the new ones", all(open(os.path.join(h, "spa", n), "rb").read() == b for n, b in new.items())
-   and sorted(os.listdir(os.path.join(h, "spa"))) == sorted(new))
+   and sorted(n for n in os.listdir(os.path.join(h, "spa")) if n != ".version") == sorted(new))
 ok("normal update: they assemble into the new page", "/* the new version */" in W.spa_assemble(os.path.join(h, "spa"))[0])
+ok("normal update: the web app folder is stamped with the version it is for", W.spa_stamp(os.path.join(h, "spa")) == NEW)
 ok("normal update: no temporary or old folder left behind", not [n for n in os.listdir(h) if n.startswith(".spa-new-") or n == "spa.old"])
 ok("normal update: the installed files are private to this user", all(os.stat(os.path.join(h, "spa", n)).st_mode & 0o077 == 0 for n in new))
 
@@ -156,7 +157,9 @@ r = W.update_if_newer(E, dict(AUTO))
 after = snapshot(h)
 ok("a failed install: no restart, the old web app files are back, the engine and watcher untouched",
    r is False and before == after and not os.path.exists(os.path.join(h, "spa.old")), set(before.items()) ^ set(after.items()))
-ok("a failed install: logged", any("failed while installing" in x for x in LOG[-3:]), LOG[-3:])
+ok("a failed install: logged", any("couldn't write the new files" in x for x in LOG[-3:]), LOG[-3:])
+ok("a failed install: no temporary folder or half-written file left", not [n for n in os.listdir(h) if n.startswith(".spa-new-")]
+   and not os.path.exists(os.path.join(h, "combo_watcher.py.new")))
 
 # 4) the phone-approved path (a Pi or a Mac with automatic updates off) fetches the same files
 h, W = home()
@@ -178,6 +181,11 @@ h, W = home()
 github(W, spa_files())
 ok("automatic updates on and the phone's approval lacks the web app digest: installs as an automatic update",
    W.update_if_newer(E, {"auto_update": True, "approve": dict(APPROVED)}) is True
+   and "/* the new version */" in open(os.path.join(h, "spa", "app.css")).read())
+h, W = home()
+github(W, spa_files())
+ok("automatic updates on and the phone approved other web app files (e.g. a stale copy): installs anyway",
+   W.update_if_newer(E, {"auto_update": True, "approve": dict(APPROVED, spa="0" * 64)}) is True
    and "/* the new version */" in open(os.path.join(h, "spa", "app.css")).read())
 h, W = home()
 github(W, spa_files())
@@ -221,6 +229,7 @@ ok("repair with automatic updates off and no phone approval: installs nothing",
 ok("repair with a phone approval for other files: installs nothing",
    W.spa_repair({"auto_update": False, "approve": {"version": W.WATCHER_VERSION, "spa": "0" * 64}}) is False
    and not os.path.exists(os.path.join(h, "spa")))
+ok("repair stamps the folder with this watcher's version", True)
 ok("repair with the phone's approval of exactly these files: installed",
    W.spa_repair({"auto_update": False, "approve": {"version": W.WATCHER_VERSION, "spa": digest_of(W, spa_files(b""))}}) is True
    and os.path.isdir(os.path.join(h, "spa")))
@@ -273,3 +282,82 @@ ok("phone: spa_approval_digest equals the watcher's spa_digest of the same files
 files = dict(files)
 files.pop("live.js")
 ok("phone: a file it can't read gives no approval (empty), never a partial one", Eng.spa_approval_digest() == "")
+
+# 9) a folder stamped for another version (an installer's fetch failed after it put in new Python files)
+h, W = home()
+open(os.path.join(h, "spa", ".version"), "w").write("2000.01.01.1\n")
+spec = importlib.util.spec_from_file_location("Wst", os.path.join(h, "combo_watcher.py"))
+Wst = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(Wst)
+Wst.log = lambda *a: LOG.append(" ".join(str(x) for x in a))
+ok("another version's web app folder: still served (no holding page) but marked stale",
+   Wst.SPA_STALE and not Wst.SPA_PROBLEM and Wst.SPA != Wst.SPA_FALLBACK)
+ok("main(): a stale folder -> the repair thread starts", main_starts_repair(Wst))
+github(Wst, spa_files(b""), watcher=open(os.path.join(h, "combo_watcher.py"), "rb").read())
+ok("repair of a stale folder: this version's files, stamped with this version",
+   Wst.spa_repair(dict(AUTO)) is True and Wst.spa_stamp(os.path.join(h, "spa")) == Wst.WATCHER_VERSION)
+
+# 10) node: a recent node's syntax error blocks; an old or broken node is skipped, never blocking updates forever
+fake = tempfile.mkdtemp(prefix="fakenode")
+path0 = os.environ.get("PATH", "")
+
+
+def node_says(version, check_exit):
+    with open(os.path.join(fake, "node"), "w") as f:
+        f.write(f"#!/bin/sh\nif [ \"$1\" = --version ]; then echo {version}; exit 0; fi\nexit {check_exit}\n")
+    os.chmod(os.path.join(fake, "node"), 0o755)
+    os.environ["PATH"] = fake + os.pathsep + path0
+
+
+spa, login = W.spa_assemble(os.path.join(SRC, "spa"))
+node_says("v12.22.0", 1)
+ok("node 12 (too old for today's JavaScript): the check is skipped, not failed", W.spa_node_check(spa, login) is False)
+node_says("v20.11.0", 1)
+try:
+    W.spa_node_check(spa, login)
+    blocked = False
+except ValueError:
+    blocked = True
+ok("a recent node that says the script doesn't parse: blocks", blocked)
+node_says("garbage", 0)
+ok("a node whose version can't be read: skipped", W.spa_node_check(spa, login) is False)
+os.environ["PATH"] = path0
+
+# 11) one fetch at a time across processes (the running watcher's repair and an installer's --install-spa)
+import fcntl
+h, W = home()
+with W.spa_locked():
+    g = open(os.path.join(h, ".spa.lock"), "a")
+    try:
+        fcntl.flock(g, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held = False
+    except OSError:
+        held = True
+    g.close()
+ok("spa_locked holds a lock file other processes respect", held)
+g = open(os.path.join(h, ".spa.lock"), "a")
+fcntl.flock(g, fcntl.LOCK_EX | fcntl.LOCK_NB)
+ok("and lets go of it afterwards", True)
+g.close()
+old = os.path.join(h, ".spa-new-fresh")
+os.mkdir(old)
+github(W, spa_files())
+W.update_if_newer(E, dict(AUTO))
+ok("a fresh temporary folder (another process mid-download) is never deleted", os.path.isdir(old))
+
+# 12) the phone reads the files at GitHub's newest commit too (a stale main copy can't make its approval wrong)
+files = spa_files(b"")
+SEEN = []
+
+
+def eget2(url, params=None, **k):
+    SEEN.append(url)
+    if "/commits/main" in url:
+        return R(raw=SHA.encode())
+    n = url.split("/watcher/spa/")[-1]
+    return R(raw=files[n]) if f"/{SHA}/watcher/spa/" in url and n in files else R({}, 404)
+
+
+Eng.requests = types.SimpleNamespace(get=eget2, RequestException=requests.RequestException)
+ok("phone: the approval digest is read at the newest commit", Eng.spa_approval_digest() == digest_of(W, files)
+   and all(f"/{SHA}/" in u for u in SEEN if "/watcher/spa/" in u))

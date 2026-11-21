@@ -361,9 +361,7 @@ def update_if_newer(E, conf):
         conf.pop("waiting", None)
         return False
     ok = conf.get("approve") or {}
-    # with automatic updates on, an approval without the web app's digest (a phone that couldn't read the files)
-    # never holds an update back: it installs as any automatic update would
-    auto = auto_updates(conf) and (ok.get("version") != latest or not ok.get("spa"))
+    auto = auto_updates(conf) and ok.get("version") != latest
     if ok.get("version") != latest and not auto:
         if conf.get("waiting") != latest:
             conf["waiting"] = latest
@@ -390,23 +388,32 @@ def update_if_newer(E, conf):
     if not sha:
         log(f"update {latest} waiting: GitHub didn't say which commit is newest, so the web app's files can't be checked")
         return False
-    if not auto and not ok.get("spa"):
+    # the web app's files must be the ones the phone approved, unless this Mac takes automatic updates anyway
+    approved = None if auto_updates(conf) else ok.get("spa")
+    if not auto_updates(conf) and not approved:
         log(f"update {latest} waiting: your phone hasn't approved this version's web app files yet")
         return False
-    with SPA_LOCK:
+    me = os.path.abspath(__file__)
+    with spa_locked():
         try:
-            new_spa = spa_fetch(sha, None if auto else ok["spa"])
+            new_spa = spa_fetch(sha, approved, stamp=latest)
         except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
             log(f"update {latest} skipped: the web app's files didn't all arrive intact ({err}); keeping this version")
             return False
-        old_spa = spa_swap(new_spa)                  # the web app first, then the engine, then the watcher itself
+        try:                                         # everything written first, then swapped in back to back
+            for path, text in ((ENGINE + ".new", src), (me + ".new", wsrc)):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+            old_spa = spa_swap(new_spa)
+        except OSError as err:
+            spa_drop(new_spa)
+            for path in (ENGINE + ".new", me + ".new"):
+                if os.path.isfile(path):
+                    os.remove(path)
+            log(f"update {latest} skipped: couldn't write the new files ({err}); keeping this version")
+            return False
         try:
-            with open(ENGINE + ".new", "w", encoding="utf-8") as f:
-                f.write(src)
             os.replace(ENGINE + ".new", ENGINE)
-            me = os.path.abspath(__file__)
-            with open(me + ".new", "w", encoding="utf-8") as f:
-                f.write(wsrc)
             os.replace(me + ".new", me)
         except OSError as err:
             spa_restore(old_spa)
@@ -452,6 +459,42 @@ def update_loop(E, conf):
 SPA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spa")
 SPA_CSS_MARK, SPA_JS_MARK = "@@SPA_CSS@@\n", "@@SPA_JS@@\n"
 SPA_LOCK = threading.Lock()
+SPA_STAMP = ".version"          # inside an installed spa folder: the watcher version it was fetched for
+
+
+class spa_locked:
+    """Held around fetching and swapping the web app's files: one thread here (SPA_LOCK) and one process on this
+    computer (a lock file next to the folder), so the watcher's repair and an installer's --install-spa never
+    trip over each other."""
+
+    def __enter__(self):
+        import fcntl
+        SPA_LOCK.acquire()
+        try:
+            self.f = open(os.path.join(os.path.dirname(SPA_DIR), ".spa.lock"), "a")
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        except BaseException:
+            SPA_LOCK.release()
+            raise
+        return self
+
+    def __exit__(self, *a):
+        import fcntl
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+            self.f.close()
+        finally:
+            SPA_LOCK.release()
+        return False
+
+
+def spa_stamp(folder=SPA_DIR):
+    """The version an installed spa folder was fetched for ("" when unstamped, e.g. in the repo)."""
+    try:
+        with open(os.path.join(folder, SPA_STAMP), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 SPA_FALLBACK = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
                 '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Combo Hub</title></head>'
                 '<body style="margin:0;padding:28px 20px;background:#0b0d12;color:#eef1f6;'
@@ -516,13 +559,22 @@ def spa_node_check(spa, login):
                                          if os.access(p, os.X_OK)), None)
     if not node:
         return False
+    try:                                              # an old node can't read today's JavaScript: skip, don't block
+        v = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=15).stdout
+        if int((re.match(r"v(\d+)", v.strip()) or [0, 0])[1]) < 18:
+            log("web app check: node is too old to check the scripts (", v.strip(), "); skipped")
+            return False
+    except (OSError, ValueError, subprocess.SubprocessError) as err:
+        log("web app check: node didn't answer (", err, "); skipped")
+        return False
     for name, page in (("web app", spa), ("login page", login)):
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
             f.write(spa_scripts(page))
         try:
             r = subprocess.run([node, "--check", f.name], capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError) as err:
-            raise ValueError(f"couldn't check the {name}'s script: {err}")
+            log(f"web app check: node couldn't check the {name}'s script ({err}); skipped")
+            return False
         finally:
             os.unlink(f.name)
         if r.returncode:
@@ -540,12 +592,12 @@ def spa_digest(spa, login):
     return hashlib.sha256((spa + "\0" + login).encode("utf-8")).hexdigest()
 
 
-def spa_fetch(sha, approved=None):
+def spa_fetch(sha, approved=None, stamp=WATCHER_VERSION):
     """Download the web app's files at exactly commit sha into a new folder next to the installed one, check them
     all and return that folder (spa_swap puts it in place). With approved (updates your phone approves), the
     assembled app must also have exactly that spa_digest. Raises on anything missing, changed, cut short, broken
-    or not approved, and then leaves nothing behind; the installed folder is never touched here. Call with
-    SPA_LOCK held."""
+    or not approved, and then leaves nothing behind; the installed folder is never touched here. The folder is
+    stamped with the watcher version it is for (stamp). Call inside spa_locked()."""
     import shutil, tempfile
     if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
         raise ValueError("no exact commit to fetch the web app from")
@@ -558,9 +610,12 @@ def spa_fetch(sha, approved=None):
         raise ValueError("GitHub's file list is out of shape")
     want = {e.get("name"): e.get("sha") for e in listing if isinstance(e, dict) and e.get("type") == "file"}
     parent = os.path.dirname(SPA_DIR)
-    for old in os.listdir(parent):                    # leftovers of an interrupted fetch
-        if old.startswith(".spa-new-"):
-            shutil.rmtree(os.path.join(parent, old), ignore_errors=True)
+    for old in os.listdir(parent):                    # leftovers of an interrupted fetch (an hour old or more)
+        try:
+            if old.startswith(".spa-new-") and time.time() - os.path.getmtime(os.path.join(parent, old)) > 3600:
+                shutil.rmtree(os.path.join(parent, old), ignore_errors=True)
+        except OSError:
+            pass
     tmp = tempfile.mkdtemp(prefix=".spa-new-", dir=parent)
     try:
         def grab(name):
@@ -581,6 +636,8 @@ def spa_fetch(sha, approved=None):
         if approved is not None and spa_digest(spa, login) != approved:
             raise ValueError("they don't match what your phone approved")
         spa_node_check(spa, login)
+        with open(os.path.join(tmp, SPA_STAMP), "w", encoding="utf-8") as f:
+            f.write(stamp + "\n")
         return tmp
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -648,7 +705,7 @@ def spa_repair(conf=None):
         if not g.ok or g.content != mine:
             log("web app files: GitHub's newest watcher isn't this one; the next update brings both")
             return False
-        with SPA_LOCK:
+        with spa_locked():
             spa_drop(spa_swap(spa_fetch(sha, approved)))
     except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
         log("web app files couldn't be fetched:", err)
@@ -1718,12 +1775,16 @@ pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}
 # The login page and the web app (SPA) live in watcher/spa/ as plain files; spa_assemble (above, next to the
 # updater) joins them back into these two strings at import. Missing or broken files never stop the watcher: the
 # pages say the app is finishing an update, the trading loop keeps running, and main() fetches the files again.
+# A folder stamped for another version (an installer's fetch failed after it put in new Python files) is still
+# served, but main() fetches this version's files too.
 SPA_PROBLEM = ""
+SPA_STALE = spa_stamp() not in ("", WATCHER_VERSION)
 try:
     SPA, LOGIN_HTML = spa_assemble()
 except Exception as _spa_err:                    # anything at all: the watcher must still start and keep trading
     SPA_PROBLEM = f"{type(_spa_err).__name__}: {_spa_err}"
-    log("WEB APP FILES MISSING OR BROKEN (spa folder):", SPA_PROBLEM, "- Combo Hub shows a holding page until they're fetched")
+    if "--install-spa" not in sys.argv:          # the installer is about to fetch them: nothing to shout about
+        log("WEB APP FILES MISSING OR BROKEN (spa folder):", SPA_PROBLEM, "- Combo Hub shows a holding page until they're fetched")
     SPA, LOGIN_HTML = SPA_FALLBACK, SPA_FALLBACK
 
 
@@ -3797,7 +3858,9 @@ def start_hub(conf, E, odds=None):
 def main():
     conf = load_conf()
     DEP["conf"] = conf
-    if SPA_PROBLEM:                         # the web app's files are missing or broken: fetch them, keep trading
+    if SPA_PROBLEM or SPA_STALE:            # the web app's files are missing, broken or another version's: fetch them
+        if SPA_STALE:
+            log("web app files are for version", spa_stamp(), "- fetching this version's")
         spa_repair_start(conf)
     E = load_engine()
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here

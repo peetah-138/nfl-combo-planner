@@ -7809,6 +7809,13 @@ def spa_approval_digest():
     A watcher on approved updates installs only web app files with this digest. "" when it can't be read."""
     import hashlib
     base = UPDATE_URL + "/watcher/spa/"
+    try:                        # read the files at GitHub's newest commit (plain main links can be minutes stale)
+        r = requests.get("https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main", timeout=10,
+                         headers={"Accept": "application/vnd.github.sha"})
+        if r.ok and re.fullmatch(r"[0-9a-f]{40}", r.text.strip()):
+            base = UPDATE_URL.rsplit("/", 1)[0] + "/" + r.text.strip() + "/watcher/spa/"
+    except requests.RequestException:
+        pass
 
     def get(name):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]+\.(html|css|js|json)", name):
