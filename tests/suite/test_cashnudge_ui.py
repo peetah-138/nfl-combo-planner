@@ -1,3 +1,4 @@
+# CHECK: group=page secs=25
 """Issue #210 on the page: a combo smart sell is looking after gets "cash out" words only when the Mac says smart sell
 would sell it now (`nudge`), and a "time to cash out" toast or a notification link ('/#c=<ticker>') opens that combo's
 page. Scripted /app/api/live and /app/api/combo answers (no real engine build); nothing real is touched."""

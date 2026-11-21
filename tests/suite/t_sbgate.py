@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Smart Buy stage 2 (issue #137): the skip-only gate and its learning dial per league. Fakes only: no network (the
 # results Kalshi settled come from a stand-in), no money, temp files.
 import os, time, tempfile, importlib.util, json, random, copy

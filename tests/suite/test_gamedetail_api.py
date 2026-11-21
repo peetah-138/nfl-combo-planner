@@ -1,3 +1,4 @@
+# CHECK: group=page secs=94
 """Slice 1 of the live game page (issue #72): the web app's /app/api/game endpoint assembles the `detail` block
 (situation + ESPN-derived board/drive) for a live football game, and never for anything else. Display only; the
 real api_game runs against a stubbed engine, so no network or account is touched. Checks:

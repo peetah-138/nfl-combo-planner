@@ -1,3 +1,4 @@
+# CHECK: group=page secs=50
 """The Live hero chart plots profit and loss (#221). From this test's own throwaway history (pulse, pulse_more, a sale in
 the ledger), through the real /app/api/live and /app/api/pulse, at phone (390x844, touch, dark and light) and desktop:
 the line starts at $0 and has a flat zero line, green above and red below (one gradient split exactly at zero), the

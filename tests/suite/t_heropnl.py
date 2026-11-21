@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The Live hero chart's profit line (#221): display only, built from the history file, never raises.
 #  A  empty history; every bet open all window; a bet bought mid-window; a bet open at the start with a gain (rebased)
 #  B  sold early (no spike or dip as it leaves, cash placed where its stake left), settled win via the over/limbo

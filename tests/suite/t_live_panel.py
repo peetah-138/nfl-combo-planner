@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Games already under way in the daily panel (Pete's call): eligible when priced live from a fresh score (never the
 # pre-game price), the switch, buying with a fresh recheck, Kalshi refusals are skips, finished games never bought.
 import os, time, tempfile, importlib.util, json

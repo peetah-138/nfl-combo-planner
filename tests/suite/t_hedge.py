@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Auto-hedge gets guards (issue #27): it only buys the other side of a combo's last game while that game is in play on
 # a fresh score, not at a break, when it locks in at least what the combo cost, after the same reading held on 3+
 # checks over 3+ minutes, and on a price re-read from the order book right before buying. A hedge with an unknown

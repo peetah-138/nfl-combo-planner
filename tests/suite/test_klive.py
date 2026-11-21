@@ -1,3 +1,4 @@
+# CHECK: group=page secs=9
 """Live scores for tennis, EuroLeague and UFC (Kalshi's public live data, display only) on the real web app: the Live
 data carries them, the Live page shows sets/games/points, quarters and clock, a fight's round, 'Not started yet' for a
 match running late, and the game sheet says where the score came from. Kalshi is faked from real response shapes."""

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=45
 """Build's "Best bets today" (issue #63): one ranked recommend-only feed. The web app's Build answer is patched at the page's
 request layer to carry a scripted feed (the engine's own feed is covered by t_bestbets.py); nothing is priced or bought.
 Checks at phone (390x844, dark and light) and desktop: the section sits under the panel, rows are in the order sent with

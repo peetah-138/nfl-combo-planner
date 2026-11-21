@@ -1,3 +1,4 @@
+# CHECK: group=page secs=8
 # Settings › Money › "Clear order block" (issue #81): after an order with an unknown outcome the app sends no order on
 # that market and side for 2 hours. Pete can lift it with one tap (and a confirm) once he has checked Kalshi; the row
 # says which market and side and when the block ends, and clearing is logged. No real orders: nothing is sent here.

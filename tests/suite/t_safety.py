@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Money-safety hardening (issue #143). Each check below failed on the code before this change:
 #  1 the Pi (backup role) can never place an order, and a synced Auto cash-out = on can't switch it back on;
 #  2 a combo accept that went out but whose status poll failed (429/5xx/timeout) is "check", never "refused";
