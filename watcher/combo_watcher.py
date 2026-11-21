@@ -2677,6 +2677,42 @@ def webapp_main():
         return out[:8]
 
     SNAP = {}                                           # sport -> its last Build, ready to switch to
+    LINES = {}                                          # sport -> its last spread/total recommendations (issue #117)
+    LINES_BUSY = set()
+
+    def lines_work(lg):
+        """Spreads and totals for one Build sport, worked out OFF the app lock (they read Kalshi's order books and run
+        Smart Buy's simulator), so taps never wait on them. Recommend-only: nothing here buys. Never raises."""
+        try:
+            codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
+            recs, priced, nobook = [], 0, 0
+            for c in codes:
+                got, info = A.line_recommend(c)
+                recs += got
+                priced += info.get("priced") or 0
+                nobook += (info.get("skipped") or {}).get("book") or 0
+            got = {"at": time.time(), "lines": sorted(recs, key=lambda x: -(x.get("exp") or 0))[:12],
+                   "priced": priced, "nobook": nobook}
+            LINES[lg] = got
+            if BUILD.get("lg") == lg:                   # Buy straight reads the board's lines (single_side)
+                BUILD.update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+            if lg in SNAP:
+                SNAP[lg].update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+        except Exception as err:
+            print("lines:", type(err).__name__, err, flush=True)
+        finally:
+            LINES_BUSY.discard(lg)
+
+    def lines_kick(lg, wait=0.0):
+        """Start working out a sport's spreads/totals in the background when its copy is over a minute old (one at a
+        time per sport); wait up to `wait` seconds for it. The page shows the last good copy meanwhile."""
+        got = LINES.get(lg)
+        if lg not in LINES_BUSY and (not got or time.time() - got["at"] > 60):
+            LINES_BUSY.add(lg)
+            th = threading.Thread(target=lines_work, args=(lg,), daemon=True)
+            th.start()
+            if wait:
+                th.join(wait)
 
     def use_snap(lg):
         s = SNAP.get(lg)
@@ -2694,6 +2730,7 @@ def webapp_main():
         BUILD.setdefault("seen", {})[lg] = time.time()
         if not warming:
             BUILD["touched"] = time.time()
+        lines_kick(lg, wait=0 if warming else 1.5)     # before the lock: never holds it
         with alock:
             gone = not A.CTX.get("all_games")              # Settings for another sport clears the build's games
             if not rebuild and (BUILD["lg"] != lg or gone) and use_snap(lg):
@@ -2726,19 +2763,9 @@ def webapp_main():
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
                 BUILD.update(lg=lg, last=lg, note=note, at=time.time(), days=days)
-                try:                                    # spreads and totals: recommendations only (issue #117)
-                    codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
-                    recs, priced, nobook = [], 0, 0
-                    for c in codes:
-                        got, info = A.line_recommend(c)
-                        recs += got
-                        priced += info.get("priced") or 0
-                        nobook += (info.get("skipped") or {}).get("book") or 0
-                    BUILD["lines"] = sorted(recs, key=lambda x: -(x.get("exp") or 0))[:12]
-                    BUILD["lines_priced"], BUILD["lines_nobook"] = priced, nobook
-                except Exception as err:
-                    print("lines:", err, flush=True)
-                    BUILD["lines"], BUILD["lines_priced"], BUILD["lines_nobook"] = [], 0, 0
+                lc = LINES.get(lg) or {}                # spreads and totals: recommendations only (issue #117),
+                BUILD.update(lines=lc.get("lines") or [], lines_priced=lc.get("priced") or 0,   # worked out off the lock
+                             lines_nobook=lc.get("nobook") or 0)
                 SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"],
                             "lines_priced": BUILD["lines_priced"], "lines_nobook": BUILD["lines_nobook"]}
             games = A.CTX.get("all_games") or {}
@@ -2775,9 +2802,9 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
-                             "singles": singles_view(games), "lines": BUILD.get("lines") or [],
-                             "lines_priced": BUILD.get("lines_priced") or 0,
-                             "lines_nobook": BUILD.get("lines_nobook") or 0,
+                             "singles": singles_view(games), "lines": (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or []),
+                             "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
+                             "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
                                       "wed": sum(1 for x in (BUILD.get("days") or {}).values() if x == "Wednesday"),

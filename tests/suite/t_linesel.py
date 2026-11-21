@@ -362,6 +362,9 @@ def t_wiring():
     ok("wiring: Build shows recommendations (line_recommend), never every strike (everything=True)",
        "A.line_recommend(" in w and "line_candidates(c, everything=True)" not in w)
     ok("wiring: the weekly review runs with the other weekly tuning", "H.line_edge_tune()" in w)
+    ab = w[w.index("    def api_build("):]
+    ok("wiring: Build's spreads/totals are worked out off the app lock (taps never wait on order books)",
+       ab.index("lines_kick(lg") < ab.index("with alock:") and "A.line_recommend(" not in ab[:ab.index("def ", 10)])
     js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build_sections.js")).read()
     ok("wiring: the empty state says so plainly", "No spread or total clears your bar right now." in js)
     ok("wiring: the old table of every strike is gone", "lrow2" not in js)

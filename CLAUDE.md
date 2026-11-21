@@ -260,7 +260,9 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
 - **Spreads and totals (issue #117 part B): recommend-only selection.** Build › Spreads & totals no longer lists every
-  strike: `line_recommend` (the watcher's Build calls it; `everything=True` is no longer used there) shows a strike only
+  strike: `line_recommend` (the watcher's Build runs it **off the app lock** in `lines_work`/`lines_kick`, a thread per
+  sport, copy ≤ 60 s old, waits ≤ 1.5 s, last good copy otherwise; order books read side by side within
+  `LINE_REC["budget"]` 3 s by `books_now`; `everything=True` is no longer used there) shows a strike only
   when (1) its edge after the fee clears the league's **learned bar** (`line_min_edge`: own once 30+ settled games,
   else its sport's (`LINE_SPORT`), else everyone's, else `LINE_MIN_EDGE`; never under `LINE_MIN_EDGE`, max 10¢; file
   `combo_line_edge.json`), (2) its kind of strike isn't **losing to the close** (`line_clv_block`: table `line_clv`,
