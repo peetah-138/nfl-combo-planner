@@ -120,6 +120,11 @@ pattern in a local `.git/hooks/pre-commit`.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home (engine, watcher and the
   web app's files from a fake GitHub file list; the new files must be swapped in with nothing left over).
+- **Best bets today** (`t_bestbets.py`, `test_bestbets.py`; issue #63): the recommend-only Build feed. Engine: only bets with an edge AND a
+  route to profit (a faked simulator) are listed, ranked by expected dollars at the stake, fail closed (unreadable balance, an
+  unmodellable bet, an old line, fresh injury news, an error), no losing spread/total strike ever, the empty message, nothing sent to
+  Kalshi, the sizing read leaves the panel's state alone. Page: section under the panel, order, plain route text, exposure warning,
+  type chips, Buy straight opens the sheet for that ticker, a combo is only priced, empty states, no sideways scroll.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion
