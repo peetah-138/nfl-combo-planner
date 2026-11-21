@@ -361,7 +361,9 @@ def update_if_newer(E, conf):
         conf.pop("waiting", None)
         return False
     ok = conf.get("approve") or {}
-    auto = auto_updates(conf) and ok.get("version") != latest
+    # with automatic updates on, an approval without the web app's digest (a phone that couldn't read the files)
+    # never holds an update back: it installs as any automatic update would
+    auto = auto_updates(conf) and (ok.get("version") != latest or not ok.get("spa"))
     if ok.get("version") != latest and not auto:
         if conf.get("waiting") != latest:
             conf["waiting"] = latest
@@ -388,9 +390,12 @@ def update_if_newer(E, conf):
     if not sha:
         log(f"update {latest} waiting: GitHub didn't say which commit is newest, so the web app's files can't be checked")
         return False
+    if not auto and not ok.get("spa"):
+        log(f"update {latest} waiting: your phone hasn't approved this version's web app files yet")
+        return False
     with SPA_LOCK:
         try:
-            new_spa = spa_fetch(sha)
+            new_spa = spa_fetch(sha, None if auto else ok["spa"])
         except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
             log(f"update {latest} skipped: the web app's files didn't all arrive intact ({err}); keeping this version")
             return False
@@ -530,10 +535,17 @@ def git_blob_sha(b):
     return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
 
 
-def spa_fetch(sha):
+def spa_digest(spa, login):
+    """The web app's fingerprint, as the phone approves it (the engine's spa_approval_digest computes the same)."""
+    return hashlib.sha256((spa + "\0" + login).encode("utf-8")).hexdigest()
+
+
+def spa_fetch(sha, approved=None):
     """Download the web app's files at exactly commit sha into a new folder next to the installed one, check them
-    all and return that folder (spa_swap puts it in place). Raises on anything missing, changed, cut short or
-    broken, and then leaves nothing behind; the installed folder is never touched here. Call with SPA_LOCK held."""
+    all and return that folder (spa_swap puts it in place). With approved (updates your phone approves), the
+    assembled app must also have exactly that spa_digest. Raises on anything missing, changed, cut short, broken
+    or not approved, and then leaves nothing behind; the installed folder is never touched here. Call with
+    SPA_LOCK held."""
     import shutil, tempfile
     if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
         raise ValueError("no exact commit to fetch the web app from")
@@ -566,6 +578,8 @@ def spa_fetch(sha):
         for name in spa_manifest(tmp)[1]:
             grab(name)
         spa, login = spa_assemble(tmp)
+        if approved is not None and spa_digest(spa, login) != approved:
+            raise ValueError("they don't match what your phone approved")
         spa_node_check(spa, login)
         return tmp
     except BaseException:
@@ -605,11 +619,24 @@ def spa_drop(old):
         shutil.rmtree(old, ignore_errors=True)
 
 
-def spa_repair():
+def spa_repair(conf=None):
     """Fetch the web app's files for exactly this watcher: after an older updater (one that didn't know about the
     spa folder) installed it, when the folder was deleted or damaged, and from the installers (--install-spa).
     Only when GitHub's newest watcher is this very file, byte for byte; otherwise the normal update brings a newer
-    version together with its own files. True once installed."""
+    version together with its own files. With automatic updates off (a Pi, usually), only files your phone
+    approved for this version (their spa_digest). True once installed."""
+    if conf is None:
+        try:
+            conf = load_conf()
+        except (OSError, ValueError):
+            conf = {}
+    approved = None
+    if not auto_updates(conf):
+        ok = conf.get("approve") or {}
+        approved = ok.get("spa") if ok.get("version") == WATCHER_VERSION else None
+        if not approved:
+            log("web app files: waiting for your phone to approve this version's files")
+            return False
     sha = repo_sha()
     if not sha:
         log("web app files: GitHub didn't say which commit is newest; trying again later")
@@ -622,7 +649,7 @@ def spa_repair():
             log("web app files: GitHub's newest watcher isn't this one; the next update brings both")
             return False
         with SPA_LOCK:
-            spa_drop(spa_swap(spa_fetch(sha)))
+            spa_drop(spa_swap(spa_fetch(sha, approved)))
     except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
         log("web app files couldn't be fetched:", err)
         return False
@@ -630,16 +657,16 @@ def spa_repair():
     return True
 
 
-def spa_repair_start():
-    threading.Thread(target=spa_repair_loop, daemon=True, name="spa-repair").start()
+def spa_repair_start(conf):
+    threading.Thread(target=spa_repair_loop, args=(conf,), daemon=True, name="spa-repair").start()
 
 
-def spa_repair_loop():
+def spa_repair_loop(conf=None):
     """main() runs this when the web app's files were missing or broken at start: it fetches them (retrying every
     10 minutes) and then restarts the watcher so Combo Hub serves them. Trading carries on throughout."""
     while True:
         try:
-            if spa_repair():
+            if spa_repair(conf):
                 log("restarting so Combo Hub uses its web app files")
                 UPDATED["now"] = True
                 return
@@ -3771,7 +3798,7 @@ def main():
     conf = load_conf()
     DEP["conf"] = conf
     if SPA_PROBLEM:                         # the web app's files are missing or broken: fetch them, keep trading
-        spa_repair_start()
+        spa_repair_start(conf)
     E = load_engine()
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here
     E.present = lambda *a, **k: None

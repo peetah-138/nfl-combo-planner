@@ -7803,16 +7803,41 @@ def send_watcher_settings(with_cfg=True):
         return False
 
 
+def spa_approval_digest():
+    """The SHA-256 of the web app (watcher/spa/) exactly as the watcher assembles it: the shell with its
+    @@SPA_CSS@@ / @@SPA_JS@@ lines replaced by the listed files in order, then a zero byte and the login page.
+    A watcher on approved updates installs only web app files with this digest. "" when it can't be read."""
+    import hashlib
+    base = UPDATE_URL + "/watcher/spa/"
+
+    def get(name):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]+\.(html|css|js|json)", name):
+            raise ValueError("bad file name")
+        r = requests.get(base + name, params={"t": int(time.time())}, timeout=20, headers={"Cache-Control": "no-cache"})
+        if not r.ok:
+            raise ValueError(f"{name}: {r.status_code}")
+        return r.content.decode("utf-8")
+    try:
+        m = json.loads(get("MANIFEST.json"))
+        spa = get(m["shell"]).replace("@@SPA_CSS@@\n", "".join(get(n) for n in m["css"])) \
+            .replace("@@SPA_JS@@\n", "".join(get(n) for n in m["js"]))
+        return hashlib.sha256((spa + "\0" + get(m["login"])).encode("utf-8")).hexdigest()
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+
+
 def approve_pi_update(version, engine_bytes):
     """After this phone updates: tell the Pi it may install exactly this version (the engine and
-    watcher files, by their SHA-256), signed like any setting. The Pi installs nothing else."""
+    watcher files, by their SHA-256, and the web app by spa_approval_digest), signed like any setting.
+    The Pi installs nothing else."""
     import hashlib
     try:
         w = requests.get(UPDATE_URL + "/watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=20)
         w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
     except requests.RequestException:
         w_sha = ""
-    save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha})
+    save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha,
+                           "spa": spa_approval_digest()})
     if watcher_conf():
         send_watcher_settings(with_cfg=False)
 
@@ -7831,8 +7856,10 @@ def refresh_pi_approval():
                          headers={"Cache-Control": "no-cache"})
         w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
         e_sha = hashlib.sha256(mine).hexdigest()
-        if w_sha and (ok.get("version") != VERSION or ok.get("watcher") != w_sha or ok.get("engine") != e_sha):
-            save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha})
+        s_sha = spa_approval_digest() or (ok.get("spa") if ok.get("version") == VERSION else "") or ""
+        if w_sha and (ok.get("version") != VERSION or ok.get("watcher") != w_sha or ok.get("engine") != e_sha
+                      or ok.get("spa") != s_sha):
+            save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha, "spa": s_sha})
             send_watcher_settings(with_cfg=False)
     except (OSError, requests.RequestException):
         pass

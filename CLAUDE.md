@@ -40,6 +40,10 @@ Real money is involved. Pete uses it daily.
   downloads every file in the new `MANIFEST.json`, checks each against GitHub's own blob hash (contents API at that
   commit), assembles it and `node --check`s it when node exists, in a temp folder, and only then swaps in spa, engine,
   watcher (spa put back if the rest fails). Anything missing/changed = nothing replaced, the old version keeps running.
+  Phone-approved updates (automatic updates off, e.g. the Pi) also need the phone's `spa` digest in its approval
+  (engine `spa_approval_digest` = watcher `spa_digest`: sha256 of the assembled SPA, a zero byte, the login page);
+  without it they wait, and the self-repair below needs it too. With automatic updates on, an approval that lacks it
+  never holds an update back.
   A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
   MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
   newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.20.125

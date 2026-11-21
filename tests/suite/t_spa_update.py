@@ -88,6 +88,14 @@ def spa_files(extra_css=b"/* the new version */\n"):
     return s
 
 
+def digest_of(W, files):
+    """The spa_digest these files assemble into (what the phone approves)."""
+    d = tempfile.mkdtemp(prefix="spadig")
+    for n, b in files.items():
+        open(os.path.join(d, n), "wb").write(b)
+    return W.spa_digest(*W.spa_assemble(d))
+
+
 E = types.SimpleNamespace(VERSION=OLD)
 AUTO = {"auto_update": True}
 
@@ -155,8 +163,21 @@ h, W = home()
 github(W, spa_files())
 eb = ENGINE_SRC.replace(f'VERSION = "{OLD}"', f'VERSION = "{NEW}"').encode()
 wb = open(os.path.join(SRC, "combo_watcher.py")).read().replace(f'WATCHER_VERSION = "{OLD}"', f'WATCHER_VERSION = "{NEW}"').encode()
-conf = {"auto_update": False, "approve": {"version": NEW, "engine": hashlib.sha256(eb).hexdigest(), "watcher": hashlib.sha256(wb).hexdigest()}}
+APPROVED = {"version": NEW, "engine": hashlib.sha256(eb).hexdigest(), "watcher": hashlib.sha256(wb).hexdigest()}
+before = snapshot(h)
+ok("phone-approved update without the web app's approval: waits, nothing installed",
+   W.update_if_newer(E, {"auto_update": False, "approve": dict(APPROVED)}) is False and snapshot(h) == before
+   and "hasn't approved this version's web app" in LOG[-1], LOG[-1:])
+ok("phone-approved update whose web app differs from what the phone approved: nothing installed",
+   W.update_if_newer(E, {"auto_update": False, "approve": dict(APPROVED, spa="0" * 64)}) is False and snapshot(h) == before
+   and "approved" in LOG[-1], LOG[-1:])
+conf = {"auto_update": False, "approve": dict(APPROVED, spa=digest_of(W, spa_files()))}
 ok("phone-approved update: installs the approved files and the web app", W.update_if_newer(E, conf) is True
+   and "/* the new version */" in open(os.path.join(h, "spa", "app.css")).read())
+h, W = home()
+github(W, spa_files())
+ok("automatic updates on and the phone's approval lacks the web app digest: installs as an automatic update",
+   W.update_if_newer(E, {"auto_update": True, "approve": dict(APPROVED)}) is True
    and "/* the new version */" in open(os.path.join(h, "spa", "app.css")).read())
 h, W = home()
 github(W, spa_files())
@@ -186,17 +207,27 @@ ok("no spa folder at start: the watcher imported and knows it", bool(W.SPA_PROBL
 mine = open(os.path.join(h, "combo_watcher.py"), "rb").read()
 github(W, spa_files(b""), watcher=mine + b"# a newer one\n")
 ok("repair: refuses when GitHub's newest watcher isn't this file (the update brings both)",
-   W.spa_repair() is False and not os.path.exists(os.path.join(h, "spa")))
+   W.spa_repair(dict(AUTO)) is False and not os.path.exists(os.path.join(h, "spa")))
 s = spa_files(b""); srv = dict(s); srv["games.js"] = b"x"
 github(W, s, watcher=mine, serve=srv)
-ok("repair: a damaged download installs nothing", W.spa_repair() is False and not os.path.exists(os.path.join(h, "spa")))
+ok("repair: a damaged download installs nothing", W.spa_repair(dict(AUTO)) is False and not os.path.exists(os.path.join(h, "spa")))
 github(W, spa_files(b""), watcher=mine)
 ok("repair: with this exact watcher on GitHub, the files are fetched, checked and installed",
-   W.spa_repair() is True and W.spa_assemble(os.path.join(h, "spa")) == W.spa_assemble(os.path.join(SRC, "spa")))
+   W.spa_repair(dict(AUTO)) is True and W.spa_assemble(os.path.join(h, "spa")) == W.spa_assemble(os.path.join(SRC, "spa")))
+shutil.rmtree(os.path.join(h, "spa"))
+ok("repair with automatic updates off and no phone approval: installs nothing",
+   W.spa_repair({"auto_update": False, "approve": {"version": W.WATCHER_VERSION}}) is False
+   and not os.path.exists(os.path.join(h, "spa")))
+ok("repair with a phone approval for other files: installs nothing",
+   W.spa_repair({"auto_update": False, "approve": {"version": W.WATCHER_VERSION, "spa": "0" * 64}}) is False
+   and not os.path.exists(os.path.join(h, "spa")))
+ok("repair with the phone's approval of exactly these files: installed",
+   W.spa_repair({"auto_update": False, "approve": {"version": W.WATCHER_VERSION, "spa": digest_of(W, spa_files(b""))}}) is True
+   and os.path.isdir(os.path.join(h, "spa")))
 shutil.rmtree(os.path.join(h, "spa"))
 W.UPDATED.clear()
 W.time = types.SimpleNamespace(sleep=lambda s: None, time=__import__("time").time)
-W.spa_repair_loop()
+W.spa_repair_loop(dict(AUTO))
 ok("repair loop: installs and asks the watcher to restart (so Combo Hub serves the files)",
    W.UPDATED.get("now") is True and os.path.isdir(os.path.join(h, "spa")))
 ok("nothing left over after the repairs", not [n for n in os.listdir(h) if n.startswith(".spa-new-") or n == "spa.old"])
@@ -208,7 +239,7 @@ class Stop(Exception):
 
 def main_starts_repair(Wm):
     seen = []
-    Wm.spa_repair_start = lambda: seen.append(True)
+    Wm.spa_repair_start = lambda *a: seen.append(True)
     Wm.load_conf = lambda: {}
     Wm.load_engine = lambda: (_ for _ in ()).throw(Stop())     # stop main() right after its first steps
     try:
@@ -221,3 +252,24 @@ def main_starts_repair(Wm):
 ok("main(): files missing at start -> the repair thread starts before anything else", main_starts_repair(W))
 _, W2 = home()
 ok("main(): files fine -> no repair", not W2.SPA_PROBLEM and not main_starts_repair(W2))
+
+# 8) the phone's approval digest (engine) is exactly the watcher's spa_digest of the same files
+os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
+espec = importlib.util.spec_from_file_location("Eng", "wahome/engine.py")
+Eng = importlib.util.module_from_spec(espec)
+espec.loader.exec_module(Eng)
+files = spa_files(b"")
+
+
+def eget(url, params=None, **k):
+    n = url.split("/watcher/spa/")[-1]
+    return R(raw=files[n]) if "/watcher/spa/" in url and n in files else R({}, 404)
+
+
+Eng.requests = types.SimpleNamespace(get=eget, RequestException=requests.RequestException)
+ok("phone: spa_approval_digest equals the watcher's spa_digest of the same files",
+   Eng.spa_approval_digest() == digest_of(W, files) == W.spa_digest(W.spa_assemble(os.path.join(SRC, "spa"))[0],
+                                                                    W.spa_assemble(os.path.join(SRC, "spa"))[1]))
+files = dict(files)
+files.pop("live.js")
+ok("phone: a file it can't read gives no approval (empty), never a partial one", Eng.spa_approval_digest() == "")
