@@ -20,7 +20,7 @@ test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_bui
 test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui
 test_haptics test_hsw test_chips_stay test_fieldstrip test_gamedetail_api test_realdate test_tabbar_stays
 test_orderblock test_buildbuttons test_cover test_pbptabs test_gamecard_opp test_offerlive test_gametabs
-test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits test_scoreboard test_linesel_ui""".split()
+test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits test_scoreboard test_linesel_ui test_flipleg""".split()
 
 # Rough seconds each page test takes on a CI runner (measured on PR #157's run; only the balance of the split
 # depends on them, a missing or stale number never drops or doubles a test). Unknown tests count as DEFAULT.
@@ -29,7 +29,7 @@ test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredit
 DEFAULT = 45
 SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedetail_api": 94, "test_motion": 93,
         "test_gametabs": 66, "test_singlebuy_ui": 65, "test_ui_fixes": 61, "test_ideacards": 55, "test_ideas2": 60,
-        "test_loadwidth": 53, "test_buildbuttons": 52, "test_makeover2": 49, "test_settings": 46, "test_tap": 40,
+        "test_loadwidth": 53, "test_buildbuttons": 52, "test_flipleg": 40, "test_makeover2": 49, "test_settings": 46, "test_tap": 40,
         "test_pbptabs": 39, "test_panel_ui": 37, "test_allchip": 37, "test_days": 37, "test_panel_ui2": 31,
         "test_updbtn": 31, "test_chips_stay": 30, "test_tabbar_stays": 29, "test_spa": 24, "test_speed": 23,
         "test_settled": 23, "test_extra_ui": 22, "test_restart2": 21, "test_livefresh": 20, "test_adv": 20,

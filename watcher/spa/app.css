@@ -771,3 +771,19 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 .pbk b span{display:inline;font-size:inherit;color:inherit;letter-spacing:normal}.pbk b span.m{color:var(--mute)}
 .pb .seg.pbt button{white-space:nowrap;flex:none}
 .pb .seg.pbt{-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
+/* Flipping a leg on a combo idea (issue #104). The tapped row folds away while the new numbers are worked out, the numbers that
+   depend on it shimmer, then the new row turns in, the numbers roll and the note slides in. */
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.lrow.flip{min-height:44px;transform-origin:50% 50%}
+.lrow.flip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.lrow.wait{animation:lfold .17s ease-in forwards;pointer-events:none}
+.lrow.turn{animation:lturn .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes lfold{to{transform:perspective(600px) rotateX(80deg);opacity:.35}}
+@keyframes lturn{from{transform:perspective(600px) rotateX(-80deg);opacity:.35}to{transform:perspective(600px) rotateX(0);opacity:1}}
+.ccard[data-ph=flip] .dep,.ccard[data-ph=flip] .dep *{color:transparent!important;-webkit-user-select:none;user-select:none}
+.ccard[data-ph=flip] .dep{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
+.flipnote.in{animation:fnin .32s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fnin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
+ .ccard[data-ph=flip] .dep{animation:none!important}}
+@keyframes lfade{from{opacity:0}to{opacity:1}}
