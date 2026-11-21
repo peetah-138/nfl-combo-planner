@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.21.128"
+VERSION = "2026.11.21.129"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -15826,8 +15826,8 @@ def choose_panel(cands, budget, base, size=None):
         stats[k] = (sum(1 for t in tot if t > 0) / len(tot), sum(tot) / len(tot))
     if stats:
         top = max(v[0] for v in stats.values())
-        floor = _ahead_floor(top) if dollars else top - 0.05
-        ok_k = [k for k, v in stats.items() if v[0] >= floor - 1e-9]
+        floor = _ahead_floor(top) - 1e-9 if dollars else top - 0.05      # switch off: the old test, exactly
+        ok_k = [k for k, v in stats.items() if v[0] >= floor]
         picked = picked[:max(ok_k, key=lambda k: stats[k][1])]
     spent = sum(c["stake"] for c in picked)
     tot = _sim_panel(picked) if picked else [0]
@@ -18696,11 +18696,35 @@ def price_flush(now=None):
         PRICE_LAST[t] = (ts, bid, ask)
     if rows:
         _price_table()
-        for r in rows:
-            store_x("insert into price_path(ts, ticker, bid, ask, mid, depth, score) values(?,?,?,?,?,?,?)", r)
+        _price_insert(rows)
     if now - PRICE_STATE["prune"] > 6 * 3600:
         price_prune(now)
     return len(rows)
+
+
+def _price_insert(rows):
+    """Write a flush's rows in one transaction (one disk sync, the history lock held once, briefly), not one commit a
+    row: the trading loop calls this and shares that lock with money paths. Inside someone else's transaction (a
+    panel_tx on this connection) the rows simply join it. Best-effort, like store_x: never raises."""
+    db = STORE.get("db")
+    if not db:
+        return
+    sql = "insert into price_path(ts, ticker, bid, ask, mid, depth, score) values(?,?,?,?,?,?,?)"
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            db.executemany(sql, rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"price recorder: {type(err).__name__}: {err}")
 
 
 def price_prune(now=None):
