@@ -334,8 +334,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
-  sell-early favorites, chosen together to **maximize the chance the whole day finishes ahead** (bigger profit is a
-  tie-breaker). Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
+  sell-early favorites, chosen together for the **most expected profit in dollars** (fees counted, from the same
+  simulation) **while the chance the whole day finishes ahead stays over a floor**: 55%, and within 10 points of the
+  best chance those bets could reach (when even the best is under 55%: within 5 points of it, as before). Profit
+  audit #142 leak 2 (`choose_panel`, `_ahead_floor`, `PANEL_AHEAD_FLOOR`/`PANEL_AHEAD_GIVE`); Settings › Money ›
+  **Pick the panel by expected dollars** (`panel_rank_dollars`, shared, on) switches back to the old rule (the chance
+  first, profit breaking ties). The NFL/pay-index priorities are small dollar nudges. Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
   days), NBA/NHL daily, bigger panels on heavy nights. Overlap rules: both sides of one game only when both are
   fairly priced, ≤ 2 bets per game, one straight bet per game, spreads/totals ≤ 30% of the panel.
 - Combos need a predicted price ≥ the cut-off: **starts at 95% of fair, self-adjusts weekly per league and size,
@@ -401,6 +405,31 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   are caught) is **skipped**, never "check"; rule 8 unchanged. Pause still wins; the switch turned off after approval
   skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
   predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
+- **Profit-audit quick wins (#142, `t_profit.py`; every check failed on the code before):**
+  - **Stale sharp lines (leak 4):** every line carries when it was read (`at`, free lines too). A pre-game line read
+    more than `PRE_LINE_AGE` (18 min) ago, or at an unknown time, for a game starting within `PRE_LINE_NEAR` (4 h) is
+    stale (`line_stale`): `merge_books` then prefers a fresh free line for that team, and `panel_collect` drops what is
+    still stale (`drop_stale_lines`: src None, Kalshi's own chance; no single, combo or closing price uses it). The
+    Mac's `HubOdds.get` drops the old sharp snapshot when the odds service answers empty and retries after the near
+    TTL (never on every call).
+  - **Green Buy and buy ideas (leak 3):** `green_bar` = max(your cut-off setting, the league's `combo_cutoff`) decides
+    the green Buy for every combo but the panel's own (`get_offer` returns `bar`; the quote line names it);
+    `notify_bar` = max(that, 100% of `calib_fair`-corrected fair) gates the Mac's buy-idea and better-price alerts in
+    `shadow_pass`. Settings › Money › **Stricter green Buy** (`idea_bar_strict`, shared, on). The panel's 95% start is
+    unchanged (#137 stage 2 decides it).
+  - **Close learning (leak 6):** `record_closes` also stores Kalshi's mid (`close_mids` table; ask kept in `closes.price`
+    for history; no mid when the gap is over 10¢). `adjust_cutoffs` and CLV read `close_prices(..., mid=True)`;
+    re-quotes of the same set of games count once (`_by_games`); the rule is symmetric: raise when combos just over
+    the bar were worth under 97% of cost, lower when the ones just under were worth over 103% (`CUT_BAND`; bigger
+    step at ±15%, `CUT_BIG`).
+  - **News guard (leak 5):** `_qualifies` (pool, `_fresh`, swaps) and `_buy_panel_bet` skip a pick priced
+    `NEWS_GAP` (6 points) or more under its chance while one of its teams has fresh injury news (`news_gap`, the
+    `single_pass` rule; an unreadable report never blocks).
+  - **Minor:** `single_fee(p, n)` rounds an order's fee up to the cent (the panel's buy recheck and its simulation use
+    it); a swapped-in bet is sized for itself, never above the stake it replaces (`_swap_stake`).
+  - Still open in #142: `_size`'s $2 minimum and combos at 95–100% (#137), live-football single ideas (leak 7),
+    panel P/L from real fills (leak 8), Build lines not recommended (leak 9), standing orders (leak 10), combo fees,
+    `smart_tune` holdout.
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
   that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it

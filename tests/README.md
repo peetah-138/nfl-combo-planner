@@ -92,6 +92,11 @@ pattern in a local `.git/hooks/pre-commit`.
   sent, a timeout or 5xx = check and never resent, 410 = a clean refusal, a game under way never priced on its pre-game
   chance; `test_singlebuy_ui.py`: the slip's Single bet / Combo switch, the game page's pinned buttons and the buy sheet
   in every state (scripted answers), at phone (dark and light) and desktop sizes.
+  Profit-audit quick wins (`t_profit.py`, issue #142; every check failed on the code before it): the panel ranks by
+  expected dollars with the chance of finishing ahead as a floor (a fake slate; the switch off = the old function
+  verbatim), stale sharp lines (fake clocks: a fresh free line wins near a game, the panel drops a stale one, an empty
+  odds refresh expires the old snapshot), the green Buy and buy-idea bars, the closing mid in cut-off learning and
+  CLV (re-quotes count once, symmetric rule), the news guard, the fee rounded up per order and a swapped-in bet's stake.
   Money-safety hardening (`t_safety.py`, issue #143; every check failed on the code before it): the Pi (backup role)
   never sends an order and a synced Auto cash-out can't switch it on; a combo accept whose status poll fails (429, 5xx,
   timeout, unreadable) or that is never confirmed, or whose accept itself got a 5xx/timeout, is "check" in the web

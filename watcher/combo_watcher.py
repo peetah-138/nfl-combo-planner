@@ -27,7 +27,7 @@ WATCHER_VERSION = "2026.11.21.128"
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
-          "line_model")
+          "line_model", "panel_rank_dollars", "idea_bar_strict")
 
 
 def log(*a):
@@ -1067,7 +1067,7 @@ class HubOdds:
 
     def __init__(self):
         self.H, self.lock, self.free, self.sharp = None, threading.RLock(), {}, {}
-        self.pending, self.told = {}, {}
+        self.pending, self.told, self.retry = {}, {}, {}
 
     def engine(self):
         if self.H is None:
@@ -1144,11 +1144,16 @@ class HubOdds:
             if key:
                 soon = self.soonest(f[1])
                 ttl = self.SHARP_NEAR_TTL if soon and soon - now < self.NEAR else self.SHARP_TTL
-                if not sh or now - sh[0] > ttl:
+                if (not sh or now - sh[0] > ttl) and now >= self.retry.get(league, 0):
                     got = H.sharp_snapshot(key)
-                    if got["fair"] or not sh:
+                    if got["fair"]:
                         sh = (now, got)
                         self.sharp[league] = sh
+                        self.retry.pop(league, None)
+                    else:                       # an empty answer (out of credits, an outage): the old lines are
+                        sh = None               # past their time, so they go (free lines only) until a retry
+                        self.sharp.pop(league, None)
+                        self.retry[league] = now + min(ttl, self.SHARP_NEAR_TTL)
                     log(f"odds service asked for {league}: {len(got['fair'])} teams")
             snap = H.merge_books(sh[1] if sh else H.empty_snapshot(), f[1])
             if sh:
@@ -2218,7 +2223,7 @@ class WebBuild:
                 return r["error"]
             b["offers"][i] = dict(H.CTX["offers"][i], got=time.time(), pct=r.get("pct"), ok=r.get("ok"))
         pct = f" ({r['pct']:.0%} of fair)" if r.get("pct") else ""
-        verdict = "" if r.get("ok") else f" That's under your {b['cut']}% cut-off."
+        verdict = "" if r.get("ok") else f" That's under your {r.get('bar') or b['cut']}% cut-off."
         return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
 
     def buy(self, i):
@@ -3008,7 +3013,8 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
+                "panel_rank_dollars", "idea_bar_strict")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3188,7 +3194,7 @@ def webapp_main():
                                 r = r2
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
-                return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": A.CFG["accept_pct"],
+                return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
                                  **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
