@@ -47,14 +47,20 @@ Real money is involved. Pete uses it daily.
   `.spa.lock` file, so the installer's `--install-spa` and the watcher never collide); temp folders are only cleared
   after an hour. An installed spa folder is stamped (`spa/.version`); a folder for another version is still served but
   marks `SPA_STALE`, so `main()` fetches this version's. node only blocks when it is 18+ and says a script doesn't parse.
-  Both Python files are written to `.new` before anything is swapped.
+  Both Python files are written to `.new` before anything is swapped; the running engine is kept as `engine.py.prev`
+  until both are in place, so a failed watcher swap puts the engine (and the spa folder) back. `repo_sha` asks the
+  commits API, then git's own ref list (`.git/info/refs`, not rate-limited), so an API limit can't hold an update
+  back. The phone's `spa_approval_digest` reads only at an exact commit (none = no digest, never stale `main`), all
+  files at once with a 40 s deadline; `refresh_pi_approval` skips it when the saved approval is already complete.
+  `spa_repair` refuses to run from a git checkout; the updater's working files are git-ignored.
   A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
   MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
   newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.21.126
   (whose updater only knows the two Python files) gets its spa folder. Until it has, the watcher serves the real
   app from **`SPA_LEGACY_Z`** (end of `combo_watcher.py`: zlib+base64 of the SPA and login page as they were when
   they moved out, develop 395a7f4; the holding page only if that copy can't be read), so the first start is never
-  blank, even with GitHub down. **Remove `SPA_LEGACY_Z` and `spa_legacy` in the release after the split**, with
+  blank, even with GitHub down. **Remove `SPA_LEGACY_Z` and `spa_legacy` only once every device (Mac and Pi) reports 2026.11.21.127 or later**
+  (a device that skips 127 still arrives from 126 with the old updater), with
   `t_spa_transition` (it runs the verbatim 126 updater, `tests/suite/fixtures/updater_126.py.txt`, against a fake
   GitHub through first start, GitHub down, repair, restart; and the Pi's approved path). Rollback: revert the split
   merge; the reverted watcher has the strings inline again and ignores any spa folder.

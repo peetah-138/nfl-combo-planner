@@ -272,6 +272,8 @@ files = spa_files(b"")
 
 
 def eget(url, params=None, **k):
+    if "/commits/main" in url:
+        return R(raw=SHA.encode())
     n = url.split("/watcher/spa/")[-1]
     return R(raw=files[n]) if "/watcher/spa/" in url and n in files else R({}, 404)
 
@@ -362,3 +364,59 @@ def eget2(url, params=None, **k):
 Eng.requests = types.SimpleNamespace(get=eget2, RequestException=requests.RequestException)
 ok("phone: the approval digest is read at the newest commit", Eng.spa_approval_digest() == digest_of(W, files)
    and all(f"/{SHA}/" in u for u in SEEN if "/watcher/spa/" in u))
+
+
+# 13) review fixes for release 127
+# the phone never approves files read from plain main (minutes stale after a release) when the commit is unknown
+files = spa_files(b"")
+Eng.requests = types.SimpleNamespace(get=lambda url, params=None, **k: R(code=503, raw=b"") if "/commits/main" in url
+                                     else R(raw=files[url.split("/watcher/spa/")[-1]]),
+                                     RequestException=requests.RequestException)
+ok("phone: no exact commit from GitHub gives no approval (never a stale main copy's digest)", Eng.spa_approval_digest() == "")
+
+# a rate-limited commits API: the newest commit comes from git's own ref list instead
+h, W = home()
+REFS = (b"001e# service=git-upload-pack\n0000015a" + b"a" * 40 + b" HEAD\0multi_ack thin-pack\n"
+        b"003d" + SHA.encode() + b" refs/heads/main\n0040" + b"b" * 40 + b" refs/heads/maintenance\n0000")
+W.requests = types.SimpleNamespace(get=lambda url, params=None, **k: R(code=403, raw=b"rate limited") if "/commits/main" in url
+                                   else R(raw=REFS) if url.endswith(".git/info/refs") else R({}, 404),
+                                   RequestException=requests.RequestException)
+ok("commits API rate-limited: repo_sha reads main's commit from git's ref list", W.repo_sha() == SHA, W.repo_sha())
+W.requests = types.SimpleNamespace(get=lambda url, params=None, **k: R(code=403, raw=b""), RequestException=requests.RequestException)
+ok("both unavailable: repo_sha says nothing (the update waits)", W.repo_sha() == "")
+
+# the second swap (the watcher file) fails: the engine goes back too, nothing half-installed or left over
+h, W = home()
+before = snapshot(h)
+github(W, spa_files())
+me = os.path.join(h, "combo_watcher.py")
+real_replace = os.replace
+
+
+def flaky_replace(src, dst):
+    if src == me + ".new" and os.path.abspath(dst) == os.path.abspath(me):
+        raise OSError("disk trouble")
+    return real_replace(src, dst)
+
+
+os.replace = flaky_replace
+try:
+    r = W.update_if_newer(E, dict(AUTO))
+finally:
+    os.replace = real_replace
+after = snapshot(h)
+ok("watcher swap fails: no restart, the old engine, watcher and web app are all back", r is False and before == after,
+   set(before.items()) ^ set(after.items()))
+ok("watcher swap fails: no .new, .prev or old folder left behind",
+   not [n for n in os.listdir(h) if n.endswith((".new", ".prev")) or n.startswith(".spa-new-") or n == "spa.old"], os.listdir(h))
+h, W = home()
+github(W, spa_files())
+ok("a normal update leaves no engine.py.prev", W.update_if_newer(E, dict(AUTO)) is True and not os.path.exists(os.path.join(h, "engine.py.prev")))
+
+# a watcher running from a git checkout never swaps the repo's spa folder
+h, W = home()
+os.mkdir(os.path.join(h, ".git"))
+github(W, spa_files(b""), watcher=open(os.path.join(h, "combo_watcher.py"), "rb").read())
+before = snapshot(h)
+ok("repair from a git checkout: refused, the folder untouched", W.spa_repair(dict(AUTO)) is False and snapshot(h) == before
+   and "git checkout" in LOG[-1], LOG[-1:])
