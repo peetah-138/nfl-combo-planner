@@ -20,6 +20,7 @@ It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0
   request to a host outside this machine with a plain ConnectionError, so no check can depend on today's real ESPN or
   Kalshi data (GitHub #189: real injury news made `t_live_panel` fail in CI at some hours of the day). Set
   `CHECK_NETLOG=/some/file` to list what was refused.
+  `t_netguard` only passes under `bash tests/run_checks.sh` (it needs that netguard `PYTHONPATH`).
   Nothing is bought or sold.
 
 ## One-time setup on a Mac
