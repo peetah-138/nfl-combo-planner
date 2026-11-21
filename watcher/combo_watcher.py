@@ -2259,6 +2259,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .h2bar{display:flex;gap:3px;height:6px}
 .h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
 .h2bar.even i{opacity:.35}
+.tsv b.lag{color:var(--mute);font-weight:600}.tsv b.lead{color:var(--ink)}
+.lob{display:block;font-size:10.5px;color:var(--mute);font-weight:500;margin-top:1px}
+.gskr{padding:9px 2px 11px}.gskr i{display:block;height:16px;margin-bottom:7px}.gskr i+i{height:6px;margin:0}
 .gin .h2bar i{animation:sbarIn .7s var(--ease) both}
 .gin .h2bar i:last-child{animation-name:sbarInR}
 @keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
@@ -3888,6 +3891,18 @@ function gameLine(g){S.gh=S.gh||{};const k=g.ticker||g.name;let h=S.gh[k]||[];co
  if(g.chance!=null&&(!h.length||h[h.length-1][1]!==g.chance))h=h.concat([[now,g.chance]]).slice(-240);S.gh[k]=h;
  const sp=(g.spark||[]).filter(p=>p[1]!=null);return sp.length>=2?sp.concat(h.filter(p=>p[0]>sp[sp.length-1][0])):h;}
 const GLIVE=g=>g.state==='live'&&!['probably_over','waiting','over'].includes(g.phase);
+/* Warm a live football game's page data before it is opened (display only): when its card is shown on Games, and when a card is hovered or pressed.
+   Polite: a game is asked about at most once a minute (3 to 5 minutes after a failure), 2 at a time, 6 per 5 minutes, never in a hidden tab;
+   the Mac dedupes and backs off again on its own. Nothing here prices, buys or sells. */
+const WARM_SPORTS=['nfl','ncaaf'];
+function warmGame(t){if(!t||typeof t!=='string'||document.hidden)return;S.warm=S.warm||{};S.warmN=S.warmN||[];const now=Date.now();
+ if((S.warm[t]||0)>now||(S.warmBusy||0)>=2)return;S.warmN=S.warmN.filter(x=>now-x<300000);if(S.warmN.length>=6)return;
+ S.warm[t]=now+60000;S.warmN.push(now);S.warmBusy=(S.warmBusy||0)+1;
+ api('/app/api/game_warm?t='+encodeURIComponent(t)).then(r=>{if(!r||!r.known)S.warm[t]=now+180000;},()=>{S.warm[t]=now+300000;}).then(()=>{S.warmBusy=Math.max(0,(S.warmBusy||1)-1);});}
+function warmShown(){if(S.view!=='games'||!S.games)return;(S.games.games||[]).forEach(g=>{if(GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);});}
+function warmCard(e){const c=e.target&&e.target.closest?e.target.closest('.gc[data-gk]'):null;if(!c||!S.games)return;
+ const g=(S.games.games||[]).find(x=>(x.ticker||x.name)===c.dataset.gk);if(g&&GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);}
+addEventListener('pointerover',warmCard,{passive:true});addEventListener('pointerdown',warmCard,{passive:true});
 function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
  const col=ch==null?'var(--acc)':ch>=.5?'var(--yes)':'var(--no)';const sg=S.gscore&&S.gscore[g.ticker||g.name];
  const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
@@ -3910,22 +3925,25 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
  clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
- scoreWatch(gs);
+ scoreWatch(gs);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
   +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
   +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gxWant=false;clearTimeout(S.gxT);S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
 // The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
 // live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
 // down between updates while it is running. Only the first draw waits for the slide-in to finish.
-async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on')||S.gameBusy||S.scrub)return;   // a finger on the chart holds the page still
+function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
+async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
+ if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
  const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
-  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
+  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
+  S.gxWant=!!(r.detail&&r.detail.gxp);clearTimeout(S.gxT);gxAgain();   // last 5 / season leaders still being fetched: look again soon, quietly
   const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail,r.buy]);
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
@@ -4158,8 +4176,10 @@ function tmName(T,s){return T[s].name||T[s].abbr||(s==='home'?'Home':'Away');}
 function tmHead(r){const T=gTeams(r),c=tcols(r);
  return `<div class="h2h"><b><i class="tdot" style="background:${c.a}"></i>${esc(T.away.abbr||'Away')}</b><b>${esc(T.home.abbr||'Home')}<i class="tdot" style="background:${c.h}"></i></b></div>`;}
 /* a head-to-head share bar; even and quiet when there is nothing to compare */
-function sbar(key,an,hn,c){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const p=ok?Math.max(4,Math.min(96,an/(an+hn)*100)):50;
- return `<div class="h2bar${ok?'':' even'}" role="img" aria-label="${ok?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
+function sbar(key,an,hn,c,lo){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const tie=ok&&an===hn;
+ /* a lower-is-better row (turnovers, sacks, penalties...) gives the longer bar to the side with the FEWER: its share is the other side's count */
+ const p=ok&&!tie?Math.max(4,Math.min(96,(lo?hn:an)/(an+hn)*100)):50;
+ return `<div class="h2bar${ok&&!tie?'':' even'}" role="img" aria-label="${ok&&!tie?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
 /* 'Nov 15' from a plain date (as given) or a UTC kickoff time (in this phone's own time zone, so a night game keeps its day) */
 function gdate(d){d=d||'';const day=/^\d{4}-\d{2}-\d{2}$/.test(d),at=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(d);if(!day&&!at)return '';
  const x=new Date(day?d+'T12:00:00Z':d);return isNaN(x)?'':x.toLocaleDateString('en-US',day?{month:'short',day:'numeric',timeZone:'UTC'}:{month:'short',day:'numeric'});}
@@ -4182,28 +4202,34 @@ function boxPick(s){if(s!=='away'&&s!=='home')return;S.boxSide=s;
  const p=document.querySelector('#sheet .gpanel[data-tab=box]');if(!p||!S.gameR)return;p.innerHTML=boxHtml(S.gameR);segInd();gtabIn(p);}
 /* Team stats: head to head, the label in the middle, a share bar under each row. */
 function tsHas(r){const t=gd(r).tstats;return Array.isArray(t)&&t.length>0;}
+/* the leading side of a row (its number is emphasised and the other dims); a tie leaves both plain. Lower-is-better rows are marked by the Mac (x.lo) and led by the side with fewer. */
+function tsLead(x,s){return x.ld===s?'lead':x.ld?'lag':'';}
 function tsHtml(r){const t=S.gameOpen,c=tcols(r);
- const rows=gd(r).tstats.map(x=>`<div class="tsr"><div class="tsv"><b${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}</span><b${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c)}</div>`).join('');
- return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates.</p></div>`;}
+ const rows=gd(r).tstats.map(x=>`<div class="tsr${x.lo?' lo':''}"><div class="tsv"><b class="${tsLead(x,'a')}"${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}${x.lo?'<small class="lob">fewer is better</small>':''}</span><b class="${tsLead(x,'h')}"${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c,x.lo)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates. Where fewer is better, the side with fewer leads.</p></div>`;}
 /* Injury report: both teams, worst first, with ESPN's guess at a return date. */
-function injHas(r){const i=gd(r).inj;return !!(i&&(Array.isArray(i.away)||Array.isArray(i.home)));}
+/* The tab shows when ESPN sent injuries, or when the rest of the summary (box score, team stats) loaded without them. A side with its own list from ESPN is a real report (an empty list means
+   nobody is hurt); a side ESPN sent nothing for is "not available right now", never "no injuries". */
+function injHas(r){return !!gd(r).inj||boxHas(r)||tsHas(r);}
 function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
 function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
- const sec=s=>{const L=Array.isArray(i[s])?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
-  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries listed.</p>'}</div>`;};
+ const sec=s=>{const known=Array.isArray(i[s]),L=known?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${!known?'<p class="gempty">Injury report isn’t available right now.</p>':L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
+  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries reported.</p>'}</div>`;};
  return `<div class="gtabx"><div class="injgrid">${sec('away')}${sec('home')}</div><p class="pnote">ESPN's injury report. Return dates are ESPN's estimate.</p></div>`;}
 /* Last 5 games: each team's five most recent finished games, newest first, and its record. */
-function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home));}
+function gskel(n){return Array.from({length:n||3},()=>'<div class="gskr" aria-hidden="true"><i class="skel"></i><i class="skel"></i></div>').join('');}
+function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home))||!!gd(r).gxp;}
 function l5Html(r){const l=gd(r).last5||{},T=gTeams(r),c=tcols(r);
  const sec=s=>{const x=l[s];const rec=(x&&x.rec)||T[s].record||'';const g=x&&Array.isArray(x.g)?x.g:[];
-  const body=!x?'<p class="gempty">Looking up recent results…</p>':x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
+  const body=!x?(gd(r).gxp?`<div aria-busy="true">${gskel(5)}</div>`:'<p class="gempty">Recent results aren’t available right now.</p>'):x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
    g.map(v=>`<div class="l5r"><span class="wl ${v.w==='W'?'w':v.w==='L'?'l':'t'}">${esc(v.w)}</span><span class="l5o"><span class="m">${esc(v.at)}</span> ${esc(v.opp)}</span><span class="l5s">${+v.me}–${+v.them}</span><span class="m l5d">${esc(gdate(v.d))}</span></div>`).join('');
   const form=g.length?`<span class="form" aria-hidden="true">${g.slice().reverse().map(v=>`<i class="${v.w==='W'?'w':v.w==='L'?'l':''}"></i>`).join('')}</span>`:'';
   return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}${rec?`&nbsp;<span class="m">(${esc(rec)})</span>`:''}${form}</h4>${body}</div>`;};
  return `<div class="gtabx"><div class="l5grid">${sec('away')}${sec('home')}</div><p class="pnote">Scores show this team first. From ESPN's schedule.</p></div>`;}
 /* Season leaders: the top passer, rusher and receiver on each side, head to head, with a share bar. */
-function ldHas(r){const l=gd(r).leaders;return Array.isArray(l)&&l.length>0;}
+function ldHas(r){const l=gd(r).leaders;return (Array.isArray(l)&&l.length>0)||!!gd(r).gxp;}
 function ldHtml(r){const t=S.gameOpen,c=tcols(r);
+ if(!Array.isArray(gd(r).leaders)||!gd(r).leaders.length)return `<div class="gtabx" aria-busy="true">${tmHead(r)}${gskel(3)}<p class="pnote">Loading season leaders…</p></div>`;
  const side=(x,s,k)=>x?`<div class="ldp ${s}"><b class="ldv" data-num="ld:${esc(t)}:${esc(k)}:${s}" data-v="${+x.v||0}" data-f="cint">${esc(Math.round(+x.v||0).toLocaleString('en-US'))}</b><div class="ldn">${x.n?esc(x.n):'—'}${x.j?`<span class="jn">#${esc(x.j)}</span>`:''}</div><div class="m ldl">${esc(x.line||'')}</div></div>`
   :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
  const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
@@ -5069,6 +5095,32 @@ def webapp_main():
         return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
                          "detail": detail, "buy": buy, "fresh": freshness()})
 
+    def api_game_warm(t):
+        """Warm one live football game's page data in the background (display only; the Games tab calls this when a card
+        is shown or pressed). Starts a polite, capped fetch of the ESPN summary and the teams' last 5 / season leaders so the
+        game page opens with them ready. Never prices, buys or sells; any trouble answers {"ok": False}."""
+        t = str(t or "")[:80]
+        try:
+            sport = A.ticker_sport(t) if t else None
+            if sport not in ("nfl", "ncaaf"):
+                return {"ok": False}
+            d = api_live() or {}
+            game = (t.split("-") + ["", ""])[1]
+            leg = next((x for x in (d.get("singles") or []) if x.get("t") == t), None)
+            for v in d.get("combos") or []:
+                for lg in v.get("legs") or []:
+                    if leg is None and game and (lg["ticker"].split("-") + ["", ""])[1] == game:
+                        leg = lg
+            if not leg or leg.get("state") != "live":
+                return {"ok": False}
+            full = A.leg_score(leg)
+            if not (full and full.get("game")):
+                return {"ok": False}
+            return {"ok": bool(A.game_prefetch(full["game"], sport)), "known": True}     # known: a live football game (ok False = just throttled)
+        except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as err:
+            A.klive_log_once("gamedetail", t or "warm", err)
+            return {"ok": False}
+
     def api_games():
         d = api_live() or {}
         games = d.get("games") or []
@@ -5472,6 +5524,8 @@ def webapp_main():
                         out = api_combo(q.get("t") or "")
                     elif path == "/app/api/game":
                         out = api_game(q.get("t") or "")
+                    elif path == "/app/api/game_warm":
+                        out = api_game_warm(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
                     elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
