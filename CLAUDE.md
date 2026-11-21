@@ -270,7 +270,18 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   1.5x the floor and lasting 2+ days past the reset): `HubOdds.worth_credits` (and the phone's `fetch_book_odds`) only
   asks for a league whose panel candidates, panel bets or held bets (`odds_interest`/`held_for_credits`, read-only) have
   a game starting within 4 h or under way; other leagues keep free lines (old sharp lines still expire at 45 min). One
-  push per low state per reset cycle (`odds_low_alert`, "Odds credits"). It never buys, sells, prices or touches Pause.
+  push per low state per reset cycle (`odds_low_alert`, "Odds credits"). It never buys, sells or touches Pause.
+  **Low mode and buying (remove-only):** a far league then falls back to free lines (ESPN, Polymarket), so while low
+  mode is on, a panel bet or Buy idea with a game-winner pick (not priced live) more than 4 h away (`CREDIT_NEAR`) or at an
+  unknown time that has **no odds-service line** is left out (`low_credit_filter` in `build_panel` before Smart Buy, on
+  the longer plays and in `_replacement`; `low_credit_ideas` in `live_ideas`). Which line priced a pick: `sharp_snapshot`
+  tags its games `sharp`, `attach_fair` sets `sharp_line` on each side, `_cand` legs and the idea's `legs_info` carry it
+  (an older idea with no record counts as free). Spreads/totals are always priced on ESPN's lines, so they're untouched.
+  Same plumbing as Smart Buy's skips: the same dicts, order and stakes minus the dropped ones, listed in `sb_skipped`
+  with `credits: true` (their stake stays out of the extras budget; their game may come back as an extra, on Pete's Add,
+  once it is near or has a sharp line), shown as "Saving odds credits: left out N".
+  Normal mode returns everything unchanged; an error keeps the bet. If `build_panel`'s stats recompute after any skip
+  fails, it logs, keeps the skips (never puts a bet back) and keeps choose_panel's numbers marked `stale`. Test: `t_lowcredit`.
   Asking only for sharp bookmakers (`bookmakers=` instead of `regions=us,eu`, 1 credit instead of 2) was **not** done:
   the fair price falls back to the median of all books when neither Pinnacle nor a sharp book lists a game, and a
   bookmaker filter would change that. Tests: `t_oddscredits`, `test_oddscredits`.
