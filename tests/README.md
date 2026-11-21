@@ -47,7 +47,17 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## What's in it
 
-- **compile, JavaScript syntax, undefined names, secret grep.**
+- **compile, JavaScript syntax, undefined names, secret grep.** JavaScript: `node --check` on every
+  `watcher/spa/*.js` file and on the assembled page and login page (the watcher's own `spa_assemble`).
+- **The web app's files** (`t_spa_files.py`): every file in `watcher/spa/` is listed once in `MANIFEST.json`,
+  non-empty, each script parses, the assembly is deterministic and complete, and a missing or broken folder never
+  stops the watcher importing (holding page, loud log, repair at start). `t_spa_update.py` runs the real
+  `update_if_newer`/`spa_repair` against a fake GitHub: a normal update, a file missing, cut short or changed in
+  transit, a manifest naming a file GitHub lacks, a script that doesn't parse, a shell without its placeholder, no
+  exact commit, a failed install (the old web app goes back), the phone-approved path, the first update from a
+  version without a spa folder, and the self-repair after an older updater installed the watcher alone.
+  Tests that look for the page's code in "the watcher's source" read `wsrc.watcher_text()` (the watcher plus its
+  spa files). The one-time proof that the split was a pure move is `python3 tools/verify_spa_split.py`.
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
   Kalshi bets, started games (pre-game-priced bets never bought once a game starts; `t_live_panel.py`: games under way only when priced live on a fresh score, the switch, recheck before buying, refusals are skips), smart sell for singles, the combo lab and analytics, self-tuning smart
   sell, AHL, AHL live scores (the league's feed, faked), tennis/EuroLeague/UFC scores from Kalshi's public live data
@@ -94,7 +104,8 @@ pattern in a local `.git/hooks/pre-commit`.
   evidence, the Mac's own record, the Settings switch), both prices logged, gate off = today's prices byte for byte,
   and the panel choosing the same bets with only the chances changed when it is on.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
-  clean, a requested panel rebuild must run; and an update install into a temp home.
+  clean, a requested panel rebuild must run; and an update install into a temp home (engine, watcher and the
+  web app's files from a fake GitHub file list; the new files must be swapped in with nothing left over).
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion

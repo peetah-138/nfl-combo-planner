@@ -16,3 +16,9 @@ held_events.json
 .claude/
 # the test Python's venv (tests/python_env.sh builds it)
 .venv-tests/
+# the web app updater's working files (spa_locked / spa_fetch / spa_swap / spa_stamp)
+watcher/.spa.lock
+watcher/.spa-new-*/
+watcher/spa.old/
+watcher/spa/.version
+engine.py.prev

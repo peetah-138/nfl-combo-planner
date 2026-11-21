@@ -5,7 +5,8 @@ import os, tempfile, datetime as dt, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
-W = open("wtest/combo_watcher.py").read()
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+W = watcher_text()
 E.HERE = tempfile.mkdtemp(); E.SAVED = E.MAIN_SAVED = os.path.join(E.HERE, "combo_settings.json")
 
 THU, FRI, SAT, MON, WED = (dt.date(2026, 11, d) for d in (19, 20, 21, 23, 18))

@@ -12,7 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
-import base64, hashlib, hmac, importlib.util, json, os, re, sys, threading, time, traceback
+import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
 
@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.126"
+WATCHER_VERSION = "2026.11.21.127"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -320,25 +320,45 @@ def auto_updates(conf):
     return bool(conf.get("auto_update", sys.platform == "darwin"))
 
 
+GH_API = "https://api.github.com/repos/peetah-138/nfl-combo-planner"
+GH_GIT = "https://github.com/peetah-138/nfl-combo-planner.git"
+
+
+def repo_sha():
+    """The newest commit on main (40 hex characters), or "" when GitHub doesn't say. Asks the API first, then
+    git's own ref list (not counted against the API's hourly limit), so a rate limit can't hold an update back."""
+    try:
+        r = requests.get(GH_API + "/commits/main", timeout=10, headers={"Accept": "application/vnd.github.sha"})
+        sha = r.text.strip()
+        if r.ok and re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha
+    except requests.RequestException:
+        pass
+    try:
+        r = requests.get(GH_GIT + "/info/refs", params={"service": "git-upload-pack"}, timeout=10)
+        m = re.search(rb"(?:^|\n)[0-9a-f]{4}([0-9a-f]{40}) refs/heads/main\n", r.content) if r.ok else None
+        if m:
+            return m.group(1).decode()
+    except requests.RequestException:
+        pass
+    return ""
+
+
 def repo_now():
     """The repo at its newest commit. Plain raw links to main can be up to 5 minutes stale right after a
     publish, so this asks GitHub for the latest commit and reads the files at exactly that commit."""
-    try:
-        r = requests.get("https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main", timeout=10,
-                         headers={"Accept": "application/vnd.github.sha"})
-        sha = r.text.strip()
-        if r.ok and re.fullmatch(r"[0-9a-f]{40}", sha):
-            return REPO.replace("/main/", f"/{sha}/")
-    except requests.RequestException:
-        pass
-    return REPO
+    sha = repo_sha()
+    return REPO.replace("/main/", f"/{sha}/") if sha else REPO
 
 
 def update_if_newer(E, conf):
     """Install a newer engine and watcher from GitHub. With automatic updates on, any new version
     whose two files agree on it; otherwise only the exact files your phone installed (it sends
-    their SHA-256, signed). Returns True if the watcher should restart."""
-    base = repo_now()
+    their SHA-256, signed). The web app's files (watcher/spa/) come from the same commit and must all arrive
+    intact before anything is replaced; if any is missing or changed, this version keeps running.
+    Returns True if the watcher should restart."""
+    sha = repo_sha()
+    base = REPO.replace("/main/", f"/{sha}/") if sha else REPO
     try:
         latest = requests.get(base + "version.txt", params={"t": int(time.time())}, timeout=15,
                               headers={"Cache-Control": "no-cache"}).text.strip()
@@ -374,13 +394,63 @@ def update_if_newer(E, conf):
         return False
     if f'VERSION = "{latest}"' not in src or "def main():" not in src:
         return False
-    with open(ENGINE + ".new", "w", encoding="utf-8") as f:
-        f.write(src)
-    os.replace(ENGINE + ".new", ENGINE)
+    if not sha:
+        log(f"update {latest} waiting: GitHub didn't say which commit is newest, so the web app's files can't be checked")
+        return False
+    # the web app's files must be the ones the phone approved, unless this Mac takes automatic updates anyway (on
+    # purpose, #160: a phone's digest that can't be read or lags must never hold a fix back from an automatic Mac)
+    approved = None if auto_updates(conf) else ok.get("spa")
+    if not auto_updates(conf) and not approved:
+        log(f"update {latest} waiting: your phone hasn't approved this version's web app files yet")
+        return False
     me = os.path.abspath(__file__)
-    with open(me + ".new", "w", encoding="utf-8") as f:
-        f.write(wsrc)
-    os.replace(me + ".new", me)
+    with spa_locked():
+        try:
+            new_spa = spa_fetch(sha, approved, stamp=latest)
+        except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
+            log(f"update {latest} skipped: the web app's files didn't all arrive intact ({err}); keeping this version")
+            return False
+        try:                                         # everything written first, then swapped in back to back
+            for path, text in ((ENGINE + ".new", src), (me + ".new", wsrc)):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+            old_spa = spa_swap(new_spa)
+        except OSError as err:
+            spa_drop(new_spa)
+            for path in (ENGINE + ".new", me + ".new"):
+                if os.path.isfile(path):
+                    os.remove(path)
+            log(f"update {latest} skipped: couldn't write the new files ({err}); keeping this version")
+            return False
+        prev = ENGINE + ".prev"                      # the running engine, kept until both files are in place
+        copied = False
+        try:
+            if os.path.isfile(prev):
+                os.remove(prev)                       # never a leftover from an earlier, interrupted update
+            if os.path.isfile(ENGINE):
+                shutil.copy2(ENGINE, prev)
+                copied = True
+            os.replace(ENGINE + ".new", ENGINE)
+            os.replace(me + ".new", me)
+        except OSError as err:
+            try:
+                if copied:
+                    os.replace(prev, ENGINE)          # never a new engine next to the old watcher
+            except OSError:
+                pass
+            for path in (ENGINE + ".new", me + ".new"):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            spa_restore(old_spa)
+            log(f"update {latest} failed while installing ({err}); the old files were put back")
+            return False
+        try:
+            os.remove(prev)
+        except OSError:
+            pass
+        spa_drop(old_spa)
     conf.pop("waiting", None)
     log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
     return True
@@ -406,6 +476,302 @@ def update_loop(E, conf):
         except Exception as err:
             log("update check failed:", type(err).__name__, err)
         time.sleep(15)
+
+
+# ---- the web app's files (watcher/spa/) ------------------------------------------------------------------------
+# The single-page app and the login page are plain files in a folder named spa next to this file, one per screen,
+# so changes to different screens never touch the same file. spa/MANIFEST.json lists them in load order. At import
+# they are joined back into the same two strings as before (SPA, LOGIN_HTML): the shell's "@@SPA_CSS@@" line is
+# replaced by the css files and its "@@SPA_JS@@" line by the js files, in the listed order; the login page is one
+# file. Keep the manifest's shape (shell/css/js/login) stable: the running updater reads the next version's.
+# Updates (update_if_newer) and repairs (spa_repair) download every listed file at one exact commit, check each
+# against GitHub's own hash of it, assemble it (and `node --check` its scripts when node is on this computer) in a
+# new folder, and only then swap the folder in. Anything missing or changed = nothing is replaced.
+SPA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spa")
+SPA_CSS_MARK, SPA_JS_MARK = "@@SPA_CSS@@\n", "@@SPA_JS@@\n"
+SPA_LOCK = threading.Lock()
+SPA_STAMP = ".version"          # inside an installed spa folder: the watcher version it was fetched for
+
+
+class spa_locked:
+    """Held around fetching and swapping the web app's files: one thread here (SPA_LOCK) and one process on this
+    computer (a lock file next to the folder), so the watcher's repair and an installer's --install-spa never
+    trip over each other."""
+
+    def __enter__(self):
+        import fcntl
+        SPA_LOCK.acquire()
+        try:
+            self.f = open(os.path.join(os.path.dirname(SPA_DIR), ".spa.lock"), "a")
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        except BaseException:
+            SPA_LOCK.release()
+            raise
+        return self
+
+    def __exit__(self, *a):
+        import fcntl
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+            self.f.close()
+        finally:
+            SPA_LOCK.release()
+        return False
+
+
+def spa_stamp(folder=SPA_DIR):
+    """The version an installed spa folder was fetched for ("" when unstamped, e.g. in the repo)."""
+    try:
+        with open(os.path.join(folder, SPA_STAMP), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+SPA_FALLBACK = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Combo Hub</title></head>'
+                '<body style="margin:0;padding:28px 20px;background:#0b0d12;color:#eef1f6;'
+                'font:16px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif">'
+                '<h2 style="margin:0 0 8px">Combo Hub is finishing an update</h2>'
+                '<p style="color:#a1aabb">The Mac is fetching the rest of the app. Your bets are still being watched. '
+                'Reload this page in a minute.</p></body></html>\n')
+
+
+def spa_manifest(folder=SPA_DIR):
+    """The manifest in folder: (manifest, every file it lists). Raises ValueError if it is malformed."""
+    with open(os.path.join(folder, "MANIFEST.json"), encoding="utf-8") as f:
+        m = json.load(f)
+    if not isinstance(m, dict) or not isinstance(m.get("css"), list) or not isinstance(m.get("js"), list):
+        raise ValueError("MANIFEST.json isn't a web app manifest")
+    files = [m.get("shell"), *m["css"], *m["js"], m.get("login")]
+    for n in files:
+        if not isinstance(n, str) or not re.fullmatch(r"[a-z0-9_]+\.(html|css|js)", n):
+            raise ValueError(f"MANIFEST.json lists a bad file name: {n!r}")
+    if len(set(files)) != len(files):
+        raise ValueError("MANIFEST.json lists a file twice")
+    return m, files
+
+
+def spa_assemble(folder=SPA_DIR):
+    """(SPA, LOGIN_HTML) built from the files in folder. Raises OSError/ValueError if anything is missing,
+    empty or out of shape; never returns a partial page."""
+    m, _ = spa_manifest(folder)
+
+    def get(name):
+        with open(os.path.join(folder, name), encoding="utf-8", newline="") as f:    # exact text, no newline changes
+            s = f.read()
+        if not s.strip():
+            raise ValueError(f"{name} is empty")
+        if name != m["shell"] and (SPA_CSS_MARK.strip() in s or SPA_JS_MARK.strip() in s):
+            raise ValueError(f"{name} contains a shell placeholder")
+        return s
+    shell = get(m["shell"])
+    if shell.count(SPA_CSS_MARK) != 1 or shell.count(SPA_JS_MARK) != 1:
+        raise ValueError(f"{m['shell']} needs exactly one {SPA_CSS_MARK.strip()} line and one {SPA_JS_MARK.strip()} line")
+    css = "".join(get(n) for n in m["css"])
+    js = "".join(get(n) for n in m["js"])
+    spa = shell.replace(SPA_CSS_MARK, css).replace(SPA_JS_MARK, js)
+    login = get(m["login"])
+    if not spa.startswith("<!doctype html>") or not spa.rstrip().endswith("</html>") or "__CWTOK__" not in spa:
+        raise ValueError("the assembled web app is out of shape")
+    if not login.startswith("<!doctype html>") or "__MSG__" not in login:
+        raise ValueError("the login page is out of shape")
+    return spa, login
+
+
+def spa_scripts(page):
+    """Every inline <script> block of a page, joined (what `node --check` reads)."""
+    return "\n".join(re.findall(r"<script>(.*?)</script>", page, re.S))
+
+
+def spa_node_check(spa, login):
+    """`node --check` the assembled scripts when node is on this computer (it usually isn't on Pete's Mac: then
+    the per-file hashes and the assembly are the check). Raises ValueError on a syntax error."""
+    import shutil, subprocess, tempfile
+    node = shutil.which("node") or next((p for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+                                         if os.access(p, os.X_OK)), None)
+    if not node:
+        return False
+    try:                                              # an old node can't read today's JavaScript: skip, don't block
+        v = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=15).stdout
+        if int((re.match(r"v(\d+)", v.strip()) or [0, 0])[1]) < 18:
+            log("web app check: node is too old to check the scripts (", v.strip(), "); skipped")
+            return False
+    except (OSError, ValueError, subprocess.SubprocessError) as err:
+        log("web app check: node didn't answer (", err, "); skipped")
+        return False
+    for name, page in (("web app", spa), ("login page", login)):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(spa_scripts(page))
+        try:
+            r = subprocess.run([node, "--check", f.name], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as err:
+            log(f"web app check: node couldn't check the {name}'s script ({err}); skipped")
+            return False
+        finally:
+            os.unlink(f.name)
+        if r.returncode:
+            raise ValueError(f"the {name}'s script doesn't parse: {(r.stderr or '').strip()[-200:]}")
+    return True
+
+
+def git_blob_sha(b):
+    """GitHub's own hash of a file's bytes (the git blob SHA-1 its file list reports)."""
+    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
+
+
+def spa_digest(spa, login):
+    """The web app's fingerprint, as the phone approves it (the engine's spa_approval_digest computes the same)."""
+    return hashlib.sha256((spa + "\0" + login).encode("utf-8")).hexdigest()
+
+
+def spa_fetch(sha, approved=None, stamp=WATCHER_VERSION):
+    """Download the web app's files at exactly commit sha into a new folder next to the installed one, check them
+    all and return that folder (spa_swap puts it in place). With approved (updates your phone approves), the
+    assembled app must also have exactly that spa_digest. Raises on anything missing, changed, cut short, broken
+    or not approved, and then leaves nothing behind; the installed folder is never touched here. The folder is
+    stamped with the watcher version it is for (stamp). Call inside spa_locked()."""
+    import shutil, tempfile
+    if not re.fullmatch(r"[0-9a-f]{40}", sha or ""):
+        raise ValueError("no exact commit to fetch the web app from")
+    r = requests.get(GH_API + "/contents/watcher/spa", params={"ref": sha}, timeout=15,
+                     headers={"Accept": "application/vnd.github+json"})
+    if not r.ok:
+        raise ValueError(f"GitHub's file list answered {r.status_code}")
+    listing = r.json()
+    if not isinstance(listing, list):
+        raise ValueError("GitHub's file list is out of shape")
+    want = {e.get("name"): e.get("sha") for e in listing if isinstance(e, dict) and e.get("type") == "file"}
+    parent = os.path.dirname(SPA_DIR)
+    for old in os.listdir(parent):                    # leftovers of an interrupted fetch (an hour old or more)
+        try:
+            if old.startswith(".spa-new-") and time.time() - os.path.getmtime(os.path.join(parent, old)) > 3600:
+                shutil.rmtree(os.path.join(parent, old), ignore_errors=True)
+        except OSError:
+            pass
+    tmp = tempfile.mkdtemp(prefix=".spa-new-", dir=parent)
+    try:
+        def grab(name):
+            if not want.get(name):
+                raise ValueError(f"{name} isn't on GitHub at {sha[:7]}")
+            g = requests.get(REPO.replace("/main/", f"/{sha}/") + "watcher/spa/" + name, timeout=30)
+            if not g.ok:
+                raise ValueError(f"{name} answered {g.status_code}")
+            if git_blob_sha(g.content) != want[name]:
+                raise ValueError(f"{name} arrived changed or cut short")
+            fd = os.open(os.path.join(tmp, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(g.content)
+        grab("MANIFEST.json")
+        for name in spa_manifest(tmp)[1]:
+            grab(name)
+        spa, login = spa_assemble(tmp)
+        if approved is not None and spa_digest(spa, login) != approved:
+            raise ValueError("they don't match what your phone approved")
+        spa_node_check(spa, login)
+        with open(os.path.join(tmp, SPA_STAMP), "w", encoding="utf-8") as f:
+            f.write(stamp + "\n")
+        return tmp
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def spa_swap(new):
+    """Put the checked folder new in place of the installed one. Returns the old folder's new name (for
+    spa_restore/spa_drop), or None when there wasn't one."""
+    import shutil
+    old = SPA_DIR + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    had = os.path.isdir(SPA_DIR)
+    if had:
+        os.replace(SPA_DIR, old)
+    try:
+        os.replace(new, SPA_DIR)
+    except OSError:
+        if had:
+            os.replace(old, SPA_DIR)
+        raise
+    return old if had else None
+
+
+def spa_restore(old):
+    """Undo spa_swap (the rest of an update failed): the previous folder goes back."""
+    import shutil
+    if old and os.path.isdir(old):
+        shutil.rmtree(SPA_DIR, ignore_errors=True)
+        os.replace(old, SPA_DIR)
+
+
+def spa_drop(old):
+    import shutil
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def spa_repair(conf=None):
+    """Fetch the web app's files for exactly this watcher: after an older updater (one that didn't know about the
+    spa folder) installed it, when the folder was deleted or damaged, and from the installers (--install-spa).
+    Only when GitHub's newest watcher is this very file, byte for byte; otherwise the normal update brings a newer
+    version together with its own files. With automatic updates off (a Pi, usually), only files your phone
+    approved for this version (their spa_digest). True once installed."""
+    if conf is None:
+        try:
+            conf = load_conf()
+        except (OSError, ValueError):
+            conf = {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    if any(os.path.exists(os.path.join(d, ".git")) for d in (here, os.path.dirname(here))):
+        log("web app files: this watcher runs from a git checkout; its spa folder is the repo's, left alone")
+        return False
+    approved = None
+    if not auto_updates(conf):
+        ok = conf.get("approve") or {}
+        approved = ok.get("spa") if ok.get("version") == WATCHER_VERSION else None
+        if not approved:
+            log("web app files: waiting for your phone to approve this version's files")
+            return False
+    sha = repo_sha()
+    if not sha:
+        log("web app files: GitHub didn't say which commit is newest; trying again later")
+        return False
+    try:
+        g = requests.get(REPO.replace("/main/", f"/{sha}/") + "watcher/combo_watcher.py", timeout=30)
+        with open(os.path.abspath(__file__), "rb") as f:
+            mine = f.read()
+        if not g.ok or g.content != mine:
+            log("web app files: GitHub's newest watcher isn't this one; the next update brings both")
+            return False
+        with spa_locked():
+            spa_drop(spa_swap(spa_fetch(sha, approved)))
+    except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as err:
+        log("web app files couldn't be fetched:", err)
+        return False
+    log("web app files installed for this version", WATCHER_VERSION)
+    return True
+
+
+def spa_repair_start(conf):
+    def run():
+        spa_repair_loop(conf)                       # returns only once the files are installed
+        if not UPDATED.get("now"):
+            return
+        time.sleep(20)                              # the main loop exits on UPDATED; if it's stuck, exit anyway
+        log("restarting for the web app files")
+        os._exit(0)
+    threading.Thread(target=run, daemon=True, name="spa-repair").start()
+
+
+def spa_repair_loop(conf=None):
+    """main() runs this when the web app's files were missing or broken at start: it fetches them (retrying every
+    10 minutes) and then restarts the watcher so Combo Hub serves them. Trading carries on throughout."""
+    while True:
+        try:
+            if spa_repair(conf):
+                log("restarting so Combo Hub uses its web app files")
+                UPDATED["now"] = True
+                return
+        except Exception as err:
+            log("web app repair failed:", type(err).__name__, err)
+        time.sleep(600)
 
 
 def estimate_offers(E):
@@ -1448,83 +1814,7 @@ pre{white-space:pre-wrap;font-size:12px;color:var(--mute)}
 .tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}"""
 
 
-LOGIN_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Combo Hub">
-<meta name="theme-color" content="#0b0d12"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<title>Combo Hub</title><style>
-:root{--bg:#0b0d12;--panel:#151821;--line:#262a35;--ink:#f2f4f8;--mute:#8b93a3;--acc:#4f8cff;--bad:#ff6b6b}
-@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--panel:#fff;--line:#dde1e8;--ink:#12151b;--mute:#667085;--acc:#2f6bff;--bad:#d92d20}}
-*{box-sizing:border-box}html,body{height:100%}
-body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,color-mix(in srgb,var(--acc) 22%,transparent),transparent 60%),var(--bg);
- color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;
- padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
-.box{width:100%;max-width:360px;text-align:center}
-.logo{width:76px;height:76px;border-radius:20px;box-shadow:0 12px 40px color-mix(in srgb,var(--acc) 40%,transparent);margin-bottom:18px}
-h1{font-size:28px;letter-spacing:-.02em;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 26px;font-size:15px}
-.fid{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:0;border-radius:14px;padding:15px;font-weight:600;font-size:17px;font-family:inherit;
- background:var(--acc);color:#fff;cursor:pointer}.fid svg{width:24px;height:24px}
-.fid.nudge{animation:nud 1.6s ease-in-out infinite}@keyframes nud{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--acc) 28%,transparent)}}@media(prefers-reduced-motion:reduce){.fid.nudge{animation:none}}
-.or{display:flex;align-items:center;gap:12px;color:var(--mute);font-size:13px;margin:20px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
-.field{position:relative}
-input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:var(--ink);padding:15px 52px 15px 16px;
- font:600 20px ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.18em;text-align:center;outline:none;transition:border-color .15s,box-shadow .15s}
-input::placeholder{letter-spacing:normal;font:400 16px -apple-system,system-ui,sans-serif;color:var(--mute)}
-input:focus{border-color:var(--acc);box-shadow:0 0 0 4px color-mix(in srgb,var(--acc) 22%,transparent)}
-.eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--mute);padding:8px;cursor:pointer}
-.go{width:100%;margin-top:12px;border:1px solid var(--line);border-radius:14px;padding:14px;font:600 17px -apple-system,system-ui,sans-serif;background:var(--panel);color:var(--ink);cursor:pointer}
-.solo .go{background:var(--acc);color:#fff;border:0}
-.msg{color:var(--bad);font-size:14px;min-height:20px;margin-top:12px}.hint{color:var(--mute);font-size:13px;margin-top:22px}.hint a{color:var(--acc)}
-.shake{animation:sh .4s}@keyframes sh{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
-.spin{width:18px;height:18px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:r .7s linear infinite;display:inline-block}@keyframes r{to{transform:rotate(1turn)}}
-/* the same motion as the app: a soft entrance, press feedback, a haptic tick on every tap */
-:root{color-scheme:dark;--spring:cubic-bezier(.2,.9,.25,1.12);--ease:cubic-bezier(.2,.8,.2,1)}@media (prefers-color-scheme:light){:root{color-scheme:light}}
-.box>*{animation:rise .5s var(--ease) both}.box>*:nth-child(2){animation-delay:.06s}.box>*:nth-child(3){animation-delay:.12s}.box>*:nth-child(4){animation-delay:.18s}.box>*:nth-child(5){animation-delay:.24s}.box>*:nth-child(n+6){animation-delay:.3s}
-.logo{animation:pop .6s var(--spring) both!important}@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-.fid,.go,.eye{transition:transform .14s var(--ease),filter .15s,background-color .15s;-webkit-tap-highlight-color:transparent}.fid:active,.go:active{transform:scale(.97)}.eye:active{transform:translateY(-50%) scale(.88)}
-.fid:hover,.solo .go:hover{filter:brightness(1.07)}
-@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-</style></head><body><div class="box" id="box">
-<img class="logo" src="data:image/png;base64,__ICON__" alt="">
-<h1>Combo Hub</h1><p class="sub" id="sub">Your Mac's betting desk</p>
-<div id="fidwrap" style="display:none"><button class="fid" id="fid" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M9 9v1.5M15 9v1.5M12 9v4.5h-1M9.5 16c1.5 1.2 3.5 1.2 5 0"/></svg><span id="fidt">Unlock with Face ID</span></button>
-<div class="or">or use your passcode</div></div>
-<form method="post" action="/login" id="f"><div class="field"><input name="pass" id="p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Passcode" required>
-<button class="eye" type="button" aria-label="Show passcode" onclick="var p=document.getElementById('p');p.type=p.type==='password'?'text':'password'"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-<button class="go" id="go">Unlock</button></form>
-<div class="msg" id="msg">__MSG__</div>
-<div class="hint" id="hint">The passcode is in Settings › This Mac, on the Mac.</div>
-</div><script>
-const FID="__FID__",HTTPS="__HTTPS__",box=document.getElementById('box'),msg=document.getElementById('msg');
-/* haptics, the same way as the app (iOS: a tiny see-through switch toggled inside the tap; elsewhere vibrate); __haps is for tests */
-function hap(k){k=k||'light';(window.__haps=window.__haps||[]).push(k);try{if(!(/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1))&&navigator.vibrate){navigator.vibrate(k==='error'?[25,60,25,60,25]:8);return;}
- let l=document.getElementById('hapl');if(!l){l=document.createElement('label');l.id='hapl';l.setAttribute('aria-hidden','true');l.style.cssText='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';l.innerHTML='<input type="checkbox" switch tabindex="-1">';document.body.appendChild(l);}
- (k==='error'?[0,80,160]:[0]).forEach(d=>d?setTimeout(()=>l.click(),d):l.click());}catch(e){}}
-addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('button,a');if(b&&!b.closest('#hapl'))hap('light');},true);
-if(msg.textContent.trim())box.classList.add('shake');
-document.getElementById('f').addEventListener('submit',()=>{document.getElementById('go').innerHTML='<span class="spin"></span>';});
-const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
-const e64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-const can=window.PublicKeyCredential&&location.protocol==='https:';
-if(FID&&can){document.getElementById('fidwrap').style.display='';document.getElementById('hint').textContent='';}
-else{box.classList.add('solo');if(location.protocol!=='https:'&&HTTPS)document.getElementById('hint').innerHTML='Face ID works on the secure address: <a href="'+HTTPS+'">'+HTTPS.replace('https://','')+'</a>';}
-async function unlock(auto){const btn=document.getElementById('fid');const old=btn.innerHTML;
- try{const o=await (await fetch('/auth/begin',{method:'POST',body:'{}'})).json();if(!o.ok)return;
-  btn.innerHTML='<span class="spin"></span>';
-  const c=await navigator.credentials.get({publicKey:{challenge:b64(o.challenge),rpId:o.rp,userVerification:'required',timeout:60000,
-   allowCredentials:o.ids.map(id=>({type:'public-key',id:b64(id)}))}});
-  const r=await (await fetch('/auth/finish',{method:'POST',body:JSON.stringify({id:c.id,clientDataJSON:e64(c.response.clientDataJSON),
-   authenticatorData:e64(c.response.authenticatorData),signature:e64(c.response.signature)})})).json();
-  if(r.ok){location.replace('/');return;}msg.textContent=r.msg||'Face ID didn\'t work.';hap('error');box.classList.remove('shake');void box.offsetWidth;box.classList.add('shake');
- }catch(e){
-  if(auto){/* iOS often refuses Face ID without a tap: say so and make the button the obvious thing to tap */
-   msg.textContent='';btn.classList.add('nudge');}
-  else msg.textContent=(e&&e.name==='NotAllowedError')?'Face ID was cancelled. Use the passcode or tap the button to try again.':'Face ID isn\'t available here. Use the passcode.';}
- btn.innerHTML=old;if(auto&&btn.classList.contains('nudge'))document.getElementById('fidt').textContent='Tap to unlock with Face ID';}
-document.getElementById('fid').onclick=()=>{document.getElementById('fid').classList.remove('nudge');unlock(false);};
-if(FID&&can&&!msg.textContent.trim())unlock(true);else document.getElementById('p').focus();
-</script></body></html>"""
+# SPA and LOGIN_HTML are built from watcher/spa/ at the end of this file (after SPA_LEGACY_Z).
 
 
 SESSIONS_FILE = os.path.join(HOME, "hub_sessions.json")    # sign-ins survive restarts and updates (hashed)
@@ -1907,2581 +2197,7 @@ class WebBuild:
 # The hub (port 8765) signs you in and passes requests through to it on this Mac only (port 8766).
 WEBAPP_PORT = int(os.environ.get("CW_WEBAPP_PORT") or 8766)   # the check suite moves it, so tests never reach the real app
 
-SPA = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)"><meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)"><title>Combo Hub</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#6b7488;
- --yes:#16c784;--yesbg:rgba(22,199,132,.13);--no:#ff5c6c;--nobg:rgba(255,92,108,.13);--acc:#4c8dff;--accbg:rgba(76,141,255,.15);
- --live:#ff9f1c;--livebg:rgba(255,159,28,.14);--r:14px}
-@media (prefers-color-scheme:light){:root{--bg:#f6f7fa;--panel:#fff;--panel2:#f2f4f8;--hover:#eef1f7;--line:#e4e7ee;--ink:#0e1320;--sub:#4c5568;--mute:#8a93a6;
- --yesbg:rgba(22,170,110,.12);--yes:#0f9e64;--no:#e5394b;--nobg:rgba(229,57,75,.1);--acc:#2468ff;--accbg:rgba(36,104,255,.1);--live:#d97706;--livebg:rgba(217,119,6,.12)}}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1,"cv11" 1}
-button{font:inherit;color:inherit;cursor:pointer}a{color:var(--acc);text-decoration:none}
-.top{position:sticky;top:0;z-index:20;height:calc(62px + env(safe-area-inset-top));display:flex;align-items:center;gap:22px;padding:0 24px;padding-top:env(safe-area-inset-top);
- border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:saturate(180%) blur(18px);backdrop-filter:saturate(180%) blur(18px)}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;letter-spacing:-.02em;white-space:nowrap}
-.mk{width:28px;height:28px;border-radius:8px;background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff);display:grid;place-items:center;flex:none}
-.nav{display:flex;gap:2px}.nav button{border:0;background:none;padding:8px 14px;border-radius:9px;color:var(--sub);font-weight:600}
-.nav button.on{color:var(--ink);background:var(--panel2)}.nav button:hover{color:var(--ink)}
-.tr{margin-left:auto;display:flex;align-items:center;gap:20px}
-.ts{text-align:right;line-height:1.2}.ts span{display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.ts b{font-size:15px}
-.status{display:flex;align-items:center;gap:7px;color:var(--sub);font-size:12.5px;font-weight:600;white-space:nowrap}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg)}.dot.off{background:var(--no);box-shadow:0 0 0 4px var(--nobg)}
-.cta{border:0;background:var(--acc);color:#fff;border-radius:10px;padding:9px 14px;font-weight:700;white-space:nowrap}
-.cta:hover{filter:brightness(1.08)}
-main{max-width:1520px;margin:0 auto;padding:22px 24px 60px;overflow-x:clip}
-.grid>*,.trow>*,.kpi,.name,.legs{min-width:0}.name span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px}
-.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:var(--panel);color:var(--sub);border-radius:99px;padding:6px 12px;font-weight:600;font-size:12.5px;white-space:nowrap}
-.chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}.chip:hover:not(.on){color:var(--ink)}
-.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:6px}
-.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:15px 17px;min-width:0}
-.kpi span{color:var(--mute);font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}.kpi b{display:block;font-size:25px;letter-spacing:-.03em;margin-top:3px;font-weight:700;white-space:nowrap}
-.kpi small{color:var(--sub);font-weight:500;font-size:13px}
-.up{color:var(--yes)}.down{color:var(--no)}.m{color:var(--mute)}.s{color:var(--sub)}
-h2{font-size:12.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.07em;margin:24px 0 10px;font-weight:700;display:flex;align-items:center;gap:8px}
-h2 .n{background:var(--panel2);color:var(--ink);border-radius:6px;padding:1px 7px;font-size:12px;letter-spacing:0}
-h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
-.alert{display:flex;align-items:center;gap:16px;background:linear-gradient(90deg,var(--yesbg),transparent 75%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 40%,transparent);border-radius:var(--r);padding:15px 17px;margin-bottom:10px}
-.alert .ic{width:38px;height:38px;border-radius:10px;background:var(--yesbg);color:var(--yes);display:grid;place-items:center;font-size:18px;flex:none}
-.alert b{font-size:15px}.alert p{margin:2px 0 0;color:var(--sub)}
-.btn{border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
-.btn:hover{background:var(--hover)}.btn.yes{background:var(--yes);color:#04150c;border-color:transparent}.btn.acc{background:var(--acc);color:#fff;border-color:transparent}
-.btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
-.own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
-.legs .up{color:var(--yes)}.legs .down{color:var(--no)}
-.ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}
-.an{padding:16px 18px;margin:18px 0}.anh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}
-.ant{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.ant button{flex:1 1 auto}
-.annotes{margin:0 0 6px 18px;padding:0;font-size:13.5px;line-height:1.5}
-.anrow{display:grid;grid-template-columns:1.4fr repeat(5,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--line);font-size:13px;align-items:center}
-.anrow.l4{grid-template-columns:1.1fr 2fr 1.2fr 1.2fr}
-@media (max-width:760px){.anrow.h{display:none}.anrow{display:flex;flex-wrap:wrap;gap:6px 14px;padding:11px 0}.anrow>div:first-child{flex-basis:100%;font-size:14px}
- .anrow>div[data-l]:not([data-l=""])::before{content:attr(data-l);display:block;color:var(--mute);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}}
-.anrow.h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-/* ---- motion & feel ---- */
-:root{--spring:cubic-bezier(.2,.9,.25,1.12);--ease:cubic-bezier(.2,.8,.2,1)}
-button,.trow,.chip,.pitem,.kpi,.moment,.ss{transition:transform .14s var(--ease),background-color .18s,color .18s,box-shadow .18s,opacity .18s}
-button:active:not(:disabled),.trow:active,.chip:active,.pitem:active,.moment:active,.ss:active{transform:scale(.97)}
-main.enter{animation:pgin .32s var(--ease)}
-@keyframes pgin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-::view-transition-old(root),::view-transition-new(root){animation-duration:.24s}
-.fl-up{animation:flup .9s var(--ease)}.fl-down{animation:fldn .9s var(--ease)}
-@keyframes flup{0%{color:var(--yes);text-shadow:0 0 18px var(--yesbg)}100%{}}
-@keyframes fldn{0%{color:var(--no);text-shadow:0 0 18px var(--nobg)}100%{}}
-.rowpop{animation:rowpop 1.2s var(--ease)}
-@keyframes rowpop{0%{background:var(--livebg)}100%{}}
-.modal{display:flex!important;opacity:0;pointer-events:none;transition:opacity .22s var(--ease)}
-.modal.on{opacity:1;pointer-events:auto}
-.modal .sheet{transform:translateY(24px) scale(.98);transition:transform .34s var(--spring)}
-.modal.on .sheet{transform:none}
-@media (max-width:760px){.modal .sheet{transform:translateY(100%)}.modal.on .sheet{transform:none}
- .modal .sheet.drag{transition:none}.sheet .grab{display:block;width:38px;height:5px;border-radius:3px;background:var(--line);margin:-6px auto 12px}}
-.sheet .grab{display:none}
-.toast{transition:transform .38s var(--spring),opacity .2s!important}
-.tabbar button.on svg{animation:tabpop .38s var(--spring)}
-@keyframes tabpop{0%{transform:scale(.8)}60%{transform:scale(1.12)}100%{transform:none}}
-#ptr{position:fixed;left:50%;top:calc(70px + env(safe-area-inset-top));width:34px;height:34px;margin-left:-17px;border-radius:50%;background:var(--panel);border:1px solid var(--line);
- display:grid;place-items:center;z-index:25;opacity:0;transform:translateY(-40px);pointer-events:none;box-shadow:0 6px 20px rgba(0,0,0,.3)}
-#ptr i{width:16px;height:16px;border-radius:50%;border:2px solid var(--acc);border-top-color:transparent}
-#ptr.go i{animation:sp .7s linear infinite}
-/* ---- stage 2: every screen ---- */
-.stag>*{animation:rise .42s var(--ease) both;animation-delay:calc(var(--i,0)*38ms)}
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
-@keyframes swl{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
-@keyframes swr{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
-.chip.on{animation:chipon .32s var(--spring)}@keyframes chipon{0%{transform:scale(.92)}100%{transform:none}}
-.seg,.ant{position:relative}.segind{position:absolute;border-radius:8px;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .32s var(--spring),width .32s var(--spring),top .32s var(--spring);z-index:0;pointer-events:none}
-.seg.hasind button,.ant.hasind button{position:relative;z-index:1}.seg.hasind button.on,.ant.hasind button.on{background:transparent!important;box-shadow:none!important}
-.tabbar{position:fixed;transform:translateY(var(--tbo,0px))}.tabind{position:absolute;top:4px;height:3px;border-radius:3px;background:var(--acc);transition:left .36s var(--spring),width .36s var(--spring);pointer-events:none}
-/* live scores on Build */
-.lvsc{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--live);font-size:11.5px;letter-spacing:.02em;white-space:nowrap}
-.pickbtn .scr{font-weight:800;font-size:15px;margin-right:8px;min-width:22px;display:inline-block;font-variant-numeric:tabular-nums}
-.pickbtn.lead .scr{color:var(--yes)}.pickbtn.trail .scr{color:var(--no)}
-.mrow.livegame{box-shadow:inset 3px 0 0 var(--live)}
-.legsc{display:block;font-size:10.5px;font-weight:700;margin-top:2px;letter-spacing:.01em}
-.legsc.up{color:var(--yes)}.legsc.down{color:var(--no)}.legsc.even{color:var(--live)}
-/* the moment: bought, sold, approved */
-.okcard{text-align:center;padding:10px 4px 4px}
-.okcard svg{width:84px;height:84px;display:block;margin:4px auto 10px}
-.okcard circle{stroke:var(--yes);stroke-width:4;fill:var(--yesbg);stroke-dasharray:240;stroke-dashoffset:240;animation:okc .6s var(--ease) forwards}
-.okcard path{stroke:var(--yes);stroke-width:5;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:60;stroke-dashoffset:60;animation:okc .38s .42s var(--ease) forwards}
-@keyframes okc{to{stroke-dashoffset:0}}
-.okcard h3{font-size:22px!important;margin:0 0 4px!important;animation:rise .4s .3s both}
-.okcard .amt{font-size:34px;font-weight:800;letter-spacing:-.04em;color:var(--yes);animation:rise .4s .45s both}
-.okcard p{animation:rise .4s .55s both}
-.okcard.bad circle{stroke:var(--no);fill:var(--nobg)}.okcard.bad path{stroke:var(--no)}.okcard.bad .amt{color:var(--no)}
-/* Results */
-.chart rect{transform-box:fill-box;transform-origin:center bottom;animation:barup .6s var(--spring) both}
-.chart rect:nth-child(n){animation-delay:calc(var(--i,0)*45ms)}
-@keyframes barup{from{transform:scaleY(0)}to{transform:none}}
-.gt.live{animation:none}.gt.scored{animation:rowpop 1.4s var(--ease)}
-.stp button{transition:transform .12s var(--ease),background-color .15s}.stp button:active{transform:scale(.86)}
-.tg{transition:background-color .2s}.tg:active{transform:scale(.94)}
-.empty[data-ic]:before{content:attr(data-ic)}.empty b{display:block}.empty:before{content:"✨";display:block;width:44px;height:44px;line-height:44px;font-size:22px;text-align:center;margin:0 auto 10px;border-radius:14px;background:linear-gradient(145deg,var(--accbg),transparent);animation:floaty 3s ease-in-out infinite}
-@keyframes floaty{50%{transform:translateY(-4px)}}
-/* ---- the hero on Live ---- */
-.kpis.hero{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:0;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:14px;position:relative}
-.kpis.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 0% 0%,var(--hglow,transparent),transparent 60%);pointer-events:none}
-.hv{padding:18px 20px 12px;position:relative;min-width:0}
-.hv .hl{color:var(--mute);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.hv .big{display:block;font-size:40px;font-weight:800;letter-spacing:-.045em;line-height:1.05;margin:6px 0 4px;font-variant-numeric:tabular-nums}
-.hv .delta{font-weight:700;font-size:14px;display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px}
-.hv .delta.up{color:var(--yes);background:var(--yesbg)}.hv .delta.down{color:var(--no);background:var(--nobg)}.hv .delta.flat{color:var(--sub);background:var(--panel2)}
-.sparkw{position:relative;margin-top:10px}.hv .spark{display:block;width:100%;height:64px}
-.sdot{position:absolute;width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 0 currentColor;animation:sdot 1.8s infinite}
-@keyframes sdot{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}100%{box-shadow:0 0 0 10px transparent}}
-.hs{display:grid;grid-template-columns:1fr 1fr;border-left:1px solid var(--line);position:relative}
-.hs>div{padding:13px 16px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);min-width:0}
-.hs>div:nth-child(2n){border-right:0}.hs>div:nth-last-child(-n+2){border-bottom:0}
-.hs .hk{display:block;color:var(--mute);font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hs b{display:block;font-size:21px;font-weight:750;letter-spacing:-.03em;margin-top:3px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.hs small{display:block;color:var(--sub);font-size:12px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ring{width:22px;height:22px;flex:none;vertical-align:-4px;margin-right:6px}
-.livedot{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block;animation:pulse 1.6s infinite}
-@media (max-width:760px){.kpis.hero{grid-template-columns:1fr;border-radius:20px}.hs{border-left:0;border-top:1px solid var(--line)}.hv .big{font-size:44px}}
-@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
-.sech{cursor:pointer;user-select:none;-webkit-user-select:none}.sech .chev{display:inline-block;width:16px;color:var(--mute);transition:transform .2s var(--ease)}
-.secfold{font-size:12px;margin:-4px 2px 14px;cursor:pointer}
-.btn.warn{background:#f5b544;color:#1c1405;border-color:transparent}.btn.warn:hover{filter:brightness(1.05)}
-.tbl{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.thead,.trow{display:grid;grid-template-columns:minmax(170px,1.25fr) minmax(200px,2fr) 82px 82px 110px 130px 92px;align-items:center;gap:12px;padding:0 16px}
-.thead{height:40px;background:var(--panel2);color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
-.trow{min-height:66px;border-bottom:1px solid var(--line);cursor:pointer}.trow:hover{background:var(--hover)}
-.tbl>div:last-child{border-bottom:0}
-.num{text-align:right;font-weight:600}.name b{font-size:14.5px;display:block}.name span{color:var(--sub);font-size:12.5px}
-.legs{display:flex;gap:4px;flex-wrap:wrap}.leg{font-size:11.5px;font-weight:700;padding:3px 7px;border-radius:6px;background:var(--panel2);color:var(--sub);white-space:nowrap}
-.leg.won{background:var(--yes);color:#04130c}.leg.lost{background:var(--nobg);color:var(--no);text-decoration:line-through;opacity:.85}
-.leg.live,.leg.up,.leg.down{background:transparent;box-shadow:inset 0 0 0 1.5px currentColor;padding:2px 7px}
-.leg.live{color:var(--live)}.leg.up{color:var(--yes)}.leg.down{color:var(--no)}
-.leg .pd{display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:1px;animation:pulse2 1.6s infinite}
-@keyframes pulse2{0%,100%{opacity:1}50%{opacity:.35}}
-.bar{height:5px;border-radius:9px;background:var(--panel2);overflow:hidden;width:84px;margin:6px 0 0 auto}.bar i{display:block;height:100%;background:var(--acc)}
-.verdict{font-size:11px;font-weight:800;padding:4px 8px;border-radius:6px;letter-spacing:.03em;justify-self:end}
-.verdict.pl{text-align:right;padding:5px 9px;line-height:1.15}.verdict.pl b{display:block;font-size:14px;letter-spacing:-.01em}.verdict.pl small{display:block;font-size:10px;font-weight:700;opacity:.8;letter-spacing:.04em;text-transform:uppercase}
-.sbar{display:flex;flex-direction:column;gap:8px;margin:-2px 0 12px}.snet{font-size:13px;color:var(--sub)}
-.verdict.hold{background:var(--accbg);color:var(--acc)}.verdict.sell,.verdict.won{background:var(--yesbg);color:var(--yes)}.verdict.out,.verdict.lost{background:var(--nobg);color:var(--no)}.verdict.cashed{background:var(--panel2);color:var(--sub)}
-.offer b{display:block}.offer small{color:var(--mute);font-size:11.5px;font-weight:500}
-.exp{background:var(--panel2);border-bottom:1px solid var(--line);padding:6px 16px 14px}
-.lrow{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
-.lrow:last-of-type{border-bottom:0}.lrow .who b{font-weight:600}.lrow .who span{color:var(--sub);font-size:12.5px}
-.mark{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:800;background:var(--panel);color:var(--mute);border:1px solid var(--line)}
-.mark.won{background:var(--yes);color:#fff;border:0}.mark.lost{background:var(--no);color:#fff;border:0}.mark.live{border:2px solid var(--live);background:var(--livebg)}.mark.up{border:2px solid var(--yes);background:var(--yesbg)}.mark.down{border:2px solid var(--no);background:var(--nobg)}
-.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:12px}.acts .s{font-size:12.5px;margin-right:auto}
-.side .card,.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:15px 17px;margin-bottom:14px}
-.card h3{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between;align-items:center}.card h3 span{color:var(--mute);font-size:12px;font-weight:600}
-.g{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1px 10px;padding:10px 0;border-top:1px solid var(--line)}.g:first-of-type{border-top:0;padding-top:2px}
-.g .t{font-weight:600}.g .x{color:var(--sub);font-size:12.5px}.g .e{grid-row:span 2;align-self:center;text-align:right;font-size:12px;color:var(--sub)}.g .e b{display:block;color:var(--ink);font-size:13.5px}
-.tag{font-size:10px;font-weight:800;padding:2px 6px;border-radius:5px;background:var(--livebg);color:var(--live);margin-left:6px;vertical-align:1px;letter-spacing:.03em}
-.mini{display:flex;justify-content:space-between;padding:6px 0;color:var(--sub)}.mini b{color:var(--ink)}
-.empty{padding:40px 20px;text-align:center;color:var(--sub)}.empty b{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}
-.skel{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:10px}
-@keyframes sk{to{background-position:-200% 0}}
-/* build */
-.board{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.mrow{display:grid;grid-template-columns:96px minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
-.mrow:last-child{border-bottom:0}.mrow .when{color:var(--sub);font-size:12px;font-weight:600}
-.pickbtn{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:9px 11px;text-align:left;min-width:0}
-.pickbtn:hover{border-color:color-mix(in srgb,var(--acc) 50%,var(--line))}
-.pickbtn.on{border-color:var(--acc);background:var(--accbg)}
-.pickbtn .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pickbtn .short{display:none}.pickbtn .pr{text-align:right;line-height:1.15;flex:none}
-.pickbtn .pr b{display:block;font-size:14px}.pickbtn .pr span{font-size:11px;color:var(--mute)}
-.val{font-size:10px;font-weight:800;color:var(--yes);background:var(--yesbg);padding:1px 5px;border-radius:4px;margin-left:5px}
-.slip{position:sticky;top:84px}
-.slip .pick{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0}.slip .pick .lrow{flex:1}
-.slip .pick button{border:0;background:none;color:var(--mute);font-size:16px;padding:0 4px}
-.sum{display:flex;justify-content:space-between;padding:6px 0;color:var(--sub)}.sum b{color:var(--ink)}
-.big{font-size:28px;font-weight:800;letter-spacing:-.03em}
-.ccard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
-.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
-.ccard .hd{display:flex;justify-content:space-between;align-items:flex-start}.ccard .hd b{font-size:22px;letter-spacing:-.02em}
-.tier{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
-input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);border-radius:9px;padding:7px 9px;font:600 14px Inter;text-align:right}
-/* results */
-.chart{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
-.hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
-.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
- padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:50;max-width:min(560px,92vw);text-align:center;pointer-events:none}.toast.good{background:var(--yes);color:#04130c}.toast.bad{background:var(--no);color:#fff}
-.toast.on{opacity:1;transform:translateX(-50%)}.toast[hidden]{display:none!important}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
-.modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
-.sheet h3{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}.sheet p{color:var(--sub);margin:0 0 18px}.sheet .row{display:flex;gap:10px;justify-content:flex-end}
-.spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
-@keyframes sp{to{transform:rotate(360deg)}}
-.tabbar{display:none}
-/* phase 3 */
-.doit{display:grid;gap:10px;margin:4px 0 18px}
-.dcard{background:linear-gradient(100deg,var(--yesbg),transparent 70%),var(--panel);border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);border-radius:var(--r);padding:16px 18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
-.dcard.idea{background:linear-gradient(100deg,var(--accbg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
-.dcard.gone{opacity:.6;filter:saturate(.4);animation:goneout .5s ease 3.8s forwards}@keyframes goneout{to{opacity:0;transform:scale(.97)}}
-.dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
-.dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
-.ihd{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);margin-bottom:3px}
-.igame{color:var(--sub);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
-.ileg{display:grid;gap:1px;padding:8px 10px;margin-top:6px;border-radius:10px;background:var(--panel2);cursor:pointer;min-width:0}
-.ileg .ilg{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}.ileg b{font-size:14px;overflow-wrap:anywhere}.ileg small{color:var(--sub);font-size:12.5px;overflow-wrap:anywhere}
-.dcard.itap{cursor:pointer}
-.dnums.ifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px 12px}.dnums.ifacts div{min-width:0}.dnums.ifacts b{overflow-wrap:anywhere}
-.dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.dnums b{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em;text-transform:none}
-.dbtns{display:flex;gap:8px;grid-row:span 2}
-.calm{display:flex;align-items:center;gap:12px;color:var(--sub);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin:4px 0 18px;font-size:13.5px}
-.calm i{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg);flex:none}
-.why{color:var(--sub);font-size:12.5px;margin-top:6px}
-.moment{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
-.moment:first-of-type{border-top:0}.moment .k{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:var(--panel2);font-size:13px}
-.moment time{color:var(--mute);font-size:11.5px}
-.flash{animation:fl 1.6s ease}@keyframes fl{0%{background:var(--accbg)}100%{background:transparent}}
-.games{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
-.gt{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:grid;gap:10px}
-.gt.live{border-color:color-mix(in srgb,var(--live) 50%,transparent)}.gt.live.up{border-color:color-mix(in srgb,var(--yes) 55%,transparent)}.gt.live.down{border-color:color-mix(in srgb,var(--no) 55%,transparent)}
-.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin:10px 2px 0}.legend .leg{font-size:11px}
-.gt .top2{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
-.gt .tm{font-weight:700;font-size:15px}.gt .vs{color:var(--mute);font-size:12.5px}
-.gt .sc{font-size:24px;font-weight:800;letter-spacing:-.02em;text-align:right;line-height:1}.gt .sc small{display:block;font-size:11.5px;color:var(--mute);font-weight:600;margin-top:4px}
-.gt .ch{display:flex;align-items:baseline;gap:8px}.gt .ch b{font-size:22px}.gt .ch span{color:var(--mute);font-size:12px}
-.gt svg{width:100%;height:56px;display:block}
-.gt .ft{display:flex;justify-content:space-between;color:var(--sub);font-size:12.5px;border-top:1px solid var(--line);padding-top:10px}
-.board2{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;background:var(--panel2);border-radius:14px;padding:16px 18px;margin-bottom:14px;box-shadow:inset 0 0 0 1.5px var(--line)}
-.board2.up{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--yes) 60%,transparent)}.board2.down{box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--no) 60%,transparent)}
-.tm2{display:flex;align-items:center;gap:12px}.tm2.r{justify-content:flex-end}.tm2 span{font-weight:700;color:var(--sub)}.tm2 b{font-size:38px;letter-spacing:-.03em;line-height:1}
-.mid2{text-align:center}.mid2 .clk{font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
-.fresh{font-size:11.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--mute);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
-.fresh.old{color:var(--no)}
-.sheet.wide{max-width:880px;max-height:calc(100vh - 40px);overflow:auto;padding:24px}
-.dhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
-.dkpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}
-.dkpis div{background:var(--panel2);border-radius:12px;padding:10px 12px}.dkpis span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.dkpis b{font-size:17px}
-.chartbox{background:var(--panel2);border-radius:12px;padding:12px 12px 6px;margin-bottom:16px}.chartbox svg{width:100%;display:block}
-.key{display:flex;gap:14px;font-size:12px;color:var(--sub);margin:2px 0 8px}.key i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
-.dlegs .lg{display:grid;grid-template-columns:minmax(0,1fr) 120px 56px;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
-.dlegs svg{width:120px;height:28px}
-.bars2 .br{display:grid;grid-template-columns:110px minmax(0,1fr) 92px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0}
-.bars2 .tr2{height:10px;background:var(--panel2);border-radius:6px;position:relative;overflow:hidden}.bars2 .tr2 i{position:absolute;top:0;bottom:0;border-radius:6px}
-.sgt{display:grid;grid-template-columns:minmax(0,1fr) 46px 54px 66px;gap:7px 8px;font-size:12.5px;align-items:center}
-.sgt>span{text-align:right}.sgt>span:nth-child(-n+4){color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.sgt b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.25}.sgt b small{font-weight:500}
-.lines .lhd{padding:10px 16px 6px;font-weight:700;font-size:13px;border-top:1px solid var(--line)}
-.lrow2{display:grid;grid-template-columns:minmax(0,1fr) 48px 48px 78px;gap:8px;align-items:center;padding:6px 16px;font-size:13px}
-.lrow2 .btn{padding:5px 8px;font-size:12px}
-.daybar{margin:-2px 0 12px;width:max-content;max-width:100%}
-.qline{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:9px 12px;font-size:12.5px;background:var(--panel2)}.qline span{color:var(--sub)}
-.qline.good{background:var(--yesbg)}.qline.good b{color:var(--yes)}.qline.bad{background:var(--nobg)}.qline.bad b{color:var(--no)}
-.pred{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--panel2);color:var(--sub)}
-.pred.good{background:var(--yesbg);color:var(--yes)}.pred.bad{background:var(--nobg);color:var(--no)}
-.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--yes);margin-right:6px;animation:pulse 2s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--yes) 60%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
-@media (max-width:900px){.dcard{grid-template-columns:minmax(0,1fr)}.dbtns{grid-row:auto}.dbtns .btn{flex:1}.dkpis{grid-template-columns:repeat(2,minmax(0,1fr))}
- .modal{padding:0;align-items:flex-end}.sheet.wide{max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
- .dlegs .lg{grid-template-columns:minmax(0,1fr) 84px 46px}.dlegs svg{width:84px}.games{grid-template-columns:minmax(0,1fr)}}
-/* live field strip (football game page; our own art). .fld (not .field, which is the login passcode wrapper). */
-.fstrip{margin:0 0 16px}
-.fld{position:relative;height:84px;border-radius:12px;overflow:hidden;box-shadow:inset 0 0 0 1.5px var(--line);background:#0b5d2a}
-.fld .grass{position:absolute;inset:0 8.333% 20px 8.333%;background:repeating-linear-gradient(90deg,#0b5d2a 0,#0b5d2a 10%,#0c6a30 10%,#0c6a30 20%)}
-.fld .ez{position:absolute;top:0;bottom:20px;width:8.333%;display:grid;place-items:center;opacity:.92}
-.fld .ez.l{left:0}.fld .ez.r{right:0}
-.fld .ez span{color:#fff;font-weight:800;font-size:11px;letter-spacing:.04em;writing-mode:vertical-rl;transform:rotate(180deg);text-shadow:0 1px 2px rgba(0,0,0,.5)}
-.fld .grass i{position:absolute;top:0;bottom:0;width:0}
-/* The ball and possession arrow sit on the field's vertical midline (centred by their own translate(..,-50%)); the rule above would pin their box top to 0 and clip the top half, so win the cascade and put them back on 50% (#93). */
-.fld .grass i.fball,.fld .grass i.fdir{top:50%;bottom:auto}
-.fld .grass>i:not(.fball):not(.fdir):not(.fdline):not(.frz){border-left:1px solid rgba(255,255,255,.28)}
-.fld .frz{background:rgba(220,40,40,.28);width:auto}
-.fld .fdline{border-left:3px solid #f5d020;box-shadow:0 0 6px rgba(245,208,32,.7);z-index:3}
-.fld .fball{width:24px;height:14px;top:50%;transform:translate(-50%,-50%);z-index:4;transition:left .5s var(--ease)}
-.fstrip.noanim .fball{transition:none}
-.fld .fball svg{width:24px;height:14px}.fld .fball ellipse{fill:#8a4b1e;stroke:#fff;stroke-width:1.2}.fld .fball line{stroke:#fff;stroke-width:1.2}
-.fld .fdir{top:50%;color:#fff;font-size:13px;z-index:4;text-shadow:0 1px 2px rgba(0,0,0,.6);transition:left .5s var(--ease);width:auto}
-.fstrip.noanim .fdir{transition:none}
-.fld .ruler{position:absolute;left:0;right:0;bottom:0;height:20px;background:rgba(0,0,0,.35)}
-.fld .ruler span{position:absolute;transform:translateX(-50%);top:3px;color:#dfe8e0;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
-.situ{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;font-size:13.5px}
-.situ .dd{font-weight:800}.situ .rzt{color:#fff;background:var(--no);border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;letter-spacing:.04em}
-.lastplay{display:flex;gap:8px;align-items:baseline;margin-top:8px;font-size:12.5px;color:var(--sub);background:var(--panel2);border-radius:10px;padding:8px 11px}
-.lastplay .lpt{font-weight:800;color:var(--ink);text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;white-space:nowrap}
-.tdots{display:flex;gap:3px;justify-content:center;margin-top:4px}.tdots i{width:7px;height:4px;border-radius:2px;background:var(--line)}.tdots i.on{background:var(--sub)}
-.poss{color:var(--live);font-size:11px;margin-left:4px}
-/* game page tabs (a horizontally scrolling row with a sliding underline) and the play-by-play tab */
-.gtabs{position:relative;display:flex;gap:2px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none;border-bottom:1px solid var(--line);margin:2px 0 14px}
-.gtabs::-webkit-scrollbar{display:none}
-.gtab{flex:0 0 auto;border:0;background:none;color:var(--sub);font-weight:700;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase;padding:11px 14px;white-space:nowrap;scroll-snap-align:center}
-.gtab.on{color:var(--ink)}
-.gtabind{position:absolute;bottom:0;left:0;width:0;height:3px;border-radius:3px 3px 0 0;background:var(--acc);transition:left .28s var(--spring),width .28s var(--spring);pointer-events:none}
-.gpanel[hidden]{display:none}
-.pcard{background:var(--panel2);border-radius:14px;padding:12px;margin-bottom:6px}
-.pcard.sc{background:var(--yesbg)}.pcard.to{background:var(--nobg)}
-.pch{display:flex;align-items:center;gap:8px}.pcm{flex:1;min-width:0;text-align:center}
-.pct{font-weight:800;font-size:15px;overflow-wrap:anywhere}.pcs{font-size:12px;color:var(--sub);margin-top:2px}
-.pstep{flex:0 0 38px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:20px;line-height:1;display:grid;place-items:center;padding:0}
-.pstep:disabled{opacity:.35}
-.pctx{margin-top:10px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}
-.pcf{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--sub)}
-.plive{border:0;border-radius:99px;background:var(--live);color:#1a1100;font-weight:800;font-size:12px;padding:6px 12px}.plive[hidden]{display:none}
-.pnote{font-size:11.5px;color:var(--mute);margin:2px 2px 12px}
-.pq{width:100%;display:flex;align-items:center;justify-content:space-between;border:0;background:none;color:var(--ink);font-weight:800;font-size:15px;padding:12px 2px;border-top:1px solid var(--line)}
-.pdr{width:100%;display:flex;align-items:center;gap:8px;border:0;background:var(--panel2);border-radius:10px;padding:9px 10px;margin:6px 0 4px;color:var(--ink);text-align:left;font-size:13px;min-width:0}
-.pdr .pres{font-weight:800}.pdr .psum{margin-left:auto;font-size:12px;white-space:nowrap}
-.pdr.sc .pres{color:var(--yes)}.pdr.to .pres{color:var(--no)}
-.pdot{width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 1.5px var(--line);flex:0 0 auto}
-.chev{flex:0 0 auto;transition:transform .2s var(--ease)}[aria-expanded=false]>.chev{transform:rotate(-90deg)}
-.pp{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;padding:9px 8px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
-.pp:last-child{border-bottom:0}.pp.sc{background:var(--yesbg)}.pp.to{background:var(--nobg)}.pp.cur{box-shadow:inset 3px 0 0 var(--acc)}
-.ppm b{display:block;font-size:12.5px}.ppm .m{font-size:11.5px}.ppt{overflow-wrap:anywhere;line-height:1.4}
-.situ .rzt.rpl{background:var(--acc)}
-/* slice 3 tabs: box score, team stats, injury report, last 5 games, season leaders (our own look, team colours as accents) */
-.gtabx{min-width:0}
-:root{--tmix:28%}@media (prefers-color-scheme:light){:root{--tmix:0%}}
-.tdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 6px 1px 0;vertical-align:middle;flex:0 0 auto}
-.ghead{display:flex;align-items:center;gap:4px;margin:14px 2px 6px;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub)}
-.gempty{color:var(--mute);font-size:13px;margin:6px 2px 10px}
-.seg.bxsw{display:inline-flex;flex-wrap:nowrap;position:relative;margin-bottom:2px}
-.seg.bxsw button{display:flex;align-items:center;position:relative;z-index:1;padding:7px 16px}
-.gtw{overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel2);border-radius:12px}
-.gstat{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
-.gstat th{font-size:10px;font-weight:800;letter-spacing:.04em;color:var(--mute);text-align:right;padding:9px 6px 6px;white-space:nowrap}
-.gstat td{text-align:right;padding:7px 6px;border-top:1px solid var(--line);white-space:nowrap}
-.gstat th:first-child,.gstat td:first-child{text-align:left;padding-left:12px;width:100%;max-width:0}
-.gstat td:first-child>div{display:flex;align-items:center;min-width:0}.gstat th:last-child,.gstat td:last-child{padding-right:12px}
-.gstat .pn{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600}.gstat .jn{flex:0 0 auto}
-.gstat tr.tot td{color:var(--sub);font-weight:700}
-.jn{display:inline-block;margin-left:5px;padding:0 5px;border-radius:6px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font-size:10.5px;font-weight:800;line-height:16px;vertical-align:1px}
-.h2h{display:flex;justify-content:space-between;align-items:center;margin:2px 2px 10px;font-weight:800;font-size:13px}
-.h2h b{display:flex;align-items:center}.h2h b:last-child .tdot{margin:0 0 1px 6px}
-.tsr,.ldr{padding:9px 2px 11px;border-bottom:1px solid var(--line)}.tsr:last-of-type,.ldr:last-of-type{border-bottom:0}
-.tsv{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:baseline;gap:8px;margin-bottom:7px}
-.tsv b{font-size:16px;font-variant-numeric:tabular-nums}.tsv b:last-child{text-align:right}
-.tsv span{font-size:12px;color:var(--sub);text-align:center;white-space:nowrap}
-.h2bar{display:flex;gap:3px;height:6px}
-.h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
-.h2bar.even i{opacity:.35}
-.tsv b.lag{color:var(--mute);font-weight:600}.tsv b.lead{color:var(--ink)}
-.lob{display:block;font-size:10.5px;color:var(--mute);font-weight:500;margin-top:1px}
-.gskr{padding:9px 2px 11px}.gskr i{display:block;height:16px;margin-bottom:7px}.gskr i+i{height:6px;margin:0}
-.gin .h2bar i{animation:sbarIn .7s var(--ease) both}
-.gin .h2bar i:last-child{animation-name:sbarInR}
-@keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
-@keyframes sbarInR{from{transform:scaleX(0);transform-origin:right}to{transform:none;transform-origin:right}}
-.gin .tsr,.gin .ldr,.gin .l5r,.gin .injr,.gin .gtw{animation:rise .38s var(--ease) both;animation-delay:calc(var(--i,0)*28ms)}
-.injr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 2px;border-bottom:1px solid var(--line)}
-.injr:last-child{border-bottom:0}.injn{min-width:0;display:flex;gap:8px;align-items:baseline}
-.injn b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}.injn .m{font-size:11.5px;white-space:nowrap}
-.injw{grid-column:1;font-size:12px}
-.ist{grid-row:1/span 2;grid-column:2;font-size:11px;font-weight:800;padding:4px 9px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap}
-.ist.bad{background:var(--nobg);color:var(--no)}.ist.warn{background:var(--livebg);color:var(--live)}.ist.q{background:var(--accbg);color:var(--acc)}
-.l5grid,.injgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:4px 18px}
-.l5r{display:grid;grid-template-columns:30px minmax(0,1fr) auto 52px;gap:10px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
-.l5r:last-child{border-bottom:0}
-.wl{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:900;font-size:12px}
-.wl.w{background:var(--yesbg);color:var(--yes)}.wl.l{background:var(--nobg);color:var(--no)}.wl.t{background:var(--panel2);color:var(--sub)}
-.l5o{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.l5s{font-variant-numeric:tabular-nums;font-weight:700}.l5d{text-align:right;font-size:12px}
-.form{display:inline-flex;gap:3px;margin-left:auto}.form i{width:7px;height:7px;border-radius:50%;background:var(--line)}.form i.w{background:var(--yes)}.form i.l{background:var(--no)}
-.ldc{text-align:center;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);margin-bottom:4px}
-.ldg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-bottom:8px}
-.ldp{min-width:0}.ldp.h{text-align:right}
-.ldv{display:block;font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.15}
-.ldn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
-.ldl{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* play illustrations on the field strip (illustrative only; .noanim / reduced motion turns them all off) */
-.fld .grass .fproj{position:absolute;top:50%;width:11px;height:11px;margin:-5px 0 0 -5px;z-index:6;transition:left var(--dur,600ms) linear}
-.fproj b{display:block;width:100%;height:100%;border-radius:50%;background:#8a4b1e;box-shadow:0 0 0 1.5px #fff;animation:arcY var(--dur,600ms) both}
-@keyframes arcY{0%{transform:translateY(0);animation-timing-function:ease-out}50%{transform:translateY(calc(var(--ah,20px)*-1));animation-timing-function:ease-in}100%{transform:translateY(0)}}
-.fld .grass .ftrail{position:absolute;top:50%;height:5px;margin-top:-2px;border-radius:3px;background:rgba(255,255,255,.8);z-index:3;animation:trailIn .9s ease-out both}
-.fld .grass .ftrail.red{background:rgba(255,80,80,.9)}
-@keyframes trailIn{0%{transform:scaleX(0);opacity:.95}55%{transform:scaleX(1);opacity:.95}100%{transform:scaleX(1);opacity:0}}
-.fld .grass .fflag{position:absolute;top:8px;margin-left:-9px;font-size:18px;z-index:7;transform-origin:bottom center;animation:flagPop 1.4s ease-out both}
-@keyframes flagPop{0%{transform:scale(0) rotate(-30deg);opacity:0}25%{transform:scale(1.3) rotate(8deg);opacity:1}40%{transform:scale(1) rotate(0)}85%{opacity:1}100%{opacity:0}}
-.fld .grass .ftag{position:absolute;left:50%;top:6px;transform:translateX(-50%);z-index:8;padding:2px 9px;border-radius:99px;background:rgba(0,0,0,.7);color:#fff;font-weight:800;font-size:11px;letter-spacing:.06em;white-space:nowrap;animation:tagPop 1.3s ease-out both}
-.fld .grass .ftag.good{background:var(--yes)}.fld .grass .ftag.bad{background:var(--no)}
-@keyframes tagPop{0%{opacity:0;transform:translateX(-50%) scale(.6)}20%{opacity:1;transform:translateX(-50%) scale(1.12)}35%{transform:translateX(-50%) scale(1)}85%{opacity:1}100%{opacity:0}}
-.fld .ez.tdflash{animation:tdf .55s ease-in-out 2}@keyframes tdf{0%,100%{filter:none}50%{filter:brightness(2.1) saturate(1.5)}}
-.fld .fball.turn ellipse{animation:turnf .5s ease-in-out 3}@keyframes turnf{0%,100%{fill:#8a4b1e}50%{fill:#ff3b4a}}
-/* settings */
-.set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
-.sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
-.sidx a{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:9px;color:var(--sub);font-weight:600;font-size:13.5px}
-.sidx a:hover{background:var(--panel2);color:var(--ink)}.sidx .sv{margin-top:14px;padding:0 12px;color:var(--mute);font-size:12px}
-.shead{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:2px 0 18px}.shead h1{margin:0;font-size:24px;letter-spacing:-.02em}
-.shead p{margin:4px 0 0;color:var(--mute)}.saved{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--mute);display:flex;align-items:center;gap:7px}
-.saved.ok{color:var(--yes)}
-.scard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:18px;scroll-margin-top:84px}
-.scard>header{padding:18px 22px 14px;display:flex;gap:12px;align-items:flex-start}.scard>header .ic{font-size:18px;line-height:1.2}
-.scard h3{margin:0;font-size:15.5px;letter-spacing:-.01em}.scard header p{margin:3px 0 0;color:var(--mute);font-size:12.5px;max-width:560px}
-.srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
-.srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
-.srow.dim{opacity:.45;pointer-events:none}
-.hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
-.hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
-.hxbtn .hsw{border-radius:inherit}
-/* Method N (#60): the see-through switch over each control, so the finger's own tap lands on a real switch (the tick).
-   appearance:none with nothing painted; opacity .01 like G's confirmed switch, never hidden, never pointer-events:none. */
-.hsw{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:inherit;background:transparent!important;box-shadow:none!important;-webkit-appearance:none!important;appearance:none!important;opacity:.01!important;transform:none!important;transition:none!important;animation:none!important;outline:none!important;cursor:inherit;flex:none;font-size:0;color:transparent;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
-.hsw::before,.hsw::after{display:none!important}
-.hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
-html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
-.hsw,:where(html.hswon) :where(button,[onclick],.chip,.trow){touch-action:manipulation}   /* #151: a drag that starts on a switch still scrolls the page (pan both ways, pinch; no double-tap zoom) */
-html.hswscr .hsw{pointer-events:none!important}   /* #151: mid-scroll a touch goes past the switches, so it keeps scrolling */
-:where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
-.hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
-.hxrow .l small{margin-top:6px}
-.rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
-input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
- background:linear-gradient(90deg,var(--acc) var(--p,50%),var(--panel2) var(--p,50%))}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45),0 0 0 1px rgba(0,0,0,.06)}
-input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45)}
-.tg{-webkit-appearance:none;appearance:none;width:44px;height:26px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);position:relative;flex:none;cursor:pointer;transition:background .18s}
-.tg::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .18s}
-.tg:checked{background:var(--yes);border-color:var(--yes)}.tg:checked::after{transform:translateX(18px)}
-.seg{display:flex;background:var(--panel2);border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
-.seg button{border:0;background:none;padding:7px 11px;border-radius:8px;color:var(--sub);font-weight:600;font-size:12.5px}
-.seg button.on{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.3)}
-.mixl>.mixr{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 22px;border-top:1px solid var(--line)}
-.mixr b{display:block;font-weight:600}.mixr small{color:var(--mute);font-size:12px}
-.mixs{display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--mute)}.mixs>div{display:flex;align-items:center;gap:8px}.mixs>div>span:first-child{min-width:84px}
-.mixt{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,minmax(96px,126px));align-items:center;border-top:1px solid var(--line)}
-.mixt>div{padding:11px 22px 11px 0;border-top:1px solid var(--line)}.mixt>div:nth-child(4n+1){padding-left:22px}
-.mixt .h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding-top:12px;padding-bottom:6px}
-.mixt b{display:block;font-weight:600}.mixt small{color:var(--mute);font-size:12px}
-.stp{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:9px;background:var(--panel2);overflow:hidden}
-.stp button{border:0;background:none;width:30px;height:30px;color:var(--sub);font-size:16px;font-weight:600}.stp button:hover{color:var(--ink);background:var(--hover)}
-.stp span{min-width:28px;text-align:center;font-weight:700}
-.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));border-top:1px solid var(--line);overflow:hidden}
-.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv>div>span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
-.kv b{font-size:14.5px;display:flex;align-items:center;gap:7px;margin-top:2px;word-break:break-all}
-.sact{display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-top:1px solid var(--line)}
-.code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
-.logbox{font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--sub);background:var(--bg);border-top:1px solid var(--line);padding:12px 22px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;border-radius:0 0 var(--r) var(--r)}
-input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font:inherit}
-@media (max-width:1100px){.set{grid-template-columns:minmax(0,1fr)}.sidx{position:static;display:flex;overflow-x:auto;scrollbar-width:none;gap:4px;margin-bottom:6px}.sidx a{white-space:nowrap;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:6px 12px;font-size:12.5px}.sidx .sv{display:none}}
-@media (max-width:640px){.srow{flex-wrap:wrap;gap:10px;padding:13px 16px}.srow .rng{width:100%}.scard>header{padding:16px 16px 12px}.kv>div{padding:12px 16px}.sact{padding:12px 16px}
- .mixt{grid-template-columns:minmax(0,1fr) repeat(3,auto)}.mixt small{display:none}.mixt>div{padding:10px 6px 10px 0}.mixt>div:nth-child(4n){padding-right:16px}.mixt>div:nth-child(4n+1){padding-left:16px}.stp button{width:24px;height:28px}.stp span{min-width:18px}.seg button{padding:7px 8px}}
-/* medium windows */
-@media (max-width:1360px){
- .grid{grid-template-columns:minmax(0,1fr)}.side{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}.side .card{margin:0}
- .kpis{grid-template-columns:repeat(5,minmax(0,1fr))}.kpi:nth-child(n+4){display:block}
- .thead{display:none}
- .trow{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name ver" "legs legs" "nums nums";gap:8px;padding:14px;min-height:0}
- .trow .name{grid-area:name}.trow .legs{grid-area:legs}.trow .verdict{grid-area:ver}.trow .numwrap{grid-area:nums;display:grid!important;grid-template-columns:repeat(4,1fr);gap:6px}
- .trow .numwrap>div{text-align:left!important}.trow .numwrap>div::before{content:attr(data-l);display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
- .bar{margin-left:0}.status span:last-child{display:none}
- h2{flex-wrap:wrap}h2 .r{margin-left:0;width:100%;order:3}
- .chips{flex-wrap:wrap}}
-/* phone */
-@media (max-width:900px){
- .top{height:auto;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;gap:10px}
- .nav,.status,.cta,.ts.wk{display:none}.tr{gap:12px}
- main{padding:14px 14px calc(96px + env(safe-area-inset-bottom))}
- .grid{grid-template-columns:minmax(0,1fr)}.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.kpi:first-child{grid-column:span 2}
- .kpi b{font-size:22px}.thead{display:none}
- .trow{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name ver" "legs legs" "nums nums";gap:8px;padding:14px;min-height:0}
- .trow .name{grid-area:name}.trow .legs{grid-area:legs}.trow .verdict{grid-area:ver}.trow .numwrap{grid-area:nums;display:grid!important;grid-template-columns:repeat(4,1fr);gap:6px}
- .trow .numwrap>div{text-align:left!important}.trow .numwrap>div::before{content:attr(data-l);display:block;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
- .bar{margin-left:0}
- .alert{flex-wrap:wrap}.alert .acts2{width:100%;display:flex;gap:8px}.alert .acts2 .btn{flex:1}
- .mrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"when when" "a b"}.mrow .when{grid-area:when}
- .slip{position:static}
- .chips{flex-wrap:wrap;gap:6px}.chips .chip{padding:6px 11px;font-size:12.5px}
- h2{flex-wrap:wrap}h2 .r{margin-left:0;width:100%;order:3}
- .pickbtn .full{display:none}.pickbtn .short{display:inline}
- .hrow{grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"p p p" "w n v"}.hrow .hp{grid-area:p}
- .tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:30;justify-content:space-around;padding:7px 6px calc(6px + env(safe-area-inset-bottom));
-  background:color-mix(in srgb,var(--bg) 92%,transparent);-webkit-backdrop-filter:saturate(180%) blur(24px);backdrop-filter:saturate(180%) blur(24px);border-top:1px solid var(--line)}
- .tabbar button{flex:1;border:0;background:none;color:var(--mute);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;font-weight:700}
- .tabbar button svg{width:25px;height:25px}.tabbar button.on{color:var(--acc)}
-}
-.trow .name b .sweat,.sweat{display:inline-flex!important;flex-direction:row;gap:3px;margin:0 0 0 9px;vertical-align:middle;position:relative;top:-1px;font-size:0}
-.sweat i{display:block;width:12px;height:6px;border-radius:3px;background:var(--line)}.sweat i.w{background:var(--yes)}
-.sweat i.u{background:color-mix(in srgb,var(--yes) 45%,var(--line))}.sweat i.x{background:var(--no)}
-.trow.hot{box-shadow:inset 3px 0 0 var(--yes)}
-.moment-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 14px;margin:0 0 12px;border-radius:14px;
- background:color-mix(in srgb,var(--yes) 14%,var(--panel));border:1px solid color-mix(in srgb,var(--yes) 45%,transparent);animation:glow 2.4s ease-in-out infinite}
-.moment-bar b{display:block;font-size:14.5px}.moment-bar span{font-size:12.5px;color:var(--sub)}
-@keyframes glow{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--yes) 18%,transparent)}}
-.recap .rh{display:flex;justify-content:space-between;align-items:flex-start}.recap .x{border:0;background:none;color:var(--mute);font-size:16px;cursor:pointer}
-.confetti{position:fixed;inset:0;pointer-events:none;z-index:99;overflow:hidden}.confetti i{position:absolute;top:-12px;width:8px;height:12px;border-radius:2px;animation:fall 2.2s cubic-bezier(.2,.6,.4,1) forwards}
-@keyframes fall{to{top:105vh;transform:rotate(720deg) translateX(40px);opacity:.9}}
-.whatif{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wi{padding:10px 12px;border-radius:12px;background:var(--panel2)}.wi span{display:block;font-size:12px;color:var(--sub)}
-.wi b{font-size:20px}.wi.up b{color:var(--yes)}.wi.down b{color:var(--no)}.wi small{display:block;font-size:11.5px;color:var(--mute)}
-@media (prefers-reduced-motion:reduce){.moment-bar{animation:none}.confetti{display:none}}
-.hfilters{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}.hfilters .chips{flex-wrap:wrap;align-items:center}
-.hfilters .chip{flex:none}.hsort{flex:none;margin-left:auto;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:inherit;font-size:13px}
-.hrow2{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:7px}.hrow2:last-child{border-bottom:0}
-.hd2{display:flex;align-items:center;gap:8px;min-width:0}.hd2 .hs{font-size:16px}.hd2 .m{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hn{display:flex;gap:16px;font-size:12.5px;color:var(--sub)}.hn b{color:var(--ink)}
-.rbtrack{height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;margin:12px 0 8px}.rbtrack i{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .6s cubic-bezier(.2,.8,.2,1)}
-.rbstrip{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--sub);margin:0 2px 10px}
-.panel{padding:16px}.phead{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:10px}
-.pring{--p:0;flex:none;width:74px;height:74px;border-radius:50%;display:grid;place-content:center;text-align:center;
- background:radial-gradient(closest-side,var(--panel) 79%,transparent 80% 100%),conic-gradient(var(--yes) calc(var(--p)*1%),var(--panel2) 0)}
-.pring b{font-size:18px;line-height:1}.pring small{font-size:9.5px;color:var(--mute);font-weight:600}
-.plist{display:flex;flex-direction:column;gap:8px}.pitem{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:12px;background:var(--panel2)}
-.pitem .pliv{color:var(--live)}.pitem.off{opacity:.4}.pitem .pi{font-size:20px;line-height:1.2}.pitem .pm{flex:1;min-width:0}.pitem .pk{font-size:11px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
-.pitem .pm b{display:block;font-size:15px;line-height:1.3;margin:2px 0;overflow-wrap:anywhere}.pitem .pg{font-size:12.5px;color:var(--sub);line-height:1.35;overflow-wrap:anywhere}.pitem .pg:empty{display:none}.pitem .pg div+div{margin-top:1px}.pitem .pn{font-size:12.5px;color:var(--sub)}.pitem .pw{font-size:12px;color:var(--mute);margin-top:4px;line-height:1.4}
-.pitem .ps{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:none}.pitem .ps b{font-size:15px}.pitem .x{border:0;background:none;color:var(--mute);font-size:15px;cursor:pointer;padding:2px 4px}
-.bets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
-.bet{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
-.bet .bt{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.bet .bt b{display:block;font-size:17px;line-height:1.3;margin-top:3px}
-.bet .kind{font-size:11.5px;font-weight:700;color:var(--sub);text-transform:uppercase;letter-spacing:.05em}
-.bet .ret{flex:none;text-align:right;color:var(--yes);font-weight:800;font-size:22px;line-height:1}.bet .ret small{display:block;font-size:10.5px;font-weight:600;color:var(--mute);margin-top:3px}
-.bnums{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.bnums div{background:var(--panel2);border-radius:10px;padding:8px 10px;font-size:11.5px;color:var(--mute)}
-.bnums b{display:block;font-size:15px;color:var(--ink);margin-top:2px}.bet .why{font-size:12.5px;color:var(--sub);line-height:1.45}
-.lrows{display:flex;flex-direction:column;gap:6px}.lrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;background:var(--panel2);border:1px dashed transparent;min-width:0}
-.lrow.flip{cursor:pointer}.lrow.flip:hover{border-color:var(--acc)}.lrow .li{font-size:19px;line-height:1;flex:none;width:24px;text-align:center}.lrow .lm{flex:1;min-width:0}
-.lrow .lm b{display:block;font-size:14.5px;line-height:1.25;overflow-wrap:anywhere}.lrow .lm small{display:block;font-size:12px;color:var(--mute);line-height:1.3;overflow-wrap:anywhere}
-.lrow .lp{flex:none;font-weight:800;font-size:14px;color:var(--sub);white-space:nowrap}.lrow .lp i{font-style:normal;margin-left:6px;color:var(--mute);font-weight:600}
-.mrow .when .wlg{font-size:11px;font-weight:800;letter-spacing:.03em;color:var(--mute);text-transform:uppercase}
-.slipbar{display:none}.leg.flip{cursor:pointer;border:1px dashed transparent}.leg.flip:hover{border-color:var(--acc)}
-.flipnote{font-size:12.5px;line-height:1.4;padding:9px 11px;border-radius:9px;background:var(--panel2);margin:2px 0 4px}.flipnote b.v{display:inline-block;margin-right:6px}
-.flipnote.good b.v{color:var(--yes)}.flipnote.bad b.v{color:var(--no)}.flipnote.mid b.v{color:var(--warn,#e0a040)}
-@media (max-width:900px){.slipbar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(74px + env(safe-area-inset-bottom));z-index:29;align-items:center;gap:10px;
- padding:10px 12px 10px 14px;border-radius:14px;background:var(--acc);color:#fff;box-shadow:0 8px 28px rgba(0,0,0,.35);font-weight:700;font-size:14px}
- .slipbar span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.slipbar button{border:0;border-radius:9px;padding:8px 12px;font-weight:800;background:#fff;color:var(--acc)}
- .slipbar .x{background:transparent;color:#fff;padding:8px 6px}}
-@media (min-width:1361px){.numwrap{display:contents}}
-/* ---- makeover 1: press feedback on everything, push sheets, the hero chart ---- */
-:root{--out:cubic-bezier(.22,.8,.24,1)}
-.prs{transform:scale(.965)!important;transition:transform .08s var(--ease)!important}
-.trow.prs,.pitem.prs,.gt.prs,.dcard.prs,.ccard.prs,.bet.prs,.mrow.prs{transform:scale(.985)!important}
-.srow.prs,.moment.prs,.g.prs,.lrow.prs,.sech.prs,.mixr.prs,.hrow2.prs{transform:none!important;background:var(--hover)}
-a.prs{opacity:.6}.tabbar button.prs,.nav button.prs{transform:scale(.88)!important}
-.bar i{transition:width .65s var(--ease)}
-.modal.push{opacity:1;padding:0;align-items:stretch;justify-content:flex-end;background:rgba(0,0,0,0);transition:background-color .27s var(--out);overflow:hidden}
-.modal.push.on{background:rgba(0,0,0,.5)}
-.modal.push .sheet{width:min(880px,100%);max-width:none;height:100%;max-height:none;border-radius:0;border:0;border-left:1px solid var(--line);padding:0 0 calc(28px + env(safe-area-inset-bottom));
- overflow-y:auto;overscroll-behavior:contain;transform:translateX(100%);transition:transform .27s var(--out);box-shadow:-24px 0 60px rgba(0,0,0,.35)}
-.modal.push.on .sheet{transform:none}.modal.push .sheet.drag{transition:none}.modal.push .sheet .grab{display:none}
-.pbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:6px;padding:calc(8px + env(safe-area-inset-top)) 10px 8px;
- background:color-mix(in srgb,var(--panel) 86%,transparent);-webkit-backdrop-filter:saturate(180%) blur(16px);backdrop-filter:saturate(180%) blur(16px);border-bottom:1px solid var(--line)}
-.pbar .back{border:0;background:none;color:var(--acc);font-weight:700;font-size:16px;padding:6px 8px 6px 2px;display:inline-flex;align-items:center;gap:1px;flex:none}
-.pbar .back svg{width:22px;height:22px}.pbar .pt{font-weight:700;font-size:14px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pbody{padding:16px 22px 0}
-main,.top{transition:transform .27s var(--out),filter .27s var(--out)}
-body.pushed main,body.pushed .top{filter:brightness(.5)}
-@media (max-width:900px){body.pushed main,body.pushed .top{transform:translateX(-30%)}.pbody{padding:14px 16px 0}}
-.psk{display:grid;gap:12px}.psk i{display:block;background:var(--panel2);border-radius:12px}
-.fadein{animation:fadein .2s var(--ease)}@keyframes fadein{from{opacity:0}to{opacity:1}}
-.hv .big.scrub{color:var(--ink)}
-.sparkw{touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
-.hv .spark{height:76px}
-.spark.draw{animation:reveal .75s var(--out)}@keyframes reveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
-.sparkw .sdot.draw{animation:fadein .3s .6s both,sdot 1.8s .9s infinite}
-.sdot{z-index:1;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 28%,transparent),0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}
-@keyframes sdot{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent),0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}100%{box-shadow:0 0 0 12px transparent,0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}}
-.scrl{position:absolute;top:0;bottom:0;width:1.5px;margin-left:-.75px;background:var(--sub);opacity:0;pointer-events:none;transition:opacity .15s}
-.scrd{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid var(--panel);opacity:0;pointer-events:none;transition:opacity .15s;z-index:2}
-.sparkw.on .scrl,.sparkw.on .scrd{opacity:1}.sparkw.on .sdot{opacity:.25}
-.sbase{position:absolute;left:0;right:0;border-top:1px dashed var(--line);pointer-events:none}
-.saxis{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--mute);font-weight:600}
-.rng2{display:flex;gap:2px}.rng2 button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;padding:4px 8px;border-radius:7px}
-.rng2 button.on{color:var(--ink)}
-.sread{position:absolute;top:-2px;transform:translateX(-50%);font-size:11px;font-weight:700;color:var(--sub);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s}
-.sparkw.on .sread{opacity:1}
-.hsk{display:grid;gap:10px;padding:18px 20px}.hsk i{display:block;background:var(--panel2);border-radius:10px}
-.empty .btn{margin-top:14px}
-@media (prefers-reduced-motion:reduce){.prs{transform:none!important;opacity:.7;transition:none!important}main,.top{transform:none!important}}
-/* ---- makeover phase 2: live game cards, the Sold moment, the big hit, Results charts you can scrub */
-.gc{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px 12px;display:grid;gap:10px;cursor:pointer;position:relative;overflow:hidden;transition:border-color .3s}
-.gc.live{border-color:color-mix(in srgb,var(--live) 45%,transparent)}.gc.live.lup{border-color:color-mix(in srgb,var(--yes) 50%,transparent)}.gc.live.ldown{border-color:color-mix(in srgb,var(--no) 50%,transparent)}
-.gc .gh{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
-.gc .gh .lv{color:var(--live);display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:12px}
-.gc .gh .lv i{width:7px;height:7px;border-radius:50%;background:var(--no);animation:pulse2 1.4s infinite}
-.gc .tms{display:grid;gap:4px}.gc .gtr{display:flex;align-items:center;gap:10px;font-size:16px}.gc .gtr .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
-.gc .gtr.them .nm{font-weight:500;color:var(--sub)}.gc .gtr .pts{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;min-width:30px;text-align:right}
-.gc .gtr.them .pts{color:var(--sub)}.gc .gtr .mine{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:var(--acc);background:var(--accbg);padding:2px 6px;border-radius:6px}
-.gc .gl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center}
-.gc .gl .ch b{display:block;font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1}.gc .gl .ch small{color:var(--mute);font-size:11.5px}
-.gc .gl .gbar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.gc .gl .gbar i{display:block;height:100%;border-radius:2px;transition:width .6s var(--ease)}
-.mline{position:relative;height:46px}.mline svg{width:100%;height:46px;display:block;overflow:visible}
-.mline .sdot{width:8px;height:8px;margin:-4px 0 0 -4px}
-.gc .bets{display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--line);padding-top:10px;align-items:center}
-.gc .bets .bt{font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;background:var(--panel2);color:var(--sub);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gc .bets .bt.s{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}.gc .bets .rd{margin-left:auto;font-weight:700;font-size:12.5px;color:var(--ink)}
-.gc.scored{animation:scored 1.6s var(--ease)}.gc.scored.good{--sg:var(--yes)}.gc.scored.bad{--sg:var(--no)}
-@keyframes scored{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--sg,var(--live)) 70%,transparent);background:color-mix(in srgb,var(--sg,var(--live)) 16%,var(--panel))}40%{box-shadow:0 0 0 10px transparent}100%{}}
-.gc .pts.bump{animation:bump .7s var(--spring)}@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.45);color:var(--sg,var(--live))}100%{transform:none}}
-.gc.done{opacity:.72}
-.gsk{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:grid;gap:12px}.gsk i{display:block;background:var(--panel2);border-radius:8px}
-.scrub{position:relative;touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
-.scrub .scrl,.scrub .scrd,.scrub .sread{position:absolute}.scrub.on .scrl,.scrub.on .scrd,.scrub.on .sread{opacity:1}
-.scrub .sread{top:-4px}
-.plc .plh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}
-.plc .plh b{font-size:26px;font-weight:800;letter-spacing:-.03em;display:block;line-height:1.1}.plc .plh small{color:var(--mute);font-size:12px;display:block;min-height:15px}
-.plc svg{width:100%;height:150px;display:block}.plc rect.brc{transition:opacity .15s}.plc.on rect.brc{opacity:.35}.plc.on rect.brc.sel{opacity:1}
-.plc .xl{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin-top:6px}
-.plc .rng2{flex:none}.plc .hint{font-size:11.5px;color:var(--mute);margin-top:6px}
-.blist .hrow2{margin-bottom:8px}
-.okcard .stamp{display:inline-block;font:700 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;color:var(--sub);border:1px dashed var(--line);border-radius:6px;padding:3px 8px;margin-bottom:8px;animation:rise .4s .25s both}
-.okcard .plp{display:inline-block;margin-top:4px;font-weight:800;font-size:14px;padding:4px 12px;border-radius:999px;background:var(--yesbg);color:var(--yes);animation:rise .4s .5s both}
-.okcard .tkt{display:flex;justify-content:center;gap:0;margin:14px auto 4px;max-width:300px;border-top:1px dashed var(--line);padding-top:12px;animation:rise .4s .6s both}
-.okcard .tkt div{flex:1;font-size:12px;color:var(--mute)}.okcard .tkt b{display:block;font-size:16px;color:var(--ink)}
-.okcard.okloss circle{stroke:var(--sub);fill:var(--panel2)}.okcard.okloss path{stroke:var(--sub)}.okcard.okloss .amt{color:var(--ink)}.okcard.okloss .plp{background:var(--nobg);color:var(--no)}
-.bigwin{position:fixed;inset:0;z-index:98;display:grid;place-items:center;background:radial-gradient(circle at 50% 42%,color-mix(in srgb,var(--yes) 26%,rgba(6,9,14,.9)),rgba(6,9,14,.94) 60%);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:fadein .3s var(--ease);padding:16px}
-.bigwin.out{opacity:0;transition:opacity .35s}
-.bigwin .bw{text-align:center;max-width:360px;animation:bwin .7s var(--spring) both}
-@keyframes bwin{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
-.bigwin .ey{font-size:12px;font-weight:800;letter-spacing:.24em;color:var(--yes);text-transform:uppercase}
-.bigwin .amt{font-size:58px;font-weight:900;letter-spacing:-.05em;color:#fff;text-shadow:0 0 34px color-mix(in srgb,var(--yes) 80%,transparent);line-height:1.05;margin:8px 0 4px;font-variant-numeric:tabular-nums}
-.bigwin .lb{font-size:16px;font-weight:700;color:#fff}.bigwin .mx{display:inline-block;margin-top:10px;font-weight:800;color:var(--yes);background:rgba(0,0,0,.35);padding:5px 12px;border-radius:999px}
-.bigwin .ring2{position:absolute;left:50%;top:42%;width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;border:3px solid var(--yes);animation:ring2 1.4s var(--out) infinite;pointer-events:none}
-.bigwin .ring2.b{animation-delay:.45s}@keyframes ring2{from{transform:scale(1);opacity:.9}to{transform:scale(14);opacity:0}}
-.bigwin .btn{margin-top:22px}
-@media (prefers-reduced-motion:reduce){.bigwin .ring2{display:none}.bigwin .bw{animation:none}.gc.scored{animation:none}}
-/* ---- makeover phase 3: every remaining screen in the same motion system ---- */
-:root{color-scheme:dark;--fs-xs:11px;--fs-s:12.5px;--fs-m:14px;--fs-l:17px;--sp:16px}
-@media (prefers-color-scheme:light){:root{color-scheme:light}
- .own{background:rgba(217,119,6,.13);color:#a85a06}.ss.me{background:rgba(217,119,6,.11);border-color:rgba(217,119,6,.38);color:#a85a06}
- .sheet{box-shadow:0 24px 60px rgba(16,24,40,.18)}.modal:not(.push){background:rgba(15,20,32,.32)}
- .segind,.seg button.on{box-shadow:0 1px 3px rgba(16,24,40,.16)}.tg{background:#e2e6ee}.tg::after{box-shadow:0 1px 3px rgba(16,24,40,.28)}
- .btn.warn{background:#f2a531}.slipbar{box-shadow:0 8px 28px rgba(36,104,255,.28)}#ptr,.netbar{box-shadow:0 6px 20px rgba(16,24,40,.12)}
- .flipnote.mid b.v{color:#b26b00}.kpis.hero:before{opacity:.8}}
-/* safe areas for the Home Screen app (notch, rounded corners, home indicator) */
-@media (max-width:900px){main{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
- .top{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
- .modal:not(.push) .sheet{border-radius:22px 22px 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
-/* keyboard-aware sheets: the sheet rides up above the on-screen keyboard */
-.modal:not(.push){padding-bottom:var(--kb,0px);transition:opacity .22s var(--ease),padding-bottom .25s var(--out)}
-@media (max-width:900px){.modal:not(.push){padding-bottom:var(--kb,0px)}}
-.modal.on:not(.push){-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
-/* the scroll-linked header: it tucks itself in once you scroll */
-.ts span{transition:opacity .2s,max-height .3s var(--ease);max-height:16px;overflow:hidden}
-.top{transition:transform .27s var(--out),filter .27s var(--out),padding .3s var(--ease),box-shadow .3s,height .3s var(--ease)}
-.brand{transition:transform .3s var(--ease);transform-origin:left center}
-body.hc .top{box-shadow:0 8px 24px rgba(0,0,0,.16)}
-@media (max-width:900px){body.hc .top{padding-top:calc(5px + env(safe-area-inset-top));padding-bottom:5px}body.hc .brand{transform:scale(.84)}body.hc .ts span{opacity:0;max-height:0}}
-/* the calm reconnecting banner */
-.netbar{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 68px);z-index:26;transform:translate(-50%,-16px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;
- padding:8px 14px;border-radius:999px;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:12.5px;font-weight:650;color:var(--ink);
- -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);transition:transform .4s var(--spring),opacity .25s;white-space:nowrap;max-width:calc(100vw - 32px)}
-.netbar.on{opacity:1;transform:translate(-50%,0)}.netbar i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse2 1.4s infinite;flex:none}
-.netbar small{color:var(--mute);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
-/* pull to refresh, on every tab: rubber band, a ring that fills, a spin, a check */
-#ptr svg{width:20px;height:20px;overflow:visible}#ptr circle{fill:none;stroke:var(--acc);stroke-width:2.4;stroke-linecap:round;transform:rotate(-90deg);transform-origin:10px 10px;transition:stroke-dashoffset .05s}
-#ptr path{fill:none;stroke:var(--yes);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;opacity:0}
-#ptr.go svg{animation:sp .7s linear infinite}#ptr.go circle{stroke-dashoffset:12!important}
-#ptr.done circle{stroke:var(--yes);stroke-dashoffset:0!important}#ptr.done path{opacity:1;animation:okc .3s var(--ease) forwards}
-#ptr{transition:transform .35s var(--spring),opacity .25s}#ptr.drag{transition:none}
-main.ptrd{transition:none!important}
-/* switches and sliders */
-.tg::after{transition:transform .34s var(--spring),width .18s var(--ease)}.tg:active::after{width:25px}.tg:checked:active::after{transform:translateX(13px)}
-.tg:checked{box-shadow:0 0 0 3px color-mix(in srgb,var(--yes) 10%,transparent)}
-.rng output{transition:color .2s}.rng output.bump,.saved.bump{animation:obump .32s var(--spring)}@keyframes obump{40%{transform:scale(1.14)}}
-.rdet{flex-wrap:wrap;row-gap:6px}.rdet .tks{flex-basis:100%;display:flex;justify-content:space-between;padding:0 8px;margin-right:98px}
-.rdet .tks i{width:5px;height:5px;border-radius:50%;background:var(--line);transition:background .25s,transform .3s var(--spring)}.rdet .tks i.on{background:var(--acc)}.rdet .tks i.at{transform:scale(1.7)}
-.rdet output{min-width:84px}
-/* buttons that report back: working, done, didn't work */
-.btn.st-ok{background:var(--yesbg)!important;color:var(--yes)!important;border-color:color-mix(in srgb,var(--yes) 40%,transparent)!important;animation:obump .4s var(--spring)}
-.btn.st-bad{background:var(--nobg)!important;color:var(--no)!important;border-color:color-mix(in srgb,var(--no) 40%,transparent)!important;animation:sh3 .4s}
-@keyframes sh3{25%,75%{transform:translateX(-4px)}50%{transform:translateX(4px)}}
-.btn.arm{position:relative;overflow:hidden;background:var(--live)!important;color:#1b1203!important}
-.btn.arm:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.75);transform-origin:left;animation:qdrain 4s linear forwards}
-@keyframes qdrain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
-/* Build: the quote countdown, picks, the slip bar, folding sections, panel cards */
-.qline,.btn.qb{position:relative;overflow:hidden}.qt{position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.45;transform-origin:left;animation:qdrain 20s linear forwards}
-.brow{display:flex;flex-wrap:wrap;gap:8px}.brow .btn{min-width:0;max-width:100%;white-space:normal;line-height:1.25;text-align:center;overflow-wrap:anywhere}
-.brow .btn.pri{flex:3 1 auto}.brow .btn.sec{flex:1 1 auto}
-.qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
-.pickbtn.pop{animation:chipon .34s var(--spring)}
-.slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
-/* Buy straight (#113): the slip's Single bet / Combo switch, the buy sheet, the game page's pinned buttons */
-.sbtog{display:inline-flex;background:rgba(0,0,0,.18);border-radius:9px;padding:2px;gap:2px;flex:none}
-.sbtog button{border:0;background:none;color:inherit;opacity:.8;font-weight:800;font-size:12px;padding:5px 9px;border-radius:7px}
-.sbtog button.on{background:#fff;color:var(--acc);opacity:1}
-.slipbar .sbtog button{padding:5px 9px;background:none;color:#fff}.slipbar .sbtog button.on{background:#fff;color:var(--acc)}
-@media (max-width:900px){.slipbar{flex-wrap:wrap;row-gap:8px}.slipbar .sbtog{flex-basis:auto;margin-right:auto}.slipbar .sbrow{display:flex;align-items:center;gap:10px;flex-basis:100%;min-width:0}}
-.slip .sbtog{background:var(--panel2);color:var(--sub)}.slip .sbtog button.on{background:var(--acc);color:#fff}
-.sb h3{margin:2px 0 2px;font-size:20px;letter-spacing:-.01em;overflow-wrap:anywhere}.sb .sbk{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
-.sbn{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0 12px}
-.sbn>div{background:var(--panel2);border-radius:12px;padding:10px 10px 9px;min-width:0}.sbn span{display:block;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
-.sbn b{display:block;font-size:21px;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}.sbn small{display:block;font-size:11px;color:var(--mute);margin-top:2px;line-height:1.3;overflow-wrap:anywhere}
-.sbst{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px}.sbst .chip{min-width:52px;justify-content:center}
-.sbst input{width:92px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-weight:700}
-.sbw{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,#f5b544 14%,transparent);color:var(--ink);margin:6px 0}
-.sbw i{font-style:normal;flex:none}.sbx{background:color-mix(in srgb,var(--no) 14%,transparent)}
-.sbgo{display:flex;gap:8px;margin-top:14px}.sbgo .btn{justify-content:center;padding:12px 14px;font-size:14.5px}.sbgo .pri{flex:1;min-width:0;white-space:normal}
-.sbleft{font-size:12px;color:var(--mute);text-align:right;margin-top:6px}
-.gbuy{position:sticky;bottom:0;z-index:3;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin:16px -16px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
- background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-top:1px solid var(--line)}
-.gbuy button{border:0;border-radius:12px;padding:11px 8px;font-weight:800;font-size:15px;color:#fff;background:var(--acc);display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
-.gbuy button:nth-child(2){background:var(--no)}.gbuy button:nth-child(3){background:var(--panel2);color:var(--ink)}
-.gbuy button b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.gbuy button small{font-size:12px;font-weight:700;opacity:.9}
-@media (min-width:901px){.gbuy{margin:16px -22px 0;padding:10px 22px 12px}}
-.pbody:has(>.gbuy){display:flex;flex-direction:column;min-height:calc(100% - 64px - env(safe-area-inset-top))}.pbody>.gbuy{margin-top:auto}
-.sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
-.unfold{animation:rise .38s var(--ease)}
-.pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
-.psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
-.ccard.flash{animation:fl 1.2s ease}
-/* Results: bars grow in, the What's working tabs crossfade. (<main> is marked `arrived` for 1.6 s after a screen change; it must never be
-   called `fresh`: that is the small "Updated Ns ago" stamp's class, and its nowrap/small-grey rules made every new screen draw too wide.) */
-main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{from{transform:scaleX(0)}to{transform:none}}
-.bars2 .tr2 i{transform-origin:left}.bars2 .tr2 i[style*="right:"]{transform-origin:right}
-.antab{animation:tabin .3s var(--ease)}@keyframes tabin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.ansk{display:grid;gap:9px;padding:4px 0}.ansk i{display:block;background:var(--panel2);border-radius:8px;height:30px}
-/* the morning recap's streak */
-.streak{display:flex;align-items:center;gap:10px;margin:10px 0 2px;padding:9px 12px;border-radius:12px;background:var(--panel2);font-size:13px;color:var(--sub)}
-.streak b{color:var(--ink);font-size:15px}.streak.hot{background:linear-gradient(100deg,color-mix(in srgb,var(--live) 18%,var(--panel2)),var(--panel2) 75%)}
-.streak .fl{font-size:18px;display:inline-block;animation:flick 1.8s ease-in-out infinite;transform-origin:50% 90%}@keyframes flick{0%,100%{transform:rotate(-4deg) scale(1)}50%{transform:rotate(4deg) scale(1.08)}}
-.streak .dots{margin-left:auto;display:flex;gap:4px}.streak .dots i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:dotin .4s var(--spring) both;animation-delay:calc(var(--i)*70ms + .2s)}
-@keyframes dotin{from{transform:scale(0)}to{transform:none}}
-/* errors and empty states */
-.card.err{border-color:color-mix(in srgb,var(--no) 35%,var(--line))}.card.err:before{background:linear-gradient(145deg,var(--nobg),transparent)}
-.setsk{display:grid;gap:14px}.setsk>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;display:grid;gap:12px}.setsk i{display:block;background:var(--panel2);border-radius:9px}
-@media (prefers-reduced-motion:reduce){.streak .fl,.netbar i{animation:none}#ptr{transition:none}}
-</style></head><body>
-<header class="top">
- <div class="brand"><div class="mk"><svg width="16" height="16" viewBox="0 0 24 24"><path d="M4 15.5l4.2-4.2 3.3 3.3L20 6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>Combo Hub</div>
- <nav class="nav" id="nav"></nav>
- <div class="tr">
-  <div class="ts"><span>Balance</span><b id="bal">—</b></div>
-  <div class="ts wk"><span>Last 7 days</span><b id="wk">—</b></div>
-  <div class="status" id="st"><span class="dot"></span>Mac · live</div>
-  <button class="cta" onclick="go('build')">＋ Build combos</button>
- </div>
-</header>
-<main id="main"></main>
-<nav class="tabbar" id="tabbar"></nav>
-<div class="toast" id="toast"></div>
-<div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
-<script>
-const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
-const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json();},e=>{netUp(false);throw e;});
-/* Offline/reconnecting: a calm pill under the header ("Reconnecting to your Mac · Updated 40s ago") that appears when
-   requests fail or the live link drops for more than a moment, and says "Back online" briefly when it returns. */
-function netUp(ok){if(ok){S.okAt=Date.now();if(S.netDown){S.netDown=false;netBanner();}}else if(!S.netDown){S.netDown=true;S.netSince=Date.now();netBanner();}}
-function netIsDown(){return !!S.netDown||(S.live_ok===false&&!!S.esEver)||navigator.onLine===false;}   // a live link that never opened (no event stream here) isn't an outage: the page polls instead
-function netTxt(){const a=S.okAt?Math.round((Date.now()-S.okAt)/1000):null;return a==null?'':a<3?'Updated just now':a<90?'Updated '+a+'s ago':'Updated '+Math.round(a/60)+' min ago';}
-function netBanner(){let el=document.getElementById('netbar');if(!el){el=document.createElement('div');el.id='netbar';el.className='netbar';el.setAttribute('role','status');document.body.appendChild(el);}
- const tb=document.querySelector('.top');if(tb)el.style.top=(tb.getBoundingClientRect().bottom+8)+'px';
- if(netIsDown()){if(S.netShown){const sm=el.querySelector('small');if(sm)sm.textContent=netTxt();return;}
-  if(!S.netPend)S.netPend=setTimeout(()=>{S.netPend=0;if(!netIsDown())return;clearTimeout(S.netT);el.className='netbar on';
-   el.innerHTML=`<i></i><span>${navigator.onLine===false?'You\'re offline':'Reconnecting to your Mac'}</span><small>${netTxt()}</small>`;S.netShown=true;},S.netNow?0:1200);return;}
- if(S.netPend){clearTimeout(S.netPend);S.netPend=0;}
- if(S.netShown){S.netShown=false;el.className='netbar on ok';el.innerHTML='<i></i><span>Back online</span>';clearTimeout(S.netT);S.netT=setTimeout(()=>{el.classList.remove('on');},1600);}}
-addEventListener('online',()=>netBanner());addEventListener('offline',()=>{S.netNow=1;netBanner();S.netNow=0;});
-/* the header tucks in once you scroll (with a little hysteresis so it never flickers) */
-/* The header tucks (body.hc) only while the page is really scrolled. It is re-read from the page itself (never from a remembered flag) on
-   scroll, on every tab switch and every second, so a page that got shorter or was reset without a scroll event can't leave it tucked. */
-function hcSync(){const y=scrollY,cur=document.body.classList.contains('hc'),short=document.documentElement.scrollHeight<=innerHeight+1,want=short?false:cur?y>8:y>40;if(want!==cur)document.body.classList.toggle('hc',want);}
-(()=>{let raf=0;addEventListener('scroll',()=>{if(!raf)raf=requestAnimationFrame(()=>{raf=0;hcSync();});},{passive:true});})();
-/* The tab bar never moves: it is fixed to the bottom of the page, but on iPhones the page's height can stay out of step with what is on
-   screen (after the keyboard closes, after returning to the Home Screen app), which floated the bar above the bottom. Whenever what is
-   visible is taller than the page, the bar is moved down by the difference (--tbo), so it is always flush with the bottom of the screen.
-   A shorter visible area is the keyboard: the bar stays where it is, behind it, as before. */
-function tbSet(vv){const given=!!vv;vv=vv||window.visualViewport;if(!vv)return;const d=Math.round(vv.height+vv.offsetTop-innerHeight),px=d>0&&d<400?d:0;
- /* a drift must show in two readings in a row (a rubber-band at the page's end passes in a moment); a reading handed in (the test) counts at once */
- const ok=px===0||given||S.tbp===px;S.tbp=px;if(!ok)return;
- if(S.tbo!==px){S.tbo=px;document.documentElement.style.setProperty('--tbo',px+'px');}}
-(()=>{const vv=window.visualViewport,f=()=>{tbSet();hcSync();};if(vv){vv.addEventListener('resize',f);vv.addEventListener('scroll',f);}
- addEventListener('resize',f);addEventListener('orientationchange',()=>setTimeout(f,300));addEventListener('pageshow',f);
- document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(f,100);});
- addEventListener('focusout',()=>setTimeout(()=>{const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;scrollTo(scrollX,scrollY);f();},350));
- setInterval(()=>{if(!document.hidden)f();},1000);})();
-/* keyboard-aware sheets: when the on-screen keyboard opens, the bottom sheet rises above it and the field stays in view */
-function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.style.setProperty('--kb',px+'px');S.kb=px;
- if(px){const f=document.activeElement;if(f&&f.closest&&f.closest('#sheet'))setTimeout(()=>f.scrollIntoView({block:'center',behavior:'smooth'}),60);}}
-(()=>{const vv=window.visualViewport;if(!vv)return;const f=()=>kbSet(innerHeight-vv.height-vv.offsetTop>80?innerHeight-vv.height-vv.offsetTop:0);vv.addEventListener('resize',f);vv.addEventListener('scroll',f);})();
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
-const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
-const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
-const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
-const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
-const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
- build:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
- results:'<svg viewBox="0 0 24 24"><path d="M5 19v-7M12 19V6M19 19v-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
- games:'<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 5v14M3.5 12h17" stroke="currentColor" stroke-width="1.5" opacity=".7"/></svg>',
- settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
- more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>'};
-const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res:null,open:{},filter:'all',lg:localStorage.getItem('cw_lg')||'nba',slip:[],busy:{}};
-/* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
-   every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
-   Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
-function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
-function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
-function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
- clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
-setInterval(toastCheck,1000);
-['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
-addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
-/* Sheets. modal() is the bottom sheet (confirmations, small things). pushOpen()/pushFill() is the Kalshi-style push for
-   detail pages (a game, a combo): the page slides in from the right in ~270 ms (ease-out) while the page behind slides a
-   third of the way left and dims; flat skeleton blocks show until the content swaps in. Back, a tap on the dimmed
-   edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
-function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
- sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
-function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
- if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
- $('#modal').classList.add('on');hap('light');}
-function closeModal(){const m=$('#modal');
- /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
- const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}
- if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
- clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
-const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
- <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><i style="height:62px"></i><i style="height:62px"></i><i style="height:62px"></i><i style="height:62px"></i></div><i style="height:170px"></i><i style="height:16px;width:40%"></i><i style="height:44px"></i><i style="height:44px"></i></div>`;}
-function pushOpen(title){const m=$('#modal'),sh=$('#sheet');const was=m.classList.contains('on')&&m.classList.contains('push');
- if(!was){m.classList.remove('on');sheetMode(true);}
- pushFill(pushSkel(),title,true);sh.scrollTop=0;S.pushAt=performance.now();
- if(!was){m.classList.add('on');document.body.classList.add('pushed');hap('light');}}
-/* the content waits for the slide to finish, so the swap never janks the motion */
-function pushWait(){const left=(S.pushAt||0)+290-performance.now();return left>0?new Promise(z=>setTimeout(z,left)):Promise.resolve();}
-function pushFill(h,title,sk){const sh=$('#sheet');const first=sh.dataset.sk==='1'&&!sk;
- sh.innerHTML=`<div class="pbar"><button class="back" onclick="closeModal()" aria-label="Back">${BACK}Back</button><span class="pt">${esc(title||'')}</span></div><div class="pbody ${first?'fadein':''}">${h}</div>`;
- sh.dataset.sk=sk?'1':'';rollNums(sh);wireScrubs(sh);
- if(first&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const b=sh.querySelector('.pbody');b.classList.add('stag');[...b.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>b.classList.remove('stag'),1200);}}
-$('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
-(()=>{const sh=$('#sheet');let x0=null,y0=null,dx=0,dy=0,ax=null,past=false;
- const cross=v=>{if(v!==past){past=v;hap(v?'light':'selection');}};
- /* a swipe that starts on the game tab row (or any sideways-scrolling strip) belongs to that strip, never to swipe-back */
- const hscroll=el=>{for(;el&&el!==sh&&el.nodeType===1;el=el.parentElement){if(el.classList.contains('gtabs'))return true;const o=getComputedStyle(el).overflowX;if((o==='auto'||o==='scroll')&&el.scrollWidth>el.clientWidth)return true;}return false;};
- sh.addEventListener('touchstart',e=>{const t=e.touches[0];dx=dy=0;ax=null;past=false;
-  if($('#modal').classList.contains('push')){if(hscroll(e.target)){x0=y0=null;return;}x0=t.clientX;y0=t.clientY;return;}x0=null;
-  if(sh.scrollTop>0||innerWidth>760){y0=null;return;}y0=t.clientY;},{passive:true});
- sh.addEventListener('touchmove',e=>{const t=e.touches[0];
-  if(x0!=null){const mx=t.clientX-x0,my=t.clientY-y0;if(ax==null&&(Math.abs(mx)>8||Math.abs(my)>8))ax=mx>0&&Math.abs(mx)>Math.abs(my)*1.2?'x':'y';
-   if(ax!=='x')return;dx=Math.max(0,mx);sh.classList.add('drag');sh.style.transform=`translateX(${dx}px)`;cross(dx>100);return;}
-  if(y0==null)return;dy=Math.max(0,t.clientY-y0);if(dy>4){sh.classList.add('drag');sh.style.transform=`translateY(${dy}px)`;cross(dy>110);}},{passive:true});
- sh.addEventListener('touchend',()=>{sh.classList.remove('drag');sh.style.transform='';
-  if(x0!=null){x0=null;if(ax==='x'&&dx>100)closeModal();return;}
-  if(y0==null)return;if(dy>110)closeModal();y0=null;dy=0;});})();
-/* Press feedback and a haptic tick on every interactive thing, in one place, so nothing can be missed: anything
-   matching TAP shrinks a touch while pressed (rows and settings lines highlight instead) and ticks when tapped.
-   Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
-   folded into the same tick; success/warning/error always play their own pattern. */
-const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
-function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentElement;const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
-(()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
- addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
- ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
- addEventListener('click',e=>{const tg=e.target;if(tg&&tg.matches&&(tg.matches('.hsw,input[switch]')||tg.matches('label')&&tg.querySelector('input[switch]')))S.hswAt=performance.now();   // the finger's own switch ticked
-  const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
-  hap(el.matches('.tabbar button,.nav button,.seg button,.sbtog button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
- addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
-/* swipe left or right anywhere on a page to move between tabs */
-(()=>{let x0=null,y0=0,t0=0,ok=true;
- addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input:not(.hsw),.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
- addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
-  if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
-/* Pull down at the top of any tab to refresh it: the page follows the finger with a rubber band, a ring fills as you
-   pull, it ticks once at the point where letting go refreshes, spins while loading and ends on a small check. */
-(()=>{let y0=null,dy=0,el=null,busy=false;const C=2*Math.PI*8,TH=64;
- const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke-dasharray="'+C.toFixed(1)+'" stroke-dashoffset="'+C.toFixed(1)+'"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>'}),document.body.appendChild(el),el);
- const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input:not(.hsw),select,textarea,.chips,.seg,.ant,.sidx'));
- const main=()=>$('#main'),reduce=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
- addEventListener('touchstart',e=>{y0=(!busy&&scrollY<=0&&!$('#modal').classList.contains('on')&&!skip(e.target))?e.touches[0].clientY:null;dy=0;},{passive:true});
- addEventListener('touchmove',e=>{if(y0==null)return;const raw=e.touches[0].clientY-y0;if(raw<=0||scrollY>0){if(dy){dy=0;const p=ptr();p.style.opacity=0;const m=main();if(m){m.style.transform='';}}return;}
-  dy=110*(1-Math.exp(-raw/150));const p=ptr(),k=Math.min(1,dy/TH);p.classList.add('drag');p.style.opacity=Math.min(1,k*1.4);p.style.transform=`translateY(${-40+k*50}px)`;
-  p.querySelector('circle').style.strokeDashoffset=(C*(1-k)).toFixed(1);const m=main();if(m&&!reduce()){m.classList.add('ptrd');m.style.transform=`translateY(${(dy*.45).toFixed(1)}px)`;}
-  if(dy>=TH&&!p._hit){p._hit=1;hap('selection');}else if(dy<TH&&p._hit){p._hit=0;}},{passive:true});
- addEventListener('touchend',async()=>{if(y0==null)return;const p=ptr(),m=main();y0=null;p.classList.remove('drag');if(m){m.classList.remove('ptrd');m.style.transform='';}
-  if(dy>=TH){busy=true;p.classList.add('go');p.style.transform='translateY(10px)';const v=S.view;await load(v,true).catch(()=>{});
-   p.classList.remove('go');p.classList.add('done');hap('success');await new Promise(z=>setTimeout(z,520));busy=false;}
-  p.classList.remove('go','done');p._hit=0;p.style.opacity=0;p.style.transform='translateY(-40px)';dy=0;});})();
-function chrome(){const tabs=[['live','Live'],['games','Games'],['build','Build'],['results','Results'],['settings','Settings']];
- $('#nav').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
- $('#tabbar').innerHTML=tabs.map(([k,l])=>`<button class="${S.view===k?'on':''}" onclick="go('${k}')">${SVG[k]}${l}</button>`).join('');
-}
-const TABS=['live','games','build','results','settings'];
-function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=true;const from=TABS.indexOf(S.view);S.view=v;try{localStorage.setItem('cw_view',v)}catch(e){};chrome();
- const paint=()=>{render();window.scrollTo(0,0);hcSync();tbSet();};
- if(!same&&!dir&&document.startViewTransition&&!matchMedia('(prefers-reduced-motion: reduce)').matches){document.startViewTransition(paint);}
- else{paint();const m=$('#main');if(m&&!same){const c=dir?(dir>0?'sw-l':'sw-r'):'enter';m.classList.remove('enter','sw-l','sw-r');void m.offsetWidth;m.classList.add(c);}}
- load(v);}
-function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
-S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
-function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
- document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
- const kp=document.querySelector('.kpis');if(kp){kp.classList.add('stag');[...kp.children].forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>kp.classList.remove('stag'),900);}
- document.querySelectorAll('.chart rect').forEach((r,i)=>r.style.setProperty('--i',i));}
-function segInd(){document.querySelectorAll('.seg,.ant').forEach((sg,k)=>{const on=sg.querySelector('button.on');let ind=sg.querySelector(':scope>.segind');
-  if(!on){if(ind)ind.remove();return;}if(!ind){ind=document.createElement('i');ind.className='segind';sg.prepend(ind);sg.classList.add('hasind');}
-  const key=sg.dataset.k||(sg.className+':'+k);const prev=S.segs&&S.segs[key];S.segs=S.segs||{};
-  const to={left:on.offsetLeft,top:on.offsetTop,width:on.offsetWidth,height:on.offsetHeight};
-  if(prev&&(prev.left!==to.left||prev.top!==to.top)){ind.style.transition='none';Object.assign(ind.style,{left:prev.left+'px',top:prev.top+'px',width:prev.width+'px',height:prev.height+'px'});void ind.offsetWidth;ind.style.transition='';}
-  Object.assign(ind.style,{left:to.left+'px',top:to.top+'px',width:to.width+'px',height:to.height+'px'});S.segs[key]=to;});
- const tb=document.querySelector('.tabbar');const on=tb&&tb.querySelector('button.on');if(on){let ti=tb.querySelector('.tabind');if(!ti){ti=document.createElement('i');ti.className='tabind';tb.appendChild(ti);}
-  ti.style.left=(on.offsetLeft+on.offsetWidth/2-14)+'px';ti.style.width='28px';}}
-function afterPaint(){stagger();segInd();rollNums(document);wireChart();wireScrubs(document);
- const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
- document.querySelectorAll('[data-sig]').forEach(el=>{const k=el.dataset.key,sg=el.dataset.sig;const old=S.sigs[k];S.sigs[k]=sg;if(old!=null&&old!==sg&&!reduce){el.classList.add('rowpop');setTimeout(()=>el.classList.remove('rowpop'),1300);}});}
-/* Numbers roll to their new value frame by frame (~0.65 s, ease-out) with a green/red flash; chance bars slide. */
-function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;S.bars=S.bars||{};
- root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
-  if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
- root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
-  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
-  const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
-function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
-function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
-function warm(v){/* show the last copy straight away while the fresh one loads */
- if(v==='live'&&!S.live){S.live=cget('live');if(S.live)head(S.live);}
- if(v==='build'&&(!S.build||S.build.lg!==S.lg)){S.build=cget('build_'+S.lg);S.panel=cget('panel_'+(S.pview||'all'))||S.panel;}
- if(v==='results'&&!S.res)S.res=cget('results');if(v==='results'&&!S.an)S.an=cget('analytics');
- if(v==='games'&&!S.games)S.games=cget('games');
- if(S.view===v&&(v!=='build'||S.build))render();}
-// ---- freshness: how old the numbers on screen are, counted on the phone between loads. Two separate things:
-//   • the snapshot ("prices"): when the dollar numbers on screen were last worked out (the snapshot build) — this is
-//     the age the big number actually has, so the stamp leads with it and goes red when it is stale;
-//   • the scores: how old the live games' scores are (only while a game is on). Shown alongside so a stale snapshot
-//     and stale scores are never conflated into one misleading "Updated N ago".
-S.fr={};
-function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
-function frEl(k){const o=S.fr[k];return o?Math.max(0,(Date.now()-o.recv)/1000):0;}        // seconds since this page got it
-function frBuilt(k){const o=S.fr[k];if(!o)return null;return Math.max(0,o.f.now-o.f.built+frEl(k));}   // snapshot/prices age
-function frScores(k){const o=S.fr[k];if(!o||o.f.scores==null)return null;return Math.max(0,o.f.scores+frEl(k));} // scores age
-function agoTxt(a){return a<3?'just now':a<90?Math.round(a)+'s ago':Math.round(a/60)+' min ago';}
-function frLive(k){const o=S.fr[k];return !!(o&&o.f.live);}                                                   // is a game under way (server says)
-function frTxt(k){const b=frBuilt(k);if(b==null)return '';const s=frScores(k);
- return(!frLive(k)||s==null)?'Updated '+agoTxt(b):'Prices '+agoTxt(b)+' · scores '+agoTxt(s);}
-function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frBuilt(k)||0)>60);});}
-setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
-setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
-async function load(v,fresh){try{warm(v);
- if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
- if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
-  if(lg!==S.lg||pv!==(S.pview||'all'))return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
- if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);
-  api('/app/api/analytics').then(a=>{S.an=a;cput('analytics',a);if(S.view==='results')renderResults();}).catch(()=>{});}
- if(v==='games'){S.games=await api('/app/api/games');cput('games',S.games);frSet('N',S.games.fresh);}
- if(v==='settings'){const [st,mac,pk]=await Promise.all([api('/app/api/settings?lg='+(S.slg||S.lg)),LOCAL?api('/app/mac',{a:'status'}).catch(()=>null):api('/app/mac-info',{}).catch(()=>null),api('/app/push',{a:'key'}).catch(()=>null)]);S.set=st;S.mac=mac;S.pk=pk;await fidLoad();try{const pp=await api('/app/api/panel?v=all');S.panelCuts=pp.cutoffs;S.skim={reserved:pp.reserved}}catch(e){}
-  try{const reg=navigator.serviceWorker&&await navigator.serviceWorker.getRegistration();const sub=reg&&reg.pushManager&&await reg.pushManager.getSubscription();S.pushOn=!!sub;}catch(e){S.pushOn=false;}}
- if(S.lerr)delete S.lerr[v];if(S.view===v)render();}catch(e){if(e)console.log(e);
-  const have={live:S.live,games:S.games,build:S.build,results:S.res,settings:S.set}[v];   // nothing to show yet: say so, with a retry, instead of a skeleton forever
-  if(e!==0&&!have){S.lerr=S.lerr||{};S.lerr[v]=navigator.onLine===false?'You\'re offline.':'Couldn\'t reach your Mac. It may be asleep or restarting.';if(S.view===v)render();}}}
-/* the error card for a screen that couldn't load: calm, says why, and a Try again that spins while it retries */
-function errCard(v){return `<div class="card empty err" data-ic="⚠️"><b>Couldn't load this screen</b>${esc((S.lerr||{})[v]||'')}<br><button class="btn acc" onclick="retry('${v}',this)">Try again</button></div>`;}
-async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
- if((S.lerr||{})[v]&&b&&b.isConnected){btnState(b,false,'Still no answer');setTimeout(()=>{if(b.isConnected){b.className='btn acc';b.textContent='Try again';}},2200);}}
-/* A button that reports back: spins while working, then a check and "Done" (green) or a cross (red, a small shake),
-   then its old self. */
-function btnState(b,ok,label,ms){if(!b||!b.isConnected)return;hap(ok?'success':'error');b.disabled=false;b.classList.remove('st-ok','st-bad');void b.offsetWidth;b.classList.add(ok?'st-ok':'st-bad');
- b.innerHTML=(ok?'✓ ':'✕ ')+esc(label||(ok?'Done':'Didn\'t work'));b.dataset.st=ok?'ok':'bad';
- if(ms!==0){const old=b._old;clearTimeout(b._st);b._st=setTimeout(()=>{if(b.isConnected){b.classList.remove('st-ok','st-bad');delete b.dataset.st;if(old!=null)b.innerHTML=old;b._old=null;}},ms||2200);}}
-function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span> '+esc(label||b.textContent.trim());}
-function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
- if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
-function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
-// ---------------- LIVE
-function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over'||l.phase==='waiting')return '';
- const lead=l.sc?(l.sc.me-l.sc.opp):0;const ch=l.live!=null?l.live:l.chance;
- if(lead>0||(!lead&&ch!=null&&ch>=.6))return 'up';if(lead<0||(!lead&&ch!=null&&ch<=.4))return 'down';return 'live';}
-function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
- const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
- const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
- return `<span class="leg ${c}" title="${tip}">${pre}${esc(short(l.name))}${sc}</span>`;}
-function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
- const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
-const PLACE_END=new Set(['City','Orleans','York','Bay','Angeles','Vegas','Francisco','Diego','Jersey','England','Louis','Antonio','Lake','Jose','Carolina','Florida','Dakota','Mexico','Virginia','Kentucky','Michigan','Illinois','Texas','Tech','State','Coast']);
-function short(n){n=String(n||'');const p=n.split(' ');if(p.length<2||n.length<=14)return n;const last=p[p.length-1];
- if(PLACE_END.has(last))return p.slice(0,-1).map(w=>w[0]+'.').join('')+' '+last;   // "San Francisco" -> "S. Francisco", never just "City"
- return last;}
-function plOf(c){return c.group==='won'?(c.pays||0)-c.cost:c.group==='cashed'?(c.back||0)-c.cost:c.group==='lost'?-c.cost:0;}
-function plPill(c){const v=plOf(c);return `<div class="verdict pl ${v>0.004?'won':v<-0.004?'lost':'cashed'}"><b>${v>=0?'+':'−'}${money(Math.abs(v))}</b><small>${c.group==='won'?'Won':c.group==='cashed'?'Cashed out':'Lost'}</small></div>`;}
-try{S.sf=JSON.parse(localStorage.getItem('cw_sf')||'null')||{o:'all',sp:'all',sort:'new'}}catch(e){S.sf={o:'all',sp:'all',sort:'new'}}
-function setSf(k,v){hap('selection');S.sf[k]=v;try{localStorage.setItem('cw_sf',JSON.stringify(S.sf))}catch(e){}renderLive();}
-function settledBar(cs){const done=cs.filter(c=>c.group!=='pending');const f=S.sf;const sps=[...new Set(done.flatMap(c=>c.sports))].filter(s=>SPN[s]);
- const net=done.filter(c=>settledOk(c)).reduce((a,c)=>a+plOf(c),0),n=done.filter(c=>settledOk(c)).length;
- const ch=(k,v,l)=>`<button class="chip ${f[k]===v?'on':''}" onclick="setSf('${k}','${v}')">${l}</button>`;
- return `<div class="sbar"><div class="chips">${ch('o','all','All')}${ch('o','profit','Profit')}${ch('o','loss','Loss')}${ch('o','won','Won')}${ch('o','cashed','Cashed early')}${ch('o','lost','Lost')}</div>
-  ${sps.length>1?`<div class="chips">${ch('sp','all','All sports')}${sps.map(s=>ch('sp',s,(ICON[s]||'')+' '+SPN[s])).join('')}</div>`:''}
-  <div class="chips">${ch('sort','new','Newest')}${ch('sort','best','Biggest profit')}${ch('sort','worst','Biggest loss')}${ch('sort','pay','Biggest payout')}</div>
-  <div class="snet">${n} settled · net <b class="${net>=0?'up':'down'}">${net>=0?'+':'−'}${money(Math.abs(net))}</b></div></div>`;}
-function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit'&&v>0)||(f.o==='loss'&&v<0)||f.o===c.group)&&(f.sp==='all'||c.sports.includes(f.sp));}
-function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
- if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
-function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
- const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
- if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
- const up=c.legs.find(l=>!l.res&&l.starts&&l.state!=='live');return up?('Next: '+short(up.name)+' · '+up.starts):(c.when||'');}
-function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{const k=legCls(l);if(k)on.add(k);}));if(!on.size)return '';
- const it=[['up','<i class="pd"></i>Winning now'],['down','<i class="pd"></i>Losing now'],['live','<i class="pd"></i>Tied'],['won','✓ Won'],['lost','✕ Lost']].filter(x=>on.has(x[0]));
- return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
-/* while a finger is on the chart the page holds still; the refresh that came in meanwhile paints on release */
-function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();}
-function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i><i style="height:76px"></i></div>
- <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
-function _renderLive(){const d=S.live;const m=$('#main');
- if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
- if(d.error){m.innerHTML=`<div class="card empty err" data-ic="⚠️"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
- const cs=(d.combos||[]);const pend=cs.filter(c=>c.group==='pending');const sOpen=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre');
- const sports=[...new Set(cs.flatMap(c=>c.sports))];
- const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
-   .sort(S.filter==='done'?((a,b)=>S.sf.sort==='best'?plOf(b)-plOf(a):S.sf.sort==='worst'?plOf(a)-plOf(b):S.sf.sort==='pay'?(b.full||b.pays)-(a.full||a.pays):(String(b.week||'')).localeCompare(String(a.week||''))||b.sort-a.sort)
-     :((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort));
- const todo=cs.filter(c=>(d.todo||[]).includes(c.t));
- const sumW=(d.cash_now||0)+sOpen.reduce((a,x)=>a+(x.worth||0),0),sumS=d.staked+sOpen.reduce((a,x)=>a+(x.cost||0),0),dl=sumW-sumS;
- m.innerHTML=`<div class="grid"><div>
- ${heroLive(d,pend,sOpen,sumW,sumS,dl)}
-
- ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
- <h2>Your combos <span class="n">${S.filter==='done'?shown.length:pend.length}</span><span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span></h2>
- ${S.filter==='done'?settledBar(cs):''}
- ${S.filter!=='done'?legendFor(pend):''}
- <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
- ${shown.map(rowLive).join('')||(S.filter==='all'&&!pend.length?'<div class="empty" data-ic="🌤️"><b>Nothing riding right now</b>Bets you place, here or on Kalshi, show up with live scores and cash-out offers.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>':'<div class="empty" data-ic="🗒️"><b>Nothing here</b>Try another filter. Combos show up here with live scores and cash-out offers.</div>')}</div>
- ${singlesLive(d)}
- </div><aside class="side">${sideLive(d)}</aside></div>`;}
-function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
- const items=[];
- for(const c of pend){
-  if((d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
-  else if(c.offer_real&&c.overpay&&c.overpay>=1.03)items.push({c,kind:'overpay',w:(c.offer||0)*1.1});
-  else if(c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
-  else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
- }
- items.sort((a,b)=>b.w-a.w);
- const hid=(()=>{try{return JSON.parse(localStorage.getItem('cw_hide')||'[]')}catch(e){return []}})();
- const ideas=(d.ideas||[]).filter(x=>!hid.includes(x.id));
- if(!items.length&&ideas.length)return ideaBlock(ideas);
- const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
- if(!items.length)return nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'';
- return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
-  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${money(c.threshold)}+</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
-  if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
-  if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
-  if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
-  return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+(ideas.length?ideaBlock(ideas):'');}
-/* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
-   plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
-function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
- if(li.kick){try{return 'Starts '+new Date(li.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'});}catch(e){}}return '';}
-function ideaAge(ts){const s=Math.max(0,Math.round(Date.now()/1000-(ts||0)));return s<60?'Price '+s+'s old':s<3600?'Price '+Math.round(s/60)+'m old':'Price '+Math.round(s/3600)+'h old';}
-function ideaHead(x,li){const lg=li&&li.league_name||x.league_name||x.sport||'';
- return `<div class="ihd"><span>${esc(li&&li.icon||x.icon||'')} ${esc(lg)}</span><span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?'<span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</div>
-  <h4>🎯 ${esc(li&&li.plain||x.picks)}</h4>${li&&(li.game||ideaWhen(li))?`<div class="igame">${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</div>`:''}`;}
-function ideaLeg(li){if(!li||!(li.plain||li.game))return '';const tk=/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
- return `<div class="ileg" ${tk?`onclick="openGame('${tk}')"`:''}><span class="ilg">${esc(li.icon||'')} ${esc(li.league_name||'')}</span><b>${esc(li.plain||'')}</b><small>${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</small></div>`;}
-function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
- return `<div class="dnums ifacts"><div>Kalshi price<b>${Math.round(x.price_c)}¢</b></div><div>Fair price<b>${Math.round(x.fair_c)}¢</b></div><div>Edge<b class="${(x.edge||0)>=0?'up':'down'}">${(x.edge||0)>=0?'+':'−'}${Math.abs(Math.round((x.edge||0)*100))}% expected</b></div>
-  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
-function ideaOpen(e,t){if(e&&e.target&&e.target.closest('button,a,input,select'))return;openGame(t);}
-function ideaBlock(ideas){S.ideaq=S.ideaq||{};
- return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
-  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
-  if(S.ideaGone&&S.ideaGone[x.id])return `<div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div>`;
-  if(x.n===1){const li=(x.legs_info||[])[0],tk=li&&/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
-   return `<div class="dcard idea ${tk?'itap ':''}${S.hl===x.id?'flash':''}" id="idea-${x.id}" ${tk?`onclick="ideaOpen(event,'${tk}')"`:''}><div>${ideaHead(x,li)}
-   <p>${esc(ideaAge(x.ts))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
-   ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   ${ideaFacts(x)||`<div class="dnums"><div>Value<b>${pct(x.pct)} of fair</b></div></div>`}
-   ${fresh?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>`:''}</div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
-    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;}
-  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair · ${esc(ideaAge(x.ts))}${x.kick?' · first game starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
-   ${(x.legs_info||[]).map(li=>ideaLeg(li)).join('')}
-   ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   ${ideaFacts(x)}
-   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
-   <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" onclick="buyIdea('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
-    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
-async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
- const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
- if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
- clearInterval(S.ideaT);S.ideaT=setInterval(()=>{if(S.view==='live'&&!$('#modal').classList.contains('on'))renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
-async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
- toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
-async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
- toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok)hideIdea(id);else renderLive();load('live',true);}
-function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
- setTimeout(()=>{delete S.ideaGone[id];hideIdea(id);},4500);}
-function hideIdea(id){try{const h=JSON.parse(localStorage.getItem('cw_hide')||'[]');h.push(id);localStorage.setItem('cw_hide',JSON.stringify(h.slice(-60)))}catch(e){}renderLive();}
-function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
- const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
- return `<span class="sweat" title="${w} of ${c.legs.length} picks won">${seg.map(s=>`<i class="${s}"></i>`).join('')}</span>`;}
-function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
- const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
- return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
-  ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('')+more;}
-const SKIND={win:'To win',spread:'Spread',total:'Total',other:'Single bet'};
-function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const live=pend.some(c=>c.live)||sOpen.some(x=>x.state==='live');
- const ch=1-(1-(d.riding?d.chance_one||0:0))*sOpen.reduce((a,x)=>a*(1-(x.chance||0)),1);
- const most=pend.reduce((a,c)=>a+c.pays,0)+sOpen.reduce((a,x)=>a+(x.pays||0),0);const big=Math.max(d.best||0,...sOpen.map(x=>x.pays||0));
- const cls=Math.abs(dl)<.005?'flat':dl>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
- const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
- const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
- return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
-   <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} <span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>${St?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/St*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
-   ${heroChart(d,cls)}</div>
-  <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
-   <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
-   <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
-   <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
-/* The hero chart: what the open bets were worth over the Day (16 h) or Week, gradient area, glowing end dot, the
-   staked line dashed. Press and drag on it to scrub: a line and dot follow the finger, the big number and the change
-   pill show the value at that moment, and every point crossed ticks a haptic. Release puts the live numbers back. */
-try{S.rng=localStorage.getItem('cw_rng')==='week'?'week':'day'}catch(e){S.rng='day'}
-S.chartDraw=true;
-function setRng(k){if(S.rng===k)return;S.rng=k;try{localStorage.setItem('cw_rng',k)}catch(e){}S.chartDraw=true;renderLive();}
-function pulseWeek(){const w=S.pulseWeek;if(S.pwBusy||(w&&Date.now()-w.at<120e3))return;S.pwBusy=true;
- api('/app/api/pulse?h=168').then(r=>{S.pulseWeek={at:Date.now(),pts:(r&&r.pulse)||[]};}).catch(()=>{S.pulseWeek={at:Date.now(),pts:[]};})
-  .finally(()=>{S.pwBusy=false;S.chartDraw=true;if(S.view==='live'&&S.rng==='week')renderLive();});}
-function heroChart(d,cls){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';const pts=wk?(S.pulseWeek||{}).pts:(d.pulse||[]);S.chart=null;
- const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.rng===k?'on':''}" onclick="setRng('${k}')">${l}</button>`).join('')}</div>`;
- if(!pts)return `<div class="sparkw"><div class="hsk" style="padding:0"><i style="height:76px"></i></div></div><div class="saxis"><span>Loading the week…</span>${sw}</div>`;
- if(pts.length<3)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line x1="0" x2="600" y1="52" y2="52" stroke="var(--line)" stroke-width="2" stroke-dasharray="4 6" vector-effect="non-scaling-stroke"/></svg></div>
-  <div class="saxis"><span>${wk?'Not enough history for a week yet.':'The day\'s line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
- const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01);
- const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>H-6-(v-lo)/rg*(H-14);const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
- const col=cls==='down'?'var(--no)':cls==='up'?'var(--yes)':'var(--acc)';const lx=X(t1),ly=Y(vs[vs.length-1]);const st=pts[pts.length-1][2];
- const lab=t=>{const x=new Date(t*1000);return wk?x.toLocaleDateString([], {weekday:'short'})+' '+x.toLocaleTimeString([], {hour:'numeric'}):x.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});};
- const draw=S.chartDraw?'draw':'';S.chartDraw=false;S.chart={pts,W,X,Y,lab};
- return `<div class="sparkw" data-chart="1"><span class="sread"></span>${st!=null&&st>=lo&&st<=hi?`<i class="sbase" style="top:${Y(st).toFixed(1)}px"></i>`:''}
-  <svg class="spark ${draw}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".32"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-  <path d="${path} L${W} ${H} L0 ${H}Z" fill="url(#sg)"/><path d="${path}" fill="none" stroke="${col}" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
-  </svg><i class="sdot ${draw}" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i><i class="scrl"></i><i class="scrd" style="background:${col}"></i></div>
-  <div class="saxis"><span>${esc(lab(t0))}</span>${sw}<span>Now</span></div>`;}
-function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.chart;if(!w||!c||w._wired)return;w._wired=1;
- const big=document.querySelector('.hv .big'),dlt=document.querySelector('.hv .delta');let idx=-1,saved=null;
- const at=x=>{const r=w.getBoundingClientRect(),f=Math.max(0,Math.min(1,(x-r.left)/Math.max(1,r.width))),t=c.pts[0][0]+f*(c.pts[c.pts.length-1][0]-c.pts[0][0]);
-  let i=0,b=Infinity;c.pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;};
- const show=i=>{if(i===idx)return;idx=i;const p=c.pts[i],fx=c.X(p[0])/c.W*100;
-  w.querySelector('.scrl').style.left=fx+'%';const dot=w.querySelector('.scrd');dot.style.left=fx+'%';dot.style.top=c.Y(p[1])+'px';
-  const rd=w.querySelector('.sread');rd.textContent=c.lab(p[0]);rd.style.left=Math.max(10,Math.min(90,fx))+'%';
-  if(big){big.textContent=money(p[1]);big.classList.add('scrub');}
-  if(dlt&&p[2]!=null){const dl=p[1]-p[2],k=Math.abs(dl)<.005?'flat':dl>0?'up':'down';dlt.className='delta '+k;
-   dlt.innerHTML=`${k==='up'?'▲':k==='down'?'▼':'•'} ${money(Math.abs(dl))}${p[2]?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/p[2]*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(p[2])} in</span>`;}
-  hap('selection');};
- const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;
-  if(saved){if(big){big.innerHTML=saved.b;big.className=saved.bc;}if(dlt){dlt.innerHTML=saved.d;dlt.className=saved.dc;}saved=null;}
-  if(S.liveDirty){S.liveDirty=false;renderLive();}};
- w.addEventListener('pointerdown',e=>{if(e.button)return;S.scrub=true;saved={b:big&&big.innerHTML,bc:big&&big.className,d:dlt&&dlt.innerHTML,dc:dlt&&dlt.className};
-  w.classList.add('on');idx=-1;show(at(e.clientX));try{w.setPointerCapture(e.pointerId)}catch(x){}});
- w.addEventListener('pointermove',e=>{if(S.scrub)show(at(e.clientX));});
- ['pointerup','pointercancel','lostpointercapture'].forEach(k=>w.addEventListener(k,end));}
-function singlesLive(d){const all=d.singles||[];
- const ss=all.filter(x=>S.filter==='all'||S.filter==='done'?true:S.filter==='live'?x.state==='live':x.sport===S.filter);
- if(!all.length)return '';
- return `<h2 style="margin-top:22px">Single bets &amp; spreads <span class="n">${all.length}</span></h2>
- <div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
- ${ss.map(rowSingle).join('')||'<div class="empty" data-ic="🗒️"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
- `;}
-function ssChip(x){const off=S.live&&S.live.auto_sell===false;
- const hint=!x.self&&!off&&x.sell_at?` · sells at ${money(x.sell_at)}+`:'';
- return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
-async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
- const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
-function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
- const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
- const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
- return `<div class="trow srow1" data-key="s:${x.t}" data-sig="${esc(x.score||'')}" onclick="openGame('${x.t}')"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(x.label)}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${esc(SKIND[x.kind]||'')}${(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
-  <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
-  <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
-  <div class="num" data-l="Chance">${x.chance!=null?`<span data-num="sc:${x.t}" data-v="${x.chance}" data-f="pct">${pct(x.chance)}</span>`:'—'}${x.chance!=null?`<div class="bar"><i data-bar="sb:${x.t}" style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
-  <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>`:'—'}</div></div><div class="verdict"></div></div>`;}
-function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.offer_live:c.offer;}   // display-only; same rule as the hero (hero_worth)
-function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
- const oLive=offNow(c);const oEst=!c.offer_real;
- const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
- return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
-  <div class="legs">${legTags(c.legs)}</div>
-  <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
-  <div class="num" data-l="To hit">${c.group==='pending'?`<span data-num="p:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}${c.group==='pending'?`<div class="bar"><i data-bar="pb:${c.t}" style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
-  <div class="num offer" data-l="Offer">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
-  ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
-   <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
-   <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
-   ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
-   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
-    <button class="btn ghost" onclick="event.stopPropagation();openCombo('${c.t}')">Details</button>
-    ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
-    <button class="btn" ${S.busy[c.t]?'disabled':''} onclick="event.stopPropagation();ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
-    ${c.offer_real?`<button class="btn yes" onclick="event.stopPropagation();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
-function tog(t){S.open[t]=!S.open[t];renderLive();}
-function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);if(!ev.length)return '';
- const K={score:'🏟️',swing:'📈',advice:'⚡',settled:'🏁',alert:'🔔'};
- return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
-function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
-function sideLive(d){const gs=d.games||[];const r=d.risk;
- return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>
-  <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.short||g.starts||'')}`}</div>
-  <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
- ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
- ${todayCard(d)}`;}
-function todayCard(d){const t=d.today;if(!t)return `<div class="card"><h3>Finished <span>recently</span></h3><div class="mini">Won or cashed<b class="up">${money(d.locked)}</b></div><div class="mini">Holding is worth<b>${money(d.hold_value)}</b></div></div>`;
- const n=t.won+t.cashed+t.lost;const bits=[t.won?`${t.won} won`:'',t.cashed?`${t.cashed} cashed`:'',t.lost?`${t.lost} lost`:''].filter(Boolean).join(' · ');
- return `<div class="card"><h3>Today <span>${n?bits:'nothing finished yet'}</span></h3>${n?`<div class="mini">Paid back<b>${money(t.back)}</b></div><div class="mini">They cost<b>${money(t.cost)}</b></div><div class="mini">Profit today<b class="${t.pl>=0?'up':'down'}">${smoney(t.pl)}</b></div>`:''}${d.week_pl!=null?`<div class="mini">Last 7 days<b class="${d.week_pl>=0?'up':'down'}">${smoney(d.week_pl)}</b></div>`:''}<div class="mini">Still riding is worth<b>${money(d.hold_value)}</b></div></div>`;}
-async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
- hap(r.ok?'success':'error');if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
-function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
- modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
- <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" onclick="doSell('${t}')">Cash out</button></div>`);}
-async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();
- if(r.ok&&/^✅/.test(r.msg||'')){S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;setTimeout(()=>soldSheet({label:c.label,back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}   // the Sold moment
- else{hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);}load('live',true);}
-async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();api('/app/api/act',{a:'hedgego',t:'${t}'}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
-async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
-// ---------------- BUILD
-function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
- return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
-/* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
-function renderBuild(){const keep=[...document.querySelectorAll('#main .ccard[data-ph]')].filter(n=>n.dataset.ph!=='idle');_renderBuild();
- keep.forEach(old=>{const nw=document.querySelector(`#main .ccard[data-i="${old.dataset.i}"]`);   // same card, same phase: keep the very same button (no flicker, no lost tap)
-  if(nw&&nw!==old&&nw.dataset.ph===old.dataset.ph&&nw.dataset.sig===old.dataset.sig){nw.replaceWith(old);
-   const q=S.quotes&&S.quotes[old.dataset.i];      // putting a node back restarts its CSS animations: keep the draining bar where it was, and don't replay the entrance
-   old.querySelectorAll('.qline.new').forEach(e=>e.classList.remove('new'));
-   if(q)old.querySelectorAll('.qt').forEach(t=>{t.style.animationDelay='-'+Math.max(0,Date.now()/1000-q.at).toFixed(2)+'s';});}});
- rollNums($('#main'));rbWatch();}
-function _renderBuild(){const d=S.build;const m=$('#main');
- /* The chip row never changes while a league loads: the list of leagues and the per-league game counts are remembered
-    (also on this phone) instead of read from the data that is cleared on a tap; the built-in list is only for a phone that has never loaded */
- if(d&&d.leagues&&d.leagues.length>1){S.lgs=d.leagues;try{localStorage.setItem('cw_leagues',JSON.stringify(d.leagues))}catch(e){}}
- if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
- const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
- const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
- if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
- const best=bestBets(d);const adv=S.adv||S.slip.length>0;
- m.innerHTML=chipRow+`<div class="grid"><div>
-  <div id="pblock">${panelBlock(S.panel)}</div>
-  <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
-  ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
-  ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${SPN[g.sport]?`<div class="wlg">${ICON[g.sport]||''} ${esc(SPN[g.sport])}</div>`:''}${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
-   ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
-    return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
-    <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
-  ${linesBlock(d)}
-  ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
-  ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
-  <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
- </div><aside>${adv?slip(d)+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
-setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
-function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
-try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
-try{const l=JSON.parse(localStorage.getItem('cw_leagues')||'null');if(Array.isArray(l)&&l.length>1&&l.every(x=>Array.isArray(x)&&x.length>=3&&/^[a-z0-9_]+$/.test(x[0])&&typeof x[1]==='string'&&typeof x[2]==='string'))S.lgs=l;
- const g=JSON.parse(localStorage.getItem('cw_gn')||'null');if(g&&typeof g==='object'&&!Array.isArray(g))S.gn=g}catch(e){}
-S.lg=S.pview==='all'?'mix':S.pview;
-const KIND={single:['🎯','Single game'],early:['🎢','Sell-early favorite'],line:['📏','Spread / total'],combo:['🧩','Combo']};
-function pTime(ts){return ts?new Date(ts*1000).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit'}):'';}
-const started=c=>!c.live&&c.kick&&c.kick*1000<Date.now()+5*60e3;
-function panelItem(c,st,approved,verb){const k=KIND[c.kind]||['•',c.kind];const off=S.pOff&&S.pOff.has(c.id);
- const state=c.state||'';const chip={'':approved||off||started(c)?'':`<span class="tag pwhen">buys when you ${verb==='add'?'add it':'approve'}</span>`,scheduled:started(c)?'<span class="tag bad">Game started · won\'t buy</span>':c.buy_at&&c.buy_at*1000>Date.now()?`<span class="tag">buys ${pTime(c.buy_at)}</span>`:`<span class="tag">${{paused:'Paused · not bought yet','no key':'Can\'t trade from here',price:'Waiting for a fresh price'}[c.hold]||'Buying now'}</span>`,bought:'<span class="tag good">Bought</span>',buying:'<span class="tag">Buying…</span>',check:'<span class="tag bad">Check Kalshi</span>',paper:'<span class="tag">Paper</span>',
-  skipped:'<span class="tag bad">Skipped</span>',swapped:'<span class="tag">Swapped</span>',failed:'<span class="tag bad">Didn\'t buy</span>',cancelled:'<span class="tag">Cancelled</span>','left out':'<span class="tag">Left out</span>'}[state]||'';
- const res=c.result?`<span class="tag ${c.pl>=0?'good':'bad'}">${c.pl>=0?'+':'−'}${money(Math.abs(c.pl))}</span>`:'';
- const title=c.kind==='combo'?(c.legs.every(l=>l.game)?c.legs.map(l=>esc(l.game)).join('<br>'):c.legs.map(l=>esc(short(l.pick))).join(' + ')):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.kind==='single'?' to win':''}`;
- const games=pGames(c);
- const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}" data-pid="${esc(c.id)}"><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''}${c.league?' · '+esc(c.league):''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
-  <div class="pg">${games.map(g=>`<div>${esc(g)}</div>`).join('')}</div>
-  <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${esc(c.note)}</div>`:''}</div>
-  <div class="ps"><b data-num="ps:${esc(c.id)}" data-v="${(+c.stake||0).toFixed(2)}">${money(c.stake)}</b>${pxSpark(c)}${chip}${res}${!approved?`<button class="x" title="${off?'Put back':'Leave out'}" onclick="pToggle('${c.id}')">${off?'↺':'✕'}</button>`:''}</div></div>`;}
-/* Which game each bet is on, in plain English ("Over 7.5" alone told Pete nothing): one line per game. Spreads and totals
-   say "Flyers at Bruins"; a single or one leg of a combo says "Flyers vs Bruins" (the team picked first). Older saved
-   drafts have no game text, so fall back to what they do carry. */
-function pGames(c){const L=c.legs||[];
- if(c.kind==='line'){const m=/\((.*)\)$/.exec(L[0]&&L[0].pick||'');return [c.game||(L[0]&&L[0].game)||(m?m[1]:'')].filter(Boolean);}
- if(c.kind==='combo')return [];   // its title already lists each leg's game
- return [c.game||(L[0]&&L[0].game)||(c.opp&&L[0]?short(L[0].pick)+' vs '+short(c.opp):'')].filter(Boolean);}
-function pToggle(id){hap();S.pOff=S.pOff||new Set();S.pOff.has(id)?S.pOff.delete(id):S.pOff.add(id);S.pJust=id;renderBuild();S.pJust=null;}
-/* A tiny line on each panel card: the bet's Kalshi price (a combo's share of fair) over the times this phone has seen
-   it, kept for 36 hours. It only shows once there are two or more readings, so it never makes data up. */
-function pxVal(c){const v=c.kind==='combo'?c.pct:(c.price!=null?c.price:((c.legs||[])[0]||{}).p);return v==null||isNaN(v)?null:+v;}
-function pxHist(){if(!S.pxh){try{S.pxh=JSON.parse(localStorage.getItem('cw_pxh')||'{}')||{}}catch(e){S.pxh={}}}return S.pxh;}
-function pxNote(c){const v=pxVal(c);if(v==null||!c.id)return [];const h=pxHist(),now=Date.now()/1000;let a=(h[c.id]||[]).filter(p=>now-p[0]<36*3600);const last=a[a.length-1];
- if(!last||Math.abs(last[1]-v)>1e-4||now-last[0]>600){a=a.concat([[Math.round(now),+v.toFixed(4)]]).slice(-48);h[c.id]=a;clearTimeout(S.pxT);
-  S.pxT=setTimeout(()=>{try{const hh=pxHist();for(const k in hh)if(!(hh[k]||[]).some(p=>Date.now()/1000-p[0]<36*3600))delete hh[k];localStorage.setItem('cw_pxh',JSON.stringify(hh))}catch(e){}},400);}
- return a;}
-function pxSpark(c){const a=pxNote(c);if(a.length<2)return '';const vs=a.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01),t0=a[0][0],t1=a[a.length-1][0];
- const d=a.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*64).toFixed(1)} ${(19-(p[1]-lo)/rg*16).toFixed(1)}`).join('');const col=vs[vs.length-1]>=vs[0]?'var(--yes)':'var(--no)';
- const f=c.kind==='combo'?pct:(x=>Math.round(x*100)+'¢');
- return `<svg class="psp" viewBox="0 0 64 22" preserveAspectRatio="none" aria-label="Price ${f(vs[0])} then ${f(vs[vs.length-1])}"><title>Kalshi price since this phone first saw it: ${f(vs[0])} → ${f(vs[vs.length-1])}</title><path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>`;}
-function rbOn(r){return !!(r&&(r.state==='asked'||r.state==='running'));}
-/* A requested rebuild, from the Mac's own notes: waiting to start, which sport it's on, or picking the mix. */
-function rbText(r){if(r.state==='asked')return r.wait>=90?'Waiting for the Mac to start. It hasn\'t picked this up yet: is it on and awake?':'Starting…';
- if(r.step==='choosing')return 'Picking the best mix for today…';return `Looking at ${esc(SPN[r.sport]||String(r.sport||'').toUpperCase())}… ${Math.min((r.i||0)+1,r.n||1)} of ${r.n||1} sports`;}
-function rbFrac(r){if(r.state==='asked')return .04;const n=(r.n||1)+1;return Math.min(.97,r.step==='choosing'?(n-.5)/n:((r.i||0)+.5)/n);}
-function rbCard(r){return `<div class="card rbcard" style="text-align:center;padding:22px 18px"><div style="font-size:30px">🔎</div><b style="display:block;margin:6px 0 4px;font-size:17px">Putting together a fresh panel</b>
-  <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
-  <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
-function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
-function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
- if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
-  <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
- const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
- if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
-  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
- return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
-function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
- const p=d.panel,st=p.stats||{},approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
- const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+c.stake,0);
- const head=`<div class="phead"><div><h2 style="margin:0">${d.view==='all'?"Today's panel":(SPN[d.view]||d.view)+(d.approved_other?' picks':' panel')}</h2>
-   <div class="m" style="font-size:12.5px;margin-top:2px">${items.length} bet${items.length===1?'':'s'} · ${money(approved?items.filter(c=>['scheduled','buying','bought','check'].includes(c.state)).reduce((a,c)=>a+c.stake,0):total)} of your ${money(p.budget)} · picked together for the best chance the day ends up ahead</div></div>
-   <div class="pring" style="--p:${Math.round((st.p_ahead||0)*100)}"><b>${pct(st.p_ahead||0)}</b><small>chance up</small></div></div>`;
- const addMode=d.view!=='all'&&d.approved_other;
- const btn=addMode?`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelAdd(this)">Add ${live.length} to today's panel · ${money(total)}</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Today's panel is already approved. These are bought right after you add them, the same way, inside your daily panel budget.</div>`:approved?(p.status==='approved'?`<button class="btn ghost" style="width:100%;justify-content:center" onclick="panelCancel()">Stop buying the rest</button>`:p.status==='cancelled'?`<button class="btn acc" style="width:100%;justify-content:center" onclick="panelRestart(this)">Build a fresh panel for today</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">Bets already bought stay. The Mac looks at today's remaining games again and puts together a new panel for you to approve.</div>`:'')
-  :`<button class="btn acc" style="width:100%;justify-content:center;font-size:16px;padding:13px" onclick="panelApprove(this)">Approve ${live.length} bet${live.length===1?'':'s'} · ${money(total)}</button>
-   <div class="m" style="font-size:12px;text-align:center;margin-top:6px">The Mac buys them right after you approve, checking each price again first. If one no longer qualifies, it swaps in a similar bet or skips it.</div>`;
- const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
- const other='';
- return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved,addMode?'add':'approve')).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>
-  <div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
-function extraBlock(x){const its=((x||{}).items||[]).filter(c=>!pSentHas(c.id));if(!its.length)return '';x=Object.assign({},x,{items:its});const live=its.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+c.stake,0);
- return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
-  <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
-  <div class="plist">${x.items.map(c=>panelItem(c,'',false,'add')).join('')}</div>
-  ${live.length?`<button class="btn acc" style="width:100%;justify-content:center;margin-top:10px" onclick="panelAdd(this,'extra')">Add ${live.length} to today's panel · ${money(tot)}</button>`:''}</div>`;}
-function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
- const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
- return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
-/* Approve / Add: the first tap arms the button, the second sends it once. While it's on its way (S.pSend) every
-   other Approve/Add tap does nothing, and a redraw can't bring back a live button (the arm timer stands aside). */
-function pArm(b,txt){b.dataset.sure='1';b.textContent=txt;b.classList.add('arm');hap('warning');
- setTimeout(()=>{if(b.isConnected&&!S.pSend&&b.dataset.sure==='1'){b.dataset.sure='';renderBuild();}},4000);}
-async function panelApprove(b){if(S.pSend||b.disabled)return;const ids=(S.panel.panel.items||[]).filter(c=>!S.pOff.has(c.id)).map(c=>c.id);
- if(!b.dataset.sure){pArm(b,'Tap again to approve');return;}
- S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Sending…';let r;
- try{r=await pPost({a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
-/* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
-function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
- if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
- const pn=((S.panel||{}).panel||{}),its=pn.items||[];if(i&&S.pview==='all'&&pn.status==='approved'&&!its.some(c=>c.state==='scheduled'||c.state==='buying'))return;
- load('build').catch(()=>{}).finally(()=>{if(++i<8)S.pbT=setTimeout(tick,[6,10,15,20,30,60,90][i-1]*1000);});};S.pbT=setTimeout(tick,4000);}
-/* Extras this phone just added stay off the New-since-you-approved card for 2 min, even if a refresh that left
-   before the Mac saved the add still lists them (the Mac drops them from the card itself too). */
-function pSentHas(id){const t=(S.pSent||{})[id];return !!t&&Date.now()-t<120000;}
-async function panelAdd(b,view){if(S.pSend||b.disabled)return;const src=view==='extra'?(S.panel.extra||{}):S.panel.panel;
- const ids=(src.items||[]).filter(c=>!S.pOff.has(c.id)&&!(view==='extra'&&pSentHas(c.id))).map(c=>c.id);
- if(!b.dataset.sure){pArm(b,'Tap again to add');return;}
- S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Adding…';let r;
- try{r=await pPost({a:'panel_add',ids,view:view||S.pview});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');
- if(r.ok){if(view==='extra'){S.pSent=S.pSent||{};const now=Date.now();ids.forEach(id=>S.pSent[id]=now);}
-  if(b.isConnected){b.innerHTML='✓ Added';b.classList.add('done');}await new Promise(res=>setTimeout(res,700));}
- S.pOff=new Set();await load('build');
- /* keep hidden only what today's panel now really has; anything the Mac left out (budget, same game) shows again */
- if(r.ok&&view==='extra'&&S.panel&&S.panel.panel){const has=new Set((S.panel.panel.items||[]).filter(c=>['scheduled','buying','bought','check','failed'].includes(c.state)).map(c=>c.id));
-  let back=false;ids.forEach(id=>{if(!has.has(id)){delete S.pSent[id];back=true;}});if(back)renderBuild();}
- if(r.ok)pBuyWatch();}
-/* Approve/Add requests give up waiting after 30 s so a hung link can't leave every button dead; the Mac's side is
-   safe to repeat (panel_tx), so the next tap can't buy anything twice. */
-function pPost(body){return Promise.race([api('/app/api/act',body).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'})),
- new Promise(res=>setTimeout(()=>res({ok:false,msg:'The Mac is slow to answer. Pull to refresh in a moment to see whether it went through.'}),30000))]);}
-async function panelRestart(b){hap();b.innerHTML='<span class="spin"></span>';
- const r=await api('/app/api/act',{a:'panel_restart'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- hap(r.ok?'success':'error');toast(r.msg,7000,r.ok?'good':'bad');S.rbWas=!!r.ok;await load('build');}
-async function panelLook(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking the Mac…';}
- const r=await api('/app/api/act',{a:'panel_look'}).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'}));
- if(!r.ok){hap('error');toast(r.msg,6000,'bad');}else{S.rbWas=true;if(S.panel){S.panel.rebuild=r.rebuild||{state:'asked',wait:0};}}
- await load('build');}
-/* While the Mac rebuilds, ask it every 2 s how far it's got and redraw just the panel card; when it's done, the
-   new panel (or the reason there isn't one) drops in by itself. */
-function rbWatch(){const on=S.view==='build'&&rbOn((S.panel||{}).rebuild);if(on){S.rbWas=true;if(!S.rbT)S.rbT=setInterval(rbPoll,2000);}else if(S.rbT){clearInterval(S.rbT);S.rbT=null;}}
-async function rbPoll(){if(S.view!=='build'){rbWatch();return;}if(document.hidden||S.rbBusy)return;S.rbBusy=true;const pv=S.pview||'all';
- try{const p=await api('/app/api/panel?v='+pv);if(!p||pv!==(S.pview||'all'))return;S.panel=p;cput('panel_'+pv,p);
-  if(rbOn(p.rebuild)){const el=$('#pblock');const t=el&&el.querySelector('.rbtxt'),bar=el&&el.querySelector('.rbtrack i');
-   if(t&&!!bar===!p.panel){t.innerHTML=(p.panel?'':'<span class="spin"></span> ')+rbText(p.rebuild);if(bar)bar.style.width=Math.round(rbFrac(p.rebuild)*100)+'%';}else renderBuild();return;}
-  const r=p.rebuild;if(S.rbWas&&r&&r.state==='done'){if(r.found){hap('success');toast(r.kind==='extra'?`Found ${r.found} new bet${r.found===1?'':'s'} since you approved.`:`Your fresh panel is ready: ${r.found} bet${r.found===1?'':'s'}.`,5000,'good');}else hap('warning');}
-  S.rbWas=false;renderBuild();}catch(e){}finally{S.rbBusy=false;rbWatch();}}
-async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
-function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open){S.slip=[];S.custom=null;}try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){}renderBuild();
- if(S.adv)setTimeout(()=>{const h=document.querySelector('.board');if(h)h.scrollIntoView({behavior:'smooth',block:'start'});},60);}
-function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
-function bestBets(d){const out=[];
- (d.singles||[]).filter(x=>x.idea).forEach(x=>out.push({k:'single',score:x.ev,x}));
- (d.lines||[]).filter(x=>x.edge>=0.04).forEach(x=>out.push({k:'line',score:x.edge/Math.max(.05,x.p),x}));
- (d.combos||[]).filter(c=>c.kind==='value'&&!c.bought&&(comboRet(c)||0)>=1).forEach(c=>out.push({k:'combo',score:comboRet(c)-1,x:c}));
- return out.sort((a,b)=>b.score-a.score).slice(0,6);}
-function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100)}%<small>expected</small></span>`;
- if(b.k==='single')return `<div class="bet"><div class="bt"><div><span class="kind">🎯 Single game</span><b>${esc(short(x.pick))} to beat ${esc(short(x.opp))}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance to win<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">Kalshi charges ${Math.round(x.p*100)}¢ for a ${pct(x.fair)} chance, after its fee. Wins pay $1 per contract.</div>
-  <button class="btn acc" style="width:100%" onclick="singleFromBoard('${x.ticker}',this)">Get a price</button></div>`;
- if(b.k==='line')return `<div class="bet"><div class="bt"><div><span class="kind">${x.kind==='spread'?'📏 Spread':'➕ Total'} · ${esc(x.game)}</span><b>${esc(x.pick.replace(/ \(.*\)$/,''))}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">From the sportsbook line (${esc(String(x.book_line))}) and how often games land within that range. A model adds its own error, so only bigger edges show here.</div>
-  <button class="btn acc" style="width:100%" onclick="lineFromBoard('${x.ticker}',this)">Get a price</button></div>`;
- const c=x,o=S.quotes&&S.quotes[c.i],fresh=o&&Date.now()/1000-o.at<20;
- return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
-  <div class="why">Every leg is priced below the sharp books' chance, so the combo should pay more than it's worth. Get the real price before buying.</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>
-   <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
-function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
-/* The slip's Single bet / Combo switch (#113): Single bet keeps one team and its button buys it straight (the buy sheet);
-   Combo is the slip as before. */
-function slipTog(){const one=S.slipMode==='single';return `<div class="sbtog" role="tablist"><button type="button" role="tab" class="${one?'on':''}" aria-selected="${one}" onclick="slipMode('single')">Single bet</button><button type="button" role="tab" class="${one?'':'on'}" aria-selected="${!one}" onclick="slipMode('combo')">Combo</button></div>`;}
-function slipMode(m){S.slipMode=m==='single'?'single':'combo';if(S.slipMode==='single'&&S.slip.length>1)S.slip=[S.slip[S.slip.length-1]];S.custom=null;renderBuild();}
-function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);const was=S.slipWas;S.slipWas=legs.length;if(!legs.length)return '';
- const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
- if(S.slipMode==='single'){const l=legs[legs.length-1],w=legWhere(l);
-  return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${ICON[w.sp]||''} ${esc(short(l.pick))}${w.opp?' vs '+esc(short(w.opp.pick)):''} · ${l.p!=null?Math.round(l.p*100)+'¢':''}</span><button onclick="sbOpen('${esc(l.ticker)}',S.lg)">Buy straight ›</button><button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
- return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${legs.length<2?`${ICON[legWhere(legs[0]).sp]||''} ${esc(short(legs[0].pick))}${legWhere(legs[0]).opp?' vs '+esc(short(legWhere(legs[0]).opp.pick)):''} picked · tap 1 more team`:`${legs.map(l=>ICON[legWhere(l).sp]||'').join('')} ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
-try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
-function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
-function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
- if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slipMode==='single'?[]:S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
-function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
-function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
- const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
- const one=S.slipMode==='single';
- return `<div class="card slip"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
-  <div style="margin:-2px 0 8px">${slipTog()}</div>
-  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use a suggestion below.'}</div>`}
-  ${legs.length===1?`<button class="btn ${one?'acc':'ghost'}" id="sbslip" style="width:100%;margin-top:10px;justify-content:center" onclick="sbOpen('${esc(legs[0].ticker)}',S.lg)">Buy ${esc(short(legs[0].pick))} straight${legs[0].p!=null?' · '+Math.round(legs[0].p*100)+'¢':''}</button>`:''}
-  ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
-   <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
-   ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
-   <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn qb ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${qBar(c.offer)}${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price</button>`}</div></div>`:''}
-  <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
-async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
- if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i,legs:S.slip.slice()});
- if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct,clears:q.clears}};hap(q.clears?'success':'warning');renderBuild();clearInterval(S.qT);S.qT=setInterval(qTick,1000);
- toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)} (${pct(q.pct)} of fair). Buy within 20 seconds.`,6000);}
-async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Rebuilding…';}
- const before=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));S.quotes={};
- await load('build',true);const after=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));
- toast(before===after?'Prices refreshed. The best combos are still the same ones.':'New combos are ready.',4000,'good');}
-async function swapCombo(i,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}
- const r=await api('/app/api/act',{a:'swap',i}).catch(()=>({ok:false}));if(S.quotes)delete S.quotes[i];if(S.flips)delete S.flips[i];
- if(!r.ok){hap('error');toast(r.msg||'Couldn\'t find another one.');renderBuild();return;}
- const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;S.ccJust=i;renderBuild();S.ccJust=null;hap('success');}
-async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
- if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
- const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
- S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');S.ccJust=i;renderBuild();S.ccJust=null;}
-/* A bet's leg, Kalshi-style: sport icon, the pick in bold, then who it plays, the league and when, with the price on the right
-   (and the live score when the game is under way). Display only: it reads the Build board the page already has. */
-function gameOf(l){const ev=l.event||String(l.ticker||'').replace(/-[^-]*$/,'');const b=S.build&&S.build.board;if(!b)return undefined;
- if(!S._gm||S._gm.b!==b){S._gm={b,m:new Map(b.map(x=>[x.event,x]))};}return S._gm.m.get(ev);}
-function legWhere(l){const g=gameOf(l)||{};const opp=(g.sides||[]).find(s=>!s.tie&&s.ticker!==l.ticker);return {g,opp,sp:g.sport||''};}
-function legRow(l,o){o=o||{};const {g,opp,sp}=legWhere(l);const meta=[opp?'vs '+opp.pick:'',SPN[sp]||'',g.started?'':(g.label||'')].filter(Boolean).join(' · ');
- const live=g.started?(legLive(l)||'<span class="legsc even">● Live</span>'):'';
- return `<div class="lrow${o.flip?' flip':''}"${o.flip?` onclick="flipLeg(${o.i},'${l.ticker}')" title="Tap to flip to the other team"`:''}>${ICON[sp]?`<span class="li">${ICON[sp]}</span>`:''}<div class="lm"><b>${esc(l.pick)}</b><small>${esc(meta)}</small>${live}</div><span class="lp">${l.fair!=null?pct(l.fair):''}${o.flip?'<i>⇄</i>':''}</span></div>`;}
-function legSummary(ls){return (ls||[]).map(l=>{const {opp,sp}=legWhere(l);return `${ICON[sp]||''} ${l.pick}${opp?' vs '+opp.pick:''}`.trim();}).join(' · ');}
-function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
- const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}
-/* a fresh Kalshi quote: it rises in once, and a thin bar under it drains over the 20 seconds the price lasts */
-function qNew(o){return o&&Date.now()/1000-o.at<1.2?'new':'';}
-function qBar(o){return o?`<i class="qt" style="animation-delay:-${Math.max(0,Date.now()/1000-o.at).toFixed(2)}s"></i>`:'';}
-function ccSig(c){return (c&&c.legs||[]).map(l=>l.ticker).join('|');}
-function ccPhase(c){const o=S.quotes&&S.quotes[c.i],wait=v=>v&&Date.now()-v.t<60000&&v.sig===ccSig(c);   // a price or a buy still on its way (never stuck for more than a minute)
- return wait(S.bpend&&S.bpend[c.i])?'buy':wait(S.qpend&&S.qpend[c.i])?'ask':o&&Date.now()/1000-o.at<20?'quote'+o.at:'idle';}
-function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];const ph=ccPhase(c);const busy=ph==='buy'||ph==='ask';
- if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
-  <div class="lrows">${c.legs.map(l=>legRow(l)).join('')}</div>
-  <div class="brow"><button class="btn ghost pri" onclick="go('live')">See it on Live</button><button class="btn ghost sec" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
- return `<div class="ccard ${S.ccJust===c.i?'flash':''}" data-i="${c.i}" data-ph="${ph}" data-sig="${esc(ccSig(c))}"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b data-num="cf:${c.i}" data-v="${(+c.fair||0).toFixed(2)}">${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold" data-num="cc:${c.i}" data-v="${c.chance}" data-f="pct">${pct(c.chance)}</span></div>
-  <div class="lrows">${c.legs.map(l=>legRow(l,{flip:1,i:c.i})).join('')}</div>
-  ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
-  <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
-   ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>`:''}
-  <div class="brow">${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin"></span> Buying… confirming with Kalshi</button>`:
-   ph==='ask'?`<button class="btn pri" id="q${c.i}" disabled><span class="spin"></span> Asking Kalshi…</button>`:
-   fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
-   `<button class="btn pri" id="q${c.i}" onclick="quote(${c.i})">Get price</button>`}<button class="btn ghost sec" title="Not this one: show a different combo" ${busy?'disabled':''} onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
-async function quote(i){hap();S.qpend=S.qpend||{};const cur0=(S.build&&S.build.combos||[]).find(c=>c.i===i),sig=ccSig(cur0);
- if(S.qpend[i]&&Date.now()-S.qpend[i].t<60000&&S.qpend[i].sig===sig)return;S.qpend[i]={t:Date.now(),sig};const b=$('#q'+i);
- if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';const sc=b.parentNode.querySelector('.sec');if(sc)sc.disabled=true;const cc=b.closest('.ccard');if(cc)cc.dataset.ph='ask';}
- const shown=((S.build&&S.build.combos||[]).find(c=>c.i===i)||{}).legs;
- const r=await api('/app/api/act',{a:'quote',i,legs:shown?shown.map(l=>l.ticker):undefined}).catch(e=>({ok:false,error:'Couldn\'t reach your Mac ('+(e&&e.message||e)+').'}));
- if(S.qpend[i]&&S.qpend[i].sig===sig)delete S.qpend[i];
- if(ccSig((S.build&&S.build.combos||[]).find(c=>c.i===i))!==sig){renderBuild();return;}   // the card was swapped, flipped or rebuilt while we waited: that price isn't for what's on screen
- if(!r.ok){hap('error');toast(r.error||r.msg||'No price came in.',6000);renderBuild();return;}
- S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,cut:r.cut,at:Date.now()/1000};hap(r.clears?'success':'warning');renderBuild();
- clearInterval(S.qT);S.qT=setInterval(qTick,1000);}
-/* The quote countdown: once a second only the "Ns left" numbers change, in place. A card is redrawn once, when its quote
-   runs out (the button goes back to Get price), never every second (that replaced the button under your finger). */
-function qTick(){if(S.view!=='build')return;const now=Date.now()/1000;
- document.querySelectorAll('#main .qs').forEach(e=>{const left=Math.max(0,Math.round(20-(now-(+e.dataset.at||0))));if(e.textContent!==String(left))e.textContent=left;});
- const old=q=>q&&!q.x&&now-q.at>=20;   // a quote that has just run out: one redraw puts Get price back (and drops the dead Buy)
- const over=Object.values(S.quotes||{}).some(old)||old(S.custom&&S.custom.offer);
- if(over&&!S.buying){Object.values(S.quotes||{}).forEach(q=>{if(old(q))q.x=1;});if(old(S.custom&&S.custom.offer))S.custom.offer.x=1;renderBuild();}
- if(!Object.values(S.quotes||{}).some(q=>q&&now-q.at<21)&&!(S.custom&&S.custom.offer&&now-S.custom.offer.at<21))clearInterval(S.qT);}
-async function buy(i,custom,btn){if(S.buying)return;S.buying=true;
- if(!custom){S.bpend=S.bpend||{};S.bpend[i]={t:Date.now(),sig:ccSig((S.build&&S.build.combos||[]).find(x=>x.i===i))};const cc=btn&&btn.closest('.ccard');if(cc)cc.dataset.ph='buy';const sc=btn&&btn.parentNode&&btn.parentNode.querySelector('.sec');if(sc)sc.disabled=true;}
- hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
- let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
- S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
- if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
- if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
-/* Haptics. light/selection = one tick; success = two quick ticks; warning = two slower; error = three.
-   In the iPhone app: combo://haptic/<kind>. Home Screen app / Safari on iOS: toggling an <input switch> ticks the
-   Taptic Engine; it has to happen synchronously inside a real tap (the global tap listener calls hap() from the click
-   event), on an element that is laid out (a tiny, nearly see-through one inside the screen; iOS ignores display:none,
-   visibility:hidden and, it seems, things parked off-screen). iPhones and iPads get the switch even if they report
-   navigator.vibrate; everything else uses navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests.
-   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses. On iOS 27 (Pete,
-   #60) only G, H and I tick: the finger itself has to land on a real switch, a scripted click never ticks. So the
-   default is N: a see-through switch over every control (hsw*, below); hap() then only tries the scripted switch for
-   the extra ticks of a pattern and for gestures without a tap, which iOS 27 ignores. The card's Haptics switch is
-   saved on this phone (cw_hapoff). */
-const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
-const APPLE=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
-const HAPDEF='N';
-const HAPCLICK='ABCDEFJK';   // the methods hap() can run itself (G, H, I need the finger itself; L, M aren't switches)
-const HAPCSS='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';
-const HAPSW='<input type="checkbox" switch tabindex="-1">';
-function hapNode(id,css){let l=document.getElementById(id);if(!l){l=document.createElement('label');l.id=id;l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=css;l.innerHTML=HAPSW;document.body.appendChild(l);}return l;}
-const HT={
- A(){hapNode('hapA','position:fixed;left:-99px;top:0;opacity:0;width:1px;height:1px;overflow:hidden').click();},   // the old way
- B(){hapNode('hapl',HAPCSS).click();},
- C(){hapNode('hapC',HAPCSS).querySelector('input').click();},
- D(){const l=document.createElement('label');l.className='hapx';l.setAttribute('aria-hidden','true');l.style.cssText=HAPCSS;l.innerHTML=HAPSW;document.body.appendChild(l);l.click();setTimeout(()=>l.remove(),400);},
- E(){const l=hapNode('hapl',HAPCSS);l.click();l.click();},
- F(){const l=hapNode('hapl',HAPCSS);l.click();setTimeout(()=>l.click(),120);},
- G(){},H(){},I(){},   // native: the user's own tap is the toggle, nothing to run
- J(){HT.B();},K(){HT.B();},
- N(){if(!hswOn())return false;},   // the button's own see-through switch is the tick
- L(){if(!navigator.vibrate)return false;navigator.vibrate([20,40,20]);},
- M(){if(!S.inapp)return false;const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/light';document.body.appendChild(f);setTimeout(()=>f.remove(),300);}
-};
-const HAPM=[   // [id, event, name, what it does]
- ['N','native','Every tap lands on a switch (the app now)','A see-through switch covers each button, so your own tap flips a real switch. No code involved.'],
- ['A','click','Switch label click (how the app did it)','Did nothing on iOS 27. A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
- ['B','click','Switch label click, on screen','Did nothing on iOS 27. The same, but the switch sits inside the screen, nearly see-through.'],
- ['C','click','Click the switch itself','Did nothing on iOS 27. Clicks the switch input directly, not its label.'],
- ['D','click','A brand-new switch each tap','Did nothing on iOS 27. Makes a fresh switch inside your tap, clicks it, removes it.'],
- ['E','click','Double tick, two clicks at once','Did nothing on iOS 27. Clicks the switch twice, right after each other.'],
- ['F','click','Double tick, second one 120 ms later','Did nothing on iOS 27. The second click is delayed, so it is outside your tap.'],
- ['G','native','The button is the switch','Pete confirmed. Your tap lands on a label wrapped around a real switch. No code involved.'],
- ['H','native','A real, visible switch','Pete confirmed. Tap the switch itself. The plain iOS baseline.'],
- ['I','native','Our toggle with the switch attribute','Pete confirmed. The same round toggle as Settings uses, with the iOS switch attribute added.'],
- ['J','pointerdown','Fires when the finger lands','Did nothing on iOS 27. The switch click runs on touch down, before you lift.'],
- ['K','pointerup','Fires when the finger lifts','Did nothing on iOS 27. The switch click runs on touch up.'],
- ['L','click','navigator.vibrate (not expected on iPhone)','The standard web vibrate call. iPhones usually have none.'],
- ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
-function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
-function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}hswSync();}
-function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
- if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
- const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
- if(hapOff())return;
- try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
- if(!APPLE&&navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
- const n=HAPDEF==='N',f=n||!HAPCLICK.includes(HAPDEF)?HT.B:HT[HAPDEF];
- (n&&now-(S.hswAt||0)<90?seq.filter(d=>d):seq).forEach(d=>d?setTimeout(f,d):f());}catch(e){}}   // N: the finger's own switch was this tick
-/* Settings > Test haptics: one button per method. Each runs its method right inside its own tap, never through hap(),
-   and the global tap listener leaves these buttons alone (data-hapt) so only the method under test can buzz. */
-function hapTry(id,b){const t=performance.now();if(hapTry.id===id&&t-hapTry.at<60)return;hapTry.id=id;hapTry.at=t;   // a label's tap clicks twice (label, then its switch): count it once
- (window.__hapt=window.__hapt||[]).push(id);let ok=true;try{ok=HT[id]();}catch(e){ok=false;}
- const s=b&&b.closest('.hxrow')&&b.closest('.hxrow').querySelector('.hxs');if(!s)return;
- s.textContent=ok===false?'not available here':'sent ✓';s.classList.remove('on');void s.offsetWidth;s.classList.add('on');
- clearTimeout(s._t);s._t=setTimeout(()=>{s.textContent='';s.classList.remove('on');},1500);}
-function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid">${id}</span> ${esc(name)}`;let btn;
-  if(id==='G')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('G',this)"><input type="checkbox" switch class="hxnat" tabindex="-1">${lab}</label>`;
-  else if(id==='H')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('H',this)">${lab}<input type="checkbox" switch data-hapt="1"></label>`;
-  else if(id==='I')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('I',this)">${lab}<input type="checkbox" switch class="tg" data-hapt="1"></label>`;
-  else if(id==='N')btn=`<button class="btn hxbtn" type="button" data-hapt="1" data-hsw="1" onclick="hapTry('N',this)">${lab}</button>`;
-  else btn=`<button class="btn hxbtn" type="button" data-hapt="1" ${ev==='click'?'onclick':ev==='pointerdown'?'onpointerdown':'onpointerup'}="hapTry('${id}',this)">${lab}</button>`;
-  return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
- return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
-  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" switch class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
-  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Nothing here changes how the app buys or sells.</small></div></div>`);}
-/* Method N, the default (#60): every tappable control gets a see-through <input type=checkbox switch> as its FIRST child,
-   covering it (position:absolute, inset 0; the control becomes position:relative through a zero-specificity rule, so
-   its own styles always win). The finger's tap lands on the switch: iOS flips it (the tick) and the same real click
-   bubbles on through the control, so its onclick, :active, press feedback and coordinates are unchanged. First child,
-   so a control nested inside another (a button in a row) paints above the row's switch and keeps its own. A scroll or
-   drag is never a click, so nothing flips. Disabled controls hide theirs, and the switches' change/input events never
-   reach the app. Skipped: links (a switch inside a link would take its navigation, its long-press menu, and a wrapped
-   link's box spills over its neighbours), native fields (selects, sliders, text, labels: their checkboxes are switches
-   themselves), chart scrub surfaces, sideways strips, the test card's other buttons. Only on iPhones/iPads, with
-   Haptics on and reduced motion off (as briefed). A MutationObserver adds switches to new content once per batch (a
-   control never gets two) and takes a control's switch away if a field appears inside it. */
-const HSWQ='button,[onclick],.chip,.trow';
-const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,svg,[data-hapt]:not([data-hsw]),[data-hsw="0"]';
-const HSWIN='input:not(.hsw),select,textarea,label,.sparkw,.scrub,.chartbox,.chips,.gtabs,.board,.antbl';   // fields, scrub charts and sideways strips stay reachable
-const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
-function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
-/* #151: a switch under the finger can keep iOS from scrolling, so big scroll surfaces (whole cards and rows: taller
-   than 64px or wider than 70% of the screen) get none; their own buttons and chips inside keep theirs, and the card's
-   tap still works (no tick). Real buttons, chips and tabs count as compact unless taller than 64px. Layout size
-   (offsetWidth/Height), so a scale animation can't fool it. A control not laid out yet (hidden: size 0) waits in HSWP,
-   rechecked for 30 frames after each change, reveal (class/hidden) or scroll. A row or card that grows big later loses
-   its switch (its own content changed, or the screen turned). Sizes are all read before any switch goes in or out. */
-const HSWC='button,.chip,[role=tab],[role=button]';
-function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const w=el.offsetWidth,h=el.offsetHeight;if(!w&&!h)return null;return h>64||!el.matches(HSWC)&&w>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
-function hswOk(el){return !(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN));}
-function hswPut(el){const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
- el.insertBefore(i,el.firstChild);}
-const HSWP=new Set();let hswF=0,hswN=0;
-function hswRun(els,re){const put=[],out=[];for(const el of new Set(els)){if(!hswOk(el)){HSWP.delete(el);continue;}   // a control listed twice in one batch still gets one switch
-  const b=el.isConnected?hswBig(el):(el.matches(HSWC)?false:null);if(b===null){HSWP.add(el);continue;}HSWP.delete(el);if(!b)put.push(el);}
- if(re)for(const h of re){const s=h.isConnected&&h.querySelector(':scope>.hsw');if(s&&hswBig(h))out.push(s);}   // grew into a card: its switch goes
- put.forEach(hswPut);out.forEach(s=>s.remove());hswWait();}
-function hswWait(){if(HSWP.size&&!hswF&&hswN<30)hswF=requestAnimationFrame(()=>{hswF=0;hswN++;for(const e of HSWP)if(!e.isConnected)HSWP.delete(e);if(hswOn())hswRun([...HSWP]);});}
-function hswAdd(el){hswRun([el]);}
-function hswList(n,out){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))out.push(n);if(n.firstElementChild)out.push(...n.querySelectorAll(HSWQ));}
-function hswScan(n){const out=[];hswList(n,out);hswRun(out);}
-function hswFix(t){const h=t.closest&&t.closest(HSWQ);if(!h)return;const s=h.querySelector(':scope>.hsw');if(s&&h.querySelector(HSWIN))s.remove();}   // a field arrived inside: its switch goes
-const HSWMO=new MutationObserver(ms=>{const out=[],re=new Set();let shown=false;for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;
-  if(m.type==='attributes'){shown=true;continue;}
-  if(t.matches(HSWQ))out.push(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(n=>hswList(n,out));
-  const h=t.closest(HSWQ);if(h&&!h.matches(HSWC))re.add(h);}
- if(out.length||shown&&HSWP.size)hswN=0;if(out.length||re.size)hswRun(out,re);else hswWait();});
-let hswRT=0;addEventListener('resize',()=>{clearTimeout(hswRT);hswRT=setTimeout(()=>{if(hswOn())hswRun([...document.querySelectorAll(HSWQ)],[...document.querySelectorAll('.hsw')].map(s=>s.parentElement));},250);},{passive:true});   // the screen turned: a row may now be wide (switch goes) or narrow (switch comes back); debounced, so a collapsing toolbar mid-scroll costs one pass
-/* #151: while the finger scrolls the page (or any list in it), momentum included, the switches let touches through
-   (html.hswscr), so a finger that lands mid-scroll keeps scrolling; back ~150 ms after the last scroll event. Only a
-   scroll the finger started counts (one while a finger is down and has moved, or chained within 200 ms of one); the
-   app's own scrolls (a tab change, a refresh) don't, so a quick second tap still lands on its switch. */
-let hswST=0,hswT=false,hswUS=-1e9;['touchstart','touchend','touchcancel'].forEach(k=>addEventListener(k,e=>{hswT=false;},{capture:true,passive:true}));
-addEventListener('touchmove',()=>{hswT=true;},{capture:true,passive:true});
-addEventListener('scroll',()=>{const now=performance.now();if(!hswT&&now-hswUS>200)return;hswUS=now;const d=document.documentElement;if(!d.classList.contains('hswscr'))d.classList.add('hswscr');
- clearTimeout(hswST);hswST=setTimeout(()=>{d.classList.remove('hswscr');hswN=0;hswWait();},150);},{capture:true,passive:true});
-function hswSync(){const on=hswOn();document.documentElement.classList.toggle('hswon',on);HSWMO.disconnect();
- if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden']});}else{HSWP.clear();document.querySelectorAll('.hsw').forEach(i=>i.remove());}}
-addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('hsw'))return;const h=t.parentElement;
- if(!h||h.disabled||h.getAttribute('aria-disabled')==='true'){e.preventDefault();e.stopImmediatePropagation();}},true);
-['change','input'].forEach(k=>addEventListener(k,e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))e.stopImmediatePropagation();},true));
-try{HSWRM.addEventListener('change',hswSync);}catch(e){}
-hswSync();
-// ---------------- RESULTS
-function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
-function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
- if(S.scrub){S.resDirty=true;return;}
- const sh=d.shadow;
- m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}<div class="kpis">
-  <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
-  <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
-  <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>
-  <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
-  <div class="kpi"><span>Best result</span><b class="up" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}"`:''}>${smoney(d.best)}</b></div></div>
-  ${plChart(d)}
-  ${anBlock(S.an)}${edgeBlock(d)}
-  ${historyBlock(d.history||[])}
- </div><aside class="side">
-  <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
-   <div class="mini">Open<b>${sh.open}</b></div><div class="mini">Kalshi quotes, median<b>${pct(sh.median)} of fair</b></div><div class="mini">Buys at<b>${sh.min_pct}%+</b></div>${sh.same_game&&(sh.same_game.n||sh.same_game.open)?`<div class="mini">Same-game test (winner + total)<b class="${sh.same_game.pl>=0?'up':'down'}">${smoney(sh.same_game.pl)} · ${sh.same_game.n} settled, ${sh.same_game.open} open</b></div>`:''}`:'<div class="m">No quotes yet. The Mac asks within 8 hours of game time.</div>'}</div>
-  <div class="card"><h3>Most accurate odds</h3><div class="m" style="font-size:13px">${esc(d.accuracy_text||'')}</div></div>
- </aside></div>`;wireScrubs(m);}
-/* Profit by day or by week: bars you can drag a finger across (the readout and a haptic tick follow it) and tap to see
-   that day's or week's bets in a sheet. Day = the last 14 days that had a result; Week = the last 12 weeks. */
-try{S.plr=localStorage.getItem('cw_plr')==='day'?'day':'week'}catch(e){S.plr='week'}
-function setPlr(k){if(S.plr===k)return;S.plr=k;try{localStorage.setItem('cw_plr',k)}catch(e){}renderResults();}
-function plBars(d){const hist=d.history||[];
- if(S.plr==='day'){const by={};hist.forEach(h=>{if(!h.day)return;const b=by[h.day]||(by[h.day]={k:h.day,pl:0,n:0});b.pl+=h.pl;b.n++;});
-  return Object.values(by).sort((a,b)=>a.k.localeCompare(b.k)).slice(-14).map(b=>Object.assign(b,{lab:new Date(b.k+'T12:00:00').toLocaleDateString([], {month:'short',day:'numeric'}),items:hist.filter(h=>h.day===b.k)}));}
- return (d.weeks||[]).map(w=>({k:w.week,pl:w.pl,n:w.n,lab:'Week of '+(w.week&&/^\d{4}-/.test(w.week)?new Date(w.week+'T12:00:00').toLocaleDateString([], {month:'short',day:'numeric'}):w.week),items:hist.filter(h=>h.week===w.week)}));}
-function plChart(d){const bars=plBars(d),n=bars.length,tot=bars.reduce((a,b)=>a+b.pl,0),cnt=bars.reduce((a,b)=>a+b.n,0);
- const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.plr===k?'on':''}" onclick="setPlr('${k}')">${l}</button>`).join('')}</div>`;
- const sum=`${S.plr==='day'?'Last '+n+' day'+(n===1?'':'s')+' with results':'Last '+n+' week'+(n===1?'':'s')} · ${cnt} bet${cnt===1?'':'s'}`;
- if(!n)return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b>$0</b><small>Nothing settled yet</small></div>${sw}</div><div class="empty" style="padding:22px 10px">Bars show up here as your bets settle.</div></div>`;
- const W=Math.max(300,n*44),H=150,mid=H/2,mx=Math.max(1,...bars.map(b=>Math.abs(b.pl))),bw=Math.min(30,W/n*.62);
- S.scr=S.scr||{};S.scr.pl={n,at:f=>Math.min(n-1,Math.floor(f*n)),
-  show:(i,el)=>{const b=bars[i];el.closest('.plc').classList.add('on');el.querySelectorAll('rect.brc').forEach((r,j)=>r.classList.toggle('sel',j===i));
-   const h=el.closest('.plc').querySelector('.plh');h.querySelector('b').textContent=smoney(b.pl);h.querySelector('b').className=b.pl>=0?'up':'down';h.querySelector('small').textContent=`${b.lab} · ${b.n} bet${b.n===1?'':'s'} · tap for the bets`;},
-  end:el=>{const c=el.closest('.plc');c.classList.remove('on');el.querySelectorAll('rect.brc').forEach(r=>r.classList.remove('sel'));const h=c.querySelector('.plh');
-   h.querySelector('b').textContent=smoney(tot);h.querySelector('b').className=tot>=0?'up':'down';h.querySelector('small').textContent=sum;},
-  tap:i=>barSheet(bars[i])};
- return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b class="${tot>=0?'up':'down'}">${smoney(tot)}</b><small>${sum}</small></div>${sw}</div>
-  <div class="scrub" data-scrub="pl"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="var(--line)" vector-effect="non-scaling-stroke"/>
-  ${bars.map((b,i)=>{const h=Math.max(2,Math.abs(b.pl)/mx*(mid-8));return `<rect class="brc" x="${(i+.5)*W/n-bw/2}" y="${b.pl>=0?mid-h:mid}" width="${bw}" height="${h}" rx="4" fill="${b.pl>=0?'var(--yes)':'var(--no)'}"/>`;}).join('')}</svg></div>
-  <div class="xl"><span>${esc(bars[0].lab)}</span><span>${n>1?esc(bars[n-1].lab):''}</span></div><div class="hint">Drag across the bars, or tap one to see its bets.</div></div>`;}
-function barSheet(b){if(!b)return;const xs=b.items||[];
- const sd=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'});};
- /* Issue #91: the bars group by when the money moved. Show the buy date and the cash-out/settlement date so the grouping explains itself. */
- const when2=h=>{const cd=h.cashed?(h.status==='cashed'?'Cashed out ':'Settled ')+sd(h.cashed):'';const bd=h.bought?'Bought '+sd(h.bought):'';return bd&&cd?bd+' · '+cd:bd||cd;};
- modal(`<h3>${esc(b.lab)}</h3><p><b class="${b.pl>=0?'up':'down'}">${smoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
-  <div class="blist">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${esc((h.picks||[]).map(short).slice(0,3).join(' + '))}${(h.picks||[]).length>3?' +'+((h.picks||[]).length-3):''}</b><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
-   ${when2(h)?`<div class="m" style="font-size:12px;margin:2px 0 4px">${esc(when2(h))}</div>`:''}<div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
-  <div class="row"><button class="btn acc" onclick="closeModal()">Done</button></div>`);}
-try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
-function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
-const RESN={won:'Rode it and won',cashed:'Cashed out early',lost:'Lost'};
-function historyBlock(all){const f=S.hf;const today=new Date();const iso=d=>d.toISOString().slice(0,10);
- const since=f.when==='7'?iso(new Date(Date.now()-7*864e5)):f.when==='30'?iso(new Date(Date.now()-30*864e5)):f.when==='month'?iso(new Date(today.getFullYear(),today.getMonth(),1)):'';
- const sports=[...new Set(all.flatMap(h=>h.sports||[]))].sort();
- let xs=all.filter(h=>(f.sport==='all'||(h.sports||[]).includes(f.sport))&&(!since||(h.day||'')>=since)
-  &&(f.res==='all'||(f.res==='profit'?h.pl>0:f.res==='loss'?h.pl<=0:h.status===f.res)));
- xs=xs.slice().sort(f.sort==='old'?(a,b)=>(a.day||'').localeCompare(b.day||''):f.sort==='best'?(a,b)=>b.pl-a.pl:f.sort==='worst'?(a,b)=>a.pl-b.pl:(a,b)=>(b.day||'').localeCompare(a.day||''));
- const chip=(k,v,l)=>`<button class="chip ${f[k]===v?'on':''}" onclick="hset('${k}','${v}')">${l}</button>`;
- const pl=xs.reduce((a,h)=>a+h.pl,0),staked=xs.reduce((a,h)=>a+h.cost,0);
- const dlab=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'})+(x.getFullYear()!==today.getFullYear()?' '+x.getFullYear():'');};
- return `<h2>History <span class="n">${xs.length}${xs.length!==all.length?' of '+all.length:''}</span></h2>
-  <div class="hfilters"><div class="chips">${chip('sport','all','All sports')}${sports.map(s=>chip('sport',s,(ICON[s]||'')+' '+(SPN[s]||s.toUpperCase()))).join('')}</div>
-   <div class="chips">${chip('res','all','Any result')}${chip('res','won','🏁 Rode it, won')}${chip('res','cashed','💸 Cashed early')}${chip('res','lost','✕ Lost')}${chip('res','profit','Made money')}${chip('res','loss','Lost money')}</div>
-   <div class="chips">${chip('when','all','All time')}${chip('when','7','Last 7 days')}${chip('when','30','Last 30 days')}${chip('when','month','This month')}
-    <select class="hsort" onchange="hset('sort',this.value)">${[['new','Newest first'],['old','Oldest first'],['best','Biggest win'],['worst','Biggest loss']].map(([v,l])=>`<option value="${v}" ${f.sort===v?'selected':''}>${l}</option>`).join('')}</select></div></div>
-  <div class="m" style="font-size:12.5px;margin:2px 2px 10px">${xs.length} combo${xs.length===1?'':'s'} · ${money(staked)} paid · <b class="${pl>=0?'up':'down'}">${smoney(pl)}</b>${staked?` (${pl>=0?'+':''}${Math.round(pl/staked*100)}%)`:''}</div>
-  <div class="tbl">${xs.map(h=>`<div class="hrow2"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${dlab(h.day)}</b><span class="m">${(h.sports||[]).map(s=>SPN[s]||s.toUpperCase()).join(' + ')} · ${h.picks.length} pick${h.picks.length===1?'':'s'}</span><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
-   <div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div>
-   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="empty"><b>Nothing matches</b>Try fewer filters.</div>'}</div>`;}
-function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini">${lab}<b>${fmt(c.mean)} <span class="m" style="font-weight:500">(${fmt(c.lo)} to ${fmt(c.hi)}, ${c.n})</span></b></div>`:`<div class="mini">${lab}<b class="m">not enough yet</b></div>`;
- const pc=x=>(x>=0?'+':'−')+Math.abs(x*100).toFixed(1)+'%';
- return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
-  <p style="margin:0 0 10px;color:var(--ink)">${esc(p.verdict)}</p>${row('Return on stake',p.roi,pc)}${row('Prices vs kickoff',p.clv,pc)}${row('Paper auto-trading',p.paper,pc)}
-  <div class="m" style="font-size:12px;margin-top:8px">The $300 full-auto test waits for prices vs kickoff to be positive with confidence and the paper record to be up over 50+ bets.</div></div>`;}
-function coverCard(c){if(!c)return '';const ws=c.weeks||[];
- const chk=w=>(w.checkpoints||[]).map(cp=>`<span class="m" style="font-size:11.5px">${esc(cp.label)}: ${cp.worth?money(cp.worth):'—'}${cp.replay_exit?` · sold ${money(cp.replay_exit.exit)}`:''}</span>`).join(' · ');
- const week=w=>{
-  if(w.status==='done'){const surv=(w.survivor||[]).join(' + ')||'—';
-   return `<div class="mini" style="align-items:flex-start;flex-direction:column;gap:3px"><div style="display:flex;width:100%;align-items:baseline"><span>${esc(w.sunday)} · ${w.k} covered · survivor ${esc(surv)}</span><b class="${w.sim_pl>=0?'up':'down'}" style="margin-left:auto">${smoney(w.sim_pl)} <span class="m" style="font-weight:500">of ${money(w.cost_both)}</span></b></div>`
-    +`<div class="m" style="font-size:11.5px">${w.beat_cost?'✅ smart sell beat the doubled cost':'✕ smart sell did not beat the doubled cost'}${chk(w)?' · '+chk(w):''}</div>`
-    +`<div class="m" style="font-size:11.5px">One favourite-side combo on the same early games (highest Kalshi price — a rough proxy; the real panel picks by edge and often takes the underdog): <b class="${w.one_sided_pl>=0?'up':'down'}" style="font-weight:600">${smoney(w.one_sided_pl)}</b></div></div>`;}
-  if(w.status==='open')return `<div class="mini">${esc(w.sunday)} · ${w.k} games · waiting for results<b class="m">${pct(w.p_ahead)} chance to be ahead</b></div>`;
-  return `<div class="mini">${esc(w.sunday)}<b class="m">${w.status==='missed'?'missed (Mac was off before kickoff)':'no result'}</b></div>`;};
- const rows=ws.slice(0,8).map(week).join('');
- return `<div class="card"><h3>Cover the early games <span>paper test · NFL week</span></h3>
-  ${c.n?`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px"><b style="font-size:30px;letter-spacing:-.03em" class="${c.sim_pl>=0?'up':'down'}">${smoney(c.sim_pl)}</b><span class="m">over ${c.n} week${c.n===1?'':'s'}, ${money(c.cost)} on paper · one-sided ${smoney(c.one_sided_pl)} · beat the cost ${c.beat}/${c.n}</span></div>`:''}
-  ${rows||'<div class="m">Starts this NFL week: the Mac covers both sides of the earliest games (Thursday night, Saturday, or Sunday early) before kickoff, then works out what the one surviving full-slate combo would be worth at each later checkpoint and what smart sell would have sold it for.</div>'}
-  <div class="m" style="font-size:12px;margin-top:8px">$5 on both sides of the earliest games — one combo is guaranteed to survive — carried through the later games, with smart sell deciding the exit. No money is spent. Covering both sides adds no expected value (the cut is paid twice); the test measures whether smart sell's exit timing beats the doubled cost.</div></div>`;}
-function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const need=Math.max(0,50-pp.bets);
- return `<div class="card"><h3>Is it working? <span>the daily panel</span></h3>
-  <div class="m" style="font-size:12.5px;margin-bottom:8px">A paper copy of each day's panel runs by itself, with no money. When it's ahead over 50+ bets and most days end up, it's ready to be handed $300.</div>
-  <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
-  <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
-  <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
-function lineAcc(ls){const f=x=>x==null?'—':Number(x).toFixed(3);const cmp=(o,n,c)=>c?`${o==null?'':f(o)+' → '}<b class="${o==null?'':n<=o?'up':'down'}">${f(n)}</b> <span class="m">(${Number(c).toLocaleString()})</span>`:'<span class="m">—</span>';
- return `<h3 class="an-lines" style="margin:18px 0 4px;font-size:15px">Spreads & totals: old vs new pricing</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">The new model prices each strike from how that league's games really finish. Numbers are the average miss (log loss, lower is better), old → new, with how many games or markets. A league uses the new one only where it clearly did better; your own settled markets take over once they cover 200 games.</div>`
-  +`<div class="antbl"><div class="anrow l4 h"><div>League</div><div>Pricing now</div><div>Past games</div><div>Your markets</div></div>${(ls||[]).map(x=>`<div class="anrow l4"><div><b>${esc(x.name)}</b> <span class="m">${x.kind==='spread'?'spreads':'totals'}</span></div><div data-l="Pricing now">${x.on?'<span class="tag good">New</span>':'<span class="tag">Old</span>'} <span class="m" style="font-size:12px">${esc(x.why||'')}</span></div><div data-l="Past games">${cmp(x.bt_old,x.bt_new,x.bt_games)}</div><div data-l="Your markets">${cmp(x.live_old,x.live_new,x.live_n)}</div></div>`).join('')||'<div class="m" style="padding:10px 0">Nothing measured yet.</div>'}</div>`;}
-function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div>${a?'<div class="m" style="padding:6px 0 4px">Nothing to measure yet. Results show up as bets settle.</div>':'<div class="ansk" aria-label="Loading"><i style="height:34px;border-radius:10px"></i><i style="width:84%"></i><i></i><i style="width:92%"></i><i style="width:70%"></i></div>'}</div>`;
- const tab=S.anTab||'levels';const r=x=>x==null?'—':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(Math.round(x*100))}%</b>`;
- const tabs=[['levels','Combo price levels'],['types','Bet types'],['sports','Sports'],['exits','Selling']];
- const tb=`<div class="seg ant">${tabs.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="anTab('${k}')">${l}</button>`).join('')}</div>`;
- const table=(head,rows)=>`<div class="antbl"><div class="anrow h">${head.map(h=>`<div>${h}</div>`).join('')}</div>${rows.map(cs=>`<div class="anrow">${cs.map((c,i)=>`<div data-l="${i?esc(head[i]):''}">${c}</div>`).join('')}</div>`).join('')||'<div class="m" style="padding:10px 0">No settled bets here yet.</div>'}</div>`;
- const mode=m=>m==='real'?'<span class="tag good">Real</span>':'<span class="tag">Paper</span>';
- let body='',expl='';
- if(tab==='levels'){expl='Every combo Kalshi has quoted (last 90 days), as if bought at that price. "% of fair" is what Kalshi pays compared to the fair payout. The lab paper-buys 3 a day in each band from 80% up, and replays smart sell on their game prices.';
-  body=table(['% of fair','Quotes','Hit vs expected','Riding to end','Worth at game time','Lab: ride · smart sell'],(a.levels||[]).map(x=>[`<b>${esc(x.band)}</b>`,x.n,x.hit==null?'—':pct(x.hit)+' <span class="m">vs '+pct(x.exp)+'</span>',r(x.ride),r(x.gt)+(x.gt_n?` <span class="m">(${x.gt_n})</span>`:''),x.lab_n?`${r(x.lab_ride)} · ${r(x.lab_smart)} <span class="m">(${x.lab_n})</span>`:'<span class="m">—</span>']));}
- else if(tab==='types'||tab==='sports'){expl=tab==='types'?'Every settled panel bet, real and paper (the paper panel and the combo lab). Return is profit over what was staked. Smart sell is the replay on recorded game prices, where there are enough of them. CLV: how the price you got compares with Kalshi\'s price right before the game. Positive means the market moved your way.':'The same bets, by sport.';
-  body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));
-  if(tab==='types')body+=`<h3 class="an-live" style="margin:18px 0 4px;font-size:15px">Bought during the game, by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Panel bets on games already under way, priced live from a fresh score and clock. Kept apart so each league's record can show whether they pay. ${esc(a.live_excluded||'')}</div>`
-   +table(['League','Bets','Won','Return','Smart sell'],(a.live||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>']))
-   +(tab==='types'?lineAcc(a.lines):'');}
- else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
-  const au=a.auto||{};const an=Object.keys(au);const ch=a.cut_held||{};const cn=Object.keys(ch);const hh=a.hedge_held||{};const hn=Object.keys(hh);
-  body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
-   +`<div class="m" style="margin-top:10px;font-size:13px">${an.length?'Automatic sales, last 30 days: '+an.map(k=>`<b>${au[k]}</b> ${esc(k)}`).join(' · '):'No automatic sales in the last 30 days.'}</div>`
-   +`<div class="m cut-held" style="margin-top:6px;font-size:13px">${cn.length?'Loss cuts the guards held back, last 30 days: '+cn.map(k=>`<b>${ch[k]}</b> ${esc(k)}`).join(' · '):'No loss cut has been held back by the guards in the last 30 days.'}</div>`
-   +`<div class="m hedge-held" style="margin-top:6px;font-size:13px">${hn.length?'Auto-hedges the guards held back, last 30 days: <b>'+hn.reduce((s,k)=>s+hh[k],0)+'</b> ('+hn.map(k=>`${hh[k]} ${esc(k)}`).join(' · ')+')':'No auto-hedge has been held back by the guards in the last 30 days.'} <span style="opacity:.8">Auto-hedge only buys on a fresh live score, never at a break, when it locks in at least what you paid, after 3+ minutes, at a re-checked price.</span></div>`
-   +`<h3 style="margin:18px 0 4px;font-size:15px">Smart sell, tuned by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Every week the Mac replays settled bets on their recorded game prices with slightly different settings and keeps whatever did clearly better: small steps, 30+ results a league, never below what you paid unless a league's own record says cutting a loss pays, and even then only late in a game, on a fresh score, not at a break, after a big fall that held 3+ minutes. Leagues without enough results use their sport's settings, then everyone's (but never borrow a loss cut).</div>`
-   +table(['League','Profit floor','Risk weight','Cut losses','Bets'],(a.tuning||[]).map(x=>[`<b>${esc(x.name)}</b>${x.own?'':' <span class="m">(learning)</span>'}${x.why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.why)}</div>`:''}<div class="m sl-row" style="font-size:11.5px;margin-top:2px">Selling at a loss (a learned cut, or the stop-loss switch if on): only after ${pct(x.sl_prog==null?0.5:x.sl_prog)} of the game, a ${Math.round((x.sl_drop==null?0.2:x.sl_drop)*100)}-point fall from before the game, held 3+ min, on a fresh score, never at a break${x.sl_own?'':' (starting point)'}</div>${x.sl_why?`<div class="m" style="font-size:11.5px;font-weight:500;margin-top:2px">${esc(x.sl_why)}</div>`:''}`,x.floor+'×',x.lam===1?'standard':x.lam<1?'holds longer':'sells sooner',x.loss?'under '+pct(x.loss)+'<div class="m" style="font-size:11px">late, confirmed</div>':'never',x.n]));}
- const notes=(a.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('');
- return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2><span class="m" style="font-size:12px">updated ${ago2(a.at)==='now'?'just now':ago2(a.at)+' ago'}</span></div>${tb}
-  ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div></div>`;}
-function anTab(k){if(S.anTab===k)return;S.anTab=k;S.anJust=true;renderResults();S.anJust=false;
- if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.an .antbl .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,12)*30}ms both`;});}
-function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
- const clv=e.clv||[0,0,0];
- if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
-  <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
-  <span class="m">You paid ${money(clv[0])} for combos the market valued at ${money(clv[1])} at kickoff.</span></div>
-  <div class="m" style="font-size:12.5px;margin-top:6px">Above 0% means you buy better than the market's final price: the earliest reliable sign of a real edge, long before wins and losses settle it.</div></div>`);}
- const cal=Object.entries(e.cal||{}).filter(([k,v])=>v[0]);
- if(cal.length)out.push(`<div class="card"><h3>Did combos hit as often as priced? <span>settled</span></h3><div class="bars2">${cal.map(([k,[n,ps,h]])=>{const ex=ps/n,hit=h/n,mx=Math.max(.05,...cal.map(([,v])=>Math.max(v[1]/v[0],v[2]/v[0])));
-  return `<div class="br"><span>${esc(k)} <span class="m">· ${n}</span></span><div style="display:grid;gap:3px"><div class="tr2"><i style="left:0;width:${ex/mx*100}%;background:var(--mute);opacity:.6"></i></div><div class="tr2"><i style="left:0;width:${hit/mx*100}%;background:${hit>=ex?'var(--yes)':'var(--no)'}"></i></div></div><span class="num">${pct(ex)} → <b>${pct(hit)}</b></span></div>`;}).join('')}</div>
-  <div class="key" style="margin-top:8px"><span><i style="background:var(--mute)"></i>Priced</span><span><i style="background:var(--yes)"></i>Actually hit</span></div></div>`);
- const bt=(d.by_tier||[]);
- if(bt.length){const mx=Math.max(1,...bt.map(r=>Math.abs(r.back-r.cost)));out.push(`<div class="card"><h3>Returns by number of picks <span>settled</span></h3><div class="bars2">${bt.map(r=>{const pl=r.back-r.cost;
-  return `<div class="br"><span>${esc(r.k)} <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${pl>=0?'left:50%':'right:50%'};width:${Math.abs(pl)/mx*50}%;background:${pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${pl>=0?'up':'down'}">${smoney(pl)}</span></div>`;}).join('')}</div></div>`);}
- const md=d.model;
- if(md){out.push(`<div class="card"><h3>How Kalshi prices combos <span>${md.n} quotes</span></h3>
-  <div class="m" style="font-size:12.5px;margin-bottom:8px">Kalshi's combo quote as a share of what its own single-game prices multiply out to. Learned from every quote the Mac sees; Build uses it to predict prices before asking.</div>
-  <div class="bars2">${Object.entries(md.by_picks||{}).sort((a,b)=>parseInt(a[0])-parseInt(b[0])).map(([k,v])=>`<div class="br"><span>${esc(k)} pick${k==='1'?'':'s'}</span><div class="tr2"><i style="left:0;width:${Math.min(100,v*100)}%;background:var(--acc)"></i></div><span class="num">${pct(v)}</span></div>`).join('')}
-  ${Object.entries(md.by_time||{}).map(([k,v])=>`<div class="br"><span>${esc(k)} to game</span><div class="tr2"><i style="left:0;width:${Math.min(100,v*100)}%;background:var(--live)"></i></div><span class="num">${pct(v)}</span></div>`).join('')}</div></div>`);}
- const b=d.backtest;
- if(b&&b.quotes){const rows=b.rows.filter(r=>r.n);const mx=Math.max(1,...rows.map(r=>Math.abs(r.pl)));const cut=(S.set&&S.set.values&&S.set.values.accept_pct)||null;
-  out.push(`<div class="card"><h3>What each cut-off would have earned <span>${b.quotes} settled quotes</span></h3>
-  <div class="m" style="font-size:12.5px;margin-bottom:8px">Every quote Kalshi gave (yours and the Mac's paper trades), bought only if it cleared that share of fair, settled with the real results.</div>
-  <div class="bars2">${rows.map(r=>`<div class="br"><span>${r.cut}%+ <span class="m">· ${r.n}</span></span><div class="tr2"><i style="${r.pl>=0?'left:50%':'right:50%'};width:${Math.abs(r.pl)/mx*50}%;background:${r.pl>=0?'var(--yes)':'var(--no)'}"></i></div><span class="num ${r.pl>=0?'up':'down'}">${smoney(r.pl)}</span></div>`).join('')}</div></div>`);}
- if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
- return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
-function blockRow(b){if(!b||!b.length)return '';return b.map(x=>{const until=new Date(x.until*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="srow"><div class="l"><b>Order block: ${esc(x.ticker)} · ${x.sell?'sell ':''}${esc(x.side)}</b><small>An order here had no clear answer, so the app sends none on it until ${esc(until)}. Check Kalshi first; the unclear order itself is never resent.</small></div><button class="btn ghost" data-k="${esc(x.key)}" onclick="clearBlock(this)">Clear order block</button></div>`}).join('');}
-function potRow(p){if(!p||p.total==null)return '';const c=x=>'$'+(+x).toFixed(2);const by=(p.by||[]).filter(r=>Array.isArray(r)&&r.length===2);
- return `<div class="srow" style="display:block"><div class="l"><b>Kalshi balance by pot</b><small>Kalshi keeps cash in separate pots by market type (Kalshi's docs: index 0 = most markets, 1 = combos, 2 = crypto, 3 = tennis, baseball and basketball). An order can only use the pot of its market. Kalshi's own app shows one total. Read-only: the app never moves money between pots.</small></div>${by.length?by.map(r=>`<div class="mini" style="margin-top:6px">Index ${esc(String(r[0]))}<b>${c(r[1])}</b></div>`).join(''):`<div class="m" style="font-size:11.5px;margin-top:6px">Kalshi didn't list the pots.</div>`}<div class="mini" style="margin-top:6px">Total<b>${c(p.total)}</b></div>${p.at?`<div class="m" style="font-size:11.5px;margin-top:6px">As of ${esc(new Date(p.at*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))}, from the Mac's last Kalshi read</div>`:''}</div>`;}
-function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
-function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
-function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
- return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
-function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===location.hostname);
- if(LOCAL&&!/\.ts\.net$/.test(location.hostname))return (f.keys||[]).length?`<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${f.keys.map(k=>esc(k.name)).join(', ')}</small></div><button class="btn ghost" onclick="fidRemoveAll()">Remove all</button></div>`:'';
- if(location.protocol!=='https:'||!window.PublicKeyCredential)return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${(S.pk||{}).https?`Works on the secure address. Open <a href="${esc(S.pk.https)}">${esc(S.pk.https.replace('https://',''))}</a> and turn it on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
- return `<div class="srow"><div class="l"><b>Face ID sign-in</b><small>${here.length?`On for ${here.map(k=>esc(k.name)).join(', ')}. Unlock Combo Hub with your face instead of the passcode.`:((f.keys||[]).length?`Face ID was set up for another address (${esc((f.keys[0]||{}).rp||'')}). Turn it on again here to use it on this one.`:'Unlock Combo Hub with Face ID instead of typing the passcode.')}</small></div>
-  ${here.length?`<button class="btn ghost" onclick="fidRemoveAll()">Turn off</button>`:`<button class="btn acc" onclick="fidOn(this)">Turn on</button>`}</div>`;}
-const fb64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
-const fe64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-async function fidOn(btn){hap();try{if(btn)btn.innerHTML='<span class="spin"></span>';
-  const o=await api('/auth/reg-begin',{});const name=/iPhone/.test(navigator.userAgent)?'iPhone':/iPad/.test(navigator.userAgent)?'iPad':/Mac/.test(navigator.userAgent)?'Mac':'This device';
-  const c=await navigator.credentials.create({publicKey:{challenge:fb64(o.challenge),rp:{id:o.rp,name:'Combo Hub'},user:{id:fb64(o.user),name:'Combo Hub',displayName:'Combo Hub'},
-   pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',userVerification:'required'},
-   excludeCredentials:o.exclude.map(id=>({type:'public-key',id:fb64(id)})),attestation:'none',timeout:60000}});
-  const r=await api('/auth/reg-finish',{clientDataJSON:fe64(c.response.clientDataJSON),attestationObject:fe64(c.response.attestationObject),name});
-  hap(r.ok?'success':'error');toast(r.ok?'Face ID is on. Next time, just look at your phone to unlock.':(r.msg||'Couldn\'t turn it on.'),5000,r.ok?'good':'bad');
- }catch(e){toast(e&&e.name==='NotAllowedError'?'Cancelled.':e&&e.name==='InvalidStateError'?'Face ID is already on for this device.':'Couldn\'t turn it on: '+(e&&e.message||e),5000);}
- await fidLoad();if(S.view==='settings')renderSettings();}
-async function fidLoad(){S.fid=await api('/auth/list',{}).catch(()=>({keys:[]}));}
-async function fidRemoveAll(){const here=(S.fid.keys||[]).filter(k=>LOCAL&&!/\.ts\.net$/.test(location.hostname)||k.rp===location.hostname);
- for(const k of here)await api('/auth/remove',{id:k.id});toast('Face ID sign-in turned off.');await fidLoad();renderSettings();}
-function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'PushManager' in window;
- if(location.protocol!=='https:'&&location.hostname!=='localhost')return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${pk.https?`Needs the secure address. Open <a href="${esc(pk.https)}">${esc(pk.https.replace('https://',''))}</a>, add that to your Home Screen, and turn them on there.`:'Needs the Mac\'s secure address first (Settings › This Mac on the Mac).'}</small></div></div>`;
- if(!can)return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>On iPhone: open Combo Hub from its Home Screen icon (Share › Add to Home Screen), then turn them on here.</small></div></div>`;
- return `<div class="srow"><div class="l"><b>Notifications on this device</b><small>${S.pushOn?'On. Alerts from the Mac open the right screen when tapped.':'Get the Mac\'s alerts here, straight from Combo Hub.'}${pk.n?` · ${pk.n} device${pk.n>1?'s':''} signed up`:''}</small></div>
-  ${S.pushOn?`<button class="btn" onclick="pushTest(this)">Send test</button><button class="btn ghost" onclick="pushOff()">Turn off</button>`:`<button class="btn acc" onclick="pushOn(this)">Turn on</button>`}</div>`;}
-function urlB64(s){const p='='.repeat((4-s.length%4)%4);const b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)));}
-async function pushOn(btn){try{const perm=await Notification.requestPermission();
-  if(perm!=='granted'){toast('Notifications are blocked. Allow them in Settings › Notifications › Combo Hub.',6000);return;}
-  if(btn)btn.innerHTML='<span class="spin"></span>';
-  const k=await api('/app/push',{a:'key'});if(!k.ok){toast('The Mac is still updating. Try again in a few minutes.');return;}
-  const reg=await navigator.serviceWorker.register('/sw.js');await navigator.serviceWorker.ready;
-  const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(k.key)});
-  await api('/app/push',{a:'sub',sub:sub.toJSON(),label:/iPhone/.test(navigator.userAgent)?'iPhone':'Browser'});
-  const t=await api('/app/push',{a:'test'});S.pushOn=true;toast(t.sent?'Notifications are on. A test is on its way.':'Signed up. The test didn\'t go through yet.',5000);load('settings');
- }catch(e){toast('Couldn\'t turn them on: '+(e&&e.message||e),6000);load('settings');}}
-async function pushTest(b){btnBusy(b,'Sending…');const t=await api('/app/push',{a:'test'}).catch(()=>({}));btnState(b,!!t.sent,t.sent?'Sent':'Not sent');toast(t.sent?'Sent. It should arrive in a few seconds.':'Nothing sent. Try turning it off and on.');}
-async function pushOff(){try{const reg=await navigator.serviceWorker.getRegistration();const sub=reg&&await reg.pushManager.getSubscription();if(sub){await api('/app/push',{a:'off',sub:sub.toJSON()});await sub.unsubscribe();}}catch(e){}S.pushOn=false;toast('Notifications off on this device.');load('settings');}
-function httpsRow(mac){const h=mac.https||{};
- if(h.state==='on')return `<div class="srow"><div class="l"><b>Secure address</b><small><a href="${esc(h.url)}" target="_blank">${esc(h.url.replace('https://',''))}</a> · use this on your iPhone for notifications</small></div><button class="btn ghost" onclick="navigator.clipboard.writeText('${esc(h.url)}').then(()=>toast('Copied'))">Copy</button></div>`;
- if(h.state==='need-enable'&&h.link)return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin yet. Tap Allow https, approve in the Tailscale page, then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.link)}" target="_blank">Allow https</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
- if(h.state==='need-enable')return `<div class="srow"><div class="l"><b>Secure address: one step</b><small>HTTPS certificates are not enabled in Tailscale admin. Open the page, sign in, scroll to <b>HTTPS Certificates</b>, tap <b>Enable HTTPS...</b> and confirm. Then tap Check (it also checks itself every few minutes).</small></div><a class="btn acc" href="${esc(h.admin||'https://login.tailscale.com/admin/dns')}" target="_blank">Open Tailscale admin</a><button class="btn" onclick="macDo('https',this)">Check</button></div>`;
- const why={'no-cli':'Tailscale\'s command line isn\'t available on this Mac. Install the Tailscale app, then Try again.',
-  'no-status':'Couldn\'t read Tailscale\'s status. Open the Tailscale app on this Mac, then Try again.',
-  'no-daemon':'Couldn\'t read Tailscale\'s status: the command line can\'t talk to the Tailscale app. Open Tailscale on this Mac, check it says Connected, then Try again.',
-  'cli-broken':'Couldn\'t read Tailscale\'s status: its command line wouldn\'t start from the watcher. Install the command line from Tailscale\'s settings, then Try again.',
-  'signed-out':'Tailscale says this Mac is signed out. Open Tailscale, sign in, then Try again.',
-  'needs-approval':'This Mac waits for approval in Tailscale admin (login.tailscale.com/admin/machines). Approve it, then Try again.',
-  'ts-off':'Tailscale is switched off on this Mac. Open Tailscale, turn it on, then Try again.',
-  'starting':'Tailscale is still starting on this Mac. It checks again by itself in a few minutes.',
-  'no-name':'Tailscale is running but gave this Mac no name. Turn MagicDNS on at login.tailscale.com/admin/dns, then Try again.',
-  'issuing':'Tailscale is still making the certificate. This can take a few minutes; it keeps checking.'};
- if(h.detail&&['no-cli','no-status','no-daemon','cli-broken','signed-out','needs-approval','ts-off','starting'].includes(h.state))why[h.state]=esc(h.detail.slice(0,300));
- return `<div class="srow"><div class="l"><b>Secure address</b><small>${why[h.state]||(h.state?'Not on yet ('+esc(h.state)+')'+(h.detail?': '+esc(h.detail.slice(-140)):''):'Checking…')}</small></div><button class="btn" onclick="macDo('https',this)">Try again</button></div>`;}
-function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
- const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
- return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
-  <div class="seg">${['off','watch','on'].map(m=>`<button class="${k.mode===m?'on':''}" onclick="killerMode('${m}')">${M[m]}</button>`).join('')}</div></div>
-  <div class="srow" style="display:block"><div class="m" style="font-size:12.5px;line-height:1.6">
-   Single game: ${Math.round((r.single_edge||.08)*100)}¢+ a contract and ${Math.round((r.single_rel||.15)*100)}%+ under fair, after the fee · Combo: Kalshi quote ${Math.round((r.combo_pct||1.15)*100)}%+ of fair, ${r.combo_legs||4} picks or fewer ·
-   two odds sources agree within ${Math.round((r.agree||.02)*100)} points · line steady ${r.steady_mins||30} minutes · no injury news in ${r.news_hours||3} hours · enough for sale on Kalshi · games not started · up to ${money(r.per_buy||10)} each.</div>
-   ${k.settled?`<div class="mini" style="margin-top:6px">Record so far<b class="${k.pl>=0?'up':'down'}">${smoney(k.pl)} on ${money(k.staked)} (${k.settled})</b></div>`:''}${rows?`<div style="margin-top:6px">${rows}</div>`:''}</div>`;}
-function killerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac buy killer deals?</h3><p>Only deals that pass every check, up to 2 a day and $20 a day, inside your cap. Every buy sends an alert with a Pause button.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();killerMode('on',true)">Turn on</button></div>`);return;}
- S.set.killer.mode=m;setv('killer_mode',m);renderSettings();toast(m==='on'?'Killer deals: the Mac buys them now. Pause from any alert.':m==='watch'?'Killer deals: watch only.':'Killer deals off.',5000);}
-function singlesCard(d){const ss=d.singles||[];if(!ss.length)return '';
- if(S.sgView==='odds')return singlesOdds(ss);
- return `<div class="card"><h3>Single games <span>best prices</span></h3><div class="m" style="font-size:12px;margin:-4px 0 8px">Kalshi's price vs the sharp books' chance to win, after Kalshi's fee. No combo maker taking a cut.</div>
-  ${ss.map(x=>`<div class="moment"><span class="k" style="color:${x.edge>=0.025?'var(--yes)':x.edge>0?'var(--sub)':'var(--mute)'}">${x.edge>=0.025?'🎯':'·'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">vs ${esc(short(x.opp))} · ${Math.round(x.p*100)}¢ · fair ${pct(x.fair)}</span></span>
-   ${x.idea?`<button class="btn acc" style="padding:6px 10px" onclick="singleFromBoard('${x.ticker}',this)">${(x.edge*100).toFixed(1)}¢ edge</button>`:`<b class="m" style="font-size:12px">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</b>`}</div>`).join('')}
-  ${ss.some(x=>x.idea)?'':'<div class="m" style="font-size:12px;margin-top:8px">Nothing at least 2.5¢ under fair right now: Kalshi is pricing these games in line with the sharp books. The Mac keeps checking every 10 minutes and alerts you when one opens up.</div>'}
-  <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='odds';renderBuild()">Win and sell-early chances</button></div>`;}
-function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
- return `<div class="card"><h3>Single games <span>win and sell-early</span></h3>
-  <div class="m" style="font-size:12px;margin:-4px 0 8px">Per $1 contract: chance to win, what it profits if it wins, the chance its price is up 10¢ at some point (a chance to sell early at a profit), and the expected profit after Kalshi's fee.</div>
-  <div class="sgt"><span></span><span>Win</span><span>Up 10¢</span><span>Expected</span>${rows.map(x=>`<b>${esc(short(x.pick))}<small class="m" style="display:block">${Math.round(x.p*100)}¢, wins +${Math.round(x.profit*100)}¢</small></b><span>${pct(x.win)}</span><span>${pct(x.touch)}</span><span class="${x.ev>=0?'up':'down'}">${x.ev>=0?'+':'−'}${Math.abs(x.ev*100).toFixed(1)}%</span>`).join('')}</div>
-  <div class="m" style="font-size:12px;margin-top:8px">Read honestly: a likely winner pays little, and a price that's up 10¢ often comes back down. Selling early doesn't create profit on its own; the expected column is what you make on average, and it's only positive when Kalshi's price is below fair.</div>
-  <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='';renderBuild()">Back to best prices</button></div>`;}
-function singleFromBoard(t){sbOpen(t,S.lg);}
-/* ---- Buy straight (issue #113): one team, or a spread/total, bought on its own by Pete's tap. The sheet asks the Mac
-   for a price (Kalshi's order book read right now, our fair chance, the edge, a suggested stake, the cap), which is good
-   for 20 seconds (the draining bar). Buy sends that exact quote once; the Mac re-reads the book and refuses a higher price,
-   so it never pays more than shown. Stakes over the quote's `arm` need a second tap. Nothing here buys by itself. */
-const m2=x=>x==null?'—':'$'+(+x).toFixed(2);
-function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null,back:S.gameOpen||null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
-function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi for its price now…</div>`;}
-async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
- const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
- if(S.sb!==s)return;s.busy=false;
- if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';hap('error');sbPaint();return;}
- r.at=Date.now()/1000;s.q=r;s.stake=r.stake;hap(r.blocked||!r.clears?'warning':'success');sbPaint();
- clearInterval(S.sbT);S.sbT=setInterval(sbTick,1000);}
-function sbTick(){const s=S.sb,q=s&&s.q,box=$('#sbx');if(!q||!box||!$('#modal').classList.contains('on')){clearInterval(S.sbT);return;}
- const left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));const e=box.querySelector('.sbs');if(e&&e.textContent!==String(left))e.textContent=left;
- if(left<=0&&!q.x&&!s.sending){q.x=1;clearInterval(S.sbT);sbPaint();}}
-function sbKind(q){return q.kind==='spread'?'📏 Spread':q.kind==='total'?'➕ Total':'🎯 Single game';}
-function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
- if(!s.q){box.innerHTML=s.busy?sbSkel():`<div class="sbk">Buy straight</div><h3>No price right now</h3><div class="sbw sbx"><i>✕</i><span>${esc(s.err||'No price came in.')}</span></div>
-  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Close</button><button class="btn acc pri" onclick="sbQuote()">Try again</button></div>`;return;}
- const q=s.q,dead=q.x||Date.now()/1000-q.at>=q.secs,left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));
- const ret=q.ret,ok=q.clears&&!q.blocked;
- const chips=(q.presets||[3,5,10]).map(v=>`<button class="chip ${Math.abs(q.stake-v)<.005?'on':''}" onclick="sbQuote(${v})">$${v}</button>`).join('');
- const custom=(q.presets||[]).every(v=>Math.abs(q.stake-v)>=.005);
- box.innerHTML=`<div class="sbk">${ICON[q.sport]||''} ${sbKind(q)}${q.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">LIVE</span>':''}</div>
-  <h3>${esc(q.pick)}</h3>${q.opp||q.game?`<div class="m" style="font-size:13px">${q.opp?'vs '+esc(q.opp):esc(q.game)}</div>`:''}
-  <div class="sbn"><div><span>Kalshi now</span><b data-num="sb:ask" data-v="${q.ask}" data-f="cent">${Math.round(q.ask*100)}¢</b><small>${q.gap!=null?Math.round(q.gap*100)+'¢ gap':'no bids'} · ${q.depth>=1000?Math.round(q.depth/1000)+'k':Math.floor(q.depth)} for sale</small></div>
-   <div><span>Our chance</span><b>${q.fair!=null?pct(q.fair):'—'}</b><small>${q.fair!=null?esc(q.how||''):'no fair price'}</small></div>
-   <div><span>Edge</span><b class="${ret==null?'':ret>=0?'up':'down'}">${ret==null?'—':(ret>=0?'+':'−')+Math.abs(Math.round(ret*100))+'%'}</b><small>${ret==null?'Kalshi\'s price only':'expected · '+(q.edge>=0?'+':'−')+Math.abs(q.edge*100).toFixed(1)+'¢ a contract'}</small></div></div>
-  <div class="sbk" style="margin-top:2px">Stake</div>
-  <div class="sbst">${chips}<input id="sbin" type="number" inputmode="decimal" min="1" max="${q.max}" step="1" placeholder="Custom" value="${custom?q.stake:''}" onkeydown="if(event.key==='Enter'){this.blur()}" onchange="sbCustom(this)" aria-label="Custom stake in dollars">
-   ${Math.abs(q.sug-q.stake)>=.005?`<button class="chip" onclick="sbQuote(${q.sug})">Suggested $${(+q.sug).toFixed(2).replace(/\.00$/,'')}</button>`:'<span class="m" style="font-size:12px">suggested size</span>'}</div>
-  <div class="sum">Contracts<b>${q.n} at ${Math.round(q.ask*100)}¢</b></div><div class="sum">You pay (with Kalshi's fee)<b>${m2(q.cost)}</b></div>
-  <div class="sum">Pays if it wins<b class="up">${m2(q.pays)} <span class="m" style="font-weight:600">(${smoney(q.profit)})</span></b></div>
-  ${q.room!=null?`<div class="sum">Room under your cap<b>${m2(q.room)} of ${m2(q.budget)}</b></div>`:''}
-  ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
-  ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
-  ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
-  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
-   q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
-   `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
-  <div class="sbleft">${dead||s.fail||q.used?'Prices move. Get a fresh one to buy.':`Price good for <span class="sbs">${left}</span>s · fills now at ${Math.round(q.ask*100)}¢ or better, or not at all`}</div>`;
- rollNums(box);}
-function sbCustom(el){const v=parseFloat(el.value);if(!(v>0)){toast('Type a stake in dollars.');return;}const s=S.sb;const mx=(s&&s.q&&s.q.max)||100;
- if(v>mx){toast(`One straight bet is at most $${mx}.`,4000,'bad');el.value=mx;}sbQuote(Math.min(v,mx));}
-async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)return;
- if(q.x||Date.now()/1000-q.at>=q.secs){sbQuote();return;}
- if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
-  setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
- let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
- catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
- s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
- /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
-    must never go unseen): on this sheet, else as a sheet of its own, else (another sheet is up) as a long toast */
- const here=S.sb===s&&!!$('#sbx')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
- if(r.ok||r.check){if(S.sb===s)S.sb=null;const sub=r.ok?`${q.pick}. ${r.msg} It shows on Live under Single bets & spreads within a minute; smart sell watches it from there.`:r.msg;
-  if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
-  else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
- const why=r.msg||'It didn\'t go through. Nothing was bought.';
- if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
-function sbClose(){closeModal();S.sb=null;}
-function lineFromBoard(t){sbOpen(t,S.lg);}
-function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
- const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
- return `<div class="srow"><div class="l"><b>Standing orders</b><small>The Mac keeps buy orders ${Math.round((r.discount||.03)*100)}¢ under the sharp books' chance, so you only buy when someone sells to you cheap. Watch only records what would have filled.</small></div>
-  <div class="seg">${['off','watch','on'].map(m=>`<button class="${k.mode===m?'on':''}" onclick="makerMode('${m}')">${M[m]}</button>`).join('')}</div></div>
-  <div class="srow" style="display:block"><div class="m" style="font-size:12.5px;line-height:1.6">Teams with a ${pct(r.min_fair||.2)}–${pct(r.max_fair||.85)} chance · two odds sources agree · games within ${r.horizon_hours||30} hours · one order per game · up to ${money(r.per_order||10)} each, ${r.max_orders||6} orders and ${money(r.max_dollars||40)} out at once, inside your cap ·
-   re-priced when the fair chance moves ${Math.round((r.reprice||.01)*100)}¢ · cancelled ${r.cancel_mins||20} minutes before the game and on injury news (Kalshi also expires them by itself).</div>
-   ${k.settled?`<div class="mini" style="margin-top:6px">Record so far<b class="${k.pl>=0?'up':'down'}">${smoney(k.pl)} (${k.settled} settled, ${k.filled} filled)</b></div>`:''}${rows?`<div style="margin-top:6px">${rows}</div>`:''}</div>`;}
-function makerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac place standing orders?</h3><p>Real buy orders on Kalshi, a few cents under fair, up to ${money(40)} out at once and inside your cap. They're cancelled before games start, on news, and when you tap Pause on any alert.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();makerMode('on',true)">Turn on</button></div>`);return;}
- S.set.maker.mode=m;setv('maker_mode',m);renderSettings();toast(m==='on'?'Standing orders: on. They appear on Live.':m==='watch'?'Standing orders: watch only.':'Standing orders off. Any open ones are cancelled on the next pass.',5000);}
-function ordersCard(d){const os=d.orders||[];if(!os.length)return '';
- return `<div class="card"><h3>Standing orders <span>${os[0].mode==='on'?'on Kalshi':'watching'}</span></h3>${os.map(x=>`<div class="moment"><span class="k">${x.mode==='on'?'📌':'👀'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)}</span></span><time>${ago2(x.ts)}</time></div>`).join('')}</div>`;}
-function dayBar(d){const v=d.days;if(!v)return '';const b=(on,lab,js)=>`<button class="${on?'on':''}" onclick="${js}">${lab}</button>`;
- if(v.mode==='day')return `<div class="seg daybar">${b(!v.next_day,'Today',"setDays({next_day:false})")}${b(v.next_day,'Tomorrow',"setDays({next_day:true})")}</div>`;
- if(v.mode==='mix')return `<div class="seg daybar">${v.windows.map((w,i)=>b(v.mix_window===i,esc(w),`setDays({mix_window:${i}})`)).join('')}</div>`;
- return `<div class="seg daybar">${b(v.thursday,v.wed?'+ Wed & Thu':'+ Thursday',`setDays({thursday:${!v.thursday}})`)}${b(true,'Sunday','')}${b(v.saturday,'+ Saturday',`setDays({saturday:${!v.saturday}})`)}${b(v.monday,'+ Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
-async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild();
- const r=await api('/app/api/settings',{lg:S.lg,values:vals}).catch(()=>({ok:false}));if(!r.ok){toast('Couldn\'t change the days.');return;}
- S.build=null;renderBuild();load('build',true);}
-try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
-function secOpen(k){return S.bsec[k]!==false;}
-/* folding a Build section: the chevron turns and the section rises in, instead of jumping */
-function secTog(k){hap('selection');S.bsec[k]=!secOpen(k);try{localStorage.setItem('cw_bsec',JSON.stringify(S.bsec))}catch(e){}S.secJust=k;renderBuild();S.secJust=null;
- const h=document.querySelector(`.sech[data-k="${k}"]`);if(!h)return;const c=h.querySelector('.chev');
- requestAnimationFrame(()=>requestAnimationFrame(()=>{if(c)c.classList.remove('from-open','from-shut');}));
- if(secOpen(k)){let n=h.nextElementSibling;for(let i=0;i<2&&n&&!n.classList.contains('sech');i++,n=n.nextElementSibling)n.classList.add('unfold');}}
-function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech ${o?'open':''}" data-k="${k}" onclick="secTog('${k}')"><span class="chev ${S.secJust===k?(o?'from-shut':'from-open'):''}">▾</span>${title} <span class="n">${n}</span>${o&&sub?`<span class="r m" style="font-size:12px">${sub}</span>`:''}${extra?`<span class="r">${extra}</span>`:''}</h2>${o?'':`<div class="m secfold" onclick="secTog('${k}')">Folded · tap to show</div>`}`;}
-function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games={};ls.forEach(x=>{(games[x.game]=games[x.game]||[]).push(x);});
- return secHead('lines','Spreads &amp; totals',ls.length,'Kalshi price · model chance from the sportsbook line')+(!secOpen('lines')?'':`
-  <div class="tbl lines"><div class="lrow2 m" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:10px"><span></span><span class="num">Kalshi</span><span class="num">Chance</span><span class="num" style="text-align:center">Edge</span></div>${Object.entries(games).map(([g,xs])=>`<div class="lhd">${esc(g)} <span class="m">· book ${xs.find(x=>x.kind==='spread')?'spread '+xs.find(x=>x.kind==='spread').book_line:''}${xs.find(x=>x.kind==='total')?' · total '+xs.find(x=>x.kind==='total').book_line:''}</span></div>
-   ${xs.sort((a,b)=>a.kind.localeCompare(b.kind)||a.line-b.line).map(x=>`<div class="lrow2"><span>${x.kind==='spread'?'📏':'➕'} ${esc(x.pick.replace(/ \(.*\)$/,''))}</span><span class="num">${Math.round(x.p*100)}¢</span><span class="num m">${pct(x.fair)}</span>
-    <button class="btn ${x.edge>=0.04?'acc':'ghost'}" onclick="lineFromBoard('${x.ticker}',this)">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</button></div>`).join('')}`).join('')}</div>
-  <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`);}
-// ---------------- charts
-function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
- return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
-function spark(pts,w,h,col){if(!pts||pts.length<2)return `<svg viewBox="0 0 ${w} ${h}"><line x1="0" x2="${w}" y1="${h/2}" y2="${h/2}" stroke="var(--line)" stroke-dasharray="3 4"/></svg>`;
- const last=pts[pts.length-1][1];col=col||(last>=.5?'var(--yes)':'var(--no)');const p=sparkPath(pts,w,h-4,0,1);
- return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><line x1="0" x2="${w}" y1="${(h-4)/2}" y2="${(h-4)/2}" stroke="var(--line)" stroke-dasharray="3 4"/>
-  <path d="${p} L${w} ${h} L0 ${h}Z" fill="${col}" opacity=".10"/><path d="${p}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;}
-function valueChart(off,cost,pays){if(!off||off.length<2)return '<div class="m" style="padding:18px 4px">The value chart fills in as the Mac watches this combo.</div>';
- const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=W<600?190:200,pl=44,pb=22,iw=W-pl-8,ih=H-pb-10;const t0=off[0].ts,t1=off[off.length-1].ts;
- const vals=off.flatMap(o=>[o.hold,o.offer]).filter(v=>v!=null).concat([cost]);const hi=Math.max(...vals)*1.08,lo=0;
- const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>10+ih-(v-lo)/(hi-lo)*ih;
- const line=k=>off.filter(o=>o[k]!=null).map((o,i)=>`${i?'L':'M'}${X(o.ts).toFixed(1)} ${Y(o[k]).toFixed(1)}`).join('');
- const ticks=[0,.25,.5,.75,1].map(f=>lo+(hi-lo)*f);const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
- return `<div class="key"><span><i style="background:var(--acc)"></i>Worth holding</span><span><i style="background:var(--yes)"></i>Kalshi offer</span><span><i style="background:var(--mute)"></i>You paid</span></div>
- <svg viewBox="0 0 ${W} ${H}">${ticks.map(v=>`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pl-6}" y="${Y(v)+4}" text-anchor="end" font-size="11" fill="var(--mute)">${money(v)}</text>`).join('')}
-  <line x1="${pl}" x2="${W-8}" y1="${Y(cost)}" y2="${Y(cost)}" stroke="var(--mute)" stroke-dasharray="4 4"/>
-  <path d="${line('hold')}" fill="none" stroke="var(--acc)" stroke-width="2.2" stroke-linejoin="round"/>
-  <path d="${line('offer')}" fill="none" stroke="var(--yes)" stroke-width="2" stroke-linejoin="round" opacity=".9"/>
-  ${off.filter(o=>o.real_offer&&o.offer!=null).map(o=>`<circle cx="${X(o.ts)}" cy="${Y(o.offer)}" r="3.5" fill="var(--yes)"/>`).join('')}
-  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg>`;}
-// ---------------- combo detail
-async function openCombo(t){S.gameOpen=null;S.comboOpen=t;pushOpen('Combo');
- const [r]=await Promise.all([api('/app/api/combo?t='+encodeURIComponent(t)).catch(()=>null),pushWait()]);if(S.comboOpen!==t)return;const c=r&&r.combo;
- if(!c){pushFill('<h3>Not found</h3><p>That combo isn\'t live any more.</p>','Combo');return;}
- const h=r.history||{offers:[],ticks:{}};const [vc,vt]=verdictOf(c);
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${(c.sports||[]).map(s=>SPN[s]||s).join(' · ')}</div><h3 style="font-size:22px">${esc(c.label)}</h3><div class="m">${esc(nextLine(c))}</div></div>
-  <div style="display:flex;gap:8px;align-items:center"><span class="verdict ${vc}">${vt}</span></div></div>
-  <div class="dkpis"><div><span>Paid</span><b>${money(c.cost)}</b></div><div><span>Pays</span><b>${money(c.pays)}</b></div><div><span>Chance</span><b>${c.group==='pending'?`<span data-num="dp:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}</b></div><div><span>${c.offer_real?'Offer':'Likely offer'}</span><b>${c.offer!=null?`<span data-num="do:${c.t}" data-v="${c.offer}" data-pre="${c.offer_real?'':'≈ '}">${(c.offer_real?'':'≈ ')+money(c.offer)}</span>`:'—'}</b></div></div>
-  ${c.why?`<p style="margin:-4px 0 14px">${esc(c.why)}</p>`:''}
-  <div class="chartbox">${valueChart(h.offers,c.cost,c.pays)}</div>
-  <h2 style="margin:4px 0 6px">Picks <span class="n">${c.legs.length}</span></h2><div class="dlegs">${c.legs.map(l=>{const tk=(h.ticks||{})[l.ticker]||[];const pts=tk.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
-   return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(l.name)}</b><div class="m" style="font-size:12.5px">${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
-    ${l.res?`<span class="m" style="text-align:center">${l.res==='yes'?'✓ won':'✕ lost'}</span>`:spark(pts,120,28)}<b style="text-align:right">${l.res?'':pct(l.live!=null?l.live:l.chance)}</b></div>`;}).join('')}</div>
-  ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" onclick="closeModal();hedge('${c.t}')">Hedge · ${money(c.hedge.cost)}</button>`:''}
-   <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`,c.label);}
-// ---------------- games
-/* Games: one live card per game you have money on (combos, single bets, spreads and totals). Team rows with the score,
-   the clock, the chance line over the game with a glowing end dot, and the bets riding on it. When someone scores the
-   card pulses (green when it's your side, red when it's theirs), the number bumps and the phone ticks. Tap to push
-   into the game page. */
-function gamesSkel(){return `<div class="games">${Array.from({length:4},()=>`<div class="gsk"><i style="height:11px;width:38%"></i><i style="height:20px;width:70%"></i><i style="height:20px;width:55%"></i><i style="height:46px"></i><i style="height:22px;width:60%"></i></div>`).join('')}</div>`;}
-function miniLine(pts,col){if(!pts||pts.length<2)return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><line x1="0" x2="300" y1="23" y2="23" stroke="var(--line)" stroke-width="2" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/></svg></div>`;
- const t0=pts[0][0],t1=pts[pts.length-1][0],X=t=>(t-t0)/Math.max(1,t1-t0)*300,Y=v=>42-Math.max(0,Math.min(1,v))*38;
- const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');const ly=Y(pts[pts.length-1][1]);const id='mg'+Math.random().toString(36).slice(2,7);
- return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-  <line x1="0" x2="300" y1="${Y(.5)}" y2="${Y(.5)}" stroke="var(--line)" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/><path d="${d} L300 46 L0 46Z" fill="url(#${id})"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>
-  <i class="sdot" style="left:100%;top:${(ly/46*100).toFixed(1)}%;background:${col};color:${col}"></i></div>`;}
-function gameLine(g){S.gh=S.gh||{};const k=g.ticker||g.name;let h=S.gh[k]||[];const now=Date.now()/1000;   // the page keeps its own line too, for bets the Mac hasn't charted yet
- if(g.chance!=null&&(!h.length||h[h.length-1][1]!==g.chance))h=h.concat([[now,g.chance]]).slice(-240);S.gh[k]=h;
- const sp=(g.spark||[]).filter(p=>p[1]!=null);return sp.length>=2?sp.concat(h.filter(p=>p[0]>sp[sp.length-1][0])):h;}
-const GLIVE=g=>g.state==='live'&&!['probably_over','waiting','over'].includes(g.phase);
-/* Warm a live football game's page data before it is opened (display only): when its card is shown on Games, and when a card is hovered or pressed.
-   Polite: a game is asked about at most once a minute (3 to 5 minutes after a failure), 2 at a time, 6 per 5 minutes, never in a hidden tab;
-   the Mac dedupes and backs off again on its own. Nothing here prices, buys or sells. */
-const WARM_SPORTS=['nfl','ncaaf'];
-function warmGame(t){if(!t||typeof t!=='string'||document.hidden)return;S.warm=S.warm||{};S.warmN=S.warmN||[];const now=Date.now();
- if((S.warm[t]||0)>now||(S.warmBusy||0)>=2)return;S.warmN=S.warmN.filter(x=>now-x<300000);if(S.warmN.length>=6)return;
- S.warm[t]=now+60000;S.warmN.push(now);S.warmBusy=(S.warmBusy||0)+1;
- api('/app/api/game_warm?t='+encodeURIComponent(t)).then(r=>{if(!r||!r.known)S.warm[t]=now+180000;},()=>{S.warm[t]=now+300000;}).then(()=>{S.warmBusy=Math.max(0,(S.warmBusy||1)-1);});}
-function warmShown(){if(S.view!=='games'||!S.games)return;(S.games.games||[]).forEach(g=>{if(GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);});}
-function warmCard(e){const c=e.target&&e.target.closest?e.target.closest('.gc[data-gk]'):null;if(!c||!S.games)return;
- const g=(S.games.games||[]).find(x=>(x.ticker||x.name)===c.dataset.gk);if(g&&GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);}
-addEventListener('pointerover',warmCard,{passive:true});addEventListener('pointerdown',warmCard,{passive:true});
-function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
- const col=ch==null?'var(--acc)':ch>=.5?'var(--yes)':'var(--no)';const sg=S.gscore&&S.gscore[g.ticker||g.name];
- const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
- // both teams and both scores on every card: the full opponent name, else the short code from the score; no score (tennis/UFC) = no number, never a fake 0
- const shown=sc&&(live||fin),myPts=shown&&sc.me!=null?sc.me:null,oppPts=shown&&sc.opp!=null?sc.opp:null,oppNm=g.opp||(sc&&sc.opp_abbr)||'';
- const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.label||'')}</span>`)].join('');
- const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
- return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" onclick="openGame('${esc(g.ticker||'')}')">
-  <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
-  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.name)}</span><span class="mine">YOURS</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
-   ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
-  <div class="gl"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
-   <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
-  <div class="bets">${bets}<span class="rd">${money(g.pays)} riding</span></div></div>`;}
-function scoreWatch(gs){/* who scored since the last paint: your side, or theirs */
- S.gsc=S.gsc||{};S.gscore={};let any=null;
- gs.forEach(g=>{const k=g.ticker||g.name,sc=g.sc;if(!sc||g.state!=='live')return;const o=S.gsc[k];S.gsc[k]=[sc.me,sc.opp];
-  if(o&&(o[0]!==sc.me||o[1]!==sc.opp)){const good=sc.me>o[0];S.gscore[k]=good?'good':'bad';any=any||S.gscore[k];}});
- if(any&&S.view==='games')hap(any==='good'?'success':'warning');
- clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
-function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
- const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
- scoreWatch(gs);setTimeout(warmShown,400);
- const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
- m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
-  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
-  +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
-  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
-// ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gxWant=false;clearTimeout(S.gxT);S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
-// The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
-// live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
-// down between updates while it is running. Only the first draw waits for the slide-in to finish.
-function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
-async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
- if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
- const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
- try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
-  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
-  frSet('G',r.fresh);clkNote(t,r.leg);
-  S.gxWant=!!(r.detail&&r.detail.gxp);clearTimeout(S.gxT);gxAgain();   // last 5 / season leaders still being fetched: look again soon, quietly
-  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail,r.buy]);
-  if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
-  S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
- }finally{S.gameBusy=false;}}
-const CLK_SPORTS=['nba','ncaamb','ncaawb','nhl','ahl','euroleague'];
-function clkNote(t,l){S.clk=S.clk||{};const sc=l.sc,m=sc&&l.state==='live'&&CLK_SPORTS.includes(l.sport)?/^(.*?)\s*(\d{1,2}):(\d{2})$/.exec(sc.detail||''):null;
- if(!m){delete S.clk[t];return;}
- const lab=m[1].trim(),secs=+m[2]*60+ +m[3],p=S.clk[t],now=Date.now();
- if(p&&p.lab===lab&&secs===p.srv){if(p.run&&now-p.recv<25000)return;S.clk[t]={lab,srv:secs,secs,recv:now,run:false};return;}
- S.clk[t]={lab,srv:secs,secs,recv:now,run:!!(p&&p.lab===lab&&secs<p.srv)};}
-function clkTick(){document.querySelectorAll('[data-clk]').forEach(e=>{const c=(S.clk||{})[e.dataset.clk];if(!c)return;const v=c.run?Math.max(0,c.secs-Math.floor((Date.now()-c.recv)/1000)):c.secs;
- const t=c.lab+' '+Math.floor(v/60)+':'+String(v%60).padStart(2,'0');if(e.textContent!==t)e.textContent=t;});}
-function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelector('#sheet .gtabs');if(gb)S.gtabScroll=gb.scrollLeft;}
- const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
- const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
- const plays=st.plays.slice().reverse();
- const ov=`<div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
-  <div class="chartbox">${winChart(pts,st.plays)}</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
-   <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
-   <div><h2 style="margin:0 0 6px">Your bets on this game</h2>${r.combos.map(c=>`<div class="moment" ${c.single?'':`style="cursor:pointer" onclick="openCombo('${c.t}')"`}><span class="k">${c.single?'📏':'🎯'}</span><span><b>${esc(c.label)}</b> <span class="m">${c.single?(c.how?esc(c.how)+' · ':'')+pct(c.p)+' chance':c.legs+' picks · '+pct(c.p)+' to hit'}</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}
-   ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
-    <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
-    ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
-  ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
-   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
-  <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
-   `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
-  ${fieldStrip(gameStepDetail(r),l)}
-  ${gameTabsHtml(r,ov)}${gameBuyBar(r)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
-/* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
-   two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
-   arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
-   slides to the new spot when the play changes (CSS transition; prefers-reduced-motion respected). Nothing here is read
-   by any buy/sell path, and a bad or missing feed just returns '' so the page still works. */
-/* A team colour, safe to drop into an inline style: a 6-hex-digit colour (with or without a leading #) becomes
-   #rrggbb; anything else (empty, a name, something odd in the feed) falls back to the given CSS variable. The rest
-   of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
-/* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
-   fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
-function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
- return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
-function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
-function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
- const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
- // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
- let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
- // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
- const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
- const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
- const haveBall=ytz!=null;
- // Field goes 0..100 left→right in the 100-yard playing area. Everything inside .grass (ball, arrow, ticks, first-down line,
- // red zone) is positioned in % of the GRASS box, which already sits between the two end zones, so a spot at N yards from the
- // left goal line is simply left:N%. The ruler lives in .fld (the whole strip), so it keeps its own end-zone inset below.
- const EZ=100/12,play=100-2*EZ;
- // Line of scrimmage as a % of the whole strip. For the away offence (driving right) distance from left goal = 100-ytz.
- let losYd=homeHas?ytz:(100-ytz);                 // yards from the LEFT goal line (0..100)
- let losPct=haveBall?Math.max(0,Math.min(100,losYd)):50;
- // First-down line: `distance` yards further toward the offence's target end zone.
- const dist=(sit.distance!=null)?sit.distance:null;
- let fdYd=dist!=null?(homeHas?losYd-dist:losYd+dist):null;
- let fdPct=fdYd!=null?Math.max(0,Math.min(100,fdYd)):null;
- const rz=!!sit.isRedZone;const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
- const rulerN=['G','10','20','30','40','50','40','30','20','10','G'];
- const ruler=rulerN.map((n,i)=>`<span style="left:${(EZ+i*play/10).toFixed(2)}%">${n}</span>`).join('');
- const ticks=Array.from({length:11},(_,i)=>`<i style="left:${i*10}%"></i>`).join('');
- // The ball marker + possession arrow point the direction of the drive.
- const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
- const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
-   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
- // Only draw the first-down line when a ball marker is shown, so a partial feed can't leave a floating line with no ball.
- const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
- // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
- // right end zone (away attacking) covers 80..100.
- const rzShade=rz?`<i class="frz" style="left:${dir>0?80:0}%;width:20%"></i>`:'';
- // The situation line: down & distance, ball spot, who has it; and the last play + its type.
- const dd=sit.downDistanceText||dr.downDistanceText||'';
- const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
- const offName=homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
- const lastPlay=(sit.lastPlayText||'').trim();const lastType=(sit.lastPlayType||'').trim();
- return `<div class="fstrip${reduce?' noanim':''}">
-  <div class="fld" role="img" aria-label="Field position">
-   <i class="ez l" style="background:${ac}"><span>${esc(away.abbr||'')}</span></i>
-   <i class="ez r" style="background:${hc}"><span>${esc(home.abbr||'')}</span></i>
-   <div class="grass">${ticks}${rzShade}${fdLine}${ball}</div>
-   <div class="ruler">${ruler}</div>
-  </div>
-  ${haveBall||dd?`<div class="situ"><span class="dd">${esc(dd||(sit.down?ordinal(sit.down)+' & '+(sit.distance??''):''))||(sit.replay?'Replay':'Live')}</span>
-   ${spot?`<span class="m">· ball on ${esc(spot)}</span>`:''}${offName?`<span class="m">· ${esc(offName)} ball</span>`:''}${rz?'<span class="rzt">RED ZONE</span>':''}${sit.replay?'<span class="rzt rpl">REPLAY</span>':''}</div>`:''}
-  ${lastPlay?`<div class="lastplay">${lastType?`<span class="lpt">${esc(lastType)}</span>`:''}<span>${esc(lastPlay)}</span></div>`:''}
- </div>`;}
-function ordinal(n){n=+n;const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}
-// Timeout dots under a team's code on the scoreboard (3 = full). Possession football next to the code with the ball.
-function _teamSide(d,abbr){if(!d||!d.board||!abbr)return null;const a=(abbr||'').toUpperCase();
- const b=d.board;if((b.home||{}).abbr&&b.home.abbr.toUpperCase()===a)return 'home';if((b.away||{}).abbr&&b.away.abbr.toUpperCase()===a)return 'away';return null;}
-function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situation||{};if(!side)return '';
- const to=side==='home'?sit.homeTimeouts:sit.awayTimeouts;if(to==null)return '';
- return `<div class="tdots">${[0,1,2].map(i=>`<i class="${i<to?'on':''}"></i>`).join('')}</div>`;}
-function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
- const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
- return has?'<span class="poss" title="has the ball">🏈</span>':'';}
-/* ---- The game page's tab framework (display only). One spec per sport says which tabs its page has; a sport with no spec
-   (or a spec with only one visible tab) gets no tab row and the page is exactly as before. A tab is {k, l, has(r), html(r, ov)}:
-   `has` hides it when its data is missing (a bad or absent feed shows nothing), `html` draws its panel (`ov` is the overview
-   markup). The chosen tab lives in S.gtab and survives the page's periodic redraws; only the open tab's panel is drawn. */
-const FOOTBALL_TABS=[{k:'overview',l:'Overview',html:(r,ov)=>ov},{k:'pbp',l:'Play-by-play',has:pbpHas,html:pbpHtml},
- {k:'box',l:'Box score',has:boxHas,html:boxHtml},{k:'tstats',l:'Team stats',has:tsHas,html:tsHtml},{k:'inj',l:'Injury report',has:injHas,html:injHtml},
- {k:'last5',l:'Last 5 games',has:l5Has,html:l5Html},{k:'leaders',l:'Season leaders',has:ldHas,html:ldHtml}];
-const GAME_TABS={nfl:FOOTBALL_TABS,ncaaf:FOOTBALL_TABS};
-function gameTabList(r){const spec=GAME_TABS[((r||{}).leg||{}).sport];if(!spec)return [];const a=spec.filter(t=>!t.has||t.has(r));return a.length>1?a:[];}
-function gameTabCur(tabs){return tabs.some(t=>t.k===S.gtab)?S.gtab:(tabs[0]||{}).k;}
-function gameTabsHtml(r,ov){const tabs=gameTabList(r);S.gtabCur=null;if(!tabs.length)return ov;const cur=gameTabCur(tabs);S.gtabCur=cur;
- return `<div class="gtabs" role="tablist">${tabs.map(t=>`<button type="button" role="tab" class="gtab${t.k===cur?' on':''}" aria-selected="${t.k===cur}" data-tab="${esc(t.k)}" onclick="gameTab('${esc(t.k)}')">${esc(t.l)}</button>`).join('')}<i class="gtabind"></i></div>
- ${tabs.map(t=>`<div class="gpanel" role="tabpanel" data-tab="${esc(t.k)}"${t.k===cur?'':' hidden'}>${t.k===cur||t===tabs[0]?t.html(r,ov):''}</div>`).join('')}`;}
-/* switch tab without a full repaint: only the visible panel is (re)drawn, and leaving the play-by-play puts the strip back to live */
-function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);if(!t)return;const was=S.gtabCur;S.gtab=k;S.gtabCur=k;
- document.querySelectorAll('#sheet .gtab').forEach(b=>{const on=b.dataset.tab===k;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
- document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k){p.innerHTML=t.html(r,'');gtabIn(p);}else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
- gameTabInd();if(was==='pbp'&&k!=='pbp'&&S.pbpStep!=null){S.pbpStep=null;pbpRefresh('slide');}}
-/* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
-function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
- const to={left:on.offsetLeft,width:on.offsetWidth},prev=S.gtabPos;
- /* paintGame rebuilds the row, so a fresh underline starts at left:0/width:0: always seed it where the old one was (or where it is going), no transition, then glide only if the tab changed */
- const from=prev||to;ind.style.transition='none';ind.style.left=from.left+'px';ind.style.width=from.width+'px';void ind.offsetWidth;ind.style.transition='';
- ind.style.left=to.left+'px';ind.style.width=to.width+'px';S.gtabPos=to;
- if(S.gtabScroll!=null){bar.scrollLeft=S.gtabScroll;S.gtabScroll=null;}
- const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
-addEventListener('resize',()=>{if(document.querySelector('#sheet .gtabs'))gameTabInd();});
-/* after every repaint: the underline, the row's own sideways scroll, and (live) the newest play's animation */
-function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);if(document.querySelector('#sheet .bxsw'))segInd();}
-/* ---- Play-by-play (football; ESPN drives and plays, display only). Stepping shows the strip as it stood after the chosen play
-   (S.pbpStep = that play's id, null = live) and replays an illustration of the play from its type and yardage. The animations
-   are illustrations only: ESPN has no player tracking, and the tab says so. Under prefers-reduced-motion nothing moves: the
-   text and the ball spot still update. Nothing here is read by any buy/sell path. */
-function pbpData(r){const p=((r||{}).detail||{}).pbp;return p&&Array.isArray(p.drives)?p:null;}
-function pbpHas(r){const p=pbpData(r);return !!(p&&p.drives.some(d=>d&&Array.isArray(d.plays)&&d.plays.length));}
-function pbpPlays(r){const out=[];let n=0;((pbpData(r)||{}).drives||[]).forEach(d=>((d&&d.plays)||[]).forEach(p=>{out.push({p,d,k:String(p.id||('#'+n)),n});n++;}));return out.slice(-250);}
-function pbpIdx(list){if(S.pbpStep==null)return list.length-1;const i=list.findIndex(x=>x.k===S.pbpStep);return i<0?list.length-1:i;}
-function pbpLiveNow(list){return S.pbpStep==null||!list.some(x=>x.k===S.pbpStep);}
-const Q_LBL=['','1st','2nd','3rd','4th'];
-function qShort(q){q=+q;return q>4?(q===5?'OT':(q-4)+'OT'):(Q_LBL[q]||'Q'+q);}
-function qFull(q){q=+q;return q>4?'Overtime':(Q_LBL[q]||'Q'+q)+' Quarter';}
-function pbpHtml(r){const pb=pbpData(r),list=pbpPlays(r);if(!pb||!list.length)return '';S.pbpOpen=S.pbpOpen||{};
- const i=pbpIdx(list),cur=list[i],live=pbpLiveNow(list),p=cur.p,b=(r.detail||{}).board||{};const open=(k,def)=>k in S.pbpOpen?S.pbpOpen[k]:def;
- const tint=x=>x.sc?' sc':x.to?' to':'';const keyOf=new Map(list.map(x=>[x.p,x.k]));
- const meta=[qShort(p.q)+(p.clk?' · '+p.clk:''),p.dn].filter(Boolean).join(' · ');
- const card=`<div class="pcard${tint(p)}" id="pbp-card"><div class="pch"><button type="button" class="pstep" data-step="prev" aria-label="Previous play" onclick="pbpStepBy(-1)"${i<=0?' disabled':''}>‹</button>
-   <div class="pcm"><div class="pct">${esc(p.ty||'Play')}</div><div class="pcs">${live?'Latest play':'Replay · play '+(i+1)+' of '+list.length}${meta?' · '+esc(meta):''}</div></div>
-   <button type="button" class="pstep" data-step="next" aria-label="Next play" onclick="pbpStepBy(1)"${i>=list.length-1?' disabled':''}>›</button></div>
-  <div class="pctx">${esc(p.txt)}</div>
-  <div class="pcf"><span>${list.length} play${list.length===1?'':'s'}${pb.cut>0?' (latest shown)':''}</span><button type="button" class="plive" onclick="pbpLive()"${live?' hidden':''}>Back to live</button></div></div>
-  <div class="pnote">Illustrations only, no player tracking</div>`;
- const qs=[];pb.drives.forEach(d=>{let g=qs.find(x=>x.q===d.q);if(!g){g={q:d.q,ds:[]};qs.push(g);}g.ds.push(d);});
- qs.reverse().forEach(g=>g.ds.reverse());
- const chev='<svg class="chev" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
- const secs=qs.map(g=>{const qk='q'+g.q,qo=open(qk,g.ds.some(d=>d.plays.includes(p)));
-  return `<div class="pqs"><button type="button" class="pq" data-k="${esc(qk)}" aria-expanded="${qo}" onclick="pbpTog(this)"><span>${esc(qFull(g.q))}</span>${chev}</button>
-   ${qo?g.ds.map(d=>{const dk='d'+d.id,dop=open(dk,d.plays.includes(p));const tm=(b[d.side]||{});
-    return `<button type="button" class="pdr${tint(d)}" data-k="${esc(dk)}" aria-expanded="${dop}" onclick="pbpTog(this)"><i class="pdot" style="background:${fcolor(tm.color,'var(--sub)')}"></i><b>${esc(d.team)}</b><span class="pres">${esc(d.res)}</span><span class="m psum">${esc(d.sum)}</span>${chev}</button>
-     ${dop?`<div class="pps">${d.plays.slice().reverse().map(x=>{const k=keyOf.get(x)||'';return `<div class="pp${tint(x)}${x===p&&!live?' cur':''}" data-pid="${esc(k)}" onclick="pbpGo(this.dataset.pid)"><div class="ppm"><b>${esc(x.dn||'')}</b><span class="m">${esc(qShort(x.q))}${x.clk?' · '+esc(x.clk):''}</span></div><div class="ppt">${esc(x.txt)}</div></div>`;}).join('')}</div>`:''}`;}).join(''):''}</div>`;}).join('');
- return `<div class="pbp">${card}${secs}</div>`;}
-function pbpTog(el){S.pbpOpen=S.pbpOpen||{};S.pbpOpen[el.dataset.k]=el.getAttribute('aria-expanded')!=='true';pbpRefresh('');}
-function pbpStepBy(dl){const r=S.gameR,list=pbpPlays(r);if(!list.length)return;const i=pbpIdx(list),j=Math.max(0,Math.min(list.length-1,i+dl));if(j===i)return;S.pbpStep=j===list.length-1?null:list[j].k;pbpRefresh('play');}
-function pbpGo(k){const list=pbpPlays(S.gameR),j=list.findIndex(x=>x.k===k);if(j<0||j===pbpIdx(list))return;S.pbpStep=j===list.length-1?null:list[j].k;pbpRefresh('play');}
-function pbpLive(){S.pbpStep=null;pbpRefresh('slide');}
-/* The strip as it stood after the stepped play (the ball spot, who has it, first-down line, red zone), as a detail block for fieldStrip().
-   A play with no ball movement (timeout, end of quarter) keeps the spot of the nearest earlier play that had one. */
-function gameStepDetail(r){const d=r.detail;if(!d||S.pbpStep==null)return d;const list=pbpPlays(r);let i=list.findIndex(x=>x.k===S.pbpStep);if(i<0)return d;const p=list[i].p;
- let j=i;while(j>=0&&(list[j].p.b==null||!pbpSide(list[j].p.bs)))j--;if(j<0)return d;const pb=list[j].p,side=pb.bs==='home'||pb.bs==='away'?pb.bs:'',abbr=(((d.board||{})[side])||{}).abbr||'';
- return Object.assign({},d,{drive:{teamAbbr:abbr,ballYardsToEndzone:pb.b,downDistanceText:pb.edd||''},
-  situation:{distance:pb.edd?pb.ed:null,downDistanceText:pb.edd||'',possessionText:pb.ep||'',isRedZone:pb.b>0&&pb.b<=20,lastPlayText:p.txt,lastPlayType:p.ty,replay:true}});}
-function pbpRefresh(mode){const r=S.gameR;if(!r)return;const st=document.querySelector('#sheet .fstrip');
- if(mode&&st){const tmp=document.createElement('div');tmp.innerHTML=fieldStrip(gameStepDetail(r),r.leg);const ns=tmp.firstElementChild;if(ns)st.replaceWith(ns);}
- const pan=document.querySelector('#sheet .gpanel[data-tab="pbp"]');if(pan&&!pan.hidden)pan.innerHTML=pbpHtml(r);
- let delay=0;if(mode==='play'){const list=pbpPlays(r);const x=list[pbpIdx(list)];if(x)delay=pbpFx(x.p);}
- if(mode)pbpSlide(delay);}
-function pbpAfterPaint(r){const list=pbpPlays(r);
- if(S.gtabCur==='pbp'&&S.pbpStep==null&&list.length){const last=list[list.length-1];if(S.pbpSeen!=null&&S.pbpSeen!==last.k){pbpSlide(pbpFx(last.p));}else pbpSyncBall();S.pbpSeen=last.k;}
- else pbpSyncBall();}
-function pbpSyncBall(){const b=document.querySelector('#sheet .fstrip .fball');S.pbpBall=b?parseFloat(b.style.left):null;}
-/* slide the ball marker (and the possession arrow) from where it was to its new spot; a pass or kick waits for the flight */
-function pbpSlide(delay){const st=document.querySelector('#sheet .fstrip'),ball=st&&st.querySelector('.fball');if(!ball){S.pbpBall=null;return;}const to=ball.style.left,from=S.pbpBall;S.pbpBall=parseFloat(to);
- if(matchMedia('(prefers-reduced-motion: reduce)').matches||from==null||isNaN(from)||Math.abs(from-parseFloat(to))<.05)return;
- const els=[ball,st.querySelector('.fdir')].filter(Boolean);els.forEach(e=>{e.style.transition='none';e.style.left=from+'%';});void st.offsetWidth;
- els.forEach(e=>{e.style.transition='';e.style.transitionDelay=(delay||0)+'ms';e.style.left=to;});}
-/* ---- illustrations: what kind of play was it, and a small effect on the field for it */
-function fabs(side,ytz){return side==='home'?ytz:100-ytz;}      // yards from the LEFT goal line = % across .grass (home attacks left, away right), the same as fieldStrip
-function pbpSide(x){return x==='home'||x==='away';}      // a ball move is only drawn when the server knew whose end zone it is
-function pbpKind(p){const t=(p.ty||'').toLowerCase(),turn=!!p.to&&!/penalty/.test(t);
- const k={mv:'dflt',td:/touchdown/.test(t)||(p.sc&&p.b===0&&!/field goal|safety|extra point/.test(t)),turn,fg:null,safety:/safety/.test(t)};
- if(p.a==null||p.b==null||!pbpSide(p.as)||!pbpSide(p.bs))k.mv='none';
- else if(p.pen||/penalty/.test(t))k.mv='pen';
- else if(/field goal/.test(t)){k.mv='kick';k.fg=p.sc?'good':'no';}
- else if(/kickoff|punt|extra point/.test(t))k.mv='kick';
- else if(/sack/.test(t))k.mv='sack';
- else if(/pass|interception/.test(t))k.mv='pass';
- else if(/rush|run/.test(t)||/scramble/.test((p.txt||'').toLowerCase()))k.mv='run';
- return k;}
-function pbpFx(p){if(matchMedia('(prefers-reduced-motion: reduce)').matches)return 0;const grass=document.querySelector('#sheet .fstrip .grass');if(!grass)return 0;
- const k=pbpKind(p);if(k.mv==='none')return 0;
- const a=fabs(p.as,p.a),b=fabs(p.bs,p.b),off=p.as==='home'?-1:1;
- const add=(cls,css,txt)=>{const e=document.createElement('div');e.className=cls;Object.assign(e.style,css||{});if(txt)e.textContent=txt;grass.appendChild(e);setTimeout(()=>e.remove(),2000);return e;};
- const tag=(txt,tone)=>add('ftag '+(tone||''),{},txt);
- const fly=(from,to,ah,dur)=>{const e=add('fproj',{left:from+'%'});e.style.setProperty('--ah',ah+'px');e.style.setProperty('--dur',dur+'ms');e.innerHTML='<b></b>';void e.offsetWidth;e.style.left=to+'%';return dur;};
- const trail=(from,to,red)=>{add('ftrail'+(red?' red':''),{left:Math.min(from,to)+'%',width:Math.abs(to-from)+'%',transformOrigin:to>=from?'left center':'right center'});};
- const goal=off>0?100:0;let delay=0;
- if(k.mv==='pass'){const inc=/incomplet/.test((p.ty||'').toLowerCase())||Math.abs(b-a)<.1;const to=k.turn?a+off*15:(inc?a+off*11:b);
-  delay=fly(a,to,Math.min(26,9+Math.abs(to-a)*.5),460+Math.min(320,Math.abs(to-a)*6));}
- else if(k.mv==='kick'){const to=k.fg?goal:b;delay=fly(a,to,Math.min(36,16+Math.abs(to-a)*.3),720+Math.min(520,Math.abs(to-a)*8));}
- else if(k.mv==='run')trail(a,b,false);
- else if(k.mv==='sack'){trail(a,b,true);tag('SACK','bad');}
- else if(k.mv==='pen'){add('fflag',{left:a+'%'},'🚩');}
- if(k.td){const ez=document.querySelector('#sheet .fstrip .ez.'+(off>0?'r':'l'));if(ez){ez.classList.add('tdflash');setTimeout(()=>ez.classList.remove('tdflash'),1400);}tag('TOUCHDOWN','good');}
- else if(k.fg==='good'){tag('FIELD GOAL','good');}
- else if(k.fg==='no'){tag('NO GOOD','bad');}
- else if(k.safety){tag('SAFETY','bad');}
- if(k.turn){const bl=document.querySelector('#sheet .fstrip .fball');if(bl){bl.classList.add('turn');setTimeout(()=>bl.classList.remove('turn'),1700);}tag('TURNOVER','bad');}
- return delay;}
-/* ---- Slice 3 tabs (football): box score, team stats, injury report, last 5 games, season leaders. Drawn only from the game
-   answer's detail block (ESPN feeds, display only). A side the feed has nothing for says so in plain words instead of guessing.
-   Team colours are accents only (our own art; no logos). Numbers roll and share bars slide when the game changes them. */
-function gd(r){return (r||{}).detail||{};}
-function gTeams(r){const b=gd(r).board||{};return {away:b.away||{},home:b.home||{}};}
-/* a team colour that reads on the page: the primary, else the alternate, when it is neither near-black nor near-white */
-function tcol(t,fb){const ok=c=>{c=fcolor(c,'');if(!c)return '';const n=parseInt(c.slice(1),16),L=(.2126*((n>>16)&255)+.7152*((n>>8)&255)+.0722*(n&255))/255;return L>.08&&L<.9?c:'';};
- const c=ok(t.color)||ok(t.alt);return c?`color-mix(in srgb,${c},#fff var(--tmix,0%))`:fb;}
-function tcols(r){const T=gTeams(r);const a=tcol(T.away,'var(--yes)');let h=tcol(T.home,'var(--no)');if(h===a)h='var(--sub)';return {a,h};}
-function tmName(T,s){return T[s].name||T[s].abbr||(s==='home'?'Home':'Away');}
-function tmHead(r){const T=gTeams(r),c=tcols(r);
- return `<div class="h2h"><b><i class="tdot" style="background:${c.a}"></i>${esc(T.away.abbr||'Away')}</b><b>${esc(T.home.abbr||'Home')}<i class="tdot" style="background:${c.h}"></i></b></div>`;}
-/* a head-to-head share bar; even and quiet when there is nothing to compare */
-function sbar(key,an,hn,c,lo){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const tie=ok&&an===hn;
- /* a lower-is-better row (turnovers, sacks, penalties...) gives the longer bar to the side with the FEWER: its share is the other side's count */
- const p=ok&&!tie?Math.max(4,Math.min(96,(lo?hn:an)/(an+hn)*100)):50;
- return `<div class="h2bar${ok&&!tie?'':' even'}" role="img" aria-label="${ok&&!tie?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
-/* 'Nov 15' from a plain date (as given) or a UTC kickoff time (in this phone's own time zone, so a night game keeps its day) */
-function gdate(d){d=d||'';const day=/^\d{4}-\d{2}-\d{2}$/.test(d),at=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(d);if(!day&&!at)return '';
- const x=new Date(day?d+'T12:00:00Z':d);return isNaN(x)?'':x.toLocaleDateString('en-US',day?{month:'short',day:'numeric',timeZone:'UTC'}:{month:'short',day:'numeric'});}
-function numAttr(k,v,f){return /^\d{1,6}$/.test(String(v))?` data-num="${esc(k)}" data-v="${+v}" data-f="${f||'int'}"`:'';}
-/* a freshly opened tab rises in and its bars grow from nothing (refreshes only roll what changed) */
-function gtabIn(p){if(!p)return;rollNums(p);if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- p.querySelectorAll('.tsr,.ldr,.l5r,.injr,.gtw').forEach((e,i)=>e.style.setProperty('--i',Math.min(i,16)));
- p.classList.add('gin');clearTimeout(S.ginT);S.ginT=setTimeout(()=>p.classList.remove('gin'),1100);}
-/* Box score: a team switch, then that team's tables (passing, rushing, receiving, then defence and kicking). */
-function boxHas(r){const b=gd(r).box;return !!(b&&((b.away||[]).length||(b.home||[]).length));}
-function boxSide(r){const b=gd(r).box||{};const s=S.boxSide;return (s==='away'||s==='home')&&(b[s]||[]).length?s:((b.away||[]).length?'away':'home');}
-function boxHtml(r){const b=gd(r).box||{},T=gTeams(r),c=tcols(r),side=boxSide(r);
- const sw=`<div class="seg bxsw" data-k="boxsw" role="group" aria-label="Team">${['away','home'].map(s=>`<button type="button" class="${s===side?'on':''}" aria-pressed="${s===side}" data-side="${s}" onclick="boxPick('${s}')"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(T[s].abbr||tmName(T,s))}</button>`).join('')}</div>`;
- const td=v=>`<td>${esc(v==null||v===''?'–':v)}</td>`;
- const tables=(b[side]||[]).map(g=>`<h4 class="ghead">${esc(g.t)}</h4><div class="gtw"><table class="gstat"><thead><tr><th>Player</th>${(g.c||[]).map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>
-  ${(g.r||[]).map(p=>`<tr><td><div><span class="pn" title="${esc(p.n)}">${esc(p.n)}</span>${p.j?`<span class="jn">#${esc(p.j)}</span>`:''}</div></td>${(p.s||[]).map(td).join('')}</tr>`).join('')}
-  ${(g.tot||[]).some(v=>v)?`<tr class="tot"><td>Team</td>${g.tot.map(td).join('')}</tr>`:''}</tbody></table></div>`).join('');
- return `<div class="gtabx box">${sw}${tables||'<p class="gempty">No stats for this team yet.</p>'}<p class="pnote">ESPN's box score. It updates as the game goes.</p></div>`;}
-function boxPick(s){if(s!=='away'&&s!=='home')return;S.boxSide=s;
- const p=document.querySelector('#sheet .gpanel[data-tab=box]');if(!p||!S.gameR)return;p.innerHTML=boxHtml(S.gameR);segInd();gtabIn(p);}
-/* Team stats: head to head, the label in the middle, a share bar under each row. */
-function tsHas(r){const t=gd(r).tstats;return Array.isArray(t)&&t.length>0;}
-/* the leading side of a row (its number is emphasised and the other dims); a tie leaves both plain. Lower-is-better rows are marked by the Mac (x.lo) and led by the side with fewer. */
-function tsLead(x,s){return x.ld===s?'lead':x.ld?'lag':'';}
-function tsHtml(r){const t=S.gameOpen,c=tcols(r);
- const rows=gd(r).tstats.map(x=>`<div class="tsr${x.lo?' lo':''}"><div class="tsv"><b class="${tsLead(x,'a')}"${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}${x.lo?'<small class="lob">fewer is better</small>':''}</span><b class="${tsLead(x,'h')}"${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c,x.lo)}</div>`).join('');
- return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates. Where fewer is better, the side with fewer leads.</p></div>`;}
-/* Injury report: both teams, worst first, with ESPN's guess at a return date. */
-/* The tab shows when ESPN sent injuries, or when the rest of the summary (box score, team stats) loaded without them. A side with its own list from ESPN is a real report (an empty list means
-   nobody is hurt); a side ESPN sent nothing for is "not available right now", never "no injuries". */
-function injHas(r){return !!gd(r).inj||boxHas(r)||tsHas(r);}
-function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
-function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
- const sec=s=>{const known=Array.isArray(i[s]),L=known?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${!known?'<p class="gempty">Injury report isn’t available right now.</p>':L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
-  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries reported.</p>'}</div>`;};
- return `<div class="gtabx"><div class="injgrid">${sec('away')}${sec('home')}</div><p class="pnote">ESPN's injury report. Return dates are ESPN's estimate.</p></div>`;}
-/* Last 5 games: each team's five most recent finished games, newest first, and its record. */
-function gskel(n){return Array.from({length:n||3},()=>'<div class="gskr" aria-hidden="true"><i class="skel"></i><i class="skel"></i></div>').join('');}
-function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home))||!!gd(r).gxp;}
-function l5Html(r){const l=gd(r).last5||{},T=gTeams(r),c=tcols(r);
- const sec=s=>{const x=l[s];const rec=(x&&x.rec)||T[s].record||'';const g=x&&Array.isArray(x.g)?x.g:[];
-  const body=!x?(gd(r).gxp?`<div aria-busy="true">${gskel(5)}</div>`:'<p class="gempty">Recent results aren’t available right now.</p>'):x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
-   g.map(v=>`<div class="l5r"><span class="wl ${v.w==='W'?'w':v.w==='L'?'l':'t'}">${esc(v.w)}</span><span class="l5o"><span class="m">${esc(v.at)}</span> ${esc(v.opp)}</span><span class="l5s">${+v.me}–${+v.them}</span><span class="m l5d">${esc(gdate(v.d))}</span></div>`).join('');
-  const form=g.length?`<span class="form" aria-hidden="true">${g.slice().reverse().map(v=>`<i class="${v.w==='W'?'w':v.w==='L'?'l':''}"></i>`).join('')}</span>`:'';
-  return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}${rec?`&nbsp;<span class="m">(${esc(rec)})</span>`:''}${form}</h4>${body}</div>`;};
- return `<div class="gtabx"><div class="l5grid">${sec('away')}${sec('home')}</div><p class="pnote">Scores show this team first. From ESPN's schedule.</p></div>`;}
-/* Season leaders: the top passer, rusher and receiver on each side, head to head, with a share bar. */
-function ldHas(r){const l=gd(r).leaders;return (Array.isArray(l)&&l.length>0)||!!gd(r).gxp;}
-function ldHtml(r){const t=S.gameOpen,c=tcols(r);
- if(!Array.isArray(gd(r).leaders)||!gd(r).leaders.length)return `<div class="gtabx" aria-busy="true">${tmHead(r)}${gskel(3)}<p class="pnote">Loading season leaders…</p></div>`;
- const side=(x,s,k)=>x?`<div class="ldp ${s}"><b class="ldv" data-num="ld:${esc(t)}:${esc(k)}:${s}" data-v="${+x.v||0}" data-f="cint">${esc(Math.round(+x.v||0).toLocaleString('en-US'))}</b><div class="ldn">${x.n?esc(x.n):'—'}${x.j?`<span class="jn">#${esc(x.j)}</span>`:''}</div><div class="m ldl">${esc(x.line||'')}</div></div>`
-  :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
- const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
- return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">Season totals from ESPN.</p></div>`;}
-function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
- const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
- const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
- const last=pts[pts.length-1][1];const col=last>=.5?'var(--yes)':'var(--no)';const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
- S.scr=S.scr||{};S.scr.win={n:pts.length,at:f=>{const t=t0+(f*W-pl)/iw*(t1-t0);let i=0,b=Infinity;pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;},
-  x:i=>X(pts[i][0])/W*100,y:i=>Y(pts[i][1])/H*100,lab:i=>tl(pts[i][0])+' · '+pct(pts[i][1])};
- return `<div class="key"><span><i style="background:${col}"></i>Chance to win</span><span><i style="background:var(--sub);height:8px;width:2px"></i>Score change</span><span class="m">Drag to look back</span></div><div class="scrub" data-scrub="win"><span class="sread"></span><i class="scrl"></i><i class="scrd" style="background:${col}"></i><svg viewBox="0 0 ${W} ${H}">
-  ${[0,.25,.5,.75,1].map(v=>`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)" ${v===.5?'stroke-dasharray="4 4"':''}/><text x="${pl-6}" y="${Y(v)+4}" font-size="11" text-anchor="end" fill="var(--mute)">${v*100}%</text>`).join('')}
-  ${(plays||[]).slice(1).filter(p=>p.ts>=t0).map(p=>`<line x1="${X(p.ts)}" x2="${X(p.ts)}" y1="8" y2="${8+ih}" stroke="var(--sub)" stroke-width="1" opacity=".35"/>`).join('')}
-  <path d="${d} L${X(t1)} ${8+ih} L${pl} ${8+ih}Z" fill="${col}" opacity=".08"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>
-  <text x="${pl}" y="${H-4}" font-size="11" fill="var(--mute)">${tl(t0)}</text><text x="${W-8}" y="${H-4}" font-size="11" fill="var(--mute)" text-anchor="end">${tl(t1)}</text></svg></div>`;}
-/* Any chart you can drag a finger along (the game's chance line, the Results profit bars): same feel as the Live hero
-   chart. A spec in S.scr[name] says how many points there are, which one is under the finger, and where to draw the
-   line, dot and readout; every new point ticks a haptic. A short tap (no drag) can open the point (o.tap). Refreshes
-   wait while a finger is down (S.scrub). */
-function wireScrubs(root){(root||document).querySelectorAll('[data-scrub]').forEach(el=>{if(el._wired)return;el._wired=1;let idx=-1,on=false,x0=0,moved=false;
- const spec=()=>(S.scr||{})[el.dataset.scrub];
- const pick=e=>{const o=spec(),r=el.getBoundingClientRect();return o?o.at(Math.max(0,Math.min(.9999,(e.clientX-r.left)/Math.max(1,r.width)))):-1;};
- const show=i=>{const o=spec();if(!o||i===idx||i<0||i>=o.n)return;idx=i;
-  if(o.x){const fx=o.x(i),l=el.querySelector('.scrl'),d=el.querySelector('.scrd'),rd=el.querySelector('.sread');if(l)l.style.left=fx+'%';if(d){d.style.left=fx+'%';d.style.top=o.y(i)+'%';}
-   if(rd){rd.textContent=o.lab(i);rd.style.left=Math.max(14,Math.min(86,fx))+'%';}}
-  if(o.show)o.show(i,el);hap('selection');};
- el.addEventListener('pointerdown',e=>{if(e.button)return;on=true;moved=false;x0=e.clientX;S.scrub=true;el.classList.add('on');idx=-1;show(pick(e));try{el.setPointerCapture(e.pointerId)}catch(x){}});
- el.addEventListener('pointermove',e=>{if(!on)return;if(Math.abs(e.clientX-x0)>6)moved=true;show(pick(e));});
- const end=e=>{if(!on)return;on=false;S.scrub=false;el.classList.remove('on');const i=idx,o=spec();idx=-1;if(o&&o.end)o.end(el);
-  if(e.type==='pointerup'&&!moved&&o&&o.tap&&i>=0)o.tap(i);if(S.liveDirty){S.liveDirty=false;if(S.view==='live')renderLive();}if(S.resDirty){S.resDirty=false;if(S.view==='results')renderResults();}};
- ['pointerup','pointercancel','lostpointercapture'].forEach(k=>el.addEventListener(k,end));});}
-// ---------------- the Sold moment, wins and the big hit
-/* Cashing out gets the same drawn-check sheet as buying: what came back, the profit and a ticket stub. A loss gets a
-   calm grey version (no alarm), like Kalshi's "Position closed" card. Shown for your own taps and, while the page is
-   open, for sales smart sell or auto cash-out made by themselves. */
-function soldSheet(o){const back=+o.back||0,cost=+o.cost||0,pl=back-cost,up=pl>=-0.004;hap(up?'success':'light');
- const id='sold:'+Date.now();S.nums[id]=0;
- modal(`<div class="okcard sold ${up?'':'okloss'}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${up?'<path d="M27 43 L37 53 L58 32"/>':'<path d="M28 42 L56 42"/>'}</svg>
-  <div class="stamp">${o.auto?'SOLD BY SMART SELL':'POSITION CLOSED'}</div><h3>${up?'Sold':'Closed'} · ${esc(o.label||'')}</h3>
-  <div class="amt" data-num="${id}" data-v="${back.toFixed(2)}">${money(back)}</div>
-  <div class="plp">${pl>=0?'+':'−'}${money(Math.abs(pl))} ${pl>=0?'profit':'loss'}${cost?` · ${pl>=0?'+':'−'}${Math.abs(Math.round(pl/cost*100))}%`:''}</div>
-  <div class="tkt"><div>You paid<b>${money(cost)}</b></div><div>Got back<b>${money(back)}</b></div></div>
-  <p>${up?(o.auto?'Smart sell took the offer because it beat holding.':'Locked in. The money is back in your balance.'):(o.auto?'Smart sell cut this one before it slid further.':'Some of it came back. On to the next one.')}</p>
-  <div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
- rollNums($('#sheet'));clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard.sold'))closeModal();},7000);}
-function bigWin(c){const pays=+c.pays||0,cost=+c.cost||0,reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
- document.querySelectorAll('.bigwin').forEach(e=>e.remove());const box=document.createElement('div');box.className='bigwin';
- box.innerHTML=`<i class="ring2"></i><i class="ring2 b"></i><div class="bw"><div class="ey">Big hit</div><div class="amt">${money(reduce?pays:0)}</div><div class="lb">${esc(c.label||'')}</div>
-  <div class="mx">+${money(pays-cost)}${cost?` · ${(pays/cost).toFixed(1)}× your money`:''}</div><br><button class="btn acc">Nice</button></div>`;
- const close=()=>{box.classList.add('out');setTimeout(()=>box.remove(),380);};box.addEventListener('click',close);document.body.appendChild(box);
- hap('success');setTimeout(()=>hap('success'),650);if(!reduce){celebrate();setTimeout(celebrate,700);
-  const a=box.querySelector('.amt'),t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/1400),e=1-Math.pow(1-k,4);a.textContent=money(pays*e);if(k<1)requestAnimationFrame(step);};requestAnimationFrame(step);}
- setTimeout(()=>{if(box.isConnected)close();},9000);}
-function isBig(c){const p=(+c.pays||0)-(+c.cost||0);return p>=50||(p>=15&&c.cost>0&&c.pays/c.cost>=5);}
-function winMoment(c){S.momSeen=S.momSeen||{};if(S.momSeen['w:'+c.t])return;S.momSeen['w:'+c.t]=1;
- if(isBig(c))bigWin(c);else{celebrate();toast(`${c.label} won · +${money((c.pays||0)-(c.cost||0))}`,5000,'good');}}
-/* What changed between two loads of Live while the page was open: a combo that won, one that was cashed out, and
-   any sale smart sell made by itself (singles included, from its log). */
-function liveMoments(prev,d){if(!d||d.error)return;S.momSeen=S.momSeen||{};const was={};((prev&&prev.combos)||[]).forEach(c=>was[c.t]=c.group);
- if(prev&&!prev.error)(d.combos||[]).forEach(c=>{if(was[c.t]!=='pending')return;
-  if(c.group==='won')winMoment(c);
-  else if(c.group==='cashed'&&!S.momSeen['s:'+c.t]){S.momSeen['s:'+c.t]=1;const auto=(d.sales||[]).some(x=>x.ticker===c.t);soldShow({label:c.label,back:c.back,cost:c.cost,auto});}});
- (d.sales||[]).forEach(x=>{if((x.at||0)<S.t0||S.momSeen['s:'+x.ticker])return;S.momSeen['s:'+x.ticker]=1;soldShow({label:x.combo,back:x.offer,cost:x.cost,auto:true});});}
-function soldShow(o){if($('#modal').classList.contains('on')){const pl=(+o.back||0)-(+o.cost||0);toast(`Sold ${o.label} for ${money(o.back)} (${pl>=0?'+':'−'}${money(Math.abs(pl))})`,6000,pl>=0?'good':null);return;}soldSheet(o);}
-S.t0=Date.now()/1000;
-// ---------------- live events from the Mac
-async function loadRecap(){const h=new Date().getHours();const day=new Date().toDateString();
- let seen='';try{seen=localStorage.getItem('cw_recap')||''}catch(e){}
- if(h<5||h>=14||seen===day){S.recap=null;return;}S.recap=await api('/app/api/recap').catch(()=>null);if(S.view==='live')renderLive();}
-function recapCard(){const r=S.recap;if(!r||!r.bets||!r.bets.length)return '';
- return `<div class="card recap"><div class="rh"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Yesterday</div>
-  <b style="font-size:26px" class="${r.pl>=0?'up':'down'}" data-num="rc:pl" data-v="${Math.abs(r.pl||0).toFixed(2)}" data-pre="${(r.pl||0)>=0?'+':'−'}">${smoney(r.pl)}</b> <span class="m">${r.won} up · ${r.lost} down</span></div>
-  <button class="x" onclick="try{localStorage.setItem('cw_recap',new Date().toDateString())}catch(e){};S.recap=null;renderLive()">✕</button></div>
-  ${r.best&&r.best.pl>0?`<div class="mini">Best<b class="up">${esc(r.best.what)} ${smoney(r.best.pl)}</b></div>`:''}${r.worst&&r.worst.pl<0?`<div class="mini">Worst<b class="down">${esc(r.worst.what)} ${smoney(r.worst.pl)}</b></div>`:''}
-  ${r.note?`<div class="m" style="font-size:12.5px;margin-top:6px">${esc(r.note)}</div>`:''}${streakNote(r)}</div>`;}
-/* The streak note in the morning recap: days in a row the panel finished up, a flame and a dot per day (up to a week).
-   One good day says what starts a streak; a down day says nothing (no guilt trip). */
-function streakNote(r){const s=+r.streak||0;if(s<1)return '';
- if(s===1)return `<div class="streak"><span class="fl">🔥</span><span><b>1 day up.</b> Another good day today starts a streak.</span></div>`;
- return `<div class="streak hot"><span class="fl">🔥</span><span><b>${s} days up</b> in a row${s>=7?'. A whole week.':s>=3?'. Keep it going.':''}</span><span class="dots">${Array.from({length:Math.min(s,7)},(_,i)=>`<i style="--i:${i}"></i>`).join('')}</span></div>`;}
-function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
- <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p><div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
- clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard'))closeModal();},5200);}
-function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
- for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
- document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
-function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
- es.onopen=()=>{S.live_ok=true;S.esEver=true;stat();};
- es.onerror=()=>{S.live_ok=false;stat();};
- es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
-  if(ev.kind==='tick'){if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
-  S.events=(S.events||[]).concat([ev]).slice(-30);
-  if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
-  if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
-  if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
-  if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
- }catch(x){}}
-function stat(){netBanner();const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
-// ---------------- settings
-const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$','']};
-const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,10,1],hedge_cap:[25,500,25]};
-function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||['',''];return u[0]+(+v).toLocaleString()+u[1];}
-function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
- return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
-  oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
-function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" switch class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
-function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
-/* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
-function rideRow(names){names=names||[];const n=Math.max(2,names.length),v=Math.max(0,Math.min(n-1,+S.set.values.ride||0));
- return `<div class="srow"><div class="l"><b>Let it ride</b><small>How long to hold before cashing out. Cautious sells sooner, Bold later, Ride it out turns smart sell off.</small></div>
-  <div class="rng rdet"><input type="range" id="ride" aria-label="Let it ride" min="0" max="${n-1}" step="1" value="${v}" style="--p:${Math.round(v/(n-1)*100)}%" oninput="rideIn(this)" onchange="setv('ride',+this.value);renderSettings()"><output>${esc(names[v]||'')}</output>
-  <div class="tks">${names.map((_,i)=>`<i class="${i<=v?'on':''} ${i===v?'at':''}"></i>`).join('')}</div></div></div>`;}
-function rideIn(el){const names=(S.set&&S.set.ride)||[],n=Math.max(2,names.length),v=+el.value;el.style.setProperty('--p',Math.round(v/(n-1)*100)+'%');
- const o=el.parentNode.querySelector('output');if(o){o.textContent=names[v]||'';o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump');}
- el.parentNode.querySelectorAll('.tks i').forEach((t,i)=>{t.classList.toggle('on',i<=v);t.classList.toggle('at',i===v);});}
-function stp(k,lo,hi){const v=S.set.values[k];return `<div class="stp"><button onclick="bump('${k}',-1,${lo},${hi})">−</button><span>${v}</span><button onclick="bump('${k}',1,${lo},${hi})">＋</button></div>`;}
-function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d));if(v===S.set.values[k])return;setv(k,v);
- const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
-function scard(id,ic,title,sub,inner){return `<section class="scard" id="s-${id}"><header><span class="ic">${ic}</span><div><h3>${title}</h3>${sub?`<p>${sub}</p>`:''}</div></header>${inner}</section>`;}
-const PEND={};let saveT=null;
-function setv(k,v){hap('selection');S.set.values[k]=v;PEND[k]=v;saved('Saving…');clearTimeout(saveT);saveT=setTimeout(flush,450);
- if(['auto_sell','auto_hedge','include_live','auto_cash','size_auto'].includes(k))renderSettings();}
-async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)delete PEND[k];
- const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
- if(r.ok){S.build=null;saved('Saved','ok');if(r.synced===true)toast('Saved · the Mac watcher has it now.');else if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
- else{saved('Not saved');toast(r.msg||'Couldn\'t save. Check the connection.');}}
-function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'')+(c==='ok'?' bump':'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
-function sport(lg){S.slg=lg;S.set=null;renderSettings();load('settings');}
-function settingsSkel(){const row='<div style="display:grid;grid-template-columns:1fr 46px;gap:14px;align-items:center"><div style="display:grid;gap:6px"><i style="height:13px;width:52%"></i><i style="height:10px;width:78%"></i></div><i style="height:26px;border-radius:99px"></i></div>';
- return `<div class="set"><div></div><div><div class="hsk" style="padding:2px 0 18px"><i style="height:24px;width:34%"></i><i style="height:12px;width:60%"></i></div><div class="setsk">${[3,4,2].map(n=>`<div><i style="height:15px;width:40%"></i>${row.repeat(n)}</div>`).join('')}</div></div></div>`;}
-function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S.lerr||{}).settings?`<div class="set"><div></div><div>${errCard('settings')}</div></div>`:settingsSkel();return;}
- const v=d.values,mode=d.mode,mac=S.mac;
- const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekend cap';
- const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
-  mode==='day'?tgl('next_day','Use tomorrow\'s games','Instead of today\'s'):
-  tgl('thursday','Thursday games')+tgl('saturday','Saturday games')+tgl('monday','Monday games')+`<div class="srow"><div class="l"><small>Sunday is always in.</small></div></div>`;
- const tiers=(d.full?[['full','Full slate','Every game on the slate in one bet. You choose how many underdogs it picks.','upsets',0,8,'underdogs']]:[]).concat([['safer','Safer','Short combos, more likely to hit.',null,2,8,'games each'],['middle','Middle','The core of the mix.',null,2,12,'games each'],['moonshot','Moonshot','Long shots, big payouts.',null,2,16,'games each']]);
- const mix=`<div class="mixl">${tiers.map(([t,n,s,alt,lo,hi,unit])=>{const b=alt||t;
-  return `<div class="mixr"><div><b>${n}</b><small>${s}</small></div><div class="mixs"><div><span>How many</span>${stp(t+'_count',0,10)}</div><div><span>${alt?'Underdogs':'Games each'}</span>${stp(b+'_min',alt?0:lo,hi)}<span>to</span>${stp(b+'_max',alt?0:lo,hi)}</div></div></div>`;}).join('')}</div>`;
- const secs=[['money','💵','Money'],['mix','🧩','Combo mix'],['games','🗓️','Games & picks'],['killer','🔥','Killer deals'],['maker','📌','Standing orders'],['cash','💸','Cash out & hedging'],['alerts','🔔','Notifications'],['haptics','📳','Haptics'],['mac','💻',LOCAL?'This Mac':'The Mac'],['keys','🔑','Accounts & keys']];
- const ago=s=>s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' hr':Math.round(s/86400)+' days';
- const macCard=LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
-   <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
-   <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
-   <div class="sact"><button class="btn acc" onclick="macUpdate(this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
-   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" switch class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
-   <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
-   ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
-   ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
-  :!LOCAL&&mac&&mac.ok?`<div class="kv"><div><span>Watcher</span><b><span class="dot"></span>Running · ${ago(mac.up)}</b></div><div><span>Version</span><b>${esc(mac.engine||mac.watcher)}</b></div>
-   <div><span>Newest</span><b style="display:block;word-break:normal">${mac.latest?(mac.latest===mac.engine?'<i style="font-style:normal;color:var(--yes)">Up to date</i>':esc(mac.latest)+(mac.waiting?' · waiting':' · installing soon')):'—'}${mac.checked?`<i class="m" style="display:block;font-style:normal;font-size:12px;font-weight:500;margin-top:2px">${Date.now()/1000-mac.checked<60?'checked just now':'checked '+ago(Math.round(Date.now()/1000-mac.checked))+' ago'}</i>`:''}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · paused':''}</b></div></div>
-   <div class="srow"><div class="l"><small>Updates install ${mac.auto_update?'automatically within about 10 minutes':'after your phone approves them'}. The pairing code and passcode are on the Mac itself.</small></div><div class="sact" style="margin:0"><button class="btn" onclick="macCheck(this)">Check for an update now</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div></div>`
-  :`<div class="srow"><div class="l"><b>${LOCAL?'Couldn\'t read the Mac\'s status':'Couldn\'t reach the Mac'}</b><small>${LOCAL?'Reload in a moment.':'It may be asleep or restarting. Pull to refresh in a minute.'}</small></div><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>`;
- m.innerHTML=`<div class="set"><nav class="sidx">${secs.map(([id,ic,t])=>`<a href="#s-${id}" onclick="event.preventDefault();document.getElementById('s-${id}').scrollIntoView({behavior:'smooth'})">${ic} ${t}</a>`).join('')}<div class="sv">Planner ${esc(d.version)}</div></nav><div>
- <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
- <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
- ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
- ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
- ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
-   +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
- ${d.killer?scard('killer','🔥','Killer deals','Rare deals so good the Mac may buy them on its own.',killerCard(d.killer)):''}
- ${d.maker?scard('maker','📌','Standing orders','Buy orders resting under fair, managed by the Mac.',makerCard(d.maker)):''}
- ${scard('cash','💸','Cash out & hedging','When to take money off the table. The Mac watches these all day.',
-   rng('bankroll','Betting bankroll','Bigger sure amounts against this get favoured')+rideRow(d.ride)
-   +tgl('auto_cash','Keep a cash-out offer ready','On every live combo')+rng('cash_every','Fresh offers every','',!v.auto_cash)+rng('refresh_secs','Live updates every')
-   +tgl('auto_sell','Auto cash-out','The Mac sells by itself, logged and capped')
-   +tgl('smart_sell','Smart profit-taking','Sells when locking in beats the risk of holding, by sport: a one-goal hockey lead is fragile, an early NBA lead isn\'t',!v.auto_sell)
-   +rng('take_profit','Take profit at','Sell once Kalshi offers this much of the payout, if it\'s at least 25% more than you paid',!v.auto_sell)
-   +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
-   +tgl('stop_loss','Manual override: sell at a loss when a game turns','Off by default. When on, auto cash-out may sell a combo for less than you paid, but only late in a game (from about halfway), when a pick has fallen well below its chance before the game, and only after that has held for 3+ minutes. It never does it at halftime or a break, early in a game, or when the live score is missing or out of date. How late and how big a fall are learned league by league (see Results › Selling). Separately, the app learns when cutting a loss beats holding.',!v.auto_sell)
-   +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
-   +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
- ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
-   fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
- ${hapCard()}
- ${scard('mac','💻',LOCAL?'This Mac':'The Mac',LOCAL?'The watcher and Combo Hub run here, and keep themselves up to date.':'',macCard)}
- ${scard('keys','🔑','Accounts & keys','Keys never leave the device they\'re on.',`<div class="kv"><div><span>Kalshi</span><b style="display:flex;align-items:center;gap:7px;word-break:normal">${d.keys.kalshi?'<span class="dot" style="flex:none"></span><span>Connected through the Mac</span>':'<span class="down">Not connected</span>'}</b></div><div><span>Sportsbook odds</span><b>${d.keys.odds?'Key saved':'Free sources only'}</b></div></div>
-   <div class="srow"><div class="l"><small>Change the Mac's Kalshi key under This Mac › Kalshi key. The phone's keys are in the planner on the iPhone.</small></div>${S.inapp?'<a class="btn ghost" href="combo://phone">Phone screens</a>':''}</div>`)}
- </div></div>`;}
-async function macCheck(b){btnBusy(b,'Checking…');const was=S.mac&&S.mac.engine;
- const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){btnState(b,false,'Couldn\'t reach the Mac');return;}
- for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
-  if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
-async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking Tailscale…';}
- const was=JSON.stringify((S.mac||{}).https||{});const r=await api('/app/mac',{a:'https'}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'Couldn\'t reach the Mac.',5000,'bad');load('settings');return;}
- for(let k=0;k<20;k++){await new Promise(z=>setTimeout(z,3000));const m=await api('/app/mac',{a:'status'}).catch(()=>null);
-  if(m&&m.ok){const h=m.https||{};if(JSON.stringify(h)!==was||k===19){S.mac=m;renderSettings();
-   toast(h.state==='on'?'Secure address is on.':h.state==='need-enable'?(h.link?'One step left: tap Allow https, approve in Tailscale, then Check.':'One step left: enable HTTPS Certificates in Tailscale admin, then Check.'):h.state==='no-cli'?'Tailscale isn\'t installed on this Mac.':h.state==='issuing'?'Almost there: Tailscale is making the certificate.':'Not on yet: '+(h.detail||h.state||'no answer from Tailscale'),7000,h.state==='on'?'good':h.state==='need-enable'?null:'bad');return;}}}
- load('settings');}
-/* Mac buttons: spin while working, then a check (or a cross) on the button itself before the card refreshes. */
-async function macDo(a,b){if(a==='https')return httpsCheck(b);btnBusy(b);const r=await api('/app/mac',{a}).catch(()=>({ok:false}));
- toast(r.msg||(r.ok?'Done.':'That didn\'t work.'),5000);
- if(a==='update'&&r.ok){btnState(b,true,'Updating · back in about a minute',0);setTimeout(()=>location.reload(),70000);return;}
- btnState(b,!!r.ok,r.ok?(a==='testpush'?'Sent':'Done'):'Didn\'t work');setTimeout(()=>{if(S.view==='settings')load('settings');},1500);}
-/* updating restarts the watcher, so it asks first */
-function macUpdate(b){S.updBtn=b;modal(`<h3>Update the Mac now?</h3><p>It installs the newest version and restarts the watcher. Bets and settings stay as they are, and this page reloads by itself in about a minute.</p>
- <div class="row"><button class="btn" onclick="closeModal()">Not now</button><button class="btn acc" onclick="closeModal();macDo('update',S.updBtn)">Update now</button></div>`);}
-async function macCode(){const r=await api('/app/mac',{a:'code'});modal(`<h3>Phone pairing code</h3><p>On the iPhone: planner › Settings › Watcher, paste this and Save. Only needed for a new phone or a reinstall.</p>
- <div class="code" id="pc">${esc(r.code||'')}</div><p class="m" style="font-size:12.5px">Hub: ${esc(r.hub||'Tailscale not signed in: the phone can only use the Mac at home.')}</p>
- <div class="row"><button class="btn" onclick="closeModal()">Close</button><button class="btn acc" onclick="navigator.clipboard.writeText($('#pc').textContent).then(()=>toast('Copied'))">Copy</button></div>`);}
-function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other than this Mac. Your phone's Open Combo Hub link signs in by itself.</p>
- <input class="txt" id="np" placeholder="At least 6 characters" autocomplete="new-password"><p class="m" id="perr" style="color:var(--no);min-height:18px"></p>
- <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
-async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
-// ---------------- refresh loop
-window.__inapp=function(){S.inapp=true;hswSync();if(S.view==='settings')renderSettings();};
-function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
-ideaFromHash(false);
-addEventListener('hashchange',()=>ideaFromHash(true));
-chrome();render();load(S.view);connect();loadRecap();
-setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
- if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
- if((S.fid.keys||[]).some(k=>k.rp===location.hostname))return;localStorage.setItem('cw_fid_asked','1');
- modal(`<h3>Unlock with Face ID?</h3><p>Skip the passcode next time. Your face never leaves your phone; the Mac only keeps a key that can't be used anywhere else.</p>
-  <div class="row"><button class="btn" onclick="closeModal()">Not now</button><button class="btn acc" onclick="closeModal();fidOn()">Turn on Face ID</button></div>`);}catch(e){}},2500);
-setInterval(()=>{if(document.hidden)return;if(S.live_ok&&Date.now()-(S.lastLoad||0)<30000)return;if(['live','games'].includes(S.view)&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}},12000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.view==='live')load('live');});
-</script></body></html>
-"""
+# SPA (the web app's page) is built at import from watcher/spa/: see spa_assemble and the SPA_PROBLEM block above.
 
 
 def webapp_main():
@@ -6171,6 +3887,10 @@ def start_hub(conf, E, odds=None):
 def main():
     conf = load_conf()
     DEP["conf"] = conf
+    if SPA_PROBLEM or SPA_STALE:            # the web app's files are missing, broken or another version's: fetch them
+        if SPA_STALE:
+            log("web app files are for version", spa_stamp(), "- fetching this version's")
+        spa_repair_start(conf)
     E = load_engine()
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here
     E.present = lambda *a, **k: None
@@ -6323,7 +4043,1392 @@ def main():
         time.sleep(max(3, every - (time.time() - t0)))
 
 
+# ---- the web app's pages, built at import ------------------------------------------------------------------
+# The login page and the web app (SPA) live in watcher/spa/ as plain files; spa_assemble (next to the updater) joins
+# them back into these two strings. Missing or broken files never stop the watcher and never leave a blank page:
+# Combo Hub serves the built-in copy below (SPA_LEGACY_Z), the trading loop keeps running, and main() fetches the
+# files (spa_repair_loop). A folder stamped for another version is still served, and main() fetches this version's.
+#
+# SPA_LEGACY_Z: the web app exactly as it was when it moved out of this file (develop 395a7f4; zlib + base64 of
+# SPA, a zero byte, LOGIN_HTML), for ONE release only: a Mac on 2026.11.21.126 updates with its old updater, which
+# installs only the two Python files, so the first start of this version has no spa folder; it serves this copy
+# until spa_repair has fetched the files (seconds, or whenever GitHub answers). Remove it (and this paragraph) only once
+# every device (the Mac and the Pi) reports 2026.11.21.127 or later: a device that skips this release (offline, or a
+# Pi waiting on the phone) still comes from 126 with the old updater and needs it. tools/verify_spa_split.py checks it matches the split's source.
+SPA_LEGACY_Z = (
+    "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"
+    "JKUd0o96S6QkXuKnFGft4rvTm+l/ACAZnDw="
+)
+
+
+def spa_legacy():
+    """(SPA, LOGIN_HTML) from the built-in copy, or None if it can't be read."""
+    import base64, zlib
+    try:
+        spa, login = zlib.decompress(base64.b64decode(SPA_LEGACY_Z)).decode("utf-8").split("\0", 1)
+        return (spa, login) if spa.startswith("<!doctype html>") and "__MSG__" in login else None
+    except Exception:
+        return None
+
+
+SPA_PROBLEM = ""
+SPA_STALE = spa_stamp() not in ("", WATCHER_VERSION)
+try:
+    SPA, LOGIN_HTML = spa_assemble()
+except Exception as _spa_err:                    # anything at all: the watcher must still start and keep trading
+    SPA_PROBLEM = f"{type(_spa_err).__name__}: {_spa_err}"
+    _legacy = spa_legacy()
+    SPA, LOGIN_HTML = _legacy or (SPA_FALLBACK, SPA_FALLBACK)
+    if "--install-spa" not in sys.argv:          # the installer is about to fetch them: nothing to shout about
+        log("WEB APP FILES MISSING OR BROKEN (spa folder):", SPA_PROBLEM, "- Combo Hub serves",
+            "the built-in copy" if _legacy else "a holding page", "until they're fetched")
+
+
 if __name__ == "__main__":
+    if "--install-spa" in sys.argv:          # the installers: fetch this version's web app files now
+        sys.exit(0 if spa_repair() else 1)
     if "--webapp" in sys.argv:
         sys.exit(webapp_main() or 0)
     sys.exit(main() or 0)

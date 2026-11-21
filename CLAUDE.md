@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.126). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.127). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -21,9 +21,49 @@ Real money is involved. Pete uses it daily.
     header "⋯" menu are gone. Settings is a tab, "Reload the page" is a button in Settings › The Mac, and pull-to-refresh
     reloads data. The web-app copy of the engine keeps no-op stand-ins for Pythonista's modules so it still imports as
     "on the phone"; the real Pythonista app is untouched.
-- `watcher/combo_watcher.py` — the Mac watcher, the hub, the web app, and the whole web UI: the single-page app is
-  the raw string `SPA = r"""..."""` (HTML/CSS/JS in one string), the login page is `LOGIN_HTML`.
-- `watcher/install_mac.sh`, `setup_wizard.py`, `wizard_window.js`, `install_pi.sh` — installers.
+- `watcher/combo_watcher.py` — the Mac watcher, the hub and the web app's server.
+- `watcher/spa/` — the whole web UI as plain files, one per screen (GitHub #124), so parallel PRs on different
+  screens don't conflict: `index.html` (the shell), `app.css`, the scripts in load order (`common.js` core/net/
+  toasts/sheets/press feedback/tabs/number rolls/freshness/load, `live.js`, `build.js` (panel, slip, quotes, Buy),
+  `haptics.js` (incl. the see-through switch, method N), `results.js`, `access.js` (Face ID, web push, secure
+  address rows), `build_cards.js` (killer deals, singles), `buy_straight.js`, `build_sections.js` (standing orders,
+  days, folds, lines), `charts.js`, `combo.js` (combo detail), `games.js`, `game.js` (game page, clock, field strip,
+  scoreboard), `game_tabs.js` (tabs, play-by-play, box score, stats, injuries, last 5, leaders, win chart, scrubs),
+  `moments.js` (Sold sheet, wins, big hit, recap, live link), `settings.js`, `boot.js` (start-up and refresh
+  loop)), `login.html`, and `MANIFEST.json` (the list and order). `spa_assemble` joins them at import into the same
+  `SPA` and `LOGIN_HTML` strings as before (`@@SPA_CSS@@`/`@@SPA_JS@@` lines in the shell). **Edit the screen's own
+  file; a new file must be added to `MANIFEST.json`** (keep its shape: the running updater reads the next one's).
+  Files keep exact bytes (`login.html` has no final newline). The split was a pure move: `tools/verify_spa_split.py`.
+- `watcher/install_mac.sh`, `setup_wizard.py`, `wizard_window.js`, `install_pi.sh` — installers. Both shell installers
+  read the files at GitHub's newest commit and then run `combo_watcher.py --install-spa` (non-fatal).
+- **Updates and the web app's files:** `update_if_newer` reads everything at one exact commit (`repo_sha`; none = wait),
+  downloads every file in the new `MANIFEST.json`, checks each against GitHub's own blob hash (contents API at that
+  commit), assembles it and `node --check`s it when node exists, in a temp folder, and only then swaps in spa, engine,
+  watcher (spa put back if the rest fails). Anything missing/changed = nothing replaced, the old version keeps running.
+  Phone-approved updates (automatic updates off, e.g. the Pi) also need the phone's `spa` digest in its approval
+  (engine `spa_approval_digest` = watcher `spa_digest`: sha256 of the assembled SPA, a zero byte, the login page);
+  without it they wait, and the self-repair below needs it too (the phone reads the files at the newest commit). With
+  automatic updates on, the digest is never required. Fetch + swap run under `spa_locked()` (thread lock + a
+  `.spa.lock` file, so the installer's `--install-spa` and the watcher never collide); temp folders are only cleared
+  after an hour. An installed spa folder is stamped (`spa/.version`); a folder for another version is still served but
+  marks `SPA_STALE`, so `main()` fetches this version's. node only blocks when it is 18+ and says a script doesn't parse.
+  Both Python files are written to `.new` before anything is swapped; the running engine is kept as `engine.py.prev`
+  until both are in place, so a failed watcher swap puts the engine (and the spa folder) back. `repo_sha` asks the
+  commits API, then git's own ref list (`.git/info/refs`, not rate-limited), so an API limit can't hold an update
+  back. The phone's `spa_approval_digest` reads only at an exact commit (none = no digest, never stale `main`), all
+  files at once with a 40 s deadline; `refresh_pi_approval` skips it when the saved approval is already complete.
+  `spa_repair` refuses to run from a git checkout; the updater's working files are git-ignored.
+  A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
+  MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
+  newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.21.126
+  (whose updater only knows the two Python files) gets its spa folder. Until it has, the watcher serves the real
+  app from **`SPA_LEGACY_Z`** (end of `combo_watcher.py`: zlib+base64 of the SPA and login page as they were when
+  they moved out, develop 395a7f4; the holding page only if that copy can't be read), so the first start is never
+  blank, even with GitHub down. **Remove `SPA_LEGACY_Z` and `spa_legacy` only once every device (Mac and Pi) reports 2026.11.21.127 or later**
+  (a device that skips 127 still arrives from 126 with the old updater), with
+  `t_spa_transition` (it runs the verbatim 126 updater, `tests/suite/fixtures/updater_126.py.txt`, against a fake
+  GitHub through first start, GitHub down, repair, restart; and the Pi's approved path). Rollback: revert the split
+  merge; the reverted watcher has the strings inline again and ignores any spa folder.
   The Raspberry Pi is an **alerts-only backup; it never trades**.
 - `version.txt` — what the Macs update to.
 - History lives in SQLite `~/combowatch/combo_history.db` (WAL; many processes; use `store_x`/`store_rows`,
@@ -80,7 +120,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.126`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.127`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -123,7 +163,8 @@ whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the tes
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
 and the test lists are in `tests/suite/checklist.py`) plus an aggregate job named `checks` (the required one). What it covers:
-- Both files compile (Python 3.10), `node --check` on the SPA's script and on `LOGIN_HTML`'s script,
+- Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
+  `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
 - Engine tests (each prints PASS/FAIL lines): review fixes, lines (spread game matching), restart, extras,
   own-bets, started-games, games under way priced live (`t_live_panel`), smart sell for singles, combo lab, self-tuning, AHL, AHL live scores, Kalshi live data
@@ -138,8 +179,8 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   nothing (state `off-in-tests`). Only `t_https_push` runs a fake script from a temp folder (`TS_FAKE_OK`). `t_tailscale_safe`
   uses a shim `tailscale` that records calls. `COMBOWATCH_NTFY` points at `ntfy.invalid` in the checks. New harnesses that boot
   the watcher must set the flag too.
-- A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher to a
-  temp home; must never touch the repo files).
+- A simulated Mac run (fake Kalshi; the log must be clean) and a simulated update install (copies the watcher and its
+  spa folder to a temp home, fake GitHub file list; the new web app files must be swapped in; never touches the repo).
 - Playwright page tests at phone (390×844) and desktop sizes for every screen: no JS errors, no sideways scroll on a
   phone, and the specific behaviour (taps, filters, toggles, numbers). Beware timing: numbers animate (~0.65 s),
   view transitions render on the next frame, and the page auto-refreshes; wait for state rather than fixed sleeps.
@@ -666,9 +707,9 @@ Engine: `panel_collect`, `build_panel`, `choose_panel`, `panel_pass`, `panel_exe
 `single_sell_reason`, `smart_sell_singles`, `open_singles`, `live_view`, `record_view`, `mine_page`,
 `fetch_account`/`_fetch_account`, `kalshi_send` (records app buys via `note_app_order`), `get_offer`,
 `accept_offer`, `add_own_combo`, `set_league`, `LEAGUES`/`SPORTS`/`SPORT_PREFIX`.
-Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `rebuild_loop`, `update_loop`/`update_if_newer`/`repo_now`, `start_hub`,
+Watcher: `shadow_loop`, `quick_rounds`, `panel_loop`, `rebuild_loop`, `update_loop`/`update_if_newer`/`repo_now`/`repo_sha`, `spa_assemble`/`spa_fetch`/`spa_swap`/`spa_repair`, `start_hub`,
 `webapp_main` (`api_live`, `api_build`, `api_act`, `api_panel`, `api_results`, `api_game`), `mac_settings`,
 `tailscale_clis`/`tailscale_env`/`tailscale_run`/`tailscale_status`/`tailscale_https`/`https_loop` (secure address: tries
 every Tailscale CLI with a launchd-safe env; "signed out" only when BackendState is NeedsLogin; retries every 5 min until on), `push`/`web_push`
-(every ntfy alert also goes to web push unless `web=False` or a topic is given; the Pi has no subscribers so it stays alerts-only). SPA: `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
+(every ntfy alert also goes to web push unless `web=False` or a topic is given; the Pi has no subscribers so it stays alerts-only). SPA (in `watcher/spa/`): `renderLive`/`heroLive`, `renderBuild`, `renderResults`/`anBlock`, `renderSettings`,
 `afterPaint` (number rolls, stagger, indicators), `go`, `modal`, `okSheet`, `toast`, `hap`.
