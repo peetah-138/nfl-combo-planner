@@ -206,7 +206,9 @@ def fake(method, url, params=None, port=18800, data=None):
             if path.count("/") >= 2:
                 m = next((x for x in mk if x["ticker"] == path.split("/")[2]), None)
                 return R({"market": m} if m else {}, 200 if m else 404)
-            st = (params or {}).get("series_ticker", "")
+            st, ev = (params or {}).get("series_ticker", ""), (params or {}).get("event_ticker", "")
+            if ev:                          # one game's markets (the game page's buy buttons)
+                return R({"markets": [m for m in mk if m["event_ticker"] == ev], "cursor": ""})
             return R({"markets": [m for m in mk if st and m["ticker"].startswith(st)], "cursor": ""})
         if path == "/portfolio/balance":
             return R({"balance": 21103})
