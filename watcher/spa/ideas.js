@@ -25,7 +25,7 @@ function ideaList(d){const hid=S.idHide||{},now=Date.now();   // a dismissal sho
 function ideaBar(x){return (x.below_bar?'<span class="tag" style="background:var(--panel2);color:var(--sub)">BELOW YOUR BAR</span>':'')+(x.stale?'<span class="tag itag-stale">REFRESHING</span>':'');}
 function ideaAgeNote(x){return ideaAge(x.ts)+(x.stale?' · refreshing':'');}
 function ideaButtons(x,q,fresh,left,det){const one=x.n===1;
- return `<div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${one&&!(q.edge>0)?'disabled':''} onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
+ return `<div class="dbtns">${fresh?`<button class="btn ghost" ${S.ibuy&&S.ibuy[x.id]?'disabled ':''}onclick="ideaPass('${x.id}',${det?'true':'false'})">Pass</button><button class="btn yes qb" ${one&&!(q.edge>0)?'disabled':''} onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
   `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}</button>`}</div>`;}
 function ideaQuote(x,q,fresh){if(!fresh)return '';
  return x.n===1?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>`
@@ -81,6 +81,12 @@ async function ideasRestore(){hap('light');const r=await api('/app/api/act',{a:'
 function ideaFind(id){return ((S.live&&S.live.ideas)||[]).find(i=>i.id===id||i.idea_id===id);}
 function ideaX(id){const x=ideaFind(id);if(!x)return;hap('light');ideaOut([id],()=>ideaSend([x],'later'));}
 function hideIdea(id){ideaX(id);}                       // the card's "Not now" means dismiss
+/* Pass (after Get price) closes the idea just like the X: the quote and its countdown are dropped, then the card goes
+   through the same dismiss path (it slides out, the Mac remembers, Undo). Off while a buy is on its way. */
+function ideaPass(id,det){if(S.ibuy&&S.ibuy[id])return;S.ideaq=S.ideaq||{};S.ideaq[id]=null;
+ if(S.ideaTid===id){clearInterval(S.ideaT);S.ideaT=null;S.ideaTid=null;}
+ if(!ideaFind(id)){renderLive();return;}
+ if(det)ideaNotNowSheet(id);else ideaX(id);}
 function ideaNotNowSheet(id){const x=ideaFind(id);closeModal();if(x)setTimeout(()=>ideaOut([x.id],()=>ideaSend([x],'later')),340);}
 function ideaClearAll(){const xs=ideaList(S.live||{});if(!xs.length)return;hap('light');ideaOut(xs.map(x=>x.id),()=>ideaSend(xs,'later'));}
 /* a bought idea (or one Kalshi no longer lists) is dropped quietly, no Undo: bought ones never come back */
@@ -161,10 +167,10 @@ async function priceIdea(id){document.querySelectorAll(`[data-ib="${id}"]`).forE
  const r=await api('/app/api/act',{a:'idea',id}).catch(()=>({ok:false}));
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
  S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
- clearInterval(S.ideaT);S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
-async function buyIdea(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
+ clearInterval(S.ideaT);S.ideaTid=id;S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
+async function buyIdea(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;S.ibuy=S.ibuy||{};S.ibuy[id]=1;let r;try{r=await api('/app/api/act',{a:'buy',i:q.i});}finally{delete S.ibuy[id];}S.ideaq[id]=null;
  toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
-async function buySingle(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
+async function buySingle(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;S.ibuy=S.ibuy||{};S.ibuy[id]=1;let r;try{r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});}finally{delete S.ibuy[id];}S.ideaq[id]=null;
  toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
  setTimeout(()=>{delete S.ideaGone[id];ideaDrop(id,'gone');},4500);}

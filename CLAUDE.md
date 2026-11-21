@@ -742,7 +742,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   under the green Buy's bar, `green_bar`, or a single with no edge left sort last and say "below your bar"), gives each a
   stable `idea_id`/`key` (the sorted leg tickers, same on every re-offer), and marks a price older than 2 minutes
   `stale` ("refreshing"; the card stays, Get today's price is the refresh). Dismissed ideas (X, swipe left, Not now,
-  Clear all) live in `combo_idea_dismiss.json` (today only; back when the edge improves 3+ points or the price drops
+  Clear all, and **Pass after Get price** (#211: `ideaPass` drops the quote and its countdown, then dismisses like the X; off while a buy is in flight)) live in `combo_idea_dismiss.json` (today only; back when the edge improves 3+ points or the price drops
   2+ cents; Undo toast), bought ones never come back (kept 3 days); `idea_dismiss`/`idea_undo`/`idea_depth` are
   acts on the web app that take no app lock and move no money. Settings > Money > "Buy ideas shown" (`ideas_shown`,
   default 3, 1-10, shared) sets how many show; the rest fold under "N more ideas". A pre-game idea whose game has
