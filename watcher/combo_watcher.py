@@ -3526,7 +3526,7 @@ const HSWMO=new MutationObserver(ms=>{const out=[],re=new Set();let shown=false;
   if(t.matches(HSWQ))out.push(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(n=>hswList(n,out));
   const h=t.closest(HSWQ);if(h&&!h.matches(HSWC))re.add(h);}
  if(out.length||shown&&HSWP.size)hswN=0;if(out.length||re.size)hswRun(out,re);else hswWait();});
-addEventListener('resize',()=>{if(hswOn())hswRun([],[...document.querySelectorAll('.hsw')].map(s=>s.parentElement));},{passive:true});   // the screen turned: a row may now be wide
+let hswRT=0;addEventListener('resize',()=>{clearTimeout(hswRT);hswRT=setTimeout(()=>{if(hswOn())hswRun([...document.querySelectorAll(HSWQ)],[...document.querySelectorAll('.hsw')].map(s=>s.parentElement));},250);},{passive:true});   // the screen turned: a row may now be wide (switch goes) or narrow (switch comes back); debounced, so a collapsing toolbar mid-scroll costs one pass
 /* #151: while the finger scrolls the page (or any list in it), momentum included, the switches let touches through
    (html.hswscr), so a finger that lands mid-scroll keeps scrolling; back ~150 ms after the last scroll event. Only a
    scroll the finger started counts (one while a finger is down and has moved, or chained within 200 ms of one); the
