@@ -101,7 +101,7 @@ with sync_playwright() as pw:
         if fit(): bad(f"{tag}: sideways scroll after the flip")
         # ---- 3. a quote after the flip, then undo: the quote goes, same animation
         pg.evaluate(f"S.quotes={{{ci}:{{pays:30.5,stake:5,pct:1.02,clears:true,cut:95,at:Date.now()/1000}}}};renderBuild()"); time.sleep(.3)
-        pg.evaluate(f"window.__acts.length=0"); pg.locator(sel_row).click()
+        pg.evaluate("window.__acts.length=0"); pg.locator(sel_row).click()
         if not wait(pg, f"document.querySelector('{card}').dataset.ph==='flip'", 3) or pg.evaluate(f"!!document.getElementById('b{ci}')||!!S.quotes[{ci}]"): bad(f"{tag}: undo tap: no loading state / quote survived")
         pg.evaluate(f"window.__held.flip({{ok:true,verdict:'mid',text:'Flipped back. Tap it again to undo.',combo:(()=>{{const c=JSON.parse(JSON.stringify(S.build.combos.find(x=>x.i=={ci})));c.legs[{K}]=Object.assign({{}},c.legs[{K}],{{ticker:c.legs[{K}].ticker.replace('-FLIP',''),pick:{json.dumps('Original')}}});return c;}})()}})")
         wait(pg, f"document.querySelector('{card}').dataset.ph==='idle'", 5)
