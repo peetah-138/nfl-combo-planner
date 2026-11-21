@@ -3230,6 +3230,37 @@ def webapp_main():
             return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
         except Exception:
             return None
+
+    def combo_offer(i, own=None):
+        """Kalshi's price for combo i: at Pete's own amount when he set one (already checked by own_stake), else at the
+        recommended size (the price sets it, less if he's heavy on a team), as before. Adds what the sheet shows beside
+        it: the recommended size (rec), the expected profit in dollars at the books' chance (ev), the room left under
+        the cap and the most this bet may be. Prices only: the buy is still accept_offer on this exact offer."""
+        r = A.get_offer(i, amount=own)
+        c = A.CTX["combos"][i - 1]
+        rec = None
+        if not r.get("error") and r.get("pct"):
+            rec = A.stake_for(r["pct"], c["legs"]) if A.CFG.get("size_auto") else None
+            if own is None and rec and abs(rec - r["stake"]) > 0.01:
+                r2 = A.get_offer(i, amount=rec)
+                if not r2.get("error"):
+                    r = r2
+        r = dict(r, own=own is not None, min=A.OWN_MIN)
+        if r.get("error"):
+            return r
+        r["rec"] = rec or A.CTX.get("stake")
+        if c.get("fair"):                              # the books' chance of the combo, as built
+            r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / c["fair"] - r["stake"], 2)
+        try:
+            r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)   # display only: the cap itself is
+        except Exception:                              # get_offer's / accept_offer's own fresh check
+            r["room"] = None
+        r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
+        return r
+
+    IDEA_Q = {}            # Live single-game ideas: the size and price the Mac quoted, by idea id (Buy must match)
+    IDEA_Q_SECS = 25       # the card's price lasts 20 s; a little slack for the tap to arrive
+
     class tap_mark:
         """While a tap is placing an order: a mark the watcher's update loop reads (it installs only after), so an
         update never restarts the web app mid-order."""
@@ -3316,6 +3347,15 @@ def webapp_main():
                     "Smart sell is watching this one now."}
         if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
             return idea_act(a, d, t)
+        if a == "panel_whatif":                     # reads only, no app lock: the card's numbers at Pete's own amounts
+            ids = d.get("ids")
+            try:
+                return jsonable(A.panel_whatif(str(d.get("view") or "all")[:20],
+                                               [str(x) for x in ids][:60] if isinstance(ids, list) else None,
+                                               d.get("stakes")))
+            except Exception as err:
+                log("panel what-if failed:", type(err).__name__, err)
+                return {"ok": False, "msg": "Couldn't work that out just now."}
         with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
@@ -3335,19 +3375,16 @@ def webapp_main():
                 cur = (A.CTX.get("combos") or [])[i - 1] if 1 <= i <= len(A.CTX.get("combos") or []) else None
                 if shown is not None and (not cur or sorted(map(str, shown)) != sorted(l["ticker"] for l in cur["legs"])):
                     return {"ok": False, "error": "The board was refreshed with new combos. Pull down to reload Build, then try again."}
+                own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here, never the page's word
+                if bad:
+                    return {"ok": False, "error": bad, "bad_stake": True}
                 try:
-                    r = A.get_offer(i, amount=d.get("stake"))
-                    c = A.CTX["combos"][i - 1]
-                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto") and not d.get("stake"):
-                        want = A.stake_for(r["pct"], c["legs"])  # the price sets the size, less if you're heavy on a team
-                        if want and abs(want - r["stake"]) > 0.01:
-                            r2 = A.get_offer(i, amount=want)
-                            if not r2.get("error"):
-                                r = r2
+                    r = combo_offer(i, own)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check")}})
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                                          "max", "min", "own")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -3362,48 +3399,58 @@ def webapp_main():
                     fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
                     if not fair or not dpt or dpt.get("ask") is None:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
+                    own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
+                    if bad:
+                        return {"ok": False, "msg": bad, "bad_stake": True}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
                     edge = fair - ask - fee
                     pct = fair / (ask + fee) if ask else 0
-                    stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
-                    n = max(1, int(stake / (ask + fee)))
-                    if dpt.get("ask_size"):             # Kalshi's sizes can be fractional now ("0.40")
-                        n = min(n, int(dpt["ask_size"]))
+                    rec = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
+                    stake = own if own is not None else rec
+                    n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
+                    note = None
+                    if dpt.get("ask_size") and n > int(dpt["ask_size"]):   # Kalshi's sizes can be fractional now ("0.40")
+                        n = int(dpt["ask_size"])
+                        note = f"Only {int(dpt['ask_size'])} contracts are for sale at {ask * 100:.0f}¢, so it buys {n}."
                     if n < 1:
-                        return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
+                        return {"ok": False, "msg": (f"That's under one contract at {ask * 100:.0f}¢. Pick a bigger amount."
+                                                     if own is not None and not note else
+                                                     "Kalshi has under one contract for sale at that price right now.")}
                     if not A.can_trade():
                         return {"ok": False, "msg": A.NO_TRADE_MSG}
-                    no, _, _ = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
+                    no, spent, budget = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
                     if no:
-                        return {"ok": False, "msg": no}
-                    return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
+                        return {"ok": False, "msg": no, "capped": True}
+                    cost = round(n * (ask + fee), 2)
+                    for k in [k for k, v in IDEA_Q.items() if time.time() - v["at"] > IDEA_Q_SECS * 4]:
+                        IDEA_Q.pop(k, None)
+                    IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
+                    return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
-                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
+                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6, "rec": rec, "own": own is not None,
+                                     "ev": round(n * fair - cost, 2), "note": note, "min": A.OWN_MIN, "max": A.OWN_MAX,
+                                     "room": round(max(0.0, budget - spent), 2) if spent is not None else None})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
                 if row.get("live") and row["ts"] < time.time() - 600:
                     return {"ok": False, "gone": True, "msg": "That idea had a game in progress and is more than 10 minutes old."}
                 if BUILD.get("lg") != row["lg"]:
                     api_build(row["lg"], rebuild=True)
+                own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
+                if bad:
+                    return {"ok": False, "msg": bad, "bad_stake": True}
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
                     return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
                 try:
-                    r = A.get_offer(k)
-                    c = A.CTX["combos"][k - 1]
-                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto"):
-                        want = A.stake_for(r["pct"], c["legs"])
-                        if want and abs(want - r["stake"]) > 0.01:
-                            r2 = A.get_offer(k, amount=want)
-                            if not r2.get("error"):
-                                r = r2
+                    r = combo_offer(k, own)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                                 "clears": r.get("ok")})
+                                 "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}})
             if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That market isn't recognized."}
@@ -3422,10 +3469,19 @@ def webapp_main():
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
                     return {"ok": False, "msg": "That idea has expired."}
-                n, price = int(d.get("n") or 0), float(d.get("price") or 0)
-                if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
+                try:
+                    n, price = int(d.get("n") or 0), float(d.get("price") or 0)
+                except (TypeError, ValueError):
+                    n, price = 0, 0.0
+                iq = IDEA_Q.get(str(d.get("id", ""))) or {}   # the size and price the Mac itself quoted (never the page's)
+                if (not iq or time.time() - iq["at"] > IDEA_Q_SECS or iq["n"] != n or abs(iq["price"] - price) > 1e-9):
+                    return {"ok": False, "expired": True, "msg": "That price isn't the one the Mac gave you any more. "
+                                                                  "Get today's price again."}
+                if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * (price + A.single_fee(price)) > A.OWN_MAX + 0.01:
                     return {"ok": False, "msg": "That size or price isn't allowed."}
                 tk = str(json.loads(rows[0]["legs"])[0])
+                if tk != iq.get("t"):
+                    return {"ok": False, "msg": "That market isn't recognized."}
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
                     return {"ok": False, "msg": "That market isn't recognized."}
                 # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
@@ -3454,7 +3510,7 @@ def webapp_main():
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
                                  "check": bool(r.get("check"))})
             if a == "panel_approve":
-                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"))
+                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"), stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
             if a == "clear_block":                  # Pete lifts an "unknown outcome" block after checking Kalshi
                 key = str(d.get("key", ""))[:200]
@@ -3479,7 +3535,7 @@ def webapp_main():
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
             if a == "panel_add":
-                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
+                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "", stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
             if a == "panel_look":
                 ok, msg = A.panel_look_now()
