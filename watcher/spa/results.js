@@ -3,7 +3,7 @@ function resultsSkel(){return pbSkel()+`<div class="kpis">${'<div class="kpi ske
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
  if(S.scrub){S.resDirty=true;return;}
  const sh=d.shadow;
- m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}${pbBlock(d.board,S.an)}${d.board&&d.board.n?'':`<div class="kpis">
+ m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}${pbBlock(d.board===undefined?null:d.board,S.an)}${d.board&&d.board.n?'':`<div class="kpis">
   <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
   <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
   <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>

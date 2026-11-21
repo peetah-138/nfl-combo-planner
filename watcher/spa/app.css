@@ -747,7 +747,7 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}
 /* Results › profit scoreboard (#138) and smart sell's scorecard (#115) */
 .pb{margin-bottom:16px}.pb .pbh{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px}.pb .pbh h2{margin:0}
-.pb .seg.pbr{flex:none}.pb .seg.pbr button,.pb .seg.pbt button{min-height:36px}
+.pb .seg.pbr{flex:none}.pb .seg.pbr button,.pb .seg.pbt button{min-height:44px}
 .pbbig{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.pbbig>b{font-size:40px;font-weight:800;letter-spacing:-.04em;line-height:1.05}
 .pbbig .pill{font-size:13px;font-weight:800;padding:3px 9px;border-radius:999px;background:var(--panel2)}.pbbig .pill.up{color:var(--yes)}.pbbig .pill.down{color:var(--no)}
 .pbroi{font-size:12.5px}.pbsub{font-size:12.5px;margin:4px 0 12px;line-height:1.4}
@@ -770,3 +770,4 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 @media (prefers-reduced-motion: reduce){.pbc .pbline.draw{animation:none;stroke-dasharray:none}}
 .pbk b span{display:inline;font-size:inherit;color:inherit;letter-spacing:normal}.pbk b span.m{color:var(--mute)}
 .pb .seg.pbt button{white-space:nowrap;flex:none}
+.pb .seg.pbt{-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}

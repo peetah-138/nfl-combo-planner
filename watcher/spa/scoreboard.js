@@ -4,7 +4,9 @@
    Read-only: nothing here buys or sells. Range and breakdown are remembered per phone. */
 try{S.pbr=['week','month','all'].includes(localStorage.getItem('cw_pbr'))?localStorage.getItem('cw_pbr'):'all';S.pbt=localStorage.getItem('cw_pbt')||'type'}catch(e){S.pbr='all';S.pbt='type'}
 const PBT=[['type','Bet type'],['league','League'],['end','How it ended'],['source','Source'],['price','Price quality'],['stake','Stake']];
-function pbSet(k,v){if(S[k]===v)return;S[k]=v;try{localStorage.setItem(k==='pbr'?'cw_pbr':'cw_pbt',v)}catch(e){}S.pbJust=k;renderResults();S.pbJust=null;
+function pbSet(k,v){if(S[k]===v)return;S[k]=v;try{localStorage.setItem(k==='pbr'?'cw_pbr':'cw_pbt',v)}catch(e){}S.pbJust=k;
+ const old=document.querySelector('.pb .pbb'),b=(S.res||{}).board,p=b&&b.periods&&(b.periods[S.pbr]||b.periods.all);
+ if(k==='pbt'&&old&&p){const h=old.offsetHeight;old.outerHTML=pbBreak(p);const nw=document.querySelector('.pb .pbb');if(nw){nw.style.minHeight=h+'px';setTimeout(()=>{if(nw.isConnected)nw.style.minHeight='';},400);}}else renderResults();S.pbJust=null;
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.pb .pbbody .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,10)*28}ms both`;});}
 const pbRoi=x=>x==null?'<span class="m">—</span>':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(x*100).toFixed(Math.abs(x)<.1?1:0)}%</b>`;
 const pbFew=r=>r&&r.few?' <span class="few">too few to trust</span>':'';
@@ -17,9 +19,9 @@ function pbBlock(b,an){if(b===undefined)return pbSkel();
  const P=b.periods||{},r=S.pbr,p=P[r]||P.all||{};const lab={week:'this week',month:'this month',all:'all time'}[r];
  const sw=`<div class="seg pbr" role="tablist" aria-label="Period">${[['week','Week'],['month','Month'],['all','All time']].map(([k,l])=>`<button role="tab" aria-selected="${r===k}" class="${r===k?'on':''}" onclick="pbSet('pbr','${k}')">${l}</button>`).join('')}</div>`;
  const pl=p.pl||0,sign=pl>=0?'+':'−';
- const big=`<div class="pbbig" aria-live="polite"><b class="${pl>=0?'up':'down'}" data-num="pb:pl" data-v="${Math.abs(pl).toFixed(2)}" data-pre="${sign}">${smoney(pl)}</b>
+ const big=`<div class="pbbig"><b class="${pl>=0?'up':'down'}" data-num="pb:pl" data-v="${Math.abs(pl).toFixed(2)}" data-pre="${sign}">${smoney(pl)}</b>
   <span class="pill ${p.roi==null?'':p.roi>=0?'up':'down'}" ${p.roi==null?'':`data-num="pb:roi" data-v="${p.roi}" data-f="spct"`}>${p.roi==null?'—':(p.roi>=0?'+':'−')+Math.abs(Math.round(p.roi*100))+'%'}</span><span class="m pbroi">return on ${money(p.staked||0)} staked</span></div>
-  <div class="m pbsub">${p.n?`${p.n} finished bet${p.n===1?'':'s'} ${lab} · settled or sold, after ${money(p.fees||0)} of Kalshi fees${pbFew(p)}`:`Nothing finished ${lab} yet.`}</div>`;
+  <div class="m pbsub" aria-live="polite">${p.n?`${p.n} finished bet${p.n===1?'':'s'} ${lab} · settled or sold, after ${money(p.fees||0)} of Kalshi fees${pbFew(p)}`:`Nothing finished ${lab} yet.`}</div>`;
  const day=(x,cls)=>x?`<b class="${cls}">${smoney(x.pl)}</b><small>${esc(pbDay(x.day))}</small>`:'<b class="m">—</b>';
  const kp=`<div class="pbk"><div><span>Days up · down</span><b><span class="up">${p.up||0}</span> <span class="m">·</span> <span class="down">${p.down||0}</span></b><small>of ${p.days||0} with results</small></div>
   <div><span>Best day</span>${day(p.best,'up')}</div><div><span>Worst day</span>${day(p.worst,p.worst&&p.worst.pl<0?'down':'up')}</div>
@@ -27,8 +29,8 @@ function pbBlock(b,an){if(b===undefined)return pbSkel();
  const o=b.open;const open=o?`<div class="pbopen"><span>Open bets, not counted above</span><b>≈ ${money(o.worth)}</b><small>if sold now (an estimate) · ${money(o.staked)} in</small></div>`:'';
  const sc=b.scorecard||{},st=sc.total||{},vh=p.vs_hold||{};const sb=(an&&an.smart_buy&&Array.isArray(an.smart_buy.gate))?an.smart_buy.gate:null;
  const sbSaved=sb?sb.reduce((s,g)=>s+(+g.saved||0),0):null,sbSkip=sb?sb.reduce((s,g)=>s+(+g.skipped||0),0):0;
- const smart=`<div class="pbsm"><div><span>🤖 Smart Sell vs holding</span>${st.done?`<b class="${st.gain>=0?'up':'down'}">${smoney(st.gain)}</b><small>over ${st.done} automatic sale${st.done===1?'':'s'} whose games are over${st.n>st.done?` · ${st.n-st.done} still being followed`:''}${pbFew(st)}</small>`:`<b class="m">—</b><small>${st.n?`${st.n} sale${st.n===1?'':'s'} waiting for their games to finish`:'No automatic sales yet'}</small>`}</div>
-  <div><span>🧠 Smart Buy skips</span>${sb&&sbSkip?`<b class="${sbSaved>=0?'up':'down'}">${sbSaved>=0?'saved ':'cost '}${money(Math.abs(sbSaved))}</b><small>${sbSkip} bet${sbSkip===1?'':'s'} skipped, on paper at $5 each (details in What's working)</small>`:`<b class="m">—</b><small>${an&&an.smart_buy&&an.smart_buy.on===false?'Switched off in Settings':'Nothing skipped yet'}</small>`}</div>
+ const smart=`<div class="pbsm"><div><span>🤖 Smart Sell vs holding, all time</span>${st.done?`<b class="${st.gain>=0?'up':'down'}">${smoney(st.gain)}</b><small>over ${st.done} automatic sale${st.done===1?'':'s'} whose games are over${st.n>st.done?` · ${st.n-st.done} still being followed`:''}${pbFew(st)}</small>`:`<b class="m">—</b><small>${st.n?`${st.n} sale${st.n===1?'':'s'} waiting for their games to finish`:'No automatic sales yet'}</small>`}</div>
+  <div><span>🧠 Smart Buy skips (paper)</span>${sb&&sbSkip?`<b class="${sbSaved>=0?'up':'down'}">${sbSaved>=0?'would have saved ':'would have cost '}${money(Math.abs(sbSaved))}</b><small>${sbSkip} bet${sbSkip===1?'':'s'} skipped, scored on paper at $5 each, not real dollars${sbSkip<20?' <span class="few">too few to trust</span>':''}</small>`:`<b class="m">—</b><small>${an&&an.smart_buy&&an.smart_buy.on===false?'Switched off in Settings':'Nothing skipped yet'}</small>`}</div>
   ${vh.n?`<div><span>Every sale vs holding, ${esc(lab)}</span><b class="${vh.gain>=0?'up':'down'}">${smoney(vh.gain)}</b><small>${vh.n} sold bet${vh.n===1?'':'s'}, yours and smart sell's, after the fee</small></div>`:''}</div>`;
  return `<div class="card pb"><div class="pbh"><h2>💵 Profit scoreboard</h2>${sw}</div>${big}${kp}${pbCurve(b.curve||[])}${open}${smart}${pbBreak(p)}</div>`;}
 /* The running total of realized profit, day by day: drag a finger across it for that day's total (a tick per day). */
@@ -47,20 +49,21 @@ function pbBreak(p){const t=S.pbt,by=p.by||{},say=p.say||{};
   rs.map(x=>[`<b>${esc(x.name)}</b>${pbFew(x)}`,x.n,`<b class="${x.pl>=0?'up':'down'}">${smoney(x.pl)}</b>`,pbRoi(x.roi),Math.round(x.won*100)+'%',pbHold(x.hold)].concat(extra?extra.c(x):[])))
   +(say[k]?`<p class="pbsay">${esc(say[k])}</p>`:'');};
  let body='',ex='';
- if(t==='type'){ex='Every finished bet with real money, by kind. Paper is the paper panel and the combo lab over the same period, for comparison.';
-  body=grp('type','Bet type',{h:['Paper'],c:x=>[x.paper_n?`${pbRoi(x.paper_roi)} <span class="m">(${x.paper_n})</span>`:'<span class="m">—</span>']});}
+ if(t==='type'){ex='Every finished bet with real money, by kind. Paper is the paper panel over the same period, for comparison (the combo lab is left out: it tests prices under the cut-off).';
+  const hasP=(by.type||[]).some(x=>x.paper_n);if(!hasP)ex='Every finished bet with real money, by kind.';
+  body=grp('type','Bet type',hasP?{h:['Paper'],c:x=>[x.paper_n?`${pbRoi(x.paper_roi)} <span class="m">(${x.paper_n})</span>`:'<span class="m">—</span>']}:null);}
  else if(t==='league'){ex='The same bets by league. A combo across leagues counts as Mixed.';body=grp('league','League');}
  else if(t==='end'){ex='How each bet finished. For sold bets, "vs holding" is what selling made compared with riding it to the end, once the games are over.';
   body=grp('end','How it ended',{h:['vs holding'],c:x=>[x.vs_n?`<b class="${x.vs>=0?'up':'down'}">${smoney(x.vs)}</b> <span class="m">(${x.vs_n})</span>`:'<span class="m">—</span>']});}
  else if(t==='source'){ex='Where each bet came from. Build and Live ideas are counted together for now.';body=grp('source','Source');}
  else if(t==='stake'){ex='By how much was staked on the bet, fees included.';body=grp('stake','Stake');}
- else{const q=p.quality||{},rq=q.real||{},pq=q.paper||{};ex='From the panel\'s own record: what it expected each bet to return, against what it did. Paper bets count here too, since they test the same prices.';
+ else{const q=p.quality||{},rq=q.real||{},pq=q.paper||{};ex='From the panel\'s own record: what it expected each bet to return, against what it did. The paper panel is shown apart, since it tests the same prices.';
   const clv=(x,n)=>x==null?'<span class="m">—</span>':`${pbRoi(x)} <span class="m">(${n})</span>`;
   body=`<div class="pbclv"><div><span>Prices vs the close, your panel</span>${clv(rq.clv,rq.clv_n)}</div><div><span>Prices vs the close, paper</span>${clv(pq.clv,pq.clv_n)}</div></div><div class="m" style="font-size:12px;margin:2px 0 10px">Above 0% means the market moved your way after you bought: the earliest honest sign of an edge.</div>`
-   +['real','paper'].map(m=>{const x=q[m]||{};return `<h3 class="pbq">${m==='real'?'Your panel':'Paper panel and lab'}: expected vs actual return</h3>`
+   +['real','paper'].map(m=>{const x=q[m]||{};return `<h3 class="pbq">${m==='real'?'Your panel':'Paper panel'}: expected vs actual return</h3>`
     +tb(['Expected edge','Bets','Expected','Actual'],(x.edge||[]).map(e=>[`<b>${esc(e.name)}</b>${pbFew(e)}`,e.n,pbRoi(e.pred),pbRoi(e.roi)]),'No settled panel bets in this period.')
-    +`<h3 class="pbq">${m==='real'?'Your panel':'Paper'}: chance of a profit, predicted vs what happened</h3>`
-    +tb(['League','Bets','Predicted','Happened'],(x.cal||[]).map(e=>[`<b>${esc(e.name)}</b>${pbFew(e)}`,e.n,pct(e.pred),pct(e.hit)]),'No settled panel bets in this period.')
+    +`<h3 class="pbq">${m==='real'?'Your panel':'Paper'}: chance it wins, predicted vs how often it won</h3>`
+    +tb(['League','Bets','Predicted','Won'],(x.cal||[]).map(e=>[`<b>${esc(e.name)}</b>${pbFew(e)}`,e.n,pct(e.pred),pct(e.hit)]),'No settled panel bets in this period.')
     +`<h3 class="pbq">${m==='real'?'Your panel':'Paper'}: when it was bought</h3>`
     +tb(['Bought','Bets','Profit','Return'],(x.timing||[]).map(e=>[`<b>${esc(e.name)}</b>${pbFew(e)}`,e.n,`<b class="${e.pl>=0?'up':'down'}">${smoney(e.pl)}</b>`,pbRoi(e.roi)]),'No settled panel bets in this period.');}).join('');}
  return `<div class="pbb"><h3 style="margin:18px 0 8px;font-size:15px">What's making money</h3>${tabs}<div class="pbbody ${S.pbJust==='pbt'?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${ex}</div>${body}</div></div>`;}

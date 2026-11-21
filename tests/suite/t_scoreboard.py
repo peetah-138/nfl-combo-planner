@@ -175,3 +175,25 @@ def e():
     ok("E6 the board now files those two as sold by smart sell, with what holding would have paid", en["smart"]["n"] == 2 and en["smart"]["vs_n"] == 2)
     ok("E7 nothing asked again once every sale has its answer", E.sale_outcomes(now + 1, every=0) == 0)
 section("E", e)
+
+
+def f():                                                 # review fixes
+    # a bet sold in two parts counts once on the scorecard
+    E.log_decision({"combo": "P", "ticker": "KXMVE-C2", "offer": 1.0, "cost": 5.0, "pays": 15, "frac": 0.5, "kind": "combo",
+                    "side": "yes", "why": "lock in", "result": "sold"})
+    E.store_x("update sell_log set outcome='won', held=7.5 where ticker='KXMVE-C2' and why='lock in'")
+    sc = E.sell_scorecard()
+    ok("F1 a bet sold in two parts counts once (Kalshi's proceeds once)", sc["total"]["n"] == 2 and near(sc["total"]["sold"], (9.0 - 0.03) + (2.5 - 0.03)), sc["total"])
+    # fewer fills than the saved row (old ones aged out of Kalshi's window) never overwrite it
+    before = {r["ticker"]: r for r in E._ledger_rows()}[N]
+    E.LEDGER_SIG.clear()
+    E.ledger_note([], {}, {N: fills[N][1:]}, {}, now)
+    after = {r["ticker"]: r for r in E._ledger_rows()}[N]
+    ok("F2 a row rebuilt from fewer fills doesn't replace the saved one", near(after["cost"], before["cost"]) and after["status"] == before["status"])
+    # no time anywhere: undated, counted in All time but not this week
+    E.ledger_note([], {}, {}, {"KXNHLGAME-26NOV19AAABBB-AAA": {"ticker": "KXNHLGAME-26NOV19AAABBB-AAA", "revenue_dollars": "0", "yes_total_cost_dollars": "2.00"}}, now)
+    E.BOARD["at"] = 0
+    bd = E.profit_board(now)
+    ok("F3 a bet with no date counts in All time only", bd["periods"]["all"]["n"] == bd["periods"]["week"]["n"] + 1)
+    ok("F4 nothing changed: the ledger isn't even read", E.ledger_note([], {}, {}, {"KXNHLGAME-26NOV19AAABBB-AAA": {"ticker": "KXNHLGAME-26NOV19AAABBB-AAA", "revenue_dollars": "0", "yes_total_cost_dollars": "2.00"}}, now) == 0)
+section("F", f)
