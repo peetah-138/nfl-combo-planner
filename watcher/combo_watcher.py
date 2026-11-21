@@ -2335,6 +2335,13 @@ def webapp_main():
     A.window_open = lambda: False                   # there is no phone window in this copy
     A.open_outside = lambda url: None
     A.tap_haptic = lambda *a, **k: None
+
+    def manual_alert(msg):                          # a manual buy whose spend couldn't be saved: tell Pete (once a run)
+        try:
+            push(load_conf(), msg, title="Combo planner", priority="high", click="/")
+        except Exception as err:
+            log("manual buy alert failed:", type(err).__name__)
+    A.MANUAL_ALERT = manual_alert
     try:                                            # get data, odds and trades through the hub like the phone
         c = json.load(open(CONF))                   # does: one shared cache, one set of odds credits
         hub = {"topic": c["topic"], "secret": c["secret"], "hub": f"http://127.0.0.1:{c.get('hub_port', 8765)}"}
@@ -2669,7 +2676,7 @@ def webapp_main():
             board.sort(key=lambda g: (g["started"], str(g["start"])))
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
-                             "spent": A.week_spend() if A.can_trade() else 0,
+                             "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
                              "singles": singles_view(games), "lines": BUILD.get("lines") or [],
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
@@ -3162,9 +3169,11 @@ def webapp_main():
                         n = min(n, int(dpt["ask_size"]))
                     if n < 1:
                         return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
-                    spent = A.week_spend() if A.can_trade() else 0
-                    if spent + n * (ask + fee) > A.CFG["budget"] + 0.01:
-                        return {"ok": False, "msg": A.cap_msg(spent, n * (ask + fee))}
+                    if not A.can_trade():
+                        return {"ok": False, "msg": A.NO_TRADE_MSG}
+                    no, _, _ = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
+                    if no:
+                        return {"ok": False, "msg": no}
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
                                      "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
@@ -3211,23 +3220,13 @@ def webapp_main():
                 n, price = int(d.get("n") or 0), float(d.get("price") or 0)
                 if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
                     return {"ok": False, "msg": "That size or price isn't allowed."}
-                try:
-                    filled, err = A.buy_single(json.loads(rows[0]["legs"])[0], n, price)
-                except Exception as e:                  # no clear answer: it may have gone through, never resent
-                    LIVE["at"] = 0
-                    log("single buy: outcome unknown:", type(e).__name__, str(e)[:160])
-                    return {"ok": False, "check": True,
-                            "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check "
-                                   "Kalshi before trying again; the app won't send it again."}
+                tk = str(json.loads(rows[0]["legs"])[0])
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
+                    return {"ok": False, "msg": "That market isn't recognized."}
+                # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
+                r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log, key=str(d.get("id", "")))
                 LIVE["at"] = 0
-                if err:
-                    return {"ok": False, "msg": err}
-                if filled <= 0:
-                    return {"ok": False, "msg": f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
-                log_line = f"single bought: {filled:g} at {price:.2f}"
-                print(log_line, flush=True)
-                return {"ok": True, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
-                                           f"pays {A.money(filled)} if it wins.", "pays": filled}
+                return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
