@@ -40,13 +40,37 @@ class R:
         return False
 
 
+def game_start(series, i):
+    """When fake game i of a series starts (naive UTC): the first one an hour before this process began (under way),
+    the second four hours before (over), the rest 3+i hours after. Fixed at import, never the clock at call time, so a
+    game's ticker date and its scoreboard start can never disagree because a test ran across midnight. Keyed on the
+    game's place in GAMES (the scoreboard's live/over/not-started roles are too): a test that reorders GAMES must do it
+    before building any ticker or market (t_singlebuy swaps two games right after import)."""
+    base = _base()
+    return base - dt.timedelta(hours=1 if i == 0 else 4) if i < 2 else base + dt.timedelta(hours=3 + i)
+
+
+def _base():
+    return dt.datetime.fromtimestamp(STARTED, dt.timezone.utc).replace(tzinfo=None)
+
+
+def us_day(t):
+    """The US game date Kalshi writes in a ticker (Eastern; the engine's espn_day uses UTC-5 the same way). Never the
+    machine's own date: CI runs on UTC, so after 00:00 UTC a 7 PM Eastern game would get tomorrow's date (GitHub #128)."""
+    return (t - dt.timedelta(hours=5)).date()
+
+
 def event_ticker(series, a, b, day=None):
-    return f"{series}-{(day or dt.date.today()).strftime('%y%b%d').upper()}{a}{b}"
+    if day is None:
+        i = next((k for k, g in enumerate(GAMES.get(series, [])) if g[0] == a and g[2] == b), None)
+        day = us_day(game_start(series, i) if i is not None else _base())
+    return f"{series}-{day.strftime('%y%b%d').upper()}{a}{b}"
 
 
 def markets(hours=6):
-    """Two markets (one per team) for every fake game, ending in a few hours."""
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    """Two markets (one per team) for every fake game, ending in a few hours (counted from when this process began,
+    like the games' start times, so expiry and start stay in step)."""
+    now = _base()
     out = []
     for series, games in GAMES.items():
         for gi, (a, an, b, bn, pa) in enumerate(games):
@@ -78,11 +102,10 @@ def orderbook(m, size=500):
 def espn_events(path):
     """Scoreboard events: the first game of each sport is live, the second is over, the rest haven't started."""
     series = next(s for s, p in ESPN_PATH.items() if p == path)
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     evs = []
     for i, (a, an, b, bn, pa) in enumerate(GAMES[series]):
         state, name = (("in", "STATUS_IN_PROGRESS"), ("post", "STATUS_FINAL"))[i] if i < 2 else ("pre", "STATUS_SCHEDULED")
-        start = now - dt.timedelta(hours=1 if i == 0 else 4) if i < 2 else now + dt.timedelta(hours=3 + i)
+        start = game_start(series, i)
         sc = {0: (54, 49), 1: (112, 104)}.get(i, (0, 0))
         clock = "5:42"
         if i == 0:                      # the live game plays on: the clock runs down and baskets drop as time passes
