@@ -422,6 +422,40 @@ def save_cfg(cleared=()):
         save_json(MAIN_SAVED, main)
 
 
+_REFUSAL = threading.local()       # this thread's latest definite refusal (issue #134: the web app attaches it to the tap's answer)
+
+
+class manual_tap:
+    """Marks this thread as running Pete's own tap (a Buy, Buy straight or idea buy). During a Kalshi region hold
+    (#134) the automatic paths wait, but his tap goes through the usual guards and is the check: if Kalshi refuses it
+    again the hold is renewed (`_restrict_note`). Pause, the caps and rule 8 are untouched."""
+    def __enter__(self):
+        self.was = getattr(_REFUSAL, "manual", False)
+        _REFUSAL.manual = True
+        return self
+
+    def __exit__(self, *exc):
+        _REFUSAL.manual = self.was
+        return False
+
+
+def in_scope(kind):
+    """Decorator: refusals inside this function count as sell-side ('sell') instead of buy-side."""
+    def wrap(fn):
+        import functools
+
+        @functools.wraps(fn)
+        def inner(*a, **kw):
+            was = getattr(_REFUSAL, "scope", None)
+            _REFUSAL.scope = kind
+            try:
+                return fn(*a, **kw)
+            finally:
+                _REFUSAL.scope = was
+        return inner
+    return wrap
+
+
 def load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
@@ -4945,6 +4979,8 @@ def auto_sell_now(plan):
     if not (CFG.get("auto_sell") and plan and can_trade()) or MINE.get("busy"):
         return []
     out = []
+    if sell_held(out):                                 # Kalshi is refusing sales: don't ask again every pass (#134)
+        return out
     MINE["busy"] = True
     try:
         cands = [(t, f, "plan") for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]) if f]
@@ -5020,7 +5056,7 @@ def auto_sell_now(plan):
                 continue
             if below and why != "cut loss":
                 rec["stop_loss"] = True
-            hg = hedge_for(t) if CFG.get("auto_hedge") else None
+            hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             better = hedge_beats(hg, whole) if hg and hg.get("n") else False
             if better:
@@ -5333,6 +5369,7 @@ def order_may_sell(o, held="yes"):
     return out is not None and out != held
 
 
+@in_scope("sell")
 def sell_single_now(t, side, n, price):
     """Sell n contracts of a single bet at `price` or better, now or not at all. Returns (sold, error)."""
     import uuid
@@ -5343,8 +5380,8 @@ def sell_single_now(t, side, n, price):
         return 0, "under one contract"
     try:
         o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
-    except PermissionError:
-        return 0, "Kalshi refused. The key needs write (trading) access."
+    except PermissionError as err:                 # Kalshi's own reason (#134), never a guess about the key
+        return 0, str(err)
     except Exception as err:                       # unknown outcome: "check", never sold again (no sale on top)
         if order_outcome(err) == "unknown":
             SINGLES["at"] = 0
@@ -5365,6 +5402,8 @@ def smart_sell_singles():
     out = []
     if time.time() - SINGLES["at"] > 180:
         return out                                   # Live hasn't refreshed lately: don't act on old prices
+    if sell_held(out):                               # Kalshi is refusing sales: don't ask again every pass (#134)
+        return out
     resting = None
     for x in list(SINGLES["items"]):
         if hands_off(x["t"]) or x.get("state") not in ("live", "pre"):
@@ -5978,6 +6017,8 @@ def place_hedge(ticker, hg=None, auto=False):
     hg = hg or hedge_for(ticker)
     if not hg or not hg.get("n"):
         return "Nothing to hedge on this combo now."
+    if auto and hold_refusal("buy", strict=True)[0]:               # Kalshi is refusing this account's orders: no automatic hedge (#134)
+        return "The hedge wasn't placed: Kalshi isn't allowing orders for your account right now."
 
     def unsure(err):
         try:
@@ -5994,8 +6035,8 @@ def place_hedge(ticker, hg=None, auto=False):
     try:                                       # V2, with the legacy fallback inside kalshi_send's order adapter
         r = kalshi_send("POST", "/portfolio/events/orders", body) or {}
         filled = float(r.get("fill_count") or 0)
-    except PermissionError:
-        return "Kalshi refused. Your API key needs write (trading) access to hedge."
+    except PermissionError as err:
+        return f"The hedge wasn't placed. {err}"
     except Exception as err:
         return unsure(err) if hedge_unknown(err) else f"Kalshi didn't take the hedge: {order_words(err)}"
     ACCT_CACHE["at"] = 0
@@ -7863,6 +7904,7 @@ def worth_now(ticker):
     return max(h.get("hold", 0.0), (o or {}).get("offer", 0.0) / max((o or {}).get("frac", 1.0), 0.01))
 
 
+@in_scope("sell")
 def post_sell(ticker, n, per):
     """One resting sell order: n contracts at `per` dollars each. Returns None or an error."""
     import uuid
@@ -7878,13 +7920,14 @@ def post_sell(ticker, n, per):
         try:
             kalshi_send("POST", "/portfolio/orders", body)
             return None
-        except PermissionError:
-            return "Kalshi refused. Your API key needs write (trading) access for auto-sell orders."
+        except PermissionError as err:
+            return f"The auto-sell order wasn't placed. {err}"
         except (RuntimeError, requests.RequestException) as err:
             last = str(err)[:120]
     return f"Kalshi didn't accept the auto-sell order ({last}). It may not allow resting orders on this combo."
 
 
+@in_scope("sell")
 def place_take_profit(ticker, contracts, cost, p=None, steps=None):
     """Put standing sell orders on Kalshi (a ladder in thirds, or one) at the wait-one-more-game
     price. Kalshi keeps them working with your phone closed; each fills only if a buyer pays it."""
@@ -8517,6 +8560,7 @@ def clear_my_rfqs(ticker):
                 pass
 
 
+@in_scope("sell")
 def get_cash_offer(ticker, frac=1.0):
     """Ask Kalshi what it will pay for the contracts you hold (or half). Nothing is sold here."""
     import time
@@ -8545,8 +8589,10 @@ def get_cash_offer(ticker, frac=1.0):
                     best = (price, q)
             if best and time.time() - start > 5:
                 break
-    except PermissionError:
-        return {"error": "Kalshi refused. Your API key needs write (trading) access to cash out.", "at": time.time()}
+    except PermissionError as err:                  # Kalshi's own words, in full (#134)
+        return {"error": f"The cash-out request wasn't accepted. {err}", "at": time.time()}
+    except KalshiRefused as err:
+        return {"error": f"Kalshi turned down the cash-out request. {err.plain}", "at": time.time()}
     except (RuntimeError, requests.RequestException, KeyError) as err:
         return {"error": f"Couldn't get an offer just now ({str(err)[:90]}). Try again, or cash out in the Kalshi app.",
                 "at": time.time()}
@@ -9505,15 +9551,19 @@ def kalshi_send(method, path, body=None, params=None):
     if is_order_write(method, path):
         return _order_create(body) if method == "POST" else _order_cancel(path, params)
     r = _signed(method, path, body, params)
-    if r.status_code in (401, 403):
-        raise PermissionError("Kalshi refused. Your API key needs write (trading) access for buying.")
     if not r.ok:
-        code, msg = _kalshi_error(r)
-        if not msg:
-            msg = str(getattr(r, "text", ""))[:120]
-        _log_once(("send", r.status_code, code), f"Kalshi refused {method} {path.split('?')[0][:60]}: "
-                                                 f"status={r.status_code} code={code}")
-        raise RuntimeError(f"{kalshi_plain(r.status_code, code, msg)} ({r.status_code})")
+        code, msg = body_words(r)
+        st, what = r.status_code, _what_of(path) if method == "POST" else "other"
+        _log_once(("send", st, code), f"Kalshi refused {method} {path.split('?')[0][:60]}: status={st} code={code} "
+                                      f"message={msg[:160]!r}")
+        if st == 408 or st >= 500:
+            raise RuntimeError(f"{kalshi_plain(st, code, msg)} ({st})")
+        restricted = note_refusal(st, code, msg, what)
+        if st in (401, 403) and not restricted:           # Kalshi's own reason, never a guess about the key (#134)
+            raise PermissionError(perm_words(st, code, msg))
+        raise KalshiRefused(kalshi_plain(st, code, msg), st, code)
+    if method == "POST" and _what_of(path) in ("rfq", "accept"):
+        restriction_clear(_say_scope(), _what_of(path))
     return r.json() if r.content else None
 
 
@@ -9645,7 +9695,7 @@ def _kalshi_error(r):
         code, msg = str(e.get("code") or ""), str(e.get("message") or e.get("error") or "")
     elif isinstance(j, str):
         msg = j
-    return code[:80], msg[:160]
+    return code[:80], msg[:600]
 
 
 def kalshi_plain(status, code, msg=""):
@@ -9656,12 +9706,12 @@ def kalshi_plain(status, code, msg=""):
         return ORDER_WORDS[code]
     if status == 429:
         return ORDER_WORDS["too_many_requests"]
+    words = re.sub(r"[{}\[\]\"\\<>]", "", msg or "").strip()
     if status == 403 and re.search(r"location|region|jurisdiction|geo", code, re.I):   # a sentence with underscores
-        return "Kalshi won't let this account trade that market from here"
+        return "Kalshi won't let this account trade that market from here" + (f". Kalshi said: {words[:500]}" if words else "")
     if code.startswith("ID_parse_error"):
         return ORDER_WORDS["invalid_parameters"]
-    words = re.sub(r"[{}\[\]\"\\<>]", "", msg or "").strip()
-    return f"Kalshi said: {words[:120]}" if words else "Kalshi turned it down"
+    return f"Kalshi said: {words[:500]}" if words else "Kalshi turned it down"   # never clipped mid-sentence (#134)
 
 
 def _log_once(key, line):
@@ -9669,6 +9719,217 @@ def _log_once(key, line):
     if key not in told:
         told.add(key)
         print(line, flush=True)
+
+
+# ---------------------------------------------------------------- Kalshi refusals, shown honestly (issue #134)
+# Kalshi sometimes refuses an order because of the account or the region ("Nevada residents are not currently allowed
+# to open positions..."). That is Kalshi's decision, not a bug of ours: we show its own words in full, say so calmly,
+# and stop sending the same refused request over and over (buys: a hold of 30 min, 1 h, 2 h, 4 h while it keeps
+# refusing; automatic sales only 10-30 min, and Pete's own taps are never held).
+# After a hold, the next buy Pete already approved (or his own tap) is the check: if Kalshi takes it, the state clears;
+# if it refuses again, the hold starts over. This never changes a location, never routes an order anywhere else and
+# never places an order just to look: it only reports and holds back. An unknown-outcome order is still "check" and is
+# never retried (those are timeouts and Kalshi 5xx, not refusals, and never reach this code).
+RESTRICT_FILE = os.path.join(HERE, "combo_kalshi_block.json")      # state, next to the other combo_*.json (never committed)
+RESTRICT_LOCK = threading.Lock()
+RESTRICT_STEPS = {"buy": (30 * 60, 60 * 60, 2 * 3600, 4 * 3600),   # hold after the 1st, 2nd, 3rd, 4th+ refusal in a row
+                  "sell": (10 * 60, 20 * 60, 30 * 60)}             # sales wait for less: getting out matters more
+RESTRICT_STALE = 24 * 3600                                         # no new refusal for a day: the state is old news
+RESTRICT_RX = re.compile(r"not (currently )?allowed|\bresidents?\b|jurisdiction|\bgeo|\blocation|\bregion|restricted in|"
+                         r"not available (in|to)|account.{0,14}restrict|unsupported.?(country|state)|ineligible", re.I)
+
+
+def is_restriction(status, code, msg):
+    """Kalshi turned the order down for the account or the region (its code or its words say so)."""
+    return int(status or 0) in (400, 401, 403, 451) and bool(RESTRICT_RX.search(f"{code} {msg}"))
+
+
+def key_write_denied(code, msg):
+    """Kalshi itself says the API key lacks write (trading) permission: only then does the app say so."""
+    return code in ("permission_denied", "subaccount_is_restricted_by_API_key", "insufficient_permissions") or \
+        bool(re.search(r"write|trading access|read.?only|insufficient.?permission", msg or "", re.I))
+
+
+def perm_words(status, code, msg):
+    """A 401/403 in Kalshi's own words (code and message), never a guess about the key."""
+    msg = re.sub(r"\s+", " ", msg or "").strip()
+    head = f"Kalshi didn't accept the API key ({status}" if int(status) == 401 else f"Kalshi refused this ({status}"
+    out = f"{head}{' ' + code if code else ''})" + (f": {msg}" if msg else ".")
+    if key_write_denied(code, msg):
+        out += " Your API key may need write (trading) access."
+    elif int(status) == 401 and not msg:
+        out += " Check the key ID and private key in Settings."
+    return out
+
+
+def body_words(r):
+    """(code, message) of a failed Kalshi answer in full. A body that isn't Kalshi's JSON (a gateway page) comes back
+    as its text with the tags and extra spaces removed."""
+    code, msg = _kalshi_error(r)
+    if not msg:
+        try:
+            j = r.json()
+        except ValueError:
+            j = None
+        if not isinstance(j, (dict, list)):
+            msg = str(getattr(r, "text", "") or "")
+    msg = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", msg)).strip()[:600]       # a gateway's page: its words, not its tags
+    return code, msg
+
+
+def _say_scope():
+    return getattr(_REFUSAL, "scope", None) or "buy"
+
+
+def _what_of(path):
+    p = str(path or "")
+    return ("accept" if "/accept" in p else "rfq" if "/communications/rfqs" in p else
+            "order" if "/portfolio/" in p and "orders" in p else "other")
+
+
+def refusal_take():
+    """The latest definite refusal this thread saw since it was last taken (or None); the web app attaches it to a
+    failed tap so the page can show Kalshi's full words."""
+    r = getattr(_REFUSAL, "last", None)
+    _REFUSAL.last = None
+    return r
+
+
+def note_refusal(status, code, msg, what="other", scope=None):
+    """Remember a definite Kalshi refusal (nothing was placed): for this thread, and, when it is a region or account
+    restriction, in the state file. Never raises. Returns True for a restriction."""
+    try:
+        restricted, scope = is_restriction(status, code, msg), scope or _say_scope()
+        if restricted or what != "other":                  # a stray 404 on a read or a cancel isn't news to Pete
+            _REFUSAL.last = {"msg": (msg or "")[:600], "code": code, "status": int(status or 0), "restricted": restricted,
+                             "what": what, "scope": scope}
+        if restricted:
+            _restrict_note(scope, int(status or 0), code, msg, what)
+        return restricted
+    except Exception as err:
+        print("refusal note skipped:", type(err).__name__, err, flush=True)
+        return False
+
+
+def _restrict_note(scope, status, code, msg, what):
+    now = time.time()
+    with RESTRICT_LOCK:
+        d = load_json(RESTRICT_FILE, {})
+        d = d if isinstance(d, dict) else {}
+        e = d.get(scope) if isinstance(d.get(scope), dict) else {}
+        live = bool(e.get("active")) and now - float(e.get("at") or 0) < RESTRICT_STALE
+        streak = int(e.get("streak") or 0) if live else 0
+        until = float(e.get("hold_until") or 0)
+        steps = RESTRICT_STEPS.get(scope) or RESTRICT_STEPS["buy"]
+        if not live or now >= until:                      # the first refusal, or the check after a hold: a longer hold
+            streak += 1
+            until = now + steps[min(streak, len(steps)) - 1]
+        else:                                             # refused again inside a hold (Pete's tap): the same hold, renewed
+            until = max(until, now + steps[min(max(streak, 1), len(steps)) - 1])
+        codes = dict(e.get("codes") or {}) if live else {}
+        k = (code or "no code")[:60]
+        codes[k] = int(codes.get(k) or 0) + 1
+        e = {"active": True, "msg": re.sub(r"\s+", " ", msg or "").strip()[:600], "code": code, "status": status,
+             "what": what, "at": now, "first": e.get("first") if live else now,
+             "count": (int(e.get("count") or 0) if live else 0) + 1, "streak": streak, "hold_until": until,
+             "codes": dict(list(codes.items())[:12]), "told": e.get("told") if live else ""}
+        d[scope] = e
+        d["last"] = {"scope": scope, "msg": e["msg"], "code": code, "at": now}
+        save_json(RESTRICT_FILE, d)
+    _log_once(("restrict", scope, code, str(msg)[:40]),
+              f"Kalshi is refusing {scope} orders for this account ({status} {code}): {str(msg)[:200]!r}. "
+              f"Holding back automatic attempts until {time.strftime('%H:%M', time.localtime(e['hold_until']))}.")
+
+
+def restriction_clear(scope, what):
+    """Kalshi took a request of the same kind: the restriction is over. Never raises."""
+    try:
+        with RESTRICT_LOCK:
+            d = load_json(RESTRICT_FILE, {})
+            e = d.get(scope) if isinstance(d, dict) else None
+            if isinstance(e, dict) and e.get("active") and e.get("what") == what:
+                e.update(active=False, cleared=time.time())
+                save_json(RESTRICT_FILE, d)
+                print(f"Kalshi took a {scope} {what} again: the restriction note is cleared.", flush=True)
+    except Exception as err:
+        print("restriction clear skipped:", type(err).__name__, err, flush=True)
+
+
+def restriction_info(now=None):
+    """What the pages and the Mac show about Kalshi's refusals, read from the state file. 'holding' = automatic
+    attempts and the Buy / Get price buttons wait. Only words Kalshi said, times and counts; never a key."""
+    now = now or time.time()
+    d = load_json(RESTRICT_FILE, {})
+    d = d if isinstance(d, dict) else {}
+    out = {}
+    for scope in ("buy", "sell"):
+        e = d.get(scope) if isinstance(d.get(scope), dict) else {}
+        on = bool(e.get("active")) and now - float(e.get("at") or 0) < RESTRICT_STALE
+        out[scope] = ({"active": True, "holding": now < float(e.get("hold_until") or 0), "msg": e.get("msg") or "",
+                       "code": e.get("code") or "", "at": e.get("at"), "hold_until": e.get("hold_until"),
+                       "count": e.get("count") or 0, "what": e.get("what") or "", "codes": e.get("codes") or {}}
+                      if on else {"active": False, "holding": False})
+    last = d.get("last") if isinstance(d.get("last"), dict) else None
+    out["last"] = {k: last.get(k) for k in ("scope", "msg", "code", "at")} if last else None
+    return out
+
+
+def restriction_holding(scope="buy"):
+    """The refusal record while Kalshi's restriction is being waited out (None otherwise). Never raises."""
+    try:
+        e = restriction_info().get(scope) or {}
+        return e if e.get("holding") else None
+    except Exception:
+        return None
+
+
+def restriction_words(e, scope="buy"):
+    """One sentence for a held attempt: nothing was sent, and why."""
+    what = "orders" if scope == "buy" else "sales"
+    at = time.strftime("%-I:%M %p", time.localtime(float(e.get("hold_until") or time.time())))
+    said = (e.get("msg") or "").strip()
+    return (f"Kalshi isn't allowing {what} for your account right now, so nothing was sent. "
+            + (f"Kalshi said: {said} " if said else "") + f"The app checks again after {at}.")
+
+
+def hold_refusal(scope="buy", strict=False):
+    """An automatic attempt that waits out Kalshi's restriction: (record, words), or (None, "").
+    Pete's own buy tap (`manual_tap`) is never held: it is the check after a hold, and a new refusal renews the hold."""
+    if scope == "buy" and not strict and getattr(_REFUSAL, "manual", False):
+        return None, ""                              # (strict = an automatic path: held whatever this thread is doing)
+    e = restriction_holding(scope)
+    if not e:
+        return None, ""
+    _REFUSAL.last = {"msg": e.get("msg") or "", "code": e.get("code") or "", "status": 403, "restricted": True,
+                     "held": True, "scope": scope}
+    return e, restriction_words(e, scope)
+
+
+def sell_held(out):
+    """Automatic sales wait while Kalshi is refusing them (its own words, once a day in the alerts). Pete's own taps
+    never wait. Returns True when the caller should do nothing this pass."""
+    e, words = hold_refusal("sell")
+    if not e:
+        return False
+    if restriction_tell("sell"):
+        out.append("⏸️ " + words)
+    return True
+
+
+def restriction_tell(scope="buy"):
+    """True once a day: the one push about this restriction."""
+    try:
+        today = dt.date.today().isoformat()
+        with RESTRICT_LOCK:
+            d = load_json(RESTRICT_FILE, {})
+            e = d.get(scope) if isinstance(d, dict) else None
+            if not isinstance(e, dict) or not e.get("active") or e.get("told") == today:
+                return False
+            e["told"] = today
+            save_json(RESTRICT_FILE, d)
+            return True
+    except Exception:
+        return False
 
 
 def deprecation_check(r, path):
@@ -10058,13 +10319,16 @@ def balance_words(o):
 
 def _order_fail(r, what, o=None):
     """Raise for a failed order answer: PermissionError / KalshiRefused (nothing placed) or OrderUnknown."""
-    code, msg = _kalshi_error(r)
+    code, msg = body_words(r)
     st = r.status_code
     _log_once(("order", what, st, code), f"Kalshi {what} refused: status={st} code={code} message={msg[:160]!r}")
     if st == 408 or st >= 500 or code == "order_already_exists":
         raise OrderUnknown(f"HTTP {st}" + (f" {code}" if code else ""))
+    restricted = what == "order" and note_refusal(st, code, msg, "order", "sell" if (o or {}).get("reduce_only") else None)
+    if restricted:                                            # the account or region: Kalshi's words, in full
+        raise KalshiRefused(kalshi_plain(st, code, msg), st, code)
     if st == 401 or (st == 403 and code in ("", "permission_denied", "subaccount_is_restricted_by_API_key")):
-        raise PermissionError("Kalshi refused. Your API key needs write (trading) access for buying.")
+        raise PermissionError(perm_words(st, code, msg))
     if code == "insufficient_balance" and o is not None:
         raise KalshiRefused(balance_words(o), st, code)
     if code == "not_found" and what == "cancel":
@@ -10108,6 +10372,7 @@ def _order_create(body):
             if got is None:
                 _log_once(("order-unread", r.status_code), f"Kalshi order answer unreadable: {str(r.text)[:200]!r}")
                 raise OrderUnknown("an answer the app couldn't read")
+            restriction_clear("sell" if o["reduce_only"] else _say_scope(), "order")   # Kalshi took it: no restriction now
             return got
         _order_fail(r, "order", o)
     except OrderUnknown as err:
@@ -10842,6 +11107,9 @@ def get_offer(i, amount=None, check_cap=True):
     """Steps 1-3: make the combo market, ask for a price, wait for the best offer. The green Buy ("ok") needs the
     combo's own minimum and, for every combo but the panel's (which carries its own cut-off), green_bar."""
     import time
+    held, words = hold_refusal("buy")                # Kalshi is refusing this account's orders: no request, no spin (#134)
+    if held:
+        return {"error": words, "restricted": True}
     c = CTX["combos"][i - 1]
     stake = round(float(amount), 2) if amount else CTX["stake"]
     if stake < 1:
@@ -10921,6 +11189,9 @@ def accept_offer(i, skip_cap=False):
     o = CTX["offers"].get(i)
     if not o:
         return {"error": "That offer expired. Tap New price for a fresh one."}
+    held, words = hold_refusal("buy")                # nothing is sent while Kalshi's restriction is being waited out
+    if held:
+        return {"error": words, "restricted": True}
     if trading_paused():
         CTX["offers"].pop(i, None)
         try:
@@ -14308,6 +14579,9 @@ def buy_single(ticker, n, price, coid=None, exact=False):
     coid: a client order id of the caller's (a manual buy uses its quote's, so Kalshi itself sees one order).
     exact: a sub-cent price goes as dollars rounded down (never more than shown) instead of to the nearest cent."""
     import uuid
+    held, words = hold_refusal("buy")                # nothing is sent while Kalshi's restriction is being waited out
+    if held:
+        return 0, words
     body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
             "yes_price": int(round(price * 100)), "time_in_force": "immediate_or_cancel",
             "client_order_id": coid or str(uuid.uuid4())}
@@ -14316,8 +14590,8 @@ def buy_single(ticker, n, price, coid=None, exact=False):
         body["yes_price_dollars"] = f"{math.floor(price * 10000 + 1e-6) / 10000:.4f}"
     try:
         o = (kalshi_send("POST", "/portfolio/orders", body) or {}).get("order") or {}
-    except PermissionError:
-        return 0, "Kalshi refused. The key needs write (trading) access."
+    except PermissionError as err:
+        return 0, str(err)
     except Exception as err:
         if order_outcome(err) == "unknown":
             ACCT_CACHE["at"] = 0
@@ -15793,7 +16067,7 @@ def month_profit(month):
     return round(pl, 2)
 
 
-def sizing_base(balance=None):
+def sizing_base(balance=None, save=True):
     """The bankroll the panel sizes from: what's in Kalshi minus the profit set aside (until you say you've
     moved it out), and when it has grown, only 10% more a week than last time (losses count right away). A balance
     that can't be read is never guessed for real money: the base is then None (the panel isn't sized or bought) and
@@ -15828,7 +16102,8 @@ def sizing_base(balance=None):
     base = min(avail, prev * (1.10 ** weeks)) if avail > prev else avail
     if now - s.get("base_at", 0) > 86400 or avail < prev:
         s.update(base=round(base, 2), base_at=now)
-    save_json(SIZING_FILE, s)
+    if save:                                           # save=False: a display-only read leaves the panel's state alone
+        save_json(SIZING_FILE, s)
     return base, s
 
 
@@ -17229,7 +17504,7 @@ def _buy_panel_bet(c):
         try:                                             # nothing is bought until accept_offer: a refusal here is a skip
             q = get_offer(1, c["stake"], check_cap=False)
         except (RuntimeError, PermissionError, requests.RequestException) as err:
-            return False, f"Kalshi wouldn't price it ({str(err)[:120]})", {}
+            return False, f"Kalshi wouldn't price it ({str(err)[:500]})", {}
         if q.get("error"):
             return False, q["error"], {}                 # (a combo already marked "check" is never re-quoted)
         if not q.get("ok"):
@@ -17371,6 +17646,14 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                 if c.get("hold") != hold:
                     _set_items(day, mode, {c["id"]: {"hold": hold}})
                 continue
+            if mode == "real":                            # Kalshi is refusing this account's orders (#134): wait it out
+                held, words = hold_refusal("buy", strict=True)         # without a request; nothing is skipped or swapped meanwhile
+                if held:
+                    if c.get("hold") != "region":
+                        _set_items(day, mode, {c["id"]: {"hold": "region"}})
+                    if restriction_tell("buy"):
+                        out.append("⏸️ " + words)
+                    continue
             f = _fresh(c)
             if f == "wait":                               # candidates too old: try again shortly, and have the Mac
                 if mode == "real":                        # look at that sport again soon (sports_near)
@@ -17422,10 +17705,21 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             panel_tx(day, mode, claim)
             if not claimed:
                 continue
+            refusal_take()                                  # forget any older refusal on this thread
             try:
                 ok, note, d = _buy_panel_bet(dict(c, **upd))
             except Exception as err:
                 ok, note, d = None, f"{type(err).__name__}: {err}", {}
+            ref = refusal_take() or {}
+            if ok is False and ref.get("restricted"):       # Kalshi refused for the account or region: nothing was
+                try:                                        # placed, so it goes back to waiting (never "check", never
+                    _set_items(day, mode, {c["id"]: {"state": "scheduled", "hold": "region", "note": note}})   # tried in a loop)
+                except Exception as err:
+                    log("panel: couldn't put a refused bet back:", type(err).__name__, err)
+                if restriction_tell("buy"):
+                    out.append("⏸️ Kalshi isn't allowing orders for your account right now, so the panel is waiting. "
+                               f"Kalshi said: {note}")
+                continue
             if ok is False and d.get("paused"):             # Pause came on during this pass: back to waiting
                 try:
                     _set_items(day, mode, {c["id"]: {"state": "scheduled", "hold": "paused"}})
@@ -20491,8 +20785,145 @@ def smart_buy_ideas_gate(ideas, now=None):
         return list(ideas), []
 
 
+# ================================================================ Build's "Best bets today" (issue #63)
+# ONE ranked, recommend-only feed across single games, spreads/totals and value combos. A bet is listed only when it has
+# BOTH an edge at a fair price after fees AND a likely route to profit under smart sell's own exit policy
+# (simulate_exit: a good chance to cash out at +10%, or a hold with an acceptable win chance, smart_buy_ok). Ranked by
+# expected dollars at the suggested stake. Display only: nothing is bought here (every Buy goes through the guarded
+# paths: the Buy straight sheet, the combo quote), nothing is placed, Pause and every cap are untouched. Fails closed:
+# an unreadable balance (no stake), a bet the simulator can't model or any error = not listed, never a guess.
+BEST_MAX = 6                 # rows shown
+BEST_LOOK = 30               # candidates simulated at most (about 5-12 ms each, memoised 5 minutes)
+
+
+def _best_exposure(legs):
+    """How much of what you hold already needs these picks: {'n': open combos needing one, 'of': open combos, 'team',
+    'label'} or None. Display only; reads MINE['hold'] and changes nothing."""
+    hold = MINE.get("hold") or {}
+    tks = {l.get("ticker") for l in legs if l.get("ticker")}
+    if not hold or not tks:
+        return None
+    on = [h for h in hold.values() if any(k[1] in tks for k, _ in h.get("need") or [])]
+    if not on:
+        return None
+    share = len(on) / len(hold)
+    team = next((l.get("pick") for l in legs if any(k[1] == l.get("ticker") for h in on for k, _ in h.get("need") or [])), "")
+    label = "on every combo" if share >= 0.999 else "heavy" if share >= 0.5 else "watch it" if share >= 0.25 else "low"
+    return {"n": len(on), "of": len(hold), "team": team, "label": label}
+
+
+def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
+    """{'items': [...], 'why': text or None, 'looked': {...}} for Build. games = the board's {event: [sides]}, lines =
+    line_recommend's vetted rows (BUILD["lines"]), combos = [(index, combo dict, predicted share of fair or None)]. Never
+    raises; anything unreadable leaves the bet out."""
+    now = now or time.time()
+    looked = {"single": 0, "line": 0, "combo": 0}
+    try:
+        base = sizing_base(save=False)[0]          # display only: never writes the panel's sizing state
+        no_base = base is None                      # singles and combos need it to be sized; spreads/totals bring their own fill
+        cands = []
+        for e, sides in ({} if no_base else (games or {})).items():
+            for x in single_candidates({e: sides}):
+                if line_stale(x.get("line_at"), _kick_ts(x), now):
+                    continue
+                opp = next((y for y in sides if y is not x and not y.get("tie") and y.get("ticker") != x.get("ticker")), None)
+                legs = [{"ticker": x["ticker"], "event": x.get("event"), "pick": x["pick"], "p": x["p"], "fair": x["fair"],
+                         "vs": (opp or {}).get("pick")}]
+                c = _cand("single", ticker_sport(x["ticker"]) or "", legs, x["fair"], x["edge"] / x["p"], "",
+                          price=x["p"], pct=None)
+                c["game"] = f"{x['pick']} vs {opp['pick']}" if opp else x["pick"]
+                c["edge"] = x["edge"]
+                cands.append(c)
+        cut = CFG["accept_pct"] / 100
+        for i, c0, pct in ([] if no_base else combos or []):
+            if c0.get("kind") != "value" or pct is None or not c0.get("legs") or not c0.get("fair"):
+                continue
+            if pct < max(1.0, cut, combo_cutoff(ticker_sport(c0["legs"][0]["ticker"]) or "", len(c0["legs"]), c0["legs"])):
+                continue                                # at or above fair, and over the league's own learned cut-off
+            fm = 1 / math.prod(l["fair"] for l in c0["legs"] if l.get("fair"))
+            code = ticker_sport(c0["legs"][0]["ticker"]) or ""
+            c = _cand("combo", code, c0["legs"], 1 / fm, pct - 1, "", pct=round(pct, 4), fair_mult=round(fm, 3))
+            c["i"] = i
+            c["edge"] = round(pct - 1, 4)
+            cands.append(c)
+        for c in cands:
+            looked[c["kind"]] += 1
+        cands.sort(key=lambda c: -(c.get("ret") or 0))
+        out = []
+        # Spreads and totals arrive ALREADY VETTED by line_recommend (issue #117): the league's learned edge bar after the
+        # fee, no kind that keeps losing to the close, fillable inside the edge at the size that fills, a likely route to
+        # profit under smart sell's exit policy, and a minimum of expected dollars at that size. Listed as they are, with
+        # their own fillable stake and expected dollars; nothing is re-priced or loosened here. A row that isn't a vetted
+        # recommendation (no `rec`, no stake or no positive expected dollars) is left out. Only the held-combo exposure
+        # trim and the injury-news guard are added on top, and they can only shrink or drop a row.
+        for x in lines or []:
+            looked["line"] += 1
+            try:
+                if not x.get("rec") or not x.get("ticker") or (x.get("stake") or 0) <= 0 or (x.get("exp") or 0) <= 0:
+                    continue
+                lg_ = [{"ticker": x["ticker"], "event": x.get("event"), "pick": x.get("pick"), "game": x.get("game"), "p": x["p"], "fair": x["fair"]}]
+                code = ticker_sport(x["ticker"]) or ""
+                c = _cand("line", code, lg_, x["fair"], x["edge"] / x["p"] if x.get("p") else 0, "", price=x["p"])
+                if news_gap(c):
+                    continue
+                fx, _ = exposure_factor(lg_)
+                k = fx if fx < 1 else 1.0
+                kick = x.get("kick")
+                if kick is None and x.get("start"):
+                    try:
+                        kick = dt.datetime.fromisoformat(str(x["start"]).replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        kick = None
+                out.append({"id": "line:" + x["ticker"], "kind": "line", "code": code, "icon": c["icon"], "league": c["league"],
+                            "game": x.get("game") or "", "pick": leg_text(lg_[0], "line"), "legs": [{"pick": x.get("pick"), "ticker": x["ticker"]}],
+                            "ticker": x["ticker"], "i": None, "kick": kick, "price": x["p"], "fair": x["fair"],
+                            "chance": x["fair"], "edge": x["edge"], "stake": round(x["stake"] * k, 2), "ev": round(x["exp"] * k, 2),
+                            "route": x.get("route"), "p_exit": x.get("p_exit"), "win": x.get("win"), "exit_mins": x.get("exit_mins"),
+                            "n": x.get("n"), "capped": x.get("capped"), "min_edge": x.get("min_edge"),
+                            "exposure": _best_exposure(lg_)})
+            except Exception as err:
+                console_note(f"best bets line: {type(err).__name__}: {err}")
+        for c in cands[:BEST_LOOK]:
+            try:
+                sim = _sb_sim(c, now)
+                stake = _size(c, base)
+                if not smart_buy_ok(sim) or news_gap(c):
+                    continue                            # no route to profit, or priced under its chance right after injury news
+                fx, _ = exposure_factor(c["legs"])
+                stake = max(2.0, round(stake * fx, 2)) if fx < 1 else stake       # never above the sized stake
+                ev = round(sim["ev"] * stake / sim["stake"], 2)
+                if ev <= 0:
+                    continue
+                out.append({"id": c["id"], "kind": c["kind"], "code": c["code"], "icon": c["icon"], "league": c["league"],
+                            "game": c.get("game") or "", "pick": leg_text(c["legs"][0], c["kind"]) if c["kind"] != "combo" else bet_text(c),
+                            "legs": [{"pick": l.get("pick"), "game": l.get("game"), "ticker": l.get("ticker")} for l in c["legs"]],
+                            "ticker": c["legs"][0]["ticker"], "i": c.get("i"), "kick": c.get("kick"),
+                            "price": c.get("price"), "fair": c["legs"][0]["fair"] if c["kind"] != "combo" else None,
+                            "chance": c["chance"], "edge": c["edge"], "stake": stake, "ev": ev,
+                            "route": sim["route"], "p_exit": sim["p_exit"], "win": sim["win"],
+                            "exit_mins": sim.get("exit_mins"), "exposure": _best_exposure(c["legs"])})
+            except Exception as err:
+                console_note(f"best bets: {type(err).__name__}: {err}")
+        out.sort(key=lambda r: -r["ev"])
+        out = out[:limit]
+        why = None
+        if not out and no_base:
+            return {"items": [], "why": "I can't read your Kalshi balance right now, so I can't size a bet. Try again in a minute.",
+                    "looked": looked}
+        if not out:
+            n = sum(looked.values())
+            why = ("Nothing clears your bar right now." if not n else
+                   f"Nothing clears your bar right now. I checked {n} bet{'s' if n != 1 else ''} with an edge; none also has a "
+                   "likely way to profit by cashing out early or holding.")
+        return {"items": out, "why": why, "looked": looked}
+    except Exception as err:
+        console_note(f"best bets: {type(err).__name__}: {err}")
+        return {"items": [], "why": "Couldn't work out today's best bets right now. Nothing is recommended until it can.",
+                "looked": looked}
+
+
 # ---- the shadow price recorder: prices the engine already fetched, never a new request
-PRICE_SEEN = {}            # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
+PRICE_SEEN = {}          # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
 PRICE_WATCH = {}           # ticker -> (watch until, kickoff) for markets we consider or hold
 PRICE_LAST = {}            # ticker -> (time, bid, ask) last written
 PRICE_STATE = {"flush": 0.0, "prune": 0.0}
