@@ -236,9 +236,14 @@ with sync_playwright() as pw:
             seq = pg.evaluate("""(async()=>{const PE=%s;const scr=()=>new Promise(z=>{addEventListener('scroll',()=>z(),{once:true,capture:true});window.scrollBy(0,40);});
               await scr();const mid=PE();
               dispatchEvent(new TouchEvent('touchend',{bubbles:true}));await scr();const still=PE();   // momentum after the finger lifts
-              await new Promise(z=>setTimeout(z,350));return {mid,still,after:PE()};})()""" % ("()=>" + pe))
+              return {mid,still};})()""" % ("()=>" + pe))
             cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-            mid, still, after = seq["mid"], seq["still"], seq["after"]
+            # once the finger is up and the page has had no scroll for 350 ms (the browser may still apply the drag's
+            # own scroll after the touchend), the switches take taps again
+            after = pg.evaluate("""(async()=>{let last=performance.now();const on=()=>{last=performance.now()};addEventListener('scroll',on,{capture:true});
+              const t0=performance.now();while(performance.now()-last<350&&performance.now()-t0<8000)await new Promise(z=>setTimeout(z,50));
+              removeEventListener('scroll',on,{capture:true});return Object.assign((%s)(),{waited:Math.round(performance.now()-t0)});})()""" % ("()=>" + pe))
+            mid, still = seq["mid"], seq["still"]
             pg.evaluate("document.querySelector('main').style.paddingBottom='';window.scrollTo(0,0)"); time.sleep(.3)
             sc = {"idle": idle, "app": app, "mid": mid, "still": still, "after": after}
             print("phone scrolling class:", sc)
