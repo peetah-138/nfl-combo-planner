@@ -477,7 +477,8 @@ for i in range(E.WARM_KEEP + 20):
 E.game_prefetch(EV, "nfl"); warm_join()
 ok("the remembered games stay bounded", len(E.GAME_WARM["ev"]) <= E.WARM_KEEP, len(E.GAME_WARM["ev"]))
 warm_reset()
-wsrc0 = open(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")).read()
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+wsrc0 = watcher_text(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py"))
 wm = wsrc0[wsrc0.index("    def api_game_warm(t):"):wsrc0.index("    def api_games():")]
 ok("the warm route only ever calls game_prefetch (no buy/sell/panel/offer function)",
    "A.game_prefetch(" in wm and not any(k in wm for k in ("accept_offer", "get_offer", "kalshi_send", "panel_", "auto_sell", "TapLock", "alock", "api_act", ".post(")), wm[:200])
@@ -498,8 +499,8 @@ locked = [f for f in mine if any(k in inspect.getsource(getattr(E, f)) for k in 
 ok("the slice-3 helpers take no tap lock and write nothing to disk or the database", not locked, locked)
 posts = [f for f in mine if any(k in inspect.getsource(getattr(E, f)) for k in (".post(", "kalshi", "hub_call"))]
 ok("the slice-3 helpers only GET public ESPN feeds (never Kalshi, never the hub's signed calls)", not posts, posts)
-wsrc = open(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")).read() if os.path.exists(
-    os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) else open("wtest/combo_watcher.py").read()
+wsrc = watcher_text(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) if os.path.exists(
+    os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) else watcher_text()
 api_src = wsrc[wsrc.index("    def api_game(t):"):wsrc.index("    def api_games():")]
 ok("the watcher calls the game detail only from the web app's game page (api_game)",
    wsrc.count("game_detail(") == 1 and "A.game_detail(" in api_src and "game_extras" not in wsrc and "_gx_" not in wsrc

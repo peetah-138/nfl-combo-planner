@@ -39,12 +39,23 @@ sudo install -d -m 700 -o combowatch -g combowatch "$DIR"
 
 echo "Downloading the planner..."
 tmp=$(mktemp -d)
-curl -fsSL "$REPO/nfl_combo_planner.py" -o "$tmp/engine.py"
-curl -fsSL "$REPO/watcher/combo_watcher.py" -o "$tmp/combo_watcher.py"
+# read the files at GitHub's newest commit (plain links to main can be minutes stale right after a release)
+SHA=$(curl -fsSL --max-time 15 -H "Accept: application/vnd.github.sha" \
+  "https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main" 2>/dev/null || true)
+AT="$REPO"; [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] && AT="${REPO%/main}/$SHA"
+curl -fsSL "$AT/nfl_combo_planner.py" -o "$tmp/engine.py"
+curl -fsSL "$AT/watcher/combo_watcher.py" -o "$tmp/combo_watcher.py"
 python3 -m py_compile "$tmp/engine.py" "$tmp/combo_watcher.py"
 sudo install -m 600 -o combowatch -g combowatch "$tmp/engine.py" "$DIR/engine.py"
 sudo install -m 600 -o combowatch -g combowatch "$tmp/combo_watcher.py" "$DIR/combo_watcher.py"
 rm -rf "$tmp"
+# the web app's files (spa folder; only used if this Pi runs Combo Hub): fetched and checked by the watcher itself,
+# as the service user; if that fails now, the watcher retries on its own, so this never stops the install
+if sudo -u combowatch env COMBOWATCH_HOME="$DIR" python3 "$DIR/combo_watcher.py" --install-spa; then
+  echo "Web app files installed."
+else
+  echo "The web app files will be fetched when the watcher starts."
+fi
 
 if sudo test -f "$DIR/kalshi_private_key.pem" && [ "${1:-}" != "--new-key" ]; then
   echo "Kalshi key already set up (run with --new-key to replace it)."

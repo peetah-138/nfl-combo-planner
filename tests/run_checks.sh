@@ -15,6 +15,7 @@ cd "$WORK" || exit 1
 mkdir -p wahome wtest run
 cp "$R/nfl_combo_planner.py" wahome/engine.py
 cp "$R/watcher/combo_watcher.py" wtest/combo_watcher.py
+cp -R "$R/watcher/spa" wtest/spa            # the web app's files sit next to the watcher, as on the Mac
 cp "$R/nfl_combo_planner.py" run/nfl_combo_planner.py
 cp fixtures/run_settings.json run/combo_settings.json
 cp fixtures/home_settings.json wahome/combo_settings.json
@@ -66,15 +67,19 @@ for f in ("nfl_combo_planner.py", "watcher/combo_watcher.py"):
     ast.parse(open(sys.argv[1] + "/" + f).read(), f, feature_version=(3, 10))
 P
 fi
-"$PY" - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
-import re, subprocess, sys, tempfile, os
-s = open(os.path.join(sys.argv[1], "watcher/combo_watcher.py")).read()
-for name in ('SPA = r"""', 'LOGIN_HTML = r"""'):
-    i = s.index(name); j = s.index('"""', i + len(name)); h = s[i + len(name):j]
-    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write("\n".join(re.findall(r"<script>(.*?)</script>", h, re.S))); f.close()
+"$PY" - "$R" <<'P' && ok "javascript syntax (each watcher/spa file and the assembled pages)" || bad "javascript syntax"
+import glob, importlib.util, os, subprocess, sys, tempfile
+os.environ["COMBOWATCH_HOME"] = tempfile.mkdtemp()      # never the real ~/combowatch
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "watcher/spa/*.js"))):
+    if subprocess.run(["node", "--check", f]).returncode: sys.exit(1)
+spec = importlib.util.spec_from_file_location("W", os.path.join(sys.argv[1], "watcher/combo_watcher.py"))
+W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
+if W.SPA_PROBLEM: print(W.SPA_PROBLEM); sys.exit(1)
+for h in (W.SPA, W.LOGIN_HTML):
+    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write(W.spa_scripts(h)); f.close()
     if subprocess.run(["node", "--check", f.name]).returncode: sys.exit(1)
 P
-"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
+"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" "$R/tools/verify_spa_split.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
 if [ -n "$SECRET_PATTERN" ]; then          # set it (privately, e.g. in your shell profile) to the strings that must never be committed
   (cd "$R" && ! git grep -nIE "$SECRET_PATTERN" >/dev/null) && ok "no secrets in repo" || bad "secrets in repo" "$(cd "$R" && git grep -nlIE "$SECRET_PATTERN")"
 else

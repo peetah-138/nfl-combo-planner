@@ -231,12 +231,23 @@ fi
 echo "STEP: download"
 echo "Downloading the planner..."
 tmp=$(mktemp -d)
-curl -fsSL "$REPO/nfl_combo_planner.py" -o "$tmp/engine.py"
-curl -fsSL "$REPO/watcher/combo_watcher.py" -o "$tmp/combo_watcher.py"
+# read the files at GitHub's newest commit (plain links to main can be minutes stale right after a release)
+SHA=$(curl -fsSL --max-time 15 -H "Accept: application/vnd.github.sha" \
+  "https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main" 2>/dev/null || true)
+AT="$REPO"; [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] && AT="${REPO%/main}/$SHA"
+curl -fsSL "$AT/nfl_combo_planner.py" -o "$tmp/engine.py"
+curl -fsSL "$AT/watcher/combo_watcher.py" -o "$tmp/combo_watcher.py"
 "$PY" -m py_compile "$tmp/engine.py" "$tmp/combo_watcher.py"
 install -m 600 "$tmp/engine.py" "$DIR/engine.py"
 install -m 600 "$tmp/combo_watcher.py" "$DIR/combo_watcher.py"
 rm -rf "$tmp"
+# the web app's files (spa folder): the watcher fetches and checks them itself; if that fails now, it retries on
+# its own once it runs (Combo Hub shows "finishing an update" until then), so this never stops the install
+if COMBOWATCH_HOME="$DIR" "$PY" "$DIR/combo_watcher.py" --install-spa; then
+  echo "Web app files installed."
+else
+  echo "The web app files will be fetched when the watcher starts."
+fi
 
 echo "STEP: key"
 if [ -f "$DIR/kalshi_private_key.pem" ] && [ "${1:-}" != "--new-key" ]; then

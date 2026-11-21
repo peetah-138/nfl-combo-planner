@@ -353,8 +353,9 @@ ok("that swallowed failure was logged under the gamedetail key", any(k[0] == "ga
 
 # ---- isolation (slice 2): the feed's plays reach no money path, take no lock, and the page's JS never trades or fetches
 import re as _re
-wsrc = open(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")).read() if os.path.exists(
-    os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) else open("wtest/combo_watcher.py").read()
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+wsrc = watcher_text(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) if os.path.exists(
+    os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) else watcher_text()
 j0 = wsrc.index("/* ---- The game page's tab framework")
 j1 = wsrc.index("function winChart(")
 block = wsrc[j0:j1]
