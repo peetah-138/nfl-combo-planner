@@ -29,6 +29,11 @@ db.executemany("insert into pulse_more values(?,?,?)", [(r[0], 0, 0) for r in ro
 db.execute("create table if not exists ledger(ticker text primary key, kind text, league text, side text, cost real, back real, "
            "fees real, sold_back real, sell_fees real, n_sold real, status text, opened real, closed real, legs text, outcome text, "
            "held real, seen real, nf int)")
+db.execute("delete from ledger")                  # this lane's earlier tests leave finished bets behind: only ours count
+try:
+    db.execute("delete from bets")
+except sqlite3.OperationalError:
+    pass
 db.execute("insert or replace into ledger(ticker, kind, cost, back, status, closed) values('KXT-SOLD','win',5.05,6.2,'sold',?)", (rows[47][0] + 200,))
 db.commit(); db.close()
 
@@ -40,10 +45,10 @@ def wait(pg, js, secs=12):
         time.sleep(.2)
     return False
 
-for _ in range(40):                              # the web app may have warmed Live (and its 20 s cache) before the seed
+for _ in range(60):                              # the web app may have warmed Live (and its 20 s cache) before the seed
     lv = requests.get(B + "/app/api/live", headers={"X-CW": "x"}).json()
     pn = lv.get("pnl") or {}
-    if pn.get("pts"): break
+    if len(pn.get("pts") or []) >= 50: break
     time.sleep(1)
 wk = requests.get(B + "/app/api/pulse?h=168", headers={"X-CW": "x"}).json().get("pnl") or {}
 print("api: day", len(pn.get("pts") or []), "t0", pn.get("t0"), "rough", pn.get("rough"), "| week", len(wk.get("pts") or []), "rough", wk.get("rough"))

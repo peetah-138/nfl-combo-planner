@@ -146,7 +146,7 @@ function heroChart(d){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';cons
  const pts=Array.isArray(v.pts)?v.pts.filter(p=>Array.isArray(p)&&isFinite(p[0])&&isFinite(p[1])):[];
  if(pts.length<2)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line class="szero" x1="0" x2="600" y1="38" y2="38" vector-effect="non-scaling-stroke"/></svg></div>
   <div class="saxis"><span>${wk?'Not enough history for a week yet.':'Your profit line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
- const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(0,...vs),hi=Math.max(0,...vs),rg=Math.max(hi-lo,1);
+ const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),sp=Math.max(0,1-(Math.max(0,...vs)-Math.min(0,...vs)))/2,lo=Math.min(0,...vs)-sp,hi=Math.max(0,...vs)+sp,rg=hi-lo;   // at least $1 tall: cents never look like a cliff
  const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>8+(hi-v)/rg*(H-16),zy=Y(0),f=(zy/H).toFixed(4);
  const smax=Math.max(.01,...pts.map(p=>+p[2]||0)),SY=s=>H-Math.max(0,+s||0)/smax*H*.7;
  const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
