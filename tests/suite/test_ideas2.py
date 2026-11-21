@@ -191,7 +191,7 @@ with sync_playwright() as pw:
         pg.evaluate("S.live.ideas_hidden=5;renderLive()"); time.sleep(.3)
         if "5 hidden" not in pg.locator(".iempty").inner_text(): bad(f"{tag}: the empty state should offer to show hidden ideas")
         pg.locator(".iempty .linkb").click(); time.sleep(1)
-        if not until(lambda: len(server_picks()) == 5): bad(f"{tag}: 'Show again' should bring them all back: {server_picks()} {open(A.IDEA_DISMISS).read()}")
+        if not until(lambda: len(server_picks()) == 5): bad(f"{tag}: 'Show again' should bring them all back: {server_picks()} {open(A.IDEA_DISMISS).read()} rows={[r['picks'] for r in A.live_suggestions(limit=50, newest=True)]} held={A._held_idea_markets()}")
         seed(); inject(pg)
         # ---- collapse: each of the three sections folds, keeps its count, remembers across a reload
         for k, name in (("ideas", "Buy ideas"), ("combos", "Your combos"), ("singles", "Single bets")):
@@ -234,7 +234,10 @@ with sync_playwright() as pw:
             if not pg.evaluate("!!document.querySelector('#sheet .imv svg path')"): bad(f"{tag}: the price line should draw (two quotes were saved)")
             if pg.evaluate("document.querySelector('#sheet').scrollWidth>document.querySelector('#sheet').clientWidth+1"): bad(f"{tag}: sideways scroll on the detail page")
             if SHOTS and tag == "phone390": pg.screenshot(path=os.path.join(SHOTS, "detail_phone390.png"))
-            pg.locator("#sheet").get_by_text("Get today's price").click(); time.sleep(.8)
+            for _try in range(3):                              # the sheet repaints when the book arrives; a click that lands mid-repaint is retried
+                try: pg.locator("#sheet").get_by_text("Get today's price").click(timeout=4000)
+                except Exception: pass
+                if until(lambda: "idea" in SENT, 2): break
             if "idea" not in SENT: bad(f"{tag}: the detail page's price button should ask the Mac for the idea's price: {SENT}")
             if not pg.evaluate("document.querySelector('#modal').classList.contains('on')"): bad(f"{tag}: asking for a price shouldn't close the page")
             pg.locator("#sheet").get_by_text("Open the game page").click()
