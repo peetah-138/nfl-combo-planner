@@ -5595,11 +5595,13 @@ def _situation_info(sit, lp):
 GAME_DETAIL = {}        # event id -> (fetched at, parsed detail); display only, like league_injuries
 
 
-def game_detail(event_id, code, max_age=6):
+def game_detail(event_id, code, max_age=6, budget=None):
     """Slice-1 game-detail for the live game page (football only): the ESPN summary parsed down to what the
     field strip, situation line, last play and scoreboard need. Display only, never read by any buy/sell path.
     Returns {} for non-football sports, a missing feed, or any parse trouble — the page still works without it.
-    Caching/backoff come free from the hub's HubCache when the Mac is up (ESPN GETs route through it)."""
+    Caching/backoff come free from the hub's HubCache when the Mac is up (ESPN GETs route through it).
+    The team-dependent extras (last 5, season leaders) never hold the page up: `budget` (default 0) is how long the first
+    open may wait for them; without it the payload carries "gxp" (still fetching) and the page fills those tabs in later."""
     import time
     path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
     # football only (slice 1); the event id must be the plain numeric ESPN id (defence in depth: a bad value is
@@ -5608,7 +5610,7 @@ def game_detail(event_id, code, max_age=6):
         return {}
     got = GAME_DETAIL.get(event_id)
     if got and time.time() - got[0] < max_age:
-        return game_extras(got[1], path, event_id)
+        return game_extras(got[1], path, event_id, budget)
     out = {}
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
@@ -5624,7 +5626,67 @@ def game_detail(event_id, code, max_age=6):
     for k in [k for k, v in list(GAME_DETAIL.items()) if now - v[0] > GAME_DETAIL_KEEP]:
         GAME_DETAIL.pop(k, None)                                # forget games nobody has opened for an hour, so the cache stays small
     GAME_DETAIL[event_id] = (now, out)
-    return game_extras(out, path, event_id)
+    return game_extras(out, path, event_id, budget)
+
+
+GAME_WARM = {"lock": threading.Lock(), "ev": {}, "busy": 0, "stamps": []}
+WARM_MIN = 30             # seconds before the same game is warmed again
+WARM_AGE = 60             # a warm read may reuse a summary up to this old (the page itself polls at 6 s)
+WARM_BACK = (60, 600)     # first wait after a failed warm, doubling up to the cap
+WARM_THREADS = 2          # most warm-ups at once
+WARM_PER_MIN = 8          # most warm-ups started per minute, across all games
+WARM_KEEP = 200           # games remembered (oldest dropped)
+
+
+def game_prefetch(event_id, code):
+    """Warm a football game's page data in the background (its summary and its teams' last 5 / season leaders) so the
+    page opens with it already there. Called when a game card is shown or pressed. Polite and display only: the same game
+    at most every WARM_MIN s, a failed one backs off 60 s doubling to 10 min, at most WARM_THREADS at once and WARM_PER_MIN a
+    minute, and the work is the page's own game_detail (never anything that buys, sells or prices). Returns True when a
+    warm-up was started; never raises."""
+    try:
+        path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
+        ev = str(event_id or "")
+        if "football/" not in str(path) or not re.match(r"^\d{1,12}$", ev):
+            return False
+        now = time.time()
+        with GAME_WARM["lock"]:
+            seen = GAME_WARM["ev"].get(ev) or (0, 0, 0)       # (last started, failures in a row, next try no sooner than)
+            st = GAME_WARM["stamps"]
+            st[:] = [t for t in st if now - t < 60]
+            if now - seen[0] < WARM_MIN or now < seen[2] or GAME_WARM["busy"] >= WARM_THREADS or len(st) >= WARM_PER_MIN:
+                return False
+            GAME_WARM["busy"] += 1
+            st.append(now)
+            GAME_WARM["ev"][ev] = (now, seen[1], seen[2])
+            if len(GAME_WARM["ev"]) > WARM_KEEP:
+                for k, _v in sorted(GAME_WARM["ev"].items(), key=lambda kv: kv[1][0])[:WARM_KEEP // 2]:
+                    GAME_WARM["ev"].pop(k, None)
+
+        def run():
+            ok_ = False
+            try:
+                got = GAME_DETAIL.get(ev)
+                ok_ = bool(game_detail(ev, code, max_age=WARM_AGE if got and got[1] else 0))   # a cached failure is never reused
+            except Exception as err:               # a background display warm-up must never die loudly
+                klive_log_once("gamedetail", f"{ev}:warm", err)
+            finally:
+                with GAME_WARM["lock"]:
+                    cur = GAME_WARM["ev"].get(ev) or (now, 0, 0)
+                    fails = 0 if ok_ else cur[1] + 1
+                    wait = 0 if ok_ else min(WARM_BACK[1], WARM_BACK[0] * 2 ** min(fails - 1, 10))
+                    GAME_WARM["ev"][ev] = (cur[0], fails, time.time() + wait)
+                    GAME_WARM["busy"] = max(0, GAME_WARM["busy"] - 1)
+        try:
+            threading.Thread(target=run, daemon=True, name="gamewarm").start()
+        except RuntimeError:                       # could not start a thread: give the slot back
+            with GAME_WARM["lock"]:
+                GAME_WARM["busy"] = max(0, GAME_WARM["busy"] - 1)
+            return False
+        return True
+    except (AttributeError, TypeError, ValueError, RuntimeError) as err:
+        klive_log_once("gamedetail", f"{event_id}:warm", err)
+        return False
 
 
 def _parse_game_detail(data, event_id=None):
@@ -5733,6 +5795,26 @@ TEAM_STATS = (("totalYards", "Total yards"), ("netPassingYards", "Passing yards"
               ("sacksYardsLost", "Sacked"), ("turnovers", "Turnovers"), ("totalPenaltiesYards", "Penalties"),
               ("possessionTime", "Time of possession"))
 TS_RATIO = ("thirdDownEff", "fourthDownEff", "redZoneAttempts")      # "made-att": the bar compares success rates
+# Rows where the LOWER number is the better one (the side with fewer leads the bar). Everything else, time of possession
+# included, is higher-is-better. Matched on the feed's stat name, and on the row's label for the feed's other shapes.
+TS_LOWER = ("turnovers", "fumbleslost", "fumbles", "interceptions", "interceptionsthrown", "sacksyardslost", "sackstaken",
+            "sacksallowed", "totalpenaltiesyards", "penalties", "penaltyyards")
+TS_LOWER_WORDS = ("turnover", "sacked", "sacks taken", "sacks allowed", "penalt", "fumbles lost", "interceptions thrown")
+
+
+def _ts_lower(key, label):
+    """True when fewer is better for this team-stat row."""
+    k = re.sub(r"[^a-z]", "", str(key).lower())
+    lab = str(label).lower()
+    return k in TS_LOWER or any(w in lab for w in TS_LOWER_WORDS)
+
+
+def _ts_leader(an, hn, lower):
+    """Who leads a team-stat row: "a" (away), "h" (home) or "" (a tie, or numbers we cannot compare). Fewer leads when
+    `lower`, more leads otherwise."""
+    if an is None or hn is None or an == hn:
+        return ""
+    return ("a" if an < hn else "h") if lower else ("a" if an > hn else "h")
 INJ_ORDER = ("out", "injured reserve", "doubtful", "questionable", "day-to-day", "probable")
 INJ_MAX = 30              # most injured players listed per team
 TXT_MAX = 60
@@ -5744,7 +5826,8 @@ ESPN_CORE = "https://sports.core.api.espn.com/v2/sports"
 GX = {}                   # (kind, ...) -> (fetched at, shaped value, failures in a row, next try no sooner than)
 GX_JOB = {"lock": threading.Lock(), "t": {}}
 GX_TTL = {"sched": 1800, "lead": 3600, "ath": 86400}
-GX_BUDGET = 1.5           # most seconds the FIRST open of a game waits for its team fetches (later polls never wait)
+GX_PENDING_MAX = 45       # a first team fetch still missing after this many seconds stops saying "still fetching" (the tab says not available)
+GX_FIRST = {}             # job -> when its team data was first asked for (bounded; see game_extras)
 GX_TIMEOUT = 8
 GX_BACKOFF = (30, 1800)   # first wait after a failure, doubling up to the cap
 GX_ATH_FETCH = 6          # most player-name lookups per refresh
@@ -5825,7 +5908,8 @@ def _ts_num(v, name):
 
 
 def _parse_team_stats(data, side_of):
-    """Head-to-head team stats: [{"k", "l" (label), "a"/"h" (as the feed shows them), "an"/"hn" (numbers for the bar, or None)}]."""
+    """Head-to-head team stats: [{"k", "l" (label), "a"/"h" (as the feed shows them), "an"/"hn" (numbers for the bar, or None),
+    "lo" (fewer is better), "ld" (who leads: "a", "h" or "" for a tie)}]."""
     per = {}
     for t in (_dic(data.get("boxscore")).get("teams") or [])[:4]:
         t = _dic(t)
@@ -5851,7 +5935,9 @@ def _parse_team_stats(data, side_of):
         an, hn = _ts_num(a, k), _ts_num(h, k)
         if an is None or hn is None or an + hn <= 0:
             an = hn = None
-        rows.append({"k": _cut(k, 40), "l": _cut(lab, 40), "a": _cut(a, 16) or "–", "h": _cut(h, 16) or "–", "an": an, "hn": hn})
+        lo = _ts_lower(k, lab)
+        rows.append({"k": _cut(k, 40), "l": _cut(lab, 40), "a": _cut(a, 16) or "–", "h": _cut(h, 16) or "–", "an": an, "hn": hn,
+                     "lo": lo, "ld": _ts_leader(an, hn, lo)})
     return rows
 
 
@@ -5861,17 +5947,20 @@ def _inj_rank(st):
 
 
 def _parse_injuries(data, side_of):
-    """The injury report per side: {"away": [{"n", "j", "pos", "st", "ty", "ret"}], "home": [...]}, worst first. Present
-    (possibly with empty lists) whenever the summary carries an injuries block, so the tab can say "none listed"."""
+    """The injury report per side: {"away": [{"n", "j", "pos", "st", "ty", "ret"}], "home": [...]}, worst first. A side is
+    present only when the feed has that team's own list (possibly empty: ESPN says nobody is hurt); a side the feed did not
+    mention, or an injuries block with no team lists, is left out, so the tab can say "not available right now" for it
+    instead of claiming "no injuries"."""
     raw = data.get("injuries")
     if not isinstance(raw, list):
         return {}
-    out = {"away": [], "home": []}
+    out = {}
     for t in raw[:4]:
         t = _dic(t)
         side = side_of.get(str(_dic(t.get("team")).get("id") or ""))
-        if side not in out or out[side]:
+        if side not in ("away", "home") or side in out or not isinstance(t.get("injuries"), list):
             continue
+        out[side] = []
         for x in (t.get("injuries") if isinstance(t.get("injuries"), list) else [])[:80]:
             x = _dic(x)
             ath = _dic(x.get("athlete"))
@@ -6133,7 +6222,8 @@ def _gx_leaders(lg, yr, ids):
 
 def game_extras(base, path, event_id, budget=None):
     """The game detail plus last 5 games and season leaders for both teams, from the background cache. Starts a refresh
-    when something is due; only the first open of a game waits for it (at most GX_BUDGET s, or `budget`). Never raises."""
+    when something is due and never waits for it unless `budget` (seconds) says to: the first open of a game returns at once
+    with "gxp": True (the team data is still being fetched) and the page fills those tabs in from a later poll. Never raises."""
     try:
         b = _dic(_dic(base).get("board"))
         lg = CORE_LEAGUE.get(str(path))
@@ -6147,12 +6237,19 @@ def game_extras(base, path, event_id, budget=None):
         job = (str(path), lg, yr, stype, ids["away"], ids["home"])
         keys = [("sched", job[0], i, yr, st) for i in ids.values() for st in _gx_types(stype)] + [("lead", lg, yr, i) for i in ids.values()]
         if any(_gx_due(k) for k in keys) or _ath_due(lg, yr, ids.values()):
-            first = not any(k in GX for k in keys)
             th = _gx_kick(job)
-            wait = budget if budget is not None else (GX_BUDGET if first else 0)
-            if th is not None and wait:
-                th.join(wait)
+            if th is not None and budget:
+                th.join(budget)
         extra = {}
+        if any(k not in GX for k in keys):                  # nothing has come back yet (not even a failure): say so, for a while
+            now = time.time()
+            if len(GX_FIRST) > 200:
+                GX_FIRST.clear()
+            th0 = GX_JOB["t"].get(job)
+            if (th0 is not None and th0.is_alive()) or now - GX_FIRST.setdefault(job, now) < GX_PENDING_MAX:
+                extra["gxp"] = True               # still being fetched: a live thread always counts, whatever ESPN's pace
+        else:
+            GX_FIRST.pop(job, None)
         l5 = _gx_last5(job[0], ids, str(event_id), yr, stype)
         if l5:
             extra["last5"] = l5

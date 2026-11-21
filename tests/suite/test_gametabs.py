@@ -284,8 +284,8 @@ def run_empty(pg, label):
     if "Team stats" in names or names != ["Overview", "Box score", "Injury report", "Last 5 games", "Season leaders"]:
         probs.append(label + ": a tab with no data should be hidden " + repr(names))
     pick(pg, "inj")
-    if pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=inj] .gempty').length") != 2:
-        probs.append(label + ": an empty injury report should say none listed for each team")
+    if txt(pg, ".gpanel[data-tab=inj] .gempty") != ["No injuries reported.", "No injuries reported."]:
+        probs.append(label + ": a real empty injury report should say no injuries reported for each team: " + repr(txt(pg, ".gpanel[data-tab=inj] .gempty")))
     pick(pg, "last5")
     t = pg.evaluate("document.querySelector('#sheet .gpanel[data-tab=last5]').textContent")
     if "aren’t available right now" not in t or "No finished games yet" not in t:
@@ -306,6 +306,201 @@ def run_empty(pg, label):
         probs.append(label + ": other sports should get no tab row")
     pg.evaluate("closeModal()"); time.sleep(.3)
     pg.unroute("**/app/api/game*")
+    return probs
+
+
+def run_nits(pg, label, phone):
+    """The release-review nits: injuries empty vs missing, fewer-is-better bars, team data still loading (skeleton, then it fills in)."""
+    probs = []
+    pg.route("**/app/api/game*", answer)
+
+    def show(d, tab):
+        state["g"] = game(d)
+        if not open_game(pg):
+            return False
+        return pick(pg, tab)
+
+    # ---- injuries: a real empty list, ESPN sending nothing, and one side of each
+    d = copy.deepcopy(DETAIL); d["inj"] = {"away": [], "home": []}
+    if not show(d, "inj"):
+        return [label + ": injury tab didn't open"]
+    if txt(pg, ".gpanel[data-tab=inj] .gempty") != ["No injuries reported.", "No injuries reported."]:
+        probs.append(label + ": two real empty lists: " + repr(txt(pg, ".gpanel[data-tab=inj] .gempty")))
+    if "No injuries listed" in pg.evaluate("document.querySelector('#sheet').textContent"):
+        probs.append(label + ": the old 'No injuries listed' wording is still there")
+    d = copy.deepcopy(DETAIL); d.pop("inj")
+    if not show(d, "inj"):
+        probs.append(label + ": the injury tab should still show when ESPN sent no injury data")
+    else:
+        if txt(pg, ".gpanel[data-tab=inj] .gempty") != ["Injury report isn’t available right now."] * 2:
+            probs.append(label + ": missing injury data should say not available: " + repr(txt(pg, ".gpanel[data-tab=inj] .gempty")))
+        if pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=inj] .injr').length"):
+            probs.append(label + ": injury rows from nowhere")
+    d = copy.deepcopy(DETAIL); d["inj"] = {"away": d["inj"]["away"]}
+    if not show(d, "inj"):
+        probs.append(label + ": half an injury report didn't open")
+    else:
+        got = txt(pg, ".gpanel[data-tab=inj] .gempty")
+        n = pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=inj] .injr').length")
+        if got != ["Injury report isn’t available right now."] or n != 5:
+            probs.append(label + ": one known side and one unknown: %r rows %d" % (got, n))
+    sw = sideways(pg)
+    if sw["page"] > 0 or sw["sheet"] > 0:
+        probs.append(label + ": injury tab scrolls sideways %r" % sw)
+    if phone:
+        shot(pg, "injury_unavailable_phone.png")
+
+    # ---- team stats: fewer is better on turnovers, sacks, penalties; ties stay neutral; the leader's side carries the longer bar
+    state["g"] = game()
+    if not open_game(pg) or not pick(pg, "tstats"):
+        return probs + [label + ": team stats didn't open"]
+    time.sleep(1.0)
+    rows = pg.evaluate("""(()=>{const o={};document.querySelectorAll('#sheet .gpanel[data-tab=tstats] .tsr').forEach(r=>{
+      const l=r.querySelector('.tsv span').childNodes[0].textContent,b=r.querySelectorAll('.tsv b'),i=r.querySelectorAll('.h2bar i');
+      o[l]={lo:r.classList.contains('lo'),tag:!!r.querySelector('.lob'),a:b[0].className,h:b[1].className,w:[parseFloat(i[0].style.width),parseFloat(i[1].style.width)],even:r.querySelector('.h2bar').classList.contains('even'),
+      px:[i[0].getBoundingClientRect().width,i[1].getBoundingClientRect().width]};});return o;})()""")
+    sk = rows.get("Sacked", {})
+    if not (sk.get("lo") and sk.get("tag") and sk["h"] == "lead" and sk["a"] == "lag" and abs(sk["w"][0] - 100 / 3) < .2 and sk["px"][0] < sk["px"][1]):
+        probs.append(label + ": Sacked 2 vs 1 (fewer is better): home should lead with the longer bar " + repr(sk))
+    pe = rows.get("Penalties", {})
+    if not (pe.get("lo") and pe["a"] == "lead" and pe["h"] == "lag" and abs(pe["w"][0] - 4 / 6 * 100) < .2 and pe["px"][0] > pe["px"][1]):
+        probs.append(label + ": Penalties 2 vs 4: away should lead with the longer bar " + repr(pe))
+    to = rows.get("Turnovers", {})
+    if not (to.get("lo") and to["a"] == "" and to["h"] == "" and to["even"] and abs(to["w"][0] - 50) < .01):
+        probs.append(label + ": Turnovers 1 vs 1 is a tie: nobody leads, the bar is even " + repr(to))
+    ty = rows.get("Total yards", {})
+    if not (not ty.get("lo") and not ty.get("tag") and ty["h"] == "lead" and ty["a"] == "lag" and ty["px"][0] < ty["px"][1]):
+        probs.append(label + ": Total yards 167 vs 354 (more is better): home leads " + repr(ty))
+    tp = rows.get("Time of possession", {})
+    if not (not tp.get("lo") and tp["h"] == "lead"):
+        probs.append(label + ": time of possession is higher-is-better " + repr(tp))
+    if sorted(k for k, v in rows.items() if v["tag"]) != ["Penalties", "Sacked", "Turnovers"]:
+        probs.append(label + ": only the fewer-is-better rows carry the tag " + repr([k for k, v in rows.items() if v["tag"]]))
+    # flip a lower-is-better row: 0 vs 3 turnovers -> away leads with a nearly full bar; changing it keeps the animation (the bar slides)
+    d = copy.deepcopy(DETAIL)
+    tr = next(r for r in d["tstats"] if r["k"] == "turnovers")
+    tr.update({"a": "0", "an": 0.0, "h": "3", "hn": 3.0, "ld": "a"})
+    state["g"] = game(d)
+    redraw(pg); time.sleep(1.0)
+    tw = pg.evaluate("""(()=>{const r=[...document.querySelectorAll('#sheet .gpanel[data-tab=tstats] .tsr')].find(x=>x.querySelector('.tsv span').textContent.startsWith('Turnovers'));
+      const i=r.querySelectorAll('.h2bar i'),b=r.querySelectorAll('.tsv b');return [parseFloat(i[0].style.width),b[0].className,b[1].className,r.querySelector('.h2bar').classList.contains('even'),getComputedStyle(i[0]).transitionDuration];})()""")
+    if not (tw[0] == 96 and "lead" in tw[1].split() and "lag" in tw[2].split() and tw[3] is False and tw[4] not in ("0s", "0ms")):
+        probs.append(label + ": 0 vs 3 turnovers: away leads with a long bar that still animates " + repr(tw))
+    sw = sideways(pg)
+    if sw["page"] > 0 or sw["sheet"] > 0:
+        probs.append(label + ": team stats scrolls sideways %r" % sw)
+    if phone:
+        shot(pg, "team_stats_lower_phone.png")
+
+    # ---- team data still loading: skeletons on Last 5 / Season leaders, then the poll fills them in by itself
+    d = copy.deepcopy(DETAIL); d.pop("last5"); d.pop("leaders"); d["gxp"] = True
+    state["g"] = game(d)
+    if not open_game(pg):
+        return probs + [label + ": the game page didn't open while team data was loading"]
+    names = txt(pg, ".gtab")
+    if names != TABS:
+        probs.append(label + ": the tab row while loading " + repr(names))
+    if not pick(pg, "last5") or pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=last5] .gskr').length") < 5:
+        probs.append(label + ": Last 5 should show a skeleton while loading")
+    if "isn’t available" in pg.evaluate("document.querySelector('#sheet .gpanel[data-tab=last5]').textContent") or "aren’t available" in pg.evaluate("document.querySelector('#sheet .gpanel[data-tab=last5]').textContent"):
+        probs.append(label + ": Last 5 says 'not available' while it is only loading")
+    if not pick(pg, "leaders") or pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=leaders] .gskr').length") < 3:
+        probs.append(label + ": Season leaders should show a skeleton while loading")
+    for k in ("box", "tstats", "inj"):
+        pick(pg, k)
+        if pg.evaluate(f"document.querySelectorAll('#sheet .gpanel[data-tab={k}] .gskr').length"):
+            probs.append(label + ": %s comes with the summary and needs no skeleton" % k)
+    pick(pg, "last5")
+    sw = sideways(pg)
+    if sw["page"] > 0 or sw["sheet"] > 0:
+        probs.append(label + ": the loading skeleton scrolls sideways %r" % sw)
+    if phone:
+        shot(pg, "last5_loading_phone.png")
+    state["g"] = game()                                      # the Mac's fetch landed: the page's own quick re-poll fills the tab in
+    if not until(pg, "document.querySelectorAll('#sheet .gpanel[data-tab=last5] .l5r').length===10", 9):
+        probs.append(label + ": the page didn't fill Last 5 in by itself when the team data arrived")
+    elif pg.evaluate("document.querySelector('#sheet .gtab.on').dataset.tab") != "last5":
+        probs.append(label + ": the quiet redraw moved the open tab")
+    pick(pg, "leaders")
+    if pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=leaders] .gskr').length") or not pg.evaluate("document.querySelectorAll('#sheet .gpanel[data-tab=leaders] .ldr').length") == 3:
+        probs.append(label + ": Season leaders didn't fill in")
+    # a long 'still loading' that never lands (the Mac gives up saying so): no skeleton forever, the tabs hide
+    d = copy.deepcopy(DETAIL); d.pop("last5"); d.pop("leaders")
+    state["g"] = game(d)
+    open_game(pg)
+    if txt(pg, ".gtab") != ["Overview", "Box score", "Team stats", "Injury report"]:
+        probs.append(label + ": with no team data and no 'loading' flag those two tabs hide " + repr(txt(pg, ".gtab")))
+    pg.evaluate("closeModal()"); time.sleep(.3)
+    pg.unroute("**/app/api/game*")
+    return probs
+
+
+def run_warm(pg, label):
+    """Games tab: a live football card warms its game page data (once, politely); a hover or press does too; others don't."""
+    probs = []
+    calls = []
+    fr = {"now": time.time(), "built": time.time() - 2, "scores": 3, "fast": True}
+
+    def card(tk, sport="nfl", state_="live", name="Colts"):
+        return {"name": name, "opp": "Texans", "sport": sport, "state": state_, "phase": "on", "ticker": tk, "combos": 1, "pays": 10.0, "singles": [],
+                "sc": {"abbr": "IND", "opp_abbr": "HOU", "me": 3, "opp": 6, "detail": "Q2 4:10"}, "chance": .4, "spark": []}
+    cards = [card(TK), card("KXNBAGAME-26NOV20LALBOS-LAL", "nba", "live", "Lakers"), card("KXNFLGAME-26NOV22KCDEN-KC", "nfl", "pre", "Chiefs"),
+             card("KXNFLGAME-26NOV20DALPHI-DAL", "nfl", "live", "Cowboys")]
+
+    def games(route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"games": cards, "at": time.time(), "fresh": fr}))
+
+    def warm(route):
+        from urllib.parse import urlparse, parse_qs
+        calls.append(parse_qs(urlparse(route.request.url).query).get("t", [""])[0])
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "known": True}))
+    pg.route("**/app/api/games*", games)
+    pg.route("**/app/api/game_warm*", warm)
+    pg.goto(B + "/app"); pg.wait_for_timeout(600)
+    pg.evaluate("go('games')")
+    if not until(pg, "document.querySelectorAll('#main .gc').length===4", 8):
+        return [label + ": the Games cards didn't draw"]
+    pg.wait_for_timeout(1600)
+    if sorted(calls) != sorted([TK, "KXNFLGAME-26NOV20DALPHI-DAL"]):
+        probs.append(label + ": showing the cards should warm the two LIVE football games only, once each: " + repr(calls))
+    n = len(calls)
+    pg.hover("#main .gc[data-gk='%s']" % TK); pg.wait_for_timeout(500)
+    pg.dispatch_event("#main .gc[data-gk='%s']" % TK, "pointerdown"); pg.wait_for_timeout(300)      # a press (not a tap: that would open the game)
+    pg.evaluate("go('build')"); pg.wait_for_timeout(400); pg.evaluate("go('games')"); pg.wait_for_timeout(1500)
+    if len(calls) != n:
+        probs.append(label + ": a hover, a press and a redraw within a minute must not warm the same game again (%d -> %d)" % (n, len(calls)))
+    # a press on a card that was not warmed at render (the page's own cap) warms it; a non-football or pre-game card never does
+    pg.evaluate("S.warm={};S.warmN=[]")
+    pg.hover("#main .gc[data-gk='KXNBAGAME-26NOV20LALBOS-LAL']"); pg.wait_for_timeout(400)
+    pg.hover("#main .gc[data-gk='KXNFLGAME-26NOV22KCDEN-KC']"); pg.wait_for_timeout(400)
+    if len(calls) != n:
+        probs.append(label + ": a basketball or not-yet-started card was warmed " + repr(calls[n:]))
+    pg.hover("#main .gc[data-gk='KXNFLGAME-26NOV20DALPHI-DAL']"); pg.wait_for_timeout(500)
+    if calls[n:] != ["KXNFLGAME-26NOV20DALPHI-DAL"]:
+        probs.append(label + ": hovering a live football card should warm it " + repr(calls[n:]))
+    # the page's own caps: 6 warm-ups per 5 minutes, 2 at a time, once a minute per game, a failed one waits longer
+    pg.evaluate("S.warm={};S.warmN=[];S.warmBusy=0")
+    calls.clear()
+    pg.evaluate("for(let i=0;i<10;i++)warmGame('KXNFLGAME-26NOV20T'+i+'-X')"); pg.wait_for_timeout(800)
+    if len(calls) > 2:
+        probs.append(label + ": more than 2 warm-ups at once: %d" % len(calls))
+    for i in range(10):
+        pg.evaluate("warmGame('KXNFLGAME-26NOV20U%d-X')" % i); pg.wait_for_timeout(150)
+    pg.wait_for_timeout(500)
+    if len(calls) > 6:
+        probs.append(label + ": more than 6 warm-ups in 5 minutes: %d" % len(calls))
+    pg.evaluate("S.warm={};S.warmN=[]")
+    pg.route("**/app/api/game_warm*", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": False, "known": True})))
+    pg.evaluate("warmGame('KXNFLGAME-26NOV20W0-X')"); pg.wait_for_timeout(500)
+    if pg.evaluate("S.warm['KXNFLGAME-26NOV20W0-X']-Date.now()") > 70000:
+        probs.append(label + ": a game the Mac merely throttled should be asked again after the normal minute, not 3 minutes")
+    pg.unroute("**/app/api/game_warm*")
+    pg.route("**/app/api/game_warm*", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": False})))
+    pg.evaluate("warmGame('KXNFLGAME-26NOV20V0-X')"); pg.wait_for_timeout(500)
+    if pg.evaluate("S.warm['KXNFLGAME-26NOV20V0-X']-Date.now()") < 150000:
+        probs.append(label + ": a game the Mac would not warm should wait 3 minutes before asking again")
+    pg.evaluate("go('live')"); pg.wait_for_timeout(300)
+    pg.unroute("**/app/api/games*"); pg.unroute("**/app/api/game_warm*")
     return probs
 
 
@@ -403,6 +598,7 @@ with sync_playwright() as pw:
     pg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run(pg, "phone", True)
     probs += run_empty(pg, "phone-empty")
+    probs += run_nits(pg, "phone-nits", True)
     pg.close()
     pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme="light")
     pg.on("pageerror", lambda e: errs.append(str(e)))
@@ -411,6 +607,11 @@ with sync_playwright() as pw:
     pg = br.new_page(viewport={"width": 1280, "height": 900}, color_scheme="dark")
     pg.on("pageerror", lambda e: errs.append(str(e)))
     probs += run(pg, "desktop", False)
+    probs += run_nits(pg, "desktop-nits", False)
+    pg.close()
+    pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme="dark")
+    pg.on("pageerror", lambda e: errs.append(str(e)))
+    probs += run_warm(pg, "warm")
     pg.close()
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce")
     rpg = ctx.new_page(); rpg.on("pageerror", lambda e: errs.append(str(e)))

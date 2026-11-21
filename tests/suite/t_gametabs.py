@@ -26,10 +26,12 @@ class Net:
     RequestException = E._requests.RequestException
 
     def __init__(self):
-        self.calls, self.heads, self.mode, self.athletes = [], [], "ok", dict(FX["athletes"])
+        self.calls, self.heads, self.mode, self.athletes, self.delay = [], [], "ok", dict(FX["athletes"]), 0
 
     def get(self, url, params=None, headers=None, **kw):
         self.calls.append(url)
+        if self.delay and "/summary" not in url:
+            time.sleep(self.delay)
         if "/summary" not in url:
             self.heads.append(headers)
         if self.mode == "down":
@@ -91,6 +93,13 @@ ok("3rd down (made-att) compares success rates: 1-11 vs 8-14", abs(by["thirdDown
 ok("possession time compares seconds (22:14 vs 37:46)", by["possessionTime"]["an"] == 1334 and by["possessionTime"]["hn"] == 2266, by.get("possessionTime"))
 ok("sacked / penalties use the first number (2-15 -> 2)", by["sacksYardsLost"]["an"] == 2 and by["totalPenaltiesYards"]["an"] == 2)
 ok("all thirteen football rows are there", [r["k"] for r in ts] == [k for k, _ in E.TEAM_STATS], [r["k"] for r in ts])
+lo_rows = sorted(r["k"] for r in ts if r["lo"])
+ok("fewer-is-better rows: sacked, turnovers and penalties (and nothing else, time of possession is higher-is-better)",
+   lo_rows == ["sacksYardsLost", "totalPenaltiesYards", "turnovers"], lo_rows)
+ok("yards and possession: the bigger number leads (HOU 354 yards, 37:46)", by["totalYards"]["ld"] == "h" and by["possessionTime"]["ld"] == "h" and by["firstDowns"]["ld"] in ("a", "h", ""))
+ok("sacked 2 (IND) vs 1 (HOU): fewer leads, HOU", by["sacksYardsLost"]["ld"] == "h", by["sacksYardsLost"])
+ok("penalties 2 (IND) vs 4 (HOU): fewer leads, IND", by["totalPenaltiesYards"]["ld"] == "a", by["totalPenaltiesYards"])
+ok("turnovers 1 vs 1 is a tie: nobody leads", by["turnovers"]["ld"] == "", by["turnovers"])
 inj = d.get("inj") or {}
 ok("injuries for both sides", len(inj.get("away", [])) == 5 and len(inj.get("home", [])) == 5, {k: len(v) for k, v in inj.items()})
 ok("worst first: Out before Doubtful before Questionable",
@@ -131,8 +140,19 @@ for junk in (None, {}, {"boxscore": "x"}, {"boxscore": {"players": "x", "teams":
     except Exception as err:
         raised = repr(err)
     ok("the slice-3 parsers never raise on " + repr(junk)[:50], raised is False, raised)
-ok("no injuries block -> no injury tab; an empty one -> an empty report (says none listed)",
-   E._parse_injuries({}, {}) == {} and E._parse_injuries({"injuries": []}, {}) == {"away": [], "home": []})
+SIDES = {"34": "home", "11": "away"}
+ok("no injuries block, or one with no team lists -> nothing known (the tab says not available, never 'no injuries')",
+   E._parse_injuries({}, SIDES) == {} and E._parse_injuries({"injuries": []}, SIDES) == {} and E._parse_injuries({"injuries": "x"}, SIDES) == {}
+   and E._parse_injuries({"injuries": [{"team": {"id": "34"}}, {"team": {"id": "11"}, "injuries": None}]}, SIDES) == {})
+ok("both teams sent an empty list -> a real empty report for both sides",
+   E._parse_injuries({"injuries": [{"team": {"id": "34"}, "injuries": []}, {"team": {"id": "11"}, "injuries": []}]}, SIDES) == {"away": [], "home": []})
+one = E._parse_injuries({"injuries": [{"team": {"id": "34"}, "injuries": [{"status": "Out", "athlete": {"displayName": "Z"}}]}]}, SIDES)
+ok("a team the feed did not mention is left out (unknown), not shown as healthy", list(one) == ["home"] and len(one["home"]) == 1, one)
+ok("the same team listed twice: the first list wins",
+   E._parse_injuries({"injuries": [{"team": {"id": "34"}, "injuries": []}, {"team": {"id": "34"}, "injuries": [{"status": "Out", "athlete": {"displayName": "Z"}}]}]}, SIDES) == {"home": []})
+ok("the parsed game detail only carries 'inj' when some side is known",
+   "inj" not in E._parse_game_detail({**copy.deepcopy(S), "injuries": []}, EV) and "inj" not in E._parse_game_detail({k: v for k, v in copy.deepcopy(S).items() if k != "injuries"}, EV)
+   and (E._parse_game_detail({**copy.deepcopy(S), "injuries": [{"team": {"id": "34"}, "injuries": []}, {"team": {"id": "11"}, "injuries": []}]}, EV).get("inj") == {"away": [], "home": []}))
 
 # ---- the number parser for the share bars
 cases = [("31:24", "possessionTime", 1884), ("5-11", "thirdDownEff", round(5 / 11, 4)), ("0-0", "thirdDownEff", 0.0),
@@ -148,7 +168,7 @@ ok("both teams at zero: no bar numbers (the page draws an even, quiet bar)", bot
 pre = E._parse_team_stats({"boxscore": {"teams": [
     {"homeAway": "away", "statistics": [{"name": "totalPointsPerGame", "label": "Points Per Game", "displayValue": "16.4"}]},
     {"homeAway": "home", "statistics": [{"name": "totalPointsPerGame", "label": "Points Per Game", "displayValue": "31.9"}]}]}}, {})
-ok("another shape (season averages): the feed's own rows and labels are used", pre == [{"k": "totalPointsPerGame", "l": "Points Per Game", "a": "16.4", "h": "31.9", "an": 16.4, "hn": 31.9}], pre)
+ok("another shape (season averages): the feed's own rows and labels are used", pre == [{"k": "totalPointsPerGame", "l": "Points Per Game", "a": "16.4", "h": "31.9", "an": 16.4, "hn": 31.9, "lo": False, "ld": "h"}], pre)
 ok("_lead_line drops the yards (the big number): passing, rushing, receiving",
    E._lead_line("222/347, 2656 YDS, 22 TD, 4 INT") == "222/347, 22 TD, 4 INT" and E._lead_line("107 CAR, 391 YDS, 2 TD") == "107 CAR, 2 TD"
    and E._lead_line("33 REC, 1,354 YDS, 1 TD") == "33 REC, 1 TD" and E._lead_line(None) == "")
@@ -156,7 +176,7 @@ ok("_lead_line drops the yards (the big number): passing, rushing, receiving",
 # ---- the background team fetches through game_detail (first open waits for them; later polls never do)
 fresh()
 net.calls.clear()
-g = E.game_detail(EV, "nfl", max_age=0)          # summary + (first open) waits up to GX_BUDGET for schedule/leaders/names
+g = E.game_detail(EV, "nfl", max_age=0, budget=5)   # summary + waits (as a caller may choose to) for schedule/leaders/names
 l5 = g.get("last5") or {}
 ok("last 5 games for both teams after the first open", set(l5) == {"away", "home"}, list(l5))
 ia = l5.get("away") or {}
@@ -332,11 +352,142 @@ ok("...and the old game is still evicted, the recent one kept", "111" not in E.G
 src = inspect.getsource(E.game_detail)
 ok("the sweep walks a copy and pops", "list(GAME_DETAIL.items())" in src and "GAME_DETAIL.pop(k, None)" in src)
 
+# ---- lower-is-better: the leader logic itself (fewer leads on those rows, more on the rest, a tie or no numbers is neutral)
+ok("_ts_leader: higher-is-better", E._ts_leader(5, 3, False) == "a" and E._ts_leader(3, 5, False) == "h")
+ok("_ts_leader: lower-is-better flips it", E._ts_leader(5, 3, True) == "h" and E._ts_leader(3, 5, True) == "a" and E._ts_leader(0, 1, True) == "a")
+ok("_ts_leader: a tie or missing numbers lead nobody", E._ts_leader(2, 2, True) == "" and E._ts_leader(2, 2, False) == "" and E._ts_leader(None, 2, True) == "" and E._ts_leader(2, None, False) == "")
+want_lo = ["turnovers", "fumblesLost", "interceptions", "sacksYardsLost", "totalPenaltiesYards", "Fumbles Lost", "Penalty Yards"]
+want_hi = ["totalYards", "netPassingYards", "rushingYards", "firstDowns", "thirdDownEff", "fourthDownEff", "redZoneAttempts",
+           "yardsPerPlay", "totalOffensivePlays", "possessionTime", "defensiveTouchdowns"]
+ok("_ts_lower: the fewer-is-better keys", all(E._ts_lower(k, "") for k in want_lo), [k for k in want_lo if not E._ts_lower(k, "")])
+LABELS = dict(E.TEAM_STATS)
+ok("_ts_lower: everything else is higher-is-better", not [k for k in want_hi if E._ts_lower(k, LABELS.get(k, ""))], [k for k in want_hi if E._ts_lower(k, LABELS.get(k, ""))])
+ok("_ts_lower: a feed's own labels count too (Turnovers, Times Sacked, Penalties)",
+   E._ts_lower("x", "Turnovers") and E._ts_lower("x", "Times Sacked") and E._ts_lower("x", "Penalties") and not E._ts_lower("x", "Points Per Game"))
+mk = lambda a, h, k="turnovers", lab="Turnovers": E._parse_team_stats({"boxscore": {"teams": [
+    {"homeAway": "away", "statistics": [{"name": k, "label": lab, "displayValue": a}]},
+    {"homeAway": "home", "statistics": [{"name": k, "label": lab, "displayValue": h}]}]}}, {})
+r_ = mk("3", "1")[0]
+ok("a row through the parser: turnovers 3 vs 1 -> lo, home leads", r_["lo"] is True and r_["ld"] == "h", r_)
+r_ = mk("0", "0")[0]
+ok("turnovers 0 vs 0: no bar numbers, nobody leads", r_["ld"] == "" and r_["an"] is None, r_)
+r_ = mk("0", "2")[0]
+ok("turnovers 0 vs 2: away leads", r_["ld"] == "a", r_)
+r_ = mk("31:24", "28:36", "possessionTime", "Time of possession")[0]
+ok("time of possession 31:24 vs 28:36: more leads (away)", r_["lo"] is False and r_["ld"] == "a", r_)
+
+# ---- the first open of a game never waits for the team fetches: a slow ESPN gives the page at once, the tabs fill in later
+fresh(); net.calls.clear(); net.delay = 1.2
+t0 = time.time()
+g = E.game_detail(EV, "nfl", max_age=0)
+took = time.time() - t0
+ok("slow team feeds: the first open returns without waiting (well under the old 1.5 s)", took < 0.6, round(took, 2))
+ok("...with the scoreboard, plays and summary tabs already there", bool(g.get("board")) and "box" in g and "tstats" in g and "inj" in g, list(g))
+ok("...and 'gxp' (team data still coming) instead of last 5 / leaders", g.get("gxp") is True and "last5" not in g and "leaders" not in g, list(g))
+t0 = time.time()
+g = E.game_detail(EV, "nfl", max_age=0)
+ok("a poll while they are still loading is quick too, and still says gxp", time.time() - t0 < 0.6 and g.get("gxp") is True)
+for t in list(E.GX_JOB["t"].values()):
+    t.join(15)
+net.delay = 0
+g = E.game_detail(EV, "nfl", max_age=0)
+ok("once the background fetch lands the next poll has last 5 and season leaders, and no gxp", bool(g.get("last5")) and bool(g.get("leaders")) and "gxp" not in g, list(g))
+fresh(); net.calls.clear(); net.delay = 0.2
+g = E.game_detail(EV, "nfl", max_age=0, budget=5)
+ok("budget=5 waits for the fetch and then has the data", bool(g.get("last5")) and "gxp" not in g, list(g))
+net.delay = 0
+# a team fetch that never lands: 'still loading' ends after GX_PENDING_MAX, so the page stops showing a skeleton forever
+fresh(); net.calls.clear()
+real_kick = E._gx_kick
+E._gx_kick = lambda job: None
+base = E._parse_game_detail(copy.deepcopy(S), EV)
+g = E.game_extras(base, "football/nfl", EV)
+ok("nothing fetched yet and no thread: gxp", g.get("gxp") is True)
+for k in list(E.GX_FIRST):
+    E.GX_FIRST[k] -= E.GX_PENDING_MAX + 5
+g = E.game_extras(base, "football/nfl", EV)
+ok("...but not forever: after GX_PENDING_MAX the page stops saying 'loading'", "gxp" not in g, list(g))
+E._gx_kick = real_kick
+# a refresh that is still running keeps saying 'loading' however long ESPN takes (the cap is only for a fetch that never started)
+fresh(); net.calls.clear(); net.delay = 1.0
+g = E.game_extras(base, "football/nfl", EV)
+for k in list(E.GX_FIRST):
+    E.GX_FIRST[k] -= E.GX_PENDING_MAX + 5
+g = E.game_extras(base, "football/nfl", EV)
+ok("a live background fetch still says gxp past the cap", g.get("gxp") is True and any(t.is_alive() for t in E.GX_JOB["t"].values()), list(g))
+for t in list(E.GX_JOB["t"].values()):
+    t.join(15)
+net.delay = 0
+ok("...and stops once it has landed", "gxp" not in E.game_extras(base, "football/nfl", EV))
+ok("the penalty/turnover matching is exact: a 'failed' or defensive label is not flipped", not E._ts_lower("x", "Failed Conversions") and not E._ts_lower("sacks", "Sacks"))
+fresh()
+
+# ---- prefetch (a game card shown or pressed): polite, deduped, capped, backs off
+def warm_join():
+    import threading
+    for th in [x for x in threading.enumerate() if x.name == "gamewarm"]:
+        th.join(10)
+    for t in list(E.GX_JOB["t"].values()):
+        t.join(10)
+
+
+def warm_reset():
+    fresh()
+    E.GAME_WARM["ev"].clear(); E.GAME_WARM["stamps"].clear(); E.GAME_WARM["busy"] = 0
+    net.calls.clear(); net.mode = "ok"; net.delay = 0
+
+
+warm_reset()
+ok("a football game is warmed once", E.game_prefetch(EV, "nfl") is True)
+warm_join()
+ok("...its summary and team data are then ready (the page opens with last 5 and leaders at once)",
+   EV in E.GAME_DETAIL and bool(E.game_detail(EV, "nfl", max_age=60).get("last5")) and "gxp" not in E.game_detail(EV, "nfl", max_age=60))
+n = len(net.calls)
+ok("the same game again right away is skipped (deduped)", E.game_prefetch(EV, "nfl") is False)
+ok("...and nothing was fetched for it", len(net.calls) == n)
+ok("a sport with no football feed, a bad id, and nothing are all skipped (no fetch, no raise)",
+   E.game_prefetch(EV, "nba") is False and E.game_prefetch("../x", "nfl") is False and E.game_prefetch("", "nfl") is False
+   and E.game_prefetch(None, None) is False and E.game_prefetch("1" * 40, "nfl") is False and len(net.calls) == n)
+warm_reset()
+E.GAME_WARM["ev"][EV] = (time.time() - E.WARM_MIN - 1, 0, 0)
+ok("a game warmed a while ago can be warmed again", E.game_prefetch(EV, "nfl") is True)
+warm_join()
+warm_reset()
+net.mode = "down"
+ok("ESPN down: the warm-up still just returns (started)", E.game_prefetch(EV, "nfl") is True)
+warm_join()
+fails, nxt = E.GAME_WARM["ev"][EV][1], E.GAME_WARM["ev"][EV][2]
+ok("a failed warm-up backs off 60 s", fails == 1 and 55 < nxt - time.time() <= 61, E.GAME_WARM["ev"][EV])
+E.GAME_WARM["ev"][EV] = (time.time() - E.WARM_MIN - 1, fails, nxt)
+ok("...even when the dedupe window has passed, it waits out the backoff", E.game_prefetch(EV, "nfl") is False)
+E.GAME_WARM["ev"][EV] = (time.time() - E.WARM_MIN - 1, 1, 0)
+net.mode = "ok"
+ok("...and after the backoff a good answer clears it", E.game_prefetch(EV, "nfl") is True)
+warm_join()
+ok("...failures back to zero", E.GAME_WARM["ev"][EV][1] == 0 and E.GAME_WARM["ev"][EV][2] <= time.time() + 1, E.GAME_WARM["ev"][EV])
+warm_reset()
+E.GAME_WARM["busy"] = E.WARM_THREADS
+ok("at most WARM_THREADS warm-ups at once", E.game_prefetch(EV, "nfl") is False and not net.calls)
+E.GAME_WARM["busy"] = 0
+E.GAME_WARM["stamps"][:] = [time.time()] * E.WARM_PER_MIN
+ok("at most WARM_PER_MIN a minute across all games", E.game_prefetch(EV, "nfl") is False and not net.calls)
+warm_reset()
+for i in range(E.WARM_KEEP + 20):
+    E.GAME_WARM["ev"][str(1000 + i)] = (time.time() - 1000 + i, 0, 0)
+E.game_prefetch(EV, "nfl"); warm_join()
+ok("the remembered games stay bounded", len(E.GAME_WARM["ev"]) <= E.WARM_KEEP, len(E.GAME_WARM["ev"]))
+warm_reset()
+wsrc0 = open(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")).read()
+wm = wsrc0[wsrc0.index("    def api_game_warm(t):"):wsrc0.index("    def api_games():")]
+ok("the warm route only ever calls game_prefetch (no buy/sell/panel/offer function)",
+   "A.game_prefetch(" in wm and not any(k in wm for k in ("accept_offer", "get_offer", "kalshi_send", "panel_", "auto_sell", "TapLock", "alock", "api_act", ".post(")), wm[:200])
+ok("...and the route is a plain GET that the page can call", 'path == "/app/api/game_warm"' in wsrc0)
+
 # ---- isolation: no money/account/trading path reaches any of this, and none of it takes a lock or writes anything
 MONEY = ["panel_exec", "panel_pass", "build_panel", "choose_panel", "panel_approve", "panel_add", "_buy_panel_bet", "panel_collect",
          "auto_sell_now", "take_profit_reason", "single_sell_reason", "smart_sell_singles", "leg_score", "pick_state", "fetch_scores",
          "accept_offer", "get_offer", "kalshi_send", "what_if", "stop_loss_check", "hedge_guard", "smart_tune", "live_view", "mine_page"]
-NEW = ("game_extras", "_gx_", "GX", "ATH[", "ATH.", "_parse_box", "_parse_team_stats", "_parse_injuries", "_note_athletes",
+NEW = ("game_extras", "game_prefetch", "GAME_WARM", "_ts_lower", "_ts_leader", "_gx_", "GX", "ATH[", "ATH.", "_parse_box", "_parse_team_stats", "_parse_injuries", "_note_athletes",
        "_shape_sched", "_shape_leaders", "_shape_ath", "_lead_line", "_ts_num", "LEAD_CATS", "TEAM_STATS", "BOX_GROUPS")
 leaks = [f for f in MONEY if hasattr(E, f) and any(k in inspect.getsource(getattr(E, f)) for k in NEW)]
 ok("no money/account/trading function reads the slice-3 tabs or their caches", not leaks and all(hasattr(E, f) for f in MONEY[:12]), leaks)
@@ -351,5 +502,6 @@ wsrc = open(os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py
     os.path.join(os.environ.get("REPO", ".."), "watcher/combo_watcher.py")) else open("wtest/combo_watcher.py").read()
 api_src = wsrc[wsrc.index("    def api_game(t):"):wsrc.index("    def api_games():")]
 ok("the watcher calls the game detail only from the web app's game page (api_game)",
-   wsrc.count("game_detail(") == 1 and "A.game_detail(" in api_src and "game_extras" not in wsrc and "_gx_" not in wsrc)
+   wsrc.count("game_detail(") == 1 and "A.game_detail(" in api_src and "game_extras" not in wsrc and "_gx_" not in wsrc
+   and wsrc.count("game_prefetch(") == 1)
 fresh()
