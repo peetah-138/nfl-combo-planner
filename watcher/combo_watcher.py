@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.127"
+WATCHER_VERSION = "2026.11.21.128"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -3240,7 +3240,8 @@ def webapp_main():
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
                     return {"ok": False, "msg": "That market isn't recognized."}
                 # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
-                r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log, key=str(d.get("id", "")))
+                with tap_mark():                        # an update never restarts the web app mid-order
+                    r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log, key=str(d.get("id", "")))
                 LIVE["at"] = 0
                 return jsonable(r)
             if a == "buy":

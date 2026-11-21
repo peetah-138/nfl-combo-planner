@@ -460,6 +460,8 @@ i = WSRC.index("def orphan_check")
 ok("the web app's shutdown waits (bounded) for the tap lock", "alock.acquire(timeout=" in WSRC[i:i + 500])
 ok("combo buy, cash-out, hedge and single-buy taps mark themselves mid-order",
    WSRC.count("with tap_mark(") >= 3)
+i = WSRC.index("A.idea_single_buy(")
+ok("a Live buy idea's single-game buy marks itself mid-order too", "with tap_mark():" in WSRC[i - 200:i])
 
 # ================================================================ (7) the ledger across processes
 ledger_reset()
