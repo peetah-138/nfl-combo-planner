@@ -60,7 +60,7 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
   if(ev.kind==='tick'){if(typeof verPoll==='function')verPoll();if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
   if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
-  if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null);}}
+  if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:ev.kind==='advice'?7000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null,ev.kind==='advice'&&comboOk(ev.combo)?()=>openCombo(ev.combo):null);}}
   if(S.gameOpen&&ev.ticker===S.gameOpen)drawGame();
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
