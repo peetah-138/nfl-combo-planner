@@ -1001,6 +1001,19 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     visible switch track), and a fix for Settings › Accounts showing "Not connected" as a label.
   - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
     reduced-motion run.
+- **Settings folds, jump chips, search and the Mac line (GitHub #212, UI only; no setting, switch, save or Mac action changed).**
+  Every Settings section (`scard`, `watcher/spa/settings.js`) folds with a chevron: the header is one real button
+  (`.sfold`, 56 pt, under `hswBig`'s 64 pt so it keeps its iOS tick) and the body is the same `.fold` grid as Live's
+  sections, remembered per phone as `cw_fold_set_<id>` (`sOpen`/`sShow`/`sTog`; Money and The Mac start open, the rest
+  folded). A folded card's badge (`sBadges`: "N of M on" switches, Watching/Off for Killer and Standing orders, the version
+  on The Mac, Kalshi connected) updates on every change. The body stays in the page (hidden), so nothing re-renders to open
+  it; a test that needs a folded control calls `sShow('<id>', true)` first. The chips (`.sidx` buttons, never links, so they
+  get the haptic tick) jump to a section and open it: a sticky row under the header on a phone (`--toph`, kept by
+  `sAfter`), the side index on a desktop. The search box (`sFind`, `S.sq`, the input keeps focus across redraws) filters
+  rows (`.srow`, `.kv>div`, `.mixr`, `.sact`) by name and description across every section **in the DOM, without
+  touching the saved folds** (`.set.sq` forces sections open; clearing restores them; "No settings match" when empty). The
+  "The Mac · version X · up to date / update available" line (`macLine`) sits under the title and opens The Mac. Test:
+  `test_settingsfold`.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
 ## Kalshi API watch (GitHub issue #82)
