@@ -259,6 +259,30 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
+- **Spreads and totals (issue #117 part B): recommend-only selection.** Build › Spreads & totals no longer lists every
+  strike: `line_recommend` (the watcher's Build runs it **off the app lock** in `lines_work`/`lines_kick`, a thread per
+  sport, copy ≤ 60 s old, waits ≤ 1.5 s, last good copy otherwise; order books read side by side within
+  `LINE_REC["budget"]` 3 s by `books_now`; `everything=True` is no longer used there) shows a strike only
+  when (1) its edge after the fee clears the league's **learned bar** (`line_min_edge`: own once 30+ settled games,
+  else its sport's (`LINE_SPORT`), else everyone's, else `LINE_MIN_EDGE`; never under `LINE_MIN_EDGE`, max 10¢; file
+  `combo_line_edge.json`), (2) its kind of strike isn't **losing to the close** (`line_clv_block`: table `line_clv`,
+  price at recommendation `rec` or panel buy `buy` vs Kalshi's last price before the start, read within 90 min of it
+  (`line_clv_seen` in `line_candidates`); blocked at ≥ 30 games, mean ≤ −0.5¢ and ≤ −2 SE, per league/kind/band; the
+  sport/everyone level may only block), (3) it **fills inside the edge** (`line_fill` walks every ask level of the book,
+  `book_asks`/`_ask_ladder` filled by `book_depth`'s same call, fee rounded up per order; stake = the buy sheet's
+  `_size` on the 30%-shrunk edge, capped by what fills; unreadable book = not shown), (4) Smart Buy's
+  `simulate_exit` (smart sell's exit policy, `_sb_sim`) passes `smart_buy_ok` (route sell or hold, ≥ `SB_EV_MIN`), and
+  (5) expected dollars at the fillable size (hold EV after fees + the policy's adjustment) ≥ `SB_EV_MIN`. Ranked by
+  expected dollars; cards show route ("Likely to cash out early for a profit: 58%" / "Profit if it holds"), stake,
+  contracts, expected profit, the bar. Empty: "No spread or total clears your bar right now." (`lines_priced` = how many
+  were checked; no section when a sport has no markets). **Weekly** `line_edge_tune` (watcher, with `smart_tune`):
+  one 0.5¢ step per league/sport/all and kind when the strikes it adds/drops cover 10+ games and move the result ≥ 2%
+  of everything staked at the bar ($1 a strike, 30+ games at the bar; settled `line_fairs` rows); ties stay; never
+  under the start. **Panel: only stricter** (`_line_ok` after the raw `line_edge`: learned bar, CLV block, and
+  `fill_cap` < $2 = out; `_size` never over `fill_cap`; book unread = today's rule, the buy-time recheck still
+  applies). The buy sheet's green Buy for a spread/total uses `max(LINE_MIN_EDGE, learned bar)`. Results › What's
+  working › Bet types: "Spreads & totals: your bar and the close" (`analytics()["line_sel"]`). Nothing here buys or
+  sells; Pause, caps and rule 8 untouched. Tests: `t_linesel`, `test_linesel_ui`.
 - **Odds API credits (issue #175).** Every odds-service answer's `x-requests-remaining/-used/-last` headers are
   recorded (`odds_credits_note`, in `fetch_book_odds_one` and `tennis_keys`; no extra calls) in `combo_odds_credits.json`
   (newest numbers plus a small history, under `file_lock`). `odds_credits()` gives remaining, burn per day (needs 6 h of
@@ -340,6 +364,24 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
   Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
   watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
+- **Kalshi's refusals, shown honestly** (issue #134). A definite refusal is Kalshi's own words, in full (`body_words`,
+  600 characters, tags stripped), never a guess: a 401/403 says "Kalshi refused this (403 code): <its message>" and adds
+  "your API key may need write access" only when Kalshi itself says so (`perm_words`, `key_write_denied`). A refusal for
+  the account or region (`is_restriction`: 400/401/403/451 with words like "residents ... not allowed", "jurisdiction",
+  "region") is written to `combo_kalshi_block.json` (git-ignored; `note_refusal`, `restriction_info`) and the Mac **holds
+  back** the same refused request: buys wait 30 min, then 1 h, 2 h, 4 h while it keeps refusing; automatic sales 10-30
+  min (`hold_refusal`, `sell_held`). Held (automatic paths only): the shadow's buy-idea quotes, the panel (`hold: "region"`, back to
+  "scheduled", never "failed" or "check"), killer deals, standing orders, the automatic hedge (`hold_refusal(..., strict=True)`),
+  auto cash-out and smart sell. **Pete's own taps are never held** (`manual_tap`, set around `api_act` and the hub's build
+  form: Get price, Buy, Buy straight, idea buys; his sell taps too): they go through the usual guards (Pause, caps, rule 8)
+  and are the check after a hold; if Kalshi refuses one again the hold is renewed at the same level (`_restrict_note`), not
+  escalated by taps. After a hold the next buy Pete already approved is the check for the panel. Kalshi taking an order clears the
+  note (`restriction_clear`), a note a day old is ignored. No harmless read reveals a cleared restriction, so nothing is
+  placed just to look. The page shows a calm banner under the header (`rsBan`, `#rsban`) and a sheet with the full message
+  (`refusalSheet`, selectable, Copy); `restrict` rides on Live, Build, Settings and panel answers and `refusal` on a refused
+  tap (`api_act`). **Rule 8 is untouched:** timeouts and 5xx are `OrderUnknown` ("check", never retried, never a region
+  hold). This only reports and waits; it never changes a location, routes an order elsewhere or adds money movement.
+  Tests: `t_refusals`, `test_refusals`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -799,6 +841,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **Profit scoreboard (issue #138, read-only).** Top of Results (`pbBlock` in `watcher/spa/scoreboard.js`; it replaces
+  the old combo-only KPI row once it has data). Source of truth is the **`ledger` table**: one row per finished market
+  (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and
+  settlements, read as a signed YES position so NO bets and closing by buying the other side are right), written by
+  `ledger_note` at the end of every direct Kalshi account read (only changed rows; never raises into the read).
+  cost = money paid to open + every fee (incl. a settlement `fee_cost`), back = sale proceeds + settlement payout;
+  `sold_back`/`sell_fees`/`n_sold` for sales; `closed` = Kalshi's sell/settle time, else the Mac's `bets.settled`, else
+  when first seen. `profit_board()` (cached 2 min; `api_results` → `board`): week (from Monday) / month / all time with
+  profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
+  (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
+  gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
+  predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
+  `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
+  standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
+- **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
+  and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)
+  other lines but **never trims sales, hedges or "check"s** (`_trim_sell_log`, at 1.5 MB), labels `by` as
+  mac/phone/pi (`device_label`), and copies every sale-type line into the **`sell_log` table** (`sale_store`;
+  `sale_import` copies the file's older ones once). Sale records now carry `frac`, `kind`, `side`.
+  `sale_outcomes()` (the watcher's shadow loop, outside `odds.lock`, at most every 10 min; public `GET /markets`, ≤ 200
+  markets) records what holding would have paid for each sale (`sell_log.outcome/held`) and each sold ledger row, for
+  60 days. `sell_scorecard()` (in the board; What's working › Selling, `scoreCard`): per league and reason, sold for
+  (the ledger's proceeds after the sale fee, else the logged offer net of the single fee) vs holding paid, too early vs
+  right and dollars left on the table; your own sales; ridden combos' best real offer vs payout. Not yet fed to
+  `smart_tune` (that would change selling).
 - **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
   rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
   $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the
