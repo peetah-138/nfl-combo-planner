@@ -55,6 +55,7 @@ function _renderLive(){const d=S.live;const m=$('#main');
  ${foldB('combos')}
  ${S.filter==='done'?settledBar(cs):''}
  ${S.filter!=='done'?legendFor(pend):''}
+ ${S.filter!=='done'&&pend.some(c=>c.offer!=null)?`<div class="chgbar"><span>Change vs paid</span>${chgSw()}</div>`:''}
  <div class="tbl"><div class="thead"><div>Combo</div><div>Picks</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">To hit</div><div class="num">Kalshi offer</div><div></div></div>
  ${shown.map(rowLive).join('')||(S.filter==='all'&&!pend.length?'<div class="empty" data-ic="🌤️"><b>Nothing riding right now</b>Bets you place, here or on Kalshi, show up with live scores and cash-out offers.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>':'<div class="empty" data-ic="🗒️"><b>Nothing here</b>Try another filter. Combos show up here with live scores and cash-out offers.</div>')}</div>
  ${foldE()}
@@ -103,6 +104,19 @@ function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.off
  const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
  return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
   ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('')+more;}
+/* Change vs what was paid (GitHub #100, display only): the same number the row already shows (offNow / worth), set against
+   the same cost. S.chg = both | pct | usd, remembered per phone like the Day/Week switch (cw_chg). Numbers roll through
+   data-num (formats chg / chgd, rounded the way they print, so "-0%" never shows); the sign is always printed. */
+try{S.chg=['pct','usd'].includes(localStorage.getItem('cw_chg'))?localStorage.getItem('cw_chg'):'both'}catch(e){S.chg='both'}
+function setChg(k){if(S.chg===k)return;S.chg=k;try{localStorage.setItem('cw_chg',k)}catch(e){}renderLive();}
+function chgSw(){return `<span class="chgsw" role="group" aria-label="Show change as">${[['both','% + $'],['pct','%'],['usd','$']].map(([k,l])=>`<button class="${S.chg===k?'on':''}" onclick="setChg('${k}')">${l}</button>`).join('')}</span>`;}
+function chgHtml(k,now,paid){if(now==null||!(paid>0))return '';const d=now-paid,p=d/paid;const r=Math.round(p*100),c=Math.round(d*100);
+ const cls=r===0&&c===0?'flat':d>0?'up':'down';const pc=S.chg!=='usd',dc=S.chg!=='pct';
+ return `<span class="chg ${cls}" data-chg="${cls}">${pc?`<span class="cp" data-num="${k}%" data-v="${p.toFixed(4)}" data-f="chg">${fmtNum(p,'chg')}</span>`:''}${dc?`<span class="cd" data-num="${k}$" data-v="${d.toFixed(2)}" data-f="chgd">${fmtNum(d,'chgd')}</span>`:''}</span>`;}
+function heroChg(dl,St,roll){const pc=S.chg!=='usd'&&St,dc=S.chg!=='pct'||!St;
+ const dv=roll?`<span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>`:money(Math.abs(dl));
+ const pv=roll?`<span data-num="h:dp" data-v="${(dl/St).toFixed(4)}" data-f="chg">${fmtNum(dl/St,'chg')}</span>`:fmtNum(dl/St,'chg');
+ return `<span class="dch">${dc?dv:''}${pc&&dc?' (':''}${pc?pv:''}${pc&&dc?')':''}</span>`;}
 const SKIND={win:'To win',spread:'Spread',total:'Total',other:'Single bet'};
 function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const live=pend.some(c=>c.live)||sOpen.some(x=>x.state==='live');
  const ch=1-(1-(d.riding?d.chance_one||0:0))*sOpen.reduce((a,x)=>a*(1-(x.chance||0)),1);
@@ -112,7 +126,7 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
  return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} <span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>${St?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/St*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
+   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(dl,St,true)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
    ${heroChart(d,cls)}</div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
@@ -151,7 +165,7 @@ function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.c
   const rd=w.querySelector('.sread');rd.textContent=c.lab(p[0]);rd.style.left=Math.max(10,Math.min(90,fx))+'%';
   if(big){big.textContent=money(p[1]);big.classList.add('scrub');}
   if(dlt&&p[2]!=null){const dl=p[1]-p[2],k=Math.abs(dl)<.005?'flat':dl>0?'up':'down';dlt.className='delta '+k;
-   dlt.innerHTML=`${k==='up'?'▲':k==='down'?'▼':'•'} ${money(Math.abs(dl))}${p[2]?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/p[2]*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(p[2])} in</span>`;}
+   dlt.innerHTML=`${k==='up'?'▲':k==='down'?'▼':'•'} ${heroChg(dl,p[2])} <span style="font-weight:500;opacity:.8">vs ${money(p[2])} in</span>`;}
   hap('selection');};
  const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;
   if(saved){if(big){big.innerHTML=saved.b;big.className=saved.bc;}if(dlt){dlt.innerHTML=saved.d;dlt.className=saved.dc;}saved=null;}
@@ -164,7 +178,7 @@ function singlesLive(d){const all=d.singles||[];
  const ss=all.filter(x=>S.filter==='all'||S.filter==='done'?true:S.filter==='live'?x.state==='live':x.sport===S.filter);
  if(!all.length)return '';
  return `${foldHead('singles','Single bets &amp; spreads',all.length,'','margin-top:22px')}
- ${foldB('singles')}<div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
+ ${foldB('singles')}${S.filter!=='done'&&!(S.live&&(S.live.combos||[]).some(c=>c.group==='pending'&&c.offer!=null))&&all.some(x=>x.worth!=null)?`<div class="chgbar"><span>Change vs paid</span>${chgSw()}</div>`:''}<div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
  ${ss.map(rowSingle).join('')||'<div class="empty" data-ic="🗒️"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
  ${foldE()}`;}
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
@@ -179,11 +193,11 @@ function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won<
   <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
   <div class="num" data-l="Chance">${x.chance!=null?`<span data-num="sc:${x.t}" data-v="${x.chance}" data-f="pct">${pct(x.chance)}</span>`:'—'}${x.chance!=null?`<div class="bar"><i data-bar="sb:${x.t}" style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
-  <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>`:'—'}</div></div><div class="verdict"></div></div>`;}
+  <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>${chgHtml('sc:'+x.t,x.worth,x.cost)}`:'—'}</div></div><div class="verdict"></div></div>`;}
 function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.offer_live:c.offer;}   // display-only; same rule as the hero (hero_worth)
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const oLive=offNow(c);const oEst=!c.offer_real;
- const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>`:'<small>—</small>';
+ const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>${chgHtml('oc:'+c.t,oLive,c.cost)}`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" onclick="tog('${c.t}')"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span></div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>

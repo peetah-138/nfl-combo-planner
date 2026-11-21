@@ -709,6 +709,11 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+- **Change vs paid (GitHub #100, display only).** Combo rows (next to the offer, `offNow`), single/spread/total rows (Worth now) and
+  the combo detail's Offer show the change against what was paid, e.g. "−7%" and "−$0.22" (`chgHtml` in `live.js`, formats `chg`/`chgd`
+  in `fmtNum`, rolling `data-num`, tabular numerals, always a sign, neutral when it rounds to zero). The hero's delta pill rolls its
+  percent too (`heroChg`). A "Change vs paid" switch (`% + $` / `%` / `$`, `S.chg`, `cw_chg`, remembered like the Day/Week
+  switch) above the tables picks what shows. Same number the row already shows; no engine change. Test: `test_pctchange`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

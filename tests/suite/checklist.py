@@ -20,7 +20,7 @@ test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_bui
 test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui
 test_haptics test_hsw test_chips_stay test_fieldstrip test_gamedetail_api test_realdate test_tabbar_stays
 test_orderblock test_buildbuttons test_cover test_pbptabs test_gamecard_opp test_offerlive test_gametabs
-test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits""".split()
+test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits test_pctchange""".split()
 
 # Rough seconds each page test takes on a CI runner (measured on PR #157's run; only the balance of the split
 # depends on them, a missing or stale number never drops or doubles a test). Unknown tests count as DEFAULT.

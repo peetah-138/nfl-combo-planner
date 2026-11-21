@@ -745,3 +745,12 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 #undo button{min-height:44px;padding:0 14px;background:none;border:0;border-radius:9px;color:inherit;font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}
 @media (prefers-reduced-motion:reduce){.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
 h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}
+
+/* change vs paid (#100): tabular, sign always printed, fixed min-width so a flip never moves the row */
+.chg{display:flex;flex-direction:column;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1.35;min-width:5.6ch}
+.chg.up{color:var(--yes)}.chg.down{color:var(--no)}.chg.flat{color:var(--sub)}
+.dkpis .chg{font-size:12px;margin-top:2px}
+.chgbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 6px;font-size:11.5px;color:var(--mute)}
+.chgsw{display:inline-flex;gap:2px}.chgsw button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;padding:4px 8px;border-radius:7px}.chgsw button.on{color:var(--ink);background:var(--panel2)}
+.num .chg,.offer .chg{align-items:flex-end}
+@media (max-width:1360px){.trow .numwrap .chg{align-items:flex-start}}
