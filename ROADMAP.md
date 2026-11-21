@@ -112,7 +112,11 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
    into (own suggestions, then bigger stakes and extra auto-buys inside every cap with a losing-streak brake; Hard
    rule 2 in CLAUDE.md), which the Results card's "Bigger stakes: not yet" line tracks.
 3. **A purchase carries a plan** (exit chance, target bid band, window, policy version), read by smart sell.
-4. **Scoreboard and plan audit** (#138, #115), dollar regret per league/rule.
+4. **Scoreboard and plan audit** (#138, #115): the scoreboard and the smart-sell scorecard shipped (see CLAUDE.md,
+   Results page). Still to do: the weekly summary push, warnings/automatic tightening when a league or type loses
+   beyond luck (learned minimum edge/exit chance, per league with borrowing, never loosened without data), links
+   from each breakdown into its setting, tagging Live Buy idea buys apart from Build, and feeding the scorecard to
+   `smart_tune` as its target (a selling change: needs Pete's go-ahead).
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
 - Finding from stage 1 to put to Pete: at the 1.5x profit floor, a single bought above ~67c can never be sold for a
   profit by smart sell (only held), and on modest-edge bets selling at the bid gives up part of the edge (the

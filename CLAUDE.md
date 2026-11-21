@@ -802,6 +802,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **Profit scoreboard (issue #138, read-only).** Top of Results (`pbBlock` in `watcher/spa/scoreboard.js`; it replaces
+  the old combo-only KPI row once it has data). Source of truth is the **`ledger` table**: one row per finished market
+  (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and
+  settlements, read as a signed YES position so NO bets and closing by buying the other side are right), written by
+  `ledger_note` at the end of every direct Kalshi account read (only changed rows; never raises into the read).
+  cost = money paid to open + every fee (incl. a settlement `fee_cost`), back = sale proceeds + settlement payout;
+  `sold_back`/`sell_fees`/`n_sold` for sales; `closed` = Kalshi's sell/settle time, else the Mac's `bets.settled`, else
+  when first seen. `profit_board()` (cached 2 min; `api_results` → `board`): week (from Monday) / month / all time with
+  profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
+  (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
+  gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
+  predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
+  `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
+  standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
+- **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
+  and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)
+  other lines but **never trims sales, hedges or "check"s** (`_trim_sell_log`, at 1.5 MB), labels `by` as
+  mac/phone/pi (`device_label`), and copies every sale-type line into the **`sell_log` table** (`sale_store`;
+  `sale_import` copies the file's older ones once). Sale records now carry `frac`, `kind`, `side`.
+  `sale_outcomes()` (the watcher's shadow loop, outside `odds.lock`, at most every 10 min; public `GET /markets`, ≤ 200
+  markets) records what holding would have paid for each sale (`sell_log.outcome/held`) and each sold ledger row, for
+  60 days. `sell_scorecard()` (in the board; What's working › Selling, `scoreCard`): per league and reason, sold for
+  (the ledger's proceeds after the sale fee, else the logged offer net of the single fee) vs holding paid, too early vs
+  right and dollars left on the table; your own sales; ridden combos' best real offer vs payout. Not yet fed to
+  `smart_tune` (that would change selling).
 - **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
   rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
   $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the
