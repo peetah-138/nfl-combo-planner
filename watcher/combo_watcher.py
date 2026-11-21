@@ -1896,6 +1896,12 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
+            n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
+            if n_out:
+                log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
+        except Exception as err:
+            log("smart-sell scorecard skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
             # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
             # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
@@ -2869,7 +2875,15 @@ def webapp_main():
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
-                             "panel": A.panel_record() if A.STORE.get("db") else None})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+
+    def board():
+        """The profit scoreboard (#138), read-only from the history file; None when it can't be read (the page says so)."""
+        try:
+            return A.profit_board() if A.STORE.get("db") else None
+        except Exception as err:
+            log("profit scoreboard:", type(err).__name__, err)
+            return None
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
