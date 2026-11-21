@@ -244,7 +244,7 @@ function flipSay(m){let e=document.getElementById('flipsay');if(!e){e=document.c
 async function flipLeg(i,t){const c0=(S.build&&S.build.combos||[]).find(c=>c.i===i);if(!c0||S.buying)return;
  const ph0=ccPhase(c0);if(ph0==='flip'||ph0==='buy')return;
  const k=c0.legs.findIndex(l=>l.ticker===t),hadFocus=!!(document.activeElement&&document.activeElement.classList&&document.activeElement.classList.contains('lrow'));
- const lg=S.lg,sig=ccSig(c0),qel=document.querySelector(`#main .ccard[data-i="${i}"] .qline`),tok={t:Date.now(),sig,k,hq:qel?qel.offsetHeight:0};   // tok is also this flip's token: only it may clear itself
+ const lg=S.lg,sig=ccSig(c0),cel=document.querySelector(`#main .ccard[data-i="${i}"]`),qel=cel&&cel.querySelector('.qline,.stk'),bel=cel&&cel.querySelector('.brow'),hq=qel&&bel?Math.max(0,bel.offsetTop-qel.offsetTop-10):0,tok={t:Date.now(),sig,k,hq};   // hq = the quote line AND the amount row (the stake control hides while a flip is on its way), so the buttons never move (the 10 is the card's row gap, which the placeholder brings again)   // tok is also this flip's token: only it may clear itself
  S.fpend=S.fpend||{};S.fpend[i]=tok;if(S.quotes)delete S.quotes[i];flipSay('Updating…');renderBuild();
  const t0=Date.now();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
  const rest=FLIP_MIN-(Date.now()-t0);if(rest>0)await new Promise(res=>setTimeout(res,rest));
@@ -317,7 +317,8 @@ function qTick(){if(S.view!=='build')return;const now=Date.now()/1000;
  if(over&&!S.buying){Object.values(S.quotes||{}).forEach(q=>{if(old(q))q.x=1;});if(old(S.custom&&S.custom.offer))S.custom.offer.x=1;renderBuild();}
  if(!Object.values(S.quotes||{}).some(q=>q&&now-q.at<21)&&!(S.custom&&S.custom.offer&&now-S.custom.offer.at<21))clearInterval(S.qT);}
 async function buy(i,custom,btn){if(S.buying)return;
- if(!custom){const cb=(S.build&&S.build.combos||[]).find(x=>x.i===i);if(cb&&ccPhase(cb)==='flip')return;}   // a flip is being worked out: no buy on this cardS.buying=true;
+ if(!custom){const cb=(S.build&&S.build.combos||[]).find(x=>x.i===i);if(cb&&ccPhase(cb)==='flip')return;}   // a flip is being worked out: no buy on this card
+ S.buying=true;
  if(!custom){S.bpend=S.bpend||{};S.bpend[i]={t:Date.now(),sig:ccSig((S.build&&S.build.combos||[]).find(x=>x.i===i))};const cc=btn&&btn.closest('.ccard');if(cc)cc.dataset.ph='buy';const sc=btn&&btn.parentNode&&btn.parentNode.querySelector('.sec');if(sc)sc.disabled=true;}
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
  let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
