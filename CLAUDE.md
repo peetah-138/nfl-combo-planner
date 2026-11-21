@@ -206,6 +206,9 @@ whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the tes
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
 and the test lists are in `tests/suite/checklist.py`) plus an aggregate job named `checks` (the required one). What it covers:
+- **Writing tests** (`tests/README.md`): hermetic (engine tests run under `suite/netguard/`, which fails any real
+  connection; `st_hermetic` checks it), wait for state not sleeps (`upwait.go_and_hold` before drawing data in), own
+  port/temp files/unique ids.
 - Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
   `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
@@ -312,6 +315,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
+- **College football scores cover all of Division I (issue #224).** `SPORTS["ncaaf"]["score_q"]` = ESPN group 90 (FBS 80 +
+  FCS 81), read only by `fetch_scores`; the free lines (`free_snapshot`) and game picking keep `q`/`espn_q` = group 80, so
+  no new game is priced from ESPN because of it. Kalshi lists FCS games (Jackson St. at Alcorn St.) that group 80 never had.
+  A college football game ESPN still has no record of gets Kalshi's public live data as a **display-only backup**
+  (`KLIVE_BACKUP`, `_kfootball`; `klive_events` asks only when `leg_score` has nothing), same isolation rule as below.
+  An open pick at 99.5%+ reads ">99%", never "100%" (`chance_pct`, SPA `pct`). Test: `t_fcs_score`.
 - **Tennis, EuroLeague and UFC scores come from Kalshi's public live data (GitHub #25), display only.** No key, no
   account endpoints: `GET /milestones?related_event_ticker=<event>` maps a game to its milestone (cached 6 h, a miss
   15 min, at most 8 new lookups a refresh) and one `GET /live_data/batch?milestone_ids=...` per refresh covers every
@@ -666,6 +675,16 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
+  sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
+  (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
+  `timeValid: false` "TBD" dates ignored), then the old estimate (Kalshi's `expected_expiration_time` minus the sport's
+  hours). Kalshi's expected settle time is a placeholder for many college football games (23:00 UTC for most of a
+  Saturday's slate, noon and night kickoffs alike), so the estimate alone put Kentucky at Missouri five hours early.
+  `start_dt`, `leg_start` and `started` all use it; `started` is also True whenever the feed shows the game in play or
+  over. `EVENT_TICK` (filled in `week_games`/`fetch_results`) finds a game's market from its event code. Pre-game panel
+  buys still need the sportsbooks' kickoff (`_kick_ts`) and live-priced ones a fresh in-play score (`live_side_fair`),
+  so a wrong estimate never bought anything. Test: `t_gamestart` (fixture `game_start_223.json`, real shapes).
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
@@ -1040,6 +1059,19 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     visible switch track), and a fix for Settings › Accounts showing "Not connected" as a label.
   - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
     reduced-motion run.
+- **Settings folds, jump chips, search and the Mac line (GitHub #212, UI only; no setting, switch, save or Mac action changed).**
+  Every Settings section (`scard`, `watcher/spa/settings.js`) folds with a chevron: the header is one real button
+  (`.sfold`, 56 pt, under `hswBig`'s 64 pt so it keeps its iOS tick) and the body is the same `.fold` grid as Live's
+  sections, remembered per phone as `cw_fold_set_<id>` (`sOpen`/`sShow`/`sTog`; Money and The Mac start open, the rest
+  folded). A folded card's badge (`sBadges`: "N of M on" switches, Watching/Off for Killer and Standing orders, the version
+  on The Mac, Kalshi connected) updates on every change. The body stays in the page (hidden), so nothing re-renders to open
+  it; a test that needs a folded control calls `sShow('<id>', true)` first. The chips (`.sidx` buttons, never links, so they
+  get the haptic tick) jump to a section and open it: a sticky row under the header on a phone (`--toph`, kept by
+  `sAfter`), the side index on a desktop. The search box (`sFind`, `S.sq`, the input keeps focus across redraws) filters
+  rows (`.srow`, `.kv>div`, `.mixr`, `.sact`) by name and description across every section **in the DOM, without
+  touching the saved folds** (`.set.sq` forces sections open; clearing restores them; "No settings match" when empty). The
+  "The Mac · version X · up to date / update available" line (`macLine`) sits under the title and opens The Mac. Test:
+  `test_settingsfold`.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
 ## Kalshi API watch (GitHub issue #82)

@@ -34,9 +34,10 @@ with sync_playwright() as pw:
     pg.goto(B + "/app")
     if not wait(pg, "!!document.querySelector('#s-haptics')", 25): bad("the Test haptics card didn't render in Settings")
     time.sleep(.5)
+    pg.evaluate("sShow('haptics',true)"); time.sleep(.7)   # Settings sections start folded (#212)
     card = pg.evaluate("""(()=>{const c=document.querySelector('#s-haptics');if(!c)return null;
-      return {title:c.querySelector('h3').textContent,sub:c.querySelector('header p').textContent,rows:[...c.querySelectorAll('.hxrow')].map(r=>r.dataset.m),
-      ask:c.innerText.includes('Does it tick on every tap now? Tell Claude.'),marks:['A','B','C','D','E','F','J','K'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Did nothing on iOS 27'))&&['G','H','I'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Pete confirmed')),tog:!!c.querySelector('#hapon'),nav:[...document.querySelectorAll('.sidx a')].some(a=>a.textContent.includes('Haptics')),
+      return {title:c.querySelector('.st').textContent,sub:c.querySelector('header p').textContent,rows:[...c.querySelectorAll('.hxrow')].map(r=>r.dataset.m),
+      ask:c.innerText.includes('Does it tick on every tap now? Tell Claude.'),marks:['A','B','C','D','E','F','J','K'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Did nothing on iOS 27'))&&['G','H','I'].every(i=>c.querySelector('.hxrow[data-m='+i+']').innerText.includes('Pete confirmed')),tog:!!c.querySelector('#hapon'),nav:[...document.querySelectorAll('.sidx .sj')].some(a=>a.textContent.includes('Haptics')),
       plain:['vibrate','not expected on iPhone','combo://haptic'].every(t=>c.innerText.includes(t))};})()""")
     print("card:", card)
     if not card: bad("no card"); card = {"rows": []}
@@ -139,7 +140,7 @@ with sync_playwright() as pw:
     pg.evaluate("window.__sw.length=0;S.hapAt=0;hap('success')"); time.sleep(.3)
     if pg.evaluate("__sw.filter(x=>x.id==='hapl').length") != 2: bad("hap('success') outside a tap should still try two scripted ticks")
     # N (the default): the N button carries its own see-through switch; a tap flips it, runs once, says sent, no scripted tick
-    pg.evaluate("go('settings')"); time.sleep(1.5); wait(pg, "!!document.querySelector('.hxrow[data-m=N] button>.hsw')", 10)
+    pg.evaluate("go('settings')"); time.sleep(1.5); pg.evaluate("sShow('haptics',true)"); time.sleep(.7); wait(pg, "!!document.querySelector('.hxrow[data-m=N] button>.hsw')", 10)
     pg.evaluate("window.__sw.length=0;window.__swc.length=0;window.__hapt=[];__haps.length=0;S.hapAt=0"); row = pg.locator('.hxrow[data-m="N"]'); row.scroll_into_view_if_needed()
     row.locator("button").click(); time.sleep(.2)
     nres = pg.evaluate("({hapt:window.__hapt.slice(),sw:__sw.slice(),finger:__swc.slice(),flash:document.querySelector('.hxrow[data-m=N] .hxs').textContent,other:document.querySelectorAll('.hxrow:not([data-m=N]) button>.hsw').length})")
