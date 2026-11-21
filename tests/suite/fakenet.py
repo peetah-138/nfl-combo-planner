@@ -40,13 +40,37 @@ class R:
         return False
 
 
+def game_start(series, i):
+    """When fake game i of a series starts (naive UTC): the first one an hour before this process began (under way),
+    the second four hours before (over), the rest 3+i hours after. Fixed at import, never the clock at call time, so a
+    game's ticker date and its scoreboard start can never disagree because a test ran across midnight. Keyed on the
+    game's place in GAMES (the scoreboard's live/over/not-started roles are too): a test that reorders GAMES must do it
+    before building any ticker or market (t_singlebuy swaps two games right after import)."""
+    base = _base()
+    return base - dt.timedelta(hours=1 if i == 0 else 4) if i < 2 else base + dt.timedelta(hours=3 + i)
+
+
+def _base():
+    return dt.datetime.fromtimestamp(STARTED, dt.timezone.utc).replace(tzinfo=None)
+
+
+def us_day(t):
+    """The US game date Kalshi writes in a ticker (Eastern; the engine's espn_day uses UTC-5 the same way). Never the
+    machine's own date: CI runs on UTC, so after 00:00 UTC a 7 PM Eastern game would get tomorrow's date (GitHub #128)."""
+    return (t - dt.timedelta(hours=5)).date()
+
+
 def event_ticker(series, a, b, day=None):
-    return f"{series}-{(day or dt.date.today()).strftime('%y%b%d').upper()}{a}{b}"
+    if day is None:
+        i = next((k for k, g in enumerate(GAMES.get(series, [])) if g[0] == a and g[2] == b), None)
+        day = us_day(game_start(series, i) if i is not None else _base())
+    return f"{series}-{day.strftime('%y%b%d').upper()}{a}{b}"
 
 
 def markets(hours=6):
-    """Two markets (one per team) for every fake game, ending in a few hours."""
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    """Two markets (one per team) for every fake game, ending in a few hours (counted from when this process began,
+    like the games' start times, so expiry and start stay in step)."""
+    now = _base()
     out = []
     for series, games in GAMES.items():
         for gi, (a, an, b, bn, pa) in enumerate(games):
@@ -78,11 +102,10 @@ def orderbook(m, size=500):
 def espn_events(path):
     """Scoreboard events: the first game of each sport is live, the second is over, the rest haven't started."""
     series = next(s for s, p in ESPN_PATH.items() if p == path)
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     evs = []
     for i, (a, an, b, bn, pa) in enumerate(GAMES[series]):
         state, name = (("in", "STATUS_IN_PROGRESS"), ("post", "STATUS_FINAL"))[i] if i < 2 else ("pre", "STATUS_SCHEDULED")
-        start = now - dt.timedelta(hours=1 if i == 0 else 4) if i < 2 else now + dt.timedelta(hours=3 + i)
+        start = game_start(series, i)
         sc = {0: (54, 49), 1: (112, 104)}.get(i, (0, 0))
         clock = "5:42"
         if i == 0:                      # the live game plays on: the clock runs down and baskets drop as time passes
@@ -131,7 +154,9 @@ def kalshi_live():
 # deprecated_v1_order_endpoint (Kalshi today); "legacy" = an account without V2 yet (404 on the V2 path, legacy works);
 # "both"; "gone" = 404 on V2 and 410 on legacy. ORDERS["next"] = a status code, (status, code), or an exception to
 # answer the next order write with; ORDERS["fill"] = contracts filled (default: all). Every write is in ORDERS["sent"].
-ORDERS = {"mode": None, "sent": [], "next": None, "fill": None, "headers": {}}
+# ORDERS["balance"] = the GET /portfolio/balance answer (with balance_breakdown, the cash in each exchange shard);
+# ORDERS["shards"] = {ticker: exchange_index} for GET /markets/{ticker}.
+ORDERS = {"mode": None, "sent": [], "next": None, "fill": None, "headers": {}, "balance": None, "shards": {}}
 GONE = {"error": {"code": "deprecated_v1_order_endpoint", "message": "This endpoint has been removed. Please switch "
                   "to the V2 endpoints", "details": "https://docs.kalshi.com/getting_started/order_errors"}}
 
@@ -190,6 +215,12 @@ def fake(method, url, params=None, port=18800, data=None):
             return order_desk(method, path, params, data)                   # a test's fake order desk only
         if method != "GET":
             return R({"error": "dev environment: no orders"}, 403)          # never a trade
+        tk = path.split("/")[2] if path.startswith("/markets/") and path.count("/") == 2 else None
+        if tk and tk in (ORDERS.get("shards") or {}):                  # a test's market and its cash pot
+            return R({"market": {"ticker": tk, "exchange_index": ORDERS["shards"][tk], "status": "active"}})
+        if path == "/portfolio/balance" and ORDERS.get("balance") is not None:
+            b = ORDERS["balance"]
+            return b if isinstance(b, R) else R(b)
         if path.startswith("/markets"):
             mk = markets()
             if path.endswith("/orderbook"):
@@ -198,7 +229,9 @@ def fake(method, url, params=None, port=18800, data=None):
             if path.count("/") >= 2:
                 m = next((x for x in mk if x["ticker"] == path.split("/")[2]), None)
                 return R({"market": m} if m else {}, 200 if m else 404)
-            st = (params or {}).get("series_ticker", "")
+            st, ev = (params or {}).get("series_ticker", ""), (params or {}).get("event_ticker", "")
+            if ev:                          # one game's markets (the game page's buy buttons)
+                return R({"markets": [m for m in mk if m["event_ticker"] == ev], "cursor": ""})
             return R({"markets": [m for m in mk if st and m["ticker"].startswith(st)], "cursor": ""})
         if path == "/portfolio/balance":
             return R({"balance": 21103})

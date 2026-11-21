@@ -155,6 +155,41 @@ with sync_playwright() as pw:
         if errs: bad(f"{tag}: JS errors {errs[:3]}")
         ctx.close()
 
+    # ---- an iPhone (method N, #60): every visible control's haptic is the finger landing on a real switch: its own
+    # see-through switch, or it is a native switch / a label around one. Selects and sliders are native (no switch).
+    AUDIT_N = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden'&&!e.closest('[hidden]')&&!(e.closest('#modal')&&!$('#modal').classList.contains('on'));};
+     const all=[...document.querySelectorAll('header *,main *,.tabbar *,#sheet *')].filter(e=>vis(e)&&!e.closest('.hapx')&&!e.classList.contains('hsw'));
+     const want=all.filter(e=>e.matches('button,a[href],select,label,input[type=checkbox],input[type=range],[onclick]')||(getComputedStyle(e).cursor==='pointer'&&!e.closest('.sparkw,.scrub')));
+     let links=0;const native=[],miss=[];want.forEach(e=>{if(e.disabled)return;const h=tapEl(e)||e;
+      if(h.closest('[data-hapt]:not([data-hsw])'))return;
+      if(h.matches('select,input[type=range]')){native.push(h.tagName);return;}
+      if(h.matches('a[href]')){links++;return;}   // links carry no switch on purpose (navigation, long-press menu)
+      if(h.matches('input[type=checkbox]')){if(!h.hasAttribute('switch'))miss.push('checkbox without switch: '+h.className);return;}
+      if(h.matches('label')){if(!h.querySelector('input[switch]')&&!h.querySelector('select,input[type=range],input[type=text],textarea'))miss.push('label: '+(h.innerText||'').slice(0,20));return;}
+      let x=h;while(x&&!x.querySelector(':scope>.hsw')){x=x.parentElement&&x.parentElement.closest(HSWQ);}
+      if(!x)miss.push(h.tagName+'.'+h.className+':'+(h.innerText||'').trim().slice(0,20));});
+     return {n:want.length,miss:miss.slice(0,8),nmiss:miss.length,native:native.length,links};})()"""
+    IOS = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", has_touch=True, user_agent=IOS)
+    pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
+    pg.route("**/app/api/act", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "msg": "Got it."})))
+    pg.add_init_script("window.__swc=[];addEventListener('click',e=>{if(e.target.classList&&e.target.classList.contains('hsw'))__swc.push(e.target.parentElement.tagName);},true);localStorage.setItem('cw_view','live')")
+    pg.goto(B + "/app"); wait(pg, "document.querySelectorAll('.hsw').length>3", 25); time.sleep(1.5)
+    for view in ("live", "games", "build", "results", "settings"):
+        pg.evaluate(f"go('{view}')"); time.sleep(5 if view == "build" else 3)
+        if view == "build": pg.evaluate("S.adv=true;renderBuild()"); time.sleep(.6)
+        a = pg.evaluate(AUDIT_N)
+        print("iphone", view, "controls:", a["n"], "| native select/slider:", a["native"], "| links:", a["links"], "| no switch under the finger:", a["nmiss"], a["miss"][:5])
+        if a["n"] < 5: bad(f"iphone {view}: the audit found almost nothing to check ({a['n']})")
+        if a["nmiss"]: bad(f"iphone {view}: controls whose tap doesn't land on a switch: {a['miss']}")
+        n0 = pg.evaluate("__haps.length"); pg.evaluate("__swc.length=0")
+        pg.locator(".tabbar button").nth(0 if view != "live" else 1).click(); time.sleep(.4)
+        got = pg.evaluate(f"({{h:__haps.slice({n0}),sw:__swc.slice()}})")
+        if got["h"][:1] != ["selection"] or got["sw"] != ["BUTTON"]: bad(f"iphone {view}: a tab tap should land on its switch once and tick once as selection: {got}")
+    print("iphone errs:", errs)
+    if errs: bad(f"iphone: JS errors {errs[:3]}")
+    ctx.close()
+
     # reduced motion: everything still works and nothing animates
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce", has_touch=True)
     pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))

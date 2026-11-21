@@ -1,6 +1,6 @@
 # Roadmap: planned work not done yet
 
-Everything we've agreed on or lined up but haven't built, as of version 2026.11.20.124 (Nov 18, 2026).
+Everything we've agreed on or lined up but haven't built, as of version 2026.11.20.125 (Nov 18, 2026).
 What's already built is described in `CLAUDE.md`. When an item ships, move its facts into `CLAUDE.md` and delete it
 here; when Pete adds or drops something, update this file in the same change.
 
@@ -66,6 +66,16 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
 
+### Smarter spreads and totals (issue #117)
+- **Part A shipped** (the margin-shape model, per-league gate, old vs new logged side by side). Its own record takes
+  over the gate once a league has 200+ settled games of spread/total markets; watch Results › What's working.
+- **Part B to build:** CLV per strike type, fillable size and after-fee expected profit from the order book, and a
+  learned minimum edge per league/type (see the issue).
+- **Left as they are on purpose (selection changes, need Pete's OK):** NHL spreads are never priced today (ESPN's
+  "details" for hockey is a moneyline, read as a 185-point spread, so the distance filter drops every puck line), and
+  soccer spreads/totals aren't fetched at all (`_espn_board` gets a list of ESPN paths for soccer). The new model can
+  price both (the backtest has them), but turning them on adds bets to the panel.
+
 ---
 
 ## 3. Ready to build (suggested order)
@@ -86,9 +96,10 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 3. **Charts to drill into:** bet value over time with scrub (combo page), charts for Results › What's working.
    Panel cards' price line is from what the phone has seen; a server-side price history per panel bet would make it
    complete (needs an API field, so it was left out of the UI-only phase).
-- Haptics on the Home Screen app still need checking on Pete's iPhone (the `<input switch>` route; ticks while
-  dragging the chart or the Let it ride slider may need a real device to confirm), and the safe-area / keyboard
-  handling wants a look on the real Home Screen app.
+- Haptics (#60): method N (a see-through switch over every control) needs Pete's confirmation on his iPhone that
+  every tap ticks. On iOS 27 nothing without a tap can tick (chart scrub, pull-to-refresh, sheet drag, tab swipe, the
+  Let it ride slider's steps, a pattern's second tick). The safe-area / keyboard handling wants a look on the real
+  Home Screen app.
 - Rule: send Pete screenshots or a short clip before shipping visual changes.
 
 ### c. Faster live numbers, the rest (GitHub #21; first slice shipped)

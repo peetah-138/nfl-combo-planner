@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.20.124). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.20.125). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -80,7 +80,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.124`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.125`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -152,6 +152,27 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   inside a sport (each soccer league) moves from its sport's the same way. A level with no games gets exactly the one
   above; a sport alone in a band is exactly as before; a band nobody has played keeps the books' chance.
   Leagues marked `require_line` need a sportsbook line (Kalshi alone isn't trusted there).
+- **Spreads and totals (issue #117 part A).** Today's ("old") price: ESPN's line + a normal curve (`MARGIN_SD`/
+  `TOTAL_SD`) or Poisson (`line_fair`). The **margin-shape model** (`margin_pmf`/`margin_prob`) prices each strike from
+  how each league's games really finish: whole-number margins/totals, a fitted width `sd = a + b·|line|`, learned
+  weights (NFL 3/7/10/14, no ties in basketball/college football; hockey = Poisson + overtime goal, soccer = Poisson with
+  the market's draw), anchored on the line and its de-vigged price (`espn_line_prices`: spread/total juice and
+  moneylines from ESPN's scoreboard), shrunk league → sport (AHL/EuroLeague borrow hockey/basketball). Tables and the
+  backtest evidence are a generated block in the engine (`LINE_TABLES`/`LINE_EVIDENCE`, ~tens of KB) built by
+  `tools/build_line_tables.py` (scrape ESPN politely into a cache outside the repo, fit, leave-one-season-out backtest
+  with the engine's own code, `--write`). Then `calib_line`: per league, kind and strike-distance band (`line_bucket`),
+  n/(n+300) borrowing everyone → sport → league, n = games. Every spread/total market's old and new price is logged in
+  `line_fairs` (one row per market per 30 min, pre-game; resolved in `resolve_closes`). **Gate** (`line_gate`, per
+  league and kind): new model only where it beat the old by ≥ 0.002 log loss and ≥ 2 SE on 200+ backtest games, or on
+  the Mac's own settled markets once they cover 200+ games (which also turn it off if worse). Settings › Money
+  "Smarter spread/total pricing" (`line_model`, shared, on = auto) turns it off everywhere. **Only the chance changes**
+  (`_line_pick_model` in `line_candidates`): selection rules, caps, sizing, start rules and approval are untouched, a
+  market the old model doesn't price stays unpriced, any error falls back to the old price, and with the gate off every
+  price is byte for byte the old one (`t_linemodel`). Results › What's working › Bet types shows old vs new per league.
+  Shipped backtest (2023-26, held-out seasons): the gate is on for **NFL spreads, college football spreads, NHL totals
+  and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
+  spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
+  has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
@@ -189,7 +210,17 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   rounded so a buy never pays more and a sale never takes less), `count` = a 2-decimal contract string; cancels are
   `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
   (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
-  skips); a timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
+  skips; `ORDER_WORDS` covers every code on Kalshi's Order Errors page, tested in `t_buyfunds`). **Cash pots (exchange
+  shards, issue #126):** Kalshi's docs say cash is kept per shard (combos 1, crypto 2, tennis/baseball/basketball 3,
+  everything else 0), `GET /portfolio/balance`'s `balance` is the total, and `insufficient_balance` means the
+  market's shard is short. Kalshi's own app shows one total; Pete's real breakdown hadn't been seen when this shipped.
+  `_fetch_account` keeps `balance_breakdown` (`note_pots` → `ACCT_POTS`, one copy per process) and logs
+  "Kalshi balance by pot: index 0 $x, index 1 $y, total $z" when it changes; Settings › Money shows it read-only
+  (`kalshi_pots`, hub op `pots`). On `insufficient_balance`, `balance_words` re-reads the balance and the market's
+  `exchange_index` (public `GET /markets/{t}`), 3 s each (`POTS_WAIT`), and claims a cause only when the numbers show
+  it: the total below the order's cost ("not enough money in your Kalshi account", never for a sale), or a listed
+  multi-pot breakdown with this market's pot short. Otherwise: the code, the total, "Check Kalshi". The app never
+  moves cash between pots. A timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
   "check", logged in `combo_orders.json`, and that market+side gets no order for 2 h, which Pete can lift sooner with Settings › Money › "Clear order block" (confirm, logged; the unclear order itself is never resent) (killer "check"s alert and count
   toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
   (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,
@@ -335,6 +366,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   held when tracking began counts as the app's). The panel avoids games he already bet himself.
 
 ### Live page
+- **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
+  `icon`, `legs_info` (per leg: matchup "Away at Home" / "A vs B" when home and away aren't known, plain pick "wins by 8 or
+  more" / "Over 7.5 total goals", start time or the cached live score, `live`) and `chance`/`price_c`/`fair_c`/`edge`/`profit`
+  (all from the idea's own stake, pays and pct: chance = stake·pct/pays, profit = stake·(pct−1)). `store_suggestion` saves the
+  per-leg facts in `suggestions.info`; older ideas are worked out from their tickers (`idea_describe`, `idea_legs_info`,
+  `_idea_matchup`, `_idea_plain`); nothing is fetched, and an unknown field is left out. A single's card body opens its game
+  page (`ideaOpen`); a combo's leg rows open their games. A game you hold nothing on gets its page from the idea
+  (`idea_game_leg`, only games named by a current idea). Tests: `t_ideacards.py`, `test_ideacards.py`.
 - Hero card: worth now if sold (rolling number), change vs what's in, a chart of open-bet worth (`pulse` table),
   riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
 - Hero chart (`heroChart`/`wireChart`): Day (16 h, from `/app/api/live`) or Week (`/app/api/pulse?h=168`, read-only,
@@ -406,9 +445,19 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   team's ESPN schedule (regular season, plus the postseason in the playoffs; last season in the preseason) and ESPN's
   core-feed season leaders (`game_extras`: a background thread, `GX` cache 30/60 min, a player's name 24 h in `ATH`, any
   failure backs off 30 s doubling to 30 min, Retry-After honoured; these GETs carry an Accept header so they go straight to
-  ESPN, never through the hub's warm cache; only the first open of a game waits, at most `GX_BUDGET` 1.5 s). Last-5 dates
-  are UTC kickoffs shown in the phone's own time zone. Same isolation rule; an absent block hides its tab, an empty one says so ("No injuries listed",
-  "Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
+  ESPN, never through the hub's warm cache; **nothing waits for them**: the first open returns at once with `detail.gxp`
+  (still fetching) and the page shows skeletons on Last 5 / Season leaders, re-polls in ~2.5 s and fills them in quietly;
+  `gxp` ends after `GX_PENDING_MAX` 45 s so a fetch that never lands cannot leave a skeleton forever; a caller may still pass
+  `budget` to wait). **Warm-up (`game_prefetch`, route `/app/api/game_warm`):** the Games tab asks the Mac to warm a LIVE
+  football game when its card is shown or hovered/pressed (`warmGame`: once a minute per game, 2 at a time, 6 per 5 minutes in
+  the page; the Mac again dedupes 30 s, backs off a failed game 60 s doubling to 10 min, 2 at once, 8 a minute); it only runs
+  `game_detail`, nothing that prices, buys or sells. Last-5 dates
+  are UTC kickoffs shown in the phone's own time zone. Same isolation rule. **Injuries:** a side shows a real report (or "No
+  injuries reported") only when ESPN sent that team's own list; a side it sent nothing for says "Injury report isn't available
+  right now" (the tab shows when ESPN sent injuries, or the box score / team stats loaded without them). **Team stats:** rows where fewer is better (turnovers, sacked,
+  penalties; `TS_LOWER`) carry `lo`/`ld` from `_ts_leader`: the side with the lower number leads, its number is emphasised, its
+  bar is the longer one, a tie is neutral (even bar). An absent block hides its tab, an empty one says so
+  ("Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
   The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
   `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
@@ -425,6 +474,34 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
   college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
   "on games still to play" for the Mix. The rule and the cap amount are unchanged.
+- **Buy straight (manual single buys, issue #113; Pete's tap only, no automatic buying).** With one team picked the slip
+  has a **Single bet / Combo** switch (`slipMode`; Single bet keeps one pick and its button is "Buy straight"); the slip
+  card offers "Buy <team> straight" too; spreads & totals rows, Best bets and the Single games card open the same sheet;
+  the game page pins one big button per team ("Colts · 24% · 3.96x" = Kalshi's ask and $1's return after the fee;
+  `api_game` → `buy` from `event_sides`, display only). The **buy sheet** (`sbOpen`/`sbQuote`/`sbBuy`, a `modal()`)
+  shows Kalshi's ask now, our fair chance and the edge, presets $3/$5/$10/custom (`SINGLE_PRESETS`) plus the suggested
+  stake, contracts, payout, room under the cap, warnings and a 20 s draining bar; green Buy or yellow Buy anyway; stakes
+  over `SINGLE_ARM` ($25) need a second tap; at most `SINGLE_MAX` ($100). Engine: `single_buy_quote(x, stake, paused)`
+  reads the book fresh (`book_depth(max_age=0)`), checks the market is open (`market_open`), prices fair as the panel does
+  (sportsbooks via `calib_fair`; a game under way **only** via `live_side_fair`, else "no live fair price"; spreads/totals
+  under way have none), sizes with `_size` (quarter Kelly, shrunk edge, $2 minimum), warns (thin > 6¢ gap, little for
+  sale, live, nearly decided, live price far from the live chance, above fair, no fair price) and blocks (Pause, the
+  unknown-outcome block, under one contract, account unreadable, over the cap: `week_spend` (Kalshi's combo record, which
+  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window, `_cap_start`: today for daily
+  slates and the Mix, else the slate week; an unclear one included; table `manual_buys`), against the cap of the league Build
+  has loaded, via `cap_msg`; the cap check, the order and its note run under one lock, `_SQ["buy"]`). The board's fair price
+  is used only while under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`; no read time = stale); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
+  on a 30%-shrunk model edge; a finished game (`_game_over`) gets no quote; a start time it can't tell = a warning, yellow. It keeps a
+  quote id (16 hex) for 20 s (`_SQ`). `single_buy(qid, ticker, anyway, paused)` checks the quote is the one on screen,
+  unused, fresh, not blocked and (unless Buy anyway) clear; marks it used **before** sending (one order per quote, ever);
+  re-reads the book and refuses a higher ask; rechecks a live game isn't over (market status and the score feed), the block and the cap; then
+  `buy_single(..., coid="cw-sb-<qid>", exact=True)`: one IOC limit at the quoted ask (sub-cent asks sent as dollars,
+  rounded down). An unclear answer = "check", the market blocked 2 h (`_mark_unsure`), never resent; a refusal is plain
+  words and a fresh price may be asked. Bought markets are marked the app's (`app_bets.how = 'manual'`), so they show on
+  Live under Single bets & spreads with smart sell on by default. Web app actions: `singlequote`, `singlebuy` with `q`
+  (Pause read fresh from `watcher.json` each time: `paused_now`); `single_side` finds the side on the board on screen
+  or a saved board (`SNAP`), read only, never rebuilding or switching it. The sheet's answer always shows (a sheet, else a
+  toast), and Cancel from a game page goes back to it. Tests: `t_singlebuy.py`, `test_singlebuy_ui.py`.
 - **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
   labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
   asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
@@ -477,13 +554,24 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
-  **Haptics on iOS (issue #60, unresolved):** Pete feels none on iOS 27.2.1 in the Home Screen app, and the `<input
-  switch>` trick is only documented for iOS 17.4-18. `hap()` now toggles a tiny see-through switch laid out *inside* the
-  screen (not parked off it), and iPhones/iPads use it even if `navigator.vibrate` exists. Settings › Test haptics
-  (`hapCard`, tests in `test_haptics.py`) has one lettered button per method (the list is `HAPM`, the code is `HT`);
-  the one `hap()` uses is the single letter `HAPDEF` (now `B`): **once Pete reports which letter he feels, change
-  `HAPDEF` to it** (and drop the methods that don't work). The card also has a per-phone Haptics on/off switch
-  (`cw_hapoff`). Helper switches carry class `hapx` (the tap listener ignores them); test buttons carry `data-hapt`.
+  **Haptics on iOS (issue #60):** Pete's test on iOS 27.2.1 (Home Screen app): only G, H and I tick, i.e. only when the
+  finger itself lands on a real `<input type=checkbox switch>`; every scripted click (A-F, J, K) does nothing. So the
+  default (`HAPDEF = 'N'`) is **method N**: every tappable control (`HSWQ`: buttons, `[onclick]`, chips, rows)
+  gets a see-through switch (`.hsw`, opacity .01, appearance none, tabindex -1, aria-hidden) as its **first child**,
+  covering it; the control becomes `position:relative` through a zero-specificity rule while `html.hswon` is set. The
+  tap flips that switch (the tick) and the same real click bubbles on to the control's own handler; nested controls
+  paint above their row's switch; icons/chance lines inside a control let taps through (`.hsw~svg`, `.mline`); disabled
+  controls hide theirs; a field appearing inside a control removes its switch (`hswFix`); the switches' change/input
+  events never reach the app. Skipped (`HSWNO`/`HSWIN`): links (no tick: a switch would take their navigation and
+  long-press menu), labels (their checkboxes carry `switch` themselves, method I), selects, sliders,
+  text fields, scrub charts, sideways strips, the test card's other buttons. A MutationObserver adds them to new content
+  (never two per control). Only on iPhones/iPads, not in the Pythonista app, and off with the Haptics switch or reduced
+  motion (`hswSync`). `hap()` still tries the scripted switch for a pattern's extra ticks and for gestures with no tap
+  (chart scrub, pull-to-refresh, sheet drag, tab swipe, slider steps): iOS 27 ignores those, so they stay silent there.
+  Settings › Test haptics (`hapCard`, `HAPM`/`HT`) lists N first, marks G/H/I "Pete confirmed" and the scripted ones
+  "did nothing on iOS 27", and asks whether every tap ticks now. Tests: `test_hsw.py` (Chromium and, where installed,
+  WebKit; CI installs it), `test_haptics.py`, the iPhone audit in `test_motion.py`. The card's on/off switch is per phone (`cw_hapoff`); helper switches carry class `hapx`,
+  test buttons `data-hapt` (N's also `data-hsw`).
 - **Makeover phase 2** (UI only; no buy/sell/panel logic touched):
   - **Games** shows one live card per game you have money on, combos **and** single bets, spreads and totals
     (`api_games` puts a single on its game's card by the game code, or gives it a card of its own). Card: league and

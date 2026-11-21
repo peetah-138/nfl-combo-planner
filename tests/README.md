@@ -73,16 +73,31 @@ pattern in a local `.git/hooks/pre-commit`.
   every price/count conversion incl. 1¢/99¢, NO prices, fractional counts and reduce-only IOC sells; the fake order
   desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
   no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
-  `fixtures/kalshi_orders_v2.json`).
+  `fixtures/kalshi_orders_v2.json`). A refusal's true reason (`t_buyfunds.py`): the Live buy idea that said "not
+  enough money" with $69.49 in the account (55 at 17¢, through the webapp copy relaying to the Mac's), Kalshi's
+  per-shard cash pots (`fakenet.ORDERS["balance"]`/`["shards"]`), and every documented order error code's words.
+  Manual single buys (`t_singlebuy.py`, issue #113): the quote's math from the fake order book (ask, gap, depth, fair,
+  edge, the panel's sizing, contracts, the cap), one V2 IOC order at the quoted price per quote (never more; sub-cent
+  prices exact), a higher price / thin book / over the cap / Pause / closed or unlisted market refused before anything is
+  sent, a timeout or 5xx = check and never resent, 410 = a clean refusal, a game under way never priced on its pre-game
+  chance; `test_singlebuy_ui.py`: the slip's Single bet / Combo switch, the game page's pinned buttons and the buy sheet
+  in every state (scripted answers), at phone (dark and light) and desktop sizes.
   Results dated by when the money moved (`t_realdate.py`, issue #91): `sunday_of` rounding shared with `week_of`,
   `realized_ts`/`realized_buckets` precedence (cash-out sell > settlement > the Mac's detection time > the game date),
   a cashed-early bet bucketed by its cash-out date in both day and week, day and week always from one date in one tz,
   and `_fetch_account` capturing the last sell fill as `cashed_at` and a settlement time as `settled_at`.
+  The spread/total margin model (`t_linemodel.py`, issue #117): the shipped tables and their borrowing, the
+  distributions (add up to 1, fall as the strike rises, NFL key numbers, no ties in basketball/college football,
+  whole-number lines set the push aside, half-point lines are exact complements, hockey's moneyline split and soccer's
+  draw kept, anchoring on the line and its price), the tool's shrinkage, real ESPN games (`fixtures/espn_margins.json`),
+  the strike-distance calibration (everyone -> sport -> league, n counts games), the gate per league and kind (backtest
+  evidence, the Mac's own record, the Settings switch), both prices logged, gate off = today's prices byte for byte,
+  and the panel choosing the same bets with only the chances changed when it is on.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
   clean, a requested panel rebuild must run; and an update install into a temp home.
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
-  Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_motion.py` covers the makeover's motion
+  Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion
   layer: every visible clickable element on every screen has press feedback and a haptic, the haptic patterns are
   distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
   ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.

@@ -21,12 +21,13 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.20.124"
+WATCHER_VERSION = "2026.11.20.125"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
-          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live")
+          "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
+          "line_model")
 
 
 def log(*a):
@@ -1959,6 +1960,7 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .ant{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.ant button{flex:1 1 auto}
 .annotes{margin:0 0 6px 18px;padding:0;font-size:13.5px;line-height:1.5}
 .anrow{display:grid;grid-template-columns:1.4fr repeat(5,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--line);font-size:13px;align-items:center}
+.anrow.l4{grid-template-columns:1.1fr 2fr 1.2fr 1.2fr}
 @media (max-width:760px){.anrow.h{display:none}.anrow{display:flex;flex-wrap:wrap;gap:6px 14px;padding:11px 0}.anrow>div:first-child{flex-basis:100%;font-size:14px}
  .anrow>div[data-l]:not([data-l=""])::before{content:attr(data-l);display:block;color:var(--mute);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}}
 .anrow.h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
@@ -2120,6 +2122,12 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .dcard.gone{opacity:.6;filter:saturate(.4);animation:goneout .5s ease 3.8s forwards}@keyframes goneout{to{opacity:0;transform:scale(.97)}}
 .dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
 .dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
+.ihd{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);margin-bottom:3px}
+.igame{color:var(--sub);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+.ileg{display:grid;gap:1px;padding:8px 10px;margin-top:6px;border-radius:10px;background:var(--panel2);cursor:pointer;min-width:0}
+.ileg .ilg{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}.ileg b{font-size:14px;overflow-wrap:anywhere}.ileg small{color:var(--sub);font-size:12.5px;overflow-wrap:anywhere}
+.dcard.itap{cursor:pointer}
+.dnums.ifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px 12px}.dnums.ifacts div{min-width:0}.dnums.ifacts b{overflow-wrap:anywhere}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .dnums b{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em;text-transform:none}
 .dbtns{display:flex;gap:8px;grid-row:span 2}
@@ -2251,6 +2259,9 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .h2bar{display:flex;gap:3px;height:6px}
 .h2bar i{display:block;height:100%;border-radius:3px;transition:width .6s var(--ease);min-width:3px}
 .h2bar.even i{opacity:.35}
+.tsv b.lag{color:var(--mute);font-weight:600}.tsv b.lead{color:var(--ink)}
+.lob{display:block;font-size:10.5px;color:var(--mute);font-weight:500;margin-top:1px}
+.gskr{padding:9px 2px 11px}.gskr i{display:block;height:16px;margin-bottom:7px}.gskr i+i{height:6px;margin:0}
 .gin .h2bar i{animation:sbarIn .7s var(--ease) both}
 .gin .h2bar i:last-child{animation-name:sbarInR}
 @keyframes sbarIn{from{transform:scaleX(0);transform-origin:left}to{transform:none;transform-origin:left}}
@@ -2305,6 +2316,14 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .srow.dim{opacity:.45;pointer-events:none}
 .hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
 .hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
+.hxbtn .hsw{border-radius:inherit}
+/* Method N (#60): the see-through switch over each control, so the finger's own tap lands on a real switch (the tick).
+   appearance:none with nothing painted; opacity .01 like G's confirmed switch, never hidden, never pointer-events:none. */
+.hsw{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:inherit;background:transparent!important;box-shadow:none!important;-webkit-appearance:none!important;appearance:none!important;opacity:.01!important;transform:none!important;transition:none!important;animation:none!important;outline:none!important;cursor:inherit;flex:none;font-size:0;color:transparent;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+.hsw::before,.hsw::after{display:none!important}
+.hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
+html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
+:where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
 .hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
 .hxrow .l small{margin-top:6px}
 .rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
@@ -2565,6 +2584,30 @@ main.ptrd{transition:none!important}
 .qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
 .pickbtn.pop{animation:chipon .34s var(--spring)}
 .slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
+/* Buy straight (#113): the slip's Single bet / Combo switch, the buy sheet, the game page's pinned buttons */
+.sbtog{display:inline-flex;background:rgba(0,0,0,.18);border-radius:9px;padding:2px;gap:2px;flex:none}
+.sbtog button{border:0;background:none;color:inherit;opacity:.8;font-weight:800;font-size:12px;padding:5px 9px;border-radius:7px}
+.sbtog button.on{background:#fff;color:var(--acc);opacity:1}
+.slipbar .sbtog button{padding:5px 9px;background:none;color:#fff}.slipbar .sbtog button.on{background:#fff;color:var(--acc)}
+@media (max-width:900px){.slipbar{flex-wrap:wrap;row-gap:8px}.slipbar .sbtog{flex-basis:auto;margin-right:auto}.slipbar .sbrow{display:flex;align-items:center;gap:10px;flex-basis:100%;min-width:0}}
+.slip .sbtog{background:var(--panel2);color:var(--sub)}.slip .sbtog button.on{background:var(--acc);color:#fff}
+.sb h3{margin:2px 0 2px;font-size:20px;letter-spacing:-.01em;overflow-wrap:anywhere}.sb .sbk{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0 12px}
+.sbn>div{background:var(--panel2);border-radius:12px;padding:10px 10px 9px;min-width:0}.sbn span{display:block;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn b{display:block;font-size:21px;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}.sbn small{display:block;font-size:11px;color:var(--mute);margin-top:2px;line-height:1.3;overflow-wrap:anywhere}
+.sbst{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px}.sbst .chip{min-width:52px;justify-content:center}
+.sbst input{width:92px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-weight:700}
+.sbw{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,#f5b544 14%,transparent);color:var(--ink);margin:6px 0}
+.sbw i{font-style:normal;flex:none}.sbx{background:color-mix(in srgb,var(--no) 14%,transparent)}
+.sbgo{display:flex;gap:8px;margin-top:14px}.sbgo .btn{justify-content:center;padding:12px 14px;font-size:14.5px}.sbgo .pri{flex:1;min-width:0;white-space:normal}
+.sbleft{font-size:12px;color:var(--mute);text-align:right;margin-top:6px}
+.gbuy{position:sticky;bottom:0;z-index:3;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin:16px -16px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+ background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-top:1px solid var(--line)}
+.gbuy button{border:0;border-radius:12px;padding:11px 8px;font-weight:800;font-size:15px;color:#fff;background:var(--acc);display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
+.gbuy button:nth-child(2){background:var(--no)}.gbuy button:nth-child(3){background:var(--panel2);color:var(--ink)}
+.gbuy button b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.gbuy button small{font-size:12px;font-weight:700;opacity:.9}
+@media (min-width:901px){.gbuy{margin:16px -22px 0;padding:10px 22px 12px}}
+.pbody:has(>.gbuy){display:flex;flex-direction:column;min-height:calc(100% - 64px - env(safe-area-inset-top))}.pbody>.gbuy{margin-top:auto}
 .sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
 .unfold{animation:rise .38s var(--ease)}
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
@@ -2672,7 +2715,10 @@ function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT
 function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
-function closeModal(){const m=$('#modal');if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
+function closeModal(){const m=$('#modal');
+ /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
+ const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}
+ if(m.classList.contains('on'))hap('light');m.classList.remove('on');document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;
  clearTimeout(S.pushT);if(m.classList.contains('push'))S.pushT=setTimeout(()=>{if(!m.classList.contains('on'))sheetMode(false);},340);else $('#sheet').classList.remove('wide');}
 const BACK='<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function pushSkel(){return `<div class="psk"><i style="height:14px;width:28%"></i><i style="height:26px;width:66%"></i><i style="height:84px"></i>
@@ -2707,23 +2753,24 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
 const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
-function tapEl(t){const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
+function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentElement;const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
- addEventListener('click',e=>{const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
-  hap(el.matches('.tabbar button,.nav button,.seg button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
+ addEventListener('click',e=>{const tg=e.target;if(tg&&tg.matches&&(tg.matches('.hsw,input[switch]')||tg.matches('label')&&tg.querySelector('input[switch]')))S.hswAt=performance.now();   // the finger's own switch ticked
+  const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
+  hap(el.matches('.tabbar button,.nav button,.seg button,.sbtog button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
- addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input,.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
+ addEventListener('touchstart',e=>{const t=e.target;ok=!(t.closest&&t.closest('.chips,.seg,.ant,.sheet,input:not(.hsw),.board,.chartbox,.spark,.sparkw,.scrub,.antbl,svg'));x0=e.touches[0].clientX;y0=e.touches[0].clientY;t0=Date.now();},{passive:true});
  addEventListener('touchend',e=>{if(x0==null||!ok||$('#modal').classList.contains('on'))return;const t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;x0=null;
   if(Math.abs(dx)<80||Math.abs(dy)>Math.abs(dx)*.6||Date.now()-t0>600||innerWidth>900)return;const i=TABS.indexOf(S.view),j=i+(dx<0?1:-1);if(j<0||j>=TABS.length)return;hap('light');go(TABS[j],dx<0?1:-1);},{passive:true});})();
 /* Pull down at the top of any tab to refresh it: the page follows the finger with a rubber band, a ring fills as you
    pull, it ticks once at the point where letting go refreshes, spins while loading and ends on a small check. */
 (()=>{let y0=null,dy=0,el=null,busy=false;const C=2*Math.PI*8,TH=64;
  const ptr=()=>el||(el=Object.assign(document.createElement('div'),{id:'ptr',innerHTML:'<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke-dasharray="'+C.toFixed(1)+'" stroke-dashoffset="'+C.toFixed(1)+'"/><path d="M6 10.4l2.6 2.6L14 7.6"/></svg>'}),document.body.appendChild(el),el);
- const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input,select,textarea,.chips,.seg,.ant,.sidx'));
+ const skip=t=>!!(t&&t.closest&&t.closest('.sheet,.sparkw,.scrub,input:not(.hsw),select,textarea,.chips,.seg,.ant,.sidx'));
  const main=()=>$('#main'),reduce=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
  addEventListener('touchstart',e=>{y0=(!busy&&scrollY<=0&&!$('#modal').classList.contains('on')&&!skip(e.target))?e.touches[0].clientY:null;dy=0;},{passive:true});
  addEventListener('touchmove',e=>{if(y0==null)return;const raw=e.touches[0].clientY-y0;if(raw<=0||scrollY>0){if(dy){dy=0;const p=ptr();p.style.opacity=0;const m=main();if(m){m.style.transform='';}}return;}
@@ -2904,19 +2951,37 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+(ideas.length?ideaBlock(ideas):'');}
+/* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
+   plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
+function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
+ if(li.kick){try{return 'Starts '+new Date(li.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'});}catch(e){}}return '';}
+function ideaAge(ts){const s=Math.max(0,Math.round(Date.now()/1000-(ts||0)));return s<60?'Price '+s+'s old':s<3600?'Price '+Math.round(s/60)+'m old':'Price '+Math.round(s/3600)+'h old';}
+function ideaHead(x,li){const lg=li&&li.league_name||x.league_name||x.sport||'';
+ return `<div class="ihd"><span>${esc(li&&li.icon||x.icon||'')} ${esc(lg)}</span><span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?'<span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</div>
+  <h4>🎯 ${esc(li&&li.plain||x.picks)}</h4>${li&&(li.game||ideaWhen(li))?`<div class="igame">${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</div>`:''}`;}
+function ideaLeg(li){if(!li||!(li.plain||li.game))return '';const tk=/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
+ return `<div class="ileg" ${tk?`onclick="openGame('${tk}')"`:''}><span class="ilg">${esc(li.icon||'')} ${esc(li.league_name||'')}</span><b>${esc(li.plain||'')}</b><small>${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</small></div>`;}
+function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
+ return `<div class="dnums ifacts"><div>Kalshi price<b>${Math.round(x.price_c)}¢</b></div><div>Fair price<b>${Math.round(x.fair_c)}¢</b></div><div>Edge<b class="${(x.edge||0)>=0?'up':'down'}">${(x.edge||0)>=0?'+':'−'}${Math.abs(Math.round((x.edge||0)*100))}% expected</b></div>
+  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
+function ideaOpen(e,t){if(e&&e.target&&e.target.closest('button,a,input,select'))return;openGame(t);}
 function ideaBlock(ideas){S.ideaq=S.ideaq||{};
  return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
   const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
   if(S.ideaGone&&S.ideaGone[x.id])return `<div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div>`;
-  if(x.n===1)return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>🎯 ${esc(x.picks)} <span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4>
-   <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
+  if(x.n===1){const li=(x.legs_info||[])[0],tk=li&&/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
+   return `<div class="dcard idea ${tk?'itap ':''}${S.hl===x.id?'flash':''}" id="idea-${x.id}" ${tk?`onclick="ideaOpen(event,'${tk}')"`:''}><div>${ideaHead(x,li)}
+   <p>${esc(ideaAge(x.ts))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   <div class="dnums">${fresh?`<div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div>`:`<div>Value<b>${pct(x.pct)} of fair</b></div>`}</div></div>
+   ${ideaFacts(x)||`<div class="dnums"><div>Value<b>${pct(x.pct)} of fair</b></div></div>`}
+   ${fresh?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>`:''}</div>
    <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
-    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;
-  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;}
+  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair · ${esc(ideaAge(x.ts))}${x.kick?' · first game starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+   ${(x.legs_info||[]).map(li=>ideaLeg(li)).join('')}
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
+   ${ideaFacts(x)}
+   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
    <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" onclick="buyIdea('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
@@ -3246,18 +3311,27 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>
    <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
+/* The slip's Single bet / Combo switch (#113): Single bet keeps one team and its button buys it straight (the buy sheet);
+   Combo is the slip as before. */
+function slipTog(){const one=S.slipMode==='single';return `<div class="sbtog" role="tablist"><button type="button" role="tab" class="${one?'on':''}" aria-selected="${one}" onclick="slipMode('single')">Single bet</button><button type="button" role="tab" class="${one?'':'on'}" aria-selected="${!one}" onclick="slipMode('combo')">Combo</button></div>`;}
+function slipMode(m){S.slipMode=m==='single'?'single':'combo';if(S.slipMode==='single'&&S.slip.length>1)S.slip=[S.slip[S.slip.length-1]];S.custom=null;renderBuild();}
 function slipBar(){const legs=S.slip.map(sideBy).filter(Boolean);const was=S.slipWas;S.slipWas=legs.length;if(!legs.length)return '';
  const ch=legs.reduce((a,l)=>a*(l.fair||l.p||0),1);
- return `<div class="slipbar ${was?'':'in'}"><span>${legs.length<2?`${ICON[legWhere(legs[0]).sp]||''} ${esc(short(legs[0].pick))}${legWhere(legs[0]).opp?' vs '+esc(short(legWhere(legs[0]).opp.pick)):''} picked · tap 1 more team`:`${legs.map(l=>ICON[legWhere(l).sp]||'').join('')} ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div><div class="slipgap" style="height:64px"></div>`;}
+ if(S.slipMode==='single'){const l=legs[legs.length-1],w=legWhere(l);
+  return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${ICON[w.sp]||''} ${esc(short(l.pick))}${w.opp?' vs '+esc(short(w.opp.pick)):''} · ${l.p!=null?Math.round(l.p*100)+'¢':''}</span><button onclick="sbOpen('${esc(l.ticker)}',S.lg)">Buy straight ›</button><button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
+ return `<div class="slipbar ${was?'':'in'}">${slipTog()}<div class="sbrow"><span>${legs.length<2?`${ICON[legWhere(legs[0]).sp]||''} ${esc(short(legs[0].pick))}${legWhere(legs[0]).opp?' vs '+esc(short(legWhere(legs[0]).opp.pick)):''} picked · tap 1 more team`:`${legs.map(l=>ICON[legWhere(l).sp]||'').join('')} ${legs.length} picks · ${pct(ch)} to hit`}</span>${legs.length>=2?`<button onclick="document.querySelector('.slip').scrollIntoView({behavior:'smooth',block:'center'});if($('#slipq'))quoteSlip()">Price it ›</button>`:''}<button class="x" aria-label="Clear" onclick="S.slip=[];S.custom=null;renderBuild()">✕</button></div></div><div class="slipgap" style="height:104px"></div>`;}
 try{S.adv=!!localStorage.getItem('cw_adv')}catch(e){}
 function setLg(k){S.lg=k;S.slip=[];try{localStorage.setItem('cw_lg',k)}catch(e){};S.build=cget('build_'+k);renderBuild();load('build');}
 function pick(t,ev){const d=S.build;const same=d.board.find(g=>g.event===ev).sides.map(s=>s.ticker);
- if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
+ if(S.slip.includes(t))S.slip=S.slip.filter(x=>x!==t);else{S.slip=S.slipMode==='single'?[]:S.slip.filter(x=>!same.includes(x));S.slip.push(t);S.justPicked=t;}S.custom=null;renderBuild();S.justPicked=null;}
 function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.ticker===t)return s;}
 function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=d.stake||5;
  const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
- return `<div class="card slip"><h3>Your combo <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
-  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):'<div class="m" style="padding:6px 0 10px">Tap teams on the board to build your own combo, or use a suggestion below.</div>'}
+ const one=S.slipMode==='single';
+ return `<div class="card slip"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
+  <div style="margin:-2px 0 8px">${slipTog()}</div>
+  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use a suggestion below.'}</div>`}
+  ${legs.length===1?`<button class="btn ${one?'acc':'ghost'}" id="sbslip" style="width:100%;margin-top:10px;justify-content:center" onclick="sbOpen('${esc(legs[0].ticker)}',S.lg)">Buy ${esc(short(legs[0].pick))} straight${legs[0].p!=null?' · '+Math.round(legs[0].p*100)+'¢':''}</button>`:''}
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
    ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div>${c.offer.pct!=null?`<div class="sum">That's<b>${pct(c.offer.pct)} of fair · ${c.offer.clears===false?'below':'above'} your cut-off</b></div>`:''}`:''}
@@ -3341,11 +3415,14 @@ async function buy(i,custom,btn){if(S.buying)return;S.buying=true;
    event), on an element that is laid out (a tiny, nearly see-through one inside the screen; iOS ignores display:none,
    visibility:hidden and, it seems, things parked off-screen). iPhones and iPads get the switch even if they report
    navigator.vibrate; everything else uses navigator.vibrate. window.__haps keeps the last 60 kinds for the page tests.
-   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses (change that one letter
-   once Pete reports which method he feels). The card's Haptics switch is saved on this phone (cw_hapoff). */
+   HT holds every method the Settings > Test haptics card can try; HAPDEF is the one hap() uses. On iOS 27 (Pete,
+   #60) only G, H and I tick: the finger itself has to land on a real switch, a scripted click never ticks. So the
+   default is N: a see-through switch over every control (hsw*, below); hap() then only tries the scripted switch for
+   the extra ticks of a pattern and for gestures without a tap, which iOS 27 ignores. The card's Haptics switch is
+   saved on this phone (cw_hapoff). */
 const HAPN={success:[0,90],warning:[0,160],error:[0,80,160]};
 const APPLE=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
-const HAPDEF='B';
+const HAPDEF='N';
 const HAPCLICK='ABCDEFJK';   // the methods hap() can run itself (G, H, I need the finger itself; L, M aren't switches)
 const HAPCSS='position:fixed;left:8px;bottom:8px;width:2px;height:2px;opacity:.01;overflow:hidden;z-index:-1';
 const HAPSW='<input type="checkbox" switch tabindex="-1">';
@@ -3359,32 +3436,35 @@ const HT={
  F(){const l=hapNode('hapl',HAPCSS);l.click();setTimeout(()=>l.click(),120);},
  G(){},H(){},I(){},   // native: the user's own tap is the toggle, nothing to run
  J(){HT.B();},K(){HT.B();},
+ N(){if(!hswOn())return false;},   // the button's own see-through switch is the tick
  L(){if(!navigator.vibrate)return false;navigator.vibrate([20,40,20]);},
  M(){if(!S.inapp)return false;const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/light';document.body.appendChild(f);setTimeout(()=>f.remove(),300);}
 };
 const HAPM=[   // [id, event, name, what it does]
- ['A','click','Switch label click (how the app did it)','A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
- ['B','click','Switch label click, on screen (the app now)','The same, but the switch sits inside the screen, nearly see-through.'],
- ['C','click','Click the switch itself','Clicks the switch input directly, not its label.'],
- ['D','click','A brand-new switch each tap','Makes a fresh switch inside your tap, clicks it, removes it.'],
- ['E','click','Double tick, two clicks at once','Clicks the switch twice, right after each other.'],
- ['F','click','Double tick, second one 120 ms later','The second click is delayed, so it is outside your tap.'],
- ['G','native','The button is the switch','Your tap lands on a label wrapped around a real switch. No code involved.'],
- ['H','native','A real, visible switch','Tap the switch itself. The plain iOS baseline.'],
- ['I','native','Our toggle with the switch attribute','The same round toggle as Settings uses, with the iOS switch attribute added.'],
- ['J','pointerdown','Fires when the finger lands','The switch click runs on touch down, before you lift.'],
- ['K','pointerup','Fires when the finger lifts','The switch click runs on touch up.'],
+ ['N','native','Every tap lands on a switch (the app now)','A see-through switch covers each button, so your own tap flips a real switch. No code involved.'],
+ ['A','click','Switch label click (how the app did it)','Did nothing on iOS 27. A tiny switch parked off the left edge of the screen; the label is clicked inside your tap.'],
+ ['B','click','Switch label click, on screen','Did nothing on iOS 27. The same, but the switch sits inside the screen, nearly see-through.'],
+ ['C','click','Click the switch itself','Did nothing on iOS 27. Clicks the switch input directly, not its label.'],
+ ['D','click','A brand-new switch each tap','Did nothing on iOS 27. Makes a fresh switch inside your tap, clicks it, removes it.'],
+ ['E','click','Double tick, two clicks at once','Did nothing on iOS 27. Clicks the switch twice, right after each other.'],
+ ['F','click','Double tick, second one 120 ms later','Did nothing on iOS 27. The second click is delayed, so it is outside your tap.'],
+ ['G','native','The button is the switch','Pete confirmed. Your tap lands on a label wrapped around a real switch. No code involved.'],
+ ['H','native','A real, visible switch','Pete confirmed. Tap the switch itself. The plain iOS baseline.'],
+ ['I','native','Our toggle with the switch attribute','Pete confirmed. The same round toggle as Settings uses, with the iOS switch attribute added.'],
+ ['J','pointerdown','Fires when the finger lands','Did nothing on iOS 27. The switch click runs on touch down, before you lift.'],
+ ['K','pointerup','Fires when the finger lifts','Did nothing on iOS 27. The switch click runs on touch up.'],
  ['L','click','navigator.vibrate (not expected on iPhone)','The standard web vibrate call. iPhones usually have none.'],
  ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
 function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
-function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}}
+function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}hswSync();}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
  if(hapOff())return;
  try{if(S.inapp){const f=document.createElement('iframe');f.style.display='none';f.src='combo://haptic/'+k;document.body.appendChild(f);setTimeout(()=>f.remove(),300);return;}
  if(!APPLE&&navigator.vibrate){navigator.vibrate(k==='success'?[10,60,10]:k==='error'?[25,60,25,60,25]:k==='warning'?[18,120,18]:8);return;}
- const f=HAPCLICK.includes(HAPDEF)?HT[HAPDEF]:HT.B;seq.forEach(d=>d?setTimeout(f,d):f());}catch(e){}}
+ const n=HAPDEF==='N',f=n||!HAPCLICK.includes(HAPDEF)?HT.B:HT[HAPDEF];
+ (n&&now-(S.hswAt||0)<90?seq.filter(d=>d):seq).forEach(d=>d?setTimeout(f,d):f());}catch(e){}}   // N: the finger's own switch was this tick
 /* Settings > Test haptics: one button per method. Each runs its method right inside its own tap, never through hap(),
    and the global tap listener leaves these buttons alone (data-hapt) so only the method under test can buzz. */
 function hapTry(id,b){const t=performance.now();if(hapTry.id===id&&t-hapTry.at<60)return;hapTry.id=id;hapTry.at=t;   // a label's tap clicks twice (label, then its switch): count it once
@@ -3396,11 +3476,41 @@ function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid"
   if(id==='G')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('G',this)"><input type="checkbox" switch class="hxnat" tabindex="-1">${lab}</label>`;
   else if(id==='H')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('H',this)">${lab}<input type="checkbox" switch data-hapt="1"></label>`;
   else if(id==='I')btn=`<label class="btn hxbtn" data-hapt="1" onclick="hapTry('I',this)">${lab}<input type="checkbox" switch class="tg" data-hapt="1"></label>`;
+  else if(id==='N')btn=`<button class="btn hxbtn" type="button" data-hapt="1" data-hsw="1" onclick="hapTry('N',this)">${lab}</button>`;
   else btn=`<button class="btn hxbtn" type="button" data-hapt="1" ${ev==='click'?'onclick':ev==='pointerdown'?'onpointerdown':'onpointerup'}="hapTry('${id}',this)">${lab}</button>`;
   return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
  return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
-  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
-  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Which one worked? Tell Claude</b><small>Say the letter. Nothing here changes how the app buys or sells.</small></div></div>`);}
+  `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" switch class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Nothing here changes how the app buys or sells.</small></div></div>`);}
+/* Method N, the default (#60): every tappable control gets a see-through <input type=checkbox switch> as its FIRST child,
+   covering it (position:absolute, inset 0; the control becomes position:relative through a zero-specificity rule, so
+   its own styles always win). The finger's tap lands on the switch: iOS flips it (the tick) and the same real click
+   bubbles on through the control, so its onclick, :active, press feedback and coordinates are unchanged. First child,
+   so a control nested inside another (a button in a row) paints above the row's switch and keeps its own. A scroll or
+   drag is never a click, so nothing flips. Disabled controls hide theirs, and the switches' change/input events never
+   reach the app. Skipped: links (a switch inside a link would take its navigation, its long-press menu, and a wrapped
+   link's box spills over its neighbours), native fields (selects, sliders, text, labels: their checkboxes are switches
+   themselves), chart scrub surfaces, sideways strips, the test card's other buttons. Only on iPhones/iPads, with
+   Haptics on and reduced motion off (as briefed). A MutationObserver adds switches to new content once per batch (a
+   control never gets two) and takes a control's switch away if a field appears inside it. */
+const HSWQ='button,[onclick],.chip,.trow';
+const HSWNO='a[href],label,select,textarea,input,.hapx,.sparkw,.scrub,.chartbox,svg,[data-hapt]:not([data-hsw]),[data-hsw="0"]';
+const HSWIN='input:not(.hsw),select,textarea,label,.sparkw,.scrub,.chartbox,.chips,.gtabs,.board,.antbl';   // fields, scrub charts and sideways strips stay reachable
+const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
+function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
+function hswAdd(el){if(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN))return;
+ const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
+ el.insertBefore(i,el.firstChild);}
+function hswScan(n){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))hswAdd(n);if(n.firstElementChild)n.querySelectorAll(HSWQ).forEach(hswAdd);}
+function hswFix(t){const h=t.closest&&t.closest(HSWQ);if(!h)return;const s=h.querySelector(':scope>.hsw');if(s&&h.querySelector(HSWIN))s.remove();}   // a field arrived inside: its switch goes
+const HSWMO=new MutationObserver(ms=>{for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;if(t.matches(HSWQ))hswAdd(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(hswScan);}});
+function hswSync(){const on=hswOn();document.documentElement.classList.toggle('hswon',on);HSWMO.disconnect();
+ if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true});}else document.querySelectorAll('.hsw').forEach(i=>i.remove());}
+addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('hsw'))return;const h=t.parentElement;
+ if(!h||h.disabled||h.getAttribute('aria-disabled')==='true'){e.preventDefault();e.stopImmediatePropagation();}},true);
+['change','input'].forEach(k=>addEventListener(k,e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))e.stopImmediatePropagation();},true));
+try{HSWRM.addEventListener('change',hswSync);}catch(e){}
+hswSync();
 // ---------------- RESULTS
 function resultsSkel(){return `<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
@@ -3497,6 +3607,9 @@ function gateCard(r){if(!r)return '';const pp=r.paper||{},rr=r.real||{};const ne
   <div class="mini">Paper panel<b class="${pp.pl>=0?'up':'down'}">${smoney(pp.pl||0)} <span class="m" style="font-weight:500">${pp.bets} bets · ${pp.days_up}/${pp.days} days up</span></b></div>
   <div class="mini">Your real panel<b class="${rr.pl>=0?'up':'down'}">${smoney(rr.pl||0)} <span class="m" style="font-weight:500">${rr.bets} bets</span></b></div>
   <div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--panel2);font-size:13px">${pp.ready?'✅ <b>Ready.</b> The paper record clears the bar for running it with $300 on its own.':`⏳ <b>Not yet.</b> ${need?need+' more paper bets to go':'Needs to be ahead, with most days up'}.`}</div></div>`;}
+function lineAcc(ls){const f=x=>x==null?'—':Number(x).toFixed(3);const cmp=(o,n,c)=>c?`${o==null?'':f(o)+' → '}<b class="${o==null?'':n<=o?'up':'down'}">${f(n)}</b> <span class="m">(${Number(c).toLocaleString()})</span>`:'<span class="m">—</span>';
+ return `<h3 class="an-lines" style="margin:18px 0 4px;font-size:15px">Spreads & totals: old vs new pricing</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">The new model prices each strike from how that league's games really finish. Numbers are the average miss (log loss, lower is better), old → new, with how many games or markets. A league uses the new one only where it clearly did better; your own settled markets take over once they cover 200 games.</div>`
+  +`<div class="antbl"><div class="anrow l4 h"><div>League</div><div>Pricing now</div><div>Past games</div><div>Your markets</div></div>${(ls||[]).map(x=>`<div class="anrow l4"><div><b>${esc(x.name)}</b> <span class="m">${x.kind==='spread'?'spreads':'totals'}</span></div><div data-l="Pricing now">${x.on?'<span class="tag good">New</span>':'<span class="tag">Old</span>'} <span class="m" style="font-size:12px">${esc(x.why||'')}</span></div><div data-l="Past games">${cmp(x.bt_old,x.bt_new,x.bt_games)}</div><div data-l="Your markets">${cmp(x.live_old,x.live_new,x.live_n)}</div></div>`).join('')||'<div class="m" style="padding:10px 0">Nothing measured yet.</div>'}</div>`;}
 function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><h2 style="margin:0">📊 What's working</h2></div>${a?'<div class="m" style="padding:6px 0 4px">Nothing to measure yet. Results show up as bets settle.</div>':'<div class="ansk" aria-label="Loading"><i style="height:34px;border-radius:10px"></i><i style="width:84%"></i><i></i><i style="width:92%"></i><i style="width:70%"></i></div>'}</div>`;
  const tab=S.anTab||'levels';const r=x=>x==null?'—':`<b class="${x>=0?'up':'down'}">${x>=0?'+':'−'}${Math.abs(Math.round(x*100))}%</b>`;
  const tabs=[['levels','Combo price levels'],['types','Bet types'],['sports','Sports'],['exits','Selling']];
@@ -3509,7 +3622,8 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
  else if(tab==='types'||tab==='sports'){expl=tab==='types'?'Every settled panel bet, real and paper (the paper panel and the combo lab). Return is profit over what was staked. Smart sell is the replay on recorded game prices, where there are enough of them. CLV: how the price you got compares with Kalshi\'s price right before the game. Positive means the market moved your way.':'The same bets, by sport.';
   body=table([tab==='types'?'Bet type':'Sport','Bets','Won','Return','Smart sell','CLV'],(a[tab]||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>',x.clv==null?'—':r(x.clv)]));
   if(tab==='types')body+=`<h3 class="an-live" style="margin:18px 0 4px;font-size:15px">Bought during the game, by league</h3><div class="m" style="font-size:12.5px;margin-bottom:6px">Panel bets on games already under way, priced live from a fresh score and clock. Kept apart so each league's record can show whether they pay. ${esc(a.live_excluded||'')}</div>`
-   +table(['League','Bets','Won','Return','Smart sell'],(a.live||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>']));}
+   +table(['League','Bets','Won','Return','Smart sell'],(a.live||[]).map(x=>[`<b>${esc(x.what)}</b> ${mode(x.mode)}`,x.n,x.n?Math.round(x.won/x.n*100)+'%':'—',r(x.roi),x.sim_n?r(x.smart):'<span class="m">—</span>']))
+   +(tab==='types'?lineAcc(a.lines):'');}
  else{expl='Your real combos in the last 90 days: ridden to the end vs cashed out early, and what automatic selling did in the last 30 days.';
   const au=a.auto||{};const an=Object.keys(au);const ch=a.cut_held||{};const cn=Object.keys(ch);const hh=a.hedge_held||{};const hn=Object.keys(hh);
   body=table(['How it ended','Combos','Profit','Return'],(a.exits||[]).map(x=>[`<b>${esc(x.what)}</b>`,x.n,smoney(x.pl),r(x.roi)]))
@@ -3549,6 +3663,8 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
 function blockRow(b){if(!b||!b.length)return '';return b.map(x=>{const until=new Date(x.until*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="srow"><div class="l"><b>Order block: ${esc(x.ticker)} · ${x.sell?'sell ':''}${esc(x.side)}</b><small>An order here had no clear answer, so the app sends none on it until ${esc(until)}. Check Kalshi first; the unclear order itself is never resent.</small></div><button class="btn ghost" data-k="${esc(x.key)}" onclick="clearBlock(this)">Clear order block</button></div>`}).join('');}
+function potRow(p){if(!p||p.total==null)return '';const c=x=>'$'+(+x).toFixed(2);const by=(p.by||[]).filter(r=>Array.isArray(r)&&r.length===2);
+ return `<div class="srow" style="display:block"><div class="l"><b>Kalshi balance by pot</b><small>Kalshi keeps cash in separate pots by market type (Kalshi's docs: index 0 = most markets, 1 = combos, 2 = crypto, 3 = tennis, baseball and basketball). An order can only use the pot of its market. Kalshi's own app shows one total. Read-only: the app never moves money between pots.</small></div>${by.length?by.map(r=>`<div class="mini" style="margin-top:6px">Index ${esc(String(r[0]))}<b>${c(r[1])}</b></div>`).join(''):`<div class="m" style="font-size:11.5px;margin-top:6px">Kalshi didn't list the pots.</div>`}<div class="mini" style="margin-top:6px">Total<b>${c(p.total)}</b></div>${p.at?`<div class="m" style="font-size:11.5px;margin-top:6px">As of ${esc(new Date(p.at*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))}, from the Mac's last Kalshi read</div>`:''}</div>`;}
 function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
@@ -3628,9 +3744,70 @@ function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
   <div class="sgt"><span></span><span>Win</span><span>Up 10¢</span><span>Expected</span>${rows.map(x=>`<b>${esc(short(x.pick))}<small class="m" style="display:block">${Math.round(x.p*100)}¢, wins +${Math.round(x.profit*100)}¢</small></b><span>${pct(x.win)}</span><span>${pct(x.touch)}</span><span class="${x.ev>=0?'up':'down'}">${x.ev>=0?'+':'−'}${Math.abs(x.ev*100).toFixed(1)}%</span>`).join('')}</div>
   <div class="m" style="font-size:12px;margin-top:8px">Read honestly: a likely winner pays little, and a price that's up 10¢ often comes back down. Selling early doesn't create profit on its own; the expected column is what you make on average, and it's only positive when Kalshi's price is below fair.</div>
   <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='';renderBuild()">Back to best prices</button></div>`;}
-async function singleFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'singleidea',t}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
- const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
+function singleFromBoard(t){sbOpen(t,S.lg);}
+/* ---- Buy straight (issue #113): one team, or a spread/total, bought on its own by Pete's tap. The sheet asks the Mac
+   for a price (Kalshi's order book read right now, our fair chance, the edge, a suggested stake, the cap), which is good
+   for 20 seconds (the draining bar). Buy sends that exact quote once; the Mac re-reads the book and refuses a higher price,
+   so it never pays more than shown. Stakes over the quote's `arm` need a second tap. Nothing here buys by itself. */
+const m2=x=>x==null?'—':'$'+(+x).toFixed(2);
+function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null,back:S.gameOpen||null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
+function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi for its price now…</div>`;}
+async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
+ const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
+ if(S.sb!==s)return;s.busy=false;
+ if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';hap('error');sbPaint();return;}
+ r.at=Date.now()/1000;s.q=r;s.stake=r.stake;hap(r.blocked||!r.clears?'warning':'success');sbPaint();
+ clearInterval(S.sbT);S.sbT=setInterval(sbTick,1000);}
+function sbTick(){const s=S.sb,q=s&&s.q,box=$('#sbx');if(!q||!box||!$('#modal').classList.contains('on')){clearInterval(S.sbT);return;}
+ const left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));const e=box.querySelector('.sbs');if(e&&e.textContent!==String(left))e.textContent=left;
+ if(left<=0&&!q.x&&!s.sending){q.x=1;clearInterval(S.sbT);sbPaint();}}
+function sbKind(q){return q.kind==='spread'?'📏 Spread':q.kind==='total'?'➕ Total':'🎯 Single game';}
+function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
+ if(!s.q){box.innerHTML=s.busy?sbSkel():`<div class="sbk">Buy straight</div><h3>No price right now</h3><div class="sbw sbx"><i>✕</i><span>${esc(s.err||'No price came in.')}</span></div>
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Close</button><button class="btn acc pri" onclick="sbQuote()">Try again</button></div>`;return;}
+ const q=s.q,dead=q.x||Date.now()/1000-q.at>=q.secs,left=Math.max(0,Math.round(q.secs-(Date.now()/1000-q.at)));
+ const ret=q.ret,ok=q.clears&&!q.blocked;
+ const chips=(q.presets||[3,5,10]).map(v=>`<button class="chip ${Math.abs(q.stake-v)<.005?'on':''}" onclick="sbQuote(${v})">$${v}</button>`).join('');
+ const custom=(q.presets||[]).every(v=>Math.abs(q.stake-v)>=.005);
+ box.innerHTML=`<div class="sbk">${ICON[q.sport]||''} ${sbKind(q)}${q.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">LIVE</span>':''}</div>
+  <h3>${esc(q.pick)}</h3>${q.opp||q.game?`<div class="m" style="font-size:13px">${q.opp?'vs '+esc(q.opp):esc(q.game)}</div>`:''}
+  <div class="sbn"><div><span>Kalshi now</span><b data-num="sb:ask" data-v="${q.ask}" data-f="cent">${Math.round(q.ask*100)}¢</b><small>${q.gap!=null?Math.round(q.gap*100)+'¢ gap':'no bids'} · ${q.depth>=1000?Math.round(q.depth/1000)+'k':Math.floor(q.depth)} for sale</small></div>
+   <div><span>Our chance</span><b>${q.fair!=null?pct(q.fair):'—'}</b><small>${q.fair!=null?esc(q.how||''):'no fair price'}</small></div>
+   <div><span>Edge</span><b class="${ret==null?'':ret>=0?'up':'down'}">${ret==null?'—':(ret>=0?'+':'−')+Math.abs(Math.round(ret*100))+'%'}</b><small>${ret==null?'Kalshi\'s price only':'expected · '+(q.edge>=0?'+':'−')+Math.abs(q.edge*100).toFixed(1)+'¢ a contract'}</small></div></div>
+  <div class="sbk" style="margin-top:2px">Stake</div>
+  <div class="sbst">${chips}<input id="sbin" type="number" inputmode="decimal" min="1" max="${q.max}" step="1" placeholder="Custom" value="${custom?q.stake:''}" onkeydown="if(event.key==='Enter'){this.blur()}" onchange="sbCustom(this)" aria-label="Custom stake in dollars">
+   ${Math.abs(q.sug-q.stake)>=.005?`<button class="chip" onclick="sbQuote(${q.sug})">Suggested $${(+q.sug).toFixed(2).replace(/\.00$/,'')}</button>`:'<span class="m" style="font-size:12px">suggested size</span>'}</div>
+  <div class="sum">Contracts<b>${q.n} at ${Math.round(q.ask*100)}¢</b></div><div class="sum">You pay (with Kalshi's fee)<b>${m2(q.cost)}</b></div>
+  <div class="sum">Pays if it wins<b class="up">${m2(q.pays)} <span class="m" style="font-weight:600">(${smoney(q.profit)})</span></b></div>
+  ${q.room!=null?`<div class="sum">Room under your cap<b>${m2(q.room)} of ${m2(q.budget)}</b></div>`:''}
+  ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
+  ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
+  ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
+  <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
+   q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
+   `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
+  <div class="sbleft">${dead||s.fail||q.used?'Prices move. Get a fresh one to buy.':`Price good for <span class="sbs">${left}</span>s · fills now at ${Math.round(q.ask*100)}¢ or better, or not at all`}</div>`;
+ rollNums(box);}
+function sbCustom(el){const v=parseFloat(el.value);if(!(v>0)){toast('Type a stake in dollars.');return;}const s=S.sb;const mx=(s&&s.q&&s.q.max)||100;
+ if(v>mx){toast(`One straight bet is at most $${mx}.`,4000,'bad');el.value=mx;}sbQuote(Math.min(v,mx));}
+async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)return;
+ if(q.x||Date.now()/1000-q.at>=q.secs){sbQuote();return;}
+ if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
+  setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
+ let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
+ catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
+ s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
+ /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
+    must never go unseen): on this sheet, else as a sheet of its own, else (another sheet is up) as a long toast */
+ const here=S.sb===s&&!!$('#sbx')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
+ if(r.ok||r.check){if(S.sb===s)S.sb=null;const sub=r.ok?`${q.pick}. ${r.msg} It shows on Live under Single bets & spreads within a minute; smart sell watches it from there.`:r.msg;
+  if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
+  else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
+ const why=r.msg||'It didn\'t go through. Nothing was bought.';
+ if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
+function sbClose(){closeModal();S.sb=null;}
+function lineFromBoard(t){sbOpen(t,S.lg);}
 function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
  const rows=(k.recent||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='filled'?'✅':x.status==='posted'?'📌':x.status==='watching'?'👀':'⏹'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}${x.why?' · '+esc(x.why):''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Standing orders</b><small>The Mac keeps buy orders ${Math.round((r.discount||.03)*100)}¢ under the sharp books' chance, so you only buy when someone sells to you cheap. Watch only records what would have filled.</small></div>
@@ -3663,9 +3840,6 @@ function linesBlock(d){const ls=d.lines||[];if(!ls.length)return '';const games=
    ${xs.sort((a,b)=>a.kind.localeCompare(b.kind)||a.line-b.line).map(x=>`<div class="lrow2"><span>${x.kind==='spread'?'📏':'➕'} ${esc(x.pick.replace(/ \(.*\)$/,''))}</span><span class="num">${Math.round(x.p*100)}¢</span><span class="num m">${pct(x.fair)}</span>
     <button class="btn ${x.edge>=0.04?'acc':'ghost'}" onclick="lineFromBoard('${x.ticker}',this)">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</button></div>`).join('')}`).join('')}</div>
   <div class="m" style="font-size:12px;margin:6px 2px 0">Edge after Kalshi's fee. Blue = at least 4¢ in your favour. A score model adds its own error, so treat small edges as zero.</div>`);}
-async function lineFromBoard(t,b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>';}const r=await api('/app/api/act',{a:'lineidea',t}).catch(()=>({ok:false}));
- if(!r.ok){toast(r.msg||'Couldn\'t set that up.');renderBuild();return;}S.view='live';chrome();await load('live',true);S.hl=r.id;renderLive();await priceIdea(r.id);
- const e=document.getElementById('idea-'+r.id);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});}
 // ---------------- charts
 function sparkPath(pts,w,h,lo,hi){if(!pts||pts.length<2)return '';const t0=pts[0][0],t1=pts[pts.length-1][0]||t0+1;lo=lo??0;hi=hi??1;
  return pts.map((p,i)=>`${i?'L':'M'}${((p[0]-t0)/Math.max(1,t1-t0)*w).toFixed(1)} ${(h-(Math.min(hi,Math.max(lo,p[1]))-lo)/Math.max(1e-9,hi-lo)*h).toFixed(1)}`).join('');}
@@ -3717,6 +3891,18 @@ function gameLine(g){S.gh=S.gh||{};const k=g.ticker||g.name;let h=S.gh[k]||[];co
  if(g.chance!=null&&(!h.length||h[h.length-1][1]!==g.chance))h=h.concat([[now,g.chance]]).slice(-240);S.gh[k]=h;
  const sp=(g.spark||[]).filter(p=>p[1]!=null);return sp.length>=2?sp.concat(h.filter(p=>p[0]>sp[sp.length-1][0])):h;}
 const GLIVE=g=>g.state==='live'&&!['probably_over','waiting','over'].includes(g.phase);
+/* Warm a live football game's page data before it is opened (display only): when its card is shown on Games, and when a card is hovered or pressed.
+   Polite: a game is asked about at most once a minute (3 to 5 minutes after a failure), 2 at a time, 6 per 5 minutes, never in a hidden tab;
+   the Mac dedupes and backs off again on its own. Nothing here prices, buys or sells. */
+const WARM_SPORTS=['nfl','ncaaf'];
+function warmGame(t){if(!t||typeof t!=='string'||document.hidden)return;S.warm=S.warm||{};S.warmN=S.warmN||[];const now=Date.now();
+ if((S.warm[t]||0)>now||(S.warmBusy||0)>=2)return;S.warmN=S.warmN.filter(x=>now-x<300000);if(S.warmN.length>=6)return;
+ S.warm[t]=now+60000;S.warmN.push(now);S.warmBusy=(S.warmBusy||0)+1;
+ api('/app/api/game_warm?t='+encodeURIComponent(t)).then(r=>{if(!r||!r.known)S.warm[t]=now+180000;},()=>{S.warm[t]=now+300000;}).then(()=>{S.warmBusy=Math.max(0,(S.warmBusy||1)-1);});}
+function warmShown(){if(S.view!=='games'||!S.games)return;(S.games.games||[]).forEach(g=>{if(GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);});}
+function warmCard(e){const c=e.target&&e.target.closest?e.target.closest('.gc[data-gk]'):null;if(!c||!S.games)return;
+ const g=(S.games.games||[]).find(x=>(x.ticker||x.name)===c.dataset.gk);if(g&&GLIVE(g)&&WARM_SPORTS.includes(g.sport))warmGame(g.ticker);}
+addEventListener('pointerover',warmCard,{passive:true});addEventListener('pointerdown',warmCard,{passive:true});
 function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chance,lc=live?legCls({state:'live',sc,live:ch}):'';
  const col=ch==null?'var(--acc)':ch>=.5?'var(--yes)':'var(--no)';const sg=S.gscore&&S.gscore[g.ticker||g.name];
  const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
@@ -3739,23 +3925,26 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
  clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
  const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
- scoreWatch(gs);
+ scoreWatch(gs);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
   +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
   +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
 // ---------------- one game, live
-async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
+async function openGame(t){if(!t)return;S.comboOpen=null;S.gameOpen=t;S.gxWant=false;clearTimeout(S.gxT);S.gameSig=null;S.gtab=null;S.gtabPos=null;S.gtabScroll=null;S.pbpStep=null;S.pbpOpen={};S.pbpSeen=null;S.pbpBall=null;pushOpen('Game');await drawGame();}
 // The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
 // live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
 // down between updates while it is running. Only the first draw waits for the slide-in to finish.
-async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on')||S.gameBusy||S.scrub)return;   // a finger on the chart holds the page still
+function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
+async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
+ if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
  const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
-  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');return;}
+  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
-  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail]);
+  S.gxWant=!!(r.detail&&r.detail.gxp);clearTimeout(S.gxT);gxAgain();   // last 5 / season leaders still being fetched: look again soon, quietly
+  const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail,r.buy]);
   if(sig===S.gameSig&&sh.querySelector('.board2')){frTick();return;}
   S.gameSig=sig;const top=sh.scrollTop;paintGame(r);sh.scrollTop=top;frTick();
  }finally{S.gameBusy=false;}}
@@ -3785,7 +3974,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
   <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   ${fieldStrip(gameStepDetail(r),l)}
-  ${gameTabsHtml(r,ov)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
+  ${gameTabsHtml(r,ov)}${gameBuyBar(r)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
 /* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
    two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
    arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
@@ -3794,6 +3983,10 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
 /* A team colour, safe to drop into an inline style: a 6-hex-digit colour (with or without a leading #) becomes
    #rrggbb; anything else (empty, a name, something odd in the feed) falls back to the given CSS variable. The rest
    of the strip escapes its text with esc(); colours are the one place a raw feed value reaches a style attribute. */
+/* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
+   fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
+function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
@@ -3983,8 +4176,10 @@ function tmName(T,s){return T[s].name||T[s].abbr||(s==='home'?'Home':'Away');}
 function tmHead(r){const T=gTeams(r),c=tcols(r);
  return `<div class="h2h"><b><i class="tdot" style="background:${c.a}"></i>${esc(T.away.abbr||'Away')}</b><b>${esc(T.home.abbr||'Home')}<i class="tdot" style="background:${c.h}"></i></b></div>`;}
 /* a head-to-head share bar; even and quiet when there is nothing to compare */
-function sbar(key,an,hn,c){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const p=ok?Math.max(4,Math.min(96,an/(an+hn)*100)):50;
- return `<div class="h2bar${ok?'':' even'}" role="img" aria-label="${ok?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
+function sbar(key,an,hn,c,lo){const ok=an!=null&&hn!=null&&an>=0&&hn>=0&&an+hn>0;const tie=ok&&an===hn;
+ /* a lower-is-better row (turnovers, sacks, penalties...) gives the longer bar to the side with the FEWER: its share is the other side's count */
+ const p=ok&&!tie?Math.max(4,Math.min(96,(lo?hn:an)/(an+hn)*100)):50;
+ return `<div class="h2bar${ok&&!tie?'':' even'}" role="img" aria-label="${ok&&!tie?Math.round(p)+' to '+(100-Math.round(p)):'no comparison'}"><i data-bar="${esc(key)}:a" style="width:${p.toFixed(1)}%;background:${c.a}"></i><i data-bar="${esc(key)}:h" style="width:${(100-p).toFixed(1)}%;background:${c.h}"></i></div>`;}
 /* 'Nov 15' from a plain date (as given) or a UTC kickoff time (in this phone's own time zone, so a night game keeps its day) */
 function gdate(d){d=d||'';const day=/^\d{4}-\d{2}-\d{2}$/.test(d),at=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(d);if(!day&&!at)return '';
  const x=new Date(day?d+'T12:00:00Z':d);return isNaN(x)?'':x.toLocaleDateString('en-US',day?{month:'short',day:'numeric',timeZone:'UTC'}:{month:'short',day:'numeric'});}
@@ -4007,28 +4202,34 @@ function boxPick(s){if(s!=='away'&&s!=='home')return;S.boxSide=s;
  const p=document.querySelector('#sheet .gpanel[data-tab=box]');if(!p||!S.gameR)return;p.innerHTML=boxHtml(S.gameR);segInd();gtabIn(p);}
 /* Team stats: head to head, the label in the middle, a share bar under each row. */
 function tsHas(r){const t=gd(r).tstats;return Array.isArray(t)&&t.length>0;}
+/* the leading side of a row (its number is emphasised and the other dims); a tie leaves both plain. Lower-is-better rows are marked by the Mac (x.lo) and led by the side with fewer. */
+function tsLead(x,s){return x.ld===s?'lead':x.ld?'lag':'';}
 function tsHtml(r){const t=S.gameOpen,c=tcols(r);
- const rows=gd(r).tstats.map(x=>`<div class="tsr"><div class="tsv"><b${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}</span><b${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c)}</div>`).join('');
- return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates.</p></div>`;}
+ const rows=gd(r).tstats.map(x=>`<div class="tsr${x.lo?' lo':''}"><div class="tsv"><b class="${tsLead(x,'a')}"${numAttr('tsa:'+t+':'+x.k,x.a)}>${esc(x.a)}</b><span>${esc(x.l)}${x.lo?'<small class="lob">fewer is better</small>':''}</span><b class="${tsLead(x,'h')}"${numAttr('tsh:'+t+':'+x.k,x.h)}>${esc(x.h)}</b></div>${sbar('ts:'+t+':'+x.k,x.an,x.hn,c,x.lo)}</div>`).join('');
+ return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">This game so far, from ESPN. The down and red-zone bars compare success rates. Where fewer is better, the side with fewer leads.</p></div>`;}
 /* Injury report: both teams, worst first, with ESPN's guess at a return date. */
-function injHas(r){const i=gd(r).inj;return !!(i&&(Array.isArray(i.away)||Array.isArray(i.home)));}
+/* The tab shows when ESPN sent injuries, or when the rest of the summary (box score, team stats) loaded without them. A side with its own list from ESPN is a real report (an empty list means
+   nobody is hurt); a side ESPN sent nothing for is "not available right now", never "no injuries". */
+function injHas(r){return !!gd(r).inj||boxHas(r)||tsHas(r);}
 function injCls(s){s=(s||'').toLowerCase();return /out|reserve|suspen/.test(s)?'bad':/doubt/.test(s)?'warn':/question/.test(s)?'q':'';}
 function injHtml(r){const i=gd(r).inj||{},T=gTeams(r),c=tcols(r);
- const sec=s=>{const L=Array.isArray(i[s])?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
-  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries listed.</p>'}</div>`;};
+ const sec=s=>{const known=Array.isArray(i[s]),L=known?i[s]:[];return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}</h4>${!known?'<p class="gempty">Injury report isn’t available right now.</p>':L.length?L.map(p=>`<div class="injr"><div class="injn"><b>${esc(p.n)}</b><span class="m">${esc([p.pos,p.j?'#'+p.j:''].filter(Boolean).join(' · '))}</span></div>
+  <div class="injw m">${esc(p.ty||'Not specified')}${p.ret&&gdate(p.ret)?' · back around '+esc(gdate(p.ret)):''}</div><span class="ist ${injCls(p.st)}">${esc(p.st)}</span></div>`).join(''):'<p class="gempty">No injuries reported.</p>'}</div>`;};
  return `<div class="gtabx"><div class="injgrid">${sec('away')}${sec('home')}</div><p class="pnote">ESPN's injury report. Return dates are ESPN's estimate.</p></div>`;}
 /* Last 5 games: each team's five most recent finished games, newest first, and its record. */
-function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home));}
+function gskel(n){return Array.from({length:n||3},()=>'<div class="gskr" aria-hidden="true"><i class="skel"></i><i class="skel"></i></div>').join('');}
+function l5Has(r){const l=gd(r).last5;return !!(l&&(l.away||l.home))||!!gd(r).gxp;}
 function l5Html(r){const l=gd(r).last5||{},T=gTeams(r),c=tcols(r);
  const sec=s=>{const x=l[s];const rec=(x&&x.rec)||T[s].record||'';const g=x&&Array.isArray(x.g)?x.g:[];
-  const body=!x?'<p class="gempty">Looking up recent results…</p>':x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
+  const body=!x?(gd(r).gxp?`<div aria-busy="true">${gskel(5)}</div>`:'<p class="gempty">Recent results aren’t available right now.</p>'):x.na?'<p class="gempty">Recent results aren’t available right now.</p>':!g.length?'<p class="gempty">No finished games yet this season.</p>':
    g.map(v=>`<div class="l5r"><span class="wl ${v.w==='W'?'w':v.w==='L'?'l':'t'}">${esc(v.w)}</span><span class="l5o"><span class="m">${esc(v.at)}</span> ${esc(v.opp)}</span><span class="l5s">${+v.me}–${+v.them}</span><span class="m l5d">${esc(gdate(v.d))}</span></div>`).join('');
   const form=g.length?`<span class="form" aria-hidden="true">${g.slice().reverse().map(v=>`<i class="${v.w==='W'?'w':v.w==='L'?'l':''}"></i>`).join('')}</span>`:'';
   return `<div><h4 class="ghead"><i class="tdot" style="background:${s==='away'?c.a:c.h}"></i>${esc(tmName(T,s))}${rec?`&nbsp;<span class="m">(${esc(rec)})</span>`:''}${form}</h4>${body}</div>`;};
  return `<div class="gtabx"><div class="l5grid">${sec('away')}${sec('home')}</div><p class="pnote">Scores show this team first. From ESPN's schedule.</p></div>`;}
 /* Season leaders: the top passer, rusher and receiver on each side, head to head, with a share bar. */
-function ldHas(r){const l=gd(r).leaders;return Array.isArray(l)&&l.length>0;}
+function ldHas(r){const l=gd(r).leaders;return (Array.isArray(l)&&l.length>0)||!!gd(r).gxp;}
 function ldHtml(r){const t=S.gameOpen,c=tcols(r);
+ if(!Array.isArray(gd(r).leaders)||!gd(r).leaders.length)return `<div class="gtabx" aria-busy="true">${tmHead(r)}${gskel(3)}<p class="pnote">Loading season leaders…</p></div>`;
  const side=(x,s,k)=>x?`<div class="ldp ${s}"><b class="ldv" data-num="ld:${esc(t)}:${esc(k)}:${s}" data-v="${+x.v||0}" data-f="cint">${esc(Math.round(+x.v||0).toLocaleString('en-US'))}</b><div class="ldn">${x.n?esc(x.n):'—'}${x.j?`<span class="jn">#${esc(x.j)}</span>`:''}</div><div class="m ldl">${esc(x.line||'')}</div></div>`
   :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
  const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
@@ -4134,7 +4335,7 @@ function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';const u=UNITS[k]||[
 function rng(k,label,sub,dis){const v=S.set.values[k],[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
   oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',+this.value)"><output>${fmtv(k,v)}</output></div></div>`;}
-function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
+function tgl(k,label,sub,dis){return `<label class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><input type="checkbox" switch class="tg" ${S.set.values[k]?'checked':''} onchange="setv('${k}',this.checked)"></label>`;}
 function seg(k,label,sub,names){const v=S.set.values[k];return `<div class="srow"><div class="l"><b>${label}</b>${sub?`<small>${sub}</small>`:''}</div><div class="seg">${names.map((n,i)=>`<button class="${v===i?'on':''}" onclick="setv('${k}',${i});renderSettings()">${esc(n)}</button>`).join('')}</div></div>`;}
 /* Let it ride as a slider with five detents: each step ticks the phone, the name pops, the dots under it fill. */
 function rideRow(names){names=names||[];const n=Math.max(2,names.length),v=Math.max(0,Math.min(n-1,+S.set.values.ride||0));
@@ -4174,7 +4375,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    <div><span>Tailscale</span><b>${mac.ts?esc(mac.ts):'<span class="down">Not signed in</span>'}</b></div><div><span>Role</span><b>${mac.role==='backup'?'Backup':'Main hub'}${mac.paused?' · auto cash-out paused':''}</b></div>
    <div><span>Combo Hub passcode</span><b>${esc(mac.pass)}</b></div><div><span>Updates</span><b>${mac.auto_update?'Automatic':'Phone-approved · '+esc(mac.approved||'—')}</b></div></div>
    <div class="sact"><button class="btn acc" onclick="macUpdate(this)">Update now</button><button class="btn" onclick="macCode()">Phone pairing code</button><button class="btn" onclick="macPass()">Change passcode</button><button class="btn" onclick="S.showlog=!S.showlog;renderSettings()">${S.showlog?'Hide':'Show'} activity</button><button class="btn ghost" onclick="macDo('advanced',this)">Kalshi key & removal…</button><button class="btn ghost" onclick="hap('light');location.reload()">Reload the page</button></div>
-   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
+   <label class="srow"><div class="l"><b>Install updates automatically</b><small>${mac.auto_update?'New versions install within about 10 minutes, no tap needed.':'Waits until your phone runs the new version and approves it.'}</small></div><input type="checkbox" switch class="tg" ${mac.auto_update?'checked':''} onchange="api('/app/mac',{a:'autoupdate',on:this.checked}).then(r=>{toast(r.msg);load('settings')})"></label>
    <div class="srow"><div class="l"><b>Alerts</b><small>${mac.last_push&&mac.last_push.at?`Last sent ${ago2(mac.last_push.at)} ago${mac.last_push.ok===false?' · <span class="down">ntfy refused it ('+mac.last_push.code+')</span>':''}: ${esc(mac.last_push.title)}`:'None sent since the Mac last restarted.'}${mac.quiet?' · Quiet hours now (10 PM–7 AM): only urgent ones go out.':''}</small></div><button class="btn" onclick="macDo('testpush',this)">Send test</button></div>
    ${httpsRow(mac)}${mac.history?`<div class="srow"><div class="l"><b>History on this Mac</b><small>${(mac.history.q||0).toLocaleString()} Kalshi quotes · ${(mac.history.t||0).toLocaleString()} live ticks · ${(mac.history.b||0).toLocaleString()} combos tracked</small></div></div>`:''}
    ${S.showlog?`<div class="logbox">${esc((mac.log||[]).join('\n'))}</div>`:''}`
@@ -4186,7 +4387,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+cutCard(S.panelCuts)+blockRow(d.blocks)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -4236,7 +4437,7 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="savePass()">Save passcode</button></div>`);setTimeout(()=>$('#np').focus(),50);}
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 // ---------------- refresh loop
-window.__inapp=function(){S.inapp=true;if(S.view==='settings')renderSettings();};
+window.__inapp=function(){S.inapp=true;hswSync();if(S.view==='settings')renderSettings();};
 function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
 ideaFromHash(false);
 addEventListener('hashchange',()=>ideaFromHash(true));
@@ -4360,6 +4561,38 @@ def webapp_main():
 
     def jsonable(x):
         return json.loads(json.dumps(x, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)))
+
+    def paused_now():
+        """The Pause switch (from an alert), read fresh for every manual buy. No settings file = no watcher to pause;
+        a file that can't be read counts as paused (never buy on a guess)."""
+        if not os.path.exists(CONF):
+            return False
+        try:
+            return bool(load_conf().get("paused"))
+        except (OSError, ValueError, AttributeError):
+            return True
+
+    def single_side(t, lg):
+        """The board's side for one market (its fair chance, game and kind, and when that price was read), from the
+        board on screen or another sport's saved board. Read only: never rebuilds or switches the board (that would
+        hold the tap lock and change what Build shows). A market no board has is priced from Kalshi alone."""
+        def find(ctx, lines, at):
+            for x in lines or []:
+                if x.get("ticker") == t:
+                    return dict(x, fair_at=at)
+            games = (ctx or {}).get("all_games") or {}
+            for e, sd in games.items():
+                for x in sd:
+                    if x.get("ticker") == t:
+                        return dict(x, event=x.get("event") or e, opp=A.opp_of(games, x), fair_at=at)
+            return None
+        x = find(A.CTX, BUILD.get("lines"), BUILD.get("at") or 0)
+        for k in sorted(list(SNAP), key=lambda k: (k != lg, -((SNAP.get(k) or {}).get("at") or 0))) if x is None else ():
+            sn = SNAP.get(k) or {}
+            x = find(sn.get("ctx"), sn.get("lines"), sn.get("at") or 0)
+            if x is not None:
+                break
+        return x or {"ticker": t}
 
     # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
     # every buy/sell decision read their own data and are untouched by any of this).
@@ -4811,6 +5044,11 @@ def webapp_main():
             if game and (x["t"].split("-") + ["", ""])[1] == game and x.get("state") in ("live", "pre"):
                 combos.append({"t": x["t"], "label": x["label"], "p": x.get("chance"), "pays": x["pays"],
                                "cost": x["cost"], "legs": 1, "single": True, "worth": x.get("worth"), "how": x.get("how")})
+        if leg is None and A.STORE.get("db"):               # a game from a buy idea you hold nothing on yet (display only)
+            try:
+                leg = A.idea_game_leg(t)
+            except Exception as err:
+                A.klive_log_once("ideagame", t, err)
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
@@ -4842,8 +5080,46 @@ def webapp_main():
             # feed just drops the strip. Logged once per game like the engine's live-score paths.
             A.klive_log_once("gamedetail", t, err)
             detail = None
+        buy = []                                         # the two pinned Buy buttons: each team's Kalshi price now
+        try:
+            if leg and leg.get("kind") in (None, "win") and leg.get("state") != "over" and leg.get("phase") != "over" \
+                    and "-" in t:
+                sides = A.event_sides(t.rsplit("-", 1)[0])
+                if 2 <= len(sides) <= 3 and all(s["ask"] and s["ticker"] for s in sides):
+                    buy = [{"t": s["ticker"], "name": s["name"], "ask": s["ask"],
+                            "mult": round(1 / (s["ask"] + A.single_fee(s["ask"])), 2)} for s in sides]
+                    buy.sort(key=lambda s: s["t"] != t)  # the team of your pick first
+        except Exception as err:                         # display only: no buttons, never a broken page
+            A.klive_log_once("gamebuy", t, err)
+            buy = []
         return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
-                         "detail": detail, "fresh": freshness()})
+                         "detail": detail, "buy": buy, "fresh": freshness()})
+
+    def api_game_warm(t):
+        """Warm one live football game's page data in the background (display only; the Games tab calls this when a card
+        is shown or pressed). Starts a polite, capped fetch of the ESPN summary and the teams' last 5 / season leaders so the
+        game page opens with them ready. Never prices, buys or sells; any trouble answers {"ok": False}."""
+        t = str(t or "")[:80]
+        try:
+            sport = A.ticker_sport(t) if t else None
+            if sport not in ("nfl", "ncaaf"):
+                return {"ok": False}
+            d = api_live() or {}
+            game = (t.split("-") + ["", ""])[1]
+            leg = next((x for x in (d.get("singles") or []) if x.get("t") == t), None)
+            for v in d.get("combos") or []:
+                for lg in v.get("legs") or []:
+                    if leg is None and game and (lg["ticker"].split("-") + ["", ""])[1] == game:
+                        leg = lg
+            if not leg or leg.get("state") != "live":
+                return {"ok": False}
+            full = A.leg_score(leg)
+            if not (full and full.get("game")):
+                return {"ok": False}
+            return {"ok": bool(A.game_prefetch(full["game"], sport)), "known": True}     # known: a live football game (ok False = just throttled)
+        except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as err:
+            A.klive_log_once("gamedetail", t or "warm", err)
+            return {"ok": False}
 
     def api_games():
         d = api_live() or {}
@@ -4889,7 +5165,7 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -4903,7 +5179,14 @@ def webapp_main():
         except (OSError, ValueError, KeyError, requests.RequestException):
             return False
 
+    def _pots():
+        try:                                            # Kalshi's cash by pot (read-only); never holds up Settings
+            return A.kalshi_pots()
+        except Exception:
+            return None
+
     def api_settings(lg, vals=None):
+        pots = _pots() if vals is None else None       # reads only, outside the lock (it may ask the Mac)
         with alock:
             if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
                 A.set_league(lg)
@@ -4950,6 +5233,7 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "blocks": A.order_blocks(),
+                             "pots": pots,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -5063,30 +5347,17 @@ def webapp_main():
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                                  "clears": r.get("ok")})
-            if a == "lineidea":                         # a spread or total from the Build board, as a buy idea
-                x = next((x for x in BUILD.get("lines") or [] if x["ticker"] == str(d.get("t", ""))), None)
-                if not x:
-                    return {"ok": False, "msg": "That line isn't on the board any more."}
-                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
-                stake = A.edge_stake(1 + (pct - 1) * 0.7, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
-                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
-                sid = A.store_suggestion({"legs": [dict(x, event=x.get("event") or "")], "fair": stake / x["fair"]},
-                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
-                if sid:
-                    A.store_x("update suggestions set note=? where id=?",
-                              (f"Priced from the sportsbook {x['kind']} of {x['book_line']:g} with a score model", sid))
-                return {"ok": bool(sid), "id": sid}
-            if a == "singleidea":                       # a single game from the Build board, as a buy idea
-                tk = str(d.get("t", ""))
-                x = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
-                if not x or not x.get("fair") or not x.get("p"):
-                    return {"ok": False, "msg": "That team isn't on the board any more."}
-                pct = x["fair"] / (x["p"] + A.single_fee(x["p"]))
-                stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), x["fair"])
-                n = max(1, int(stake / (x["p"] + A.single_fee(x["p"]))))
-                sid = A.store_suggestion({"legs": [x], "fair": stake / x["fair"]},
-                                         {"pays": float(n), "stake": round(n * (x["p"] + A.single_fee(x["p"])), 2)}, pct)
-                return {"ok": bool(sid), "id": sid}
+            if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                    return {"ok": False, "msg": "That market isn't recognized."}
+                lg = str(d.get("lg") or A.ticker_sport(t) or "")
+                return jsonable(A.single_buy_quote(single_side(t, lg), d.get("stake"), paused=paused_now()))
+            if a == "singlebuy" and d.get("q"):          # Buy straight: the quote on screen, once
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q"))):
+                    return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
+                LIVE["at"] = 0
+                return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
@@ -5253,6 +5524,8 @@ def webapp_main():
                         out = api_combo(q.get("t") or "")
                     elif path == "/app/api/game":
                         out = api_game(q.get("t") or "")
+                    elif path == "/app/api/game_warm":
+                        out = api_game_warm(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
                     elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
@@ -5329,7 +5602,7 @@ def webapp_main():
                     if lg == BUILD.get("lg") and A.CTX.get("offers"):
                         continue                                # a price you asked for is still open
                     with alock:
-                        cur, saved = BUILD.get("lg"), dict(A.CTX)
+                        cur, saved, was_at = BUILD.get("lg"), dict(A.CTX), BUILD.get("at")
                         try:
                             api_build(lg, rebuild=True, warming=True)
                         finally:
@@ -5340,6 +5613,7 @@ def webapp_main():
                                 s = SNAP.get(cur)
                                 if s:
                                     BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:
                 print("warm-up:", type(err).__name__, err, flush=True)
@@ -5559,6 +5833,8 @@ def start_hub(conf, E, odds=None):
             return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
         if op == "account":
             return {"value": list(E.fetch_account(max_age=15, every_league=True))}
+        if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
+            return {"pots": E.kalshi_pots()}
         if op == "get":
             url = str(req.get("url", ""))
             if not url.startswith(E.HUB_GET_HOSTS):
