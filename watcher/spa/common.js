@@ -68,6 +68,14 @@ function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT
 function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
+/* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
+   short plain reasons in a sheet. `where` is one of two fixed words, never page data. */
+function sbSkipLine(xs,where){xs=(Array.isArray(xs)?xs:[]).filter(x=>x&&x.text);S.sbSkip=S.sbSkip||{};S.sbSkip[where]=xs;if(!xs.length)return '';
+ return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">Smart Buy skipped ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} · Why?</button>`;}
+function sbSkipOpen(w){const xs=(S.sbSkip||{})[w]||[];
+ modal(`<h3>Smart Buy skipped ${xs.length}</h3><p class="m" style="font-size:13px;line-height:1.45">Priced better than their chance, but unlikely to make money once selling and holding are both played out. They're still tracked, so Smart Buy learns if skipping them was wrong. Switch it off in Settings › Money.</p>
+  ${xs.map(x=>`<div class="sbrow" style="padding:10px 0;border-top:1px solid var(--line)"><b style="font-size:14px">${esc(x.text)}</b><div class="m" style="font-size:12.5px;margin-top:2px;line-height:1.4">${esc(x.why||'')}</div></div>`).join('')}
+  <button class="btn ghost" type="button" style="width:100%;justify-content:center;margin-top:12px" onclick="closeModal()">Close</button>`);}
 function closeModal(){const m=$('#modal');
  /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
  const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}

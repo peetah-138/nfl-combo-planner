@@ -88,6 +88,11 @@ Real money is involved. Pete uses it daily.
    smart sell, take profit, lock-in, learned loss-cutting), auto-hedge (≤ $100 a hedge), killer deals,
    standing orders, approving the daily panel, and "Add to today's panel". Everything else buys or sells only on
    his tap. The Pause switch must always be respected. The Pi never trades.
+   **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
+   the bar (50+ settled bets, ahead in dollars, ≥ 55% of days up, CLV ≥ 0, the shadow beating plain), it may
+   graduate by itself: stage 2 = its own suggestions (recommend-only); stage 3 = bigger stakes and extra auto-buys,
+   always inside every existing cap, Pause, quarter Kelly and rule 8, with an automatic brake on a losing streak.
+   Dropping panel approval entirely stays behind the full-auto gate (rule 6). Today's Smart Buy gate only skips.
 3. **Each device has its own revocable Kalshi key.** The Pi never accepts keys over sync.
 4. Don't touch the Vercel project "cynserus" (unrelated business). Repo write access stays with Pete.
 5. Latency arbitrage is not pursued.
@@ -541,6 +546,43 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     `smart_buy_summary()`, built only while the switch is on; the route re-reads the switch and builds it when it was
     switched on since the 10-minute cache). Off or on, panel candidates, picks and sells are identical
     (`t_smartbuy`). Next stages: `ROADMAP.md`.
+- **Smart Buy, stage 2: the gate (issue #137; skip-only, learning, on by default).**
+  - Settings › Money › **Smart Buy** (`smart_buy_gate`, shared, **on** by default; text: "Skips bets that are unlikely
+    to be profitable. Each league starts working once it has enough results, and keeps learning from every result.").
+    A new key on purpose: the preview's `smart_buy` (off by default) was never a choice about the gate, and an older
+    process still running after the update can't write the new one. Off = the gate is fully off (nothing simulated,
+    nothing skipped); recording and learning keep running either way. The Results card shows while it's on.
+  - **Skip-only, by construction.** `smart_buy_filter(items)` returns the same dicts, same order, same stakes, minus
+    the skipped ones. It runs in `build_panel` **after** `choose_panel` (and on the longer plays after their cut), so
+    nothing is picked in a skipped bet's place; the card's stats are recomputed on what's left. `_replacement` returns
+    no swap (a skip) when the swap it found fails the gate, never the next one down. Live Buy ideas are gated after the
+    `IDEA_KEEP` cut (`smart_buy_ideas_gate`, from the shadow's last `ev` for that market; an idea not yet simulated
+    stays). The extras pass keeps a skipped bet's stake and games out of its budget (`sb_skipped` on the draft), so a
+    skip never makes room for something else. A draft Smart Buy emptied is still saved, so an older draft can't be
+    approved. Longer plays are judged against the panel's games as chosen (a skip makes no room there either); sims are
+    memoised 5 min per bet and price (`_sb_sim`; `panel_pass` builds several panels under `odds.lock`). Never touches selling, sizing, caps, cut-offs, Pause, claim-before-buy or rule 8. Gate errors pass the bet
+    through today's rules. Property test: 400 random panels, output always a subset with identical stakes (`t_sbgate`).
+  - **The dial** (`sb_dial`, `combo_smartbuy.json`, gitignored): strictness k skips a bet whose `simulate_exit` `ev`
+    (dollars on $5 under smart sell's exit policy) is under `SB_DIAL_BARS[k]` (0 = no bar; then −$0.20, −$0.10, $0,
+    +$0.10 … +$0.60). A league with fewer than `SB_LEARN_N` (30) checked bets with known results is "Learning (12 of
+    30)" at 0 (exactly as before; nothing simulated) or borrows its sport's, then everyone's dial (borrowed levels never
+    under the start, 0). At 30 of its own it starts from what it borrowed; from then on only its own record moves it.
+  - **Learning** (`smart_buy_learn`, from the watcher's history loop; dial re-looked at most hourly): `sb_resolve`
+    fills each checked bet's result from Kalshi's settled markets (`res`, `outcome` = dollars on $5 held to the end,
+    from the `pays` logged with the check); `_sb_results` takes one row per bet (its last check before the game);
+    `_sb_step` moves a group (everyone, each sport, each league) one step, judged on the band (the bets the step
+    changes): up when they lost money, down when the bets the current level skips made money, each only when the band
+    has ≥ `SB_DIAL_BAND` (10) bets averaging ≥ `SB_DIAL_MEAN` ($0.25 on $5) the right way and ≥ `SB_DIAL_T` (2)
+    standard errors from zero, and ≥ `SB_DIAL_NEW` (20) results from games after the last step; both ways or neither =
+    stay. Under `SB_DIAL_SOFT_N` (100) results a dial stops at 3 (bar $0: only bets expected to lose are skipped).
+  - **Counterfactuals:** `smart_buy_shadow` keeps logging every candidate unconditionally, now with `pays`, the
+    gate's verdict then (`skip`, the plain reason) and the level (`strict`), so skipped bets are scored too.
+  - **Visible:** Results › What's working › 🧠 Smart Buy shows a line per league (`smart_buy_gate_summary`):
+    "Learning (12 of 30)" or "Active · strictness N · skipped X · shadow saved $Y" (from the verdicts really logged),
+    the last change and why, and a **"Bigger stakes: not yet"** progress line toward the graduation bar (50+ settled,
+    ahead, ≥ 55% of days up, CLV on singles/spreads ≥ 0, skips beating plain). Display only: nothing acts on it yet.
+    The panel (every view) and the Buy ideas show a calm "Smart Buy skipped N · Why?" (`sbSkipLine`/`sbSkipOpen`): a sheet of
+    short plain reasons.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything

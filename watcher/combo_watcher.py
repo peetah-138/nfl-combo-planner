@@ -1823,6 +1823,7 @@ def history_loop(E, every=900):
             E.maker_resolve()
             got = E.resolve_quotes()
             E.resolve_closes()
+            E.smart_buy_learn()                    # Smart Buy: results of checked bets, then the dial per league
             if got:
                 log(f"history: {got} quotes settled")
             n += 1
@@ -2584,7 +2585,8 @@ def webapp_main():
         try:
             info = {}
             ideas = jsonable(A.live_ideas(info=info)) if A.STORE.get("db") else []
-            ideas_extra = {"ideas_limit": A.ideas_shown(), "ideas_hidden": info.get("hidden", 0)}
+            ideas_extra = {"ideas_limit": A.ideas_shown(), "ideas_hidden": info.get("hidden", 0),
+                           "ideas_sb": info.get("sb_skipped") or []}
         except Exception:
             ideas, ideas_extra = None, {}                      # unreadable: the page leaves the section out, not "nothing clears"
         try:
@@ -3063,7 +3065,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3506,7 +3508,7 @@ def webapp_main():
                             sb = out["smart_buy"]
                             if on and "rows" not in sb:            # switched on since the cache was built
                                 try:
-                                    sb = jsonable(A.smart_buy_summary())
+                                    sb = jsonable(dict(A.smart_buy_summary(), gate=A.smart_buy_gate_summary()))
                                 except Exception as err:
                                     log("smart buy summary:", type(err).__name__, err)
                             out["smart_buy"] = dict(sb, on=on)

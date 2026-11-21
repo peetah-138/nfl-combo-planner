@@ -54,9 +54,9 @@ function ideaSection(d){if(!Array.isArray(d.ideas))return '';S.ideaq=S.ideaq||{}
  const right=all.length?`<span class="r clr"><button class="btn ghost sm" type="button" onclick="ideaClearAll()">Clear all</button></span>`:'';
  const body=all.length?`<div class="m icap">Best expected profit first · Kalshi priced these at or above your cut-off</div><div class="doit ilist">${top.map(ideaCard).join('')}</div>
    ${more.length?`<button class="imore ${open?'open':''}" type="button" aria-expanded="${open}" onclick="ideasMoreTog(this)"><span class="chev">▾</span>${more.length} more idea${more.length>1?'s':''}</button>
-   <div class="fold ${open?'':'shut'}" id="imore"><div class="fin"><div class="doit ilist">${more.map(ideaCard).join('')}</div></div></div>`:''}${back}`
+   <div class="fold ${open?'':'shut'}" id="imore"><div class="fin"><div class="doit ilist">${more.map(ideaCard).join('')}</div></div></div>`:''}${back}${sbSkipLine(d.ideas_sb,'ideas')}`
   :`<div class="iempty" role="status"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="19" fill="none" stroke="currentColor" stroke-width="2.4" opacity=".45"/><path d="M15.5 25l6 6 11-13" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-   <b>Nothing clears your bar right now</b><span>${hid?'You\'ve cleared today\'s ideas.':'New ideas show up here when Kalshi prices one below the sharp books\' chance.'}</span>${back}</div>`;
+   <b>Nothing clears your bar right now</b><span>${hid?'You\'ve cleared today\'s ideas.':'New ideas show up here when Kalshi prices one below the sharp books\' chance.'}</span>${back}${sbSkipLine(d.ideas_sb,'ideas')}</div>`;
  return foldHead('ideas','Buy ideas',all.length,right)+foldB('ideas')+body+foldE();}
 function ideasMoreTog(b){hap('selection');S.ideasMore=!S.ideasMore;b.classList.toggle('open',S.ideasMore);b.setAttribute('aria-expanded',S.ideasMore);const f=$('#imore');if(f)f.classList.toggle('shut',!S.ideasMore);}
 
