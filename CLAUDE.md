@@ -1,8 +1,15 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.127). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.128). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
+
+## Goals and strategy
+
+Two goals, in order: **profit is #1, fun is #2.** Smart Buy and Smart Sell are **one strategy** (issue #137): every
+buy needs an edge at a fair price *and* a likely route to profit (a good chance to cash out through the shared exit
+policy, or a hold with an acceptable win chance). Rank and size in expected dollars, and fail closed when data
+can't be read. Pete's rule (2026-11-20): whenever you build anything, it gets a review for profit and delight.
 
 ## What this is
 
@@ -89,6 +96,34 @@ Real money is involved. Pete uses it daily.
 7. Never price or buy a combo other than the one on Pete's screen (the quote API checks the leg tickers the page sends).
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
 
+**How these are enforced in code (money-safety hardening, issue #143; tested by `t_safety.py`):**
+- *The Pi:* the watcher's `backup_safe(conf, E)` forces `auto_sell`/`auto_hedge` off and killer/maker `off` at
+  start, after every settings copy (`fetch_settings`, the listener thread) and before `live_check`/`autosell_pass`;
+  `COMBO_ROLE=backup` / `E.ROLE_BACKUP` make the engine's `can_trade()` False and `kalshi_send`/`_signed` refuse every
+  non-GET before anything is sent (`has_kalshi_key()` is the plain "has a key" check for reads).
+- *Combo accepts (buy and cash-out):* only a definite refusal **before** Kalshi took the accept (a 4xx other than 408,
+  the key, Pause) is "refused". Once the accept PUT was sent (or its send timed out / 5xx'd / the Mac was lost), any
+  unclear answer, a failed status poll or no confirmation within `ACCEPT_WAIT` (15 s) is **unknown**: marked in the
+  order ledger (`mark_rfq_unsure`, keys `<market>|rfq-buy|o` / `<market>|rfq-sell|r`, with the leg tickers), the
+  panel/killer get `None` = "check", the web app answers `check` with `COMBO_UNSURE_MSG`, `get_offer` won't re-quote
+  the same legs, a cash-out stops (no second accept; `CASH_RETRIES` only after a definite refusal) and auto cash-out
+  leaves that combo alone (`rfq_unsure(t, "sell")`, like `hedge_unsure`). Settings › Money lists them as order blocks.
+- *Ledger and hedges across processes:* `combo_orders.json` and `combo_hedges.json` are read-modify-written under an
+  `fcntl` lock (`file_lock`), with `save_json(..., strict=True)` (raises and logs "MONEY STATE NOT SAVED"); a mark
+  that couldn't be written stays in that process's memory and still blocks.
+- *Killer deals:* the dedupe and caps are read with `store_rows_strict` (unreadable = skip), the row goes in as
+  "buying" **before** `buy()` and counts toward the caps until updated.
+- *Pause:* `E.TRADING_PAUSED` (watcher: `watcher_paused`, the live `conf["paused"]`; web app: `paused_now`) is read
+  by `accept_offer`, `killer_act` and `maker_pass`; the web app's combo quote/idea/Buy refuse while paused; turning
+  killer/standing orders/Auto cash-out on while paused is undone if `send_synced` failed.
+- *Taps and updates:* the hub's proxy gives `/app/api/act` `PROXY_ACT_TIMEOUT` (300 s) and answers a timeout with
+  JSON 504 "may or may not have gone through" (`check` only for `ORDER_ACTS`, the taps that can move money: buy, go,
+  hedgego, singlebuy, pot_move); order taps write `combo_tap_busy.json` (`tap_mark`) and `update_loop` waits while it's
+  fresh; once an update (or web app repair) is installed, `restart_when_quiet` writes `combo_restarting.json` (the web
+  app refuses new taps while it's fresh; the restarted watcher deletes it) and waits (≤ 240 s) for two quiet checks
+  before the watcher exits; the web app's `orphan_check` waits (≤ 120 s) for the tap lock before exiting. A manual
+  Hedge tap refuses while `hedge_unsure` (an earlier hedge unclear, or bought but not saved).
+
 ## How Pete wants work done
 
 - **Check thoroughly before pushing.** He was fed up with bugs reaching him. Every release goes through the full
@@ -114,13 +149,16 @@ Real money is involved. Pete uses it daily.
 - **Every PR must pass lint (`ruff check .`) and the full `bash tests/run_checks.sh`.** CI runs both
   (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
   silence them. Run code review and security review before opening the PR and fix everything they raise.
+- **Four reviews on every PR: code, security, profit, delight** (`docs/REVIEW_LENSES.md`). Builder agents run all
+  four on their own diff; the release agent runs all four on the whole release diff. Fix every finding or file an
+  issue labelled `profit` or `fun`. The PR template (`.github/pull_request_template.md`) carries the checklist.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below), and main is back-merged into develop right after. Releases are owned by the session that
   holds the "release owner" role in issue #83 (it also merges the PRs). **Standing go-ahead (Pete, 2026-11-19,
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.127`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.128`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -277,6 +315,23 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   require_line, hockey shapes, live scores from the league feed (Kalshi's team codes can differ from the feed's,
   e.g. CHA/CLT, so `AHL_ALIAS` maps them; names are matched too).
 
+### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
+- Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
+  `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
+  API order can only use its market's pot (`shard_of`). Kalshi's own app moves cash for its own orders; API orders don't.
+  An `insufficient_balance` refusal says which pot is short (`balance_words`). Settings › Money › Kalshi balance by pot
+  lists them.
+- **Money moves between pots only on Pete's tap** (a confirm sheet with both pots before/after, then "Tap again"):
+  the Buy straight sheet refused for its pot offers "Move $X from <pot> to <pot>" (`pot_shortfall`: shortfall + $0.50,
+  rounded up to whole dollars, from the largest other pot), and Settings has "Move money between pots".
+  `pot_transfer` (on the Mac via hub op `pot_move`; the web app runs it under the tap lock) refuses while paused,
+  re-reads the balance fresh, caps a move at $200, sends `POST /portfolio/intra_exchange_instance_transfer` (amount in
+  centicents, a UUID `client_transfer_id` per sheet so a double tap is one move), polls its status ~7 s, and logs every
+  move in `combo_pot_moves.json`. Rule 8 applies: an unknown outcome is `check`, never resent, and blocks further moves
+  (as does a pending one) until Pete clears it in Settings. The hub's generic Kalshi relay refuses transfer paths.
+  **Automatic rebalancing (Kalshi's `target_balance_allocation`) is not used**: it would be new automatic money
+  movement and needs Pete's explicit opt-in.
+
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
   sell-early favorites, chosen together to **maximize the chance the whole day finishes ahead** (bigger profit is a
@@ -347,7 +402,9 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
   predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
-  immediately; half of each month's profit is set aside (reminder until Pete says he moved it).
+  immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
+  that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it
+  can't be approved or added; approved bets wait (`hold: "balance"`) until the balance reads again.
 - Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
   (80–85, 85–90, 90–95, 95–100, 100+% of fair) from real quotes, $5 each, separate from the gate.
 
@@ -513,10 +570,28 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
-  is left, and the setting to change ("Settings > Money > Weekend cap/Daily cap/Mix cap for <league>"). Its window word
-  (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
-  college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
-  "on games still to play" for the Mix. The rule and the cap amount are unchanged.
+  is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
+  "Weekend cap" to **Weekly cap** on #71). Its window word (`cap_window`) matches what `week_spend` counts:
+  "today"/"tomorrow" for daily leagues, "this week (Tue to Mon)" for the slate-week leagues (football, soccer, UFC;
+  never "this weekend"), "on games still to play" for the Mix. The rule, the windows and the cap amount are unchanged.
+- **Caps fail closed (issue #136).** Every cap check reads spend through `cap_bets` (a fresh Kalshi account read, or
+  after a failed one the last good read only while ≤ `CAP_READ_AGE` = 120 s old; else `CapUnknown`). `week_spend` raises
+  instead of counting $0; Get price / Buy / Live ideas / the phone's batch refuse with "Couldn't check your weekly cap
+  right now, try again in a minute"; killer deals skip; standing orders post nothing new that pass (logged once per
+  10 min). `week_spend_shown` is the display-only copy (Build's "spent"). The daily panel's buys are limited by its own
+  daily panel budget (`panel_budget`, from the history database) and never read Kalshi spend, so they are unchanged.
+  **Single bets use their own league's cap** (`single_cap_block` → `manual_cap`: the market's league from its ticker,
+  that league's budget and slate, its combos + manual singles), never the loaded league's or the Mix's: Buy straight
+  and Live's single-game buy ideas (`api_act` "idea" quote and "singlebuy" by idea → `idea_single_buy`, which also
+  checks Pause, trading access and the unknown-outcome block, allows one order per idea and per market per 2 min
+  (`IDEA_TAP_SECS`, marked before the order, freed again when Kalshi clearly bought nothing), sends a sub-cent price rounded down, notes the buy in `manual_buys`, and marks an unclear
+  answer "check"). Mix combos keep the Mix cap. `manual_spend` fails closed too (no history database = its own words,
+  `NO_HISTORY_MSG`; a failed read = `CapUnknown`, never $0; manual-buy reads and writes use `store_x_strict`/`store_rows_strict`, which raise
+  where `store_x` swallows; with no ticker it counts the loaded league's own window, today for daily leagues).
+  `_manual_note` never loses a filled buy: tried twice, then kept in memory (`MANUAL_MEM`, still counted by the cap until
+  the app restarts), logged "MANUAL BUY NOT SAVED" and pushed to Pete once (`MANUAL_ALERT`, set by the web app). A
+  market's kind (win/spread/total) comes from its ticker; a side's `kind` only fills in when the ticker can't tell. The window words say "Tue to Mon" because `sunday_of` puts a Tuesday
+  game in the coming Sunday's week (Pete's #71 note said Wed to Mon; the counting itself was not changed).
 - **Buy straight (manual single buys, issue #113; Pete's tap only, no automatic buying).** With one team picked the slip
   has a **Single bet / Combo** switch (`slipMode`; Single bet keeps one pick and its button is "Buy straight"); the slip
   card offers "Buy <team> straight" too; spreads & totals rows, Best bets and the Single games card open the same sheet;
@@ -530,9 +605,10 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   under way have none), sizes with `_size` (quarter Kelly, shrunk edge, $2 minimum), warns (thin > 6¢ gap, little for
   sale, live, nearly decided, live price far from the live chance, above fair, no fair price) and blocks (Pause, the
   unknown-outcome block, under one contract, account unreadable, over the cap: `week_spend` (Kalshi's combo record, which
-  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window, `_cap_start`: today for daily
-  slates and the Mix, else the slate week; an unclear one included; table `manual_buys`), against the cap of the league Build
-  has loaded, via `cap_msg`; the cap check, the order and its note run under one lock, `_SQ["buy"]`). The board's fair price
+  never sees singles) **plus** `manual_spend` (that league's manual singles in the same window; an unclear one included;
+  table `manual_buys`), against the cap of **the market's own league** (from its ticker, never the one Build has loaded
+  or the Mix), via `single_cap_block` → `manual_cap`/`manual_cap_msg` (issues #133, #136); the cap check, the order and
+  its note run under one lock, `_SQ["buy"]`). The board's fair price
   is used only while under 12 min old (`SINGLE_FAIR_AGE`, `fair_at`; no read time = stale); spreads/totals need the board's 4¢ `LINE_MIN_EDGE` for a green Buy and size
   on a 30%-shrunk model edge; a finished game (`_game_over`) gets no quote; a start time it can't tell = a warning, yellow. It keeps a
   quote id (16 hex) for 20 s (`_SQ`). `single_buy(qid, ticker, anyway, paused)` checks the quote is the one on screen,
