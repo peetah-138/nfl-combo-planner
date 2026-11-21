@@ -43,7 +43,7 @@ CFG = {
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
-    "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
+    "auto_cap": 5,        # at most this many automatic cash-outs a day (per device); AUTO_CAP_UNLIMITED = no limit
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
@@ -4570,6 +4570,26 @@ def log_decision(rec):
     console_note("auto cash-out: " + json.dumps(rec))
 
 
+AUTO_CAP_MAX = 10           # the Auto cash-outs a day slider's highest number; its next stop is "Unlimited"
+AUTO_CAP_UNLIMITED = 1000   # stored for "Unlimited" (issue #217): an older process reads it as a cap of 1000 a day
+
+
+def auto_cap_limit(v=None):
+    """Today's limit on automatic cash-outs: a number, or None for Unlimited (anything over AUTO_CAP_MAX).
+    A value that can't be read falls back to the default 5, never to unlimited."""
+    try:
+        n = int(float(CFG.get("auto_cap", 5) if v is None else v))
+    except (TypeError, ValueError, OverflowError):
+        n = 5
+    return None if n > AUTO_CAP_MAX else n
+
+
+def auto_cap_reached():
+    """This device already made today's allowed automatic cash-outs ("check" sales count). Never with Unlimited."""
+    lim = auto_cap_limit()
+    return lim is not None and sold_today() >= lim
+
+
 def sold_today():
     """Automatic cash-outs made by this device today."""
     today = dt.date.today().isoformat()
@@ -5060,11 +5080,11 @@ def auto_sell_now(plan):
                    "chance": round(h["p"], 4), "cost": round(h["cost"], 2), "pays": h["pays"],
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
                    "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes"}
-            if sold_today() >= int(CFG.get("auto_cap", 5)):
+            if auto_cap_reached():
                 log_decision(dict(rec, result="skipped", why="daily cap reached"))
                 if MINE.get("cap_told") != dt.date.today().isoformat():
                     MINE["cap_told"] = dt.date.today().isoformat()
-                    out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
+                    out.append(f"🤖 Auto cash-out reached today's cap of {auto_cap_limit()} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
@@ -5448,7 +5468,7 @@ def smart_sell_singles():
             continue                                  # a sell waiting, or an order whose outcome is unknown
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side}
-        if sold_today() >= int(CFG.get("auto_cap", 5)):
+        if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
         sold, err = sell_single_now(x["t"], side, x["n"], bid)
@@ -11753,7 +11773,8 @@ def settings_page(all_games, days, counts):
                         + slider("ride", "Let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
-                        + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
+                        + slider("auto_cap", "Auto cash-outs a day, at most", 1, AUTO_CAP_MAX + 1, 1, "",
+                                 names=[str(i) for i in range(AUTO_CAP_MAX + 1)] + ["Unlimited"])
                         + switch("auto_hedge", "Hedge instead when that locks in more (only on a fresh live "
                                  "score, never at a break, at least what you paid, held 3+ min, fresh price)")
                         + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
@@ -11917,6 +11938,8 @@ def settings_page(all_games, days, counts):
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
+            if auto_cap_limit() is None:
+                CFG["auto_cap"] = AUTO_CAP_UNLIMITED   # the slider's "Unlimited" stop is stored as the clear sentinel
             save_cfg(cleared)
             if choice != "save" and before != {k: CFG.get(k) for k in WATCHER_SYNCED}:
                 import threading               # left Settings another way: the Pi still hears of it
