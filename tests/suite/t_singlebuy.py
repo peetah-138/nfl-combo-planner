@@ -26,7 +26,7 @@ ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 SPENT = {"v": 10.0}
 E.week_spend = lambda: SPENT["v"]
 E.can_trade = lambda: True
-EV = fakenet.event_ticker("KXNBAGAME", "DEN", "LAL")          # not started (the fake's second game)
+EV = fakenet.event_ticker("KXNBAGAME", "DEN", "LAL")          # not started (the fake's third game after the swap above)
 T = EV + "-DEN"
 LIVE_EV = fakenet.event_ticker("KXNBAGAME", "BOS", "NYK")     # under way (the fake's first game)
 LT = LIVE_EV + "-BOS"
@@ -34,6 +34,16 @@ mk = {m["ticker"]: m for m in fakenet.markets()}
 X = {"ticker": T, "pick": "Denver Nuggets", "event": EV, "exp": mk[T]["expected_expiration_time"], "fair": 0.80,
      "src": "pinnacle", "opp": "Los Angeles Lakers", "fair_at": time.time()}
 REAL_BOOK = E.book_depth
+# The fake's tickers carry each game's US date, never the machine's (GitHub #128: CI on UTC lost the fake games' scores
+# after 00:00 UTC). A 6 PM Eastern game at 00:10 UTC the next day is still on the 20th; each fake game's ticker date
+# matches the day the engine reads off its scoreboard start.
+import datetime as _dt
+ok("fake tickers use the US game date: 00:10 UTC on the 21st is still the 20th",
+   fakenet.us_day(_dt.datetime(2026, 11, 21, 0, 10)) == _dt.date(2026, 11, 20))
+_evs = {e["id"]: e for e in fakenet.espn_events("basketball/nba")}
+ok("every fake game's ticker date is its scoreboard date (as the engine reads it)",
+   all(E.ticker_day(fakenet.event_ticker("KXNBAGAME", g[0], g[2])) == E.espn_day(_evs[f"KXNBAGAME{i}"]["date"])
+       for i, g in enumerate(G)))
 LOG = []
 
 
