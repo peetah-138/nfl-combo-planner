@@ -12,7 +12,7 @@ t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_l
 t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2
 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy
 t_ideacards t_ideas_ration t_shards t_spa_files t_spa_update t_spa_transition t_safety t_pottransfer t_profit t_exitpolicy t_smartbuy t_oddscredits
-t_sbgate t_lowcredit t_refusals t_scoreboard t_linesel t_bestbets t_ownstake t_cashnudge t_autocap""".split()
+t_sbgate t_lowcredit t_refusals t_scoreboard t_linesel t_bestbets t_ownstake t_cashnudge t_autocap t_fcs_score""".split()
 
 PAGE = """test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv
 test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2

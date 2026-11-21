@@ -5638,7 +5638,7 @@ def open_singles(max_age=30):
             "live" if live else "pre"
         rs = None                                   # started, nothing settled it, no live score: say so honestly
         ksc = None                                  # tennis, EuroLeague, UFC: Kalshi's live data, shown only
-        if not sc and code in KLIVE_SPORTS:         # (state, and so smart sell, stay exactly as before)
+        if not sc and code in KLIVE_ANY:            # (state, and so smart sell, stay exactly as before)
             try:
                 ksc = kalshi_score({"ticker": t, "side": side})
             except Exception:
@@ -5886,6 +5886,11 @@ def plan_cashout():
     return {"acts": acts, "plan": weekend_stats(acts), "hold": weekend_stats({t: 0.0 for t in offers})}
 
 
+def chance_pct(c):
+    """'64%', but an open pick is never called a sure thing: 99.5% and up (short of 1) reads '>99%' (issue #224)."""
+    return ">99%" if 0.995 <= c < 1 else f"{c:.0%}"
+
+
 def plan_words(t, f, o, h, W):
     """One short reason for the verdict on one combo."""
     p, pays = h["p"], h["pays"]
@@ -5899,7 +5904,7 @@ def plan_words(t, f, o, h, W):
     if h.get("won_some") and thr > o["offer"] / max(o.get("frac", 1.0), 0.01):
         nxt = (h.get("legs_left") or [(0, False, 0)])[0]
         return (f"Waiting is worth more: {'the game under way' if nxt[1] else 'the next game'} "
-                f"({nxt[0]:.0%} to go your way) makes this combo worth more to sell after. "
+                f"({chance_pct(nxt[0])} to go your way) makes this combo worth more to sell after. "
                 f"Worth cashing out at about {money(thr)}.")
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
@@ -6171,8 +6176,11 @@ SPORTS = {
     "ahl": {"icon": "🏒", "name": "AHL", "espn": None, "feed": "ahl", "q": {}, "periods": 3, "day": True, "hours": 2.75},
     "ncaamb": {"icon": "🏀", "name": "College", "espn": "basketball/mens-college-basketball",
                "q": {"groups": "50"}, "periods": 2, "day": True, "hours": 2.25},
+    # Scores ask ESPN for all of Division I (group 90 = FBS 80 + FCS 81): Kalshi lists FCS games too (Jackson St. at
+    # Alcorn St., issue #224) and group 80 alone left them with no live score. Only the scores: the free lines and
+    # everything that picks games keep "q" (FBS), so no new game can be priced or bought because of this.
     "ncaaf": {"icon": "🎓", "name": "College football", "espn": "football/college-football",
-              "q": {"groups": "80"}, "periods": 4, "day": False, "hours": 3.5},
+              "q": {"groups": "80"}, "score_q": {"groups": "90", "limit": 400}, "periods": 4, "day": False, "hours": 3.5},
     "ncaawb": {"icon": "🏀", "name": "Women's college", "espn": "basketball/womens-college-basketball",
                "q": {"groups": "50"}, "periods": 4, "day": True, "hours": 2.25},
     "euroleague": {"icon": "🏀", "name": "EuroLeague", "espn": None, "q": {}, "periods": 4, "day": True, "hours": 2.25},
@@ -7019,9 +7027,10 @@ def fetch_scores(max_age=None, code=None):
     by = {}
     try:
         events = []
+        base = sp.get("score_q") or sp["q"]      # scores may ask wider than the lines do (college football: FCS too)
         for path in (sp["espn"] if isinstance(sp["espn"], list) else [sp["espn"]]):
             url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard"
-            q = dict(sp["q"])
+            q = dict(base)
             if sp["day"]:                        # teams play most nights: yesterday to 3 days out
                 today = dt.date.today()
                 q.update(dates=f"{today - dt.timedelta(days=1):%Y%m%d}-{today + dt.timedelta(days=3):%Y%m%d}",
@@ -7029,7 +7038,7 @@ def fetch_scores(max_age=None, code=None):
             r = requests.get(url, params=q, timeout=8)
             evs = r.json().get("events", []) if r.ok else []
             if not evs and "dates" in q:
-                r = requests.get(url, params=sp["q"], timeout=8)
+                r = requests.get(url, params=base, timeout=8)
                 evs = r.json().get("events", []) if r.ok else []
             events += evs
         for ev in events:
@@ -7371,6 +7380,10 @@ def run_status(sport, started_at, now=None, score_state=None, detail=""):
 # milestone lookup per game (kept for hours), one batch call per refresh for every game under way, the last good
 # copy kept when Kalshi is slow or says 429, and a growing pause after failures.
 KLIVE_SPORTS = ("tennis", "euroleague", "ufc")
+# Sports ESPN does cover, where Kalshi's live data only fills in a game ESPN has no record of (a small college
+# football game, issue #224). Same rule: shown only, never read by leg_score or anything that buys or sells.
+KLIVE_BACKUP = ("ncaaf",)
+KLIVE_ANY = KLIVE_SPORTS + KLIVE_BACKUP
 KLIVE = {"ms": {}, "live": {}, "cool": 0.0, "fails": 0}       # event -> milestone; milestone id -> {"at", "d"}
 KLIVE_MS_TTL, KLIVE_MS_MISS, KLIVE_NEW_MAX = 6 * 3600, 900, 8   # keep a mapping 6h, a "none found" 15 min; 8 lookups a refresh
 KLIVE_HDR = {"Accept": "application/json"}                       # public reads, sent straight to Kalshi (no key)
@@ -7439,7 +7452,7 @@ def kalshi_live_refresh(events, max_age=None):
     import time
     now = time.time()
     max_age = max(SCORES_MAX_AGE if max_age is None else max_age, 5)
-    evs = sorted({e for e in events if e and ticker_sport(e) in KLIVE_SPORTS})
+    evs = sorted({e for e in events if e and ticker_sport(e) in KLIVE_ANY})
     if not evs or now < KLIVE["cool"]:
         return 0
     ids, new = [], 0
@@ -7602,6 +7615,22 @@ def _khoops(d, mine_first):
     return int(me or 0), int(opp or 0), detail
 
 
+def _kfootball(d, mine_first):
+    """(points me, points them, 'Q3 9:23' / 'Half' / 'Final') for a football game in Kalshi's live data."""
+    me, opp = (d.get("away_points"), d.get("home_points")) if mine_first else (d.get("home_points"), d.get("away_points"))
+    q = int(d.get("quarter") or d.get("period") or 0)
+    state = _kstate(d)
+    if state == "post":
+        detail = "Final" + (" OT" if q > 4 else "")
+    elif state == "pre":
+        detail = ""
+    elif "half" in str(d.get("match_status") or d.get("period_status") or "").lower():
+        detail = "Half"
+    else:
+        detail = f"{'OT' if q > 4 else 'Q' + str(q or 1)} {_kclock(d.get('clock'))}".strip()
+    return int(me or 0), int(opp or 0), detail
+
+
 def _kfight(d, rounds):
     """What a UFC fight's feed says. The in-fight fields are unverified (no fight was live when this was built), so
     only the round is read, and the clock only if a field for it turns up; never a made-up clock."""
@@ -7636,7 +7665,7 @@ def _kalshi_score(l, max_age=900):
     import time
     t = l.get("ticker") or ""
     code = ticker_sport(t)
-    if code not in KLIVE_SPORTS or "-" not in t:
+    if code not in KLIVE_ANY or "-" not in t:
         return None
     ev, suffix = t.rsplit("-", 1)
     m = KLIVE["ms"].get(ev)
@@ -7677,6 +7706,8 @@ def _kalshi_score(l, max_age=900):
         me, opp, detail = _khoops(d, first)
     elif kind.startswith("mma"):
         detail = _kfight(d, m.get("rounds"))
+    elif kind.startswith("football"):
+        me, opp, detail = _kfootball(d, first)
     else:
         return None
     win = d.get("winner") or ""
@@ -7689,13 +7720,17 @@ def _kalshi_score(l, max_age=900):
 
 
 def klive_events(legs, side_of=None, soon=15 * 60):
-    """Event tickers of these picks worth asking Kalshi's live data about: sports ESPN lacks, games that have
-    started or start within `soon` seconds (or whose start is unknown)."""
+    """Event tickers of these picks worth asking Kalshi's live data about: sports ESPN lacks (and, for the backup
+    sports, a game ESPN has no score for), games that have started or start within `soon` seconds (or whose start
+    is unknown)."""
     now = dt.datetime.now(dt.timezone.utc)
     out = set()
     for l in legs:
         t = l.get("ticker") or ""
-        if ticker_sport(t) not in KLIVE_SPORTS or "-" not in t:
+        code = ticker_sport(t)
+        if code not in KLIVE_ANY or "-" not in t:
+            continue
+        if code in KLIVE_BACKUP and _espn_has(l):
             continue
         try:
             st = leg_start(l, side_of or {})
@@ -7704,6 +7739,15 @@ def klive_events(legs, side_of=None, soon=15 * 60):
         if st is None or (st - now).total_seconds() < soon:
             out.add(t.rsplit("-", 1)[0])
     return out
+
+
+def _espn_has(l):
+    """Does the usual score source already have this pick's game? (Then Kalshi's data isn't asked for.) Reads only
+    the scores already fetched, never the network: with none yet, Kalshi is asked once (its lookups are cached)."""
+    try:
+        return bool(leg_score(l))
+    except Exception:
+        return False
 
 
 def display_score(l, points=True, pre=False):
@@ -9192,7 +9236,7 @@ def mine_page(live=False):
                     if lp is not None and l.get("side", "yes") == "no":
                         lp = 1 - lp
                     tag = "<span class='tag bad'>In progress</span>"
-                    pct = f"<span style='font-size:12px;font-weight:500' class='muted'>live</span> {lp:.0%}" if lp else ""
+                    pct = f"<span style='font-size:12px;font-weight:500' class='muted'>live</span> {chance_pct(lp)}" if lp else ""
             sline = score_line(display_score(l)) if not res else ""
             if sline:
                 sub = sline
