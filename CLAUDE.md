@@ -216,6 +216,10 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   `/`, never `/app`; the service worker maps old `/app` payloads to `/`; the hub redirects a browser navigation to `/app` and
   `/app/` to `/` and answers any other navigation that finds nothing or has no session with a small HTML page, never an empty
   file; API routes unchanged) and the login page's Face ID tap fallback (`test_login_faceid`).
+- **Engine tests run offline (issue #189).** `run_checks.sh` puts `tests/suite/netguard/` on `PYTHONPATH`; its
+  `sitecustomize.py` refuses every `requests` call to a non-local host (ConnectionError), so a check can never depend on
+  real ESPN/Kalshi data (real injury news once failed `t_live_panel` in CI only, by time of day). Page tests wait on page
+  state, not fixed sleeps, after a request (`test_singlebuy_ui`'s `settle`).
 - **Tests never touch the real Tailscale or ntfy (issue #54).** `run_checks.sh`, macsmoke, `dev.sh` and `dev_webapp.py` set
   `COMBO_NO_TAILSCALE=1`; `tailscale_run` refuses every Tailscale command (serve, funnel, cert, status) unless the config
   folder is a real install home (`~/combowatch`, the Pi's `/var/lib/combowatch`), and `tailscale_https`/`https_loop` do

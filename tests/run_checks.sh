@@ -104,8 +104,11 @@ fi   # static
 if on engine; then
   ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
   [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")
+  # offline: suite/netguard/sitecustomize.py refuses every request to a host outside this machine (#189: real ESPN
+  # injury news made t_live_panel fail in CI at some hours); the tests' own fakes on 127.0.0.1 still answer
+  NG="$WORK/netguard${PYTHONPATH:+:$PYTHONPATH}"
   for t in $ENG; do
-    o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
+    o=$(PYTHONPATH="$NG" "$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
   done
 fi
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
@@ -155,7 +158,8 @@ fi
 for t in $PAGE; do
   sec="$(cat "secs_$t.txt" 2>/dev/null)s"; [ -f "retried_$t.txt" ] && sec="$sec, RETRIED: the first try failed"
   if page_bad "out_$t.txt"; then
-    bad "page test $t ($sec)" "$(grep -v Deprecation "out_$t.txt" 2>/dev/null | grep -E -B2 -A6 'Traceback|errs|PROBLEMS|JS errors|Error' | head -16)"
+    # the lines that say what went wrong (#189: an empty "JS errors: []" used to fill the excerpt and hide the PROBLEM line)
+    bad "page test $t ($sec)" "$(grep -v Deprecation "out_$t.txt" 2>/dev/null | grep -E -A3 'Traceback|errs: \[.+|PROBLEM|JS errors: \[.+|Error' | head -12)"
   else
     ok "page test $t ($sec)"
     [ -f "retried_$t.txt" ] && grep -v Deprecation "first_$t.txt" | grep -E 'Traceback|errs: \[.+|PROBLEMS|JS errors' | head -6 | sed 's/^/     first try: /'

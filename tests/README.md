@@ -16,6 +16,10 @@ It prints one PASS/FAIL line per check and ends with `ALL CHECKS PASSED` (exit 0
 - The page tests start their own web apps on ports **18766–18769** (the real Combo Hub uses 8765/8766), so a test can
   never reach the real app. If any of those ports is busy, the run fails instead of guessing.
 - Kalshi, ESPN and GitHub are faked; anything that slips past the fakes carries a throwaway key Kalshi rejects.
+- The engine tests run offline: `suite/netguard/sitecustomize.py` (put on `PYTHONPATH` by `run_checks.sh`) refuses every
+  request to a host outside this machine with a plain ConnectionError, so no check can depend on today's real ESPN or
+  Kalshi data (GitHub #189: real injury news made `t_live_panel` fail in CI at some hours of the day). Set
+  `CHECK_NETLOG=/some/file` to list what was refused.
   Nothing is bought or sold.
 
 ## One-time setup on a Mac
