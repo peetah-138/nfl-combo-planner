@@ -4987,6 +4987,31 @@ def take_profit_reason(t, h, cut_ok=False):
     return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
 
 
+def cash_nudge(t, h, tp=None):
+    """Whether a "time to cash out" alert (the Live toast, the moment bar, a Do now card, the phone's push) may go out
+    for this live combo (#210). Alerts only: it reads, never sells, and auto cash-out does not look at it. All of:
+      - smart sell's own rule says sell now (exit_policy via take_profit_reason; tp = its answer when already worked
+        out this refresh), not the older Let it ride plan, which also says "sell" for a long shot on an estimate;
+      - a real Kalshi offer that is still fresh (never the watcher's estimate);
+      - that offer is at least what was paid, and at least 97% of the line the rule sells at;
+      - one of the games still to play is under way (between games nothing changes, so nothing to say).
+    Returns {'why', 'offer' (whole combo)} or None."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None
+    why, floor = tp if tp is not None else take_profit_reason(t, h)
+    if not why:
+        return None
+    o = MINE["cash"].get(t) or {}
+    if o.get("rfq") in (None, "estimate") or not o.get("offer") or not fresh_offer(t):
+        return None
+    whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+    if whole < (h.get("cost") or 0) or whole < 0.97 * (floor or 0):
+        return None
+    if not any(lv for _, lv, _ in h.get("legs_left") or []):
+        return None
+    return {"why": why, "offer": round(whole, 2)}
+
+
 def auto_sell_now(plan):
     """Auto cash-out (Settings, off by default): sells what the plan says to cash out, by itself,
     the same advice the card shows as Cash out. That already means a pick has won and Kalshi's
@@ -5748,8 +5773,9 @@ def live_view(mine, views, plan, chance_one, balance):
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
+            v["nudge"] = cash_nudge(t, h, (why, floor))     # the only thing that may say "time to cash out" (#210)
         except Exception:
-            v["moment"] = None
+            v["moment"] = v["nudge"] = None
         try:
             hg = hedge_for(t)
             v["hedge"] = {k: hg.get(k) for k in ("name", "cost", "locked", "price", "done")} if hg else None
@@ -8850,6 +8876,8 @@ def cash_alerts(plan):
     so the alert and the buttons always agree). It needs all of:
       - the plan recommends cashing something out, judged after the latest refresh;
       - each combo in it has a pick already won (before that, you hold: it was bought for the upside);
+      - smart sell's own rule would sell it now, on a real offer at or above cost, with a game under way
+        (cash_nudge, #210);
       - it's worth at least $2, or 3% of what it locks in, more to you than holding;
       - it's new: same advice again only if the offer rose 20%+ or half became all, and never
         within 10 minutes of the last alert for that combo."""
@@ -8863,8 +8891,8 @@ def cash_alerts(plan):
     news = []
     for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
         o, h = fresh_offer(t), MINE["hold"].get(t)
-        if not (f and o and h):
-            continue
+        if not (f and o and h) or not cash_nudge(t, h):
+            continue                   # smart sell wouldn't sell it now: no "cash out" push (#210)
         amt = acts_price(t) * h["pays"] * f
         last = told.get(t)
         if last and (time.time() - last["at"] < 600 or (amt < last["amt"] * 1.2 and f <= last["f"])):
@@ -11131,6 +11159,8 @@ def get_offer(i, amount=None, check_cap=True):
         return {"error": words, "restricted": True}
     c = CTX["combos"][i - 1]
     stake = round(float(amount), 2) if amount else CTX["stake"]
+    if not math.isfinite(stake):                   # never a NaN or infinite amount to Kalshi (own_stake checks first)
+        return {"error": "That bet amount isn't a number."}
     if stake < 1:
         return {"error": "Use at least $1 per combo."}
     if stake > CFG["budget"]:
@@ -14631,6 +14661,30 @@ SINGLE_ARM = 25.0               # stakes above this need a second tap ("Tap agai
 SINGLE_MAX = 100.0              # the most one manual single bet may stake
 SINGLE_PRESETS = (3, 5, 10)
 _SQ = {"lock": threading.Lock(), "buy": threading.Lock(), "q": {}}
+OWN_MIN = 1.0                   # Pete's own stake (issue #145): the least one tap may bet (Kalshi's combos take $1)
+OWN_MAX = SINGLE_MAX            # ...and the most (the caps, the panel budget and Kalshi's own checks still apply)
+
+
+def own_stake(v, lo=OWN_MIN, hi=OWN_MAX):
+    """Pete's own stake as the page sent it, checked here (the page is never trusted). (None, None) = none given: use
+    the recommended size. (dollars, None) = a real, finite amount inside lo..hi, rounded DOWN to the cent (never more
+    than he typed). (None, words) = refused: not a number, not finite, negative, or outside lo..hi."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None, None
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        return None, "That bet amount isn't a number. Nothing was priced or bought."
+    try:
+        x = float(str(v).strip()[:20])
+    except ValueError:
+        return None, "That bet amount isn't a number. Nothing was priced or bought."
+    if not math.isfinite(x) or x <= 0:
+        return None, "Type a bet amount in dollars, above $0. Nothing was priced or bought."
+    x = math.floor(x * 100 + 1e-6) / 100
+    if x < lo - 1e-9:
+        return None, f"The least you can bet here is {money(lo)}."
+    if x > hi + 1e-9:
+        return None, f"The most this bet can be is {money(hi)}. Lower the amount."
+    return round(x, 2), None
 
 
 def market_open(ticker):
@@ -15048,13 +15102,10 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     ret = round(fair / per - 1, 4) if fair is not None else None
     size_fair = fair if fair is None or kind == "win" else per + (fair - per) * 0.7   # model prices: shrink the edge
     sug = _size({"kind": "single", "chance": size_fair, "price": ask}, _manual_base()) if fair is not None else 2.0
-    try:
-        want = float(stake) if stake not in (None, "") else sug
-    except (TypeError, ValueError):
-        want = sug
-    if not want > 0:
-        want = sug
-    want = round(min(max(want, 1.0), SINGLE_MAX), 2)
+    own, bad = own_stake(stake, OWN_MIN, SINGLE_MAX)    # Pete's own amount, checked here (never the page's word)
+    if bad:
+        return {"ok": False, "bad_stake": True, "msg": bad, "max": SINGLE_MAX, "min": OWN_MIN}
+    want = own if own is not None else round(min(max(sug, 1.0), SINGLE_MAX), 2)
     n = int(want / per + 1e-9)
     if depth and n > int(depth):
         n = int(depth)
@@ -15097,7 +15148,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             "game": x.get("game") or "", "sport": market_league(t) or "", "kind": kind, "live": live,
             "ask": ask, "bid": bid, "gap": gap, "depth": depth, "fee": round(fee, 4), "per": round(per, 4),
             "fair": fair, "how": how, "nofair": nofair, "edge": edge, "ret": ret, "sug": round(sug, 2),
-            "stake": want, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
+            "stake": want, "own": own is not None, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
+            "ev": round(n * fair - cost, 2) if fair is not None else None, "min": OWN_MIN,
             "spent": spent, "budget": budget, "room": room, "blocked": blocked, "warn": warn, "clears": bool(clears),
             "secs": SINGLE_QUOTE_SECS, "arm": SINGLE_ARM, "max": SINGLE_MAX, "presets": list(SINGLE_PRESETS)}
 
@@ -15245,6 +15297,9 @@ def _alert(alert, msg, kind, url):
         alert(msg, kind)
 
 
+_SID = {"n": 0, "start": random.randint(0, 899)}   # store_suggestion's id counter
+
+
 def store_suggestion(c, r, pct):
     """Remember a combo Kalshi just priced at or above your cut-off, so Live can offer it. Returns its id."""
     if not STORE["db"]:
@@ -15252,7 +15307,10 @@ def store_suggestion(c, r, pct):
     now = time.time()
     live = any(started(l) for l in c["legs"])
     kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x and x > now]   # the next game still to start
-    sid = f"{int(now)}{random.randint(100, 999)}"
+    # The 3 digits after the second count up from a random start, so two ideas stored in the same second never share an id
+    # (a random pick collided now and then: "UNIQUE constraint failed: suggestions.id", and the idea was silently lost).
+    _SID["n"] = (_SID["n"] + 1) % 900
+    sid = f"{int(now)}{100 + (_SID['start'] + _SID['n']) % 900}"
     try:                                              # what the card says about each game (display only)
         info = json.dumps(idea_legs_info(c["legs"]))
     except Exception:
@@ -17126,11 +17184,73 @@ def _item(p, cid):
     return next((c for c in (p or {}).get("items", []) if c["id"] == cid), None)
 
 
-def panel_approve(ids=None, view="all", at=None):
+PANEL_OWN_MIN = 2.0     # the least Pete may set a panel bet to (the panel's own smallest bet)
+
+
+def own_panel_stakes(stakes, items, budget):
+    """Pete's own stakes for panel bets ({id: dollars}, issue #145), checked here, never trusted from the page: each a
+    real amount from PANEL_OWN_MIN to the smaller of the panel budget and OWN_MAX, rounded down to the cent (own_stake).
+    Ids not among items are ignored (that bet isn't on the panel, so nothing of it is bought). ({id: dollars}, None)
+    or (None, words) when any amount is refused (then nothing is approved or added)."""
+    if not stakes:
+        return {}, None
+    if not isinstance(stakes, dict) or len(stakes) > 60:
+        return None, "Those bet amounts aren't recognized. Nothing was approved."
+    have = {c["id"] for c in items or []}
+    try:
+        hi = max(PANEL_OWN_MIN, min(OWN_MAX, float(budget)))
+    except (TypeError, ValueError):
+        return None, "Couldn't read today's panel budget, so your amounts can't be checked. Nothing was approved."
+    out = {}
+    for k, v in stakes.items():
+        if str(k) not in have:
+            continue
+        amt, why = own_stake(v, PANEL_OWN_MIN, hi)
+        if why:
+            return None, why
+        if amt is not None:
+            out[str(k)] = amt
+    return out, None
+
+
+def _own_apply(c, amt):
+    """Put Pete's own stake on a panel bet, keeping the panel's own size beside it (rec_stake) for the record."""
+    if amt is None or abs(amt - float(c["stake"])) < 0.005:
+        return c
+    c.setdefault("rec_stake", c["stake"])
+    c["stake"], c["own"] = amt, True
+    return c
+
+
+def _panel_stats(items):
+    """The card's numbers (chance the day ends ahead, expected, range) for these bets, from the same simulation."""
+    tot = _sim_panel(items) if items else [0]
+    return {"p_ahead": round(sum(1 for t in tot if t > 0) / len(tot), 3), "ev": round(sum(tot) / len(tot), 2),
+            "stake": round(sum(c["stake"] for c in items), 2), "worst": round(min(tot), 2), "best": round(max(tot), 2)}
+
+
+def panel_whatif(view="all", ids=None, stakes=None):
+    """Reads only: what the panel card's numbers would be with these bets (ids; None = all) at Pete's own stakes, so the
+    ring updates as he changes an amount. Never saves, approves or buys anything."""
+    src = panel_get("extra" if view == "extra" else "real" if view in ("all", "", None) else f"view:{view}")
+    if not src:
+        return {"ok": False, "msg": "That panel is gone. Pull to refresh."}
+    budget = float(src.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    own, why = own_panel_stakes(stakes, src.get("items", []), budget)
+    if why:
+        return {"ok": False, "msg": why}
+    pick = [_own_apply(dict(c), own.get(c["id"])) for c in src.get("items", [])
+            if (ids is None or c["id"] in set(ids)) and c.get("state") not in ("skipped", "swapped", "failed", "left out")]
+    st = _panel_stats(pick)
+    return dict(st, ok=True, budget=budget, over=st["stake"] > budget + 0.01)
+
+
+def panel_approve(ids=None, view="all", at=None, stakes=None):
     """Pete's tap: the Mac buys these panel bets (all by default) right away, each after a fresh price check. A one-sport
     panel (view = its code) becomes today's panel when approved. `at` is the version he was looking at;
     if the panel has been rebuilt since, nothing is approved and he's asked to look again. After a Cancel,
-    approving again schedules the bets that weren't bought."""
+    approving again schedules the bets that weren't bought. stakes: Pete's own amounts ({id: dollars}, checked by
+    own_panel_stakes); with any, the bets riding today must still fit the panel budget, or nothing is approved."""
     src = panel_get("real" if view in ("all", "", None) else f"view:{view}")
     if not src:
         return False, "There's no panel yet. Give it a few minutes."
@@ -17138,6 +17258,10 @@ def panel_approve(ids=None, view="all", at=None):
         return False, "The panel was just updated with new prices. Take another look, then approve."
     if src.get("base_guess") or sizing_base()[0] is None:
         return False, BALANCE_UNREAD_MSG
+    budget = float(src.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    own, why = own_panel_stakes(stakes, src.get("items", []), budget)
+    if why:
+        return False, why
     msg = {}
 
     def fn(cur, st):
@@ -17157,9 +17281,19 @@ def panel_approve(ids=None, view="all", at=None):
                 msg["late"] = msg.get("late", 0) + 1
                 continue
             c["state"] = "scheduled" if (ids is None or c["id"] in ids) else "left out"
+            if c["state"] == "scheduled":
+                _own_apply(c, own.get(c["id"]))
         msg["n"] = sum(1 for c in p["items"] if c.get("state") == "scheduled")
         if not msg["n"] and msg.get("late"):
             return None                                  # nothing left to buy: don't approve a dead panel
+        if own:                                          # his own amounts: still inside the day's panel budget
+            riding = [c for c in p["items"] if c.get("state") in PANEL_LIVE]
+            tot = sum(float(c["stake"]) for c in riding)
+            if tot > budget + 0.01:
+                msg["no"] = (f"Those bets add up to {money(tot)}, over today's {money(budget)} panel budget. Lower an "
+                             "amount or leave a bet out. Nothing was approved.")
+                return None
+            p["stats"] = dict(p.get("stats") or {}, **_panel_stats(riding))
         return p, "approved"
     panel_tx(_panel_day(src["at"]), "real", fn)
     if msg.get("no"):
@@ -17205,16 +17339,22 @@ def panel_extras(real=None):
     return dict(x, items=_extras_filter(x.get("items", []), real))
 
 
-def panel_add(ids, view):
+def panel_add(ids, view, stakes=None):
     """Add bets from one sport's panel (or the new-since-you-approved extras) to today's already-approved panel,
     inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away.
     Safe to repeat: a bet already in today's panel (anything but skipped/left out) is never added again, the check
-    and the add happen in one locked step (panel_tx), and added extras leave the extras card at once."""
+    and the add happen in one locked step (panel_tx), and added extras leave the extras card at once. stakes: Pete's
+    own amounts ({id: dollars}, checked by own_panel_stakes), counted against the same budget room."""
     src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
     if src.get("base_guess"):                         # sized without the balance: never added to the real panel
         return False, BALANCE_UNREAD_MSG
+    real = panel_get("real") or {}
+    own, why = own_panel_stakes(stakes, src.get("items", []),
+                                real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    if why:
+        return False, why
     ids = set(ids or [])
     msg = {}
 
@@ -17230,6 +17370,7 @@ def panel_add(ids, view):
             old = _item(cur, c["id"])
             if c["id"] not in ids or (old and old.get("state") in PANEL_TRIED):
                 continue
+            c = _own_apply(dict(c), own.get(c["id"]))
             if not _start_ok(c, time.time(), 5 * 60):
                 skipped.append(c["legs"][0]["pick"])
                 continue
@@ -19896,6 +20037,27 @@ def resolve_quotes(limit=200):
     return n
 
 
+NUDGE_GAP = 600          # seconds: one "time to cash out" toast per combo at most this often (#210)
+
+
+def nudge_event(t, v, view, last, now):
+    """The Live toast "Combo N: time to cash out" (#210). It used to follow the Let it ride plan's verdict, which
+    flips between hold and sell on the watcher's estimated offer, so a long shot that smart sell would never sell
+    (a 12-pick combo on an estimate below cost, games days away) got the toast every few minutes. Now it goes out
+    only when the combo's `nudge` (cash_nudge: smart sell's rule says sell, on a real offer at or above cost, a game
+    under way) turns on, at most once per NUDGE_GAP. Tapping it opens the combo (the SPA's moments.js)."""
+    nd = v.get("nudge")
+    was = last.get(("nudge", t))
+    last[("nudge", t)] = bool(nd)
+    if not nd or was or now - last.get(("nudge_at", t), 0) < NUDGE_GAP:
+        return []
+    last[("nudge_at", t)] = now
+    amt = money(nd.get("offer") or v.get("offer") or 0)
+    smart = view.get("auto_sell") and not v.get("self")
+    return [{"kind": "advice", "combo": t,
+             "text": f"{v['label']}: smart sell is cashing out at {amt}" if smart else f"{v['label']}: time to cash out ({amt})"}]
+
+
 def record_view(view):
     """Called each time the Mac refreshes Live: writes ticks and offers that changed, notes new bets and
     results, and returns the events worth pushing to open screens (scores, big swings, settled combos)."""
@@ -19973,8 +20135,7 @@ def record_view(view):
                 store_x("insert into offers values(?,?,?,?,?,?,?,?)",
                         (now, t, v.get("p"), v.get("pays"), v.get("hold_value"), v.get("offer"),
                          int(bool(v.get("offer_real"))), v.get("verdict")))
-                if prev and prev[1][2] != sig[2] and sig[2] in ("sell", "half"):
-                    ev.append({"kind": "advice", "combo": t, "text": f"{v['label']}: time to {'cash out' if sig[2] == 'sell' else 'cash out half'}"})
+            ev += nudge_event(t, v, view, last, now)
             _legs(t, v["legs"])
         elif ("done", t) not in last:
             last[("done", t)] = 1
