@@ -3214,7 +3214,12 @@ def webapp_main():
             msg = "The Mac is restarting. Nothing was done; try again in a moment."
             return {"ok": False, "msg": msg, "error": msg, "busy": True}
         try:
-            return _api_act(d)
+            A.refusal_take()                                # this thread's last Kalshi refusal belongs to this tap only
+            r = _api_act(d)
+            ref = A.refusal_take()
+            if ref and isinstance(r, dict) and (r.get("error") or r.get("ok") is False):
+                r = dict(r, refusal=ref)                    # Kalshi's own words, in full, for the page (#134)
+            return r
         except ActBusy:
             msg = "The app is busy updating. Nothing was done; try again in a moment."
             log("tap waited too long for the app lock:", str(d.get("a", ""))[:20])
@@ -3540,6 +3545,11 @@ def webapp_main():
                     import traceback
                     traceback.print_exc()
                     out = {"error": f"{type(err).__name__}: {err}"}
+                if isinstance(out, dict) and path in ("/app/api/live", "/app/api/build", "/app/api/settings", "/app/api/panel"):
+                    try:                                    # Kalshi's refusals (issue #134): the page shows a calm banner
+                        out = dict(out, restrict=A.restriction_info())
+                    except Exception as err:
+                        log("restriction info:", type(err).__name__, err)
                 return self._send(200, json.dumps(out))
             self._send(404, "{}")
 

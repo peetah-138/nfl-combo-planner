@@ -329,6 +329,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
   Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
   watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
+- **Kalshi's refusals, shown honestly** (issue #134). A definite refusal is Kalshi's own words, in full (`body_words`,
+  600 characters, tags stripped), never a guess: a 401/403 says "Kalshi refused this (403 code): <its message>" and adds
+  "your API key may need write access" only when Kalshi itself says so (`perm_words`, `key_write_denied`). A refusal for
+  the account or region (`is_restriction`: 400/401/403/451 with words like "residents ... not allowed", "jurisdiction",
+  "region") is written to `combo_kalshi_block.json` (git-ignored; `note_refusal`, `restriction_info`) and the Mac **holds
+  back** the same refused request: buys wait 30 min, then 1 h, 2 h, 4 h while it keeps refusing; automatic sales 10-30
+  min (`hold_refusal`, `sell_held`). Held: new quotes and accepts, Buy ideas, the panel (`hold: "region"`, back to
+  "scheduled", never "failed" or "check"), the automatic hedge, auto cash-out and smart sell. Pete's own sell taps are
+  never held. After a hold the next buy Pete already approved (or his tap) is the check; Kalshi taking an order clears the
+  note (`restriction_clear`), a note a day old is ignored. No harmless read reveals a cleared restriction, so nothing is
+  placed just to look. The page shows a calm banner under the header (`rsBan`, `#rsban`) and a sheet with the full message
+  (`refusalSheet`, selectable, Copy); `restrict` rides on Live, Build, Settings and panel answers and `refusal` on a refused
+  tap (`api_act`). **Rule 8 is untouched:** timeouts and 5xx are `OrderUnknown` ("check", never retried, never a region
+  hold). This only reports and waits; it never changes a location, routes an order elsewhere or adds money movement.
+  Tests: `t_refusals`, `test_refusals`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
