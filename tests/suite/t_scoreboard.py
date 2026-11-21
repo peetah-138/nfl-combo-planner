@@ -156,6 +156,8 @@ def e():
     E.store_x("update sell_log set ts=?", (now - 3600,))
     try:
         n = E.sale_outcomes(now, every=0)
+        n_asked = len(asked)
+        again = E.sale_outcomes(now + 1, every=0)        # E7 below: answered from what's stored, never Kalshi's real API
     finally:
         E.requests.get = real
     sl = {r["ticker"]: r for r in E.store_rows("select * from sell_log where result='sold'")}
@@ -173,7 +175,8 @@ def e():
     bd = E.profit_board(now)
     en = {r["k"]: r for r in bd["periods"]["all"]["by"]["end"]}
     ok("E6 the board now files those two as sold by smart sell, with what holding would have paid", en["smart"]["n"] == 2 and en["smart"]["vs_n"] == 2)
-    ok("E7 nothing asked again once every sale has its answer", E.sale_outcomes(now + 1, every=0) == 0)
+    re_asked = {t for q in asked[n_asked:] for t in q.split(",")}
+    ok("E7 nothing asked again once every sale has its answer (only the one still unsettled)", again == 0 and not re_asked & {"KXMVE-C2", N}, (again, asked))
 section("E", e)
 
 
