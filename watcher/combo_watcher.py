@@ -3183,8 +3183,8 @@ def webapp_main():
         if c.get("fair"):                              # the books' chance of the combo, as built
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / c["fair"] - r["stake"], 2)
         try:
-            r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend()), 2)
-        except Exception:                              # unreadable: no room shown (get_offer refused anything over)
+            r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)   # display only: the cap itself is
+        except Exception:                              # get_offer's / accept_offer's own fresh check
             r["room"] = None
         r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
         return r
@@ -3272,6 +3272,15 @@ def webapp_main():
                     "Smart sell is watching this one now."}
         if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
             return idea_act(a, d, t)
+        if a == "panel_whatif":                     # reads only, no app lock: the card's numbers at Pete's own amounts
+            ids = d.get("ids")
+            try:
+                return jsonable(A.panel_whatif(str(d.get("view") or "all")[:20],
+                                               [str(x) for x in ids][:60] if isinstance(ids, list) else None,
+                                               d.get("stakes")))
+            except Exception as err:
+                log("panel what-if failed:", type(err).__name__, err)
+                return {"ok": False, "msg": "Couldn't work that out just now."}
         with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
@@ -3339,6 +3348,8 @@ def webapp_main():
                     if no:
                         return {"ok": False, "msg": no, "capped": True}
                     cost = round(n * (ask + fee), 2)
+                    for k in [k for k, v in IDEA_Q.items() if time.time() - v["at"] > IDEA_Q_SECS * 4]:
+                        IDEA_Q.pop(k, None)
                     IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
@@ -3426,11 +3437,6 @@ def webapp_main():
             if a == "panel_approve":
                 ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"), stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
-            if a == "panel_whatif":                 # reads only: the card's numbers at Pete's own amounts
-                ids = d.get("ids")
-                return jsonable(A.panel_whatif(str(d.get("view") or "all")[:20],
-                                               [str(x) for x in ids][:60] if isinstance(ids, list) else None,
-                                               d.get("stakes")))
             if a == "clear_block":                  # Pete lifts an "unknown outcome" block after checking Kalshi
                 key = str(d.get("key", ""))[:200]
                 if not A.clear_order_block(key):

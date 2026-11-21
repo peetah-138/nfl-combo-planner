@@ -19,8 +19,8 @@ function stakeCtl(o){const k=esc(o.key),rec=+o.rec||0,cur=+(o.cur!=null?o.cur:re
  const note=own&&rec>0&&x>=1.5?`<div class="stkw" data-w="big">${x.toFixed(1).replace(/\.0$/,'')}× the recommended size: more risk for the same edge.</div>`:'';
  const cap=o.room!=null&&o.room<100&&mx<=o.room+.005?`<div class="stkm" data-w="cap">Your cap has ${money(o.room)} left, so ${stkMoney(mx)} is the most here.</div>`:'';
  const ev=o.ev!=null?`<span class="stkev ${o.ev>0?'up':o.ev<0?'down':''}">Expected profit ${o.ev>=0?'+':'−'}${stkMoney(Math.abs(o.ev))}</span>`:'';
- return `<div class="stk" data-sk="${k}" onclick="event.stopPropagation()">
-  <div class="stkh"><span class="stkl">Your bet</span><b data-num="sk:${k}" data-v="${cur.toFixed(2)}">${stkMoney(cur)}</b>${own?'<span class="tag">your amount</span>':'<span class="tag good">recommended</span>'}${ev}</div>
+ return `<div class="stk" data-sk="${k}">
+  <div class="stkh" aria-live="polite"><span class="stkl">Your bet</span><b data-num="sk:${k}" data-v="${cur.toFixed(2)}">${stkMoney(cur)}</b>${own?'<span class="tag">your amount</span>':'<span class="tag good">recommended</span>'}${ev}</div>
   <div class="stkr"><button type="button" class="stkb" aria-label="One dollar less" ${cur-1<mn-.005?'disabled':''} onclick="stkSet('${k}',${Math.max(mn,Math.round((cur-1)*100)/100)})">−</button>
    ${chip(rec,'Recommended '+stkMoney(rec))}${ps.map(v=>chip(v,last&&Math.abs(v-last)<.005&&!STK_PRESETS.includes(v)?'Last '+stkMoney(v):'')).join('')}
    <input class="stkin" type="number" inputmode="decimal" min="${mn}" max="${mx}" step="1" placeholder="$" aria-label="Your own bet amount in dollars" onkeydown="if(event.key==='Enter'){this.blur()}" onchange="stkType('${k}',this,${mn},${mx})">

@@ -118,7 +118,7 @@ function undoHide(){const b=$('#undo');if(!b)return;clearTimeout(b._t);b._fn=nul
  addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',()=>{if(c&&lock==='x'){S.scrub=false;}reset();if(S.liveDirty){S.liveDirty=false;if(S.view==='live')renderLive();}},{passive:true});})();
 
 /* ---- the detail page: tap a card (not a button) */
-function ideaOpen(e,id){if(e&&e.target&&e.target.closest('button,a,input,select,.ileg'))return;if(Date.now()-(S.swAt||0)<450)return;openIdea(id);}
+function ideaOpen(e,id){if(e&&e.target&&e.target.closest('button,a,input,select,.ileg,.stk'))return;if(Date.now()-(S.swAt||0)<450)return;openIdea(id);}
 const IKIND={win:'Single game',spread:'Spread',total:'Total'};
 function ideaTk(li){return li&&/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';}
 function openIdea(id){const x=ideaFind(id);if(!x)return;id=x.idea_id||x.id;S.gameOpen=null;S.comboOpen=null;S.ideaOpen=id;S.ideaReady=null;S.ideaSig=null;S.ideaDepth=null;
@@ -162,7 +162,8 @@ function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').
 
 /* ---- getting a price and buying: the same guarded Mac paths as always */
 async function priceIdea(id){document.querySelectorAll(`[data-ib="${id}"]`).forEach(b=>{b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';});
- const r=await api('/app/api/act',{a:'idea',id,stake:stkGet('id:'+id)}).catch(()=>({ok:false}));
+ const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
+ if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
  S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note};
  S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
