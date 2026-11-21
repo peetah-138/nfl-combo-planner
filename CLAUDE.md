@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.128). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.129). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -158,7 +158,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.128`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.129`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -510,7 +510,8 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     `fetch_series` and the held-singles refresh in `open_singles`) and `price_seen_book` (`book_depth`) note prices the
     engine already read: **no new Kalshi request**. `price_watch` marks markets to record (panel candidates, Buy ideas,
     held singles); `price_flush` writes every 60 s near a game (3 h before to 6 h after), 5 min otherwise, only on a
-    change unless 15 min passed; `price_prune` keeps 30 days and ≤ 250k rows (exit_shadow: 60 days, 200k; both
+    change unless 15 min passed, all of a flush's rows in one transaction (`_price_insert`: one sync, the history lock held
+    once; inside a `panel_tx` they join it); `price_prune` keeps 30 days and ≤ 250k rows (exit_shadow: 60 days, 200k; both
     indexed on ts). A failed held-markets refresh's fallback copy is never recorded as fresh; held singles are watched
     with their kickoff (`price_watch_held`); `depth` is the size at the best ask (book_info's `ask_size`), not the bid.
     Buy-idea combos share the combo's chance out in proportion to each pick's ask; asks over 15 min old = skipped.

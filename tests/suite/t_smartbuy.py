@@ -124,6 +124,17 @@ E.price_prune(now)
 left = E.store_rows("select count(*) n from price_path")[0]["n"]
 E.PRICE_MAX_ROWS = cap
 ok("and the table is capped (oldest go first)", left == 3)
+_db = E.STORE["db"]
+E._price_insert([(now, "BATCH1", 0.1, 0.2, 0.15, None, None), (now, "BATCH2", 0.3, 0.4, 0.35, None, None)])
+ok("a flush's rows go in one transaction and are committed",
+   not _db.in_transaction and len(E.store_rows("select 1 from price_path where ticker like 'BATCH%'")) == 2)
+_db.execute("begin")
+E._price_insert([(now, "INTX", 0.1, 0.2, 0.15, None, None)])
+ok("inside someone else's transaction the rows join it (no commit of theirs)", _db.in_transaction)
+_db.execute("rollback")
+ok("...and go with it on their rollback", not E.store_rows("select 1 from price_path where ticker='INTX'"))
+E._price_insert([(now, "BAD")])
+ok("a bad row never raises and leaves no transaction open", not _db.in_transaction)
 E.price_seen_markets([None, {"ticker": None}, {"ticker": "X", "yes_bid": "junk"}])
 ok("odd market data never raises", True)
 
