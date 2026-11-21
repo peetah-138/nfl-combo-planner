@@ -62,7 +62,7 @@ with sync_playwright() as pw:
     errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     def fresh_page():
         pg.goto(B + "/app"); until(pg, "!!(S.live&&S.live.fresh)", 25)
-        pg.evaluate("try{sessionStorage.clear()}catch(e){}; window.__m=1; window.__haps=[]; const h=window.hap; window.hap=function(k){window.__haps.push(k||'light');return h.apply(this,arguments)}")
+        pg.evaluate("try{sessionStorage.clear();localStorage.removeItem('cw_vrl')}catch(e){}; window.__m=1; window.__haps=[]; window.__vp=verPoll; verPoll=()=>{}; const h=window.hap; window.hap=function(k){window.__haps.push(k||'light');return h.apply(this,arguments)}")
     # the page itself: the version is filled in, never cached
     resp = pg.request.get(B + "/app")
     A = state["A"]
@@ -81,10 +81,10 @@ with sync_playwright() as pw:
     pg.evaluate("go('settings')"); until(pg, "!!document.querySelector('#verrow')", 10)
     row = pg.evaluate("(document.querySelector('#verrow')||{}).textContent")
     print("version row:", repr(row))
-    if not re.search(r"App version\s*" + re.escape(A.VERSION) + r"\s*\(page: same\)", row or ""): print("PROBLEMS: settings version row", row)
+    if not re.search(r"Up to date\s*App version " + re.escape(A.VERSION), row or "") or "Reload" in row: print("PROBLEMS: settings version row", row)
     row2 = pg.evaluate("(()=>{const d=document.createElement('div');d.innerHTML=verRow('" + NEWV + "');return d.textContent})()")
     print("differing row:", repr(row2))
-    if NEWV not in row2 or A.VERSION not in row2 or "page: same" in row2: print("PROBLEMS: a differing page version isn't shown")
+    if NEWV not in row2 or A.VERSION not in row2 or "A newer version is ready" not in row2 or "Reload" not in row2: print("PROBLEMS: a differing page version isn't shown")
     if SHOTS: pg.evaluate("document.querySelector('#verrow').scrollIntoView({block:'center'})"); time.sleep(.5); pg.screenshot(path=SHOTS + "/settings_version.png")
     pg.evaluate("go('live')")
 
@@ -108,15 +108,56 @@ with sync_playwright() as pw:
     pg.evaluate("window.load=async()=>{}")   # the page's own refreshes would put the real version back mid-case
     cases = {"quote in flight": "S.qpend={1:{t:Date.now()}}", "buy in flight": "S.buying=true", "tap in flight": "S.busy={x:true}",
              "price on screen": "S.quotes={1:{at:Date.now()/1000}}", "scrubbing": "S.scrub=true",
-             "approve on its way": "S.pSend=true", "finger down": "dispatchEvent(new PointerEvent('pointerdown'))"}
+             "approve on its way": "S.pSend=true", "live idea quote": "S.ideaq={x:{at:Date.now()/1000}}",
+             "any tap's request in flight": "S.inflight=1", "a result just landed": "S.verHold=Date.now()+15000",
+             "a refusal being read": "toast('Didn\\'t go through.',9000,'bad')", "a check message": "toast('Check Live before trying again',9000)", "finger down": "dispatchEvent(new PointerEvent('pointerdown'))"}
     for name, js in cases.items():
         pg.evaluate(js); pg.evaluate(f"S.srvVer='';S.verIdleAt=0;verSeen('{NEWV}')")
         until(pg, "!!document.querySelector('#verpill.on')", 3)
         held = still(pg, "window.__m===1&&!!document.querySelector('#verpill.on')", 2.8)
         print(name + " -> pill, no reload:", held, pg.evaluate("[window.__m,!!document.querySelector('#verpill.on'),S.srvVer,verBusy(),JSON.stringify(S.quotes)]") if not held else "")
         if not held: print("PROBLEMS: reloaded or no pill while: " + name)
-        pg.evaluate("S.qpend={};S.buying=false;S.busy={};S.quotes={};S.scrub=false;S.pSend=false;dispatchEvent(new PointerEvent('pointerup'))")
+        pg.evaluate("S.qpend={};S.buying=false;S.busy={};S.quotes={};S.scrub=false;S.pSend=false;S.ideaq={};S.inflight=0;S.verHold=0;toastHide();dispatchEvent(new PointerEvent('pointerup'))")
         pg.evaluate("S.srvVer=PAGE_VER;verSeen(PAGE_VER)"); time.sleep(.3)
+
+    # 2b. leftovers of a rebuilt card (an old pending quote) don't block a reload forever
+    fresh_page(); pg.evaluate("window.load=async()=>{}; S.qpend={1:{t:Date.now()-120000}}; S.bpend={1:{t:Date.now()-120000}}")
+    pg.evaluate(f"verSeen('{NEWV}')")
+    ok = until(pg, "window.__m!==1", 9)
+    print("old pending leftovers don't block:", ok)
+    if not ok: print("PROBLEMS: stale qpend/bpend blocked the reload")
+    # 2c. the pill itself: 44 px, no role, labelled, not focusable while hidden
+    fresh_page()
+    hid = pg.evaluate("(()=>{verPill(true);verPill(false);const e=document.getElementById('verpill');return getComputedStyle(e).visibility})()")
+    time.sleep(.7)
+    hid = pg.evaluate("getComputedStyle(document.getElementById('verpill')).visibility")
+    pg.evaluate("verPill(true)"); time.sleep(.3)
+    vis = pg.evaluate("getComputedStyle(document.getElementById('verpill')).visibility")
+    hgt = pg.evaluate("document.getElementById('verpill').getBoundingClientRect().height")
+    print("pill hidden/visible/height:", hid, vis, hgt)
+    if hid != "hidden" or vis != "visible": print("PROBLEMS: the hidden pill is still focusable/visible")
+    if hgt < 43.9: print("PROBLEMS: the pill is under 44px tall")
+    if pg.evaluate("document.getElementById('verpill').hasAttribute('role')") or "New version ready" not in pg.evaluate("document.getElementById('verpill').getAttribute('aria-label')"): print("PROBLEMS: pill role/label")
+    pg.evaluate("verPill(false)")
+    # 2d. a page parked on Build still learns the version (its own read-only check)
+    fresh_page()
+    pg.evaluate("verPoll=window.__vp")
+    r = pg.evaluate("api('/app/api/ver')")
+    print("version endpoint:", r)
+    if r.get("ver") != A.VERSION: print("PROBLEMS: /app/api/ver")
+    pg.route("**/app/api/ver", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "ver": NEWV})))
+    pg.evaluate("go('build')"); time.sleep(.8); pg.evaluate("window.load=async()=>{}; S.verPollAt=0; verPoll()")
+    ok = until(pg, "window.__m!==1", 9)
+    print("parked on Build -> learns and reloads:", ok)
+    if not ok: print("PROBLEMS: a page on Build never noticed the new version")
+    pg.unroute("**/app/api/ver")
+
+    # 3b. the Settings Reload button (a stale page): the haptic comes from the tap itself
+    fresh_page(); pg.evaluate("window.load=async()=>{}")
+    n = pg.evaluate("(()=>{const d=document.createElement('div');d.innerHTML=verRow('2099.01.01.1');const b=d.querySelector('button');__haps.length=0;b.click();return __haps.length})()")
+    print("settings Reload haptic:", n)
+    if n < 1: print("PROBLEMS: the Settings Reload button has no haptic in the tap")
+    until(pg, "window.__m!==1", 6)
 
     # 3. tapping the pill: the light haptic comes straight from the tap, then it reloads
     fresh_page()

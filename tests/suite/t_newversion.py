@@ -14,9 +14,9 @@ man = json.load(open("wtest/spa/MANIFEST.json")) if __import__("os").path.exists
 js = man["js"]
 ok("manifest: update.js is listed, after settings.js and before boot.js", "update.js" in js and js.index("settings.js") < js.index("update.js") < js.index("boot.js"))
 ok("page: the version check is hooked into every freshness block", "verSeen(f.ver)" in W.SPA and "function verSeen" in W.SPA)
-ok("page: the pill's tap fires the haptic itself (no await before it)", "function verTap(){hap('light');verReload(true);}" in W.SPA)
+ok("page: the pill's tap fires the haptic itself (no await before it)", "function verTap(){hap('light');verReload();}" in W.SPA)
 ok("page: busy checks cover sheets, quotes, buys, taps, fingers and scrubs",
-   all(k in W.SPA for k in ("S.scrub", "S.buying", "S.pSend", "S.qpend", "S.bpend", "S.busy", "#modal", "verFingers")))
+   all(k in W.SPA for k in ("S.scrub", "S.buying", "S.pSend", "S.qpend", "S.bpend", "S.busy", "#modal", "verFingers", "S.inflight", "S.verHold", "S.ideaq")))
 sw = W.SW_JS
 ok("sw: has no fetch handler and caches nothing, so it can't serve an old page", "'fetch'" not in sw and "caches." not in sw)
 ok("sw: carries a version stamp filled in at serve time", "// app-version: @@VER@@" in sw)
@@ -25,3 +25,5 @@ ok("sw: a new release changes the worker's bytes (so browsers install it)", a !=
 src = open("wtest/combo_watcher.py").read()
 ok("server: the version is in the freshness block and the page is filled in", '"ver": str(getattr(A, "VERSION"' in src and '.replace("__CWVER__"' in src)
 ok("server: the worker is stamped with WATCHER_VERSION when served", 'SW_JS.replace("@@VER@@", WATCHER_VERSION)' in src)
+ok("page: a read-only version check runs on the tick, every 12 s and on resume", "function verPoll" in W.SPA and "verPoll()" in W.SPA and "/app/api/ver" in W.SPA)
+ok("server: /app/api/ver answers only the version", 'path == "/app/api/ver"' in src and '{"ok": True, "ver": str(getattr(A, "VERSION"' in src)

@@ -3603,6 +3603,8 @@ def webapp_main():
                         out = api_game_warm(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
+                    elif path == "/app/api/ver":            # read-only: the running version (a parked page checks it, #150)
+                        out = {"ok": True, "ver": str(getattr(A, "VERSION", "") or "")}
                     elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
                         try:
                             h = max(1, min(720, int(q.get("h") or 16)))

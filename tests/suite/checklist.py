@@ -37,7 +37,7 @@ SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedet
         "test_chips": 17, "test_hist": 16, "test_rebuild_ui": 16, "test_cover": 13, "test_https": 12,
         "test_realdate": 11, "test_analytics": 11, "test_fieldstrip": 10, "test_klive": 9, "test_singles_live": 8,
         "test_orderblock": 8, "test_gamecard_opp": 8, "test_buildguard": 6, "test_login_faceid": 6,
-        "test_bestbets": 45, "test_newversion": 45, "test_offerlive": 4, "test_web3": 1}
+        "test_bestbets": 45, "test_newversion": 200, "test_offerlive": 4, "test_web3": 1}
 
 # Page tests allowed ONE automatic rerun in CI (CHECK_RETRY=1), logged as "passed on retry". Keep it empty unless a
 # test is timing-bound by nature; a flaky test should be fixed at the root first.

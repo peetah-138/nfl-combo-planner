@@ -1,6 +1,9 @@
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__,PAGE_VER="__CWVER__";
 const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
+const apiRaw=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
+/* Every POST in flight is counted (update.js never reloads under one), and a money result holds a reload for 15 s so its message can be read. */
+const VER_HOLD_ACTS=['buy','go','hedgego','singlebuy','pot_move','panel_approve','panel_add','panel_cancel','panel_restart'];
+const api=(p,b)=>{if(b===undefined)return apiRaw(p);S.inflight=(S.inflight||0)+1;return apiRaw(p,b).finally(()=>{S.inflight=Math.max(0,(S.inflight||1)-1);if(b&&VER_HOLD_ACTS.includes(b.a))S.verHold=Date.now()+15000;});};
 /* Kalshi's refusals, shown honestly (issue #134). When Kalshi turns an order down for the account or the region, the page says
    so in Kalshi's own words, in full (a sheet you can read and copy), and a calm banner stays up while the Mac waits before trying
    again. It is Kalshi's rule, not a bug in the app: the page only reports it and never offers a way around it. `S.rs` is the
