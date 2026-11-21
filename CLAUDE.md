@@ -312,6 +312,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
+- **College football scores cover all of Division I (issue #224).** `SPORTS["ncaaf"]["score_q"]` = ESPN group 90 (FBS 80 +
+  FCS 81), read only by `fetch_scores`; the free lines (`free_snapshot`) and game picking keep `q`/`espn_q` = group 80, so
+  no new game is priced from ESPN because of it. Kalshi lists FCS games (Jackson St. at Alcorn St.) that group 80 never had.
+  A college football game ESPN still has no record of gets Kalshi's public live data as a **display-only backup**
+  (`KLIVE_BACKUP`, `_kfootball`; `klive_events` asks only when `leg_score` has nothing), same isolation rule as below.
+  An open pick at 99.5%+ reads ">99%", never "100%" (`chance_pct`, SPA `pct`). Test: `t_fcs_score`.
 - **Tennis, EuroLeague and UFC scores come from Kalshi's public live data (GitHub #25), display only.** No key, no
   account endpoints: `GET /milestones?related_event_ticker=<event>` maps a game to its milestone (cached 6 h, a miss
   15 min, at most 8 new lookups a refresh) and one `GET /live_data/batch?milestone_ids=...` per refresh covers every
