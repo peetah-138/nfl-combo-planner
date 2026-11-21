@@ -21,6 +21,7 @@
     "game_tabs.js",
     "moments.js",
     "settings.js",
+    "update.js",
     "boot.js"
   ],
   "login": "login.html"

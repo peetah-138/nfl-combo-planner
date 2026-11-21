@@ -1,4 +1,4 @@
-const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
+const TOK="__CWTOK__",LOCAL=__CWLOCAL__,PAGE_VER="__CWVER__";
 const $=s=>document.querySelector(s);
 const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
 /* Kalshi's refusals, shown honestly (issue #134). When Kalshi turns an order down for the account or the region, the page says
@@ -221,7 +221,7 @@ function warm(v){/* show the last copy straight away while the fresh one loads *
 //   • the scores: how old the live games' scores are (only while a game is on). Shown alongside so a stale snapshot
 //     and stale scores are never conflated into one misleading "Updated N ago".
 S.fr={};
-function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
+function frSet(k,f){if(f&&f.ver&&typeof verSeen==='function')verSeen(f.ver);if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
 function frEl(k){const o=S.fr[k];return o?Math.max(0,(Date.now()-o.recv)/1000):0;}        // seconds since this page got it
 function frBuilt(k){const o=S.fr[k];if(!o)return null;return Math.max(0,o.f.now-o.f.built+frEl(k));}   // snapshot/prices age
 function frScores(k){const o=S.fr[k];if(!o||o.f.scores==null)return null;return Math.max(0,o.f.scores+frEl(k));} // scores age

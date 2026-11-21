@@ -753,6 +753,15 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
+- **A newer version reaches an open page (GitHub #150, display only).** The web app fills the running version into the page
+  (`PAGE_VER`, `__CWVER__` in `SPA`, from `A.VERSION`; the page is `no-store`) and every live/games/game answer carries it
+  (`fresh.ver`). `watcher/spa/update.js` (`verSeen`, hooked in `frSet`) compares the two. Different + idle (no sheet or pushed page
+  open, no quote/buy/tap/Approve in flight, no live price on screen, no finger, scrub or typing; quiet for 1.5 s) = reload by itself
+  with a quiet fade, then an "Updated to <version>" toast; busy = a "New version ready: tap to refresh" pill (`verTap` fires the
+  light haptic inside the real tap, then reloads). Never reloads under a sheet or a tap in flight; a version we already reloaded for
+  within 5 min leaves only the pill (no loop); an unreadable version does nothing. The service worker has no fetch handler (caches
+  nothing) and its text carries `WATCHER_VERSION`, so every release changes it. Settings > The Mac shows "App version X (page: same)",
+  or the page's own version when it differs. Tests: `t_newversion`, `test_newversion`.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
   dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
 
