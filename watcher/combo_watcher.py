@@ -3502,33 +3502,41 @@ const HSWRM=matchMedia('(prefers-reduced-motion: reduce)');
 function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!hapOff()&&!HSWRM.matches;}
 /* #151: a switch under the finger can keep iOS from scrolling, so big scroll surfaces (whole cards and rows: taller
    than 64px or wider than 70% of the screen) get none; their own buttons and chips inside keep theirs, and the card's
-   tap still works (no tick). Real buttons, chips and tabs count as compact unless taller than 64px. A control not laid
-   out yet (size unknown) waits until it is (HSWP, rechecked each frame and on every change). Sizes are all read
-   before any switch goes in, so a batch costs one layout. */
+   tap still works (no tick). Real buttons, chips and tabs count as compact unless taller than 64px. Layout size
+   (offsetWidth/Height), so a scale animation can't fool it. A control not laid out yet (hidden: size 0) waits in HSWP,
+   rechecked for 30 frames after each change, reveal (class/hidden) or scroll. A row or card that grows big later loses
+   its switch (its own content changed, or the screen turned). Sizes are all read before any switch goes in or out. */
 const HSWC='button,.chip,[role=tab],[role=button]';
-function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const r=el.getBoundingClientRect();if(!r.width&&!r.height)return null;return r.height>64||!el.matches(HSWC)&&r.width>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
+function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const w=el.offsetWidth,h=el.offsetHeight;if(!w&&!h)return null;return h>64||!el.matches(HSWC)&&w>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
 function hswOk(el){return !(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN));}
 function hswPut(el){const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
  el.insertBefore(i,el.firstChild);}
 const HSWP=new Set();let hswF=0,hswN=0;
-function hswRun(els){const put=[];for(const el of new Set(els)){if(!hswOk(el)){HSWP.delete(el);continue;}
+function hswRun(els,re){const put=[],out=[];for(const el of new Set(els)){if(!hswOk(el)){HSWP.delete(el);continue;}   // a control listed twice in one batch still gets one switch
   const b=el.isConnected?hswBig(el):(el.matches(HSWC)?false:null);if(b===null){HSWP.add(el);continue;}HSWP.delete(el);if(!b)put.push(el);}
- put.forEach(hswPut);hswWait();}
-function hswWait(){if(HSWP.size&&!hswF&&hswN<30)hswF=requestAnimationFrame(()=>{hswF=0;hswN++;for(const e of HSWP)if(!e.isConnected)HSWP.delete(e);if(hswOn())hswRun([...HSWP]);});}   // up to 30 frames, again after each change or scroll
+ if(re)for(const h of re){const s=h.isConnected&&h.querySelector(':scope>.hsw');if(s&&hswBig(h))out.push(s);}   // grew into a card: its switch goes
+ put.forEach(hswPut);out.forEach(s=>s.remove());hswWait();}
+function hswWait(){if(HSWP.size&&!hswF&&hswN<30)hswF=requestAnimationFrame(()=>{hswF=0;hswN++;for(const e of HSWP)if(!e.isConnected)HSWP.delete(e);if(hswOn())hswRun([...HSWP]);});}
 function hswAdd(el){hswRun([el]);}
 function hswList(n,out){if(n.nodeType!==1||n.classList.contains('hsw'))return;if(n.matches(HSWQ))out.push(n);if(n.firstElementChild)out.push(...n.querySelectorAll(HSWQ));}
 function hswScan(n){const out=[];hswList(n,out);hswRun(out);}
 function hswFix(t){const h=t.closest&&t.closest(HSWQ);if(!h)return;const s=h.querySelector(':scope>.hsw');if(s&&h.querySelector(HSWIN))s.remove();}   // a field arrived inside: its switch goes
-const HSWMO=new MutationObserver(ms=>{const out=[];for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;if(t.matches(HSWQ))out.push(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(n=>hswList(n,out));}
- hswN=0;hswRun(out);});
+const HSWMO=new MutationObserver(ms=>{const out=[],re=new Set();let shown=false;for(const m of ms){const t=m.target;if(t.nodeType!==1||t.classList.contains('hsw'))continue;
+  if(m.type==='attributes'){shown=true;continue;}
+  if(t.matches(HSWQ))out.push(t);if(m.addedNodes.length)hswFix(t);m.addedNodes.forEach(n=>hswList(n,out));
+  const h=t.closest(HSWQ);if(h&&!h.matches(HSWC))re.add(h);}
+ if(out.length||shown&&HSWP.size)hswN=0;if(out.length||re.size)hswRun(out,re);else hswWait();});
+addEventListener('resize',()=>{if(hswOn())hswRun([],[...document.querySelectorAll('.hsw')].map(s=>s.parentElement));},{passive:true});   // the screen turned: a row may now be wide
 /* #151: while the finger scrolls the page (or any list in it), momentum included, the switches let touches through
    (html.hswscr), so a finger that lands mid-scroll keeps scrolling; back ~150 ms after the last scroll event. Only a
-   scroll the finger started counts (one during a touch, or chained within 200 ms of one); the app's own scrolls don't. */
-let hswST=0,hswT=false,hswUS=-1e9;['touchstart','touchend','touchcancel'].forEach(k=>addEventListener(k,e=>{hswT=e.touches.length>0;},{capture:true,passive:true}));
+   scroll the finger started counts (one while a finger is down and has moved, or chained within 200 ms of one); the
+   app's own scrolls (a tab change, a refresh) don't, so a quick second tap still lands on its switch. */
+let hswST=0,hswT=false,hswUS=-1e9;['touchstart','touchend','touchcancel'].forEach(k=>addEventListener(k,e=>{hswT=false;},{capture:true,passive:true}));
+addEventListener('touchmove',()=>{hswT=true;},{capture:true,passive:true});
 addEventListener('scroll',()=>{const now=performance.now();if(!hswT&&now-hswUS>200)return;hswUS=now;const d=document.documentElement;if(!d.classList.contains('hswscr'))d.classList.add('hswscr');
  clearTimeout(hswST);hswST=setTimeout(()=>{d.classList.remove('hswscr');hswN=0;hswWait();},150);},{capture:true,passive:true});
 function hswSync(){const on=hswOn();document.documentElement.classList.toggle('hswon',on);HSWMO.disconnect();
- if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true});}else{HSWP.clear();document.querySelectorAll('.hsw').forEach(i=>i.remove());}}
+ if(on){hswScan(document.body);HSWMO.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden']});}else{HSWP.clear();document.querySelectorAll('.hsw').forEach(i=>i.remove());}}
 addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('hsw'))return;const h=t.parentElement;
  if(!h||h.disabled||h.getAttribute('aria-disabled')==='true'){e.preventDefault();e.stopImmediatePropagation();}},true);
 ['change','input'].forEach(k=>addEventListener(k,e=>{if(e.target&&e.target.classList&&e.target.classList.contains('hsw'))e.stopImmediatePropagation();},true));

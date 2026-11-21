@@ -34,8 +34,8 @@ COVER = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width
   if(a.right<0||a.bottom<70||a.left>innerWidth||a.top>innerHeight-90)return;inview++;
   // the centre and four inner points: each must land on a switch inside this control (its own or a nested control's)
   for(const [fx,fy] of [[.5,.5],[.2,.3],[.8,.3],[.2,.7],[.8,.7]]){const x=a.left+a.width*fx,y=a.top+a.height*fy;if(x<0||x>innerWidth||y<70||y>innerHeight-90)continue;const t=document.elementFromPoint(x,y);
-   if(!t||t===h||!h.contains(t))continue;
-   if(bigs.some(g=>g!==h&&h.contains(g)&&g.contains(t)))continue;   // a big card inside this control: that point is scroll surface   // something outside the control covers that point (a sticky bar): not this test's business
+   if(!t||t===h||!h.contains(t))continue;   // something outside the control covers that point (a sticky bar): not this test's business
+   if(bigs.some(g=>g!==h&&h.contains(g)&&g.contains(t)))continue;   // a big card inside this control: that point is scroll surface
    if(!t.classList.contains('hsw')){hit.push(nm+' @'+fx+','+fy+' -> '+t.tagName+'.'+(t.getAttribute('class')||''));break;}}});
  return {n:hosts.length,big:bigs.length,bigsw:bigsw.slice(0,6),inview,miss:miss.slice(0,6),twice:twice.slice(0,6),box:box.slice(0,6),hit:hit.slice(0,8),nhit:hit.length};})()"""
 
@@ -92,6 +92,7 @@ with sync_playwright() as pw:
                 mine = [x for x in h if x["k"] == k]
                 if len(mine) != 1 or mine[0]["t"] != "hsw" or not mine[0]["tr"]: bad(f"{tag} {view}: a tap on control {k} reached its handler {len(mine)} times (target {mine[:1]})")
             print(tag, view, "tapped once each:", len(keys))
+            # Games: its cards are big scroll surfaces (no switch, #151); the COVER check above asserts that
             if len(keys) < (0 if view == "games" else 1 if view == "results" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
             pg.evaluate(f"go('{view}')"); time.sleep(.5)
 
@@ -205,6 +206,7 @@ with sync_playwright() as pw:
             app = pg.evaluate("(async()=>{window.scrollBy(0,40);await new Promise(z=>setTimeout(z,60));return document.documentElement.classList.contains('hswscr');})()")
             time.sleep(.3)
             cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 200, "y": 100}]})
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": 200, "y": 70}]})
             pg.evaluate("window.scrollBy(0,40)"); time.sleep(.06); mid = pg.evaluate(pe)
             cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
             pg.evaluate("window.scrollBy(0,40)"); time.sleep(.08); still = pg.evaluate(pe)   # momentum after the finger lifts
@@ -219,7 +221,8 @@ with sync_playwright() as pw:
             src = pg.evaluate("document.documentElement.outerHTML")
             blk = src[src.index("const HSWQ="):src.index("hswSync();", src.index("const HSWQ="))]
             tl = re.search(r"\['touchstart','touchend','touchcancel'\]\.forEach\(k=>addEventListener\(k,[^\n]*passive:true", blk)
-            if blk.count("preventDefault") != 1 or re.search(r"addEventListener\('(?:touch|pointer)", blk) or "'pointerdown'" in blk or not tl:
+            tm = re.findall(r"addEventListener\('touch\w+'[^\n]*", blk)
+            if blk.count("preventDefault") != 1 or any("passive:true" not in x for x in tm) or "pointerdown" in blk or not tl:
                 bad("phone: the switch code's touch listeners must be passive and must never block the browser's scrolling")
 
         # performance: 300 new buttons get one switch each, in one batch, quickly; a re-render never doubles them;
@@ -234,6 +237,15 @@ with sync_playwright() as pw:
         if perf["n1"] != 300 or perf["n2"] != 300 or perf["n3"] != 300 or perf["dup"]: bad(f"{tag}: switches missing, doubled or on big rows among 600 new controls: {perf}")
         dbl = pg.evaluate("(()=>{const b=document.createElement('button');b.textContent='x';document.querySelector('main').appendChild(b);hswRun([b,b]);const n=b.querySelectorAll('.hsw').length;b.remove();return n;})()")
         if dbl != 1: bad(f"{tag}: a control listed twice in one batch got {dbl} switches")
+        # a small row that grows into a card loses its switch; a control revealed later (class change) gets one
+        lat = pg.evaluate("""(async()=>{const f=()=>new Promise(z=>requestAnimationFrame(()=>setTimeout(z,30)));const m=document.querySelector('main');
+          const r=document.createElement('div');r.className='trow';r.setAttribute('onclick','void 0');r.style.cssText='width:120px;height:40px';r.innerHTML='<span>small</span>';m.appendChild(r);await f();const a=r.querySelectorAll(':scope>.hsw').length;
+          r.style.height='120px';r.querySelector('span').textContent='grown';await f();const b=r.querySelectorAll(':scope>.hsw').length;r.remove();
+          const w=document.createElement('div');w.style.display='none';w.className='zz';w.innerHTML='<span onclick="void 0" style="display:inline-block;padding:8px">later</span>';m.appendChild(w);
+          for(let i=0;i<40;i++)await f();const c=w.querySelectorAll('.hsw').length;w.style.display='';w.className='zz on';await f();await f();const d=w.querySelectorAll('.hsw').length;w.remove();
+          return {small:a,grown:b,hidden:c,shown:d};})()""")
+        print(tag, "grow/reveal:", lat)
+        if lat != {"small": 1, "grown": 0, "hidden": 0, "shown": 1}: bad(f"{tag}: a control that grows or is revealed later has the wrong switch: {lat}")
         if perf["sync"] > 150: bad(f"{tag}: wrapping 600 controls took {perf['sync']} ms")
         if perf["total"] > 1500: bad(f"{tag}: too many switches in the page ({perf['total']})")
 
