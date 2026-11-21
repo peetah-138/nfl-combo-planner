@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Every panel bet names its game in plain English (issue #61): a spread or total ("Over 7.5") used to show nothing about
 # which game it was on. Singles, sell-early favorites, combos (each leg), spreads and totals carry a game label and a
 # league tag, built from data the Mac already has (no lookups); notifications and the recap name the game too; and
@@ -5,6 +6,7 @@
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SIZING_FILE = os.path.join(E.HERE, "s.json"); E.CUTOFF_FILE = os.path.join(E.HERE, "c.json")

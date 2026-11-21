@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """The hub's read cache (display only): short score ttl, last-good copy, backoff on 429/5xx, and warming that never
 keeps an entry alive by itself. Everything is faked; nothing touches the network."""
 import os, sys, time, importlib.util

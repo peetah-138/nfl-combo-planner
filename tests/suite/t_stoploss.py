@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The stop-loss switch (issue #27): off by default, and when on it can only sell at a loss late in a game, on a
 # fresh score, not at a break, after a big fall from the pregame chance that held 3+ checks over 3+ minutes.
 # How late and how big a fall are learned league by league. No real orders: every trading call is faked here.

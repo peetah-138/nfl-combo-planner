@@ -1,3 +1,4 @@
+# CHECK: group=page secs=55
 """Live "Buy ideas" cards say which game they are for (GitHub #129): league icon + name, the matchup, start time (or the live
 score), the pick in plain words, Kalshi's price vs fair, the edge, the stake and expected profit, the chance to win and how
 fresh the price is. The ideas come from the real engine (saved with store_suggestion, read with live_suggestions): a
@@ -75,8 +76,8 @@ with sync_playwright() as pw:
         ctx = br.new_context(viewport={"width": W_, "height": H}, device_scale_factor=2, color_scheme="dark", has_touch=touch)
         pg = ctx.new_page()
         errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(3)
-        pg.evaluate("window.load=async()=>{}")
+        pg.add_init_script(__import__("upwait").COUNT_FETCHES)
+        pg.goto(B + "/app"); __import__("upwait").go_and_hold(pg, "live")   # every load in flight done (the boot one too), then held still
         pg.evaluate(LIVE); time.sleep(1)
         # ---- the words on each card
         want = {

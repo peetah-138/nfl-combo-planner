@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The Kalshi API watch (tools/kalshi_feed_watch.py, run by .github/workflows/kalshi-api-watch.yml on GitHub): reads
 # Kalshi's API changelog RSS feed and opens one issue per new entry. Real feed shape: fixtures/kalshi_changelog.rss
 # (a trimmed copy of https://docs.kalshi.com/changelog/rss.xml). Nothing here touches the network or GitHub: the

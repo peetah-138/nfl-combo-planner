@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Kalshi removed its legacy order writes (issue #81): POST/DELETE /portfolio/orders now answer 410
 # deprecated_v1_order_endpoint. Every order write goes through one adapter in kalshi_send that sends Kalshi's V2
 # request (POST /portfolio/events/orders: side bid/ask on the YES book, price a 4-decimal dollar string of the YES price,

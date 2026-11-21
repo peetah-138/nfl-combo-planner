@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Robustness of the display-only live-score code (review #37: H1, M3, L4) and the web app's tap lock and request
 limit (L1, L2). A bad or slow live-score feed must never stop or delay auto cash-out; nothing here changes what
 is bought or sold. Everything is faked; nothing touches the network or a real account."""

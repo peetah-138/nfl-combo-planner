@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The transition (GitHub #124): a Mac on 2026.11.21.126 updates to the split release with its OWN, old updater
 # (fixtures/updater_126.py.txt, verbatim from origin/main), which installs only the engine and watcher files and
 # never watcher/spa/. This proves, against a fake GitHub, that:

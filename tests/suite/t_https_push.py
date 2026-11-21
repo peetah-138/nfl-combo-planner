@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Secure address (Tailscale) and web push coverage. Nothing here touches the real Tailscale: every command line is a
 fake script in a temp folder, the network is faked, and push sends are recorded instead of sent."""
 import os, sys, json, tempfile, importlib.util, time

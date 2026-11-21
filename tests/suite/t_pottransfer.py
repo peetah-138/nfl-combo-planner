@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Moving cash between Kalshi's pots (issue #144). Kalshi keeps API cash in a pot per exchange shard and an API order can
 # only use its market's pot. Pete's single-game buy was refused with $69.49 in all but $5.63 in that pot. This checks
 # the manual move (only on Pete's confirmed tap) on the fake Kalshi: the request's units (centicents), the shortfall

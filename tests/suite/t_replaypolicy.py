@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Issue #228, PR0: the weekly tuner's replay (_replay, used by smart_tune and sim_exit) now calls exit_policy, the one
 # rule live smart sell uses, instead of its own copy. The old _replay runs verbatim (fixtures/replay_old.py.txt) next
 # to the new one on thousands of fuzzed paths and on recorded ones. Where the old copy differed from exit_policy the

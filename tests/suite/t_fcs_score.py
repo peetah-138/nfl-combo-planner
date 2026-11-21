@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Issue #224: a college football game outside ESPN's FBS group (Jackson St. at Alcorn St., FCS/SWAC) showed
 "Started 3h ago · no live score". Scores now ask ESPN for all of Division I (group 90); Kalshi's public live data
 fills in (display only) a game ESPN still has nothing for. Network faked from real responses in
