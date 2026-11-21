@@ -4,6 +4,13 @@ You are picking up a long-running project with Pete. This file holds the decisio
 earlier sessions (up to version 2026.11.21.127). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
+## Goals and strategy
+
+Two goals, in order: **profit is #1, fun is #2.** Smart Buy and Smart Sell are **one strategy** (issue #137): every
+buy needs an edge at a fair price *and* a likely route to profit (a good chance to cash out through the shared exit
+policy, or a hold with an acceptable win chance). Rank and size in expected dollars, and fail closed when data
+can't be read. Pete's rule (2026-11-20): whenever you build anything, it gets a review for profit and delight.
+
 ## What this is
 
 A betting planner for Kalshi (prediction markets): it finds sports bets priced better than their real chance,
@@ -138,6 +145,9 @@ Real money is involved. Pete uses it daily.
 - **Every PR must pass lint (`ruff check .`) and the full `bash tests/run_checks.sh`.** CI runs both
   (`.github/workflows/ci.yml`, job `checks`); run them locally first. Fix lint findings in the code; don't
   silence them. Run code review and security review before opening the PR and fix everything they raise.
+- **Four reviews on every PR: code, security, profit, delight** (`docs/REVIEW_LENSES.md`). Builder agents run all
+  four on their own diff; the release agent runs all four on the whole release diff. Fix every finding or file an
+  issue labelled `profit` or `fun`. The PR template (`.github/pull_request_template.md`) carries the checklist.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below), and main is back-merged into develop right after. Releases are owned by the session that
   holds the "release owner" role in issue #83 (it also merges the PRs). **Standing go-ahead (Pete, 2026-11-19,
