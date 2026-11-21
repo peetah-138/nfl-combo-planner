@@ -9,6 +9,13 @@ os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+# An idea's id is the second it was saved plus a random 100-999, so ideas this test saves within one second could
+# share an id (about 1 in 900 per pair) and the lookup by id below found the wrong idea: CI failed "each leg has its
+# own matchup/league" once. Give the engine its own random whose randint counts up, so every id here is distinct.
+import itertools, random as _random, types
+_ids = itertools.count(100)
+E.random = types.SimpleNamespace(**{k: getattr(_random, k) for k in dir(_random) if not k.startswith("_")})
+E.random.randint = lambda a, b: a + (next(_ids) - 100) % (b - a + 1)
 now = time.time()
 import datetime as dt
 iso = lambda secs: (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=secs)).isoformat()

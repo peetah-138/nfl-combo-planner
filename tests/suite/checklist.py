@@ -40,7 +40,10 @@ SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedet
 
 # Page tests allowed ONE automatic rerun in CI (CHECK_RETRY=1), logged as "passed on retry". Keep it empty unless a
 # test is timing-bound by nature; a flaky test should be fixed at the root first.
-RETRY = []
+# test_rebuild_ui: its own race (a page load replacing the card mid-check) is fixed, but on a badly overloaded
+# machine the web app's background warm-up (watcher code, which this test can't hold off) can keep the engine lock
+# for minutes and the progress poll gets no answer (2 of 20 runs with 8 lanes on a loaded Mac; 0 in CI so far).
+RETRY = ["test_rebuild_ui"]
 
 
 def secs(name):

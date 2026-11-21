@@ -149,6 +149,6 @@ own runner, 3 lanes, its own ports). `suite/checklist.py` does the split: determ
 test in exactly one shard (checked by `t_shards.py`, which also checks CI runs every shard and every group). A final
 job named `checks` (the one branch protection requires) passes only when all of them passed. pip and the Playwright
 browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test listed in `checklist.RETRY` once and the log says
-`RETRIED`; the list is empty: fix a flaky test instead. Locally, `bash tests/run_checks.sh` still runs everything, and
+`RETRIED`; it holds only `test_rebuild_ui` (see why there): fix a flaky test instead of adding it. Locally, `bash tests/run_checks.sh` still runs everything, and
 you can run one part the same way, e.g. `CHECK_GROUPS=pages CHECK_SHARD=2/5 bash tests/run_checks.sh`. Each page
 test's PASS line shows its seconds.
