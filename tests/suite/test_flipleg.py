@@ -137,7 +137,7 @@ with sync_playwright() as pw:
             rects = lambda: pg.evaluate(f"[...document.querySelectorAll('{card} .brow .btn')].map(b=>{{const r=b.getBoundingClientRect();return [r.left,r.top,r.width,r.height].map(Math.round)}})")
             near = lambda a, b: len(a) == len(b) and all(abs(x - y) <= 1 for p_, q_ in zip(a, b) for x, y in zip(p_, q_))
             # -- layout: nothing moves between idle, loading and arrived (the note's space is reserved up front)
-            reset(); r0 = rects(); tap_flip(); r1 = rects(); release_flip(); wait(pg, f"document.querySelector('{card}').dataset.ph==='idle'", 5); time.sleep(.5); r2 = rects()
+            reset(); r0 = rects(); tap_flip(); r1 = rects(); release_flip(); wait(pg, f"document.querySelector('{card}').dataset.ph==='idle'", 5); pg.evaluate("Promise.all(document.getAnimations().filter(a=>a.effect&&a.effect.getComputedTiming().endTime!==Infinity).map(a=>a.finished.catch(()=>0)))"); r2 = rects()
             print(tag, "button boxes idle/loading/arrived:", r0, r1, r2)
             if not near(r0, r1) or not near(r0, r2): bad(f"{tag}: the buttons moved during the flip: {r0} {r1} {r2}")
             # with a quote showing, the quote's space is kept while loading
