@@ -116,7 +116,7 @@ ok("book_depth: a 429 is unknown (None), not an empty book, and isn't cached", r
 from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
 W = watcher_text() if os.path.exists("wtest/combo_watcher.py") else ""
 ok("Buy idea: caps at the whole contracts on sale, says so when under one",
-   'n = min(n, int(dpt["ask_size"]))' in W and "under one contract for sale" in W)
+   'n = int(dpt["ask_size"])' in W and 'n > int(dpt["ask_size"])' in W and "under one contract for sale" in W)
 
 # ---- the gap rule at exactly 6c on a live panel single: 0.55 - 0.49 is 0.06000000000000005 in floats, still allowed
 _real_book_depth, _real_recheck = E.book_depth, E.live_recheck
