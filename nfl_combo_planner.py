@@ -10701,6 +10701,8 @@ def get_offer(i, amount=None, check_cap=True):
     import time
     c = CTX["combos"][i - 1]
     stake = round(float(amount), 2) if amount else CTX["stake"]
+    if not math.isfinite(stake):                   # never a NaN or infinite amount to Kalshi (own_stake checks first)
+        return {"error": "That bet amount isn't a number."}
     if stake < 1:
         return {"error": "Use at least $1 per combo."}
     if stake > CFG["budget"]:
@@ -13777,6 +13779,30 @@ SINGLE_ARM = 25.0               # stakes above this need a second tap ("Tap agai
 SINGLE_MAX = 100.0              # the most one manual single bet may stake
 SINGLE_PRESETS = (3, 5, 10)
 _SQ = {"lock": threading.Lock(), "buy": threading.Lock(), "q": {}}
+OWN_MIN = 1.0                   # Pete's own stake (issue #145): the least one tap may bet (Kalshi's combos take $1)
+OWN_MAX = SINGLE_MAX            # ...and the most (the caps, the panel budget and Kalshi's own checks still apply)
+
+
+def own_stake(v, lo=OWN_MIN, hi=OWN_MAX):
+    """Pete's own stake as the page sent it, checked here (the page is never trusted). (None, None) = none given: use
+    the recommended size. (dollars, None) = a real, finite amount inside lo..hi, rounded DOWN to the cent (never more
+    than he typed). (None, words) = refused: not a number, not finite, negative, or outside lo..hi."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None, None
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        return None, "That bet amount isn't a number. Nothing was priced or bought."
+    try:
+        x = float(str(v).strip()[:20])
+    except ValueError:
+        return None, "That bet amount isn't a number. Nothing was priced or bought."
+    if not math.isfinite(x) or x <= 0:
+        return None, "Type a bet amount in dollars, above $0. Nothing was priced or bought."
+    x = math.floor(x * 100 + 1e-6) / 100
+    if x < lo - 1e-9:
+        return None, f"The least you can bet here is {money(lo)}."
+    if x > hi + 1e-9:
+        return None, f"The most this bet can be is {money(hi)}. Lower the amount."
+    return round(x, 2), None
 
 
 def market_open(ticker):
@@ -14194,13 +14220,10 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     ret = round(fair / per - 1, 4) if fair is not None else None
     size_fair = fair if fair is None or kind == "win" else per + (fair - per) * 0.7   # model prices: shrink the edge
     sug = _size({"kind": "single", "chance": size_fair, "price": ask}, _manual_base()) if fair is not None else 2.0
-    try:
-        want = float(stake) if stake not in (None, "") else sug
-    except (TypeError, ValueError):
-        want = sug
-    if not want > 0:
-        want = sug
-    want = round(min(max(want, 1.0), SINGLE_MAX), 2)
+    own, bad = own_stake(stake, OWN_MIN, SINGLE_MAX)    # Pete's own amount, checked here (never the page's word)
+    if bad:
+        return {"ok": False, "bad_stake": True, "msg": bad, "max": SINGLE_MAX, "min": OWN_MIN}
+    want = own if own is not None else round(min(max(sug, 1.0), SINGLE_MAX), 2)
     n = int(want / per + 1e-9)
     if depth and n > int(depth):
         n = int(depth)
@@ -14238,7 +14261,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             "game": x.get("game") or "", "sport": market_league(t) or "", "kind": kind, "live": live,
             "ask": ask, "bid": bid, "gap": gap, "depth": depth, "fee": round(fee, 4), "per": round(per, 4),
             "fair": fair, "how": how, "nofair": nofair, "edge": edge, "ret": ret, "sug": round(sug, 2),
-            "stake": want, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
+            "stake": want, "own": own is not None, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
+            "ev": round(n * fair - cost, 2) if fair is not None else None, "min": OWN_MIN,
             "spent": spent, "budget": budget, "room": room, "blocked": blocked, "warn": warn, "clears": bool(clears),
             "secs": SINGLE_QUOTE_SECS, "arm": SINGLE_ARM, "max": SINGLE_MAX, "presets": list(SINGLE_PRESETS)}
 
@@ -16239,11 +16263,73 @@ def _item(p, cid):
     return next((c for c in (p or {}).get("items", []) if c["id"] == cid), None)
 
 
-def panel_approve(ids=None, view="all", at=None):
+PANEL_OWN_MIN = 2.0     # the least Pete may set a panel bet to (the panel's own smallest bet)
+
+
+def own_panel_stakes(stakes, items, budget):
+    """Pete's own stakes for panel bets ({id: dollars}, issue #145), checked here, never trusted from the page: each a
+    real amount from PANEL_OWN_MIN to the smaller of the panel budget and OWN_MAX, rounded down to the cent (own_stake).
+    Ids not among items are ignored (that bet isn't on the panel, so nothing of it is bought). ({id: dollars}, None)
+    or (None, words) when any amount is refused (then nothing is approved or added)."""
+    if not stakes:
+        return {}, None
+    if not isinstance(stakes, dict) or len(stakes) > 60:
+        return None, "Those bet amounts aren't recognized. Nothing was approved."
+    have = {c["id"] for c in items or []}
+    try:
+        hi = max(PANEL_OWN_MIN, min(OWN_MAX, float(budget)))
+    except (TypeError, ValueError):
+        return None, "Couldn't read today's panel budget, so your amounts can't be checked. Nothing was approved."
+    out = {}
+    for k, v in stakes.items():
+        if str(k) not in have:
+            continue
+        amt, why = own_stake(v, PANEL_OWN_MIN, hi)
+        if why:
+            return None, why
+        if amt is not None:
+            out[str(k)] = amt
+    return out, None
+
+
+def _own_apply(c, amt):
+    """Put Pete's own stake on a panel bet, keeping the panel's own size beside it (rec_stake) for the record."""
+    if amt is None or abs(amt - float(c["stake"])) < 0.005:
+        return c
+    c.setdefault("rec_stake", c["stake"])
+    c["stake"], c["own"] = amt, True
+    return c
+
+
+def _panel_stats(items):
+    """The card's numbers (chance the day ends ahead, expected, range) for these bets, from the same simulation."""
+    tot = _sim_panel(items) if items else [0]
+    return {"p_ahead": round(sum(1 for t in tot if t > 0) / len(tot), 3), "ev": round(sum(tot) / len(tot), 2),
+            "stake": round(sum(c["stake"] for c in items), 2), "worst": round(min(tot), 2), "best": round(max(tot), 2)}
+
+
+def panel_whatif(view="all", ids=None, stakes=None):
+    """Reads only: what the panel card's numbers would be with these bets (ids; None = all) at Pete's own stakes, so the
+    ring updates as he changes an amount. Never saves, approves or buys anything."""
+    src = panel_get("extra" if view == "extra" else "real" if view in ("all", "", None) else f"view:{view}")
+    if not src:
+        return {"ok": False, "msg": "That panel is gone. Pull to refresh."}
+    budget = float(src.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    own, why = own_panel_stakes(stakes, src.get("items", []), budget)
+    if why:
+        return {"ok": False, "msg": why}
+    pick = [_own_apply(dict(c), own.get(c["id"])) for c in src.get("items", [])
+            if (ids is None or c["id"] in set(ids)) and c.get("state") not in ("skipped", "swapped", "failed", "left out")]
+    st = _panel_stats(pick)
+    return dict(st, ok=True, budget=budget, over=st["stake"] > budget + 0.01)
+
+
+def panel_approve(ids=None, view="all", at=None, stakes=None):
     """Pete's tap: the Mac buys these panel bets (all by default) right away, each after a fresh price check. A one-sport
     panel (view = its code) becomes today's panel when approved. `at` is the version he was looking at;
     if the panel has been rebuilt since, nothing is approved and he's asked to look again. After a Cancel,
-    approving again schedules the bets that weren't bought."""
+    approving again schedules the bets that weren't bought. stakes: Pete's own amounts ({id: dollars}, checked by
+    own_panel_stakes); with any, the bets riding today must still fit the panel budget, or nothing is approved."""
     src = panel_get("real" if view in ("all", "", None) else f"view:{view}")
     if not src:
         return False, "There's no panel yet. Give it a few minutes."
@@ -16251,6 +16337,10 @@ def panel_approve(ids=None, view="all", at=None):
         return False, "The panel was just updated with new prices. Take another look, then approve."
     if src.get("base_guess") or sizing_base()[0] is None:
         return False, BALANCE_UNREAD_MSG
+    budget = float(src.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    own, why = own_panel_stakes(stakes, src.get("items", []), budget)
+    if why:
+        return False, why
     msg = {}
 
     def fn(cur, st):
@@ -16270,9 +16360,19 @@ def panel_approve(ids=None, view="all", at=None):
                 msg["late"] = msg.get("late", 0) + 1
                 continue
             c["state"] = "scheduled" if (ids is None or c["id"] in ids) else "left out"
+            if c["state"] == "scheduled":
+                _own_apply(c, own.get(c["id"]))
         msg["n"] = sum(1 for c in p["items"] if c.get("state") == "scheduled")
         if not msg["n"] and msg.get("late"):
             return None                                  # nothing left to buy: don't approve a dead panel
+        if own:                                          # his own amounts: still inside the day's panel budget
+            riding = [c for c in p["items"] if c.get("state") in PANEL_LIVE]
+            tot = sum(float(c["stake"]) for c in riding)
+            if tot > budget + 0.01:
+                msg["no"] = (f"Those bets add up to {money(tot)}, over today's {money(budget)} panel budget. Lower an "
+                             "amount or leave a bet out. Nothing was approved.")
+                return None
+            p["stats"] = dict(p.get("stats") or {}, **_panel_stats(riding))
         return p, "approved"
     panel_tx(_panel_day(src["at"]), "real", fn)
     if msg.get("no"):
@@ -16318,16 +16418,22 @@ def panel_extras(real=None):
     return dict(x, items=_extras_filter(x.get("items", []), real))
 
 
-def panel_add(ids, view):
+def panel_add(ids, view, stakes=None):
     """Add bets from one sport's panel (or the new-since-you-approved extras) to today's already-approved panel,
     inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away.
     Safe to repeat: a bet already in today's panel (anything but skipped/left out) is never added again, the check
-    and the add happen in one locked step (panel_tx), and added extras leave the extras card at once."""
+    and the add happen in one locked step (panel_tx), and added extras leave the extras card at once. stakes: Pete's
+    own amounts ({id: dollars}, checked by own_panel_stakes), counted against the same budget room."""
     src = panel_get("extra" if view == "extra" else f"view:{view}")
     if not src:
         return False, "Those picks are gone. Pull to refresh."
     if src.get("base_guess"):                         # sized without the balance: never added to the real panel
         return False, BALANCE_UNREAD_MSG
+    real = panel_get("real") or {}
+    own, why = own_panel_stakes(stakes, src.get("items", []),
+                                real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    if why:
+        return False, why
     ids = set(ids or [])
     msg = {}
 
@@ -16343,6 +16449,7 @@ def panel_add(ids, view):
             old = _item(cur, c["id"])
             if c["id"] not in ids or (old and old.get("state") in PANEL_TRIED):
                 continue
+            c = _own_apply(dict(c), own.get(c["id"]))
             if not _start_ok(c, time.time(), 5 * 60):
                 skipped.append(c["legs"][0]["pick"])
                 continue
