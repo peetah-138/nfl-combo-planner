@@ -950,6 +950,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     `api_results` buckets both the per-day `day` and the per-week grouping with it; the detail sheet shows the buy date
     and the cash-out/settlement date so the grouping explains itself. No bet, P/L or buy/sell/panel logic changed.
     `t_realdate.py` and `test_realdate.py` cover it.
+    **Live > Settled cards carry the date too (issue #207, display only):** `mine_page` adds `done_at` to each settled combo
+    view (`done_stamp` = `realized_ts`: cash-out sell, else Kalshi's settlement time, else the Mac's own `bets.settled`; None
+    = no date shown, never a guess; pending = None). The card shows a small grey line under the picks ("Today",
+    "Yesterday", "Sat Nov 21", year only when it isn't this one) in the phone's own time zone (`doneWord`, `.sdt`), and
+    "Newest" sorts by it. Results' History rows already carry the day; settled singles on Live are open positions with no
+    realized time, so they have none. Tests: `t_realdate.py`, `test_settled.py`.
 - **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
   motion system.
   - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link
