@@ -164,6 +164,7 @@ with sync_playwright() as pw:
       if(h.closest('[data-hapt]:not([data-hsw])'))return;
       if(h.matches('select,input[type=range]')){native.push(h.tagName);return;}
       if(h.matches('a[href]')){links++;return;}   // links carry no switch on purpose (navigation, long-press menu)
+      if(h.closest(HSWX)){links++;return;}   // #218: controls inside sideways-scrolling strips carry none on purpose (the switch grabs a sideways drag)
       if(h.matches('input[type=checkbox]')){if(!h.hasAttribute('switch'))miss.push('checkbox without switch: '+h.className);return;}
       if(h.matches('label')){if(!h.querySelector('input[switch]')&&!h.querySelector('select,input[type=range],input[type=text],textarea'))miss.push('label: '+(h.innerText||'').slice(0,20));return;}
       let x=h,big=false;while(x&&!x.querySelector(':scope>.hsw')){if(x.matches(HSWQ)&&hswBig(x))big=true;x=x.parentElement&&x.parentElement.closest(HSWQ);}
