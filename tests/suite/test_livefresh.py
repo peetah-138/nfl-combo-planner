@@ -33,7 +33,7 @@ def _espn_get(url, params=None, **k):
                               "competitions": [{"status": st, "competitors": [tm("1", "Boston Celtics", "BOS", "away", 54), tm("2", "New York Knicks", "NYK", "home", 49)]}]}]})
     return _net(url, params=params, **k)
 requests.get = _espn_get
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 

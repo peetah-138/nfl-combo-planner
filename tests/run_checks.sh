@@ -3,6 +3,10 @@
 #   bash tests/run_checks.sh
 # It copies the suite to a temporary folder, so it never touches your real ~/combowatch or the repo's files.
 # One PASS/FAIL line per check, then ALL CHECKS PASSED or SOME CHECKS FAILED. Takes about 4 minutes.
+# By default it runs everything. CI splits it into parallel jobs with these (see tests/README.md):
+#   CHECK_GROUPS="static engine sim pages"   which parts to run (space or comma separated; default all four)
+#   CHECK_SHARD=i/N                           only page-test shard i of N (tests/suite/checklist.py splits them)
+#   CHECK_RETRY=1                             rerun a page test listed in checklist.RETRY once if it fails (CI only)
 R="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/combochecks.XXXXXX")"
 trap 'pkill -f "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -11,6 +15,7 @@ cd "$WORK" || exit 1
 mkdir -p wahome wtest run
 cp "$R/nfl_combo_planner.py" wahome/engine.py
 cp "$R/watcher/combo_watcher.py" wtest/combo_watcher.py
+cp -R "$R/watcher/spa" wtest/spa            # the web app's files sit next to the watcher, as on the Mac
 cp "$R/nfl_combo_planner.py" run/nfl_combo_planner.py
 cp fixtures/run_settings.json run/combo_settings.json
 cp fixtures/home_settings.json wahome/combo_settings.json
@@ -38,13 +43,22 @@ if [ "$PB" -lt 1024 ] || [ "$PB" -gt 65000 ] || { [ "$PB" -le 8766 ] && [ $((PB 
 fi
 export CW_WEBAPP_PORT=$PB             # tests run their own web apps on $PB+ (18766+), never on the real one (8766)
 command -v timeout >/dev/null 2>&1 || timeout(){ perl -e 'alarm shift; exec @ARGV' "$@"; }   # macOS has no timeout
+G=" $(echo "${CHECK_GROUPS:-static engine sim pages}" | tr ',' ' ') "
+for g in $G; do case "$g" in static|engine|sim|pages) ;; *) echo "CHECK_GROUPS: unknown group '$g' (use static engine sim pages)"; exit 2;; esac; done
+on(){ case "$G" in *" $1 "*) return 0;; esac; return 1; }
+case "$CHECK_SHARD" in ""|[1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;; *) echo "CHECK_SHARD must look like 2/5"; exit 2;; esac
+[ -n "$CHECK_SHARD" ] && ! on pages && { echo "CHECK_SHARD splits the page tests: add pages to CHECK_GROUPS"; exit 2; }
+keep(){ local t; for t in $1; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done; }   # CHECK_ONLY filter
+PARTIAL=""; [ "$G" != " static engine sim pages " ] && PARTIAL="groups:$G"
+[ -n "$CHECK_SHARD" ] && PARTIAL="$PARTIAL shard $CHECK_SHARD"; [ -n "$CHECK_ONLY" ] && PARTIAL="$PARTIAL only: $CHECK_ONLY"
 fail=0
 ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; echo "$2" | head -12 | sed 's/^/     /'; fail=1; }
 need(){ command -v "$1" >/dev/null 2>&1 || { bad "setup: $1 is missing" "$2"; }; }
-need node "Install Node (e.g. brew install node). It checks the web app's JavaScript."
-"$PY" -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
-"$PY" -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"
+on static && need node "Install Node (e.g. brew install node). It checks the web app's JavaScript."
+on pages && { "$PY" -c "import playwright" 2>/dev/null || bad "setup: playwright is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"; }
+on static && { "$PY" -c "import pyflakes" 2>/dev/null || bad "setup: pyflakes is missing" "see tests/README.md (one-time setup), or set CHECK_PYTHON"; }
 
+if on static; then
 "$PY" -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok compile || bad compile
 if command -v python3.10 >/dev/null 2>&1; then python3.10 -m py_compile "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" && ok "compile (3.10)" || bad "compile (3.10)"
 else "$PY" - "$R" <<'P' && ok "compile (3.10 grammar, partial: CI runs a real python3.10)" || bad "compile (3.10 grammar)"   # no python3.10 here: parse with its grammar (feature_version misses some newer syntax, e.g. nested f-string quotes)
@@ -53,15 +67,19 @@ for f in ("nfl_combo_planner.py", "watcher/combo_watcher.py"):
     ast.parse(open(sys.argv[1] + "/" + f).read(), f, feature_version=(3, 10))
 P
 fi
-"$PY" - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
-import re, subprocess, sys, tempfile, os
-s = open(os.path.join(sys.argv[1], "watcher/combo_watcher.py")).read()
-for name in ('SPA = r"""', 'LOGIN_HTML = r"""'):
-    i = s.index(name); j = s.index('"""', i + len(name)); h = s[i + len(name):j]
-    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write("\n".join(re.findall(r"<script>(.*?)</script>", h, re.S))); f.close()
+"$PY" - "$R" <<'P' && ok "javascript syntax (each watcher/spa file and the assembled pages)" || bad "javascript syntax"
+import glob, importlib.util, os, subprocess, sys, tempfile
+os.environ["COMBOWATCH_HOME"] = tempfile.mkdtemp()      # never the real ~/combowatch
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "watcher/spa/*.js"))):
+    if subprocess.run(["node", "--check", f]).returncode: sys.exit(1)
+spec = importlib.util.spec_from_file_location("W", os.path.join(sys.argv[1], "watcher/combo_watcher.py"))
+W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
+if W.SPA_PROBLEM: print(W.SPA_PROBLEM); sys.exit(1)
+for h in (W.SPA, W.LOGIN_HTML):
+    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write(W.spa_scripts(h)); f.close()
     if subprocess.run(["node", "--check", f.name]).returncode: sys.exit(1)
 P
-"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
+"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" "$R/tools/verify_spa_split.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
 if [ -n "$SECRET_PATTERN" ]; then          # set it (privately, e.g. in your shell profile) to the strings that must never be committed
   (cd "$R" && ! git grep -nIE "$SECRET_PATTERN" >/dev/null) && ok "no secrets in repo" || bad "secrets in repo" "$(cd "$R" && git grep -nlIE "$SECRET_PATTERN")"
 else
@@ -78,35 +96,71 @@ hits = [f for f in files if has_key(f)]
 print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
+v1=$(grep -m1 '^VERSION = ' "$R/nfl_combo_planner.py" | cut -d'"' -f2); v2=$(grep -m1 '^WATCHER_VERSION = ' "$R/watcher/combo_watcher.py" | cut -d'"' -f2); v3=$(cat "$R/version.txt")
+[ "$v1" = "$v2" ] && [ "$v2" = "$v3" ] && ok "versions agree ($v1)" || bad "versions disagree" "engine $v1 / watcher $v2 / version.txt $v3"
+fi   # static
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy t_ideacards t_safety; do
-  o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
-done
+# the test lists and their split live in suite/checklist.py (t_shards.py checks every test is in exactly one shard)
+if on engine; then
+  ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
+  [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")
+  for t in $ENG; do
+    o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
+  done
+fi
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
 # each worker with its own copy of everything and its own port (18766, 18767, ...), so nothing is shared.
 N=${CHECK_WORKERS:-4}
-PAGE="test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2 test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_buildsec test_ui_fixes test_login_faceid test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui test_haptics test_hsw test_chips_stay test_fieldstrip test_gamedetail_api test_realdate test_tabbar_stays test_orderblock test_buildbuttons test_cover test_pbptabs test_gamecard_opp test_offerlive test_gametabs test_singlebuy_ui test_ideacards"
-for w in $(seq 0 $((N-1))); do
-  p=$((PB + w))
-  "$PY" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
-done
-( timeout 200 "$PY" macsmoke/run.py > out_macsmoke.txt 2>&1; UPD=1 SECS=5 timeout 200 "$PY" macsmoke/run.py > out_macupd.txt 2>&1 ) &
+PAGE=""
+if on pages; then PAGE=$("$PY" checklist.py page "$CHECK_SHARD") || bad "page test list" "checklist.py page '$CHECK_SHARD' failed"; fi
+[ -n "$CHECK_ONLY" ] && PAGE=$(keep "$PAGE")   # e.g. CHECK_ONLY="test_klive" while fixing one
+[ -n "$CHECK_ONLY" ] && [ -z "$PAGE$ENG" ] && bad "CHECK_ONLY" "'$CHECK_ONLY' names no engine or page test in the groups being run"
+RETRY=" $("$PY" checklist.py retry) "
+page_bad(){   # $1 = a page test's output; succeeds (= the test failed) on no output, a real traceback, JS errors or PROBLEMS
+  local o tb benign
+  o=$(grep -v Deprecation "$1" 2>/dev/null)
+  tb=$(echo "$o" | grep -c Traceback); benign=$(echo "$o" | grep -cE "BrokenPipeError|ConnectionResetError|ConnectionAbortedError")
+  [ -z "$o" ] || [ "$tb" -gt "$benign" ] || echo "$o" | grep -qE "JS errors: \[.+\]|errs: \[.+\]|PROBLEMS"
+}
+if [ -n "$PAGE" ] || on sim; then
+  for w in $(seq 0 $((N-1))); do
+    p=$((PB + w))
+    "$PY" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$p)) else 1)" || bad "setup: port $p is busy" "Something is already listening on a test port; stop it and rerun."
+  done
+fi
+if on sim; then
+  ( timeout 200 "$PY" macsmoke/run.py > out_macsmoke.txt 2>&1; UPD=1 SECS=5 timeout 200 "$PY" macsmoke/run.py > out_macupd.txt 2>&1 ) &
+fi
 lanes=()
-i=0; for t in $PAGE; do lanes[$((i % N))]="${lanes[$((i % N))]} $t"; i=$((i+1)); done
+if [ -n "$PAGE" ]; then   # longest tests first, each to the lightest lane (balanced by checklist.SECS)
+  w=0; while IFS= read -r l; do lanes[$w]="$l"; w=$((w+1)); done < <("$PY" checklist.py lanes "$N" $PAGE)
+fi
 for w in $(seq 0 $((N-1))); do
+  [ -n "${lanes[$w]}" ] || continue
   D="$WORK/lane$w"; mkdir -p "$D"
   (cd "$WORK" && tar cf - --exclude='./lane*' --exclude='./out_*' .) | (cd "$D" && tar xf -)
   ( cd "$D" && export CW_WEBAPP_PORT=$((PB + w)) && for t in ${lanes[$w]}; do
-      "$PY" reset.py; timeout 400 "$PY" $t.py > "$WORK/out_$t.txt" 2>&1; done ) &
+      s0=$(date +%s); "$PY" reset.py; timeout 400 "$PY" $t.py > "$WORK/out_$t.txt" 2>&1
+      if [ "$CHECK_RETRY" = 1 ] && case "$RETRY" in *" $t "*) true;; *) false;; esac && page_bad "$WORK/out_$t.txt"; then
+        mv "$WORK/out_$t.txt" "$WORK/first_$t.txt"; "$PY" reset.py; timeout 400 "$PY" $t.py > "$WORK/out_$t.txt" 2>&1
+        : > "$WORK/retried_$t.txt"
+      fi
+      echo $(( $(date +%s) - s0 )) > "$WORK/secs_$t.txt"; done ) &
 done
 wait
-o=$(cat out_macsmoke.txt); echo "$o" | grep -q "no problems in the log" && echo "$o" | grep -q "started: True" && ! echo "$o" | grep -q "PROBLEMS" && ok "simulated Mac runs clean" || bad "simulated Mac" "$o"
-o=$(cat out_macupd.txt); echo "$o" | grep -q "update installed: True" && ! echo "$o" | grep -q "PROBLEMS: update check" && ok "simulated Mac installs an update" || bad "simulated Mac update" "$o"
+if on sim; then
+  o=$(cat out_macsmoke.txt); echo "$o" | grep -q "no problems in the log" && echo "$o" | grep -q "started: True" && ! echo "$o" | grep -q "PROBLEMS" && ok "simulated Mac runs clean" || bad "simulated Mac" "$o"
+  o=$(cat out_macupd.txt); echo "$o" | grep -q "update installed: True" && ! echo "$o" | grep -q "PROBLEMS: update check" && ok "simulated Mac installs an update" || bad "simulated Mac update" "$o"
+fi
 for t in $PAGE; do
-  o=$(grep -v Deprecation "out_$t.txt" 2>/dev/null)
-  tb=$(echo "$o" | grep -c Traceback); benign=$(echo "$o" | grep -cE "BrokenPipeError|ConnectionResetError|ConnectionAbortedError")
-  if [ -z "$o" ] || [ "$tb" -gt "$benign" ] || echo "$o" | grep -qE "JS errors: \[.+\]|errs: \[.+\]|PROBLEMS"; then bad "page test $t" "$(echo "$o" | grep -E -B2 -A6 'Traceback|errs|PROBLEMS|JS errors|Error' | head -16)"; else ok "page test $t"; fi
+  sec="$(cat "secs_$t.txt" 2>/dev/null)s"; [ -f "retried_$t.txt" ] && sec="$sec, RETRIED: the first try failed"
+  if page_bad "out_$t.txt"; then
+    bad "page test $t ($sec)" "$(grep -v Deprecation "out_$t.txt" 2>/dev/null | grep -E -B2 -A6 'Traceback|errs|PROBLEMS|JS errors|Error' | head -16)"
+  else
+    ok "page test $t ($sec)"
+    [ -f "retried_$t.txt" ] && grep -v Deprecation "first_$t.txt" | grep -E 'Traceback|errs: \[.+|PROBLEMS|JS errors' | head -6 | sed 's/^/     first try: /'
+  fi
 done
-v1=$(grep -m1 '^VERSION = ' "$R/nfl_combo_planner.py" | cut -d'"' -f2); v2=$(grep -m1 '^WATCHER_VERSION = ' "$R/watcher/combo_watcher.py" | cut -d'"' -f2); v3=$(cat "$R/version.txt")
-[ "$v1" = "$v2" ] && [ "$v2" = "$v3" ] && ok "versions agree ($v1)" || bad "versions disagree" "engine $v1 / watcher $v2 / version.txt $v3"
-[ $fail = 0 ] && echo "ALL CHECKS PASSED" || { echo "SOME CHECKS FAILED"; exit 1; }
+[ $fail = 0 ] || { echo "SOME CHECKS FAILED"; exit 1; }
+# only a run of the whole list may say ALL CHECKS PASSED (a part of it, e.g. one CI shard, says which part it was)
+if [ -n "$PARTIAL" ]; then echo "PART PASSED ($PARTIAL ): not the full check list"; else echo "ALL CHECKS PASSED"; fi

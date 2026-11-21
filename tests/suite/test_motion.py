@@ -160,15 +160,16 @@ with sync_playwright() as pw:
     AUDIT_N = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden'&&!e.closest('[hidden]')&&!(e.closest('#modal')&&!$('#modal').classList.contains('on'));};
      const all=[...document.querySelectorAll('header *,main *,.tabbar *,#sheet *')].filter(e=>vis(e)&&!e.closest('.hapx')&&!e.classList.contains('hsw'));
      const want=all.filter(e=>e.matches('button,a[href],select,label,input[type=checkbox],input[type=range],[onclick]')||(getComputedStyle(e).cursor==='pointer'&&!e.closest('.sparkw,.scrub')));
-     let links=0;const native=[],miss=[];want.forEach(e=>{if(e.disabled)return;const h=tapEl(e)||e;
+     let links=0,bigs=0;const native=[],miss=[];want.forEach(e=>{if(e.disabled)return;const h=tapEl(e)||e;
       if(h.closest('[data-hapt]:not([data-hsw])'))return;
       if(h.matches('select,input[type=range]')){native.push(h.tagName);return;}
       if(h.matches('a[href]')){links++;return;}   // links carry no switch on purpose (navigation, long-press menu)
       if(h.matches('input[type=checkbox]')){if(!h.hasAttribute('switch'))miss.push('checkbox without switch: '+h.className);return;}
       if(h.matches('label')){if(!h.querySelector('input[switch]')&&!h.querySelector('select,input[type=range],input[type=text],textarea'))miss.push('label: '+(h.innerText||'').slice(0,20));return;}
-      let x=h;while(x&&!x.querySelector(':scope>.hsw')){x=x.parentElement&&x.parentElement.closest(HSWQ);}
+      let x=h,big=false;while(x&&!x.querySelector(':scope>.hsw')){if(x.matches(HSWQ)&&hswBig(x))big=true;x=x.parentElement&&x.parentElement.closest(HSWQ);}
+      if(!x&&big){bigs++;return;}   // #151: a big card or row (a scroll surface) has no switch on purpose; its compact buttons do
       if(!x)miss.push(h.tagName+'.'+h.className+':'+(h.innerText||'').trim().slice(0,20));});
-     return {n:want.length,miss:miss.slice(0,8),nmiss:miss.length,native:native.length,links};})()"""
+     return {n:want.length,miss:miss.slice(0,8),nmiss:miss.length,native:native.length,links,bigs};})()"""
     IOS = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", has_touch=True, user_agent=IOS)
     pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
@@ -179,7 +180,7 @@ with sync_playwright() as pw:
         pg.evaluate(f"go('{view}')"); time.sleep(5 if view == "build" else 3)
         if view == "build": pg.evaluate("S.adv=true;renderBuild()"); time.sleep(.6)
         a = pg.evaluate(AUDIT_N)
-        print("iphone", view, "controls:", a["n"], "| native select/slider:", a["native"], "| links:", a["links"], "| no switch under the finger:", a["nmiss"], a["miss"][:5])
+        print("iphone", view, "controls:", a["n"], "| native select/slider:", a["native"], "| links:", a["links"], "| big cards/rows (exempt):", a["bigs"], "| no switch under the finger:", a["nmiss"], a["miss"][:5])
         if a["n"] < 5: bad(f"iphone {view}: the audit found almost nothing to check ({a['n']})")
         if a["nmiss"]: bad(f"iphone {view}: controls whose tap doesn't land on a switch: {a['miss']}")
         n0 = pg.evaluate("__haps.length"); pg.evaluate("__swc.length=0")

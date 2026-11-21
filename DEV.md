@@ -37,5 +37,6 @@ The seeded bets are in `tests/dev_webapp.py`.
   settings to ntfy. The fake internet also refuses any local address other than its own port, and `hub_call` is stubbed.
 - Refuses ports 8765 and 8766 (real hub and app) and a busy port. The app listens on 127.0.0.1 only.
 - Notifications go nowhere (`COMBOWATCH_NTFY=http://127.0.0.1:9`), auto-update is off, and the watcher file is copied
-  into the throwaway home before running, so nothing runs from, or self-updates over, the repo.
+  into the throwaway home before running (with its `spa` folder), so nothing runs from, or self-updates over, the
+  repo. The page is read from `watcher/spa/` when the app starts: restart `dev.sh` to see an edit.
 - Not covered: the full watcher main loop (hub, auto cash-out, updates). Use `tests/run_checks.sh` for that.

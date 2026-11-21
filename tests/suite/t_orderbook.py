@@ -113,7 +113,8 @@ ok("book_depth: a 429 is unknown (None), not an empty book, and isn't cached", r
    and E.book_depth(T)["ask"] is not None)
 
 # ---- a Buy idea for a single never offers under one contract (sizes can be fractional now)
-W = open("wtest/combo_watcher.py").read() if os.path.exists("wtest/combo_watcher.py") else ""
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+W = watcher_text() if os.path.exists("wtest/combo_watcher.py") else ""
 ok("Buy idea: caps at the whole contracts on sale, says so when under one",
    'n = min(n, int(dpt["ask_size"]))' in W and "under one contract for sale" in W)
 

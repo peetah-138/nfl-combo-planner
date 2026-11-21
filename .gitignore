@@ -18,3 +18,9 @@ held_events.json
 .venv-tests/
 combo_*.json.lock
 *.json.lock
+# the web app updater's working files (spa_locked / spa_fetch / spa_swap / spa_stamp)
+watcher/.spa.lock
+watcher/.spa-new-*/
+watcher/spa.old/
+watcher/spa/.version
+engine.py.prev

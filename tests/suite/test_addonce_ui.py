@@ -18,7 +18,7 @@ def load():
 
 
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 FIX = open("panel_fixture4.json").read()
 from playwright.sync_api import sync_playwright

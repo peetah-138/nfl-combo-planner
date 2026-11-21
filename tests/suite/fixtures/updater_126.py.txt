@@ -1,0 +1,77 @@
+# The updater of release 2026.11.21.126, copied verbatim from watcher/combo_watcher.py at origin/main 68e493f
+# (lines 317-388): auto_updates, repo_now and update_if_newer. It only knows the engine and watcher files, not
+# watcher/spa/. tests/suite/t_spa_transition.py runs it against a fake GitHub serving the split release, to prove a
+# Mac on 126 gets through the transition. Not imported by the app. Remove once every Mac runs the split.
+# The test provides: requests, re, time, hashlib, os, sys, log, ENGINE, REPO, LATEST_SEEN, __file__.
+
+
+def auto_updates(conf):
+    """Install new versions as soon as they're out, no approval needed. On by default on the Mac
+    (you chose this); a Pi keeps waiting for the phone unless turned on."""
+    return bool(conf.get("auto_update", sys.platform == "darwin"))
+
+
+def repo_now():
+    """The repo at its newest commit. Plain raw links to main can be up to 5 minutes stale right after a
+    publish, so this asks GitHub for the latest commit and reads the files at exactly that commit."""
+    try:
+        r = requests.get("https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main", timeout=10,
+                         headers={"Accept": "application/vnd.github.sha"})
+        sha = r.text.strip()
+        if r.ok and re.fullmatch(r"[0-9a-f]{40}", sha):
+            return REPO.replace("/main/", f"/{sha}/")
+    except requests.RequestException:
+        pass
+    return REPO
+
+
+def update_if_newer(E, conf):
+    """Install a newer engine and watcher from GitHub. With automatic updates on, any new version
+    whose two files agree on it; otherwise only the exact files your phone installed (it sends
+    their SHA-256, signed). Returns True if the watcher should restart."""
+    base = repo_now()
+    try:
+        latest = requests.get(base + "version.txt", params={"t": int(time.time())}, timeout=15,
+                              headers={"Cache-Control": "no-cache"}).text.strip()
+    except requests.RequestException:
+        return False
+    if re.fullmatch(r"[0-9.]+", latest):
+        LATEST_SEEN.update(v=latest, at=time.time())
+    if not re.fullmatch(r"[0-9.]+", latest) or latest == getattr(E, "VERSION", ""):
+        conf.pop("waiting", None)
+        return False
+    ok = conf.get("approve") or {}
+    auto = auto_updates(conf) and ok.get("version") != latest
+    if ok.get("version") != latest and not auto:
+        if conf.get("waiting") != latest:
+            conf["waiting"] = latest
+            log(f"version {latest} is out; waiting until your phone updates to it")
+        return False
+    try:
+        sb = requests.get(base + "nfl_combo_planner.py", params={"t": int(time.time())}, timeout=30).content
+        wb = requests.get(base + "watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=30).content
+        if not auto and (hashlib.sha256(sb).hexdigest() != ok.get("engine") or
+                         hashlib.sha256(wb).hexdigest() != ok.get("watcher")):
+            log(f"update {latest} skipped: the files don't match what your phone approved")
+            return False
+        src, wsrc = sb.decode("utf-8"), wb.decode("utf-8")
+        if auto and f'WATCHER_VERSION = "{latest}"' not in wsrc:
+            log(f"update {latest} waiting: GitHub is still sending older files")   # mid-publish or a stale copy
+            return False
+        compile(src, "engine.py", "exec")
+        compile(wsrc, "combo_watcher.py", "exec")
+    except (requests.RequestException, SyntaxError, UnicodeDecodeError) as err:
+        log("update skipped:", err)
+        return False
+    if f'VERSION = "{latest}"' not in src or "def main():" not in src:
+        return False
+    with open(ENGINE + ".new", "w", encoding="utf-8") as f:
+        f.write(src)
+    os.replace(ENGINE + ".new", ENGINE)
+    me = os.path.abspath(__file__)
+    with open(me + ".new", "w", encoding="utf-8") as f:
+        f.write(wsrc)
+    os.replace(me + ".new", me)
+    conf.pop("waiting", None)
+    log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
+    return True

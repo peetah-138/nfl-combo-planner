@@ -13,18 +13,24 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The check list (tests/run_checks.sh) split into jobs that run at the same time. Each job runs one part of it
+# (CHECK_GROUPS) and the page tests are split into shards (CHECK_SHARD, see tests/suite/checklist.py; t_shards.py
+# checks every test lands in exactly one shard and that this file runs every shard). Branch protection requires the
+# job named `checks` below: it passes only when every other job passed.
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
-  checks:
-    name: checks
+  static:
+    name: lint and static (compile 3.10 + 3.12, JavaScript, names, secrets, versions)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     env:
-      CHECK_WORKERS: 3          # the page tests run in lanes; 3 suits a 4-core runner
+      CHECK_GROUPS: static
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
       - uses: actions/setup-python@v5
         with:
           # 3.10 matches Pythonista and the older Macs (run_checks.sh compiles both files with python3.10);
@@ -32,25 +38,119 @@ jobs:
           python-version: |
             3.10
             3.12
-
+          cache: pip
+          cache-dependency-path: tests/requirements-ci.txt
       - name: Check the Python versions
         run: |
           python --version
           python3.10 --version
           python --version | grep -q "Python 3.12"
-
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
-
       - name: Install test tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pyflakes playwright ruff==0.17.5
-          python -m playwright install --with-deps chromium webkit   # webkit: test_hsw.py checks the iPhone haptic switches in Safari's engine
-
+        run: pip install -r tests/requirements-ci.txt
       - name: Lint (ruff)
         run: ruff check .
-
-      - name: Full check list
+      - name: Static checks
         run: bash tests/run_checks.sh
+
+  engine:
+    name: engine tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHECK_GROUPS: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements-ci.txt
+      - name: Install test tools
+        run: pip install -r tests/requirements-ci.txt
+      - name: Engine tests
+        run: bash tests/run_checks.sh
+
+  sim:
+    name: simulated Mac and update install
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHECK_GROUPS: sim
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements-ci.txt
+      - name: Install test tools
+        run: pip install -r tests/requirements-ci.txt
+      - name: Simulated Mac
+        run: bash tests/run_checks.sh
+
+  pages:
+    name: page tests ${{ matrix.shard }}/5
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    env:
+      CHECK_GROUPS: pages
+      CHECK_SHARD: ${{ matrix.shard }}/5
+      CHECK_WORKERS: 3          # lanes inside the shard; 3 suits a 4-core runner
+      SHARD_NO: ${{ matrix.shard }}
+      CHECK_RETRY: "1"          # only tests listed in checklist.RETRY, once, and the log says so
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements-ci.txt
+      - name: Install test tools
+        id: tools
+        run: |
+          pip install -r tests/requirements-ci.txt
+          echo "pw=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+      - name: Cache the Playwright browsers
+        id: browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.tools.outputs.pw }}-chromium-webkit
+      - name: Install the browsers
+        if: steps.browsers.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium webkit   # webkit: test_hsw.py checks the iPhone haptic switches in Safari's engine
+      - name: Install the browsers' system libraries
+        if: steps.browsers.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium webkit
+      - name: Page tests
+        run: |
+          export CHECK_PORT_BASE=$((18766 + 10 * SHARD_NO))   # each shard on its own ports (18776+, 18786+, ...)
+          bash tests/run_checks.sh
+
+  checks:
+    name: checks
+    if: ${{ always() }}
+    needs: [static, engine, sim, pages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every part of the check list passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do [ "$r" = success ] || { echo "SOME CHECKS FAILED"; exit 1; }; done
+          echo "ALL CHECKS PASSED"
