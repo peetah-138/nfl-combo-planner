@@ -407,6 +407,8 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .hsw::before,.hsw::after{display:none!important}
 .hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
 html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
+.hsw,:where(html.hswon) :where(button,[onclick],.chip,.trow){touch-action:manipulation}   /* #151: a drag that starts on a switch still scrolls the page (pan both ways, pinch; no double-tap zoom) */
+html.hswscr .hsw{pointer-events:none!important}   /* #151: mid-scroll a touch goes past the switches, so it keeps scrolling */
 :where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
 .hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
 .hxrow .l small{margin-top:6px}

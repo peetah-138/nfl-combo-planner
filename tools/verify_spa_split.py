@@ -12,7 +12,7 @@ It only proves the split itself: once someone edits a spa file the output differ
 """
 import ast, hashlib, importlib.util, os, subprocess, sys, tempfile
 
-PRE_SPLIT = "d372dfe"            # origin/develop just before the split commit
+PRE_SPLIT = "1a7ea9b"            # origin/develop just before the split landed (after the #161 scroll hotfix)
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
