@@ -761,6 +761,24 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+- **"Time to cash out" only when smart sell would sell (GitHub #210, alerts and navigation only).** The Live toast
+  "Combo N: time to cash out" used to fire on every hold→sell flip of the older Let it ride plan (`plan_cashout`), which
+  takes the watcher's *estimated* offer as a fresh one (`fresh_offer` accepts `rfq="estimate"`) and, for a long shot
+  with a big payout, prefers a sure few dollars to a ~1% shot (log utility on the bankroll); the Monte Carlo chance's
+  noise (8,000 runs) pushes the estimate over its line now and then, so the verdict flickered and the toast repeated.
+  Now `cash_nudge(t, h)` decides every cash-out nudge: smart sell's rule (`take_profit_reason`/`exit_policy`) says
+  sell, a **real** fresh Kalshi offer (never an estimate), at or above cost and ≥ 97% of the rule's line, and a game
+  still to play is under way. `live_view` sets `v["nudge"]`; `nudge_event` (in `record_view`) raises the toast once
+  when it turns on (≤ 1 per `NUDGE_GAP` 10 min), worded "smart sell is cashing out at $X" with Auto cash-out on;
+  the phone's `cash_alerts` push needs it too. On the page, a combo smart sell looks after (not "I'll sell it") shows
+  SELL, the moment bar, the Do now cash-out/"check Kalshi's price" cards and the plan's sentence only with `nudge`
+  (`planOn`/`verdictShown`/`whyShown`); "I'll sell it" combos keep the plan's advice. Nothing that sells reads it:
+  `auto_sell_now`, smart sell, hedges are unchanged (they already refused a sale below cost and re-quote an estimate).
+  **Tapping opens the combo:** the toast is a button (`toast(m, ms, tone, onTap)`, `.toast.tap`) → `openCombo`; an
+  urgent push about exactly one combo carries `/#c=<ticker>` (watcher `combo_link`: the text names one "Combo N" on
+  this refresh's list; ticker `[A-Za-z0-9._-]` only), and `comboFromHash` (boot.js) opens Live, waits for its data and
+  pushes the combo only when it is on Live (unknown, old or malformed = just Live). Tests: `t_cashnudge`,
+  `t_push_target`, `test_cashnudge_ui`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
