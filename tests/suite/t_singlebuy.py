@@ -569,44 +569,70 @@ try:
 except E.CapUnknown:
     ok("manual_spend with no history database: CapUnknown (never $0)", True)
 no, _, _ = E.single_cap_block(T, 3.0)
-ok("...so a single's cap check refuses with the cap words", no and "Couldn't check your weekly cap" in no)
+ok("...so a single's cap check refuses (the history file isn't open)", no and "history file" in no)
 q = E.single_buy_quote(X, 10)
-ok("...and Buy straight's quote is blocked", q["ok"] and q["blocked"] and "Couldn't check your weekly cap" in q["blocked"])
+ok("...and Buy straight's quote is blocked", q["ok"] and q["blocked"] and "history file" in q["blocked"])
 E.STORE["db"] = real_db
-real_rows = E.store_rows
-E.store_rows = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked"))
+# real sqlite failures through the real helpers (store_x would swallow them; the money records must not)
+E.store_x("drop table if exists manual_buys")
+E.store_x("create table broken_src(x)")
+E.store_x("create view manual_buys as select ts, ticker, cost from broken_src")
+E.store_x("drop table broken_src")                 # the view now fails on every read, as a corrupt table would
 try:
     E.manual_spend(T)
-    ok("manual_spend when the read fails: CapUnknown", False)
+    ok("manual_spend when the database read really fails: CapUnknown", False)
 except E.CapUnknown:
-    ok("manual_spend when the read fails: CapUnknown (never $0)", True)
-E.store_rows = real_rows
+    ok("manual_spend when the database read really fails: CapUnknown (never $0)", True)
+no, _, _ = E.single_cap_block(T, 3.0)
+ok("...so the single's cap check refuses", no and "Couldn't check" in no)
+E.store_x("drop view manual_buys")
+E._manual_table()
+E.store_x("create trigger no_notes before insert on manual_buys begin select raise(abort, 'disk I/O error'); end")
 ALERTS = []
 E.MANUAL_ALERT = ALERTS.append
-real_sx = E.store_x
-TRIES = []
-
-
-def bad_insert(sql, *a, **k):
-    if "insert into manual_buys" in sql:
-        TRIES.append(1)
-        raise RuntimeError("disk I/O error")
-    return real_sx(sql, *a, **k)
-
-
-E.store_x = bad_insert
+E._SQ["ideas"] = {}
 r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="idea-note")
-E.store_x = real_sx
-ok(f"a filled buy whose note won't save: still reported bought, tried twice ({len(TRIES)})", r["ok"] and len(TRIES) == 2)
+time.sleep(0.3)                                    # the alert goes from its own thread
+ok("a filled buy whose note the database refuses: still reported bought", r["ok"])
 ok("...logged loudly and Pete told once", any("MANUAL BUY NOT SAVED" in str(x) for x in LOG) and len(ALERTS) == 1)
+E.store_x("drop trigger no_notes")
 ok(f"...and the cap still counts it from memory ({E.manual_spend(T)})", E.manual_spend(T) >= 4 * 0.72)
-E.store_x = bad_insert
+E.store_x("create trigger no_notes before insert on manual_buys begin select raise(abort, 'disk I/O error'); end")
+E._SQ["ideas"] = {}
 E.idea_single_buy(T, 1, 0.72, log=LOG.append, key="idea-note2")
-E.store_x = real_sx
+time.sleep(0.3)
+E.store_x("drop trigger no_notes")
 ok("...a second unsaved note doesn't notify again", len(ALERTS) == 1)
 E.MANUAL_MEM.clear()
 E.MANUAL_ALERT = None
 E._CAP_LOGGED.pop("manual_note", None)
+# one order per idea and per market for a while, but a definite no-buy frees the next tap
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+r1 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-A")
+r2 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-B")
+ok("two idea cards for the same market: only the first sends an order", r1["ok"] and not r2["ok"] and len(D["sent"]) == 1)
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+D["fill"] = 0
+r1 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-C")
+D["fill"] = None
+E._ORDER_SHARED.recent.clear()                     # (the order desk's own same-order guard is a separate check)
+r2 = E.idea_single_buy(T, 2, 0.72, log=LOG.append, key="card-C")
+ok(f"nothing filled: the next tap may go again ({r1.get('msg')} / {r2.get('msg')})",
+   not r1["ok"] and r2["ok"] and len(D["sent"]) == 2)
+# a history file that isn't open says so (retrying won't help)
+real_db2 = E.STORE["db"]
+E.STORE["db"] = None
+no, _, _ = E.single_cap_block(T, 3.0)
+E.STORE["db"] = real_db2
+ok(f"no history file: its own words, not 'try again' ({(no or '')[:50]})", no and "history file" in no and "try again" not in no)
+# a winner ticker whose side carries a spread's fair: no fair price (never priced as a winner on a line's chance)
+reset()
+qk2 = E.single_buy_quote(dict(X, kind="spread", src="model", fair=0.95), 10)
+ok("a winner ticker with a spread's fair: no fair price, no edge", qk2["ok"] and qk2["fair"] is None and not qk2["clears"])
 E._SQ["ideas"] = {}
 reset()
 import datetime as _d2

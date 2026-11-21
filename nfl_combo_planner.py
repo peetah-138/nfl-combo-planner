@@ -12851,7 +12851,7 @@ def manual_spend(ticker=None, now=None):
     does one whose note couldn't be saved (kept in memory, MANUAL_MEM). Fails closed: no history database, or a read
     that fails, raises CapUnknown (never $0)."""
     if not STORE["db"]:
-        raise CapUnknown("no history database")
+        raise CapUnknown("no history database", NO_HISTORY_MSG)
     now = now or time.time()
     mix = False
     if ticker:
@@ -12862,10 +12862,10 @@ def manual_spend(ticker=None, now=None):
         mix = is_mix()
         key = (CTX["sunday"] if isinstance(CTX.get("sunday"), dt.date) and not by_day() and not mix else
                today if by_day() or mix else sunday_of(today))
-    try:
-        _manual_table()
+    try:                                                # store_strict: a failed read raises, never reads as empty
+        store_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
         rows = [(r["ticker"], r["cost"]) for r in
-                store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))]
+                store_strict("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,), rows=True)]
     except Exception as err:
         raise CapUnknown(f"manual buys unreadable ({type(err).__name__})") from None
     rows += [(m[1], m[2]) for m in list(MANUAL_MEM) if m[0] >= now - MANUAL_LOOKBACK]
@@ -12884,11 +12884,9 @@ def _manual_note(t, cost, log=print):
     row = (time.time(), str(t), round(float(cost), 2))
     why = None
     for _ in range(2):
-        try:
-            if not STORE["db"]:
-                raise RuntimeError("no history database")
-            _manual_table()
-            store_x("insert into manual_buys(ts, ticker, cost) values(?,?,?)", row)
+        try:                                            # store_strict: a failed write raises (store_x would hide it)
+            store_strict("create table if not exists manual_buys(ts real, ticker text, cost real)")
+            store_strict("insert into manual_buys(ts, ticker, cost) values(?,?,?)", row)
             return True
         except Exception as err:
             why = f"{type(err).__name__}: {str(err)[:80]}"
@@ -12901,11 +12899,15 @@ def _manual_note(t, cost, log=print):
         pass
     if MANUAL_ALERT and not _CAP_LOGGED.get("manual_note"):
         _CAP_LOGGED["manual_note"] = row[0]
-        try:
-            MANUAL_ALERT(msg)
-        except Exception:
-            pass
+        threading.Thread(target=_quiet, args=(MANUAL_ALERT, msg), daemon=True).start()   # never under the buy lock
     return False
+
+
+def _quiet(fn, *a):
+    try:
+        fn(*a)
+    except Exception:
+        pass
 
 
 def manual_cap(t, now=None):
@@ -12950,6 +12952,8 @@ def manual_cap_msg(code, spent, add, budget):
 CAP_UNKNOWN_MSG = "Couldn't check your weekly cap right now, try again in a minute. Nothing was bought."
 NO_LEAGUE_MSG = ("Couldn't tell which league this market is in, so its spending cap can't be checked. "
                  "Nothing can be bought straight here.")
+NO_HISTORY_MSG = ("The app's history file isn't open, so your manual buys (and the cap) can't be checked. Restart "
+                  "the Mac app (Settings › The Mac). Nothing was bought.")
 NO_SLATE_MSG = ("Couldn't tell which day this game is on, so its spending cap can't be checked. "
                 "Nothing can be bought straight here.")
 NO_TRADE_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be bought."
@@ -13037,7 +13041,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     gap = round(ask - bid, 4) if bid is not None else None
     depth = float(book.get("ask_size") or 0)
     kind = tk_kind or (x.get("kind") if x.get("kind") in ("spread", "total") else None)   # the ticker's own kind wins
-    line_gone = kind in ("spread", "total") and x.get("kind") != kind    # a line the board no longer has: its fair
+    line_gone = (kind in ("spread", "total") and x.get("kind") != kind) or (   # a line the board no longer has: its
+        kind == "win" and x.get("kind") in ("spread", "total"))                  # fair (or a line's on a winner)
     if not x.get("event") and "-" in t:
         x["event"] = t.rsplit("-", 1)[0]
     warn, fair, how, nofair = [], None, None, None
@@ -13247,10 +13252,11 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
         taps = _SQ.setdefault("ideas", {})
         for k in [k for k, v in taps.items() if now - v > IDEA_TAP_SECS]:
             taps.pop(k, None)
-        tap = str(key or t)
-        if tap in taps:
-            return {"ok": False, "msg": "This idea was just bought (or tried). Check Live before buying it again."}
-        taps[tap] = now                                 # from here on this idea can't send a second order for a while
+        marks = ["m:" + t] + (["i:" + str(key)] if key else [])   # the idea and its market: two cards, one market
+        if any(m in taps for m in marks):
+            return {"ok": False, "msg": "This was just bought (or tried). Check Live before buying it again."}
+        for m in marks:                                 # from here on no second order for a while (cleared below
+            taps[m] = now                               # only when Kalshi clearly bought nothing)
         coid = f"cw-ib-{uuid.uuid4().hex[:16]}"
         try:
             filled, err = buy_single(t, n, price, coid=coid, exact=True)
@@ -13264,10 +13270,10 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
             return {"ok": False, "check": True,
                     "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi before "
                            "trying again; the app won't send it again."}
-        if err:
-            return {"ok": False, "msg": err}
-        if filled <= 0:
-            return {"ok": False, "msg": f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
+        if err or filled <= 0:                         # a definite no-buy: the next tap may go again
+            for m in marks:
+                taps.pop(m, None)
+            return {"ok": False, "msg": err or f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
         _manual_note(t, filled * per, log)            # before the answer goes back; never lost (see _manual_note)
     log(f"single bought: {filled:g} of {t} at {price:.2f}")
     return {"ok": True, "pays": filled, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
@@ -16731,6 +16737,17 @@ def store_x(sql, args=()):
         except Exception as err:                     # history is best-effort: never break a trade over it
             console_note(f"history: {type(err).__name__}: {err}")
             return None
+
+
+def store_strict(sql, args=(), rows=False):
+    """store_x for the money records (manual buys): an error raises instead of being swallowed, so a cap check or a
+    buy's note can tell a failed read/write from an empty one. rows=True returns the rows as dicts."""
+    db = STORE["db"]
+    if not db:
+        raise RuntimeError("no history database")
+    with _SLOCK:
+        cur = db.execute(sql, args)
+        return [dict(r) for r in cur.fetchall()] if rows else cur
 
 
 def store_rows(sql, args=()):

@@ -483,10 +483,11 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   **Single bets use their own league's cap** (`single_cap_block` → `manual_cap`: the market's league from its ticker,
   that league's budget and slate, its combos + manual singles), never the loaded league's or the Mix's: Buy straight
   and Live's single-game buy ideas (`api_act` "idea" quote and "singlebuy" by idea → `idea_single_buy`, which also
-  checks Pause, trading access and the unknown-outcome block, allows one order per idea per 2 min (`IDEA_TAP_SECS`,
-  marked before the order), sends a sub-cent price rounded down, notes the buy in `manual_buys`, and marks an unclear
-  answer "check"). Mix combos keep the Mix cap. `manual_spend` fails closed too (no history database or a failed read
-  = `CapUnknown`, never $0; with no ticker it counts the loaded league's own window, today for daily leagues).
+  checks Pause, trading access and the unknown-outcome block, allows one order per idea and per market per 2 min
+  (`IDEA_TAP_SECS`, marked before the order, freed again when Kalshi clearly bought nothing), sends a sub-cent price rounded down, notes the buy in `manual_buys`, and marks an unclear
+  answer "check"). Mix combos keep the Mix cap. `manual_spend` fails closed too (no history database = its own words,
+  `NO_HISTORY_MSG`; a failed read = `CapUnknown`, never $0; manual-buy reads and writes use `store_strict`, which raises
+  where `store_x` swallows; with no ticker it counts the loaded league's own window, today for daily leagues).
   `_manual_note` never loses a filled buy: tried twice, then kept in memory (`MANUAL_MEM`, still counted by the cap until
   the app restarts), logged "MANUAL BUY NOT SAVED" and pushed to Pete once (`MANUAL_ALERT`, set by the web app). A
   market's kind (win/spread/total) comes from its ticker; a side's `kind` only fills in when the ticker can't tell. The window words say "Tue to Mon" because `sunday_of` puts a Tuesday
