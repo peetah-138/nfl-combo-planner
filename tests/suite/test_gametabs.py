@@ -549,8 +549,9 @@ HSW = r"""(()=>{const vis=e=>{const r=e.getBoundingClientRect();return r.width>0
 
 
 def run_hsw(pg, label):
-    """Method N (#60): every game-page tab, the box score's team pills and each tab's controls carry one see-through switch,
-    links none, and a real touch on a tab or a team pill lands on its switch and still does its job."""
+    """Method N (#60): the box score's team pills and each tab's controls carry one see-through switch, links none, and the
+    tabs none (#218: they sit in a sideways-scrolling row); a real touch on a tab opens it, one on a team pill lands on its
+    switch and still does its job."""
     probs = []
     state["g"] = game()
     pg.route("**/app/api/game*", answer)
@@ -563,18 +564,19 @@ def run_hsw(pg, label):
             continue
         pg.evaluate(f"document.querySelector('#sheet .gtab[data-tab={k}]').scrollIntoView({{inline:'center',block:'center'}})"); time.sleep(.3)
         bb = pg.locator(f"#sheet .gtab[data-tab={k}]").bounding_box()
-        hit = pg.evaluate("([x,y])=>{const t=document.elementFromPoint(x,y);return t?t.className+'|'+(t.parentElement&&t.parentElement.dataset.tab):''}", [bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2])
-        if hit != "hsw|" + k:
-            probs.append(label + ": a tap on the %s tab doesn't land on its switch (%s)" % (k, hit))
+        # #218: the tab row scrolls sideways, so its tabs carry no switch (WebKit's switch grabs a sideways drag): a tap lands on the tab
+        hit = pg.evaluate("([x,y])=>{const t=document.elementFromPoint(x,y),b=t&&t.closest('.gtab');return b?'tab|'+b.dataset.tab+(t.classList.contains('hsw')?'|hsw':''):(t?t.className:'')}", [bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2])
+        if hit != "tab|" + k:
+            probs.append(label + ": a tap on the %s tab doesn't land on the tab itself (%s)" % (k, hit))
         pg.touchscreen.tap(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
         if not until(pg, f"document.querySelector('#sheet .gtab.on').dataset.tab==='{k}'&&!document.querySelector('#sheet .gpanel[data-tab={k}]').hidden", 4):
-            probs.append(label + ": tapping the %s tab through its switch didn't open it" % k)
+            probs.append(label + ": tapping the %s tab didn't open it" % k)
         time.sleep(.3)
         c = pg.evaluate(HSW)
         if c["bad"] or c["links"]:
             probs.append(label + ": %s tab switches: %r" % (k, c))
-        if c["tabs"] != pg.evaluate("document.querySelectorAll('#sheet .gtab').length"):
-            probs.append(label + ": not every tab has its switch on %s: %r" % (k, c))
+        if c["tabs"]:
+            probs.append(label + ": tabs in the sideways tab row carry switches on %s: %r" % (k, c))
         if k == "box":
             if pg.evaluate("document.querySelectorAll('#sheet .bxsw button').length") != 2 or pg.evaluate("[...document.querySelectorAll('#sheet .bxsw button')].some(b=>b.querySelectorAll(':scope>.hsw').length!==1)"):
                 probs.append(label + ": the team pills lack their switches")

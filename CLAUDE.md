@@ -735,7 +735,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   at most `PBP_MAX_PLAYS` newest plays, short keys) and a generic **game-page tab framework** in the SPA (`GAME_TABS`: a per-sport
   list of `{k, l, has(r), html(r, ov)}`; football = Overview + Play-by-play; a sport with no spec, or a tab whose data is missing,
   shows no tab row and the page is as before; the chosen tab, stepped play and collapsed sections live in `S.gtab`/`S.pbpStep`/
-  `S.pbpOpen` and survive the 2 s redraws). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
+  `S.pbpOpen` and survive the 2 s redraws; a redraw puts the tab row back where the finger left it and only scrolls to the chosen tab when the tab changes, and no redraw happens while a finger is on the row or for 0.5 s after it glides, `gtabHeld`, #218). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
   the ball as it stood after that play, from the play's `yardsToEndzone` and the team whose end zone it is), Back to live,
   collapsible quarters and drives, and tinted scoring/turnover plays, newest first. Stepping (and a new live play) plays a small
   illustration (pass arc, run trail, sack, kick, flag, touchdown, turnover) driven only by play type and yardage: **illustrations
@@ -990,7 +990,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   controls hide theirs; a field appearing inside a control removes its switch (`hswFix`); the switches' change/input
   events never reach the app. Skipped (`HSWNO`/`HSWIN`): links (no tick: a switch would take their navigation and
   long-press menu), labels (their checkboxes carry `switch` themselves, method I), selects, sliders,
-  text fields, scrub charts, sideways strips, the test card's other buttons. A MutationObserver adds them to new content
+  text fields, scrub charts, sideways strips, the test card's other buttons. **Controls inside a sideways-scrolling strip get no switch either** (`HSWX`: the game page's tab row `.gtabs`, the scoreboard's `.pbt`, wide tables `.gtw`, the Settings index `.sidx`; GitHub #218): WebKit's switch grabs a drag that starts on it as a slide of its knob, so a row of tabs that each carried one couldn't be scrolled sideways on Pete's iPhone. They keep press feedback and their tap (no iOS tick); a new sideways strip must be added to `HSWX` (`test_gtabscroll` fails on any overflowing strip with switches inside). A MutationObserver adds them to new content
   (never two per control). Only on iPhones/iPads, not in the Pythonista app, and off with the Haptics switch or reduced
   motion (`hswSync`). `hap()` still tries the scripted switch for a pattern's extra ticks and for gestures with no tap
   (chart scrub, pull-to-refresh, sheet drag, tab swipe, slider steps): iOS 27 ignores those, so they stay silent there.
