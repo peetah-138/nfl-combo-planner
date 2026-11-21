@@ -65,7 +65,7 @@ function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.sty
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
-const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
+const pct=x=>x==null?'—':x>=.995&&x<1?'>99%':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
 const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
 const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
@@ -78,14 +78,16 @@ const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res
 /* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
    every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
    Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
-function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
+function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on','tap');t.onclick=null;clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
 function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
-function toast(m,ms,tone){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
+/* onTap (optional): the toast becomes a button for that (e.g. open the combo it's about, #210); without it, taps go through. */
+function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
  if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+ t.classList.toggle('tap',!!onTap);t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
-addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
+addEventListener('pointerdown',e=>{const t=$('#toast');if(t&&t.classList.contains('on')&&!(t.classList.contains('tap')&&t.contains(e.target))&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
 /* Sheets. modal() is the bottom sheet (confirmations, small things). pushOpen()/pushFill() is the Kalshi-style push for
    detail pages (a game, a combo): the page slides in from the right in ~270 ms (ease-out) while the page behind slides a
    third of the way left and dims; flat skeleton blocks show until the content swaps in. Back, a tap on the dimmed

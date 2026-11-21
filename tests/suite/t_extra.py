@@ -1,6 +1,8 @@
+# CHECK: group=engine
 import os,time,tempfile,importlib.util
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))  # midday "Pacific" whenever it runs, so the fake games (2.5 h out) are in today's panel day
 E.store_open(os.path.join(tempfile.mkdtemp(),"h.db")); E.HERE=tempfile.mkdtemp(); E.SIZING_FILE=os.path.join(E.HERE,"s.json"); E.CUTOFF_FILE=os.path.join(E.HERE,"c.json")
 E.REBUILD_FLAG=os.path.join(E.HERE,"flag")

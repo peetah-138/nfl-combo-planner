@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Tests can never touch the real Tailscale (issue #54): a test run once ran the real `tailscale serve`, re-pointing
 Pete's real secure address at a fake hub. A SHIM `tailscale` records every call it gets; nothing here reaches the real
 one (its paths are replaced), and the shim is the only command line this process can find."""

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=11
 """Issue #91: Results "Profit by day" AND "Profit by week" group each bet by when the money moved
 (cash-out / settlement), not the game/slate date. This page test boots the web app with a combo that
 was CASHED OUT early (game Sunday Nov 22, cashed out Wed Nov 18) and checks end to end that:

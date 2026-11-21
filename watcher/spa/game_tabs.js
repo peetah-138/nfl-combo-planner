@@ -16,15 +16,24 @@ function gameTab(k){const r=S.gameR,tabs=gameTabList(r),t=tabs.find(x=>x.k===k);
  document.querySelectorAll('#sheet .gtab').forEach(b=>{const on=b.dataset.tab===k;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
  document.querySelectorAll('#sheet .gpanel').forEach(p=>{const on=p.dataset.tab===k;p.hidden=!on;if(on&&p.dataset.tab!==tabs[0].k){p.innerHTML=t.html(r,'');gtabIn(p);}else if(!on&&p.dataset.tab!==tabs[0].k)p.innerHTML='';});
  gameTabInd();if(was==='pbp'&&k!=='pbp'&&S.pbpStep!=null){S.pbpStep=null;pbpRefresh('slide');}}
-/* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right. */
+/* The sliding underline. It is a child of the scrolling row, so it scrolls with the tabs and offsetLeft is already right.
+   The row is only scrolled to the chosen tab when the tab (or its place) changes, or on the first draw: a redraw puts
+   the row back where the finger left it (#218: every live redraw used to yank a row scrolled away back to the chosen tab). */
 function gameTabInd(){const bar=document.querySelector('#sheet .gtabs');if(!bar)return;const on=bar.querySelector('.gtab.on'),ind=bar.querySelector('.gtabind');if(!on||!ind)return;
- const to={left:on.offsetLeft,width:on.offsetWidth},prev=S.gtabPos;
+ const to={left:on.offsetLeft,width:on.offsetWidth},prev=S.gtabPos,moved=!prev||prev.left!==to.left||prev.width!==to.width;
  /* paintGame rebuilds the row, so a fresh underline starts at left:0/width:0: always seed it where the old one was (or where it is going), no transition, then glide only if the tab changed */
  const from=prev||to;ind.style.transition='none';ind.style.left=from.left+'px';ind.style.width=from.width+'px';void ind.offsetWidth;ind.style.transition='';
  ind.style.left=to.left+'px';ind.style.width=to.width+'px';S.gtabPos=to;
  if(S.gtabScroll!=null){bar.scrollLeft=S.gtabScroll;S.gtabScroll=null;}
- const vis=on.offsetLeft-bar.scrollLeft;if(vis<0||vis+on.offsetWidth>bar.clientWidth)bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
+ const vis=on.offsetLeft-bar.scrollLeft;if(moved&&(vis<0||vis+on.offsetWidth>bar.clientWidth))bar.scrollTo({left:on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
 addEventListener('resize',()=>{if(document.querySelector('#sheet .gtabs'))gameTabInd();});
+/* #218: a finger on the tab row (and its glide after) holds the game page still: a redraw would replace the row under
+   the finger and stop the scroll. gtabHeld() is read by drawGame, which looks again shortly. */
+(()=>{const inRow=e=>!!(e.target&&e.target.closest&&e.target.closest('#sheet .gtabs'));
+ addEventListener('touchstart',e=>{if(inRow(e)){S.gtabT=true;S.gtabAt=performance.now();}},{capture:true,passive:true});
+ ['touchend','touchcancel'].forEach(k=>addEventListener(k,()=>{if(S.gtabT){S.gtabT=false;S.gtabAt=performance.now();}},{capture:true,passive:true}));
+ addEventListener('scroll',e=>{if(e.target&&e.target.classList&&e.target.classList.contains('gtabs'))S.gtabAt=performance.now();},{capture:true,passive:true});})();
+function gtabHeld(){return !!S.gtabT||performance.now()-(S.gtabAt||-1e9)<500;}
 /* after every repaint: the underline, the row's own sideways scroll, and (live) the newest play's animation */
 function gameAfterPaint(r){gameTabInd();pbpAfterPaint(r);if(document.querySelector('#sheet .bxsw'))segInd();}
 /* ---- Play-by-play (football; ESPN drives and plays, display only). Stepping shows the strip as it stood after the chosen play

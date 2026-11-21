@@ -1,3 +1,4 @@
+# CHECK: group=page secs=6
 """The login page: iOS refuses the Face ID prompt that opens by itself, so the button has to work as the fallback."""
 import sys, os, json, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = tempfile.mkdtemp()

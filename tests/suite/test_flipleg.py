@@ -1,3 +1,4 @@
+# CHECK: group=page secs=40
 """Flipping a leg on a Build combo idea (GitHub #104, display only). Tapping a leg row: (1) at once the card is in the
 'flip' phase (a loading state: the tapped row folds, the dependent numbers shimmer, Get price is disabled and marked stale)
 and any Kalshi quote fetched before is gone, so Buy can't be tapped on an old price; (2) when the answer is held, the card

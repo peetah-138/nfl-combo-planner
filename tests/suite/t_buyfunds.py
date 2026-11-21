@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Live › Buy ideas said "there isn't enough money in your Kalshi account" with $69.49 in it (2026-11-20). Kalshi's
 # real answer was 400 insufficient_balance, which (docs.kalshi.com, Order Errors and Exchange Sharding) means the cash
 # in the market's exchange shard ("pot") doesn't cover the order: Kalshi keeps combos, crypto and some sports in

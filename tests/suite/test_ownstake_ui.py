@@ -1,3 +1,4 @@
+# CHECK: group=page
 """Pete sets his own bet amount (issue #145), end to end through the real web app. Server side (POSTs to the real
 /app/api/act, the engine's money calls faked so nothing can be ordered): a combo price with a bad amount (NaN, negative,
 text, over $100) is refused before Kalshi is asked; a good one is asked for exactly that amount and comes back with the

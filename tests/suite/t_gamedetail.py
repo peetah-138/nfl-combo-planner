@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Slices 1 and 2 of the live game page (issue #72): the situation fields fetch_scores now surfaces, and the
 game_detail() helper that parses the ESPN summary for the field strip. Display only, football only, defensive:
 a malformed feed yields empty and never raises. The network is faked from fixtures/espn_game_detail.json."""

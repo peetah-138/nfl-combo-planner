@@ -1,0 +1,5 @@
+/* Best bets today (#63) */
+.bfrow .bnums{grid-template-columns:repeat(auto-fit,minmax(68px,1fr))}
+.bfwarn{font-size:12.5px;line-height:1.45;border-radius:10px;padding:8px 10px;background:color-mix(in srgb,var(--warn,#f5a623) 16%,transparent);color:var(--ink)}
+.bfwarn.h{background:color-mix(in srgb,var(--no,#ff5a5f) 16%,transparent)}
+
