@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.128). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.129). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -158,7 +158,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.128`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.129`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -334,8 +334,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
-  sell-early favorites, chosen together to **maximize the chance the whole day finishes ahead** (bigger profit is a
-  tie-breaker). Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
+  sell-early favorites, chosen together for the **most expected profit in dollars** (fees counted, from the same
+  simulation) **while the chance the whole day finishes ahead stays over a floor**: 55%, and within 10 points of the
+  best chance those bets could reach (when even the best is under 55%: within 5 points of it, as before). Profit
+  audit #142 leak 2 (`choose_panel`, `_ahead_floor`, `PANEL_AHEAD_FLOOR`/`PANEL_AHEAD_GIVE`); Settings › Money ›
+  **Pick the panel by expected dollars** (`panel_rank_dollars`, shared, on) switches back to the old rule (the chance
+  first, profit breaking ties). The NFL/pay-index priorities are small dollar nudges. Sport-aware: NFL weekly slate (with time-slot combos and checkpoints, small NFL priority on NFL
   days), NBA/NHL daily, bigger panels on heavy nights. Overlap rules: both sides of one game only when both are
   fairly priced, ≤ 2 bets per game, one straight bet per game, spreads/totals ≤ 30% of the panel.
 - Combos need a predicted price ≥ the cut-off: **starts at 95% of fair, self-adjusts weekly per league and size,
@@ -401,6 +405,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   are caught) is **skipped**, never "check"; rule 8 unchanged. Pause still wins; the switch turned off after approval
   skips live bets. Same cut-offs, sizing and per-league learning; CLV isn't counted for live buys (the closing price
   predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
+- **Profit-audit quick wins (#142, `t_profit.py`; every check failed on the code before):**
+  - **Stale sharp lines (leak 4):** every line carries when it was read (`at`, free lines too). A pre-game line read
+    more than `PRE_LINE_AGE` (45 min: it missed the Mac's 40-minute near-game refresh) ago, or at an unknown time, for
+    a game starting within `PRE_LINE_NEAR` (4 h) is
+    stale (`line_stale`): `merge_books` then prefers a fresh free line for that team, and `panel_collect` drops what is
+    still stale (`drop_stale_lines`: src None, Kalshi's own chance; no game-winner single, combo or closing price uses
+    it; spreads/totals come from ESPN's own lines, not checked here). The near-game refresh also counts the sharp
+    lines' own start times (`soonest`), so leagues without free lines (tennis, UFC, EuroLeague, AHL) get it. The
+    Mac's `HubOdds.get` drops the old sharp snapshot when the odds service answers empty and retries after the near
+    TTL (never on every call).
+  - **Green Buy and buy ideas (leak 3):** `green_bar` = max(your cut-off setting, the league's `combo_cutoff`) decides
+    the green Buy for every combo but the panel's own (`get_offer` returns `bar`; the quote line names it);
+    `notify_bar` = max(that, 100% of `calib_fair`-corrected fair) gates the Mac's buy-idea and better-price alerts in
+    `shadow_pass`. Settings › Money › **Stricter green Buy** (`idea_bar_strict`, shared, on). The panel's 95% start is
+    unchanged (#137 stage 2 decides it).
+  - **Close learning (leak 6):** `record_closes` also stores Kalshi's mid (`close_mids` table; ask kept in `closes.price`
+    for history; no mid when the gap is over 10¢). `adjust_cutoffs` and CLV read `close_prices(..., mid=True)`;
+    re-quotes of the same set of games count once (`_by_games`); the rule is symmetric: raise when combos just over
+    the bar were worth under 97% of cost, lower when the ones just under were worth over 103% (`CUT_BAND`; bigger
+    step at ±15%, `CUT_BIG`).
+  - **News guard (leak 5):** `_qualifies` (pool, `_fresh`, swaps) and `_buy_panel_bet` skip a pick priced
+    `NEWS_GAP` (6 points) or more under its chance while one of its teams has fresh injury news (`news_gap`, the
+    `single_pass` rule; an unreadable report never blocks).
+  - **Minor:** `single_fee(p, n)` rounds an order's fee up to the cent (the panel's buy recheck and its simulation use
+    it); a swapped-in bet is sized for itself, never above the stake it replaces (`_swap_stake`).
+  - Still open in #142: `_size`'s $2 minimum and combos at 95–100% (#137), live-football single ideas (leak 7),
+    panel P/L from real fills (leak 8), Build lines not recommended (leak 9), standing orders (leak 10), combo fees,
+    `smart_tune` holdout.
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
   that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it
@@ -460,6 +492,40 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   guards hold back is logged once per bet and reason (`note_cut_held`, `result: "held"`); `analytics()["cut_held"]`
   counts them for Results › Selling, which also shows the guard settings per league. Pause / Auto cash-out off /
   Ride it out still stop it (it runs only inside `auto_sell_now`).
+- **Smart Buy, stage 1: the foundation (issue #137; watches only, changes no buy, sale or pick).**
+  - `exit_policy(state, params)` is smart sell's decision in one pure function (risk-adjusted hold value, profit
+    floor, take profit, lock-in, the learned loss cut with `cut_ok`); `take_profit_reason` and `single_sell_reason`
+    now only gather their inputs and call it (`EXIT_POLICY_VERSION`). `t_exitpolicy` runs the old functions verbatim
+    (`fixtures/exit_policy_old.py.txt`) beside the new ones on 8,000 states: identical answers and peak tracking.
+    (`_replay`, the weekly tuner's replay, still has its own copy of the rule; aligning it is stage 5.)
+  - `simulate_exit(spec)` (spec from `exit_spec(candidate)`; `predict_exit_chance(c)`): Monte Carlo (120 paths,
+    seeded from the candidate id) of each pick's hidden lead (pre-game drift `SB_PRE_VOL`, in play scoring jumps per
+    sport `SB_SCORE_UNIT`, fair = Φ(lead/√time left) as the live model), Kalshi's mid closing the gap to fair
+    (`SB_PRE_CLOSE`), the sellable bid (half the gap, wider in play, cents, the exit fee; a gap over 6¢ or too little
+    depth = can't sell), `exit_policy` at every step with the league's settings (`exit_settings`). Returns at a $5
+    stake: `p_exit` (cash out ≥ +10%), `p_sell`, `exit_profit`, `hold_profit`, blended `ev` (optional stopping:
+    hold value from the sale on = fair × payout), `exit_mins`, `route` (sell / hold / none). ~5 ms a single, ~12 ms a
+    2-pick combo. `smart_buy_ok` is the stage-2 gate as it would stand (logged only).
+  - **Price recorder** (`price_path` table: ts, ticker, bid, ask, mid, depth, score): `price_seen_markets` (from
+    `fetch_series` and the held-singles refresh in `open_singles`) and `price_seen_book` (`book_depth`) note prices the
+    engine already read: **no new Kalshi request**. `price_watch` marks markets to record (panel candidates, Buy ideas,
+    held singles); `price_flush` writes every 60 s near a game (3 h before to 6 h after), 5 min otherwise, only on a
+    change unless 15 min passed, all of a flush's rows in one transaction (`_price_insert`: one sync, the history lock held
+    once; inside a `panel_tx` they join it); `price_prune` keeps 30 days and ≤ 250k rows (exit_shadow: 60 days, 200k; both
+    indexed on ts). A failed held-markets refresh's fallback copy is never recorded as fresh; held singles are watched
+    with their kickoff (`price_watch_held`); `depth` is the size at the best ask (book_info's `ask_size`), not the bid.
+    Buy-idea combos share the combo's chance out in proportion to each pick's ask; asks over 15 min old = skipped.
+  - **exit_shadow** (`smart_buy_shadow`, called at the end of `panel_collect`; `smart_buy_shadow_ideas` from the
+    suggestions table every 10 min): one row per candidate per 30 min with edge, win chance, cash-out chance, dollars,
+    route, `old` (today's rules took it) and `new` (`smart_buy_ok`), ≤ 0.15 s of simulation a pass (it can run under `odds.lock`; ideas ≤ 0.1 s), never raises,
+    never changes a candidate. `exit_replay`/`exit_calibration` replay `exit_policy` on recorded paths: predicted vs
+    actual cash-out rate per league and type (singles/spreads/totals; combos in stage 2), one bet counted once (its
+    first check), with the same simplified loss-cut guard as the simulator. Counts in the preview are distinct bets.
+  - Settings › Money › **Smart Buy (preview)** (`smart_buy`, shared, off; `smart_buy_on()` reads the shared file):
+    on = Results › What's working shows a folded "🧠 Smart Buy (preview)" card (`sbCard`, `analytics()["smart_buy"]` =
+    `smart_buy_summary()`, built only while the switch is on; the route re-reads the switch and builds it when it was
+    switched on since the 10-minute cache). Off or on, panel candidates, picks and sells are identical
+    (`t_smartbuy`). Next stages: `ROADMAP.md`.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
@@ -560,6 +626,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   ("Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
   The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
   `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).
+- **Buy ideas: ration, dismiss, fold, detail (GitHub #141, display and filtering only; buying still goes through
+  `priceIdea`/`buyIdea`/`buySingle` and the guarded Mac paths).** `live_ideas()` (engine) ranks the ideas by expected
+  profit in dollars at the suggested stake (`ep` = stake x (share of fair - 1), fields the idea already holds; ideas
+  under the green Buy's bar, `green_bar`, or a single with no edge left sort last and say "below your bar"), gives each a
+  stable `idea_id`/`key` (the sorted leg tickers, same on every re-offer), and marks a price older than 2 minutes
+  `stale` ("refreshing"; the card stays, Get today's price is the refresh). Dismissed ideas (X, swipe left, Not now,
+  Clear all) live in `combo_idea_dismiss.json` (today only; back when the edge improves 3+ points or the price drops
+  2+ cents; Undo toast), bought ones never come back (kept 3 days); `idea_dismiss`/`idea_undo`/`idea_depth` are
+  acts on the web app that take no app lock and move no money. Settings > Money > "Buy ideas shown" (`ideas_shown`,
+  default 3, 1-10, shared) sets how many show; the rest fold under "N more ideas". A pre-game idea whose game has
+  started is dropped. Live's three sections (Buy ideas, Your combos, Single bets & spreads) fold with a chevron
+  button (`cw_fold_*` per phone, count badge stays). Tapping a card body pushes a detail page (`openIdea`: price vs
+  fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
+  The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
+  is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

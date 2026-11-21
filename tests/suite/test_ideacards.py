@@ -93,7 +93,7 @@ with sync_playwright() as pw:
             txt = c.inner_text()
             for w in words:
                 if w.lower() not in txt.lower(): bad(f"{tag}: the {k} card should say '{w}': {txt.replace(chr(10), ' | ')[:400]}")
-            if "Not now" not in txt or "price" not in txt.lower(): bad(f"{tag}: the {k} card lost its Not now / price buttons")
+            if "Not now" not in txt or "price" not in txt.lower(): bad(f"{tag}: the {k} card lost its Not now / price buttons: {txt.replace(chr(10), ' | ')[-120:]}")
         old = card(pg, "oldone")
         if old.count() != 1 or "Suns" not in old.inner_text(): bad(f"{tag}: the older idea should still show a card")
         # ---- nothing wider than the screen

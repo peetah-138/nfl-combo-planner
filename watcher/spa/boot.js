@@ -1,6 +1,6 @@
 // ---------------- refresh loop
 window.__inapp=function(){S.inapp=true;hswSync();if(S.view==='settings')renderSettings();};
-function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
+function ideaFromHash(open){if(!location.hash.startsWith('#s='))return;S.hl=location.hash.slice(3);S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();load('live',true);}setTimeout(()=>{if(typeof ideaReveal==='function')ideaReveal(S.hl);const e=document.getElementById('idea-'+S.hl);if(e)e.scrollIntoView({behavior:'smooth',block:'center'});},open?1200:2500);}
 ideaFromHash(false);
 addEventListener('hashchange',()=>ideaFromHash(true));
 chrome();render();load(S.view);connect();loadRecap();

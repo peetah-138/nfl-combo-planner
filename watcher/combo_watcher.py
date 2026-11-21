@@ -21,13 +21,13 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.128"
+WATCHER_VERSION = "2026.11.21.129"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
-          "line_model")
+          "line_model", "panel_rank_dollars", "idea_bar_strict")
 
 
 def log(*a):
@@ -1067,7 +1067,7 @@ class HubOdds:
 
     def __init__(self):
         self.H, self.lock, self.free, self.sharp = None, threading.RLock(), {}, {}
-        self.pending, self.told = {}, {}
+        self.pending, self.told, self.retry = {}, {}, {}
 
     def engine(self):
         if self.H is None:
@@ -1084,10 +1084,12 @@ class HubOdds:
         return self.H
 
     @staticmethod
-    def soonest(snap):
+    def soonest(snap, *more):
+        """The next start time in the snapshots (free lines, and the sharp lines' own: tennis, UFC, EuroLeague and
+        the AHL have no free lines, and still need the near-game refresh)."""
         import datetime as dt
         now, best = time.time(), None
-        for start in (snap.get("kick") or {}).values():
+        for start in [v for s in (snap,) + more if s for v in (s.get("kick") or {}).values()]:
             try:
                 t = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp()
             except ValueError:
@@ -1142,13 +1144,18 @@ class HubOdds:
                     self.note_moves(league, old[1], f[1])
             sh = self.sharp.get(league)
             if key:
-                soon = self.soonest(f[1])
+                soon = self.soonest(f[1], sh[1] if sh else None)
                 ttl = self.SHARP_NEAR_TTL if soon and soon - now < self.NEAR else self.SHARP_TTL
-                if not sh or now - sh[0] > ttl:
+                if (not sh or now - sh[0] > ttl) and now >= self.retry.get(league, 0):
                     got = H.sharp_snapshot(key)
-                    if got["fair"] or not sh:
+                    if got["fair"]:
                         sh = (now, got)
                         self.sharp[league] = sh
+                        self.retry.pop(league, None)
+                    else:                       # an empty answer (out of credits, an outage): the old lines are
+                        sh = None               # past their time, so they go (free lines only) until a retry
+                        self.sharp.pop(league, None)
+                        self.retry[league] = now + min(ttl, self.SHARP_NEAR_TTL)
                     log(f"odds service asked for {league}: {len(got['fair'])} teams")
             snap = H.merge_books(sh[1] if sh else H.empty_snapshot(), f[1])
             if sh:
@@ -2218,7 +2225,7 @@ class WebBuild:
                 return r["error"]
             b["offers"][i] = dict(H.CTX["offers"][i], got=time.time(), pct=r.get("pct"), ok=r.get("ok"))
         pct = f" ({r['pct']:.0%} of fair)" if r.get("pct") else ""
-        verdict = "" if r.get("ok") else f" That's under your {b['cut']}% cut-off."
+        verdict = "" if r.get("ok") else f" That's under your {r.get('bar') or b['cut']}% cut-off."
         return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
 
     def buy(self, i):
@@ -2530,9 +2537,11 @@ def webapp_main():
 
     def live_extras(out):
         try:
-            ideas = jsonable(A.live_suggestions()) if A.STORE.get("db") else []
+            info = {}
+            ideas = jsonable(A.live_ideas(info=info)) if A.STORE.get("db") else []
+            ideas_extra = {"ideas_limit": A.ideas_shown(), "ideas_hidden": info.get("hidden", 0)}
         except Exception:
-            ideas = []
+            ideas, ideas_extra = None, {}                      # unreadable: the page leaves the section out, not "nothing clears"
         try:
             orders = jsonable(A.maker_summary()["open"]) if A.STORE.get("db") else []
         except Exception:
@@ -2541,7 +2550,7 @@ def webapp_main():
             pulse = A.pulse_series() if A.STORE.get("db") else []
         except Exception:
             pulse = []
-        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(),
+        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(), **ideas_extra,
                     auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
 
     def recent_sales(hours=3):
@@ -3008,7 +3017,8 @@ def webapp_main():
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
-                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model")
+                "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy", "ideas_shown")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3128,6 +3138,30 @@ def webapp_main():
 
     SHUT = {"on": False}
 
+    def idea_act(a, d, t):
+        """Live Buy ideas, no orders: hide ideas (X, swipe, Not now, Clear all, a bought one), bring them back (Undo,
+        'show them again'), and a read of the order book for the detail page (only a market that is in an idea on the
+        list). Not a money action: no app lock, no Pause check, nothing is priced or bought here."""
+        ok_id = lambda i: isinstance(i, str) and re.fullmatch(r"i[0-9a-f]{12}", i)
+        ids = [i for i in (d.get("ids") or []) if ok_id(i)][:40] if isinstance(d.get("ids"), list) else []
+        try:
+            if a == "idea_dismiss":
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought")
+                return {"ok": True, "n": r["n"], "ids": r["ids"]}
+            if a == "idea_undo":
+                r = A.idea_undismiss(ids, everything=d.get("all") is True)
+                return {"ok": True, "n": r["n"]}
+            tk = t if re.fullmatch(r"[A-Z0-9._-]{3,120}", t) else ""
+            if not tk or not any(tk in (x.get("legs") or []) for x in A.live_ideas()):
+                return {"ok": False, "msg": "That market isn't in an idea right now."}
+            dpt = A.book_depth(tk)                      # Kalshi's public order book, cached for a minute
+            if not dpt:
+                return {"ok": False, "msg": "Couldn't read Kalshi's book just now."}
+            return jsonable({"ok": True, **{k: dpt.get(k) for k in ("bid", "ask", "spread", "ask_size", "thin")}})
+        except Exception as err:
+            log("idea action failed:", a, type(err).__name__, err)
+            return {"ok": False, "msg": "Couldn't do that just now. Try again."}
+
     def api_act(d):
         if SHUT["on"] or restarting():
             msg = "The Mac is restarting. Nothing was done; try again in a moment."
@@ -3158,6 +3192,8 @@ def webapp_main():
             LIVE["at"] = 0
             return {"ok": True, "msg": "Got it. This one waits for you to sell it." if d.get("on") else
                     "Smart sell is watching this one now."}
+        if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
+            return idea_act(a, d, t)
         with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
@@ -3188,7 +3224,7 @@ def webapp_main():
                                 r = r2
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
-                return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": A.CFG["accept_pct"],
+                return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
                                  **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
@@ -3420,6 +3456,15 @@ def webapp_main():
                         out = api_results()
                     elif path == "/app/api/analytics":
                         out = jsonable(A.analytics()) if A.STORE.get("db") else {}
+                        if isinstance(out, dict) and isinstance(out.get("smart_buy"), dict):
+                            on = A.smart_buy_on()                  # the switch, read now (analytics is cached 10 min)
+                            sb = out["smart_buy"]
+                            if on and "rows" not in sb:            # switched on since the cache was built
+                                try:
+                                    sb = jsonable(A.smart_buy_summary())
+                                except Exception as err:
+                                    log("smart buy summary:", type(err).__name__, err)
+                            out["smart_buy"] = dict(sb, on=on)
                     elif path == "/app/api/recap":
                         out = jsonable(A.recap()) if A.STORE.get("db") else {}
                     elif path == "/app/api/panel":
