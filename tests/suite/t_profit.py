@@ -144,10 +144,10 @@ def snap(team, opp, fair, src, at, start):
 def sec_b():
     t = time.time()
     soon, later = t + 2 * 3600, t + 10 * 3600
-    old_sharp = snap("Boston Celtics", "Miami Heat", 0.70, "Pinnacle", t - 40 * 60, soon)
+    old_sharp = snap("Boston Celtics", "Miami Heat", 0.70, "Pinnacle", t - 60 * 60, soon)
     fresh_free = snap("Boston Celtics", "Miami Heat", 0.58, "ESPN BET + Polymarket", t - 60, soon)
     m = E.merge_books(old_sharp, fresh_free)
-    ok("B: a sharp line 40 min old, game in 2 h, gives way to a fresh free line",
+    ok("B: a sharp line an hour old (it missed its 40-min refresh), game in 2 h, gives way to a fresh free line",
        m["fair"]["Boston Celtics"][0] == 0.58 and m["games"]["Boston Celtics"][0]["fair"][0] == 0.58)
     m = E.merge_books(snap("Boston Celtics", "Miami Heat", 0.70, "Pinnacle", t - 5 * 60, soon), fresh_free)
     ok("B: a fresh sharp line still wins", m["fair"]["Boston Celtics"][0] == 0.70)
@@ -155,14 +155,14 @@ def sec_b():
                       snap("Boston Celtics", "Miami Heat", 0.58, "ESPN", t - 60, later))
     ok("B: far from the game (10 h) an older sharp line still wins", m["fair"]["Boston Celtics"][0] == 0.70)
     ok("B: line_stale: old near a game, unknown time near a game, fine far away",
-       E.line_stale(t - 30 * 60, soon, t) and E.line_stale(None, soon, t) and not E.line_stale(t - 5 * 3600, later, t)
+       E.line_stale(t - 60 * 60, soon, t) and not E.line_stale(t - 30 * 60, soon, t) and E.line_stale(None, soon, t) and not E.line_stale(t - 5 * 3600, later, t)
        and not E.line_stale(t - 60, soon, t))
     # the panel: a game starting soon whose line is too old is priced on Kalshi alone (no single, combo or close)
     ev1, ev2 = "KXNBAGAME-26NOV21BOSMIA", "KXNBAGAME-26NOV21LALGSW"
     E.KICKOFF[ev1] = iso(soon)
     E.KICKOFF[ev2] = iso(soon)
-    games = {ev1: [leg(ev1 + "-BOS", ev1, "Boston", .55, .70, src="Pinnacle", line_at=t - 30 * 60, edge=.15),
-                   leg(ev1 + "-MIA", ev1, "Miami", .47, .30, src="Pinnacle", line_at=t - 30 * 60, edge=-.17)],
+    games = {ev1: [leg(ev1 + "-BOS", ev1, "Boston", .55, .70, src="Pinnacle", line_at=t - 60 * 60, edge=.15),
+                   leg(ev1 + "-MIA", ev1, "Miami", .47, .30, src="Pinnacle", line_at=t - 60 * 60, edge=-.17)],
              ev2: [leg(ev2 + "-LAL", ev2, "LA", .50, .58, src="Pinnacle", line_at=t - 2 * 60, edge=.08),
                    leg(ev2 + "-GSW", ev2, "GS", .52, .42, src="Pinnacle", line_at=t - 2 * 60, edge=-.1)]}
     n = E.drop_stale_lines(games, t)
@@ -191,6 +191,8 @@ def sec_b():
        got["fair"]["Boston Celtics"][0] == 0.58 and "nba" not in o.sharp and len(asked) == 1)
     o.get("nba", "key")
     ok("B: ...and the odds service isn't asked again on the next call (credits)", len(asked) == 1)
+    ok("B: the near-game refresh also counts the sharp lines' own start times (leagues with no free lines)",
+       abs((W.HubOdds.soonest(E.empty_snapshot(), snap("A", "B", .5, "Pinnacle", t, soon)) or 0) - soon) < 2)
 
 
 # ---------------------------------------------------------------- C: the green Buy and buy-idea alerts
@@ -352,6 +354,9 @@ def sec_e():
                                                      "fair": .52, "game": "Bears at Lions"}]}
         E.injury_note = lambda code, *teams, hours=48: ([], "Lions" in teams)
         ok("E: a spread is checked against both teams of its game", E.news_gap(ln) is not None)
+        E.injury_note = lambda code, *teams, hours=48: ([], code == "nba")
+        mix = dict(big, code="mix")
+        ok("E: a Mix bet checks each pick's own league's injury report", not E._qualifies(mix))
     finally:
         E.injury_note = real
 

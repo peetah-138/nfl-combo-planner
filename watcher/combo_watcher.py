@@ -1084,10 +1084,12 @@ class HubOdds:
         return self.H
 
     @staticmethod
-    def soonest(snap):
+    def soonest(snap, *more):
+        """The next start time in the snapshots (free lines, and the sharp lines' own: tennis, UFC, EuroLeague and
+        the AHL have no free lines, and still need the near-game refresh)."""
         import datetime as dt
         now, best = time.time(), None
-        for start in (snap.get("kick") or {}).values():
+        for start in [v for s in (snap,) + more if s for v in (s.get("kick") or {}).values()]:
             try:
                 t = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp()
             except ValueError:
@@ -1142,7 +1144,7 @@ class HubOdds:
                     self.note_moves(league, old[1], f[1])
             sh = self.sharp.get(league)
             if key:
-                soon = self.soonest(f[1])
+                soon = self.soonest(f[1], sh[1] if sh else None)
                 ttl = self.SHARP_NEAR_TTL if soon and soon - now < self.NEAR else self.SHARP_TTL
                 if (not sh or now - sh[0] > ttl) and now >= self.retry.get(league, 0):
                     got = H.sharp_snapshot(key)

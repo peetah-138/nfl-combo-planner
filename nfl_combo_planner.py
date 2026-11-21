@@ -842,7 +842,8 @@ def sharp_snapshot(key):
             "opp": dict(BOOK_OPP), "kick": dict(TEAM_KICKOFF), "note": note}
 
 
-PRE_LINE_AGE = 18 * 60       # a pre-game sportsbook line read longer ago than this...
+PRE_LINE_AGE = 45 * 60       # a pre-game sportsbook line read longer ago than this (the Mac re-reads the odds service
+                              # every 40 min near games, so a line past this missed its refresh: empty answer, outage)...
 PRE_LINE_NEAR = 4 * 3600      # ...is too old to price a game starting within this (injury and lineup news lands late)
 
 
@@ -15546,10 +15547,10 @@ def _ahead_floor(top):
 
 def choose_panel(cands, budget, base, size=None):
     """Greedy, inside the overlap rules and the budget. By default (rank_dollars) it keeps adding the bet that adds
-    the most expected profit in dollars (fees counted, from the same simulation) while the chance the day finishes
-    ahead stays at or over the floor; a bet that would take it under the floor is passed over (while the panel is
-    still under the floor, the bet that raises the chance most goes in). Then the prefix with the most expected profit
-    whose chance is still over the floor (_ahead_floor) is kept. With the switch off: the old rule (the bet that most
+    the most expected profit in dollars (fees counted, from the same simulation) among the bets that keep the chance
+    the day finishes ahead at or over the floor; when none does (or the panel is still under it), the bet that leaves
+    the best chance goes in. Then the prefix with the most expected profit whose chance is still over the floor
+    (_ahead_floor) is kept, so bets that dragged it under are trimmed off. With the switch off: the old rule (the bet that most
     raises the chance of finishing ahead, profit breaking ties; prefixes within 5 points of the best chance)."""
     size = size or PANEL["size"]
     dollars = rank_dollars()
@@ -16014,7 +16015,8 @@ def news_gap(x, ask=None):
         if not p or not l.get("fair") or l["fair"] - p < NEWS_GAP:
             continue
         try:
-            _, fresh = injury_note(x.get("code") or LEAGUE["code"], *_leg_teams(l), hours=3)
+            code = ticker_sport(l.get("ticker") or "") or x.get("code") or LEAGUE["code"]   # Mix: each pick's own league
+            _, fresh = injury_note(code, *_leg_teams(l), hours=3)
         except Exception:
             fresh = False
         if fresh:
@@ -16105,6 +16107,8 @@ def _buy_panel_bet(c):
         if news:
             return False, news, {}
         n = int(c["stake"] // (ask + single_fee(ask)))
+        while n > 1 and n * (ask + single_fee(ask, n)) > c["stake"] + 1e-9:
+            n -= 1                                       # the order's fee is rounded up: stay inside the stake
         if n < 1:
             return False, "the stake is under one contract", {}
         if ask + single_fee(ask, n) + edge_needed > l["fair"] + 1e-9:   # this order's fee, rounded up to the cent

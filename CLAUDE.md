@@ -407,9 +407,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   predates them); Results › What's working › Bet types shows **Bought during the game, by league** (`analytics()["live"]`).
 - **Profit-audit quick wins (#142, `t_profit.py`; every check failed on the code before):**
   - **Stale sharp lines (leak 4):** every line carries when it was read (`at`, free lines too). A pre-game line read
-    more than `PRE_LINE_AGE` (18 min) ago, or at an unknown time, for a game starting within `PRE_LINE_NEAR` (4 h) is
+    more than `PRE_LINE_AGE` (45 min: it missed the Mac's 40-minute near-game refresh) ago, or at an unknown time, for
+    a game starting within `PRE_LINE_NEAR` (4 h) is
     stale (`line_stale`): `merge_books` then prefers a fresh free line for that team, and `panel_collect` drops what is
-    still stale (`drop_stale_lines`: src None, Kalshi's own chance; no single, combo or closing price uses it). The
+    still stale (`drop_stale_lines`: src None, Kalshi's own chance; no game-winner single, combo or closing price uses
+    it; spreads/totals come from ESPN's own lines, not checked here). The near-game refresh also counts the sharp
+    lines' own start times (`soonest`), so leagues without free lines (tennis, UFC, EuroLeague, AHL) get it. The
     Mac's `HubOdds.get` drops the old sharp snapshot when the odds service answers empty and retries after the near
     TTL (never on every call).
   - **Green Buy and buy ideas (leak 3):** `green_bar` = max(your cut-off setting, the league's `combo_cutoff`) decides
