@@ -17,16 +17,16 @@ function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
  const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
- const best=bestBets(d);const adv=S.adv||S.slip.length>0;
+ const adv=S.adv||S.slip.length>0;
  m.innerHTML=chipRow+`<div class="grid"><div>
   <div id="pblock">${panelBlock(S.panel)}</div>
+  ${bestFeed(d)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games${(d.lines||[]).length?', spreads & totals':''} ▾`}</button>
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${SPN[g.sport]?`<div class="wlg">${ICON[g.sport]||''} ${esc(SPN[g.sport])}</div>`:''}${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
     return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
-  ${linesBlock(d)}
   ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
   ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
@@ -165,27 +165,32 @@ async function rbPoll(){if(S.view!=='build'){rbWatch();return;}if(document.hidde
 async function panelCancel(){hap('warning');if(!confirm('Stop the Mac from buying the rest of today\'s panel?'))return;const r=await api('/app/api/act',{a:'panel_cancel'});toast(r.msg,5000);await load('build');}
 function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open){S.slip=[];S.custom=null;}try{localStorage.setItem('cw_adv',S.adv?'1':'')}catch(e){}renderBuild();
  if(S.adv)setTimeout(()=>{const h=document.querySelector('.board');if(h)h.scrollIntoView({behavior:'smooth',block:'start'});},60);}
+/* Best bets today (#63): ONE ranked, recommend-only feed across single games, spreads/totals and value combos, built by the
+   Mac (best_bets_feed): each has an edge at a fair price AND a likely route to profit (cash out early, or hold). Nothing is
+   bought here: Buy straight opens the guarded sheet, a combo is priced in its own card. */
+const BF_KIND={single:['🎯','Single game'],line:['📏','Spread / total'],combo:['🧩','Combo']};
+function bfType(){return S.bfType||'all';}
+function setBfType(k){S.bfType=k;try{localStorage.setItem('cw_bftype',k)}catch(e){}renderBuild();}
+try{S.bfType=localStorage.getItem('cw_bftype')||'all'}catch(e){S.bfType='all'}
+function bfRow(x){const k=BF_KIND[x.kind]||['•',x.kind];const ex=x.exposure;
+ const route=x.kind==='line'?`${lineRoute(x)}.${x.n?` Stake ${money(x.stake)} for ${Number(x.n).toLocaleString()} contract${x.n===1?'':'s'}${x.capped==='depth'?', all Kalshi has inside the edge right now':''}.`:''}${x.min_edge?` Your bar here: ${(x.min_edge*100).toFixed(1)}¢.`:''}`:x.route==='sell'?`Likely to cash out early for a profit: <b>${Math.round((x.p_exit||0)*100)}%</b>${x.exit_mins?` · about ${Math.round(x.exit_mins)} min in`:''}`:`Profit if it holds: <b>${Math.round((x.win||0)*100)}%</b> to win, +${((x.edge||0)*100).toFixed(1)}${x.kind==='combo'?'%':'¢'} edge`;
+ const warn=ex&&ex.label!=='low'?`<div class="bfwarn ${ex.label==='watch it'?'w':'h'}" role="note">⚠ ${esc(short(ex.team||''))} is already in ${ex.n} of your ${ex.of} open combos (${esc(ex.label)}). The stake is cut to match.</div>`:'';
+ const nums=x.kind==='combo'?`<div>Chance to hit<b>${pct(x.chance)}</b></div><div>Pays vs fair<b class="up">≈${pct((x.edge||0)+1)}</b></div><div>Stake<b>${money(x.stake)}</b></div>`
+  :`<div>Kalshi<b>${Math.round((x.price||0)*100)}¢</b></div><div>Our fair<b>${pct(x.fair)}</b></div><div>Edge<b class="up">${((x.edge||0)*100).toFixed(1)}¢</b></div><div>Stake<b>${money(x.stake)}</b></div>`;
+ const btn=x.kind==='combo'?`<button class="btn acc" style="width:100%" onclick="feedCombo(${+x.i})">Price it ›</button>`:`<button class="btn acc" style="width:100%" onclick="sbOpen('${esc(x.ticker)}',S.lg)">Buy straight ›</button>`;
+ return `<div class="bet bfrow" data-key="bf:${esc(x.id)}"><div class="bt"><div><span class="kind">${esc(x.icon||k[0])} ${k[1]}${x.league?' · '+esc(x.league):''}${x.kick?' · '+esc(pTime(x.kick)):''}</span><b>${esc(x.pick)}</b>${x.game&&x.kind!=='combo'?`<div class="m" style="font-size:12px">${esc(x.game)}</div>`:''}</div>
+  <span class="ret"><span data-num="bf:${esc(x.id)}" data-v="${(+x.ev||0).toFixed(2)}" data-pre="+">+${money(x.ev)}</span><small>expected</small></span></div>
+  <div class="bnums">${nums}</div><div class="why">${route}</div>${warn}${btn}</div>`;}
+function bestFeed(d){const f=d.best;if(!f)return '';const all=f.items||[];const t=bfType();const xs=t==='all'?all:all.filter(x=>x.kind===t);
+ const types=[['all','All'],['single','Singles'],['line','Spreads & totals'],['combo','Combos']].filter(([k])=>k==='all'||all.some(x=>x.kind===k)||k===t);
+ const tot=xs.reduce((a,x)=>a+(+x.ev||0),0);
+ const sub=xs.length?`${money(xs.reduce((a,x)=>a+(+x.stake||0),0))} in · expected +$${tot.toFixed(2)}`:'';
+ return secHead('best','⭐ Best bets today',xs.length,sub)+(!secOpen('best')?'':`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Only bets with an edge at a fair price <b>and</b> a likely way to profit, ranked by expected dollars. Nothing is bought until you tap.</div>
+  ${types.length>2?`<div class="chips" style="margin-bottom:10px">${types.map(([k,l])=>`<button class="chip ${t===k?'on':''}" onclick="setBfType('${k}')">${l}</button>`).join('')}</div>`:''}
+  ${xs.length?`<div class="cgrid">${xs.map(bfRow).join('')}</div>`:`<div class="empty" role="status"><b>${t==='all'?'Nothing clears your bar right now':'No '+esc((types.find(a=>a[0]===t)||[0,t])[1].toLowerCase())+' clear your bar right now'}</b>${esc(f.why||'Check back after the next price update.')}</div>`}`);}
+function feedCombo(i){hap();S.adv=true;try{localStorage.setItem('cw_adv','1')}catch(e){}renderBuild();
+ setTimeout(()=>{const el=document.querySelector(`#main .ccard[data-i="${i}"]`);if(el)el.scrollIntoView({behavior:'smooth',block:'center'});},60);quote(i);}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
-function bestBets(d){const out=[];
- (d.singles||[]).filter(x=>x.idea).forEach(x=>out.push({k:'single',score:x.ev,x}));
- (d.lines||[]).filter(x=>x.rec&&x.stake>0).forEach(x=>out.push({k:'line',score:x.exp/x.stake,x}));
- (d.combos||[]).filter(c=>c.kind==='value'&&!c.bought&&(comboRet(c)||0)>=1).forEach(c=>out.push({k:'combo',score:comboRet(c)-1,x:c}));
- return out.sort((a,b)=>b.score-a.score).slice(0,6);}
-function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100)}%<small>expected</small></span>`;
- if(b.k==='single')return `<div class="bet"><div class="bt"><div><span class="kind">🎯 Single game</span><b>${esc(short(x.pick))} to beat ${esc(short(x.opp))}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance to win<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">Kalshi charges ${Math.round(x.p*100)}¢ for a ${pct(x.fair)} chance, after its fee. Wins pay $1 per contract.</div>
-  <button class="btn acc" style="width:100%" onclick="singleFromBoard('${x.ticker}',this)">Get a price</button></div>`;
- if(b.k==='line')return `<div class="bet"><div class="bt"><div><span class="kind">${x.kind==='spread'?'📏 Spread':'➕ Total'} · ${esc(x.game)}</span><b>${esc(x.pick.replace(/ \(.*\)$/,''))}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">${lineRoute(x)}. Expected ${smoney(x.exp)} on ${money(x.stake)}, after Kalshi's fee, at what you can really buy.</div>
-  <button class="btn acc" style="width:100%" data-t="${esc(x.ticker)}" onclick="lineFromBoard(this.dataset.t,this)">Get a price</button></div>`;
- const c=x,o=S.quotes&&S.quotes[c.i],fresh=o&&Date.now()/1000-o.at<20;
- return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
-  <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
-  <div class="why">Every leg is priced below the sharp books' chance, so the combo should pay more than it's worth. Get the real price before buying.</div>
-  ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>
-   <button class="btn ${o.clears?'yes':'warn'}" style="width:100%" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:`<button class="btn acc" style="width:100%" id="q${c.i}" onclick="quote(${c.i})">Get a price</button>`}</div>`;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
 /* The slip's Single bet / Combo switch (#113): Single bet keeps one team and its button buys it straight (the buy sheet);
    Combo is the slip as before. */
