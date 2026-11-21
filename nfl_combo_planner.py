@@ -9353,7 +9353,7 @@ def order_cost(o):
     return n * p + math.ceil(round(n * single_fee(p) * 100, 6)) / 100
 
 
-POTS_WAIT = 3                     # seconds for each diagnostic read (the phone's relay gives up after 40 s in all)
+POTS_WAIT = 1.6                   # seconds for the diagnostic read (inside POTS_BUDGET, so no read is cut off early)
 POTS_BUDGET = 1.8                 # the most balance_words ever waits in all: it can run inside a buy's order lock
 
 
@@ -12732,11 +12732,22 @@ def _manual_table():
     store_x("create table if not exists manual_buys(ts real, ticker text, cost real)")
 
 
+MANUAL_LOOKBACK = 120 * 86400  # manual buys read back this far: Kalshi lists some games (UFC, football) weeks ahead
 CAP_READ_AGE = 120            # a manual buy's cap check trusts Kalshi's combo record only this fresh (seconds)
 
 
 class CapUnknown(Exception):
-    """What's been spent can't be told from fresh-enough data: a manual buy is refused, never let through."""
+    """What's been spent can't be told from fresh-enough data: a manual buy is refused, never let through.
+    `words` is what the buy sheet says (a retry helps for a failed read, never for a market with no date)."""
+
+    def __init__(self, why, words=None):
+        super().__init__(why)
+        self.words = words or CAP_UNKNOWN_MSG
+
+
+def cap_refusal(err):
+    """The plain words for a cap check that couldn't be done (anything unexpected reads as a failed check)."""
+    return getattr(err, "words", None) or CAP_UNKNOWN_MSG
 
 
 def league_cfg(code):
@@ -12800,7 +12811,7 @@ def manual_spend(ticker=None, now=None):
         key = CTX.get("sunday") if isinstance(CTX.get("sunday"), dt.date) else week_of(
             "X-" + dt.date.today().strftime("%y%b%d").upper())
     _manual_table()
-    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (now - 9 * 86400,))
+    rows = store_rows("select ticker, cost from manual_buys where ts >= ?", (now - MANUAL_LOOKBACK,))
     return round(sum(float(r["cost"] or 0) for r in rows if ticker_sport(r["ticker"]) == code
                      and in_cap_window(week_of(r["ticker"]), key)), 2)
 
@@ -12815,8 +12826,10 @@ def manual_cap(t, now=None):
     """(spent, budget, code) for a manual buy of market t: its own league's cap and that league's spending in its
     game's slate (combos + manual singles). Raises CapUnknown when that can't be told safely."""
     code, key = market_league(t), week_of(t)
-    if not code or not key:
-        raise CapUnknown("league or slate unknown")
+    if not code:
+        raise CapUnknown("league unknown", NO_LEAGUE_MSG)
+    if not key:
+        raise CapUnknown("slate unknown", NO_SLATE_MSG)
     try:
         budget = float((league_cfg(code) or {})["budget"])
     except (KeyError, TypeError, ValueError):
@@ -12838,6 +12851,8 @@ def manual_cap_msg(code, spent, add, budget):
 CAP_UNKNOWN_MSG = "Couldn't check your weekly cap right now, try again in a minute. Nothing was bought."
 NO_LEAGUE_MSG = ("Couldn't tell which league this market is in, so its spending cap can't be checked. "
                  "Nothing can be bought straight here.")
+NO_SLATE_MSG = ("Couldn't tell which day this game is on, so its spending cap can't be checked. "
+                "Nothing can be bought straight here.")
 NO_TRADE_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be bought."
 PAUSE_MSG = "Paused from an alert, so nothing is bought. To resume, save Settings with Auto cash-out on."
 DRAW_MSG = ("A draw can't be bought straight here: the app's fair prices are for teams, not draws. "
@@ -13007,11 +13022,9 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
     if not blocked:
         try:
             spent, budget, code = manual_cap(t, now)
-        except Exception:                               # CapUnknown, or anything else: refused, never $0
-            spent = None
-        if spent is None:
-            blocked = CAP_UNKNOWN_MSG
-        else:
+        except Exception as err:                        # CapUnknown, or anything else: refused, never $0
+            spent, blocked = None, cap_refusal(err)
+        if spent is not None:
             room = round(max(0.0, budget - spent), 2)
             if spent + cost > budget + 0.01:
                 blocked = manual_cap_msg(code, spent, cost, budget)
@@ -13039,6 +13052,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     quoted price, never more. {"ok", "msg", "filled", "price", "cost", "pays"} or {"ok": False, "check": True} when
     Kalshi's answer was unclear (it may have gone through: never resent, the market is blocked for 2 hours)."""
     now = now or time.time()
+    trade_ok = can_trade()                            # may ping the hub: never while holding the quote lock
     with _SQ["lock"]:
         q = _SQ["q"].get(str(qid or ""))
         if not q or q["t"] != str(ticker or ""):
@@ -13050,7 +13064,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if paused:
             return {"ok": False, "msg": "Paused from an alert, so nothing was bought. To resume, save Settings with "
                                         "Auto cash-out on."}
-        if not can_trade():
+        if not trade_ok:
             return {"ok": False, "msg": NO_TRADE_MSG}
         if q["blocked"]:
             return {"ok": False, "msg": q["blocked"]}
@@ -13079,8 +13093,8 @@ def _single_send(q, qid, now, log):
         return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. Check Kalshi."}
     try:
         spent, budget, code = manual_cap(t, now)
-    except Exception:                                  # CapUnknown (or anything else): refused, nothing sent
-        return {"ok": False, "msg": CAP_UNKNOWN_MSG}
+    except Exception as err:                           # CapUnknown (or anything else): refused, nothing sent
+        return {"ok": False, "msg": cap_refusal(err)}
     if spent + q["cost"] > budget + 0.01:
         return {"ok": False, "msg": manual_cap_msg(code, spent, q["cost"], budget)}
     coid = f"cw-sb-{qid}"

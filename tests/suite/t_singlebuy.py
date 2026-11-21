@@ -329,7 +329,7 @@ E.EVENT_SIDES[EV] = (time.time() - 200, good)
 ok("a copy over 3 min old isn't shown while Kalshi is down", E.event_sides(EV) == [])
 fakenet.markets = real_markets
 reset()
-E._manual_note(T, 30.0)
+E._manual_note("KXNBAGAME-26OCT01DENLAL-DEN", 30.0)          # last month's game (its own slate, not this one)
 E.store_x("update manual_buys set ts=? where cost=30.0", (time.time() - 30 * 86400,))
 E._manual_note("KXNHLGAME-26NOV19COLSJ-COL", 12.0)
 E._manual_note(T, 5.0)
@@ -429,11 +429,28 @@ r = buy(q)
 ok("the read fails between the quote and the tap: refused with the cap words, nothing sent",
    q["ok"] and not q["blocked"] and not r["ok"] and "Couldn't check your weekly cap" in r["msg"] and not D["sent"])
 E.ACCT_CACHE.update(at=0, value=None)
-ok("KNOWN GAP (listed in the PR, unchanged here): the combo cap's week_spend still counts a failed read as $0",
-   REAL_WS() == 0)
+print("INFO known gap (listed in the PR, unchanged here): the combo cap's week_spend counts a failed read as "
+      f"${REAL_WS():g}")
 E._fetch_account = real_fa
 E.ACCT_CACHE.update(at=0, value=None)
 E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]
+
+# a single bought weeks before its game still counts in that game's slate; a market with no date says so
+reset()
+E._manual_note(T, 20.0)
+E.store_x("update manual_buys set ts=? where cost=20.0", (time.time() - 12 * 86400,))
+ok("a manual single bought 12 days before its game still counts toward that game's cap", E.manual_spend(T) == 20.0)
+try:
+    E.manual_cap("KXNBAGAME-NODATE-DEN")
+    ok("a market with no date: CapUnknown", False)
+except E.CapUnknown as err:
+    ok(f"a market with no date: refused with its own words, not 'try again' ({err.words[:45]}...)",
+       "which day" in err.words and "try again" not in err.words)
+LOCKED = []
+E.can_trade = lambda: (LOCKED.append(E._SQ["lock"].locked()), True)[1]
+buy(E.single_buy_quote(X, 10))
+E.can_trade = lambda: True
+ok("can_trade (it may ping the hub) is never called while the quote lock is held", LOCKED and not any(LOCKED))
 
 # a spread/total that's no longer on the board never borrows a moneyline chance
 reset()
