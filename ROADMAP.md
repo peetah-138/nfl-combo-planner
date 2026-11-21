@@ -69,8 +69,9 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 ### Smarter spreads and totals (issue #117)
 - **Part A shipped** (the margin-shape model, per-league gate, old vs new logged side by side). Its own record takes
   over the gate once a league has 200+ settled games of spread/total markets; watch Results › What's working.
-- **Part B to build:** CLV per strike type, fillable size and after-fee expected profit from the order book, and a
-  learned minimum edge per league/type (see the issue).
+- **Part B shipped** (CLV per strike, fillable size after fees, learned minimum edge per league; Build shows
+  recommendations only; see `CLAUDE.md`). Watch Results › What's working › Bet types › "your bar and the close" as
+  the first bars move (a league needs 30+ settled games at its bar).
 - **Left as they are on purpose (selection changes, need Pete's OK):** NHL spreads are never priced today (ESPN's
   "details" for hockey is a moneyline, read as a 185-point spread, so the distance filter drops every puck line), and
   soccer spreads/totals aren't fetched at all (`_espn_board` gets a list of ESPN paths for soccer). The new model can
@@ -112,7 +113,11 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
    into (own suggestions, then bigger stakes and extra auto-buys inside every cap with a losing-streak brake; Hard
    rule 2 in CLAUDE.md), which the Results card's "Bigger stakes: not yet" line tracks.
 3. **A purchase carries a plan** (exit chance, target bid band, window, policy version), read by smart sell.
-4. **Scoreboard and plan audit** (#138, #115), dollar regret per league/rule.
+4. **Scoreboard and plan audit** (#138, #115): the scoreboard and the smart-sell scorecard shipped (see CLAUDE.md,
+   Results page). Still to do: the weekly summary push, warnings/automatic tightening when a league or type loses
+   beyond luck (learned minimum edge/exit chance, per league with borrowing, never loosened without data), links
+   from each breakdown into its setting, tagging Live Buy idea buys apart from Build, and feeding the scorecard to
+   `smart_tune` as its target (a selling change: needs Pete's go-ahead).
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
 - Finding from stage 1 to put to Pete: at the 1.5x profit floor, a single bought above ~67c can never be sold for a
   profit by smart sell (only held), and on modest-edge bets selling at the bid gives up part of the edge (the
