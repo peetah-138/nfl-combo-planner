@@ -16,6 +16,7 @@ def load():
     A = real_load()
     A.fetch_account = lambda max_age=60, every_league=False: ([], 211.03, "test")
     A.resting_sells = lambda: {}
+    A.kalshi_pots = lambda: {"total": 69.49, "by": [[0, 4.1], [1, 65.39]], "at": int(time.time())}
     A.save_json(A.ORDER_LEDGER, {f"{TK}|bid|o": {"ts": time.time() - 600, "coid": "c1", "why": "Timeout"}})
     ENG["A"] = A
     return A
@@ -46,6 +47,9 @@ with sync_playwright() as pw:
     row = pg.evaluate("[...document.querySelectorAll('.srow')].map(r=>r.innerText).find(t=>t.includes('Order block'))||''")
     if TK not in row or "YES" not in row or "until" not in row:
         problems.append(f"the row doesn't say which market, side and until when: {row!r}")
+    pot = pg.evaluate("[...document.querySelectorAll('.srow')].map(r=>r.innerText).find(t=>t.includes('Kalshi balance by pot'))||''")
+    if not all(w in pot for w in ("Index 0", "$4.10", "Index 1", "$65.39", "Total", "$69.49", "Kalshi's own app shows one total")):
+        problems.append(f"Settings › Money doesn't show the balance by pot: {pot!r}")
     btn = pg.locator("button", has_text="Clear order block").first
     btn.scroll_into_view_if_needed(); btn.click()
     pg.wait_for_function("!(S.set.blocks||[]).length || [...document.querySelectorAll('button')].every(b=>!b.innerText.includes('Clear order block'))",
@@ -60,7 +64,7 @@ with sync_playwright() as pw:
     r = __import__("requests").post(B + "/app/api/act", json={"a": "clear_block", "key": "nope|bid|o"}, headers={"X-CW": "x"})
     if r.ok and r.json().get("ok"):
         problems.append("clearing a block that isn't there said ok")
-    print("checks: block listed, row words, confirm, cleared, logged, missing key refused")
+    print("checks: balance by pot, block listed, row words, confirm, cleared, logged, missing key refused")
     print("JS errors:", errs[:3])
     print("PROBLEMS:" if problems else "no problems", problems)
     br.close()

@@ -3660,6 +3660,8 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
 function blockRow(b){if(!b||!b.length)return '';return b.map(x=>{const until=new Date(x.until*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="srow"><div class="l"><b>Order block: ${esc(x.ticker)} · ${x.sell?'sell ':''}${esc(x.side)}</b><small>An order here had no clear answer, so the app sends none on it until ${esc(until)}. Check Kalshi first; the unclear order itself is never resent.</small></div><button class="btn ghost" data-k="${esc(x.key)}" onclick="clearBlock(this)">Clear order block</button></div>`}).join('');}
+function potRow(p){if(!p||p.total==null)return '';const c=x=>'$'+(+x).toFixed(2);const by=(p.by||[]).filter(r=>Array.isArray(r)&&r.length===2);
+ return `<div class="srow" style="display:block"><div class="l"><b>Kalshi balance by pot</b><small>Kalshi keeps cash in separate pots by market type (Kalshi's docs: index 0 = most markets, 1 = combos, 2 = crypto, 3 = tennis, baseball and basketball). An order can only use the pot of its market. Kalshi's own app shows one total. Read-only: the app never moves money between pots.</small></div>${by.length?by.map(r=>`<div class="mini" style="margin-top:6px">Index ${esc(String(r[0]))}<b>${c(r[1])}</b></div>`).join(''):`<div class="m" style="font-size:11.5px;margin-top:6px">Kalshi didn't list the pots.</div>`}<div class="mini" style="margin-top:6px">Total<b>${c(p.total)}</b></div>${p.at?`<div class="m" style="font-size:11.5px;margin-top:6px">As of ${esc(new Date(p.at*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))}, from the Mac's last Kalshi read</div>`:''}</div>`;}
 function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
@@ -4359,7 +4361,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -5125,7 +5127,14 @@ def webapp_main():
         except (OSError, ValueError, KeyError, requests.RequestException):
             return False
 
+    def _pots():
+        try:                                            # Kalshi's cash by pot (read-only); never holds up Settings
+            return A.kalshi_pots()
+        except Exception:
+            return None
+
     def api_settings(lg, vals=None):
+        pots = _pots() if vals is None else None       # reads only, outside the lock (it may ask the Mac)
         with alock:
             if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
                 A.set_league(lg)
@@ -5172,6 +5181,7 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "blocks": A.order_blocks(),
+                             "pots": pots,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -5769,6 +5779,8 @@ def start_hub(conf, E, odds=None):
             return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
         if op == "account":
             return {"value": list(E.fetch_account(max_age=15, every_league=True))}
+        if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
+            return {"pots": E.kalshi_pots()}
         if op == "get":
             url = str(req.get("url", ""))
             if not url.startswith(E.HUB_GET_HOSTS):

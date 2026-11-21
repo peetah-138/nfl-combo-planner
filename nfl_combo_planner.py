@@ -1713,6 +1713,39 @@ def on_live(a, week):
 
 
 ACCT_POS = {"at": 0, "items": []}      # every position from the last account read (singles and spreads too)
+# Kalshi's cash by exchange shard ("pot") from the last balance read: GET /portfolio/balance's balance_breakdown.
+# Kalshi's own app shows one total; API orders can only use the pot of their market's shard (docs: Exchange Sharding).
+# One copy for every engine copy in this process (the watcher loads the engine twice), so it's logged once.
+ACCT_POTS = sys.modules.setdefault("_combo_pots_shared", type(sys)("_combo_pots_shared")).__dict__.setdefault(
+    "pots", {"at": 0, "total": None, "by": {}, "logged": ""})
+
+
+def note_pots(bal):
+    """Keep the balance by pot next to the total (read-only), and log it when it changes (no account ids)."""
+    try:
+        if not isinstance(bal, dict):
+            return
+        total = dollars(bal, "balance")
+        by = shard_balances(bal) if "balance_breakdown" in bal else ACCT_POTS["by"]   # none sent: keep the last
+        ACCT_POTS.update(at=time.time(), total=total, by=by)
+        line = ("Kalshi balance by pot: " + (", ".join(f"index {k} {_usd(v)}" for k, v in sorted(by.items()))
+                                             or "none listed") + f", total {_usd(total)}")
+        if line != ACCT_POTS["logged"]:
+            ACCT_POTS["logged"] = line
+            print(line, flush=True)
+    except Exception:
+        pass
+
+
+def kalshi_pots():
+    """{"total", "by": [[index, dollars]], "at"} for Settings (from the Mac when paired), or None if not known yet."""
+    if hub_up():
+        got = hub_call("pots", timeout=4)
+        return got.get("pots") if isinstance(got, dict) and isinstance(got.get("pots"), dict) else None
+    if not ACCT_POTS["at"]:
+        return None
+    return {"total": ACCT_POTS["total"], "by": [[k, v] for k, v in sorted(ACCT_POTS["by"].items())],
+            "at": int(ACCT_POTS["at"])}
 
 
 def fetch_account(max_age=60, every_league=False):
@@ -1748,6 +1781,7 @@ def _fetch_account():
         positions = all_positions(key, key_id)
         ACCT_POS.update(at=time.time(), items=positions)
         bal = account_get(key, key_id, "/portfolio/balance")
+        note_pots(bal)
     except (ValueError, PermissionError) as err:
         return None, None, str(err)
     except (requests.RequestException, OSError) as err:
@@ -8798,7 +8832,7 @@ def kalshi_send(method, path, body=None, params=None):
     return r.json() if r.content else None
 
 
-def _signed(method, path, body=None, params=None):
+def _signed(method, path, body=None, params=None, timeout=20):
     """One signed request to Kalshi with this device's key. Returns the response, whatever its status."""
     import base64
     key_id = CFG.get("kalshi_key_id", "").strip()
@@ -8814,7 +8848,7 @@ def _signed(method, path, body=None, params=None):
                "KALSHI-ACCESS-SIGNATURE": sig}
     if body is not None:
         headers["Content-Type"] = "application/json"
-    r = requests.request(method, KALSHI + path, params=params or {}, timeout=20, headers=headers,
+    r = requests.request(method, KALSHI + path, params=params or {}, timeout=timeout, headers=headers,
                          data=json.dumps(body) if body is not None else None)
     deprecation_check(r, path)
     return r
@@ -8841,7 +8875,15 @@ ORDER_TIF = ("immediate_or_cancel", "good_till_canceled", "fill_or_kill")
 RESTING_SELLS_OK = False
 ORDER_WORDS = {
     "deprecated_v1_order_endpoint": "Kalshi changed how orders are placed; the app is updating",
-    "insufficient_balance": "there isn't enough money in your Kalshi account for it",
+    # insufficient_balance = the cash in the market's exchange shard ("pot") doesn't cover the order (Kalshi's docs).
+    # These words claim no cause; balance_words adds the numbers, and the pots only when the breakdown shows them.
+    "insufficient_balance": "Kalshi says not enough money is available for this order (code insufficient_balance). Check Kalshi",
+    "insufficient_shard_balance": ("Kalshi says this account has no cash set up for this kind of market yet (code "
+                                   "insufficient_shard_balance). Check Kalshi"),
+    "invalid_order": "Kalshi wouldn't take the order as sent",
+    "invalid_parameters": "Kalshi wouldn't take the order as sent",
+    "missing_parameters": "Kalshi wouldn't take the order as sent",
+    "bad_request": "Kalshi wouldn't take the order as sent",
     "market_inactive": "that market isn't open for trading right now",
     "market_closed": "that market isn't open for trading right now",
     "market_not_found": "Kalshi doesn't list that market any more",
@@ -8853,6 +8895,10 @@ ORDER_WORDS = {
     "too_many_open_orders": "the account has too many open orders on Kalshi",
     "fill_or_kill_insufficient_resting_volume": "there weren't enough contracts for sale at that price",
     "TRADING_BLOCKED": "Kalshi isn't letting this account trade that market",
+    "Cannot_specify_both_IoC_and_expiration_timestamp": "Kalshi wouldn't take the order's time limit",
+    "EXPIRED_TIMESTAMP": "Kalshi wouldn't take the order's time limit",
+    "Post_only_but_execution_type_can't_rest": "Kalshi wouldn't take the order as sent",
+    "exceeded_order_group_contracts_limit": "Kalshi wouldn't take the order as sent",
 }
 # one lock and one double-tap memory for every engine copy in this process (the watcher loads it twice)
 _ORDER_SHARED = sys.modules.setdefault("_combo_order_shared", type(sys)("_combo_order_shared"))
@@ -8922,6 +8968,10 @@ def kalshi_plain(status, code, msg=""):
         return ORDER_WORDS[code]
     if status == 429:
         return ORDER_WORDS["too_many_requests"]
+    if status == 403 and re.search(r"location|region|jurisdiction|geo", code, re.I):   # a sentence with underscores
+        return "Kalshi won't let this account trade that market from here"
+    if code.startswith("ID_parse_error"):
+        return ORDER_WORDS["invalid_parameters"]
     words = re.sub(r"[{}\[\]\"\\<>]", "", msg or "").strip()
     return f"Kalshi said: {words[:120]}" if words else "Kalshi turned it down"
 
@@ -9160,7 +9210,90 @@ def _route_missing(r):
     return r.status_code == 404 and not _kalshi_error(r)[0]
 
 
-def _order_fail(r, what):
+def _usd(x):
+    return f"${float(x):,.2f}"
+
+
+def shard_of(ticker):
+    """The Kalshi exchange shard (cash pot) a market trades on, from its public listing; None if unknown."""
+    try:
+        r = requests.get(f"{KALSHI}/markets/{ticker}", timeout=POTS_WAIT, headers={"Accept": "application/json"})
+        if r.ok:
+            return _index(((r.json() or {}).get("market") or {}).get("exchange_index"))
+    except Exception:
+        pass
+    return None
+
+
+def _index(v):
+    """An exchange index as an int (Kalshi sends a number; a digit string is read too), or None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.strip().isdigit() else None
+
+
+def shard_balances(bal):
+    """{shard: dollars} from a GET /portfolio/balance answer's balance_breakdown ({} when it has none)."""
+    out = {}
+    rows = bal.get("balance_breakdown") if isinstance(bal, dict) else None
+    for b in rows if isinstance(rows, list) else []:
+        if not isinstance(b, dict) or _index(b.get("exchange_index")) is None:
+            continue
+        if b.get("balance") in (None, "") and b.get("balance_dollars") in (None, ""):
+            continue
+        out[_index(b["exchange_index"])] = dollars(b, "balance")    # same unit rule as the total (int = cents)
+    return out
+
+
+def order_cost(o):
+    """About what a buy needs in cash: contracts x the price of the side bought, plus Kalshi's fee rounded up to
+    the cent (as Kalshi charges it)."""
+    import math
+    p = float(o["yes"]) if o["side"] == "bid" else 1 - float(o["yes"])
+    n = float(o["count"])
+    return n * p + math.ceil(round(n * single_fee(p) * 100, 6)) / 100
+
+
+POTS_WAIT = 3                     # seconds for each diagnostic read (the phone's relay gives up after 40 s in all)
+
+
+def balance_words(o):
+    """Kalshi's insufficient_balance in plain English, from a fresh read of the balance (total and each pot) and the
+    market's pot. Claims a cause only when the numbers show it: the total below the order's cost, or the breakdown
+    listing this market's pot below it. Otherwise the code and the total, and "Check Kalshi". Never raises.
+    Called after the refusal, so nothing was placed whatever this finds."""
+    base = ORDER_WORDS["insufficient_balance"]
+    if o.get("reduce_only"):                      # a sale: its cost isn't a purchase, so no money sums
+        return base
+    try:
+        r = _signed("GET", "/portfolio/balance", timeout=POTS_WAIT)
+        bal = r.json() if r.ok else None
+        if not isinstance(bal, dict) or (bal.get("balance") in (None, "") and bal.get("balance_dollars") in (None, "")):
+            return base
+        note_pots(bal)
+        total, need = dollars(bal, "balance"), order_cost(o)
+        pots = shard_balances(bal)
+        shard = shard_of(o["ticker"]) if pots else None
+        print(f"insufficient_balance: order needs about {_usd(need)}, total {_usd(total)}, this market's pot "
+              f"{shard if shard is not None else '?'}", flush=True)
+        if total + 0.005 < need:
+            return (f"there isn't enough money in your Kalshi account for it (it needs about {_usd(need)}; "
+                    f"your total is {_usd(total)})")
+        here = pots.get(shard, 0.0)                 # Kalshi lists every pot, zero ones too: a missing pot holds $0
+        if shard is not None and here + 0.005 < need:
+            return (f"Kalshi says the money available for this market isn't enough (your total is {_usd(total)}; "
+                    f"Kalshi keeps cash in separate pots per market type: this market's pot has {_usd(here)}, "
+                    f"and this order needs about {_usd(need)}). Check Settings › Money › Kalshi balance by pot")
+        return (f"Kalshi says not enough money is available for this order (code insufficient_balance). Your total "
+                f"shows {_usd(total)} and this order needs about {_usd(need)}. Check Kalshi")
+    except Exception:
+        pass
+    return base
+
+
+def _order_fail(r, what, o=None):
     """Raise for a failed order answer: PermissionError / KalshiRefused (nothing placed) or OrderUnknown."""
     code, msg = _kalshi_error(r)
     st = r.status_code
@@ -9169,6 +9302,10 @@ def _order_fail(r, what):
         raise OrderUnknown(f"HTTP {st}" + (f" {code}" if code else ""))
     if st == 401 or (st == 403 and code in ("", "permission_denied", "subaccount_is_restricted_by_API_key")):
         raise PermissionError("Kalshi refused. Your API key needs write (trading) access for buying.")
+    if code == "insufficient_balance" and o is not None:
+        raise KalshiRefused(balance_words(o), st, code)
+    if code == "not_found" and what == "cancel":
+        raise KalshiRefused("Kalshi couldn't find that order (it may have filled or been cancelled already)", st, code)
     raise KalshiRefused(kalshi_plain(st, code, msg), st, code)
 
 
@@ -9209,7 +9346,7 @@ def _order_create(body):
                 _log_once(("order-unread", r.status_code), f"Kalshi order answer unreadable: {str(r.text)[:200]!r}")
                 raise OrderUnknown("an answer the app couldn't read")
             return got
-        _order_fail(r, "order")
+        _order_fail(r, "order", o)
     except OrderUnknown as err:
         _mark_unsure(o, err)
         raise
@@ -9505,6 +9642,8 @@ def accept_offer(i, skip_cap=False):
         kalshi_send("PUT", f"/communications/rfqs/{o['rfq']}/quotes/{o['quote']}/accept",
                     {"accepted_side": "no"})
     except RuntimeError as err:
+        if "insufficient_balance" in str(err):          # Kalshi's own code: not an expired quote
+            return {"error": f"Kalshi didn't take the combo: {order_words(err)}"}
         return {"error": f"Couldn't accept, probably expired. Get a fresh offer. ({err})"}
     status, start = "accepted", time.time()
     while time.time() - start < 15 and status not in ("executed", "cancelled"):
