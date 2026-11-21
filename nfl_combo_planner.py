@@ -820,6 +820,8 @@ def fetch_book_odds(key):
         got = hub_call("odds", timeout=60, league=LEAGUE["code"], key=key or "")
         if got and isinstance(got.get("snap"), dict):
             return load_book_state(got["snap"]), got["snap"].get("note", "")
+    if key and odds_saving()[0] and not odds_worth_reading(LEAGUE["code"], odds_interest(held_for_credits())):
+        key = ""                                  # low on credits and nothing near that matters: free lines only
     sharp = sharp_snapshot(key) if key else empty_snapshot()
     snap = merge_books(sharp, free_snapshot(league_codes()))
     return load_book_state(snap), snap["note"]
@@ -1104,6 +1106,7 @@ def tennis_keys(key):
     """The ATP tournaments the odds feed lists right now (asking costs no credits)."""
     try:
         r = requests.get("https://api.the-odds-api.com/v4/sports", params={"apiKey": key}, timeout=15)
+        odds_credits_note(r.headers)
         return [x["key"] for x in (r.json() if r.ok else []) if str(x.get("key", "")).startswith("tennis_atp")
                 and x.get("active")][:3]
     except (requests.RequestException, ValueError):
@@ -1116,6 +1119,7 @@ def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
             "apiKey": key, "regions": regions, "markets": "h2h", "oddsFormat": "decimal"})
     except requests.RequestException:
         return {}, "Couldn't reach the sportsbook service, so chances use Kalshi's prices."
+    odds_credits_note(r.headers)                  # every answer says how many credits are left: no extra calls
     if r.status_code == 401:
         return {}, "Your sportsbook key wasn't accepted. Check it on the settings screen."
     if r.status_code == 429:
@@ -1171,6 +1175,239 @@ def fetch_book_odds_one(key, url, keep=False, regions="us,eu"):
         except ValueError:
             pass
     return fair, note
+
+
+# ---------------------------------------------------------------- odds service credits
+# The Odds API answers every call with x-requests-remaining / -used / -last. We keep the newest numbers and a short
+# history (no extra calls just to read the quota) so Settings › The Mac can show what's left, how fast it goes and
+# when it resets, and so the Mac can spend what's left where it matters once it runs low. This never decides a buy,
+# a sale or a price: it only changes which sportsbook lines the Mac asks for.
+ODDS_CREDITS = os.path.join(HERE, "combo_odds_credits.json")
+ODDS_CREDITS_LOCK = threading.Lock()
+CREDIT_FLOOR = 40            # credits left at or under this = low, whatever the burn rate (a call costs about 2)
+CREDIT_FLOOR_SHARE = 0.05    # ...or this share of the plan, if bigger
+CREDIT_RATE_SPAN = 6 * 3600  # a burn rate needs this much history since the last reset
+CREDIT_RATE_WINDOW = 7 * 86400   # the burn rate looks back this far
+CREDIT_NEAR = 4 * 3600       # low mode: only leagues with a game that matters starting within this (= PRE_LINE_NEAR)...
+CREDIT_LIVE = 4 * 3600       # ...or one that started within this (under way)
+
+
+def _num(x):
+    try:
+        v = float(str(x).strip())
+        return v if math.isfinite(v) and v >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def odds_credits_note(headers, now=None):
+    """Record the odds service's credit headers from an answer we already got. Never raises, never calls anything."""
+    try:
+        rem = _num(headers.get("x-requests-remaining"))
+        used = _num(headers.get("x-requests-used"))
+        last = _num(headers.get("x-requests-last"))
+    except Exception:
+        return False
+    if rem is None:
+        return False
+    now = now or time.time()
+    try:
+        with ODDS_CREDITS_LOCK, file_lock(ODDS_CREDITS):   # the watcher, the shadow and the web app all write it
+            _credits_add(rem, used, last, now)
+    except Exception as err:                                # display/low-mode state only: never stops a fetch
+        console_note(f"odds credits not saved: {type(err).__name__} {err}")
+        return False
+    return True
+
+
+def _credits_add(rem, used, last, now):
+    """Add one reading to the credits file (the caller holds both locks). A big jump up = the plan reset."""
+    s = load_json(ODDS_CREDITS, {})
+    s = s if isinstance(s, dict) else {}
+    pts = [p for p in (s.get("pts") or []) if isinstance(p, list) and len(p) >= 2
+           and _num(p[0]) is not None and _num(p[1]) is not None]
+    if pts:
+        prev = pts[-1][1]
+        total = max(rem + (used or 0), prev, 1)
+        if rem > prev + max(5, 0.1 * total):           # credits went up a lot: the plan reset (or a bigger plan)
+            s["reset_seen"] = now
+            pts = []
+    pts.append([round(now), rem] + ([used] if used is not None else []))
+    pts = [p for p in pts if now - p[0] <= 40 * 86400]
+    if len(pts) > 400:                                  # keep it small: thin the oldest half
+        half = len(pts) // 2
+        pts = pts[:half][::2] + pts[half:]
+    s.update(remaining=rem, used=used, last=last, at=now, pts=pts)
+    save_json(ODDS_CREDITS, s)
+
+
+def _add_month(d):
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    import calendar
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def odds_reset_at(s, now=None):
+    """(when the credits next reset, guessed?). From a reset we saw, a month on; else the 1st of next month (UTC),
+    which is how the free plan works, marked as a guess."""
+    now = now or time.time()
+    seen = _num(s.get("reset_seen"))
+    if seen:
+        d = dt.datetime.fromtimestamp(seen, dt.timezone.utc)
+        for _ in range(24):
+            d = _add_month(d)
+            if d.timestamp() > now:
+                return d.timestamp(), False
+    t = dt.datetime.fromtimestamp(now, dt.timezone.utc)
+    nxt = dt.datetime(t.year + (t.month == 12), t.month % 12 + 1, 1, tzinfo=dt.timezone.utc)
+    return nxt.timestamp(), True
+
+
+def odds_credits(now=None):
+    """What Settings shows and what low mode reads: remaining, used, last call's cost, burn per day, projected run-out,
+    reset date (and whether it's a guess), and low (with the reason). None until an answer has been recorded."""
+    now = now or time.time()
+    s = load_json(ODDS_CREDITS, {})
+    if not isinstance(s, dict) or _num(s.get("remaining")) is None:
+        return None
+    rem, used = _num(s.get("remaining")), _num(s.get("used"))
+    reset, guess = odds_reset_at(s, now)
+    pts = [p for p in (s.get("pts") or []) if isinstance(p, list) and len(p) >= 2 and now - p[0] <= CREDIT_RATE_WINDOW]
+    rate = None
+    if len(pts) >= 2 and pts[-1][0] - pts[0][0] >= CREDIT_RATE_SPAN:
+        spent = max(0.0, pts[0][1] - pts[-1][1])
+        rate = spent / ((pts[-1][0] - pts[0][0]) / 86400)  # credits a day
+    out_at = now + rem / rate * 86400 if rate and rate > 0 else None
+    plan = rem + (used or 0)
+    floor = max(CREDIT_FLOOR, CREDIT_FLOOR_SHARE * plan)
+    why = ("out" if rem <= 0 else "floor" if rem <= floor else
+           "pace" if out_at is not None and out_at < reset else None)
+    return {"remaining": rem, "used": used, "last": _num(s.get("last")), "at": _num(s.get("at")),
+            "per_day": round(rate, 1) if rate is not None else None, "runs_out": out_at, "reset": reset,
+            "reset_guess": guess, "low": why is not None, "why": why, "floor": round(floor),
+            "saving": bool(s.get("saving")), "alerted": s.get("alerted")}
+
+
+def odds_low_alert(c):
+    """The one alert for a low state: (dedupe key, message) or None. One per reason per reset cycle, so a level that
+    goes in and out of low doesn't keep buzzing."""
+    if not c or not c.get("low"):
+        return None
+    cycle = time.strftime("%Y-%m-%d", time.gmtime(c["reset"]))
+    key = f"{'out' if c['why'] == 'out' else 'low'}:{cycle}"
+    when = time.strftime("%b %-d", time.gmtime(c["reset"])) + (" (estimate)" if c.get("reset_guess") else "")
+    if c["why"] == "out":
+        msg = f"Sportsbook odds credits are used up. Chances use free lines until they reset about {when}."
+    else:
+        left = f"{int(c['remaining'])} left"
+        pace = (f", about {c['per_day']:g} a day, so they'd run out "
+                f"{time.strftime('%b %-d', time.localtime(c['runs_out']))}") if c.get("runs_out") else ""
+        msg = (f"Sportsbook odds credits are running low ({left}{pace}). The Mac now saves them for games starting "
+               f"soon that you have bets or good prices on. They reset {when}.")
+    return key, msg
+
+
+def odds_mark(**kw):
+    """Save small flags in the credits file (saving mode on/off, which alert went out)."""
+    try:
+        with ODDS_CREDITS_LOCK, file_lock(ODDS_CREDITS):
+            s = load_json(ODDS_CREDITS, {})
+            s = s if isinstance(s, dict) else {}
+            s.update(kw)
+            save_json(ODDS_CREDITS, s)
+    except Exception as err:
+        console_note(f"odds credits flag not saved: {type(err).__name__} {err}")
+
+
+def _codes_of_ticker(t):
+    """The league codes a Kalshi ticker belongs to (a spread or total counts for its game's league)."""
+    t = (t or "").upper()
+    out = []
+    for code, lg in LEAGUES.items():
+        sers = lg.get("series")
+        for ser in (sers if isinstance(sers, (list, tuple)) else str(sers or "").split(",")):
+            pre = re.sub(r"GAME$", "", str(ser or "").strip().upper())
+            if pre and t.startswith(pre) and code not in out:
+                out.append(code)
+    return out
+
+
+def odds_interest(held=(), now=None):
+    """What's worth spending scarce credits on: [(league code, start time or None)] for the panel's current candidates
+    (an edge found on the free lines), today's panel bets and the bets you hold. Read-only; never raises."""
+    now = now or time.time()
+    out = []
+    try:
+        for code, (at, cands) in list(PANEL_POOL.items()):
+            if now - at <= PANEL["pool_age"]:
+                out += [(code, c.get("kick")) for c in cands or []]
+    except Exception:
+        pass
+    try:
+        for p in (panel_get("real"), panel_get("paper")):
+            for c in (p or {}).get("items", []):
+                if c.get("state") not in ("skipped", "cancelled", "done"):
+                    out += [(c.get("code"), c.get("kick"))]
+    except Exception:
+        pass
+    for t, start in held or ():
+        out += [(code, now if _num(start) is None else start) for code in _codes_of_ticker(t)]   # unknown: counts
+    return out
+
+
+def held_for_credits():
+    """[(ticker, start time or None)] for what this copy holds: live combos' picks and single positions (from the last
+    account read; nothing is fetched). Never raises."""
+    out = []
+    try:
+        for h in list((MINE.get("hold") or {}).values()):
+            for item in h.get("need") or []:
+                t = item[0][1] if isinstance(item[0], (list, tuple)) else None
+                if t:
+                    d = start_dt(str(t).rsplit("-", 1)[0])
+                    out.append((t, d.timestamp() if d else None))
+        for p in list(ACCT_POS.get("items") or []):
+            t = p.get("ticker") or p.get("market_ticker")
+            if t and not is_combo(t) and abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
+                d = start_dt(str(t).rsplit("-", 1)[0])
+                out.append((t, d.timestamp() if d else None))
+    except Exception:
+        pass
+    return out
+
+
+def odds_worth_reading(code, interest, now=None):
+    """Low-credit mode: is this league worth a call? Only when something that matters (an edge candidate, a panel bet,
+    a held bet) has a game starting within CREDIT_NEAR or under way (odds_interest counts a held bet with an unknown
+    start as under way; a candidate with no start time never counts).
+    The odds service charges per league, so this is the unit we can save on."""
+    now = now or time.time()
+    codes = set(MIX_SPORTS) if code == "mix" else {code}
+    for c, start in interest:
+        k = _num(start)
+        if c in codes and k is not None and now - CREDIT_LIVE <= k <= now + CREDIT_NEAR:
+            return True
+    return False
+
+
+def odds_saving(now=None):
+    """(saving credits now?, the numbers). Turns on as soon as credits are low; turns off only once they are
+    comfortably back (half again over the floor and lasting 2+ days past the reset), so it doesn't flap as the
+    slower spending improves the projection."""
+    now = now or time.time()
+    try:
+        c = odds_credits(now)
+    except Exception:
+        return False, None
+    if not c:
+        return False, None
+    on = bool(c.get("saving"))
+    new = True if c["low"] else on and not (c["remaining"] > 1.5 * c["floor"] and
+                                            (c["runs_out"] is None or c["runs_out"] >= c["reset"] + 2 * 86400))
+    if new != on:
+        odds_mark(saving=new, saving_at=now)
+    c["saving"] = new
+    return new, c
 
 
 BOOK_OPP = {}   # sportsbook team name -> its opponent (soonest game)

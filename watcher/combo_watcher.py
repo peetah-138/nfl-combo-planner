@@ -1068,6 +1068,7 @@ class HubOdds:
     def __init__(self):
         self.H, self.lock, self.free, self.sharp = None, threading.RLock(), {}, {}
         self.pending, self.told, self.retry = {}, {}, {}
+        self.saving, self.skip_log = False, {}
 
     def engine(self):
         if self.H is None:
@@ -1146,7 +1147,13 @@ class HubOdds:
             if key:
                 soon = self.soonest(f[1], sh[1] if sh else None)
                 ttl = self.SHARP_NEAR_TTL if soon and soon - now < self.NEAR else self.SHARP_TTL
-                if (not sh or now - sh[0] > ttl) and now >= self.retry.get(league, 0):
+                due = (not sh or now - sh[0] > ttl) and now >= self.retry.get(league, 0)
+                if due and not self.worth_credits(H, league, now):
+                    due = False                 # low on credits: this league has nothing near that matters, and
+                    if sh:                      # its sharp lines are past their time, so they go (free lines only):
+                        sh = None               # never price a far-off game on a line days old
+                        self.sharp.pop(league, None)
+                if due:
                     got = H.sharp_snapshot(key)
                     if got["fair"]:
                         sh = (now, got)
@@ -1160,7 +1167,45 @@ class HubOdds:
             snap = H.merge_books(sh[1] if sh else H.empty_snapshot(), f[1])
             if sh:
                 snap["note"] += f" Sportsbook lines checked {int((now - sh[0]) / 60)} min ago (shared by the Mac)."
+            if key and self.saving:
+                snap["note"] += " Saving sportsbook credits: lines refresh only for games starting soon that you have bets or good prices on."
             return snap
+
+    def worth_credits(self, H, league, now):
+        """Spend a call on this league? Always, unless credits are low: then only when a panel candidate, a panel bet
+        or a bet you hold has a game in this league starting within 4 hours or under way. It only decides which lines
+        get read; nothing here buys, sells or prices. Also sends the one low-credit alert. Never raises."""
+        try:
+            saving, c = H.odds_saving(now)
+            self.saving = saving
+            self.credits_alert(H, c)
+            if not saving:
+                return True
+            E = WATCHER.get("E")
+            held = (E.held_for_credits() if E else []) + H.held_for_credits()
+            if H.odds_worth_reading(league, H.odds_interest(held, now), now):
+                return True
+            if now - self.skip_log.get(league, 0) > 1800:
+                self.skip_log[league] = now
+                log(f"odds credits low ({int(c['remaining'])} left): skipped {league}, nothing near that matters")
+            return False
+        except Exception as err:
+            log("odds credits check skipped:", type(err).__name__, err)
+            return True
+
+    @staticmethod
+    def credits_alert(H, c):
+        """One push per low state (per reason, per reset cycle), sent off the odds lock."""
+        got = H.odds_low_alert(c)
+        if not got or (c or {}).get("alerted") == got[0]:
+            return False
+        H.odds_mark(alerted=got[0])
+        conf = DEP.get("conf")
+        log("odds credits:", got[1])
+        if conf and conf.get("topic"):
+            threading.Thread(target=push, args=(conf, got[1]), kwargs={"title": "Odds credits", "tag": "credits"},
+                             daemon=True).start()
+        return True
 
 
 class Notifier:
@@ -3613,6 +3658,20 @@ def mac_tailscale_ip():
 LATEST_SEEN = {}
 
 
+def odds_info(E):
+    """Settings › The Mac: the odds service's credits as last seen (read from the answers we already got; no call).
+    None when there's no key or nothing recorded yet. Only numbers and flags: never the key."""
+    try:
+        if not E or not (getattr(E, "CFG", {}) or {}).get("odds_key"):
+            return None
+        c = E.odds_credits()
+        return {k: c.get(k) for k in ("remaining", "used", "last", "at", "per_day", "runs_out", "reset", "reset_guess",
+                                      "low", "why", "saving")} if c else {"none": True}
+    except Exception as err:
+        log("odds credits unreadable:", type(err).__name__, err)
+        return None
+
+
 def mac_settings(conf, web, d, tok):
     """Combo Hub's This Mac section: status, pairing code, passcode, update. Only from the Mac itself."""
     import subprocess
@@ -3632,7 +3691,7 @@ def mac_settings(conf, web, d, tok):
                 "quiet": not (7 <= time.localtime().tm_hour < 22),
                 "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
                                         "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
-                "log": tail}
+                "log": tail, "odds": odds_info(E)}
     if a == "code":
         ip = mac_tailscale_ip()
         out = {"topic": conf["topic"], "secret": conf["secret"]}
@@ -3917,7 +3976,7 @@ def start_hub(conf, E, odds=None):
                         "up": int(time.time() - STARTED), "role": conf.get("role") or "main",
                         "paused": bool(conf.get("paused")), "auto_update": auto_updates(conf),
                         "waiting": conf.get("waiting") or "", "latest": LATEST_SEEN.get("v", ""),
-                        "checked": LATEST_SEEN.get("at") or 0}
+                        "checked": LATEST_SEEN.get("at") or 0, "odds": odds_info(eng)}
                 return self._send(200, json.dumps(info).encode())
             if web and self.path == "/app/mac-check":       # any signed-in device: look for an update right now
                 tok = web.session(self)
