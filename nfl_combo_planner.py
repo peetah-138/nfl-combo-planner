@@ -5070,17 +5070,19 @@ def open_singles(max_age=30):
         n = float(p.get("position_fp") or p.get("position") or 0)
         if t and not is_combo(t) and abs(n) > 0.005:
             held.append((t, n, p))
-    mk = {}
+    mk, got = {}, []
     for i in range(0, len(held), 50):
         chunk = [t for t, _, _ in held[i:i + 50]]
         try:
             r = requests.get(f"{KALSHI}/markets", params={"tickers": ",".join(chunk)}, timeout=15)
             r.raise_for_status()
-            mk.update({m.get("ticker"): m for m in r.json().get("markets", [])})
+            ms = r.json().get("markets", [])
+            got += ms
+            mk.update({m.get("ticker"): m for m in ms})
         except (requests.RequestException, ValueError):
             mk.update({t: SINGLES["mk"][t] for t in chunk if t in SINGLES["mk"]})
-    price_watch([t for t, _, _ in held])               # Smart Buy's price recorder: the singles you hold
-    price_seen_markets(mk.values())
+    price_watch_held(held, mk)                         # Smart Buy's price recorder: the singles you hold
+    price_seen_markets(got)                            # only prices read just now, never the fallback copy
     try:                                             # display only: scores for tennis, EuroLeague, UFC
         kalshi_live_kick(klive_events([{"ticker": t, "event": game_event((mk.get(t) or {}).get("event_ticker") or "")}
                                           for t, _, _ in held if not (mk.get(t) or {}).get("result")]))
@@ -16398,7 +16400,7 @@ def analytics(max_age=600):
     except Exception:
         out["lines"] = []
     try:                                               # Smart Buy (preview): read-only, shown only with its switch on
-        out["smart_buy"] = smart_buy_summary()
+        out["smart_buy"] = smart_buy_summary() if smart_buy_on() else {"on": False}   # off: no work at all
     except Exception as err:
         print("smart buy summary:", type(err).__name__, err)
         out["smart_buy"] = None
@@ -17885,7 +17887,7 @@ SB_WIN_MIN = 0.40          # hold route: a win chance at least this (placeholder
 SB_EV_MIN = 0.25           # dollars: the smallest expected profit at the reference stake worth a recommendation
 SB_SCORE_UNIT = {"nfl": 7 / 13.5, "ncaaf": 7 / 16.0, "nhl": 1 / 2.4, "ahl": 1 / 2.5, "soccer": 1 / 1.9}  # jump sizes
 SB_SHADOW_EVERY = 1800     # one exit_shadow row per candidate per half hour
-SB_BUDGET = 0.35           # seconds of simulation per shadow pass, at most
+SB_BUDGET = 0.15           # seconds of simulation per shadow pass, at most (panel_collect can run under odds.lock)
 SB_CACHE = {"seen": {}, "ideas": 0, "on": None}
 
 
@@ -18145,6 +18147,7 @@ def _price_table():
     store_x("create table if not exists price_path(ts real, ticker text, bid real, ask real, mid real, depth real, "
             "score text)")
     store_x("create index if not exists price_path_t on price_path(ticker, ts)")
+    store_x("create index if not exists price_path_ts on price_path(ts)")       # pruning by age without a full scan
 
 
 def price_seen_markets(ms):
@@ -18172,7 +18175,8 @@ def price_seen_markets(ms):
 
 
 def price_seen_book(ticker, info):
-    """The same from an order book the engine just read (book_depth): best bid/ask and the size at the bid side."""
+    """The same from an order book the engine just read (book_depth): best bid/ask and the size at the best ask
+    (book_info's ask_size; the column is that, not the bid side's size, and nothing reads it as sellable depth yet)."""
     try:
         if ticker and info and (info.get("bid") or info.get("ask")):
             PRICE_SEEN[ticker] = (time.time(), info.get("bid"), info.get("ask"), info.get("ask_size"))
@@ -18182,15 +18186,28 @@ def price_seen_book(ticker, info):
 
 def price_watch(tickers, kick=None, hours=8):
     """Record these markets' price paths from now until a few hours after their game (or `hours` from now)."""
-    now = time.time()
-    until = max(now + hours * 3600, (kick or 0) + 6 * 3600)
-    for t in tickers or ():
-        if t:
-            old = PRICE_WATCH.get(t)
-            PRICE_WATCH[t] = (max(until, old[0]) if old else until, kick or (old[1] if old else None))
-    if len(PRICE_WATCH) > 4000:
-        for k in sorted(PRICE_WATCH, key=lambda k: PRICE_WATCH[k][0])[:1000]:
-            PRICE_WATCH.pop(k, None)
+    try:
+        now = time.time()
+        until = max(now + hours * 3600, (kick or 0) + 6 * 3600)
+        for t in tickers or ():
+            if t:
+                old = PRICE_WATCH.get(t)
+                PRICE_WATCH[t] = (max(until, old[0]) if old else until, kick or (old[1] if old else None))
+        if len(PRICE_WATCH) > 4000:
+            for k, _ in sorted(list(PRICE_WATCH.items()), key=lambda kv: kv[1][0])[:1000]:
+                PRICE_WATCH.pop(k, None)
+    except Exception as err:                          # never in the way of the caller (open_singles, the panel)
+        print("price recorder:", type(err).__name__, err)
+
+
+def price_watch_held(held, mk):
+    """Watch the singles you hold, each with its game's kickoff (so it is recorded every minute near the game)."""
+    try:
+        for t, _, _ in held:
+            ev = game_event((mk.get(t) or {}).get("event_ticker") or "") or "-".join(t.split("-")[:2])
+            price_watch([t], _kick_ts({"event": ev}))
+    except Exception as err:
+        print("price recorder:", type(err).__name__, err)
 
 
 def _price_every(kick, now):
@@ -18323,17 +18340,21 @@ def smart_buy_shadow_ideas(now=None):
         if not tks or not chance or not 0 < chance < 1:
             continue
         seen = [PRICE_SEEN.get(t) for t in tks]
-        if any(not s or not s[2] for s in seen):
-            continue                                   # no recent ask for a pick: can't model it, skip
-        q_each = chance ** (1 / len(tks)) if len(tks) > 1 else (r["pfair"] or chance)
-        legs = [{"ticker": t, "p": s[2], "fair": q_each, "event": "-".join(t.split("-")[:2])} for t, s in zip(tks, seen)]
+        if any(not s or not s[2] or now - s[0] > 900 for s in seen):
+            continue                                   # no ask read in the last 15 min for a pick: can't model it
+        if len(tks) > 1:                               # the combo's chance shared out in proportion to each pick's price
+            k = (chance / math.prod(s[2] for s in seen)) ** (1 / len(tks))
+            fairs = [min(max(s[2] * k, 0.01), 0.99) for s in seen]
+        else:
+            fairs = [r["pfair"] or chance]
+        legs = [{"ticker": t, "p": s[2], "fair": f, "event": "-".join(t.split("-")[:2])} for t, s, f in zip(tks, seen, fairs)]
         c = {"id": "idea:" + str(r["id"]), "kind": "combo" if len(tks) > 1 else "single", "legs": legs, "kick": r["kick"],
              "chance": chance}
         if len(tks) > 1:
             fm = 1 / math.prod(l["fair"] for l in legs)
             c.update(pct=r["pays"] / r["stake"] / fm, fair_mult=fm)
         cands.append(c)
-    return smart_buy_shadow(cands, source="idea", now=now)
+    return smart_buy_shadow(cands, source="idea", now=now, budget=0.1)
 
 
 # ---- calibration: did the exit rule really fire on the recorded prices?
@@ -18350,6 +18371,7 @@ def exit_replay(row, path, prm=None, gain=SB_GAIN):
     cost, peak = SB_STAKE, 0.0
     code = ticker_sport(tks[0]) if tks else ""
     kick = row.get("kick")
+    q_start = row.get("fair") or next(((b + a) / 2 for _, b, a, _ in path if b and a), None)
     for ts, bid, ask, mid in path:
         if not bid or not ask:
             continue
@@ -18361,14 +18383,16 @@ def exit_replay(row, path, prm=None, gain=SB_GAIN):
             continue
         f = max(1 - (ts - kick) / _sb_game_secs(code), 0.02) if live else 1.0
         lam = 0.35 * SWING.get(code, 1.0) * (math.sqrt(f) if live else 1.0) * prm["lam_mult"]
+        cut_ok = bool(prm.get("loss")) and live and 1 - f >= prm["prog"] and q_start is not None and \
+            q <= q_start - prm["drop"]                 # the same simplified loss-cut guard as simulate_exit
         d = exit_policy({"kind": "single", "value": net, "peak": peak, "pays": P, "cost": cost, "q": q, "live": live},
-                        dict(prm, lam=lam, cut_ok=False))
+                        dict(prm, lam=lam, cut_ok=cut_ok))
         if d["sell"]:
             return net >= cost * (1 + gain)
     return False
 
 
-def exit_calibration(days=30, now=None, limit=4000):
+def exit_calibration(days=30, now=None, limit=1500):
     """Predicted vs actual cash-out chance for singles, spreads and totals whose games are over, per league and type:
     [{'league', 'kind', 'n', 'pred', 'actual'}]. Combos aren't replayed yet (stage 2)."""
     now = now or time.time()
@@ -18376,8 +18400,9 @@ def exit_calibration(days=30, now=None, limit=4000):
         return []
     _price_table()
     _exit_shadow_table()
-    rows = store_rows("select ts, league, kind, tickers, kick, price, exit_chance from exit_shadow where ts > ? and "
-                      "kind in ('single','line') and kick is not null and kick < ? order by ts desc limit ?",
+    rows = store_rows("select min(ts) ts, league, kind, tickers, kick, price, fair, exit_chance from exit_shadow "
+                      "where ts > ? and kind in ('single','line') and kick is not null and kick < ? "
+                      "group by cand order by ts desc limit ?",                 # one bet once: its first check
                       (now - days * 86400, now - 6 * 3600, limit))
     by = defaultdict(lambda: {"n": 0, "pred": 0.0, "hit": 0})
     for r in rows:
@@ -18410,9 +18435,10 @@ def smart_buy_summary(days=7, now=None):
     _exit_shadow_table()
     _price_table()
     names = {"single": "Single games", "line": "Spreads & totals", "combo": "Combos"}
-    for r in store_rows("select league, kind, count(*) n, sum(new) ok, avg(exit_chance) pe, avg(ev) ev, "
-                        "sum(route='sell') s, sum(route='hold') h from exit_shadow where ts > ? group by league, kind "
-                        "order by n desc limit 30", (now - days * 86400,)):
+    for r in store_rows("select league, kind, count(distinct cand) n, count(distinct case when new=1 then cand end) ok, "
+                        "avg(exit_chance) pe, avg(ev) ev, count(distinct case when route='sell' then cand end) s, "
+                        "count(distinct case when route='hold' then cand end) h from exit_shadow where ts > ? "
+                        "group by league, kind order by n desc limit 30", (now - days * 86400,)):
         out["rows"].append({"name": league_label(r["league"] or "other"), "kind": names.get(r["kind"], r["kind"]),
                             "n": r["n"], "ok": r["ok"] or 0, "p_exit": round(r["pe"] or 0, 3),
                             "ev": round(r["ev"] or 0, 2), "sell": r["s"] or 0, "hold": r["h"] or 0})

@@ -188,10 +188,61 @@ ok("the preview summary lists leagues with sample sizes, and is marked off by de
    and all(k in s["rows"][0] for k in ("name", "kind", "n", "ok", "p_exit", "ev")) and s["calib"])
 E.save_json(E.MAIN_SAVED, {"smart_buy": True})
 ok("...and on once the switch is on", E.smart_buy_summary(now=now)["on"] is True)
-E.save_json(E.MAIN_SAVED, {})
 E.ANALYTICS.update(at=0, v=None)
 an = E.analytics(max_age=0)
-ok("analytics() carries it for the page", isinstance(an.get("smart_buy"), dict) and "rows" in an["smart_buy"])
+ok("analytics() carries it for the page when the switch is on", isinstance(an.get("smart_buy"), dict) and "rows" in an["smart_buy"])
+E.save_json(E.MAIN_SAVED, {})
+E.ANALYTICS.update(at=0, v=None)
+real_cal = E.exit_calibration
+E.exit_calibration = lambda **k: (_ for _ in ()).throw(AssertionError("calibration ran with the switch off"))
+an = E.analytics(max_age=0)
+E.exit_calibration = real_cal
+ok("...and does no Smart Buy work at all when it's off", an.get("smart_buy") == {"on": False})
+E.store_x("insert into exit_shadow(ts, cand, source, league, kind, tickers, kick, price, fair, exit_chance, route, old, new, ver) "
+          "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (now - 8.5 * 3600, "single:" + TC, "panel", "nba", "single", json.dumps([TC]),
+                                                   now - 8 * 3600, 0.5, 0.55, 0.2, "sell", 1, 1, 1))
+cal = E.exit_calibration(now=now)
+ok("a bet checked again every half hour counts once (its first check) in calibration",
+   any(x["league"] == "nba" and x["kind"] == "single" and x["n"] == 1 and x["pred"] == 0.6 for x in cal))
+s = E.smart_buy_summary(now=now)
+nba = [r for r in s["rows"] if r["name"] == "NBA" and r["kind"] == "Single games"]
+ok("...and once in the preview's counts", nba and nba[0]["n"] == E.store_rows(
+    "select count(distinct cand) n from exit_shadow where league='nba' and kind='single'")[0]["n"])
+
+# held singles: only freshly read prices are recorded, with their game's kickoff
+E.requests = type("R", (), {"RequestException": NoNet.RequestException, "get": staticmethod(
+    lambda *a, **k: (_ for _ in ()).throw(NoNet.RequestException("429")))})()
+HS = "KXNBAGAME-26NOV21BOSNYK-NYK"
+E.ACCT_POS.update(at=time.time(), items=[{"ticker": HS, "position_fp": "3"}])
+E.SINGLES.update(at=0, items=[], mk={HS: {"ticker": HS, "event_ticker": "KXNBAGAME-26NOV21BOSNYK", "yes_bid_dollars": "0.10", "yes_ask_dollars": "0.12"}})
+E.PRICE_SEEN.pop(HS, None)
+try:
+    E.open_singles(max_age=0)
+except Exception as err:
+    print("open_singles:", type(err).__name__, err)
+ok("a failed held-markets refresh never records the old copy as a fresh price", HS not in E.PRICE_SEEN)
+ok("held singles are watched with their game's kickoff (recorded every minute near it)",
+   HS in E.PRICE_WATCH and E.PRICE_WATCH[HS][1] == E._kick_ts({"event": "KXNBAGAME-26NOV21BOSNYK"}) and E.PRICE_WATCH[HS][1])
+E.requests = NoNet()
+
+# idea combos: the chance is shared out by each pick's price, and stale asks are skipped
+TB = "KXNBAGAME-26NOV21LALMIA-LAL"
+E.store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live) values(?,?,?,?,?,?,?,?,?,?,?,?)",
+          ("idea2", now, "nba", json.dumps([T, TB]), "BOS + LAL", 2, 1.0, 5 / 0.21 * 1.0, 5.0, 0, now + 3 * 3600, 0))
+E.PRICE_SEEN[T], E.PRICE_SEEN[TB] = (now, 0.28, 0.30, None), (now, 0.68, 0.70, None)
+got = []
+real_sh = E.smart_buy_shadow
+E.smart_buy_shadow = lambda cands, source="panel", now=None, budget=0: got.extend(cands) or 0
+E.SB_CACHE["ideas"] = 0
+E.smart_buy_shadow_ideas(now=now)
+c2 = [c for c in got if c["id"] == "idea:idea2"]
+ok("an idea combo's picks get fair chances in proportion to their prices (not one shared number)",
+   c2 and abs(c2[0]["legs"][0]["fair"] / c2[0]["legs"][1]["fair"] - 0.3 / 0.7) < 1e-6
+   and abs(c2[0]["legs"][0]["fair"] * c2[0]["legs"][1]["fair"] - 0.21) < 1e-6)
+got.clear(); E.PRICE_SEEN[TB] = (now - 3600, 0.68, 0.70, None); E.SB_CACHE["ideas"] = 0
+E.smart_buy_shadow_ideas(now=now)
+ok("an idea whose pick's ask is over 15 min old is skipped", not [c for c in got if c["id"] == "idea:idea2"])
+E.smart_buy_shadow = real_sh
 
 # ---- the switch off (and the logging) changes nothing in the panel
 E.fetch_markets = lambda: []

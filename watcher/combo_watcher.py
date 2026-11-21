@@ -3422,7 +3422,14 @@ def webapp_main():
                     elif path == "/app/api/analytics":
                         out = jsonable(A.analytics()) if A.STORE.get("db") else {}
                         if isinstance(out, dict) and isinstance(out.get("smart_buy"), dict):
-                            out["smart_buy"] = dict(out["smart_buy"], on=A.smart_buy_on())   # the switch, read now
+                            on = A.smart_buy_on()                  # the switch, read now (analytics is cached 10 min)
+                            sb = out["smart_buy"]
+                            if on and "rows" not in sb:            # switched on since the cache was built
+                                try:
+                                    sb = jsonable(A.smart_buy_summary())
+                                except Exception as err:
+                                    log("smart buy summary:", type(err).__name__, err)
+                            out["smart_buy"] = dict(sb, on=on)
                     elif path == "/app/api/recap":
                         out = jsonable(A.recap()) if A.STORE.get("db") else {}
                     elif path == "/app/api/panel":
