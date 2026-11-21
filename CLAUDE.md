@@ -850,6 +850,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   (Pause read fresh from `watcher.json` each time: `paused_now`); `single_side` finds the side on the board on screen
   or a saved board (`SNAP`), read only, never rebuilding or switching it. The sheet's answer always shows (a sheet, else a
   toast), and Cancel from a game page goes back to it. Tests: `t_singlebuy.py`, `test_singlebuy_ui.py`.
+- **Your own bet amount (issue #145; Pete's tap only, no new automatic buying).** Combo cards, the slip, Live Buy ideas
+  (singles and combos) and panel bets before Approve/Add get an amount row (`watcher/spa/stake.js`, `stakeCtl`): the
+  recommended size first ("Recommended $X"), presets $2/$5/$10/$20, a "Last $X" chip (the last amount chosen, kept on
+  this phone only, `cw_stk_last`; the default stays the recommended size), -/+ by $1 and a typed amount, the expected
+  profit in dollars, "N× the recommended size: more risk for the same edge" at 1.5×+, and the cap room. A changed amount
+  drops the old price: singles re-price at once, combos show "Get price · $X". **The Mac checks every amount**
+  (`own_stake`: a real finite number, $1-$100 (`OWN_MIN`/`OWN_MAX`), rounded down to the cent; bad = refused with
+  words, never clamped): the combo quote and Live idea quote (`combo_offer` in the web app: `get_offer` at that amount,
+  plus `rec`, `ev`, `room`, `max`), Buy straight (`single_buy_quote` now refuses a bad amount instead of clamping), and
+  the panel (`own_panel_stakes`: $2 to the panel budget; `panel_approve(..., stakes)` refuses when the bets riding would
+  pass the budget; `panel_add(..., stakes)` counts them in the same room; the item keeps `rec_stake` and `own`; the card's
+  stats are re-simulated; `panel_whatif` (read-only, no app lock) updates the ring while he edits). A Live single
+  idea's Buy (`singlebuy` by id) must match the size and price the Mac quoted in the last 25 s (`IDEA_Q`), else nothing is
+  sent. Combo buys still accept exactly the cached offer (rule 7/8 unchanged); caps, Pause and the unknown-outcome
+  block are unchanged. Tests: `t_ownstake.py`, `test_ownstake_ui.py`.
 - **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
   labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
   asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
