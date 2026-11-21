@@ -3485,6 +3485,17 @@ def webapp_main():
                 if not r.get("ok") and not r.get("check") and "market's pot has" in str(r.get("msg") or ""):
                     r = dict(r, pot=pot_plan(t, r.get("msg"), d.get("cost")))   # offer a move (a refusal: nothing bought)
                 return jsonable(r)
+            if a == "sellquote":                        # Sell a single (issue #238): what it gets now, from a fresh book
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                    return {"ok": False, "msg": "That bet isn't recognized."}
+                return jsonable(A.single_sell_quote(t, paused=paused_now()))
+            if a == "singlesell":                       # Pete's second tap on the sell sheet: the quote on screen, once
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q") or "")):
+                    return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                with tap_mark():                        # an update never restarts the web app mid-order
+                    r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now(), log=log)
+                LIVE["at"] = 0
+                return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
@@ -3965,7 +3976,7 @@ def webapp_proxy(handler, tok, method, path, body=b""):
 
 PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
 #                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
-ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "pot_move")   # taps that can move money (the rest only read)
+ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "singlesell", "pot_move")   # taps that can move money (the rest only read)
 
 
 def _proxy_send(handler, code, ctype, data, where=""):

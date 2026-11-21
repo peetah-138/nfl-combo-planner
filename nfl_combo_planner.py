@@ -5432,12 +5432,12 @@ def order_may_sell(o, held="yes"):
 
 
 @in_scope("sell")
-def sell_single_now(t, side, n, price):
+def sell_single_now(t, side, n, price, coid=None):
     """Sell n contracts of a single bet at `price` or better, now or not at all. Returns (sold, error)."""
     import uuid
     body = {"ticker": t, "action": "sell", "side": side, "type": "limit", "count": int(n),
             f"{side}_price": max(1, int(math.floor(price * 100 + 1e-6))), "time_in_force": "immediate_or_cancel",
-            "reduce_only": True, "client_order_id": str(uuid.uuid4())}
+            "reduce_only": True, "client_order_id": coid or str(uuid.uuid4())}
     if body["count"] < 1:
         return 0, "under one contract"
     try:
@@ -5565,8 +5565,19 @@ def _single_how(kind, side, line, sc):
         return f"{'Covering' if good else 'Not covering'} now · {'+' if margin >= 0 else ''}{margin:g}, needs {'more than ' + format(line, 'g') if side == 'yes' else 'to lose by under ' + format(line, 'g') if line else 'to win'}"
     if kind == "total" and line is not None:
         tot = me + opp
-        good = tot > line if side == "yes" else tot < line
-        return f"{'On track' if good else 'Not on track'} · {tot:g} so far, line {line:g}"
+        if tot > line:                          # already over: an Over has won it, an Under has lost it
+            return f"{'Over the line' if side == 'yes' else 'Not on track'} · {tot:g} so far, line {line:g}"
+        played = game_played(sc)                # issue #238: mid-game an Over is always under the line, so judge the
+        if played is None:                      # pace (points so far over the share of the game played), not the total
+            if sc.get("state") == "post":
+                return f"{'Not on track' if side == 'yes' else 'On track'} · {tot:g} final, line {line:g}"
+            return f"Needs {line - tot:g} more · {tot:g} so far, line {line:g}" if side == "yes" else \
+                f"{tot:g} so far, line {line:g}"
+        if played < 0.15:                       # too early for a pace to mean anything
+            return f"{tot:g} so far, line {line:g}"
+        pace = tot / played
+        good = pace > line if side == "yes" else pace < line
+        return f"{'On track' if good else 'Not on track'} · {tot:g} so far, on pace for {pace:.0f}, line {line:g}"
     if kind == "win":
         return "Winning now" if me > opp else "Losing now" if me < opp else "Tied"
     return ""
@@ -14727,7 +14738,7 @@ SINGLE_QUOTE_SECS = 20          # a quote's lifetime (the sheet's draining bar)
 SINGLE_ARM = 25.0               # stakes above this need a second tap ("Tap again to buy")
 SINGLE_MAX = 100.0              # the most one manual single bet may stake
 SINGLE_PRESETS = (3, 5, 10)
-_SQ = {"lock": threading.Lock(), "buy": threading.Lock(), "q": {}}
+_SQ = {"lock": threading.Lock(), "buy": threading.Lock(), "sell": threading.Lock(), "q": {}}
 OWN_MIN = 1.0                   # Pete's own stake (issue #145): the least one tap may bet (Kalshi's combos take $1)
 OWN_MAX = SINGLE_MAX            # ...and the most (the caps, the panel budget and Kalshi's own checks still apply)
 
@@ -15231,7 +15242,7 @@ def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
     trade_ok = can_trade()                            # may ping the hub: never while holding the quote lock
     with _SQ["lock"]:
         q = _SQ["q"].get(str(qid or ""))
-        if not q or q["t"] != str(ticker or ""):
+        if not q or q.get("sell") or q["t"] != str(ticker or ""):   # a sell sheet's quote never buys
             return {"ok": False, "expired": True, "msg": "That price isn't the one on your screen any more. Get a fresh price."}
         if q["used"]:
             return {"ok": False, "msg": "This price was already used for a buy. Check Live before buying again."}
@@ -15299,6 +15310,184 @@ def _single_send(q, qid, now, log):
     part = f" of {n}" if filled < n else ""
     return {"ok": True, "filled": filled, "price": ask, "cost": round(filled * per, 2), "pays": filled,
             "pick": q["pick"], "msg": f"Bought {filled:g}{part} at {ask * 100:.0f}¢: pays {money(filled)} if it wins."}
+
+
+# ---- Sell a single bet, spread or total by Pete's own tap (issue #238). Smart sell already sells singles by itself
+# (smart_sell_singles); this is the manual Sell button on Live's single cards and the game page. Nothing here sells by
+# itself: a quote reads Kalshi's order book now and is good for 20 seconds; the sale sends that quote once (one
+# fill-now-or-cancel, reduce-only order at the quoted bid or better), after Pause, trading access and the market's
+# unknown-outcome block are checked again and the book is re-read (a lower bid is refused, nothing sent). An unclear
+# answer is "check": the market is blocked (the order adapter marks the ledger) and the sale is never resent (rule 8).
+SELL_PAUSE_MSG = "Paused from an alert, so nothing is sold. To resume, save Settings with Auto cash-out on."
+NO_SELL_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be sold."
+SELL_UNSURE_MSG = ("An earlier order on this market had no clear answer, so the app won't send another for now. "
+                   "Check Kalshi; you can lift the block in Settings › Money.")
+
+
+def _held_single(t, max_age=30):
+    """The open single bet, spread or total on this market, as Live has it (position read at most max_age s ago: an
+    older positions copy is read again, so a bet smart sell already sold on the Mac isn't offered for sale here)."""
+    if time.time() - ACCT_POS["at"] > max_age:
+        ACCT_POS["at"] = 0
+        max_age = 0
+    for x in open_singles(max_age=max_age) or []:
+        if x.get("t") == t:
+            return x
+    return None
+
+
+def _sell_side_book(book, side):
+    """(bid, ask, size at the bid) for the side you hold, from a YES order book: NO's bid is 1 - YES's ask."""
+    if not book:
+        return None, None, 0.0
+    yb, ya = book.get("bid"), book.get("ask")
+    if side == "yes":
+        return yb, ya, float(book.get("bid_size") or 0)
+    return (round(1 - ya, 4) if ya is not None else None, round(1 - yb, 4) if yb is not None else None,
+            float(book.get("ask_size") or 0))
+
+
+def single_sell_quote(t, paused=False, now=None):
+    """What selling one held single (or spread/total) would get right now, for the sell sheet and Live's "Get new
+    price": Kalshi's bid for your side read now, the gap, how many contracts the bid takes, Kalshi's fee, what comes
+    back, profit vs what you paid, holding's chance, warnings, and a quote id good for 20 seconds. Never sells."""
+    import secrets
+    now = now or time.time()
+    t = str(t or "")
+    if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or is_combo(t):
+        return {"ok": False, "msg": "That bet isn't recognized."}
+    if paused:                                          # Pause first: nothing is read or quoted
+        return {"ok": False, "paused": True, "blocked": SELL_PAUSE_MSG, "msg": SELL_PAUSE_MSG}
+    if not can_trade():
+        return {"ok": False, "msg": NO_SELL_MSG}
+    try:
+        x = _held_single(t)
+    except Exception as err:                            # the account couldn't be read: never a guess at what you hold
+        print("sell quote: positions unreadable:", type(err).__name__, err)
+        return {"ok": False, "msg": "Couldn't read your Kalshi positions just now. Try again in a moment."}
+    if not x or not x.get("n"):
+        return {"ok": False, "gone": True, "msg": "You don't hold this bet any more (it may have sold or settled)."}
+    if x.get("res") or x.get("state") == "done":
+        return {"ok": False, "gone": True, "msg": "Kalshi already settled this one."}
+    side = x.get("side") if x.get("side") in ("yes", "no") else "yes"
+    book = book_depth(t, max_age=0)
+    if not book:
+        return {"ok": False, "msg": "Couldn't read Kalshi's order book just now. Try again in a moment."}
+    bid, ask, size = _sell_side_book(book, side)
+    have = float(x["n"])
+    if not bid or not 0.01 <= bid <= 0.99:
+        return {"ok": False, "nobid": True, "msg": "Nobody is buying this on Kalshi right now, so there's no price "
+                                                   "to sell at. Smart sell keeps watching it."}
+    px = math.floor(bid * 100 + 1e-6) / 100             # the order's limit (whole cents, never above the bid)
+    n = int(have + 1e-9)
+    warn = []
+    if size and n > int(size):
+        warn.append({"k": "depth", "t": f"Only {size:g} contracts are wanted at {bid * 100:.0f}¢, so it sells "
+                                        f"{int(size)} now and you keep the rest."})
+        n = int(size)
+    fee = single_fee(px, n) if n else single_fee(px)
+    got = round(n * (px - fee), 2)
+    cost = round((x.get("cost") or 0) * (n / have if have else 0), 2)
+    gap = round(ask - bid, 4) if ask is not None else None
+    thin = gap is None or gap > LIVE_SPREAD
+    if thin:
+        warn.append({"k": "thin", "t": "Thin market: " + (f"{gap * 100:.0f}¢ between the buy and sell prices"
+                                                          if gap is not None else "nobody is selling")
+                     + ", so this price may be well under what the bet is worth."})
+    if cost and got < cost:
+        warn.append({"k": "loss", "t": f"That's {money(cost - got)} less than you paid for these."})
+    ch = x.get("chance")
+    try:
+        rest = resting_single_sells()
+    except Exception:
+        rest = None
+    if rest and t in rest:
+        warn.append({"k": "resting", "t": "You already have a sell order waiting on Kalshi for this market."})
+    blocked = None
+    if order_unsure(t):
+        blocked = SELL_UNSURE_MSG
+    elif n < 1:
+        blocked = ("You hold under one whole contract, which can't be sold here." if have < 1 else
+                   "Kalshi's buyers want under one contract at that price right now.")
+    qid = secrets.token_hex(8)
+    with _SQ["lock"]:
+        _sq_prune(now)
+        _SQ["q"][qid] = {"sell": True, "t": t, "side": side, "bid": bid, "px": px, "n": n, "got": got, "cost": cost,
+                         "at": now, "thin": thin, "blocked": blocked, "used": False, "pick": x.get("label") or t,
+                         "kind": x.get("kind")}
+    return {"ok": True, "q": qid, "t": t, "pick": x.get("label") or t, "game": x.get("game") or "",
+            "sport": x.get("sport") or "", "kind": x.get("kind") or "", "live": x.get("state") == "live",
+            "side": side, "bid": bid, "ask": ask, "gap": gap, "depth": size, "px": px, "have": have, "n": n,
+            "fee": round(n * fee, 2), "got": got, "cost": cost, "profit": round(got - cost, 2),
+            "chance": ch, "pays": round(n, 2), "worth": round(have * bid, 2), "thin": thin,
+            "clears": not thin and not blocked, "blocked": blocked, "warn": warn, "secs": SINGLE_QUOTE_SECS,
+            "self": bool(x.get("self"))}
+
+
+def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
+    """Sell a quoted single (Pete's second tap on the sell sheet). One order per quote, ever: the quote must be the one
+    on screen, under 20 seconds old and unused; Pause, trading access and the unknown-outcome block are checked again;
+    a thin market needs Sell anyway; the book is re-read and a lower bid is refused (nothing sent). Then one
+    fill-now-or-cancel, reduce-only sale at the quoted price or better. {"ok", "msg", "sold", "got", "cost"} or
+    {"ok": False, "check": True} when Kalshi's answer was unclear (never resent; the market is blocked for 2 hours)."""
+    now = now or time.time()
+    trade_ok = can_trade()                            # may ping the hub: never while holding the quote lock
+    with _SQ["lock"]:
+        q = _SQ["q"].get(str(qid or ""))
+        if not q or not q.get("sell") or q["t"] != str(ticker or ""):
+            return {"ok": False, "expired": True, "msg": "That price isn't the one on your screen any more. Get a fresh price."}
+        if q["used"]:
+            return {"ok": False, "msg": "This price was already used for a sale. Check Live before selling again."}
+        if now - q["at"] > SINGLE_QUOTE_SECS:
+            return {"ok": False, "expired": True, "msg": "That price is more than 20 seconds old. Get a fresh one."}
+        if paused:
+            return {"ok": False, "paused": True, "msg": SELL_PAUSE_MSG}
+        if not trade_ok:
+            return {"ok": False, "msg": NO_SELL_MSG}
+        if q["blocked"]:
+            return {"ok": False, "msg": q["blocked"]}
+        if q["thin"] and not anyway:
+            return {"ok": False, "msg": "This one needs Sell anyway: the market is thin, so the price may be poor."}
+        q["used"] = True                                # from here on this quote can never send a second order
+    t, side, bid, px, n = q["t"], q["side"], q["bid"], q["px"], q["n"]
+    now_bid, _, _ = _sell_side_book(book_depth(t, max_age=0), side)
+    if not now_bid:
+        return {"ok": False, "msg": "Couldn't read Kalshi's price just now. Nothing was sold."}
+    if now_bid < bid - 1e-9:
+        return {"ok": False, "moved": True, "msg": f"The price dropped to {now_bid * 100:.0f}¢ (you saw {bid * 100:.0f}¢). "
+                                                   "Nothing was sold. Get a fresh price."}
+    with _SQ["sell"]:                                 # one manual sale at a time: two taps can't both go out
+        if order_unsure(t):
+            return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. "
+                                        "Check Kalshi."}
+        coid = f"cw-ss-{qid}"
+        log(f"manual single sale: selling {n} of {t} ({side}) at {px:.2f}+ (IOC, reduce-only, quote {qid})")
+        try:
+            sold, err = sell_single_now(t, side, n, px, coid=coid)
+        except Exception as err2:                       # anything unexpected after the send: it may have gone through
+            sold, err = 0, f"check: {type(err2).__name__}"
+        if (err or "").startswith("check:"):
+            try:                                        # the adapter marks it; this makes sure (never resent)
+                _mark_unsure({"ticker": t, "side": "ask" if side == "yes" else "bid", "reduce_only": True,
+                              "coid": coid}, err)
+            except Exception:
+                pass
+            log(f"manual single sale {t}: outcome unknown ({err}): check Kalshi")
+            return {"ok": False, "check": True,
+                    "msg": "Kalshi didn't answer clearly, so this may or may not have sold. Check Kalshi (or Live in a "
+                           "minute) before trying again; the app won't send it again."}
+    if err:
+        return {"ok": False, "msg": err}
+    if sold <= 0:
+        return {"ok": False, "msg": f"Nobody was buying at {px * 100:.0f}¢ any more. Nothing was sold."}
+    MINE.get("peak", {}).pop(t, None)
+    fee = single_fee(px, sold)
+    got = round(sold * (px - fee), 2)
+    cost = round(q["cost"] * (sold / n), 2) if n else 0.0
+    log(f"manual single sold: {sold:g} of {t} at {px:.2f}+")
+    part = f" of {n}" if sold < n else ""
+    return {"ok": True, "sold": sold, "price": px, "got": got, "cost": cost, "pick": q["pick"],
+            "msg": f"✅ Sold {sold:g}{part} at {px * 100:.0f}¢ or better: about {money(got)} back after Kalshi's fee."}
 
 
 IDEA_TAP_SECS = 120            # one order per Live single-game idea in this long (a double tap or a retry sends nothing)
@@ -19813,10 +20002,10 @@ def book_info(payload):
     yes, no = next((b for b in books if b[0] and b[1]), None) or next((b for b in books if b[0] or b[1]), ([], []))
     if not yes or not no:
         return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
-                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
+                "spread": None, "ask_size": no[-1][1] if no else 0, "bid_size": yes[-1][1] if yes else 0, "thin": True}
     bid, ask = yes[-1][0], 1 - no[-1][0]
     spread = round(ask - bid, 4)                  # rounded: 0.53 - 0.49 is 0.04000000000000001 in floats
-    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1],
+    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1], "bid_size": yes[-1][1],
             "thin": spread > 0.04 or no[-1][1] < 100}
 
 
