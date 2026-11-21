@@ -132,8 +132,11 @@ ok("through the Mac, a funded pot buys: 55 filled", filled == 55 and err is None
 src = open("wtest/combo_watcher.py").read()
 i = src.index('if a == "singlebuy":')
 seg = src[i:src.index('if a == "buy":', i)]
-ok("api_act singlebuy shows buy_single's words as they are (no money words of its own)",
-   'return {"ok": False, "msg": err}' in seg and "enough money" not in seg)
+esrc = open("wahome/engine.py").read()
+j = esrc.index("def idea_single_buy(")
+eseg = esrc[j:esrc.index("\ndef ", j + 10)]
+ok("api_act singlebuy (via idea_single_buy) shows buy_single's words as they are (no money words of its own)",
+   "A.idea_single_buy(" in seg and 'return {"ok": False, "msg": err}' in eseg and "enough money" not in seg + eseg)
 
 # ---- (5) every order error code in Kalshi's docs -> its own true words (never "not enough money")
 WANT = {

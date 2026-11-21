@@ -470,10 +470,21 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
-  is left, and the setting to change ("Settings > Money > Weekend cap/Daily cap/Mix cap for <league>"). Its window word
-  (`cap_window`) matches what `week_spend` counts: "today"/"tomorrow" for daily leagues, "this weekend" only for NFL and
-  college football Friday to Monday, otherwise "this week" (the Wed-Mon slate week: soccer, UFC, football Wed/Thu),
-  "on games still to play" for the Mix. The rule and the cap amount are unchanged.
+  is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
+  "Weekend cap" to **Weekly cap** on #71). Its window word (`cap_window`) matches what `week_spend` counts:
+  "today"/"tomorrow" for daily leagues, "this week (Wed to Mon)" for the slate-week leagues (football, soccer, UFC;
+  never "this weekend"), "on games still to play" for the Mix. The rule, the windows and the cap amount are unchanged.
+- **Caps fail closed (issue #136).** Every cap check reads spend through `cap_bets` (a fresh Kalshi account read, or
+  after a failed one the last good read only while ≤ `CAP_READ_AGE` = 120 s old; else `CapUnknown`). `week_spend` raises
+  instead of counting $0; Get price / Buy / Live ideas / the phone's batch refuse with "Couldn't check your weekly cap
+  right now, try again in a minute"; killer deals skip; standing orders post nothing new that pass (logged once per
+  10 min). `week_spend_shown` is the display-only copy (Build's "spent"). The daily panel's buys are limited by its own
+  daily panel budget (`panel_budget`, from the history database) and never read Kalshi spend, so they are unchanged.
+  **Single bets use their own league's cap** (`single_cap_block` → `manual_cap`: the market's league from its ticker,
+  that league's budget and slate, its combos + manual singles), never the loaded league's or the Mix's: Buy straight
+  and Live's single-game buy ideas (`api_act` "idea" quote and "singlebuy" by idea → `idea_single_buy`, which also
+  checks Pause, trading access and the unknown-outcome block, notes the buy in `manual_buys`, and marks an unclear
+  answer "check"). Mix combos keep the Mix cap.
 - **Buy straight (manual single buys, issue #113; Pete's tap only, no automatic buying).** With one team picked the slip
   has a **Single bet / Combo** switch (`slipMode`; Single bet keeps one pick and its button is "Buy straight"); the slip
   card offers "Buy <team> straight" too; spreads & totals rows, Best bets and the Single games card open the same sheet;

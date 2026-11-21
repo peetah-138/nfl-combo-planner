@@ -429,8 +429,113 @@ r = buy(q)
 ok("the read fails between the quote and the tap: refused with the cap words, nothing sent",
    q["ok"] and not q["blocked"] and not r["ok"] and "Couldn't check your weekly cap" in r["msg"] and not D["sent"])
 E.ACCT_CACHE.update(at=0, value=None)
-print("INFO known gap (listed in the PR, unchanged here): the combo cap's week_spend counts a failed read as "
-      f"${REAL_WS():g}")
+
+# ---- (10) issue #136: every other cap fails closed too, Live-idea singles have a cap, singles use their own league's
+# cap (never the Mix's). The account read still fails here (429), with no good read in the last 120 s.
+try:
+    REAL_WS()
+    ok("week_spend on a failed read with no recent good one: CapUnknown", False)
+except E.CapUnknown:
+    ok("week_spend on a failed read with no recent good one: CapUnknown (never $0)", True)
+ok("Build's display copy still answers (never used for a cap)", E.week_spend_shown() == 0)
+E.week_spend = REAL_WS
+real_ks = E.kalshi_send
+KS = []
+E.kalshi_send = lambda *a, **k: (KS.append(a), (_ for _ in ()).throw(AssertionError("must not reach Kalshi")))[1]
+saved_ctx = dict(E.CTX)
+E.CTX.update(combos=[{"legs": [{"ticker": T, "event": EV, "pick": "Denver Nuggets", "fair": 0.8}], "fair": 2.0, "min": 1}],
+             stake=5, sunday=KEY, offers={1: {"stake": 5.0, "rfq": "r1", "quote": "q1", "market": "M", "pays": 9.0}})
+r = E.get_offer(1)
+ok(f"combo Get price (Build, and Live's combo ideas) on an unreadable spend: refused with the cap words ({r.get('error')})",
+   "Couldn't check your weekly cap" in (r.get("error") or "") and not KS)
+r = E.accept_offer(1)
+ok("combo Buy on an unreadable spend: refused, nothing sent to Kalshi, no 'check'",
+   "Couldn't check your weekly cap" in (r.get("error") or "") and not KS and 1 in E.CTX["offers"])
+E.CTX.update(offers={1: {"stake": 5.0, "rfq": "r1", "quote": "q1", "market": "M", "pays": 9.0}})
+GOOD90 = ([{"cost": 9.0, "lgs": ["nba"], "first_week": KEY.isoformat(), "week": KEY.isoformat()}], None, None)
+E.ACCT_CACHE.update(at=time.time() - 90, value=GOOD90)
+ok("a failed read with a good one 90 s ago: the combo cap uses it ($9)", REAL_WS() == 9.0)
+E.CFG["budget"] = 12.0
+r = E.get_offer(1)
+ok(f"...and over the cap on that read the old cap words still answer ({(r.get('error') or '')[:60]})",
+   "over your $12 cap" in (r.get("error") or "") and not KS)
+E.CFG["budget"] = 100.0
+E.ACCT_CACHE.update(at=0, value=None)
+E.CTX.clear(); E.CTX.update(saved_ctx)
+E.kalshi_send = real_ks
+E.CFG["killer_mode"] = "on"
+BOUGHT = []
+line = E.killer_act("combo", [{"ticker": T, "pick": "Denver Nuggets"}], 5.0, 9.0, 1.3,
+                    lambda: (BOUGHT.append(1), (True, "bought"))[1])
+krow = E.store_rows("select status, why from killer order by ts desc limit 1")
+ok(f"a killer deal on an unreadable spend: skipped, never bought ({krow and dict(krow[0])})",
+   not BOUGHT and krow and krow[0]["status"] == "skipped" and "spending cap" in krow[0]["why"])
+E.CFG["killer_mode"] = "watch"
+
+# Live's single-game buy idea: the market's own league cap, fail closed, Pause, and noted for every manual cap
+reset()
+E.week_spend = lambda: SPENT["v"]
+E.cap_combo_spend = REAL_CCS
+no, sp, bud = E.single_cap_block(T, 3.0)
+ok(f"a Live-idea single on an unreadable spend: refused with the cap words ({no})",
+   no and "Couldn't check your weekly cap" in no and sp is None)
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("...and its Buy is refused, nothing sent", not r["ok"] and "Couldn't check your weekly cap" in r["msg"]
+   and not D["sent"] and not r.get("check"))
+E.ACCT_CACHE.update(at=time.time(), value=([{"cost": 95.0, "lgs": ["nba"], "first_week": KEY.isoformat(),
+                                             "week": KEY.isoformat()}], None, None))
+r = E.idea_single_buy(T, 10, 0.72, log=LOG.append)
+ok(f"a Live-idea single over the NBA's daily cap: refused, names the window, the setting and the room left ({r['msg'][:90]}...)",
+   not r["ok"] and not D["sent"] and "NBA" in r["msg"] and "that day" in r["msg"] and "Daily cap" in r["msg"]
+   and "$5.00 left" in r["msg"].replace("$5 left", "$5.00 left") and "$100" in r["msg"])
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+r = E.idea_single_buy(T, 4, 0.72, paused=True, log=LOG.append)
+ok("a Live-idea single while paused: refused, nothing sent", not r["ok"] and "Paused" in r["msg"] and not D["sent"])
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok(f"a Live-idea single inside the cap: one V2 order ({r.get('msg')})", r["ok"] and len(D["sent"]) == 1)
+ok("...noted in manual_buys, so Buy straight's cap sees it", abs(E.manual_spend(T) - 4 * (0.72 + E.single_fee(0.72))) < 0.02)
+reset()
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+D["next"] = requests.Timeout("slow")
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("a Live-idea single with no clear answer: 'check', the market blocked, never resent",
+   not r["ok"] and r.get("check") and E.order_unsure(T))
+n0 = len(D["sent"])
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
+ok("...a second tap sends nothing", not r["ok"] and len(D["sent"]) == n0)
+WSRC = open("wtest/combo_watcher.py").read()
+iq = WSRC.index('if a == "idea":')
+seg_q = WSRC[iq:WSRC.index('if row["kick"]', iq)]
+ib = WSRC.index('if a == "singlebuy":')
+seg_b = WSRC[ib:WSRC.index('if a == "buy":', ib)]
+ok("the web app's idea single quote checks its own league's cap (not the loaded league's week_spend)",
+   "A.single_cap_block(tk" in seg_q and "week_spend" not in seg_q)
+ok("the web app's idea single buy goes through idea_single_buy (cap, Pause, block) and never buy_single directly",
+   "A.idea_single_buy(" in seg_b and "paused_now()" in seg_b and "buy_single" not in seg_b)
+ok("Build's 'spent' line uses the display-only copy", "A.week_spend_shown()" in WSRC)
+
+# manual singles use their own league's cap even with the Mix loaded (Mix combos keep the Mix cap)
+reset()
+E.set_league("mix")
+E.ACCT_CACHE.update(at=time.time(), value=([{"cost": 8.0, "lgs": ["mix"], "first_week": KEY.isoformat(),
+                                             "week": KEY.isoformat()}], None, None))
+E.CFG["budget"] = 5.0                     # a tiny Mix cap, already used up by a Mix combo
+E.CFG["kalshi_key_id"] = "fake-key-id"
+q = E.single_buy_quote(X, 10)
+NBA_CAP = float(E.league_cfg("nba")["budget"])
+ok(f"Mix loaded with its cap used up: an NBA single is checked against the NBA's own cap (${NBA_CAP:g}), not the "
+   f"Mix's $5 ({q.get('budget')}, {q.get('blocked')})", q["ok"] and q["budget"] == NBA_CAP > 5 and not q["blocked"])
+no, sp, bud = E.single_cap_block(T, 3.0)
+ok("...and so is a Live-idea single (the same check)", no is None and bud == NBA_CAP)
+_json.dump({"budget": 2}, open(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]), "w"))
+no, _, _ = E.single_cap_block(T, 3.0)
+ok(f"...a small NBA cap still limits it while the Mix is loaded ({(no or '')[:60]})", no and "NBA" in no and "$2" in no)
+os.remove(os.path.join(E.HERE, E.LEAGUES["nba"]["settings"]))
+ok("Mix combos keep the Mix cap", E.cap_label() == "Mix cap" and REAL_WS() == 8.0)
+E.set_league("nba")
+E.CFG["budget"] = 100.0
+E.CFG["kalshi_key_id"] = "fake-key-id"
+E.ACCT_CACHE.update(at=0, value=None)
 E._fetch_account = real_fa
 E.ACCT_CACHE.update(at=0, value=None)
 E.cap_combo_spend = lambda code, key, now=None: SPENT["v"]

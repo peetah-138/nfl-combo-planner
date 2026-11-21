@@ -4362,7 +4362,7 @@ function settingsSkel(){const row='<div style="display:grid;grid-template-column
  return `<div class="set"><div></div><div><div class="hsk" style="padding:2px 0 18px"><i style="height:24px;width:34%"></i><i style="height:12px;width:60%"></i></div><div class="setsk">${[3,4,2].map(n=>`<div><i style="height:15px;width:40%"></i>${row.repeat(n)}</div>`).join('')}</div></div></div>`;}
 function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S.lerr||{}).settings?`<div class="set"><div></div><div>${errCard('settings')}</div></div>`:settingsSkel();return;}
  const v=d.values,mode=d.mode,mac=S.mac;
- const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekend cap';
+ const cap=mode==='mix'?'Mix cap':mode==='day'?'Daily cap':'Weekly cap';
  const days=mode==='mix'?seg('mix_window','Games from','Which games Mixed sports can combine',d.windows)+tgl('next_day','Same day means tomorrow'):
   mode==='day'?tgl('next_day','Use tomorrow\'s games','Instead of today\'s'):
   tgl('thursday','Thursday games')+tgl('saturday','Saturday games')+tgl('monday','Monday games')+`<div class="srow"><div class="l"><small>Sunday is always in.</small></div></div>`;
@@ -4387,7 +4387,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'week (Wed to Mon)'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -4864,7 +4864,7 @@ def webapp_main():
             board.sort(key=lambda g: (g["started"], str(g["start"])))
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
-                             "spent": A.week_spend() if A.can_trade() else 0,
+                             "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
                              "singles": singles_view(games), "lines": BUILD.get("lines") or [],
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
@@ -5317,9 +5317,9 @@ def webapp_main():
                         n = min(n, int(dpt["ask_size"]))
                     if n < 1:
                         return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
-                    spent = A.week_spend() if A.can_trade() else 0
-                    if spent + n * (ask + fee) > A.CFG["budget"] + 0.01:
-                        return {"ok": False, "msg": A.cap_msg(spent, n * (ask + fee))}
+                    no, _, _ = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
+                    if no:
+                        return {"ok": False, "msg": no}
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
                                      "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
@@ -5365,23 +5365,13 @@ def webapp_main():
                 n, price = int(d.get("n") or 0), float(d.get("price") or 0)
                 if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
                     return {"ok": False, "msg": "That size or price isn't allowed."}
-                try:
-                    filled, err = A.buy_single(json.loads(rows[0]["legs"])[0], n, price)
-                except Exception as e:                  # no clear answer: it may have gone through, never resent
-                    LIVE["at"] = 0
-                    log("single buy: outcome unknown:", type(e).__name__, str(e)[:160])
-                    return {"ok": False, "check": True,
-                            "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check "
-                                   "Kalshi before trying again; the app won't send it again."}
+                tk = str(json.loads(rows[0]["legs"])[0])
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
+                    return {"ok": False, "msg": "That market isn't recognized."}
+                # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
+                r = A.idea_single_buy(tk, n, price, paused=paused_now(), log=log)
                 LIVE["at"] = 0
-                if err:
-                    return {"ok": False, "msg": err}
-                if filled <= 0:
-                    return {"ok": False, "msg": f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
-                log_line = f"single bought: {filled:g} at {price:.2f}"
-                print(log_line, flush=True)
-                return {"ok": True, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
-                                           f"pays {A.money(filled)} if it wins.", "pays": filled}
+                return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
