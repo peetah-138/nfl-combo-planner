@@ -1,0 +1,26 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Combo Hub"><link rel="apple-touch-icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)"><meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)"><title>Combo Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+@@SPA_CSS@@
+</style></head><body>
+<header class="top">
+ <div class="brand"><div class="mk"><svg width="16" height="16" viewBox="0 0 24 24"><path d="M4 15.5l4.2-4.2 3.3 3.3L20 6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>Combo Hub</div>
+ <nav class="nav" id="nav"></nav>
+ <div class="tr">
+  <div class="ts"><span>Balance</span><b id="bal">—</b></div>
+  <div class="ts wk"><span>Last 7 days</span><b id="wk">—</b></div>
+  <div class="status" id="st"><span class="dot"></span>Mac · live</div>
+  <button class="cta" onclick="go('build')">＋ Build combos</button>
+ </div>
+</header>
+<main id="main"></main>
+<nav class="tabbar" id="tabbar"></nav>
+<div class="toast" id="toast"></div>
+<div class="modal" id="modal"><div class="sheet" id="sheet"></div></div>
+<script>
+@@SPA_JS@@
+</script></body></html>

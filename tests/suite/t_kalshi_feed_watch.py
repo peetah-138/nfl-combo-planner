@@ -231,13 +231,17 @@ buf = io.StringIO()
 class NoGh(K.Gh):
     def _run(self, args, stdin=None):
         raise RuntimeError("no gh in tests")
-orig = K.Gh
-K.Gh = NoGh
+class FixedClock(datetime):            # the command line reads the real clock; pin it to NOW so the fixture's
+    @classmethod                        # Nov 2026 entries stay inside --days 30 whatever today's date is
+    def now(cls, tz=None):
+        return NOW if tz else NOW.replace(tzinfo=None)
+orig, orig_dt = K.Gh, K.datetime
+K.Gh, K.datetime = NoGh, FixedClock
 try:
     with contextlib.redirect_stdout(buf):
         rc = K.main(["--feed-file", os.path.join(HERE, "fixtures", "kalshi_changelog.rss"), "--dry-run", "--days", "30"])
 finally:
-    K.Gh = orig
+    K.Gh, K.datetime = orig, orig_dt
 out = buf.getvalue()
 ok("cli: --feed-file --dry-run prints what it would create and exits 0", rc == 0 and out.count("would create: Kalshi API change:") == 5)
 buf = io.StringIO()
