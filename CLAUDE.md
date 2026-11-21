@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.20.125). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.126). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## What this is
@@ -50,7 +50,7 @@ Real money is involved. Pete uses it daily.
   Both Python files are written to `.new` before anything is swapped.
   A watcher whose spa folder is missing or broken still imports (holding page `SPA_FALLBACK`, loud log `WEB APP FILES
   MISSING OR BROKEN`), keeps trading, and `main()` starts `spa_repair_loop`: it fetches the files only when GitHub's
-  newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.20.125
+  newest watcher is byte-identical to itself, then restarts. This is also how the first update from 2026.11.21.126
   (whose updater only knows the two Python files) gets its spa folder.
   The Raspberry Pi is an **alerts-only backup; it never trades**.
 - `version.txt` — what the Macs update to.
@@ -108,7 +108,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.20.125`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.126`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
