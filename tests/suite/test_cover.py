@@ -4,7 +4,7 @@ sys.argv = ["combo_watcher.py", "--webapp"]
 import importlib.util
 spec = importlib.util.spec_from_file_location("W", "wtest/combo_watcher.py")
 W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 

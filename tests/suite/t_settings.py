@@ -2,7 +2,8 @@ import os, json, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
-W = open("wtest/combo_watcher.py").read()
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+W = watcher_text()
 
 # the dead "include my own Kalshi bets" setting is gone everywhere
 ok("sell_own is not an engine default", "sell_own" not in E.DEFAULTS)

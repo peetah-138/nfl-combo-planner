@@ -46,6 +46,9 @@ class R:
     def __enter__(s): return s
     def __exit__(s, *a): return False
 CALLS = []
+# the web app's files as GitHub has them: today's, and on an update a new app.css (so the swap can be seen)
+GH_SPA = {n: open(f"{REPO}/watcher/spa/{n}", "rb").read() for n in os.listdir(f"{REPO}/watcher/spa")}
+if os.environ.get("UPD"): GH_SPA["app.css"] += b"/* the new version */\n"
 def fake(method, url, params=None, data=None, json_=None, **k):
     CALLS.append((method, url.split("?")[0][-60:]))
     if url.startswith("http://127.0.0.1"): raise requests.ConnectionError("no local servers in this test")
@@ -54,6 +57,11 @@ def fake(method, url, params=None, data=None, json_=None, **k):
         if url.endswith("version.txt"): CALLS.append(("SHA", "pinned" if "/0123456789abcdef" in url else "main")); return R(None, raw=GH["v"].encode())
         if url.endswith("nfl_combo_planner.py"): return R(None, raw=open(f"{REPO}/nfl_combo_planner.py").read().replace(f'VERSION = "{VERSION}"', f'VERSION = "{GH["v"]}"').encode())
         if url.endswith("combo_watcher.py"): return R(None, raw=open(f"{REPO}/watcher/combo_watcher.py").read().replace(f'WATCHER_VERSION = "{VERSION}"', f'WATCHER_VERSION = "{GH["v"]}"').encode())
+        if "api.github.com" in url and url.endswith("/contents/watcher/spa"):     # GitHub's file list, with its own hashes
+            if (params or {}).get("ref") != "0123456789abcdef0123456789abcdef01234567": return R({}, 404)
+            return R([{"name": n, "type": "file", "sha": W.git_blob_sha(b)} for n, b in GH_SPA.items()])
+        if "/watcher/spa/" in url and "/0123456789abcdef" in url:
+            n = url.split("/watcher/spa/")[1]; return R(None, raw=GH_SPA[n]) if n in GH_SPA else R({}, 404)
         return R({}, 404)
     if "kalshi" in url:
         path = url.split("/trade-api/v2")[-1].split("?")[0]
@@ -95,6 +103,7 @@ real_sleep = T.sleep
 T.sleep = lambda x: real_sleep(min(x, 0.2))
 LOG = []
 shutil.copy(f"{REPO}/watcher/combo_watcher.py", f"{home}/combo_watcher.py")   # never let a test touch the repo
+shutil.copytree(f"{REPO}/watcher/spa", f"{home}/spa")                          # the web app's files, next to it
 sys.argv = [f"{home}/combo_watcher.py"]
 spec = importlib.util.spec_from_file_location("W", f"{home}/combo_watcher.py")
 W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
@@ -134,3 +143,9 @@ if os.environ.get("UPD"):
     pins = [c[1] for c in CALLS if c[0] == "SHA"]
     print("update read the newest commit:", pins[:3])
     if not pins or pins[0] != "pinned": print("PROBLEMS: update check didn't read the newest commit")
+    css = open(f"{home}/spa/app.css", "rb").read()
+    left = [n for n in os.listdir(home) if n.startswith(".spa-new-") or n == "spa.old"]
+    print("web app files updated:", css == GH_SPA["app.css"], "| leftovers:", left)
+    if css != GH_SPA["app.css"] or left: print("PROBLEMS: the update didn't install the new web app files cleanly")
+    if "/* the new version */" not in W.spa_assemble(f"{home}/spa")[0]:
+        print("PROBLEMS: the installed web app files don't assemble into the new page")

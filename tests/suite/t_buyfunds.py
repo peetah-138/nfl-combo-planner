@@ -129,7 +129,8 @@ ok(f"through the Mac (as on Pete's phone): the same true words, no status code, 
 reset()
 filled, err = A.buy_single(BAY, n, ask)
 ok("through the Mac, a funded pot buys: 55 filled", filled == 55 and err is None)
-src = open("wtest/combo_watcher.py").read()
+from wsrc import watcher_text   # the watcher file plus its web app files (watcher/spa/)
+src = watcher_text()
 i = src.index('if a == "singlebuy":')
 seg = src[i:src.index('if a == "buy":', i)]
 esrc = open("wahome/engine.py").read()
