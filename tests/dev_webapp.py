@@ -56,7 +56,8 @@ W = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(W)
 assert os.path.realpath(W.HOME) == HOME and W.WEBAPP_PORT == PORT, "watcher is not using the dev home/port"
 
-ev = {s: sorted({m["event_ticker"] for m in fakenet.markets() if m["event_ticker"].startswith(s)}) for s in fakenet.GAMES}
+# in GAMES order (game 0 under way, 1 over, the rest to come); never sorted: each ticker carries its own game's US date
+ev = {s: [fakenet.event_ticker(s, a, b) for a, _, b, _, _ in fakenet.GAMES[s]] for s in fakenet.GAMES}
 nba, nhl = ev["KXNBAGAME"], ev["KXNHLGAME"]
 
 
