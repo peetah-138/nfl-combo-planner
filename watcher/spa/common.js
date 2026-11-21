@@ -71,7 +71,7 @@ function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.ga
 /* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
    short plain reasons in a sheet. `where` is one of two fixed words, never page data. */
 function sbSkipLine(xs,where){xs=(Array.isArray(xs)?xs:[]).filter(x=>x&&x.text);S.sbSkip=S.sbSkip||{};S.sbSkip[where]=xs;if(!xs.length)return '';
- return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">Smart Buy skipped ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} today · Why?</button>`;}
+ return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">Smart Buy skipped ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} · Why?</button>`;}
 function sbSkipOpen(w){const xs=(S.sbSkip||{})[w]||[];
  modal(`<h3>Smart Buy skipped ${xs.length}</h3><p class="m" style="font-size:13px;line-height:1.45">Priced better than their chance, but unlikely to make money once selling and holding are both played out. They're still tracked, so Smart Buy learns if skipping them was wrong. Switch it off in Settings › Money.</p>
   ${xs.map(x=>`<div class="sbrow" style="padding:10px 0;border-top:1px solid var(--line)"><b style="font-size:14px">${esc(x.text)}</b><div class="m" style="font-size:12.5px;margin-top:2px;line-height:1.4">${esc(x.why||'')}</div></div>`).join('')}

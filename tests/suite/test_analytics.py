@@ -110,10 +110,10 @@ with sync_playwright() as pw:
             or "keeps learning from every result" not in row.inner_text() or "preview" in row.inner_text():
         print("PROBLEMS: Settings › Money has no 'Smart Buy' switch (on by default, saying it skips unlikely bets and keeps learning)")
     else:
-        row.locator("input").click(); v = saved("smart_buy", False)
+        row.locator("input").click(); v = saved("smart_buy_gate", False)
         if v is not False: print("PROBLEMS: turning off 'Smart Buy' didn't save:", v)
         row.locator("input").click()
-        if saved("smart_buy", True) is not True: print("PROBLEMS: turning 'Smart Buy' back on didn't save")
+        if saved("smart_buy_gate", True) is not True: print("PROBLEMS: turning 'Smart Buy' back on didn't save")
     SBP = {"on": False, "days": 7, "stake": 5, "markets": 42, "prices": 900,
            "rows": [{"name": "NBA", "kind": "Single games", "n": 48, "ok": 20, "p_exit": 0.52, "ev": 0.41, "sell": 25, "hold": 10},
                     {"name": "NFL", "kind": "Spreads & totals", "n": 12, "ok": 3, "p_exit": 0.31, "ev": -0.2, "sell": 2, "hold": 4}],
@@ -157,7 +157,7 @@ with sync_playwright() as pw:
     if "won't buy" not in h: print("PROBLEMS: a pre-game-priced bet on a started game no longer says it won't be bought")
     # Smart Buy's calm skipped line under the panel and the Buy ideas, with a tap to see the plain reasons
     h = pg.evaluate("()=>sbSkipLine([{text:'Bruins vs Flyers',why:'expects to lose about $0.05 per $5, even selling smartly'}],'panel')")
-    if "Smart Buy skipped 1 bet today" not in h or pg.evaluate("()=>sbSkipLine([],'ideas')") != "":
+    if "Smart Buy skipped 1 bet · Why?" not in h or pg.evaluate("()=>sbSkipLine([],'ideas')") != "":
         print("PROBLEMS: the Smart Buy skipped line is wrong (or shows with nothing skipped):", h[:200])
     pg.evaluate("()=>{sbSkipLine([{text:'<b>x</b>',why:'w <i>y</i>'}],'ideas');sbSkipOpen('ideas')}")
     wait(pg, "!!document.querySelector('#sheet .sbrow')", 5)
