@@ -556,6 +556,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   success = 2 ticks, warning = 2 slower, error = 3. A control's own `hap()` right after the tap folds into the same
   tick (no double buzz). Sheets tick on open/close and when a drag crosses the close threshold; pull-to-refresh ticks
   at its threshold. `test_motion.py` audits every screen: no visible clickable element may miss press + haptic.
+  **Exception (#151, scrolling first):** on iPhones the tick is a see-through switch over each control (`.hsw`,
+  method N), and a switch under the finger can stop iOS scrolling. So big scroll surfaces (`hswBig`: taller than
+  64px, or wider than 70% of the screen unless a real button/chip/tab) get **no switch and no iOS tick** (the tap still
+  works); their compact buttons/chips inside keep theirs. Switches and their controls have `touch-action:manipulation`,
+  and while the finger scrolls (momentum included) `html.hswscr` makes switches `pointer-events:none` until 150 ms
+  after the last scroll. The audit counts big cards/rows as exempt; `test_hsw.py` checks drags from them scroll.
   **Haptics on iOS (issue #60):** Pete's test on iOS 27.2.1 (Home Screen app): only G, H and I tick, i.e. only when the
   finger itself lands on a real `<input type=checkbox switch>`; every scripted click (A-F, J, K) does nothing. So the
   default (`HAPDEF = 'N'`) is **method N**: every tappable control (`HSWQ`: buttons, `[onclick]`, chips, rows)
