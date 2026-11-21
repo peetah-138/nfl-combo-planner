@@ -1884,7 +1884,8 @@ def shadow_loop(odds, notifier=None, every=600):
             with odds.lock:
                 H = odds.engine()
                 did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()] \
-                    + [f"smart sell {m}" for m in H.smart_tune()]
+                    + [f"smart sell {m}" for m in H.smart_tune()] \
+                    + [f"spread/total bar {m}" for m in H.line_edge_tune()]
                 n_lab = H.lab_pass()
             if n_lab:
                 log(f"combo lab: paper-bought {n_lab} at different price levels")
@@ -2684,7 +2685,8 @@ def webapp_main():
         A.set_league(lg)
         A.CTX.clear()
         A.CTX.update(s["ctx"])
-        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"])
+        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"],
+                     lines_priced=s.get("lines_priced") or 0)
         return True
 
     def api_build(lg, rebuild=True, warming=False):
@@ -2724,13 +2726,20 @@ def webapp_main():
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
                 BUILD.update(lg=lg, last=lg, note=note, at=time.time(), days=days)
-                try:                                    # spreads and totals, priced with the score model
+                try:                                    # spreads and totals: recommendations only (issue #117)
                     codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
-                    BUILD["lines"] = [x for c in codes for x in A.line_candidates(c, everything=True)][:40]
+                    recs, priced = [], 0
+                    for c in codes:
+                        got, info = A.line_recommend(c)
+                        recs += got
+                        priced += info.get("priced") or 0
+                    BUILD["lines"] = sorted(recs, key=lambda x: -(x.get("exp") or 0))[:12]
+                    BUILD["lines_priced"] = priced
                 except Exception as err:
                     print("lines:", err, flush=True)
-                    BUILD["lines"] = []
-                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"]}
+                    BUILD["lines"], BUILD["lines_priced"] = [], 0
+                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"],
+                            "lines_priced": BUILD["lines_priced"]}
             games = A.CTX.get("all_games") or {}
             board = []
             on = {e for e, sides in games.items() if any(A.started(x) for x in sides)}
@@ -2766,6 +2775,7 @@ def webapp_main():
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
                              "singles": singles_view(games), "lines": BUILD.get("lines") or [],
+                             "lines_priced": BUILD.get("lines_priced") or 0,
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
                                       "wed": sum(1 for x in (BUILD.get("days") or {}).values() if x == "Wednesday"),
@@ -3613,7 +3623,8 @@ def webapp_main():
                                 A.CTX.update(saved)
                                 s = SNAP.get(cur)
                                 if s:
-                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"],
+                                                 lines_priced=s.get("lines_priced") or 0)
                                 BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:

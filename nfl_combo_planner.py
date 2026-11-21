@@ -13141,14 +13141,15 @@ def line_record(max_age=600):
     out = []
     if STORE["db"]:
         _line_fair_table()
-        rows = store_rows("select ticker, sport, league, kind, bucket, fair_old, fair_new, fair_cal, outcome, ts from "
-                          "line_fairs where outcome in ('yes','no') order by ts")
+        rows = store_rows("select ticker, sport, league, kind, bucket, fair_old, fair_new, fair_cal, outcome, ts, price, "
+                          "used from line_fairs where outcome in ('yes','no') order by ts")
         last = {}
         for r in rows:
             last[r["ticker"]] = r
         out = [{"sport": r["sport"], "league": r["league"], "kind": r["kind"], "bucket": r["bucket"],
                 "event": (r["ticker"] or "").rsplit("-", 1)[0],
-                "old": r["fair_old"], "new": r["fair_new"], "cal": r["fair_cal"], "y": r["outcome"] == "yes"}
+                "old": r["fair_old"], "new": r["fair_new"], "cal": r["fair_cal"], "y": r["outcome"] == "yes",
+                "p": r["price"], "used": r["used"], "ts": r["ts"]}
                for r in last.values()]
     LINE_STATS.update(at=time.time(), v=out, derived=None)
     return out
@@ -13280,8 +13281,9 @@ def line_candidates(code, everything=False):
     (everything=True: all markets near the sportsbook line, for the Build board)."""
     mk, lines = line_markets(code), espn_lines(code)
     if not mk or not lines:
+        LINE_LAST[code] = {"n": 0, "at": time.time()}
         return []
-    out = []
+    out, priced = [], 0
     for m in mk:
         p = price(m)
         if not p or p >= 0.95 or p <= 0.05:
@@ -13299,6 +13301,11 @@ def line_candidates(code, everything=False):
             line = float(strike) if strike is not None else float(re.findall(r"(\d+(?:\.\d+)?)", sub)[-1])
         except (ValueError, IndexError):
             continue
+        try:
+            kick = dt.datetime.fromisoformat(str(g.get("start")).replace("Z", "+00:00")).timestamp() if g.get("start") else None
+        except ValueError:
+            kick = None
+        line_clv_seen(m["ticker"], p, kick)              # part B: the last price before the start is a strike's close
         if m["kind"] == "spread":
             hn, an = g["home"].lower(), g["away"].lower()
             sl = sub.lower()
@@ -13318,11 +13325,13 @@ def line_candidates(code, everything=False):
                 continue                                # far from the line: the model's tails are less reliable
             fair = line_fair(code, "spread", line, team_is_home, g)
             label = f"{team} win by {line:g}+" if line > 0 else f"{team} lose by under {abs(line):g}"
+            center = mu
         else:
             sd = TOTAL_SD.get(code, 1.5)
             if g["total"] is None or abs(line - g["total"]) > sd * 0.8:
                 continue
             fair = line_fair(code, "total", line, True, g)
+            center = g["total"]
             label = f"Over {line:g} ({g['away'].split()[-1]} at {g['home'].split()[-1]})"
         fair, model = _line_pick_model(code, m, line, team_is_home if m["kind"] == "spread" else True, g, fair, p)
         if fair is None:
@@ -13330,13 +13339,19 @@ def line_candidates(code, everything=False):
         if abs(fair - p) > 0.15:                        # the market disagrees wildly: our match or model is wrong
             continue
         edge = fair - p - single_fee(p)
-        if everything or (edge >= LINE_MIN_EDGE and edge / p >= 0.06):
+        priced += 1
+        lg = _line_lg(code, m["ticker"])
+        bucket = line_bucket(code, m["kind"], line, center)
+        need = line_min_edge(lg, m["kind"])["v"]          # part B: the league's learned bar (never under LINE_MIN_EDGE)
+        if everything or (edge >= need - 1e-9 and edge / p >= 0.06 and not line_clv_block(lg, m["kind"], bucket)):
             out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
-                        "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}"})
+                        "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}",
+                        "league": lg, "bucket": bucket, "min_edge": need, "kick": kick, "code": code})
             if model:                                   # only when the new model priced it (gate on)
                 out[-1]["model"] = model
+    LINE_LAST[code] = {"n": priced, "at": time.time()}
     return sorted(out, key=lambda x: -x["edge"] / x["p"])
 
 
@@ -13367,6 +13382,374 @@ def _line_pick_model(code, m, line, team_is_home, g, old, p):
     if use and got[1] is not None and old is not None:   # never prices a market today's model leaves out
         return got[1], "margin"
     return old, None
+
+
+# ---- spreads and totals, part B (issue #117): which strikes to recommend, and how much
+# Three checks on top of the price model above. None of them buys or sells anything (recommend-only):
+#  1. closing-line value per strike: the price when a strike was recommended (or bought) against Kalshi's last price
+#     before the start, per league, kind and distance from the line (line_bucket). A kind of strike that keeps
+#     losing to the close is no longer recommended (line_clv_block).
+#  2. fillable size after fees: the real order book (every ask level), the biggest buy that keeps every contract at
+#     least the bar under fair after Kalshi's fee (rounded up to the cent, like Kalshi), and the expected dollars of
+#     exactly that buy (line_fill). Never more than can be bought inside the edge.
+#  3. a learned minimum edge per league and kind (line_min_edge), starting at today's bar (LINE_MIN_EDGE) and moving
+#     weekly, one small step, only on clear evidence from settled markets (line_edge_tune), borrowing league -> sport
+#     -> everyone. It never goes under today's bar, so borrowing or learning can only ever make it stricter.
+# The Build page shows a strike only when all three pass AND Smart Buy's exit simulator (smart sell's own exit
+# policy, simulate_exit) sees a likely route to profit (line_recommend). Ranked by expected dollars at the size that
+# fills.
+LINE_EDGE = {"max": 0.10, "step": 0.005, "games": 30, "band": 10, "gain": 0.02, "every": 7 * 86400, "days": 120}
+LINE_CLV = {"games": 30, "mean": -0.005, "t": 2.0, "close_win": 90 * 60, "days": 90}
+LINE_REC = {"check": 8, "panel_fill": 4, "big": 1000.0}
+LINE_LAST = {}
+LE_CACHE = {"path": None, "at": 0.0, "d": {}}
+CLV_STATE = {"db": None, "open": {}, "at": 0.0, "stats": None, "stats_at": 0.0}
+
+
+def _le_file():
+    return os.path.join(HERE, "combo_line_edge.json")   # gitignored (combo_*.json)
+
+
+def _le_load():
+    p = _le_file()
+    if LE_CACHE["path"] != p or time.time() - LE_CACHE["at"] > 60:
+        d = load_json(p, {})
+        LE_CACHE.update(path=p, at=time.time(), d=d if isinstance(d, dict) else {})
+    return LE_CACHE["d"]
+
+
+def _line_lg(code, ticker):
+    """The league a spread/total market is judged in ('epl', 'nba'; the sport code when the ticker can't tell)."""
+    lg = league_key(ticker) if ticker else code
+    return code if lg in ("other", "mix") or LINE_SPORT.get(lg) is None else lg
+
+
+def line_min_edge(lg, kind):
+    """The edge after the fee (dollars a contract) a spread/total in this league needs to be recommended: the league's
+    own learned bar once it has 30+ settled games of its own, else its sport's, else everyone's, else today's bar
+    (LINE_MIN_EDGE). Never under today's bar, never over LINE_EDGE['max']. {'v', 'key', 'src', 'why', 'at'}."""
+    d = _le_load()
+    for key, src in ((f"{lg}:{kind}", "own"), (f"{LINE_SPORT.get(lg) or lg}:{kind}", "sport"), (f"all:{kind}", "all")):
+        e = d.get(key)
+        try:
+            if isinstance(e, dict) and int(e.get("games") or 0) >= LINE_EDGE["games"]:
+                v = min(max(float(e.get("v")), LINE_MIN_EDGE), LINE_EDGE["max"])
+                return {"v": round(v, 4), "key": key, "src": src, "why": e.get("why"), "at": e.get("at")}
+        except (TypeError, ValueError):
+            continue
+    return {"v": LINE_MIN_EDGE, "key": None, "src": "start", "why": None, "at": None}
+
+
+def _line_edge_rows(now=None):
+    """Settled spread/total markets for the weekly bar review: the last reading of each before its game, with the
+    edge after the fee and what $1 on it made. Only markets the board would have looked at (sane against the market,
+    at least today's bar) and only from the last LINE_EDGE['days'] days."""
+    now = now or time.time()
+    out = []
+    for r in line_record():
+        fair = r.get("cal") if r.get("used") == "new" and r.get("cal") is not None else r.get("old")
+        p = r.get("p")
+        if fair is None or not p or not 0.05 < p < 0.95 or abs(fair - p) > 0.15:
+            continue
+        if r.get("ts") and now - r["ts"] > LINE_EDGE["days"] * 86400:
+            continue
+        per = p + single_fee(p)
+        edge = fair - per
+        if edge < LINE_MIN_EDGE - 1e-9 or edge / p < 0.06:
+            continue                                     # never recommended at any bar the review can set
+        out.append({"lg": r.get("league") or r.get("sport") or "", "kind": r.get("kind"), "event": r.get("event"),
+                    "edge": edge, "pr": ((1.0 if r["y"] else 0.0) - per) / per})
+    return out
+
+
+def line_edge_tune(force=False, now=None):
+    """Once a week, for each league's spreads and totals (then each sport's, then everyone's): would a bar one step
+    higher or lower have done clearly better on the settled markets? 'Clearly' = the strikes the step adds or drops
+    cover 10+ games and change the result by at least 2% of everything staked at the bar ($1 a strike), with 30+ games
+    at the bar. One step at most; on a tie it stays (the smallest change wins); never under today's bar. Returns what
+    changed, in words."""
+    now = now or time.time()
+    d = load_json(_le_file(), {})
+    d = d if isinstance(d, dict) else {}
+    if not force and now - float(d.get("_at") or 0) < LINE_EDGE["every"]:
+        return []
+    if not STORE["db"]:
+        return []
+    groups = defaultdict(list)
+    for r in _line_edge_rows(now):
+        for key in {f"{r['lg']}:{r['kind']}", f"{LINE_SPORT.get(r['lg']) or r['lg']}:{r['kind']}", f"all:{r['kind']}"}:
+            groups[key].append(r)
+    moved, step = [], LINE_EDGE["step"]
+    for key in sorted(groups):
+        rows = groups[key]
+        e = d.get(key) if isinstance(d.get(key), dict) else {}
+        try:
+            cur = min(max(float(e.get("v", LINE_MIN_EDGE)), LINE_MIN_EDGE), LINE_EDGE["max"])
+        except (TypeError, ValueError):
+            cur = LINE_MIN_EDGE
+        at = [r for r in rows if r["edge"] >= cur - 1e-9]
+        games = len({r["event"] for r in at})
+        best, why, options = cur, None, []
+        if games >= LINE_EDGE["games"]:
+            if cur + step <= LINE_EDGE["max"] + 1e-9:   # up: the strikes it would drop lost money
+                band = [r for r in at if r["edge"] < cur + step - 1e-9]
+                gain, bg = -sum(r["pr"] for r in band), len({r["event"] for r in band})
+                if bg >= LINE_EDGE["band"] and gain >= LINE_EDGE["gain"] * len(at):
+                    options.append((gain, cur + step, f"strikes just over {cur * 100:.1f}¢ lost ${gain:.2f} "
+                                                      f"($1 each) over {bg} games"))
+            if cur - step >= LINE_MIN_EDGE - 1e-9:      # down (never under today's bar): the strikes it adds made money
+                wide = [r for r in rows if r["edge"] >= cur - step - 1e-9]
+                band = [r for r in wide if r["edge"] < cur - 1e-9]
+                gain, bg = sum(r["pr"] for r in band), len({r["event"] for r in band})
+                if bg >= LINE_EDGE["band"] and gain >= LINE_EDGE["gain"] * len(wide):
+                    options.append((gain, cur - step, f"strikes just under {cur * 100:.1f}¢ made ${gain:.2f} "
+                                                      f"($1 each) over {bg} games"))
+        options.sort(key=lambda o: -o[0])
+        if options and (len(options) == 1 or options[0][0] > options[1][0] + 1e-9):   # a tie: stay where it is
+            best, why = round(options[0][1], 4), options[0][2]
+        new = dict(e, v=round(best, 4), games=games, n=len(at))
+        if why:
+            new.update(why=why, at=now)
+            moved.append(f"{key} {cur * 100:.1f}¢ → {best * 100:.1f}¢ ({why})")
+        d[key] = new
+    d["_at"] = now
+    save_json(_le_file(), d)
+    LE_CACHE["at"] = 0.0
+    return moved
+
+
+def _line_clv_table():
+    if CLV_STATE["db"] is STORE["db"] and STORE["db"] is not None:
+        return
+    store_x("create table if not exists line_clv(ticker text, src text, ts real, sport text, league text, kind text, "
+            "bucket text, strike real, price real, fair real, kick real, close real, close_ts real, "
+            "primary key(ticker, src))")
+    CLV_STATE.update(db=STORE["db"], open={}, at=0.0, stats=None)
+
+
+def _clv_open(now):
+    """{ticker: kick} of recommended/bought strikes whose game hasn't started (whose close is still being read).
+    Re-read from the history every 10 minutes; note_line_rec keeps it current in between."""
+    if now - CLV_STATE["at"] > 600:
+        rows = store_rows("select ticker, max(kick) kick from line_clv where kick > ? group by ticker", (now,))
+        CLV_STATE.update(open={r["ticker"]: r["kick"] for r in rows}, at=now)
+    return CLV_STATE["open"]
+
+
+def note_line_rec(x, src="rec", price=None, now=None):
+    """Remember the price a spread/total strike was recommended ('rec') or bought ('buy') at, once per strike and
+    source, before its game, so its closing-line value can be measured. Logging only; never raises."""
+    try:
+        now = now or time.time()
+        if not STORE["db"] or not x.get("ticker") or not x.get("kick") or float(x["kick"]) <= now:
+            return
+        _line_clv_table()
+        p = float(price if price is not None else x.get("p"))
+        store_x("insert or ignore into line_clv values(?,?,?,?,?,?,?,?,?,?,?,null,null)",
+                (x["ticker"], src, now, x.get("code") or x.get("sport"), x.get("league"), x.get("kind"),
+                 x.get("bucket"), x.get("line"), round(p, 4), x.get("fair"), float(x["kick"])))
+        _clv_open(now)[x["ticker"]] = float(x["kick"])
+    except Exception:
+        pass
+
+
+def line_clv_seen(ticker, p, kick, now=None):
+    """A fresh Kalshi price for a strike being followed: the latest one read before the start is its close."""
+    try:
+        now = now or time.time()
+        if not STORE["db"] or not p or not kick or now >= kick:
+            return
+        _line_clv_table()
+        if ticker in _clv_open(now):
+            store_x("update line_clv set close=?, close_ts=? where ticker=? and ts <= ? and kick > ?",
+                    (round(float(p), 4), now, ticker, now, now))
+    except Exception:
+        pass
+
+
+def line_clv_stats(now=None, max_age=600):
+    """{(league, kind, bucket): {'n', 'games', 'mean', 'se'}}: closing-line value of recommended strikes (the close
+    minus the price then; positive = recommended cheaper than it closed), only where the close was read within 90
+    minutes of the start, last 90 days. Also keyed ('*<sport>', kind, bucket) and ('*all', kind, bucket). Cached."""
+    now = now or time.time()
+    if CLV_STATE["stats"] is not None and now - CLV_STATE["stats_at"] < max_age and CLV_STATE["db"] is STORE["db"]:
+        return CLV_STATE["stats"]
+    acc = defaultdict(lambda: [0, 0.0, 0.0, set()])
+    if STORE["db"]:
+        _line_clv_table()
+        rows = store_rows("select ticker, league, sport, kind, bucket, price, close from line_clv where src='rec' and "
+                          "close is not null and kick < ? and kick > ? and close_ts >= kick - ?",
+                          (now, now - LINE_CLV["days"] * 86400, LINE_CLV["close_win"]))
+        for r in rows:
+            lg = r["league"] or r["sport"] or ""
+            v = float(r["close"]) - float(r["price"])
+            ev = (r["ticker"] or "").rsplit("-", 1)[0]
+            for k in ((lg, r["kind"], r["bucket"]), ("*" + (LINE_SPORT.get(lg) or lg), r["kind"], r["bucket"]),
+                      ("*all", r["kind"], r["bucket"])):
+                a = acc[k]
+                a[0] += 1
+                a[1] += v
+                a[2] += v * v
+                a[3].add(ev)
+    out = {}
+    for k, (n, s, s2, evs) in acc.items():
+        mean = s / n
+        var = max(s2 / n - mean * mean, 0.0) * n / max(n - 1, 1)
+        out[k] = {"n": n, "games": len(evs), "mean": round(mean, 4),
+                  "se": round(math.sqrt(var / n), 5) if n > 1 else None}
+    CLV_STATE.update(stats=out, stats_at=now)
+    return out
+
+
+def line_clv_block(lg, kind, bucket, now=None):
+    """Why this kind of strike is no longer recommended (it keeps losing to the close), or None. The league's own
+    record decides once it has 30+ games in that band; until then its sport's, then everyone's, may only block
+    (borrowing never loosens). 'Keeps losing' = closing at least half a cent under the price on average, two
+    standard errors from zero. Never raises (unreadable = no block: the other checks still apply)."""
+    try:
+        st = line_clv_stats(now)
+        for k, who in (((lg, kind, bucket), None), (("*" + (LINE_SPORT.get(lg) or lg), kind, bucket), "its sport"),
+                       (("*all", kind, bucket), "every league")):
+            s = st.get(k)
+            if not s or s["games"] < LINE_CLV["games"]:
+                continue
+            if s["mean"] <= LINE_CLV["mean"] and s["se"] and s["mean"] / s["se"] <= -LINE_CLV["t"]:
+                return (f"{'spreads' if kind == 'spread' else 'totals'} {bucket} closed {abs(s['mean']) * 100:.1f}¢ "
+                        f"under the price we saw, on average over {s['games']} games"
+                        + (f" ({who})" if who else ""))
+            if who is None:
+                return None                              # its own record says it's fine: borrowing can't block it
+    except Exception:
+        return None
+    return None
+
+
+def book_asks(ticker, max_age=60):
+    """Every YES ask level on Kalshi's order book [(price, contracts)], cheapest first (1 - each NO bid), read with
+    book_depth (one call fills both). None = unreadable."""
+    got = BOOK_LADDER.get(ticker)
+    if got and time.time() - got[0] < max_age:
+        return got[1]
+    if book_depth(ticker, max_age=0) is None:
+        return None
+    got = BOOK_LADDER.get(ticker)
+    return got[1] if got else None
+
+
+def _fill_total(take):
+    """What buying [[price, contracts], ...] in one order costs: the prices plus Kalshi's fee, rounded up to the cent."""
+    px = sum(p * k for p, k in take)
+    fee = math.ceil(round(sum(FEE_RATE * p * (1 - p) * k for p, k in take) * 100, 6)) / 100
+    return px + fee
+
+
+def line_fill(ticker, fair, need, stake, asks=None):
+    """The biggest buy of a strike, up to `stake` dollars, that keeps every contract at least `need` under `fair` after
+    Kalshi's fee, walking up the order book. {'n' contracts, 'cost' dollars with the fee, 'per' (cost a contract),
+    'exp' (expected profit of that buy at fair, after fees), 'depth' (contracts for sale inside the edge, any stake),
+    'best' (best ask), 'capped' ('depth' = the book ran out inside the edge first, else 'stake')}. None = the book
+    couldn't be read (so nothing is recommended)."""
+    asks = book_asks(ticker) if asks is None else asks
+    if asks is None:
+        return None
+    inside = [[p, int(q)] for p, q in asks if fair - p - single_fee(p) >= need - 1e-9 and int(q) >= 1]
+    depth = sum(k for _, k in inside)
+    take, spent = [], 0.0
+    for p, q in inside:
+        per = p + single_fee(p)
+        k = min(q, int((stake - spent) / per + 1e-9))
+        if k <= 0:
+            break
+        take.append([p, k])
+        spent += k * per
+    for _ in range(10000):                               # the rounded fee: stay inside the stake and the edge
+        n = sum(k for _, k in take)
+        if not n or (_fill_total(take) <= stake + 1e-9 and fair - _fill_total(take) / n >= need - 1e-9):
+            break
+        take[-1][1] -= 1
+        if take[-1][1] <= 0:
+            take.pop()
+    n = sum(k for _, k in take)
+    cost = _fill_total(take) if n else 0.0
+    return {"n": n, "cost": round(cost, 2), "per": round(cost / n, 4) if n else None,
+            "exp": round(n * fair - cost, 2) if n else 0.0, "depth": depth,
+            "best": asks[0][0] if asks else None, "capped": "depth" if n and n >= depth else "stake"}
+
+
+def _line_rec_one(code, x, base, now):
+    """One strike as a recommendation (the card's numbers), or (None, why not)."""
+    fair, need = x["fair"], x.get("min_edge") or LINE_MIN_EDGE
+    stake = _size({"kind": "single", "chance": x["p"] + (fair - x["p"]) * 0.7, "price": x["p"]}, base)
+    fill = line_fill(x["ticker"], fair, need, stake)     # model prices: the edge shrunk 30% for sizing (as the buy sheet)
+    if fill is None:
+        return None, "book"
+    if fill["n"] < 1:
+        return None, "depth"
+    ask = fill["best"]
+    c = {"kind": "line", "code": code, "id": "line:" + x["ticker"], "kick": x.get("kick"),
+         "legs": [{"ticker": x["ticker"], "event": x.get("event"), "fair": fair, "p": ask, "pick": x.get("pick")}]}
+    sim = _sb_sim(c, now)
+    if not smart_buy_ok(sim):
+        return None, "route"
+    exp = round(fill["exp"] + (sim["ev"] - sim["hold_profit"]) * fill["cost"] / SB_STAKE, 2)
+    if exp < SB_EV_MIN:
+        return None, "small"
+    return dict(x, rec=True, p=ask, edge=round(fair - ask - single_fee(ask), 4), stake=fill["cost"], n=fill["n"],
+                per=fill["per"], exp=exp, hold_exp=fill["exp"], depth=fill["depth"], capped=fill["capped"],
+                p_exit=sim["p_exit"], win=sim["win"], route=sim["route"], exit_mins=sim.get("exit_mins")), None
+
+
+def line_recommend(code, now=None):
+    """The Build page's spreads and totals: only strikes worth buying (the learned bar after the fee, not a kind that
+    keeps losing to the close, fillable inside the edge, a likely route to profit under smart sell's exit policy, and
+    at least SB_EV_MIN expected dollars at the size that fills), ranked by expected dollars. Returns (recs, info):
+    info = {'priced': markets looked at, 'skipped': {reason: n}} for the empty state. Recommend-only: never buys."""
+    now = now or time.time()
+    try:
+        cands = line_candidates(code)
+    except Exception as err:
+        console_note(f"spreads/totals {code}: {type(err).__name__}: {err}")
+        cands = []
+    info = {"priced": (LINE_LAST.get(code) or {}).get("n", 0), "skipped": defaultdict(int)}
+    try:
+        base = _manual_base()
+    except Exception:
+        base = 0.0
+    out = []
+    for x in cands[:LINE_REC["check"]]:
+        try:
+            r, why = _line_rec_one(code, x, base, now)
+        except Exception as err:
+            r, why = None, type(err).__name__
+        if r:
+            out.append(r)
+        else:
+            info["skipped"][why] += 1
+    out.sort(key=lambda r: -r["exp"])
+    for r in out:
+        note_line_rec(r, now=now)
+    info["skipped"] = dict(info["skipped"])
+    return out, info
+
+
+def line_sel_summary(now=None):
+    """Results › What's working: each league's spreads and totals bar (learned or borrowed, and why it last moved)
+    and how recommended strikes did against the close."""
+    st = line_clv_stats(now)
+    d = _le_load()
+    keys = {tuple(k.split(":", 1)) for k in d if ":" in k and k.split(":", 1)[0] in LINE_SPORT}
+    keys |= {(k[0], k[1]) for k in st if not k[0].startswith("*") and k[1]}
+    out = []
+    for lg, kind in sorted(keys, key=lambda x: (list(LINE_SPORT).index(x[0]) if x[0] in LINE_SPORT else 99, x[1])):
+        me = line_min_edge(lg, kind)
+        parts = [(k[2], v) for k, v in st.items() if k[0] == lg and k[1] == kind]
+        n = sum(v["n"] for _, v in parts)
+        mean = round(sum(v["mean"] * v["n"] for _, v in parts) / n, 4) if n else None
+        blocked = [b for b, _ in parts if line_clv_block(lg, kind, b, now)]
+        out.append({"lg": lg, "name": league_label(lg), "kind": kind, "bar": me["v"], "src": me["src"],
+                    "from": me["key"], "why": me["why"], "at": me["at"], "clv_n": n,
+                    "clv_games": sum(v["games"] for _, v in parts), "clv": mean, "blocked": blocked})
+    return out
 
 
 # ---- same-game combos (a team to win + the game's total): tested on paper first
@@ -14227,6 +14610,11 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         if spent is not None:
             room = round(max(0.0, budget - spent), 2)
     need = SINGLE_MIN_EDGE * 0.6 if kind == "win" else LINE_MIN_EDGE   # a score model's small edges count as zero
+    if kind in ("spread", "total"):
+        try:                                            # part B: the league's learned bar (never under LINE_MIN_EDGE)
+            need = max(need, line_min_edge(_line_lg(ticker_sport(t) or "", t), kind)["v"])
+        except Exception:
+            pass
     clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
@@ -15296,7 +15684,10 @@ def _size(c, base):
     if edge <= 0:
         return 2.0
     f = 0.7 * edge / b                                  # Kelly on an edge shrunk 30%
-    return round(min(hi, max(2.0, 0.25 * f * base)), 2)
+    out = round(min(hi, max(2.0, 0.25 * f * base)), 2)
+    if c.get("fill_cap") is not None:                   # a spread/total: never more than fills inside its edge
+        out = round(min(out, float(c["fill_cap"])), 2)
+    return out
 
 
 # ---- candidates
@@ -15895,11 +16286,19 @@ def panel_collect(book_snap, code, log=print):
                            f"Bought at fair or better; the Mac sells at {x['exit'] * 100:.0f}¢, which it reaches about "
                            f"{x['touch']:.0%} of the time.", price=x["p"], exit=x["exit"], opp=opp_of(games, x)))
     try:
-        for x in line_candidates(code):
+        for i, x in enumerate(line_candidates(code)):
             if x["edge"] >= LINE_MIN_EDGE:
+                fill = None                              # part B: what can really be bought inside the edge (top few)
+                if i < LINE_REC["panel_fill"]:
+                    try:
+                        fill = line_fill(x["ticker"], x["fair"], x.get("min_edge") or LINE_MIN_EDGE, LINE_REC["big"])
+                    except Exception:
+                        fill = None
                 cands.append(_cand("line", code, [dict(x, start=x.get("start"))], x["fair"], x["edge"] / x["p"],
                                    "From the sportsbook line and how often games land past it.", price=x["p"],
-                                   game=x.get("game"), line_kind=x.get("kind")))
+                                   game=x.get("game"), line_kind=x.get("kind"), line_lg=x.get("league"),
+                                   bucket=x.get("bucket"), fill_cap=fill["cost"] if fill else None))
+                note_line_rec(x)                         # its closing-line value is measured from here
     except Exception as err:
         log(f"panel lines {code}:", type(err).__name__, err)
     for c in value_combos(games, k=6, live_ok=set(live)):
@@ -16514,8 +16913,25 @@ def _qualifies(x):
         return x["ret"] >= 0
     if x["kind"] == "line":                            # priced by our own score model, not the sharp books:
         l = x["legs"][0]                               # its errors look like edges, so it needs a bigger one
-        return (l.get("fair") or 0) - (l.get("p") or 1) >= PANEL["line_edge"]
+        f, p = l.get("fair") or 0, l.get("p") or 1
+        if f - p < PANEL["line_edge"]:
+            return False
+        return _line_ok(x, f, p)                       # part B: only ever stricter on top of that
     return x["ret"] >= PANEL["min_edge"]
+
+
+def _line_ok(x, f, p):
+    """Issue #117 B on a panel spread/total, on top of its usual bar: the league's learned bar after the fee, not a
+    kind of strike that keeps losing to the close, and (where the book was read) at least $2 fillable inside the
+    edge. Each can only leave a bet out."""
+    t = (x.get("legs") or [{}])[0].get("ticker") or ""
+    lg = x.get("line_lg") or _line_lg(x.get("code") or "", t)
+    kind = x.get("line_kind") or _bet_kind(t)
+    if f - p - single_fee(p) < line_min_edge(lg, kind)["v"] - 1e-9:
+        return False
+    if x.get("bucket") and line_clv_block(lg, kind, x["bucket"]):
+        return False
+    return x.get("fill_cap") is None or float(x["fill_cap"]) >= 2.0
 
 
 def _replacement(c, p):
@@ -16601,6 +17017,9 @@ def _buy_panel_bet(c):
         if err or filled <= 0:
             return False, err or "nobody was selling at that price", {}
         d = {"filled": filled, "price": ask, "paid": ask, "bought_at": int(time.time())}
+        if c["kind"] == "line":                          # logging only (never raises): its closing-line value
+            note_line_rec(dict(l, kind=c.get("line_kind"), league=c.get("line_lg"), bucket=c.get("bucket"),
+                               kick=c.get("kick"), code=c.get("code")), "buy", price=ask)
         if c["kind"] == "early":
             e = post_sell(l["ticker"], filled, c["exit"])
             d["exit_order"] = "placed" if not e else f"failed: {e}"
@@ -17101,6 +17520,10 @@ def analytics(max_age=600):
         out["lines"] = line_accuracy()
     except Exception:
         out["lines"] = []
+    try:
+        out["line_sel"] = line_sel_summary()
+    except Exception:
+        out["line_sel"] = []
     try:                                               # Smart Buy (preview): read-only, shown only with its switch on
         out["smart_buy"] = dict(smart_buy_summary(), gate=smart_buy_gate_summary()) if smart_buy_on() else \
             {"on": False}                                                      # off: no work at all
@@ -18014,6 +18437,7 @@ def shadow_html(sm):
 
 # ================================================================ order books (Kalshi)
 BOOK_DEPTH = {}
+BOOK_LADDER = {}
 
 
 def book_levels(ob, side):
@@ -18066,15 +18490,29 @@ def book_depth(ticker, max_age=60):
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
         if not r.ok:
             return None                           # 429/5xx: unknown, not an empty book (and not cached)
-        info = book_info(r.json())
+        js = r.json()
+        info = book_info(js)
     except (requests.RequestException, ValueError):
         return None
     BOOK_DEPTH[ticker] = (now, info)
+    BOOK_LADDER[ticker] = (now, _ask_ladder(js))      # every ask level, for the spreads/totals fill (issue #117 B)
     price_seen_book(ticker, info)                     # Smart Buy's price recorder (no new call)
     if len(BOOK_DEPTH) > 3000:
         for k in sorted(BOOK_DEPTH, key=lambda k: BOOK_DEPTH[k][0])[:1000]:
             BOOK_DEPTH.pop(k, None)
+            BOOK_LADDER.pop(k, None)
     return info
+
+
+def _ask_ladder(payload):
+    """YES ask levels [(price, contracts)], cheapest first, from an order book answer (either shape): 1 - each NO bid.
+    Never raises; an odd answer = no levels."""
+    for k in ("orderbook_fp", "orderbook"):
+        ob = payload.get(k) if isinstance(payload, dict) else None
+        no = book_levels(ob, "no")
+        if no:
+            return sorted((round(1 - p, 4), q) for p, q in no)
+    return []
 
 
 def thin_legs(legs):

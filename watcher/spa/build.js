@@ -168,7 +168,7 @@ function toggleAdv(){hap();const open=S.adv||S.slip.length>0;S.adv=!open;if(open
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
 function bestBets(d){const out=[];
  (d.singles||[]).filter(x=>x.idea).forEach(x=>out.push({k:'single',score:x.ev,x}));
- (d.lines||[]).filter(x=>x.edge>=0.04).forEach(x=>out.push({k:'line',score:x.edge/Math.max(.05,x.p),x}));
+ (d.lines||[]).filter(x=>x.rec&&x.stake>0).forEach(x=>out.push({k:'line',score:x.exp/x.stake,x}));
  (d.combos||[]).filter(c=>c.kind==='value'&&!c.bought&&(comboRet(c)||0)>=1).forEach(c=>out.push({k:'combo',score:comboRet(c)-1,x:c}));
  return out.sort((a,b)=>b.score-a.score).slice(0,6);}
 function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100)}%<small>expected</small></span>`;
@@ -178,7 +178,7 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
   <button class="btn acc" style="width:100%" onclick="singleFromBoard('${x.ticker}',this)">Get a price</button></div>`;
  if(b.k==='line')return `<div class="bet"><div class="bt"><div><span class="kind">${x.kind==='spread'?'📏 Spread':'➕ Total'} · ${esc(x.game)}</span><b>${esc(x.pick.replace(/ \(.*\)$/,''))}</b></div>${ret}</div>
   <div class="bnums"><div>Chance<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
-  <div class="why">From the sportsbook line (${esc(String(x.book_line))}) and how often games land within that range. A model adds its own error, so only bigger edges show here.</div>
+  <div class="why">${lineRoute(x)}. Expected ${smoney(x.exp)} on ${money(x.stake)}, after Kalshi's fee, at what you can really buy.</div>
   <button class="btn acc" style="width:100%" onclick="lineFromBoard('${x.ticker}',this)">Get a price</button></div>`;
  const c=x,o=S.quotes&&S.quotes[c.i],fresh=o&&Date.now()/1000-o.at<20;
  return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
