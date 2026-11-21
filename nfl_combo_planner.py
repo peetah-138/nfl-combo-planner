@@ -2123,10 +2123,13 @@ def _fetch_account():
         return None, None, f"Couldn't reach your Kalshi account just now ({why}). Showing what's saved."
 
     held = defaultdict(lambda: {"cost": 0.0, "contracts": 0.0, "fees": 0.0, "sold": 0.0, "sold_n": 0.0,
-                                "bought_n": 0.0, "first": None, "cashed_at": None})
+                                "bought_n": 0.0, "first": None, "cashed_at": None, "sell_fees": 0.0, "first_ts": None})
+    single_fills = defaultdict(list)             # the profit scoreboard's record of single bets (read-only, #138)
     for f in fills:
         t = f.get("ticker") or f.get("market_ticker")
         if not is_combo(t):
+            if t:
+                single_fills[t].append(f)
             continue                             # single bets (any sport) aren't combos
         side = f.get("side", "yes")
         n = count_of(f)
@@ -2148,6 +2151,11 @@ def _fetch_account():
             if sold_ts and (not held[t]["cashed_at"] or sold_ts > held[t]["cashed_at"]):
                 held[t]["cashed_at"] = sold_ts     # the LAST sell fill is when it finished cashing out
         held[t]["fees"] += dollars(f, "fee_cost")
+        if not buying_yes:
+            held[t]["sell_fees"] += dollars(f, "fee_cost")
+        fts = iso_unix(f.get("created_time"))
+        if fts and (not held[t]["first_ts"] or fts < held[t]["first_ts"]):
+            held[t]["first_ts"] = fts
         when = str(f.get("created_time") or "")[:10]
         if when and (not held[t]["first"] or when < held[t]["first"]):
             held[t]["first"] = when
@@ -2213,6 +2221,10 @@ def _fetch_account():
                      "lg": lg if lg in LEAGUES else "nfl",    # other combos are shown with the NFL
                      "lgs": combo_leagues(legs)})
     save_json(LEGS_CACHE, cache)
+    try:                                         # the profit scoreboard's ledger (#138): read-only, never in the way
+        ledger_note(bets, held, single_fills, settled)
+    except Exception as err:
+        console_note(f"ledger: {type(err).__name__}: {err}")
     balance = dollars(bal, "balance")
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
 
@@ -4359,21 +4371,72 @@ def live_check(webview):
 SELL_LOG = os.path.join(HERE, "combo_autosell_log.jsonl")   # every automatic cash-out decision, one per line
 
 
+SELL_TOLD = {}             # ticker -> (result, why, offer band) of the last skip logged (no 12-second repeats, #115)
+SELL_KEEP = 3000          # other decision lines kept in the file; sales, hedges and "check"s are never trimmed
+SALE_RESULTS = ("sold", "hedged", "check", "failed", "hedge check", "hedge failed")
+
+
+def device_label():
+    """Which device made a decision: the phone (Pythonista), the Pi (alerts-only backup) or the Mac."""
+    return "phone" if in_pythonista() else "pi" if role_backup() else "mac"
+
+
+def _skip_repeat(rec):
+    """True when this skip says what the last one for the same bet said (same reason, offer within the same 10% of
+    cost): it isn't written again. A new reason or a different offer band is written once more."""
+    if rec.get("result") != "skipped":
+        if rec.get("ticker"):
+            SELL_TOLD.pop(rec["ticker"], None)
+        return False
+    cost = rec.get("cost") or 0
+    band = int((rec.get("offer") or 0) / cost * 10) if cost else None
+    sig = (rec.get("why"), band)
+    t = rec.get("ticker") or rec.get("combo") or ""
+    if SELL_TOLD.get(t) == sig:
+        return True
+    if len(SELL_TOLD) > 2000:
+        SELL_TOLD.clear()
+    SELL_TOLD[t] = sig
+    return False
+
+
+def _trim_sell_log():
+    """Keeps every sale, hedge and unclear order, and the newest SELL_KEEP other lines."""
+    with open(SELL_LOG, encoding="utf-8") as f:
+        lines = f.readlines()
+    keep, other = [], 0
+    for line in reversed(lines):
+        sale = any(f'"result": "{r}"' in line for r in SALE_RESULTS)
+        if sale or other < SELL_KEEP:
+            keep.append(line)
+            other += not sale
+    tmp = SELL_LOG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines(reversed(keep))
+    os.replace(tmp, SELL_LOG)
+
+
 def log_decision(rec):
-    """One line per automatic cash-out decision (sold, or skipped and why), trimmed to the last 1,000."""
+    """One line per automatic cash-out decision (sold, or skipped and why). A skip is written once per bet and
+    reason (again when the reason or the offer's band changes), so the file covers weeks, not hours; sales are never
+    trimmed, and each sale is also kept in the history file for the smart-sell scorecard (#115)."""
     import time
+    if _skip_repeat(rec):
+        return
     rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
-               by="phone" if in_pythonista() else "pi", ride=ride_level()[0])
+               by=device_label(), ride=ride_level()[0])
     try:
         with open(SELL_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
-        if os.path.getsize(SELL_LOG) > 300000:
-            with open(SELL_LOG, encoding="utf-8") as f:
-                lines = f.readlines()[-1000:]
-            with open(SELL_LOG, "w", encoding="utf-8") as f:
-                f.writelines(lines)
+        if os.path.getsize(SELL_LOG) > 1500000:
+            _trim_sell_log()
     except OSError:
         pass
+    try:
+        if rec.get("result") in SALE_RESULTS:
+            sale_store(rec)
+    except Exception as err:
+        print("sale log:", type(err).__name__, err)
     console_note("auto cash-out: " + json.dumps(rec))
 
 
@@ -4863,7 +4926,8 @@ def auto_sell_now(plan):
                 continue
             rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2), "why": why,
                    "chance": round(h["p"], 4), "cost": round(h["cost"], 2), "pays": h["pays"],
-                   "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []]}
+                   "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
+                   "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes"}
             if sold_today() >= int(CFG.get("auto_cap", 5)):
                 log_decision(dict(rec, result="skipped", why="daily cap reached"))
                 if MINE.get("cap_told") != dt.date.today().isoformat():
@@ -5248,7 +5312,7 @@ def smart_sell_singles():
         if x["t"] in resting or order_unsure(x["t"]):
             continue                                  # a sell waiting, or an order whose outcome is unknown
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
-               "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"]}
+               "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side}
         if sold_today() >= int(CFG.get("auto_cap", 5)):
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
@@ -16356,7 +16420,8 @@ def panel_add(ids, view):
             used |= set(_events_of(c))
             if old:                                       # it was skipped/swapped earlier: this replaces that entry
                 cur["items"] = [i for i in cur["items"] if i["id"] != c["id"]]
-            cur["items"].append(dict({k: v for k, v in c.items() if k != "buy_at"}, state="scheduled"))
+            cur["items"].append(dict({k: v for k, v in c.items() if k != "buy_at"}, state="scheduled",
+                                     origin="extra" if view == "extra" else "added"))   # for the profit scoreboard
             added.append(c["legs"][0]["pick"])
         msg["added"], msg["skipped"] = added, skipped
         msg["in"] = {c["id"] for c in cur["items"] if c["id"] in ids and c.get("state") in PANEL_TRIED}
@@ -17167,6 +17232,575 @@ def _analytics_notes(levels, types, n_real):
     if not n_real:
         notes.append("No real panel bets have settled yet.")
     return notes
+
+
+# ---------------------------------------------------------------- the profit scoreboard and the smart-sell scorecard
+# Pete (#138): "The #1 goal is profit." Read-only: nothing here buys, sells or changes a setting. Real dollars come from
+# Kalshi's own fills and settlements (fees included), kept in one ledger row per finished market (combos and single
+# bets), so every bet counts once and nothing is picked out. #115: every automatic sale is kept in the history file,
+# and once its games are over the Mac records what holding it would have paid, so each sale reads "sold $X, holding
+# would have paid $Y".
+LEDGER_SIG = {}
+BOARD = {"at": 0, "v": None}
+SALE_OUT = {"at": 0}
+BOARD_FEW = 20                 # fewer settled bets than this in a group: shown, but marked "too few to trust"
+SALE_FOLLOW_DAYS = 60          # how long a sale's games are followed for "what holding would have paid"
+
+
+def _ledger_table():
+    if STORE["db"] and not STORE.get("ledger_ok"):
+        store_x("create table if not exists ledger(ticker text primary key, kind text, league text, side text, "
+                "cost real, back real, fees real, sold_back real, sell_fees real, n_sold real, status text, "
+                "opened real, closed real, legs text, outcome text, held real, seen real)")
+        store_x("create table if not exists sell_log(ts real, ticker text, result text, why text, kind text, "
+                "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
+                "outcome text, held real, done real, primary key(ts, ticker, result))")
+        STORE["ledger_ok"] = True
+
+
+def _single_ledger(fills, settles, now=None):
+    """Finished single bets (game winners, spreads, totals) from Kalshi's fills and settlements, in dollars:
+    {ticker: row}. Each fill is read as a change in a signed YES position, so buying NO, or selling, works the same
+    whichever way Kalshi reports it. cost = money paid to open (plus every fee); back = money from selling plus the
+    settlement payout. A market still held (not settled, position not back to zero) is left out: it isn't finished."""
+    now = now or time.time()
+    out = {}
+    for t, fs in fills.items():
+        pos, cost, back, fees, sold_back, sell_fees, n_sold, side = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, None
+        first = last = None
+        for f in sorted(fs, key=lambda f: str(f.get("created_time") or "")):
+            n = count_of(f)
+            if n <= 0:
+                continue
+            fside = f.get("side", "yes")
+            no_px = dollars(f, "no_price")
+            yes_px = dollars(f, "yes_price") or (1 - no_px if no_px else 0.0) or dollars(f, "price")
+            buy = f.get("action") != "sell"
+            d = n if (buy == (fside == "yes")) else -n          # buy yes / sell no add YES; buy no / sell yes take it
+            fee = dollars(f, "fee_cost")
+            fees += fee
+            closing = 0.0
+            if pos > 0.005 and d < 0:
+                closing = min(pos, -d)
+                back += closing * yes_px
+                sold_back += closing * yes_px
+            elif pos < -0.005 and d > 0:
+                closing = min(-pos, d)
+                back += closing * (1 - yes_px)
+                sold_back += closing * (1 - yes_px)
+            opening = abs(d) - closing
+            if opening > 0:
+                cost += opening * (yes_px if d > 0 else 1 - yes_px)
+                side = side or ("yes" if d > 0 else "no")
+            if closing:
+                n_sold += closing
+                sell_fees += fee * closing / abs(d)
+            pos += d
+            ts = iso_unix(f.get("created_time"))
+            first = first or ts
+            last = ts or last
+        s = settles.get(t)
+        if s:
+            rev = dollars(s, "revenue")
+            back += rev
+            fees += dollars(s, "fee_cost")
+            status = "won" if rev > 0.005 else "sold" if abs(pos) <= 0.005 and n_sold else "lost"
+            closed = iso_unix(s.get("settled_time") or s.get("settlement_time")) or last
+        elif abs(pos) <= 0.005 and n_sold:
+            status, closed = "sold", last
+        else:
+            continue
+        if cost <= 0:
+            continue
+        out[t] = {"ticker": t, "kind": _bet_kind(t), "league": league_key(t), "side": side or "yes",
+                  "cost": round(cost + fees, 2), "back": round(back, 2), "fees": round(fees, 2),
+                  "sold_back": round(sold_back, 2), "sell_fees": round(sell_fees, 2), "n_sold": round(n_sold, 2),
+                  "status": status, "opened": first, "closed": closed, "legs": [t]}
+    for t, s in settles.items():                 # settled with no fills in Kalshi's window: its settlement says it all
+        if t in out or t in fills or is_combo(t):
+            continue
+        cost = dollars(s, "yes_total_cost") + dollars(s, "no_total_cost")
+        if cost <= 0:
+            continue
+        rev, fee = dollars(s, "revenue"), dollars(s, "fee_cost")
+        ts = iso_unix(s.get("settled_time") or s.get("settlement_time"))
+        out[t] = {"ticker": t, "kind": _bet_kind(t), "league": league_key(t),
+                  "side": "no" if dollars(s, "no_total_cost") > dollars(s, "yes_total_cost") else "yes",
+                  "cost": round(cost + fee, 2), "back": round(rev, 2), "fees": round(fee, 2), "sold_back": 0.0,
+                  "sell_fees": 0.0, "n_sold": 0.0, "status": "won" if rev > 0.005 else "lost", "opened": None,
+                  "closed": ts, "legs": [t]}
+    return out
+
+
+def ledger_note(bets, held, single_fills, settled, now=None):
+    """Saves every finished bet (combos from the account read, singles from their fills) to the ledger. Only rows
+    that changed are written, so the account read stays as quick as before."""
+    if not STORE["db"]:
+        return 0
+    now = now or time.time()
+    _ledger_table()
+    rows = {}
+    for b in bets or []:
+        if b.get("status") not in ("won", "lost", "cashed"):
+            continue
+        t = b["ticker"]
+        h = held.get(t) or {}
+        s = settled.get(t) or {}
+        tks = [l.get("ticker") for l in b.get("legs") or [] if l.get("ticker")]
+        rows[t] = {"ticker": t, "kind": "combo", "league": bet_key(tks), "side": "yes",
+                   "cost": round(b["cost"] + dollars(s, "fee_cost"), 2), "back": round(b.get("back") or 0, 2),
+                   "fees": round(h.get("fees", 0.0) + dollars(s, "fee_cost"), 2),
+                   "sold_back": round(h.get("sold", 0.0), 2), "sell_fees": round(h.get("sell_fees", 0.0), 2),
+                   "n_sold": round(h.get("sold_n", 0.0), 2), "status": "sold" if b["status"] == "cashed" else b["status"],
+                   "opened": h.get("first_ts"), "closed": b.get("cashed_at") or b.get("settled_at"), "legs": tks}
+    rows.update(_single_ledger(single_fills or {}, settled or {}, now))
+    had = {r["ticker"]: r for r in store_rows("select ticker, closed, seen from ledger")} if rows else {}
+    mac = {r["combo"]: r["settled"] for r in store_rows("select combo, settled from bets where settled is not null")} \
+        if rows else {}
+    n = 0
+    for t, r in rows.items():
+        sig = tuple(r[k] for k in ("cost", "back", "status", "n_sold", "closed"))
+        if LEDGER_SIG.get(t) == sig:
+            continue
+        old = had.get(t) or {}
+        closed = r["closed"] or old.get("closed") or mac.get(t) or now   # no time from Kalshi: when the Mac saw it end
+        store_x("insert into ledger(ticker, kind, league, side, cost, back, fees, sold_back, sell_fees, n_sold, status, "
+                "opened, closed, legs, seen) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(ticker) do update set "
+                "kind=excluded.kind, league=excluded.league, side=excluded.side, cost=excluded.cost, back=excluded.back, "
+                "fees=excluded.fees, sold_back=excluded.sold_back, sell_fees=excluded.sell_fees, n_sold=excluded.n_sold, "
+                "status=excluded.status, opened=coalesce(excluded.opened, ledger.opened), closed=excluded.closed, "
+                "legs=excluded.legs",
+                (t, r["kind"], r["league"], r["side"], r["cost"], r["back"], r["fees"], r["sold_back"], r["sell_fees"],
+                 r["n_sold"], r["status"], r["opened"], closed, json.dumps(r["legs"]), old.get("seen") or now))
+        LEDGER_SIG[t] = sig
+        n += 1
+    if n:
+        BOARD["at"] = 0
+    return n
+
+
+def sale_store(rec):
+    """One automatic sale (or hedge, or unclear order) in the history file: never trimmed (#115)."""
+    if not STORE["db"]:
+        return
+    _ledger_table()
+    store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, by, "
+            "combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (rec.get("at") or time.time(), rec.get("ticker") or "", rec.get("result"), rec.get("why"),
+             rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
+             rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
+             rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200]))
+
+
+def sale_import():
+    """Once: copies the sales already in the decision file into the history file, so the older ones aren't lost."""
+    if not STORE["db"] or STORE.get("sales_in"):
+        return 0
+    STORE["sales_in"] = True
+    n = 0
+    try:
+        with open(SELL_LOG, encoding="utf-8") as f:
+            for line in f:
+                if '"result": "' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and d.get("result") in SALE_RESULTS and d.get("ticker"):
+                    sale_store(d)
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+def sale_outcomes(now=None, every=600):
+    """Follows sold bets until their games are over and records what holding would have paid (#115): Kalshi's public
+    market result, one batched read for at most 200 markets, every 10 minutes. No key, nothing bought or sold.
+    A market Kalshi can't be reached for just waits for the next pass."""
+    if not STORE["db"]:
+        return 0
+    now = now or time.time()
+    if now - SALE_OUT["at"] < every:
+        return 0
+    SALE_OUT["at"] = now
+    _ledger_table()
+    sale_import()
+    since = now - SALE_FOLLOW_DAYS * 86400
+    a = store_rows("select rowid as id, ticker, side, pays, frac from sell_log where result='sold' and outcome is null "
+                   "and ts > ? and ts < ?", (since, now - 600))
+    b = store_rows("select ticker, side, n_sold from ledger where n_sold > 0 and outcome is null and closed > ?", (since,))
+    want = sorted({r["ticker"] for r in a + b if r["ticker"]})[:200]
+    res = {}
+    for i in range(0, len(want), 50):
+        try:
+            r = requests.get(f"{KALSHI}/markets", params={"tickers": ",".join(want[i:i + 50])}, timeout=15)
+            r.raise_for_status()
+            for m in r.json().get("markets", []):
+                if not isinstance(m, dict):
+                    continue
+                st = str(m.get("status") or "").lower()
+                if m.get("result") in ("yes", "no"):
+                    res[m.get("ticker")] = m["result"]
+                elif st in ("settled", "finalized") and m.get("result") not in (None, ""):
+                    res[m.get("ticker")] = "void"
+        except (requests.RequestException, ValueError, AttributeError):
+            continue
+    n = 0
+    for r in a:
+        got = res.get(r["ticker"])
+        if got:
+            won = got == (r["side"] or "yes")
+            held = round((r["pays"] or 0) * (r["frac"] or 1.0), 2) if won else 0.0
+            store_x("update sell_log set outcome=?, held=?, done=? where rowid=?",
+                    ("void" if got == "void" else "won" if won else "lost", None if got == "void" else held, now, r["id"]))
+            n += 1
+    for r in b:
+        got = res.get(r["ticker"])
+        if got:
+            won = got == (r["side"] or "yes")
+            store_x("update ledger set outcome=?, held=? where ticker=?",
+                    ("void" if got == "void" else "won" if won else "lost",
+                     None if got == "void" else round(r["n_sold"] if won else 0.0, 2), r["ticker"]))
+            n += 1
+    if n:
+        BOARD["at"] = 0
+        ANALYTICS["at"] = 0
+    return n
+
+
+def _ledger_rows():
+    _ledger_table()
+    out = []
+    for r in store_rows("select * from ledger where cost > 0"):
+        try:
+            r["legs"] = json.loads(r["legs"] or "[]")
+        except ValueError:
+            r["legs"] = []
+        r["pl"] = round((r["back"] or 0) - (r["cost"] or 0), 2)
+        out.append(r)
+    return out
+
+
+def _sig(rows):
+    """(profit, ROI, the ROI's standard error) of a group of bets, profit over money staked; None for the error
+    below 5 bets."""
+    pl = sum(r["pl"] for r in rows)
+    st = sum(r["cost"] for r in rows)
+    roi = pl / st if st else None
+    se = None
+    if roi is not None and len(rows) >= 5:
+        k = len(rows)
+        resid = [r["pl"] - roi * r["cost"] for r in rows]
+        var = sum(x * x for x in resid) / (k - 1)
+        se = math.sqrt(var * k) / st
+    return pl, roi, se
+
+
+def _board_group(rows, key, names=None, order=None, paper=None):
+    """One breakdown: per group, the number of bets, profit, ROI, share that made money and average hold time."""
+    g = defaultdict(list)
+    for r in rows:
+        k = key(r)
+        if k is not None:
+            g[k].append(r)
+    out = []
+    for k, rs in g.items():
+        pl, roi, se = _sig(rs)
+        hold = [(r["closed"] - r["opened"]) / 3600 for r in rs if r.get("opened") and r.get("closed")
+                and r["closed"] >= r["opened"]]
+        row = {"k": k, "name": (names or {}).get(k) or str(k), "n": len(rs), "pl": round(pl, 2),
+               "staked": round(sum(r["cost"] for r in rs), 2), "roi": round(roi, 4) if roi is not None else None,
+               "won": round(sum(1 for r in rs if r["pl"] > 0) / len(rs), 3),
+               "hold": round(sum(hold) / len(hold), 1) if hold else None, "few": len(rs) < BOARD_FEW,
+               "z": round(roi / se, 2) if se else None}
+        if paper is not None:
+            p = paper.get(k)
+            row.update(paper_n=p["n"] if p else 0, paper_roi=_roi(p["pl"], p["staked"]) if p else None)
+        if any("held" in r for r in rs):
+            done = [r for r in rs if r.get("held") is not None]
+            row.update(vs_n=len(done), vs=round(sum(r["sold_net"] - r["held"] for r in done), 2) if done else None)
+        out.append(row)
+    rank = {k: i for i, k in enumerate(order or [])}
+    out.sort(key=lambda x: (rank.get(x["k"], 99), -x["n"]))
+    return out
+
+
+def _board_say(rows, what):
+    """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
+    big = [r for r in rows if not r["few"] and r["roi"] is not None]
+    if not big:
+        return f"Too few settled bets to judge any {what} yet ({BOARD_FEW}+ each before reading much into it)."
+    good = [r for r in big if r["z"] is not None and r["z"] >= 2]
+    bad = [r for r in big if r["z"] is not None and r["z"] <= -2]
+    parts = []
+    if good:
+        b = max(good, key=lambda r: r["roi"])
+        parts.append(f"{b['name']} is {b['roi']:+.0%} over {b['n']} bets, more than luck explains: keep it.")
+    if bad:
+        w = min(bad, key=lambda r: r["roi"])
+        parts.append(f"{w['name']} is {w['roi']:+.0%} over {w['n']} bets, worse than luck explains: worth leaving "
+                     f"out until its prices improve.")
+    if not parts:
+        b = max(big, key=lambda r: r["roi"])
+        parts.append(f"Nothing is clearly ahead or behind yet: {b['name']} leads at {b['roi']:+.0%} over {b['n']} bets, "
+                     f"but that is still within luck.")
+    return " ".join(parts)
+
+
+def _panel_items_done():
+    """Settled panel bets: (mode, item) for the real panel, the paper panel and the combo lab."""
+    _panel_table()
+    out = []
+    for r in store_rows("select mode, body from panel where mode in ('real','paper','lab') or mode like 'real#%'"):
+        try:
+            b = json.loads(r["body"])
+        except ValueError:
+            continue
+        for c in b.get("items", []):
+            if c.get("result") and c.get("pl") is not None and c.get("stake"):
+                out.append((r["mode"].split("#")[0], c))
+    return out
+
+
+def _panel_ticker(c):
+    return c.get("market") if c.get("kind") == "combo" else ((c.get("legs") or [{}])[0].get("ticker"))
+
+
+def _bands(x, cuts, names):
+    for c, n in zip(cuts, names):
+        if x < c:
+            return n
+    return names[-1]
+
+
+def sell_scorecard(rows=None, now=None):
+    """#115: every automatic sale with what holding would have paid, by league and reason, plus manual sales, and
+    for bets ridden to the end the best real offer seen against what they paid."""
+    if not STORE["db"]:
+        return {}
+    now = now or time.time()
+    _ledger_table()
+    led = {r["ticker"]: r for r in (rows if rows is not None else _ledger_rows())}
+    sales = store_rows("select ts, ticker, why, kind, side, offer, cost, pays, frac, by, combo, outcome, held from "
+                       "sell_log where result='sold' order by ts")
+    groups = defaultdict(lambda: {"n": 0, "done": 0, "sold": 0.0, "held": 0.0, "early": 0, "right": 0, "early_usd": 0.0})
+    auto = set()
+    tot = {"n": 0, "done": 0, "sold": 0.0, "held": 0.0, "early": 0, "right": 0, "early_usd": 0.0}
+    for s in sales:
+        t = s["ticker"]
+        auto.add(t)
+        lr = led.get(t)
+        lg = (lr or {}).get("league") or (league_key(t) if not is_combo(t) else _combo_league_of(t))
+        if lr and lr.get("n_sold"):
+            sold = (lr["sold_back"] or 0) - (lr["sell_fees"] or 0)        # Kalshi's own record, after the fee
+            held = lr.get("held") if lr.get("outcome") not in (None, "void") else None
+        else:
+            fee = single_fee(s["offer"] / s["pays"]) * s["pays"] if s.get("kind") != "combo" and s.get("pays") and \
+                s.get("offer") else 0.0
+            sold = (s["offer"] or 0) - fee
+            held = s["held"] if s.get("outcome") not in (None, "void") else None
+        for g in (groups[(lg, s["why"] or "sold")], tot):
+            g["n"] += 1
+            if held is not None:
+                g["done"] += 1
+                g["sold"] += sold
+                g["held"] += held
+                if held > sold + 0.005:
+                    g["early"] += 1
+                    g["early_usd"] += held - sold
+                else:
+                    g["right"] += 1
+    out_rows = []
+    for (lg, why), g in groups.items():
+        out_rows.append({"league": lg, "name": league_label(lg), "why": why, "n": g["n"], "done": g["done"],
+                         "sold": round(g["sold"], 2), "held": round(g["held"], 2), "gain": round(g["sold"] - g["held"], 2),
+                         "early": g["early"], "right": g["right"], "early_usd": round(g["early_usd"], 2),
+                         "few": g["done"] < BOARD_FEW})
+    out_rows.sort(key=lambda r: (-r["n"], r["name"]))
+    mine = [r for t, r in led.items() if r.get("n_sold") and t not in auto]
+    md = [r for r in mine if r.get("held") is not None and r.get("outcome") != "void"]
+    m_sold = sum((r["sold_back"] or 0) - (r["sell_fees"] or 0) for r in md)
+    m_held = sum(r["held"] for r in md)
+    rode = []
+    for r in led.values():
+        if r["kind"] == "combo" and not r.get("n_sold") and r["status"] in ("won", "lost"):
+            best = store_rows("select max(offer) as b from offers where combo=? and real_offer=1", (r["ticker"],))
+            b = (best[0] or {}).get("b") if best else None
+            if b is not None:
+                rode.append((r, b))
+    return {"rows": out_rows, "total": dict({k: round(v, 2) if isinstance(v, float) else v for k, v in tot.items()},
+                                            gain=round(tot["sold"] - tot["held"], 2), few=tot["done"] < BOARD_FEW),
+            "mine": {"n": len(mine), "done": len(md), "sold": round(m_sold, 2), "held": round(m_held, 2),
+                     "gain": round(m_sold - m_held, 2), "few": len(md) < BOARD_FEW},
+            "rode": {"n": len(rode), "best": round(sum(b for _, b in rode), 2),
+                     "final": round(sum(r["back"] or 0 for r, _ in rode), 2),
+                     "cost": round(sum(r["cost"] for r, _ in rode), 2),
+                     "above": sum(1 for r, b in rode if b > r["cost"] + 0.005), "few": len(rode) < BOARD_FEW},
+            "following": sum(1 for s in sales if s.get("outcome") is None and s["ts"] > now - SALE_FOLLOW_DAYS * 86400)}
+
+
+def _combo_league_of(t):
+    rows = store_rows("select legs from bets where combo=?", (t,))
+    try:
+        return bet_key(json.loads(rows[0]["legs"] or "[]")) if rows else "mix"
+    except ValueError:
+        return "mix"
+
+
+BOARD_KINDS = {"combo": "Combos", "win": "Single games", "spread": "Spreads", "total": "Totals",
+               "early": "Sell-early favorites", "other": "Other"}
+BOARD_ENDS = {"smart": "Sold by smart sell", "you": "Sold by you", "won": "Held to the end: won",
+              "lost": "Held to the end: lost"}
+BOARD_SRC = {"panel": "Daily panel", "extra": "Panel extras", "manual": "Buy straight",
+             "app": "Build & Live ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
+
+
+def profit_board(now=None, max_age=120):
+    """The profit scoreboard (#138): realized profit in dollars (after Kalshi's fees) this week, this month and all
+    time, with ROI, days up and down, best and worst day, the running total, and breakdowns by bet type, league, how
+    each bet ended, where it came from, price quality, stake and timing. Open bets are a separate, labelled estimate.
+    Cached 2 minutes. Read-only."""
+    now = now or time.time()
+    if BOARD["v"] is not None and now - BOARD["at"] < max_age:
+        return BOARD["v"]
+    if not STORE["db"]:
+        return None
+    rows = _ledger_rows()
+    sc = sell_scorecard(rows, now)
+    auto = {r["ticker"] for r in store_rows("select distinct ticker from sell_log where result='sold'")}
+    try:
+        _app_table()
+        how = {r["ticker"]: r["how"] for r in store_rows("select ticker, how from app_bets")}
+    except Exception:
+        how = {}
+    seeded = "__seeded__" in how
+    items = _panel_items_done()
+    pan = {}
+    for m, c in items:
+        if m == "real" and _panel_ticker(c):
+            pan[_panel_ticker(c)] = c
+    for r in rows:
+        c = pan.get(r["ticker"])
+        r["kind2"] = "early" if c and c.get("kind") == "early" else r["kind"]
+        r["end"] = ("smart" if r["ticker"] in auto else "you") if r.get("n_sold") else r["status"] \
+            if r["status"] in ("won", "lost") else "you"
+        r["src"] = ("extra" if c.get("origin") == "extra" else "panel") if c else \
+            {"manual": "manual", "before": "before"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
+                                                         "own" if seeded else "app")
+        if r.get("n_sold") and r.get("held") is not None and r.get("outcome") != "void":
+            r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
+        else:
+            r.pop("held", None)
+    loc = dt.datetime.fromtimestamp(now)
+    week0 = (loc - dt.timedelta(days=loc.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    month0 = loc.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+    paper_all = [(m, c) for m, c in items if m in ("paper", "lab")]
+    real_items = [c for m, c in items if m == "real"]
+
+    def paper_by(since):
+        g = defaultdict(lambda: {"n": 0, "pl": 0.0, "staked": 0.0})
+        for _, c in paper_all:
+            if (c.get("kick") or 0) < since:
+                continue
+            k = "early" if c["kind"] == "early" else "combo" if c["kind"] == "combo" else \
+                _bet_kind(_panel_ticker(c) or "")
+            x = g[k]
+            x["n"] += 1
+            x["pl"] += c["pl"]
+            x["staked"] += c["stake"]
+        return g
+
+    def quality(since):
+        out = {}
+        for mode, its in (("real", [c for c in real_items if (c.get("kick") or 0) >= since]),
+                          ("paper", [c for _, c in paper_all if (c.get("kick") or 0) >= since])):
+            eb = defaultdict(lambda: {"n": 0, "pred": 0.0, "pl": 0.0, "st": 0.0})
+            cal = defaultdict(lambda: {"n": 0, "pred": 0.0, "hit": 0})
+            tm = defaultdict(lambda: {"n": 0, "pl": 0.0, "st": 0.0})
+            clv = [c["clv"] for c in its if c.get("clv") is not None]
+            for c in its:
+                if c.get("ret") is not None:
+                    b = eb[_bands(c["ret"], (0, 0.05, 0.10, 0.20), ("Under 0%", "0–5%", "5–10%", "10–20%", "20%+"))]
+                    b["n"] += 1
+                    b["pred"] += c["ret"]
+                    b["pl"] += c["pl"]
+                    b["st"] += c["stake"]
+                if c.get("chance") is not None:
+                    lg = bet_key([l.get("ticker") for l in c.get("legs") or []])
+                    x = cal[lg]
+                    x["n"] += 1
+                    x["pred"] += c["chance"]
+                    x["hit"] += c["pl"] > 0
+                at = c.get("bought_at") or c.get("at")
+                if c.get("kick") and at:
+                    hrs = (c["kick"] - at) / 3600
+                    k = "During the game" if c.get("live") or hrs < 0 else \
+                        _bands(hrs, (1, 6, 24), ("Under 1 hour before", "1–6 hours before", "6–24 hours before",
+                                                 "A day or more before"))
+                    tm[k]["n"] += 1
+                    tm[k]["pl"] += c["pl"]
+                    tm[k]["st"] += c["stake"]
+            order = ("Under 0%", "0–5%", "5–10%", "10–20%", "20%+")
+            torder = ("During the game", "Under 1 hour before", "1–6 hours before", "6–24 hours before",
+                      "A day or more before")
+            out[mode] = {
+                "edge": [{"name": k, "n": eb[k]["n"], "pred": round(eb[k]["pred"] / eb[k]["n"], 4),
+                          "roi": _roi(eb[k]["pl"], eb[k]["st"]), "few": eb[k]["n"] < BOARD_FEW} for k in order if k in eb],
+                "cal": sorted([{"name": league_label(k), "n": x["n"], "pred": round(x["pred"] / x["n"], 3),
+                                "hit": round(x["hit"] / x["n"], 3), "few": x["n"] < BOARD_FEW} for k, x in cal.items()],
+                              key=lambda r: -r["n"]),
+                "timing": [{"name": k, "n": tm[k]["n"], "pl": round(tm[k]["pl"], 2), "roi": _roi(tm[k]["pl"], tm[k]["st"]),
+                            "few": tm[k]["n"] < BOARD_FEW} for k in torder if k in tm],
+                "clv": round(sum(clv) / len(clv), 4) if clv else None, "clv_n": len(clv)}
+        return out
+
+    def period(since):
+        rs = [r for r in rows if (r.get("closed") or 0) >= since]
+        pl, roi, se = _sig(rs)
+        days = defaultdict(float)
+        for r in rs:
+            days[dt.date.fromtimestamp(r["closed"]).isoformat()] += r["pl"]
+        best = max(days.items(), key=lambda kv: kv[1]) if days else None
+        worst = min(days.items(), key=lambda kv: kv[1]) if days else None
+        by = {
+            "type": _board_group(rs, lambda r: r["kind2"], BOARD_KINDS, list(BOARD_KINDS), paper_by(since)),
+            "league": _board_group(rs, lambda r: r["league"] or "other", {k: league_label(k) for k in
+                                                                          {r["league"] or "other" for r in rs}}),
+            "end": _board_group(rs, lambda r: r["end"], BOARD_ENDS, list(BOARD_ENDS)),
+            "source": _board_group(rs, lambda r: r["src"], BOARD_SRC, list(BOARD_SRC)),
+            "stake": _board_group(rs, lambda r: _bands(r["cost"], (5, 10, 25), ("Under $5", "$5–10", "$10–25", "$25+")),
+                                  None, ["Under $5", "$5–10", "$10–25", "$25+"])}
+        say = {k: _board_say(v, w) for k, v, w in ((k, by[k], w) for k, w in
+                                                    (("type", "bet type"), ("league", "league"), ("end", "kind of ending"),
+                                                     ("source", "source"), ("stake", "stake size")))}
+        sold = [r for r in rs if "held" in r]
+        return {"n": len(rs), "pl": round(pl, 2), "staked": round(sum(r["cost"] for r in rs), 2),
+                "roi": round(roi, 4) if roi is not None else None, "z": round(roi / se, 2) if se else None,
+                "fees": round(sum(r["fees"] or 0 for r in rs), 2), "won": sum(1 for r in rs if r["pl"] > 0),
+                "days": len(days), "up": sum(1 for v in days.values() if v > 0.005),
+                "down": sum(1 for v in days.values() if v < -0.005),
+                "best": {"day": best[0], "pl": round(best[1], 2)} if best else None,
+                "worst": {"day": worst[0], "pl": round(worst[1], 2)} if worst else None,
+                "vs_hold": {"n": len(sold), "gain": round(sum(r["sold_net"] - r["held"] for r in sold), 2)},
+                "by": by, "say": say, "quality": quality(since), "few": len(rs) < BOARD_FEW}
+    days = defaultdict(float)
+    for r in rows:
+        if r.get("closed"):
+            days[dt.date.fromtimestamp(r["closed"]).isoformat()] += r["pl"]
+    run, curve = 0.0, []
+    for d in sorted(days):
+        run += days[d]
+        curve.append([d, round(run, 2)])
+    pulse = store_rows("select ts, worth, staked from pulse order by ts desc limit 1")
+    opn = None
+    if pulse and now - pulse[0]["ts"] < 1800 and (pulse[0]["staked"] or 0) > 0:
+        opn = {"worth": round(pulse[0]["worth"] or 0, 2), "staked": round(pulse[0]["staked"] or 0, 2), "at": pulse[0]["ts"]}
+    out = {"at": now, "n": len(rows), "periods": {"week": period(week0), "month": period(month0), "all": period(0)},
+           "curve": curve[-120:], "open": opn, "scorecard": sc, "few": BOARD_FEW}
+    BOARD.update(at=now, v=out)
+    return out
 
 
 # ---------------------------------------------------------------- smart sell that tunes itself, league by league
