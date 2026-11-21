@@ -11,6 +11,7 @@ cd "$WORK" || exit 1
 mkdir -p wahome wtest run
 cp "$R/nfl_combo_planner.py" wahome/engine.py
 cp "$R/watcher/combo_watcher.py" wtest/combo_watcher.py
+cp -R "$R/watcher/spa" wtest/spa            # the web app's files sit next to the watcher, as on the Mac
 cp "$R/nfl_combo_planner.py" run/nfl_combo_planner.py
 cp fixtures/run_settings.json run/combo_settings.json
 cp fixtures/home_settings.json wahome/combo_settings.json
@@ -53,15 +54,19 @@ for f in ("nfl_combo_planner.py", "watcher/combo_watcher.py"):
     ast.parse(open(sys.argv[1] + "/" + f).read(), f, feature_version=(3, 10))
 P
 fi
-"$PY" - "$R" <<'P' && ok "javascript syntax" || bad "javascript syntax"
-import re, subprocess, sys, tempfile, os
-s = open(os.path.join(sys.argv[1], "watcher/combo_watcher.py")).read()
-for name in ('SPA = r"""', 'LOGIN_HTML = r"""'):
-    i = s.index(name); j = s.index('"""', i + len(name)); h = s[i + len(name):j]
-    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write("\n".join(re.findall(r"<script>(.*?)</script>", h, re.S))); f.close()
+"$PY" - "$R" <<'P' && ok "javascript syntax (each watcher/spa file and the assembled pages)" || bad "javascript syntax"
+import glob, importlib.util, os, subprocess, sys, tempfile
+os.environ["COMBOWATCH_HOME"] = tempfile.mkdtemp()      # never the real ~/combowatch
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "watcher/spa/*.js"))):
+    if subprocess.run(["node", "--check", f]).returncode: sys.exit(1)
+spec = importlib.util.spec_from_file_location("W", os.path.join(sys.argv[1], "watcher/combo_watcher.py"))
+W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
+if W.SPA_PROBLEM: print(W.SPA_PROBLEM); sys.exit(1)
+for h in (W.SPA, W.LOGIN_HTML):
+    f = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False); f.write(W.spa_scripts(h)); f.close()
     if subprocess.run(["node", "--check", f.name]).returncode: sys.exit(1)
 P
-"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
+"$PY" -m pyflakes "$R/nfl_combo_planner.py" "$R/watcher/combo_watcher.py" "$R/tools/verify_spa_split.py" 2>&1 | grep -E "undefined name|referenced before|unable to detect" > pf.txt; [ -s pf.txt ] && bad "undefined names" "$(cat pf.txt)" || ok "no undefined names"
 if [ -n "$SECRET_PATTERN" ]; then          # set it (privately, e.g. in your shell profile) to the strings that must never be committed
   (cd "$R" && ! git grep -nIE "$SECRET_PATTERN" >/dev/null) && ok "no secrets in repo" || bad "secrets in repo" "$(cd "$R" && git grep -nlIE "$SECRET_PATTERN")"
 else
@@ -79,7 +84,7 @@ print("\n".join(hits)); sys.exit(1 if hits else 0)
 K
 fi
 
-for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy t_ideacards; do
+for t in t_review t_review2 t_lines t_restart t_extra t_own t_started t_smart t_lab t_tune t_ahl t_ahl_scores t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_live t_robust t_stoploss t_cutloss t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy t_ideacards t_spa_files t_spa_update; do
   o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
 done
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
