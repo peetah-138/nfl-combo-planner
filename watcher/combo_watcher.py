@@ -2761,10 +2761,21 @@ def webapp_main():
                               "sides": [side_view(x) for x in sides], "tie": any(x.get("tie") for x in sides),
                               "value": max((x.get("edge") or -1) for x in teams) if teams else None})
             board.sort(key=lambda g: (g["started"], str(g["start"])))
+            own_sets = owned_sets()
+            cviews = [combo_view(i, c, own_sets) for i, c in enumerate(A.CTX.get("combos") or [], 1)]
+            try:                                        # Best bets today (#63): recommend-only, display only
+                best = A.best_bets_feed(
+                    {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)},
+                    BUILD.get("lines") or [],
+                    [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
+                     for v, c in zip(cviews, A.CTX.get("combos") or []) if not v.get("bought")])
+            except Exception as err:
+                print("best bets:", err, flush=True)
+                best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
-                             "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
+                             "board": board, "combos": cviews, "best": best,
                              "singles": singles_view(games), "lines": BUILD.get("lines") or [],
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},

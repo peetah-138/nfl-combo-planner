@@ -715,8 +715,25 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
 
 ### Build page
-- Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
-  games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
+- Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
+  period, clock for games under way), more combo ideas — each section folds separately (remembered). The old all-strikes
+  "Spreads & totals" board is gone (Pete, #63: only recommendations).
+- **Best bets today (issue #63, recommend-only, display only).** `best_bets_feed` (engine; called by the web app's
+  `api_build`, answer key `best`) ranks single games (`single_candidates`), spreads/totals (`line_candidates`, edge ≥
+  `LINE_MIN_EDGE`) and value combos (predicted share of fair ≥ 100% and the cut-off) in **one list by expected dollars**:
+  each must have an edge at a fair price after fees **and** a likely route to profit, i.e. `smart_buy_ok(simulate_exit)`
+  (same exit policy as Smart Sell: a good chance to cash out at +10%, or a hold with `SB_WIN_MIN` win chance and
+  `SB_EV_MIN` dollars). Expected dollars = the simulator's `ev` on $5 scaled to the suggested stake (`_size`, quarter
+  Kelly, never above it after the exposure cut `exposure_factor`). Rows show type, league, game, pick, Kalshi vs fair,
+  edge, stake, expected dollars, the route in plain words, and a real exposure warning ("Kites is already in 7 of your 9
+  open combos"). **Fails closed:** an unreadable balance (no stake), a bet the simulator can't model, a pre-game sportsbook
+  line too old for how soon the game starts (`line_stale`), or any error = not listed; empty = "Nothing clears your bar right
+  now" plus how many were checked. Games already under way and sell-early favorites are not in it. At most `BEST_MAX` (6)
+  rows, `BEST_LOOK` (30) simulated per build (memoised 5 min). Nothing is bought from the feed: a single/line's button is
+  "Buy straight" (the guarded sheet: fresh quote, cap, Pause, rule 8); a combo's is "Price it" (scrolls to its own card and
+  asks for the price there). It is not behind a switch (it only recommends; the Smart Buy switch does not hide it). Type
+  chips filter it (`cw_bftype`). Code: `watcher/spa/build.js` (`bestFeed`, `bfRow`). Tests: `t_bestbets.py`,
+  `test_bestbets.py`. Still to do (ROADMAP): confidence per league and type, realized return per type, a detail page.
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
   is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
