@@ -177,7 +177,7 @@ with sync_playwright() as pw:
             swipe(cdp, x0, y0, x0 - 200, y0 + 6)               # a clear swipe left
             if not wait(pg, "![...document.querySelectorAll('.ilist .iw')].some(e=>/CCC/.test(e.innerText))", 4): bad(f"{tag}: a swipe left should dismiss the card (it was: {second[:40]!r})")
             time.sleep(.6)
-            if not until(lambda: "CCC" not in server_picks()): bad(f"{tag}: the swipe should reach the Mac: {server_picks()} {pg.evaluate('JSON.stringify(S.idHide)')} toast={pg.evaluate("document.querySelector('#toast').innerText")!r}")
+            if not until(lambda: "CCC" not in server_picks()): bad(f"{tag}: the swipe should reach the Mac: {server_picks()} {pg.evaluate('JSON.stringify(S.idHide)')}")
             if pg.evaluate("location.hash").startswith("#game") or pg.evaluate("document.querySelector('#modal').classList.contains('on')"): bad(f"{tag}: a swipe must not open the detail page")
             if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): bad(f"{tag}: sideways scroll after a swipe")
             seed(); inject(pg)
@@ -242,7 +242,7 @@ with sync_playwright() as pw:
             pg.evaluate("closeModal()"); time.sleep(.5)
         pg.unroute("**/app/api/act")
         # the buttons on the card itself don't open the page; a combo's leg still opens its game
-        pg.evaluate("S.ideaq={}");
+        pg.evaluate("S.ideaq={}")
         pg.locator(".ilist .iw").first.locator(".ix").click(); time.sleep(.8)
         if pg.evaluate("document.querySelector('#modal').classList.contains('on')"): bad(f"{tag}: the X must not open the detail page")
         # a combo card: tap its body for the detail page (picks listed), tap a leg for that game
