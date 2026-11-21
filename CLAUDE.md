@@ -666,6 +666,16 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
+  sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
+  (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
+  `timeValid: false` "TBD" dates ignored), then the old estimate (Kalshi's `expected_expiration_time` minus the sport's
+  hours). Kalshi's expected settle time is a placeholder for many college football games (23:00 UTC for most of a
+  Saturday's slate, noon and night kickoffs alike), so the estimate alone put Kentucky at Missouri five hours early.
+  `start_dt`, `leg_start` and `started` all use it; `started` is also True whenever the feed shows the game in play or
+  over. `EVENT_TICK` (filled in `week_games`/`fetch_results`) finds a game's market from its event code. Pre-game panel
+  buys still need the sportsbooks' kickoff (`_kick_ts`) and live-priced ones a fresh in-play score (`live_side_fair`),
+  so a wrong estimate never bought anything. Test: `t_gamestart` (fixture `game_start_223.json`, real shapes).
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
