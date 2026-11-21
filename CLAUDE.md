@@ -234,6 +234,23 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   require_line, hockey shapes, live scores from the league feed (Kalshi's team codes can differ from the feed's,
   e.g. CHA/CLT, so `AHL_ALIAS` maps them; names are matched too).
 
+### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
+- Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
+  `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
+  API order can only use its market's pot (`shard_of`). Kalshi's own app moves cash for its own orders; API orders don't.
+  An `insufficient_balance` refusal says which pot is short (`balance_words`). Settings › Money › Kalshi balance by pot
+  lists them.
+- **Money moves between pots only on Pete's tap** (a confirm sheet with both pots before/after, then "Tap again"):
+  the Buy straight sheet refused for its pot offers "Move $X from <pot> to <pot>" (`pot_shortfall`: shortfall + $0.50,
+  rounded up to whole dollars, from the largest other pot), and Settings has "Move money between pots".
+  `pot_transfer` (on the Mac via hub op `pot_move`; the web app runs it under the tap lock) refuses while paused,
+  re-reads the balance fresh, caps a move at $200, sends `POST /portfolio/intra_exchange_instance_transfer` (amount in
+  centicents, a UUID `client_transfer_id` per sheet so a double tap is one move), polls its status ~7 s, and logs every
+  move in `combo_pot_moves.json`. Rule 8 applies: an unknown outcome is `check`, never resent, and blocks further moves
+  (as does a pending one) until Pete clears it in Settings. The hub's generic Kalshi relay refuses transfer paths.
+  **Automatic rebalancing (Kalshi's `target_balance_allocation`) is not used**: it would be new automatic money
+  movement and needs Pete's explicit opt-in.
+
 ### The daily panel (Build page, top)
 - Up to ~10 bets a day (size scales with games: 6–14), across combos, single games, spreads/totals and
   sell-early favorites, chosen together to **maximize the chance the whole day finishes ahead** (bigger profit is a

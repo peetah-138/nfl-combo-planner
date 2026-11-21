@@ -9494,6 +9494,415 @@ def is_order_write(method, path):
     return method == "DELETE" and bool(re.fullmatch(r"/portfolio/(events/)?orders/[^/]+", p))
 
 
+# ---------------------------------------------------------------- moving cash between Kalshi's pots (issue #144)
+# Kalshi keeps API cash in a separate pot per exchange shard (GET /portfolio/balance's balance_breakdown), and an API
+# order can only use its market's pot; Kalshi's own app moves cash for its own orders, API orders don't. This moves
+# money between pots ONLY on Pete's tap (a confirm sheet, then a second tap): never automatically, and the app never
+# uses Kalshi's target_balance_allocation (automatic rebalancing would be a new automatic money movement).
+# POST /portfolio/intra_exchange_instance_transfer (docs.kalshi.com/openapi.yaml): source/destination "event_contract"
+# (prediction markets), source_exchange_shard / destination_exchange_shard, amount in CENTICENTS (cents x 100, so
+# $1 = 10000), client_transfer_id a UUID (a repeat with the same id answers 409 and moves nothing). Kalshi answers 200
+# {transfer_id} and moves it asynchronously; GET .../intra_exchange_instance_transfers/{id} gives "pending"/"complete".
+# Rule 8 applies: a move whose outcome is unknown (timeout, 5xx, 408/409, an answer the app can't read) is marked
+# "check", never resent, and no further move goes until Pete clears it in Settings › Money.
+POT_TRANSFER = "/portfolio/intra_exchange_instance_transfer"
+POT_LEDGER = os.path.join(HERE, "combo_pot_moves.json")   # every move: pots, amount, status, client id (no keys)
+POT_MAX = 200.0                   # the most one move can carry
+POT_BUFFER = 0.50                 # a shortfall move adds this, then rounds up to whole dollars
+POT_REPEAT_SECS = 10              # the same move again this soon (a double tap) is not sent
+POT_POLL = (0.7, 1.3, 2.0)        # waits between status checks once Kalshi has taken a move
+POT_WAIT = 4                      # seconds for each balance read / status check; the send itself gets POT_SEND_WAIT
+POT_SEND_WAIT = 8
+POT_DEADLINE = 17                 # the whole move, start to answer: under the tap lock's 20 s wait (ACT_WAIT), so a
+                                  # cash-out tapped meanwhile still goes, and under the hub proxy's 40 s
+POT_KEEP = 60                     # moves kept in the ledger
+POT_OPEN = ("sending", "check", "pending")   # states that block another move until done or cleared
+POT_DOCS = {0: "Default", 1: "Combos", 2: "Crypto & Commodities", 3: "Tennis, Baseball, Basketball"}   # docs' table
+POT_PAUSE_MSG = "Paused from an alert, so the app moves no money. To resume, save Settings with Auto cash-out on."
+_POT_SHARED = sys.modules.setdefault("_combo_pot_shared", type(sys)("_combo_pot_shared"))
+_POT_SHARED.__dict__.setdefault("lock", threading.Lock())
+_POT_SHARED.__dict__.setdefault("recent", {})
+_POT_SHARED.__dict__.setdefault("names", {"at": 0, "by": {}, "live": {}})
+
+
+def pot_names(max_age=3600):
+    """{index: plain name} for each pot, from Kalshi's public exchange status (each shard's description; no key,
+    cached an hour), falling back to the table in Kalshi's docs, else "Pot N". The default shard reads "Main pot"."""
+    c = _POT_SHARED.names
+    if time.time() - c["at"] > max_age:
+        c["at"] = time.time()                        # one try an hour, answered or not
+        try:
+            r = requests.get(f"{KALSHI}/exchange/status", timeout=3, headers={"Accept": "application/json"})
+            rows = (r.json() or {}).get("exchange_index_statuses") if r.ok else None
+            by, live = {}, {}
+            for x in rows if isinstance(rows, list) else []:
+                i = _index((x or {}).get("exchange_index")) if isinstance(x, dict) else None
+                d = re.sub(r"[^A-Za-z0-9 &,./()+-]", "", str(x.get("description") or ""))[:40].strip() if i is not None else ""
+                if i is not None and d:
+                    by[i] = d
+                if i is not None and isinstance(x.get("intra_exchange_transfers_active"), bool):
+                    live[i] = x["intra_exchange_transfers_active"]
+            if by:
+                c["by"] = by
+            c["live"] = live                         # not read = unknown (Kalshi refuses a paused move itself)
+        except Exception:
+            c["live"] = {}
+    out = {}
+    for i in set(POT_DOCS) | set(c["by"]) | set(ACCT_POTS.get("by") or {}):
+        d = c["by"].get(i) or POT_DOCS.get(i)
+        out[i] = ("Main pot (most markets)" if d and d.lower() == "default" else f"{d} pot") if d else f"Pot {i}"
+    return out
+
+
+def pot_name(i):
+    return pot_names().get(i) or f"Pot {i}"
+
+
+def _pot_amount(amount):
+    """A move's amount as whole cents (int), or None if it isn't a positive whole-cent amount within POT_MAX."""
+    d = _dec(amount)
+    if d is None or d <= 0 or d != d.quantize(_dec("0.01")) or d > _dec(POT_MAX):
+        return None
+    return int(d * 100)
+
+
+def _pot_by(pots):
+    """{index: dollars} from kalshi_pots()'s shape ({"by": [[i, v]]}) or a plain dict."""
+    if isinstance(pots, dict) and isinstance(pots.get("by"), list):
+        return {_index(r[0]): float(r[1]) for r in pots["by"]
+                if isinstance(r, (list, tuple)) and len(r) == 2 and _index(r[0]) is not None}
+    return {_index(k): float(v) for k, v in pots.items() if _index(k) is not None} if isinstance(pots, dict) else {}
+
+
+def pot_transfer_quote(from_index, to_index, amount, pots=None):
+    """What a move would do, for the confirm sheet: checks it against the last balance by pot (the move itself
+    re-reads it fresh). {"ok", "msg", "from", "to", "from_name", "to_name", "amount", "before": [from, to],
+    "after": [from, to]}. Reads only; never moves anything."""
+    f, t, cents = _index(from_index), _index(to_index), _pot_amount(amount)
+    if f is None or t is None or not (0 <= f <= 100 and 0 <= t <= 100):
+        return {"ok": False, "msg": "Pick the two pots to move money between."}
+    if f == t:
+        return {"ok": False, "msg": "Pick two different pots."}
+    if cents is None:
+        return {"ok": False, "msg": f"Type an amount over $0, in whole cents, up to {_usd(POT_MAX)} a move."}
+    by = _pot_by(pots if pots is not None else kalshi_pots())
+    if not by:
+        return {"ok": False, "msg": "Kalshi hasn't listed your balance by pot yet. Try again in a minute."}
+    if f not in by or t not in by:
+        return {"ok": False, "msg": "Kalshi doesn't list one of those pots for this account."}
+    amt = cents / 100
+    if by[f] + 0.005 < amt:
+        return {"ok": False, "msg": f"{pot_name(f)} has {_usd(by[f])}, less than {_usd(amt)}."}
+    return {"ok": True, "msg": "", "from": f, "to": t, "from_name": pot_name(f), "to_name": pot_name(t), "amount": amt,
+            "before": [round(by[f], 2), round(by[t], 2)], "after": [round(by[f] - amt, 2), round(by[t] + amt, 2)]}
+
+
+def pot_shortfall(ticker, need, pots=None, shard=None):
+    """The move that would let a refused buy fill: its market's pot, what it's short by, plus POT_BUFFER, rounded up
+    to whole dollars, from the largest other pot (Pete can change both on the sheet). A quote (pot_transfer_quote's
+    shape plus "short" and "need"), or {"ok": False, "msg"} when it can't tell (no breakdown, market's pot unknown,
+    the pot isn't short, or no other pot has enough). Reads only."""
+    import math
+    try:
+        need = float(need)
+    except (TypeError, ValueError):
+        return {"ok": False, "msg": "Couldn't tell what the order needs."}
+    by = _pot_by(pots if pots is not None else kalshi_pots())
+    if not by or not need > 0:
+        return {"ok": False, "msg": "Kalshi hasn't listed your balance by pot yet."}
+    shard = shard if shard is not None else shard_of(str(ticker or ""))
+    if shard is None or shard not in by:
+        return {"ok": False, "unknown": True, "msg": "Couldn't tell which pot this market uses. Pick one in Settings › "
+                                                     "Money › Kalshi balance by pot."}
+    short = need - by[shard]
+    if short <= 0.005:
+        return {"ok": False, "msg": f"{pot_name(shard)} already has {_usd(by[shard])}, enough for this order."}
+    others = sorted(((v, k) for k, v in by.items() if k != shard), reverse=True)
+    if not others:
+        return {"ok": False, "msg": "Kalshi lists no other pot to move money from."}
+    src_bal, src = others[0]
+    if short > POT_MAX:
+        return {"ok": False, "msg": f"This pot is {_usd(short)} short, more than one move can carry ({_usd(POT_MAX)}). "
+                                    "Move it in two goes in Settings › Money, or buy less."}
+    amt = min(float(math.ceil(round(short + POT_BUFFER, 6))), POT_MAX)
+    if src_bal + 0.005 < amt:                       # less than the buffered amount: what it has, if that covers it
+        amt = math.floor(src_bal * 100 + 1e-6) / 100
+    if amt + 0.005 < short:
+        return {"ok": False, "msg": f"No other pot has the {_usd(short)} this order is short (largest: "
+                                    f"{pot_name(src)} with {_usd(src_bal)})."}
+    q = pot_transfer_quote(src, shard, f"{amt:.2f}", {"by": [[k, v] for k, v in by.items()]})
+    if q.get("ok"):
+        q.update(short=round(short, 2), need=round(need, 2))
+    return q
+
+
+def _pot_ledger():
+    d = load_json(POT_LEDGER, {})
+    moves = d.get("moves") if isinstance(d, dict) else None
+    return [m for m in moves if isinstance(m, dict) and m.get("cid")] if isinstance(moves, list) else []
+
+
+def _pot_save(moves):
+    """Save the ledger and read it back: False if it didn't stick (then nothing is sent)."""
+    moves = moves[-POT_KEEP:]
+    save_json(POT_LEDGER, {"moves": moves})
+    return [m.get("cid") for m in _pot_ledger()] == [m.get("cid") for m in moves]
+
+
+def _pot_note(cid, **k):
+    moves = _pot_ledger()
+    for m in moves:
+        if m["cid"] == cid:
+            m.update(k, at=time.time())
+    _pot_save(moves)
+
+
+def _pot_refresh():
+    """Ask Kalshi once more about pending moves (at most two, time-boxed), so Settings shows them landed. Never raises."""
+    if not _POT_SHARED.lock.acquire(timeout=0.5):    # a move is going: it refreshes them itself
+        return
+    try:
+        moves, n, changed = _pot_ledger(), 0, False
+        for m in moves:
+            if m.get("status") == "pending" and not m.get("cleared") and m.get("tid") and n < 2:
+                n += 1
+                if _pot_status(m["tid"], 3) == "complete":
+                    m.update(status="complete", at=time.time())
+                    changed = True
+        if changed:
+            _pot_save(moves)
+    except Exception:
+        pass
+    finally:
+        _POT_SHARED.lock.release()
+
+
+def pot_moves(refresh=False):
+    """The last moves for Settings, newest first: [{"cid", "ts", "from", "to", "from_name", "to_name", "amount",
+    "status", "why", "open"}]. "open" = it blocks another move until it's done or Pete clears it. With refresh, pending
+    moves are checked with Kalshi first (on the Mac when paired, which holds the key)."""
+    if refresh and hub_up():
+        got = hub_call("pot_moves", timeout=8)
+        if isinstance(got, dict) and isinstance(got.get("moves"), list):
+            return got["moves"]
+    elif refresh:
+        _pot_refresh()
+    out = []
+    for m in reversed(_pot_ledger()[-12:]):
+        st = str(m.get("status") or "")
+        out.append({"cid": str(m["cid"])[:40], "ts": int(float(m.get("ts") or 0)), "from": m.get("from"),
+                    "to": m.get("to"), "from_name": pot_name(m.get("from")), "to_name": pot_name(m.get("to")),
+                    "amount": m.get("amount"), "status": st, "why": str(m.get("why") or "")[:120],
+                    "open": st in POT_OPEN and not m.get("cleared")})
+    return out
+
+
+def pot_clear(cid):
+    """Pete clears one open move after checking Kalshi (a pending one, or one marked check). The move itself is never
+    resent; new moves may go again. Logged. True if there was one."""
+    if hub_up():
+        got = hub_call("pot_clear", timeout=10, cid=str(cid)[:40])
+        return bool(isinstance(got, dict) and got.get("ok"))
+    with _POT_SHARED.lock:
+        moves, hit = _pot_ledger(), None
+        for m in moves:
+            if m["cid"] == str(cid) and m.get("status") in POT_OPEN and not m.get("cleared"):
+                m["cleared"], hit = time.time(), m
+        if hit is None or not _pot_save(moves):
+            return False
+    print(f"pot move cleared by you: {hit['cid']} {hit.get('status')} {_usd(hit.get('amount') or 0)} "
+          f"index {hit.get('from')} -> {hit.get('to')}", flush=True)
+    return True
+
+
+def _pot_balance(timeout=POT_WAIT):
+    """A fresh GET /portfolio/balance as a dict (also noted for Settings), or None."""
+    try:
+        r = _signed("GET", "/portfolio/balance", timeout=max(0.5, timeout))
+        bal = r.json() if r.ok else None
+    except Exception:
+        return None
+    if not isinstance(bal, dict) or "balance_breakdown" not in bal:
+        return None
+    note_pots(bal)
+    return bal
+
+
+def _pot_status(tid, timeout=POT_WAIT):
+    """A move's status from Kalshi ("pending", "complete"), or None if it can't be read."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(tid or "")):
+        return None
+    try:
+        r = _signed("GET", f"/portfolio/intra_exchange_instance_transfers/{tid}", timeout=max(0.5, timeout))
+        j = r.json() if r.ok else None
+        tr = j.get("transfer") if isinstance(j, dict) else None
+        st = tr.get("status") if isinstance(tr, dict) else None
+    except Exception:
+        return None
+    return st if st in ("pending", "complete") else None
+
+
+def pot_transfer(from_index, to_index, amount, cid=None, paused=False, sleep=time.sleep):
+    """Move `amount` dollars from one of Kalshi's pots to another, on Pete's confirmed tap only. `cid` = the confirm
+    sheet's own id (a UUID): the same id twice is one move (the second tap gets the first one's answer). Refuses while
+    paused, without a trading key, while an earlier move is open (pending or check), or if a fresh balance read
+    doesn't show the money. Returns {"ok", "check", "msg", "status", "pots", "cid", "from_name", "to_name", "amount"}.
+    Kalshi's definite refusal (a 4xx other than 408/409) moved nothing and says Kalshi's words; an unknown outcome is
+    "check", never resent, and blocks further moves until cleared."""
+    import uuid
+    if hub_up():                                     # the Mac holds the key: it checks, sends and records the move
+        got = hub_call("pot_move", timeout=POT_DEADLINE + 10, frm=from_index, to=to_index, amount=str(amount), cid=cid,
+                       paused=bool(paused))
+        if not isinstance(got, dict) or "ok" not in got:
+            return {"ok": False, "check": True, "msg": "Lost contact with your Mac during this move, so it may or may "
+                    "not have gone through. Check Settings › Money › Kalshi balance by pot before trying again."}
+        return got
+    if paused:
+        return {"ok": False, "paused": True, "msg": POT_PAUSE_MSG}
+    if not (bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)):
+        return {"ok": False, "msg": "This device has no Kalshi key with trading access, so no money can be moved."}
+    cid = str(cid or "")
+    try:
+        cid = str(uuid.UUID(cid)) if cid else str(uuid.uuid4())
+    except ValueError:
+        return {"ok": False, "msg": "That move isn't recognized. Open it again."}
+    f, t, cents = _index(from_index), _index(to_index), _pot_amount(amount)
+    if f is None or t is None or f == t or cents is None or not (0 <= f <= 100 and 0 <= t <= 100):
+        return {"ok": False, "msg": pot_transfer_quote(from_index, to_index, amount, {}).get("msg")
+                or "That move isn't allowed."}
+    amt = cents / 100
+    names = {"from_name": pot_name(f), "to_name": pot_name(t), "amount": amt, "cid": cid}
+    sh, end = _POT_SHARED, time.monotonic() + POT_DEADLINE
+
+    def left():
+        return end - time.monotonic()
+    if not sh.lock.acquire(timeout=2):
+        return {"ok": False, "msg": "Another move is still going. Nothing was moved; try again in a moment.", **names}
+    try:
+        moves, now = _pot_ledger(), time.time()
+        same = next((m for m in moves if m["cid"] == cid), None)
+        if same is not None:                        # a double tap on the same sheet: the first answer, nothing sent
+            st = same.get("status")
+            return {"ok": st in ("complete", "pending"), "check": st in ("sending", "check"), "status": st, "repeat": True,
+                    "msg": "That move was already sent once, so it wasn't sent again.", **names}
+        for m in moves:                             # an open move: refresh a pending one, else wait for Pete
+            if m.get("status") not in POT_OPEN or m.get("cleared"):
+                continue
+            if m.get("status") == "pending" and _pot_status(m.get("tid"), min(POT_WAIT, left() - 12)) == "complete":
+                m.update(status="complete", at=now)
+                _pot_save(moves)
+                continue
+            return {"ok": False, "blocked": True, "msg": (
+                "An earlier move between pots is still being processed by Kalshi. Try again in a minute."
+                if m.get("status") == "pending" else
+                "An earlier move between pots had no clear answer, so the app won't move more until you check Kalshi "
+                "and clear it in Settings › Money › Kalshi balance by pot."), **names}
+        key = f"{f}|{t}|{cents}"
+        if now - sh.recent.get(key, 0) < POT_REPEAT_SECS:
+            return {"ok": False, "msg": "The same move went out a moment ago, so it wasn't sent twice.", **names}
+        bal = _pot_balance(min(POT_WAIT, left() - 11))   # validate on a fresh read, never on a guess
+        by = shard_balances(bal) if bal else {}
+        if not by:
+            return {"ok": False, "msg": "Couldn't read your balance by pot from Kalshi just now. Nothing was moved; "
+                                        "try again in a minute.", **names}
+        if f not in by or t not in by:
+            return {"ok": False, "msg": "Kalshi doesn't list one of those pots for this account. Nothing was moved.",
+                    **names}
+        if by[f] + 0.005 < amt:
+            return {"ok": False, "msg": f"{names['from_name']} has {_usd(by[f])} now, less than {_usd(amt)}. Nothing "
+                                        "was moved.", **names}
+        if left() > POT_SEND_WAIT + 4:
+            pot_names(max_age=60)                   # Kalshi's own "transfers active" flags, a minute old at most
+        live = sh.names.get("live") or {}
+        if live.get(f) is False or live.get(t) is False:
+            return {"ok": False, "msg": "Kalshi has paused moves between pots right now. Nothing was moved; try again "
+                                        "later.", **names}
+        if left() < POT_SEND_WAIT + 1:              # the reads were slow: no time to send and hear back
+            return {"ok": False, "msg": "Kalshi is slow to answer right now. Nothing was moved; try again in a minute.",
+                    **names}
+        moves.append({"cid": cid, "ts": now, "at": now, "from": f, "to": t, "amount": amt, "status": "sending",
+                      "before": [round(by[f], 2), round(by[t], 2)]})
+        if not _pot_save(moves):                    # write-ahead: no record, no move
+            return {"ok": False, "msg": "Couldn't record the move on the Mac, so it wasn't sent.", **names}
+        sh.recent[key] = now
+        for k in [k for k, v in sh.recent.items() if now - v > 600]:
+            sh.recent.pop(k, None)
+        body = {"client_transfer_id": cid, "source": "event_contract", "destination": "event_contract",
+                "amount": cents * 100, "source_exchange_shard": f, "destination_exchange_shard": t}
+        print(f"pot move: sending {_usd(amt)} index {f} -> {t} (client id {cid})", flush=True)
+        try:
+            r = _signed("POST", POT_TRANSFER, body, timeout=POT_SEND_WAIT)
+        except KalshiRefused as err:                # the key couldn't be read: nothing was sent
+            _pot_note(cid, status="refused", why=err.plain[:120])
+            sh.recent.pop(key, None)
+            return {"ok": False, "msg": f"{err.plain}. Nothing was moved.", "status": "refused", **names}
+        except Exception as err:
+            return _pot_unsure(cid, type(err).__name__, names)
+        try:                                        # it was sent: from here any surprise is "check", never "nothing"
+            return _pot_answer(r, cid, key, f, t, amt, names, left, sleep)
+        except Exception as err:
+            return _pot_unsure(cid, f"an answer the app couldn't read ({type(err).__name__})", names)
+    finally:
+        sh.lock.release()
+
+
+def _pot_answer(r, cid, key, f, t, amt, names, left, sleep):
+    """Kalshi's answer to a move that was sent: refused (nothing moved), unknown (check), or taken (then polled within
+    the time box; Kalshi moves it on its own either way)."""
+    sh = _POT_SHARED
+    if not r.ok:
+        code, msg = _kalshi_error(r)
+        print(f"pot move refused: status={r.status_code} code={code} message={msg[:160]!r}", flush=True)
+        if r.status_code in (408, 409) or r.status_code >= 500:
+            return _pot_unsure(cid, f"HTTP {r.status_code}" + (f" {code}" if code else ""), names)
+        said = re.sub(r"[{}\[\]\"\\<>]", "", msg or "").strip()[:120]   # Kalshi's own words, never raw JSON
+        words = ORDER_WORDS["too_many_requests"] if r.status_code == 429 else \
+            (f"Kalshi said: {said}" if said else f"code {code}" if code else f"status {r.status_code}")
+        if r.status_code in (401, 403) and not said:
+            words = "Kalshi refused this device's key for moving money (it needs trading access)"
+        _pot_note(cid, status="refused", why=f"{words} ({r.status_code})"[:120])
+        sh.recent.pop(key, None)
+        return {"ok": False, "msg": f"Kalshi didn't move it: {words}. Nothing was moved.", "status": "refused",
+                **names}
+    try:
+        j = r.json()
+    except ValueError:
+        j = None
+    tid = j.get("transfer_id") if isinstance(j, dict) else None
+    if not isinstance(tid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", tid):
+        return _pot_unsure(cid, "an answer the app couldn't read", names)
+    _pot_note(cid, status="pending", tid=tid)
+    st, pots = "pending", None
+    try:                                        # Kalshi has it: the rest only reports, within the time box
+        for w in POT_POLL:
+            if left() < w + POT_WAIT / 2 + 1:
+                break
+            sleep(w)
+            st = _pot_status(tid, min(POT_WAIT, left() - 1)) or st
+            if st == "complete":
+                break
+        _pot_note(cid, status=st)
+        bal = _pot_balance(min(POT_WAIT, left() - 0.5)) if left() > 1.5 else None
+        if bal:
+            pots = {"by": [[k, v] for k, v in sorted(shard_balances(bal).items())], "total": dollars(bal, "balance")}
+    except Exception:
+        pass
+    print(f"pot move: {st} {_usd(amt)} index {f} -> {t} (transfer {tid})", flush=True)
+    if st == "complete":
+        return {"ok": True, "status": st, "pots": pots, "msg": f"Moved {_usd(amt)} from {names['from_name']} to "
+                f"{names['to_name']}.", **names}
+    return {"ok": True, "status": st, "pots": pots, "msg": f"Kalshi took the move of {_usd(amt)} and is still "
+            "processing it. It usually lands within a minute.", **names}
+
+
+def _pot_unsure(cid, why, names):
+    _pot_note(cid, status="check", why=str(why)[:80])
+    print(f"pot move: outcome unknown ({why}); marked check, never resent (client id {cid})", flush=True)
+    return {"ok": False, "check": True, "status": "check", **names,
+            "msg": f"Kalshi didn't answer clearly ({why}), so the move may or may not have gone through. Check Kalshi; "
+                   "the app won't send it again, and won't move more until you clear it in Settings › Money."}
+
+
 def can_trade():
     return (bool(CFG.get("kalshi_key_id")) and os.path.exists(KEYFILE)) or \
         (hub_up() and bool(HUB["info"].get("trade")))

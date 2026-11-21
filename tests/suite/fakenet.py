@@ -198,6 +198,66 @@ def order_desk(method, path, params, data):
     return r
 
 
+# A fake desk for moving cash between pots (POST /portfolio/intra_exchange_instance_transfer), OFF unless a test turns
+# it on (TRANSFERS["on"]). Shapes from docs.kalshi.com/openapi.yaml: amount in centicents, source/destination
+# "event_contract", source_exchange_shard / destination_exchange_shard, client_transfer_id (a repeat answers 409).
+# TRANSFERS["next"] = a status code, (status, code), an R or an exception for the next POST; TRANSFERS["status"] =
+# what GET .../intra_exchange_instance_transfers/{id} says ("complete" moves the cash in ORDERS["balance"] at once,
+# "pending" leaves it until the status flips); TRANSFERS["active"] = intra_exchange_transfers_active in /exchange/status.
+TRANSFERS = {"on": False, "sent": [], "next": None, "status": "complete", "ids": {}, "active": True, "moved": {}}
+
+
+def _move_cash(src, dst, cents):
+    b = ORDERS.get("balance")
+    if not isinstance(b, dict):
+        return
+    for row in b.get("balance_breakdown") or []:
+        if row["exchange_index"] == src:
+            row["balance"] = f"{float(row['balance']) - cents / 100:.4f}"
+        if row["exchange_index"] == dst:
+            row["balance"] = f"{float(row['balance']) + cents / 100:.4f}"
+
+
+def transfer_desk(method, path, data):
+    T = TRANSFERS
+    if method == "GET":
+        tid = path.rsplit("/", 1)[-1]
+        t = T["moved"].get(tid)
+        if not t:
+            return R({"error": {"code": "not_found", "message": "fake"}}, 404)
+        if T["status"] == "complete" and not t["done"]:
+            t["done"] = True
+            _move_cash(t["src"], t["dst"], t["amount"] // 100)
+        return R({"transfer": {"transfer_id": tid, "client_transfer_id": t["cid"], "source": "event_contract",
+                               "destination": "event_contract", "source_exchange_shard": t["src"],
+                               "destination_exchange_shard": t["dst"], "amount": f"{t['amount'] / 10000:.4f}",
+                               "status": "complete" if t["done"] else "pending", "created_ts": 1}})
+    try:
+        body = json.loads(data) if data else None
+    except (TypeError, ValueError):
+        body = None
+    T["sent"].append(body)
+    nxt, T["next"] = T["next"], None
+    if isinstance(nxt, BaseException):
+        raise nxt
+    if isinstance(nxt, R):
+        return nxt
+    if nxt:
+        st, code = nxt if isinstance(nxt, tuple) else (nxt, "")
+        return R({"error": {"code": code, "message": f"fake {st}"}}, st)
+    cid = (body or {}).get("client_transfer_id")
+    if cid and cid in T["ids"]:
+        return R({"error": {"code": "conflict", "message": "duplicate client_transfer_id"}}, 409)
+    tid = f"tr-{len(T['sent'])}"
+    T["ids"][cid] = tid
+    T["moved"][tid] = {"cid": cid, "src": body["source_exchange_shard"], "dst": body["destination_exchange_shard"],
+                       "amount": int(body["amount"]), "done": False}
+    if T["status"] == "complete":
+        T["moved"][tid]["done"] = True
+        _move_cash(body["source_exchange_shard"], body["destination_exchange_shard"], int(body["amount"]) // 100)
+    return R({"transfer_id": tid})
+
+
 def fake(method, url, params=None, port=18800, data=None):
     """The answer for one call, or None for the dev app's own address (the caller makes that one for real)."""
     try:
@@ -213,6 +273,12 @@ def fake(method, url, params=None, port=18800, data=None):
         path = url.split("/trade-api/v2")[-1].split("?")[0]
         if method != "GET" and ORDERS["mode"] and path.startswith(("/portfolio/orders", "/portfolio/events/orders")):
             return order_desk(method, path, params, data)                   # a test's fake order desk only
+        if TRANSFERS["on"] and path.startswith("/portfolio/intra_exchange_instance_transfer"):
+            return transfer_desk(method, path, data)                        # a test's fake transfer desk only
+        if path == "/exchange/status" and TRANSFERS["on"]:
+            return R({"exchange_active": True, "exchange_index_statuses": [
+                {"exchange_index": i, "description": d, "intra_exchange_transfers_active": TRANSFERS["active"]}
+                for i, d in ((0, "Default"), (1, "Combos"), (3, "Tennis, Baseball, Basketball"))]})
         if method != "GET":
             return R({"error": "dev environment: no orders"}, 403)          # never a trade
         tk = path.split("/")[2] if path.startswith("/markets/") and path.count("/") == 2 else None

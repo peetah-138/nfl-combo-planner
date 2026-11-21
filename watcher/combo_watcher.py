@@ -3663,8 +3663,50 @@ function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel)
  if(out.length<=1&&!(d.proof&&(d.proof.roi||d.proof.clv)))return (out[0]||'')+`<div class="card"><h3>Your edge</h3><div class="m">Fills in as combos settle and the Mac records Kalshi's quotes: prices vs kickoff, how often combos hit vs their price, returns by number of picks, and a back-test of your fair-price cut-off.</div></div>`;
  return `<h2>Your edge</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,380px),1fr));gap:14px;align-items:start">${out.join('')}</div>`;}
 function blockRow(b){if(!b||!b.length)return '';return b.map(x=>{const until=new Date(x.until*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="srow"><div class="l"><b>Order block: ${esc(x.ticker)} · ${x.sell?'sell ':''}${esc(x.side)}</b><small>An order here had no clear answer, so the app sends none on it until ${esc(until)}. Check Kalshi first; the unclear order itself is never resent.</small></div><button class="btn ghost" data-k="${esc(x.key)}" onclick="clearBlock(this)">Clear order block</button></div>`}).join('');}
-function potRow(p){if(!p||p.total==null)return '';const c=x=>'$'+(+x).toFixed(2);const by=(p.by||[]).filter(r=>Array.isArray(r)&&r.length===2);
- return `<div class="srow" style="display:block"><div class="l"><b>Kalshi balance by pot</b><small>Kalshi keeps cash in separate pots by market type (Kalshi's docs: index 0 = most markets, 1 = combos, 2 = crypto, 3 = tennis, baseball and basketball). An order can only use the pot of its market. Kalshi's own app shows one total. Read-only: the app never moves money between pots.</small></div>${by.length?by.map(r=>`<div class="mini" style="margin-top:6px">Index ${esc(String(r[0]))}<b>${c(r[1])}</b></div>`).join(''):`<div class="m" style="font-size:11.5px;margin-top:6px">Kalshi didn't list the pots.</div>`}<div class="mini" style="margin-top:6px">Total<b>${c(p.total)}</b></div>${p.at?`<div class="m" style="font-size:11.5px;margin-top:6px">As of ${esc(new Date(p.at*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))}, from the Mac's last Kalshi read</div>`:''}</div>`;}
+function potRow(p,names,moves){if(!p||p.total==null)return '';const c=x=>'$'+(+x).toFixed(2);const by=(p.by||[]).filter(r=>Array.isArray(r)&&r.length===2);
+ S.potn=names||{};S.potby=by;const open=(moves||[]).filter(m=>m.open),done=(moves||[]).filter(m=>!m.open).slice(0,3);
+ const ST={sending:'No clear answer yet',check:'No clear answer: check Kalshi',pending:'Kalshi is still processing it',complete:'Done',refused:'Kalshi refused: nothing moved'};
+ return `<div class="srow" style="display:block"><div class="l"><b>Kalshi balance by pot</b><small>Kalshi keeps cash in separate pots by market type, and an order can only use the pot of its market. Kalshi's own app shows one total and moves cash for its own orders; the app's orders can't, so move it here. Money only moves when you tap and confirm.</small></div>${by.length?by.map(r=>`<div class="mini" style="margin-top:6px"><span>${esc(potName(r[0]))} <span class="m" style="font-size:11.5px">· Index ${esc(String(r[0]))}</span></span><b>${c(r[1])}</b></div>`).join(''):`<div class="m" style="font-size:11.5px;margin-top:6px">Kalshi didn't list the pots.</div>`}<div class="mini" style="margin-top:6px">Total<b>${c(p.total)}</b></div>${p.at?`<div class="m" style="font-size:11.5px;margin-top:6px">As of ${esc(new Date(p.at*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}))}, from the Mac's last Kalshi read</div>`:''}
+  ${open.map(m=>`<div class="sbw ${m.status==='pending'?'':'sbx'}" data-pm="${esc(m.cid)}" style="margin-top:8px;align-items:center"><i>${m.status==='pending'?'⏳':'⚠️'}</i><span style="flex:1">Move ${c(m.amount)} from ${esc(m.from_name)} to ${esc(m.to_name)}: ${esc(ST[m.status]||m.status)}. No more moves go until it's done or you clear it.</span><button class="btn ghost" data-c="${esc(m.cid)}" onclick="potClear(this)">Clear</button></div>`).join('')}
+  ${done.map(m=>`<div class="mini" style="font-size:12px"><span>${esc(ago2(m.ts)==='now'?'Just now':ago2(m.ts)+' ago')}: ${c(m.amount)} ${esc(m.from_name)} → ${esc(m.to_name)}</span><b class="${m.status==='complete'?'up':''}">${esc(ST[m.status]||m.status)}</b></div>`).join('')}
+  ${by.length>1?`<div class="brow" style="margin-top:10px"><button class="btn acc" onclick="potTool()">Move money between pots</button></div>`:''}</div>`;}
+function potName(i){const n=S.potn&&S.potn[String(i)];return n||('Pot '+i);}
+function potCid(){try{if(crypto.randomUUID)return crypto.randomUUID();}catch(e){}const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;
+ const h=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;}
+function potTool(){const by=(S.potby||[]).slice().sort((a,b)=>b[1]-a[1]);if(by.length<2){toast('Kalshi lists only one pot.');return;}
+ const opt=sel=>by.map(r=>`<option value="${esc(String(r[0]))}" ${String(r[0])===String(sel)?'selected':''}>${esc(potName(r[0]))} · $${(+r[1]).toFixed(2)}</option>`).join('');
+ S.potq=null;modal(`<div id="potx"><h3>Move money between pots</h3><p class="m" style="font-size:13px">Both pots are your own Kalshi money; this moves cash between them. Nothing is bought or sold.</p>
+  <label class="sum" style="align-items:center">From<select id="potf" aria-label="Move from">${opt(by[0][0])}</select></label>
+  <label class="sum" style="align-items:center">To<select id="pott" aria-label="Move to">${opt(by[by.length-1][0])}</select></label>
+  <div class="sbk" style="margin-top:6px">Amount</div><div class="sbst">${[5,10,25,50].map(v=>`<button class="chip" onclick="$('#pota').value=${v}">$${v}</button>`).join('')}<input id="pota" type="number" inputmode="decimal" min="0.01" max="200" step="0.01" placeholder="Amount" aria-label="Amount in dollars" onkeydown="if(event.key==='Enter'){this.blur()}"></div>
+  <div class="m" style="font-size:12px;margin-top:4px">Up to $200 a move.</div><div id="potmsg"></div>
+  <div class="sbgo"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn acc pri" onclick="potReview(this)">Review the move</button></div></div>`);}
+async function potReview(b){const f=$('#potf').value,t=$('#pott').value,a=($('#pota').value||'').trim();
+ if(!(+a>0)){toast('Type an amount in dollars.');return;}btnBusy(b,'Checking');
+ const q=await api('/app/api/act',{a:'pot_quote',from:+f,to:+t,amount:a}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac. Try again.'}));
+ if(!q.ok){btnState(b,false);const m=$('#potmsg');if(m)m.innerHTML=`<div class="sbw sbx"><i>✕</i><span>${esc(q.msg||'That move isn\'t allowed.')}</span></div>`;return;}potConfirm(q);}
+function potConfirm(q){if(!q||!q.ok)return;const c=x=>'$'+(+x).toFixed(2);S.potq={q,cid:potCid(),sending:false};
+ modal(`<div id="potc"><h3>Move ${c(q.amount)} to ${esc(q.to_name)}?</h3>
+  <div class="sum"><span>${esc(q.from_name)}</span><b>${c(q.before[0])} → <span class="down">${c(q.after[0])}</span></b></div>
+  <div class="sum"><span>${esc(q.to_name)}</span><b>${c(q.before[1])} → <span class="up">${c(q.after[1])}</span></b></div>
+  ${q.short?`<div class="m" style="font-size:12.5px;margin:4px 0">The order needed about ${c(q.need)}; ${esc(q.to_name)} was ${c(q.short)} short. This adds a little extra, in whole dollars.</div>`:''}
+  <p class="m" style="font-size:13px">Both pots are your own Kalshi money; this moves cash between them. Nothing is bought or sold, and your total stays the same.</p><div id="potmsg"></div>
+  <div class="sbgo"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn acc pri" id="potgo" onclick="potGo(this)">Move ${c(q.amount)}</button></div></div>`);}
+async function potGo(b){const s=S.potq;if(!s||s.sending||b.disabled)return;const c=x=>'$'+(+x).toFixed(2),q=s.q;
+ if(b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to move ${c(q.amount)}`;hap('warning');
+  setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';b.classList.remove('arm');b.textContent=`Move ${c(q.amount)}`;}},4000);return;}
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Moving… confirming with Kalshi';
+ let r;try{r=await api('/app/api/act',{a:'pot_move',from:q.from,to:q.to,amount:q.amount.toFixed(2),cid:s.cid});}
+ catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac during this move, so it may or may not have gone through. Check Settings › Money › Kalshi balance by pot before trying again.'};}
+ s.sending=false;const here=S.potq===s&&!!$('#potc')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
+ if(r.ok||r.check){S.potq=null;const fromBuy=!!S.sb;S.sb=null;const by=r.pots&&r.pots.by||[];const now=by.filter(x=>x[0]===q.to||x[0]===q.from).map(x=>`${potName(x[0])} now ${c(x[1])}`).join(' · ');
+  const sub=r.ok?`${r.msg}${now?' '+now+'.':''}${fromBuy&&r.ok?' Open the bet again for a fresh price to buy.':''}`:r.msg;
+  if(free){if(r.ok)okSheet(r.status==='complete'?'Moved':'On its way',c(q.amount),sub);else okSheet('Check Kalshi',null,sub,true);}
+  else{hap(r.ok?'success':'error');toast(sub,9000,r.ok?'good':'bad');}
+  if(S.view==='settings')setTimeout(()=>load('settings',true),1500);return;}
+ if(here){b._old=`Move ${c(q.amount)}`;btnState(b,false,'Didn\'t go through');b.dataset.sure='';const m=$('#potmsg');if(m)m.innerHTML=`<div class="sbw sbx"><i>✕</i><span>${esc(r.msg||'It didn\'t go through. Nothing was moved.')}</span></div>`;S.potq={q,cid:potCid(),sending:false};}
+ else{hap('error');toast(r.msg||'It didn\'t go through. Nothing was moved.',7000,'bad');}}
+function potClear(b){hap('warning');if(!confirm('Clear this move? Only do this after checking your balance on Kalshi: moves between pots can go again, and the unclear one is never resent.'))return;btnBusy(b);api('/app/api/act',{a:'pot_clear',cid:b.dataset.c}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
@@ -3783,6 +3825,7 @@ function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
   ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
+  ${s.fail&&s.pot?`<div class="brow" style="margin:4px 0 6px"><button class="btn acc" id="sbpot" onclick="potConfirm(S.sb&&S.sb.pot)">Move ${m2(s.pot.amount)} from ${esc(s.pot.from_name)} to ${esc(s.pot.to_name)}</button></div><div class="m" style="font-size:12px">Both pots are your own Kalshi money. Then get a fresh price to buy.</div>`:''}
   <div class="sbgo"><button class="btn ghost" onclick="sbClose()">Cancel</button>${dead||s.fail||q.used?`<button class="btn acc pri" id="sbbuy" onclick="sbQuote()">Get a fresh price</button>`:
    q.blocked?`<button class="btn pri" id="sbbuy" disabled>Can't buy this now</button>`:
    `<button class="btn qb pri ${ok?'yes':'warn'}" id="sbbuy" onclick="sbBuy(this)">${qBar(q)}${ok?'Buy':'Buy anyway'} ${m2(q.cost)} → ${m2(q.pays)}</button>`}</div>
@@ -3795,7 +3838,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
  if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
  s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
- let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked)});}
+ let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked),cost:q.cost});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
  /* the answer is always shown, even if the sheet was closed or another one opened meanwhile (a Bought or a Check Kalshi
@@ -3805,7 +3848,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
   if(free){if(r.ok)okSheet('Bought',`${m2(r.pays)} if it wins`,sub);else okSheet('Check Kalshi',null,sub,true);}
   else{hap(r.ok?'success':'error');toast((r.ok?'Bought: ':'Check Kalshi: ')+sub,9000,r.ok?'good':'bad');}return;}
  const why=r.msg||'It didn\'t go through. Nothing was bought.';
- if(here){s.fail=why;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
+ if(here){s.fail=why;s.pot=r.pot&&r.pot.ok?r.pot:null;hap('error');sbPaint();}else{hap('error');toast(why,7000,'bad');}}
 function sbClose(){closeModal();S.sb=null;}
 function lineFromBoard(t){sbOpen(t,S.lg);}
 function makerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Place orders'};
@@ -4387,7 +4430,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
  <div class="shead"><div><h1>Settings</h1><p>Planner settings are per sport. Changes save as you go.</p></div><div class="saved" id="saved"></div></div>
  <div class="chips" style="margin-bottom:18px">${d.leagues.map(([k,n,ic])=>`<button class="chip ${k===d.lg?'on':''}" onclick="sport('${k}')">${ic} ${esc(n)}</button>`).join('')}</div>
  ${scard('money','💵','Money','What each combo costs and the price you\'ll accept from Kalshi.',
-   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
+   rng('panel_budget',"Today's panel",'The most the daily panel spends in one day')+tgl('panel_live','Include games already under way','The panel may pick a game in progress when its live price beats its chance right now, worked out from a fresh score and clock (never the pre-game price), and checked again just before buying. Not EuroLeague, UFC or tennis: no live score we trust there.')+tgl('line_model','Smarter spread/total pricing','Auto: spreads and totals are priced from how each league\'s games really finish (key numbers like 3 and 7, no ties, goals), only in leagues where that has beaten the old model. Results › What\'s working shows which. Off: the old model everywhere.')+cutCard(S.panelCuts)+blockRow(d.blocks)+potRow(d.pots,d.potnames,d.potmoves)+skimRow(S.skim)+rng('stake','Per combo')+rng('budget',cap,'The most the planner spends in one '+(mode==='day'?'day':mode==='mix'?'mix':'weekend'))+rng('accept_pct','Cut-off for your own combos','Kalshi prices paying less than this share of fair get marked')+tgl('size_auto','Bet more when the price is good','$3 near the cut-off, up to $10 well above fair'))}
  ${scard('mix','🧩','Combo mix','How many of each kind to build each day, and how big each one is.',mix)}
  ${scard('games','🗓️','Games & picks','Which games go in, and how picks are spread.',days+tgl('include_live','Include games already in progress','With extra safety checks')+rng('live_min','Live picks need at least','Chance to win right now',!v.include_live)
    +rng('max_share','One pick in at most','Share of combos for any single team')+tgl('hedge_close','Split coin-flip games','Put both sides of close games across combos')+tgl('dogs_late','Underdogs late','Favourites in the early games')+tgl('skip_news','Skip games with breaking news','When Kalshi and the sportsbooks disagree a lot'))}
@@ -5187,6 +5230,11 @@ def webapp_main():
 
     def api_settings(lg, vals=None):
         pots = _pots() if vals is None else None       # reads only, outside the lock (it may ask the Mac)
+        try:                                            # pot names (public exchange status) and recent moves
+            potnames = {str(k): v for k, v in A.pot_names().items()} if vals is None else None
+            potmoves = A.pot_moves(refresh=True) if vals is None else None
+        except Exception:
+            potnames = potmoves = None
         with alock:
             if lg in A.LEAGUES and A.LEAGUE["code"] != lg:
                 A.set_league(lg)
@@ -5233,9 +5281,19 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "blocks": A.order_blocks(),
-                             "pots": pots,
+                             "pots": pots, "potnames": potnames, "potmoves": potmoves,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
+
+    def pot_plan(t, msg, cost=None):
+        """The move that would let a buy refused for its pot fill (pot_shortfall), from what the order needed: the
+        refusal's own words ("needs about $9.90"), else the cost on the sheet. Never raises; reads only."""
+        try:
+            m = re.search(r"needs about \$([0-9][0-9,]*\.?[0-9]*)", str(msg or ""))
+            need = float(m.group(1).replace(",", "")) if m else float(cost or 0)
+            return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
+        except Exception:
+            return None
 
     def api_act(d):
         try:
@@ -5357,6 +5415,8 @@ def webapp_main():
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 r = A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)
                 LIVE["at"] = 0
+                if not r.get("ok") and not r.get("check") and "market's pot has" in str(r.get("msg") or ""):
+                    r = dict(r, pot=pot_plan(t, r.get("msg"), d.get("cost")))   # offer a move (a refusal: nothing bought)
                 return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
@@ -5411,6 +5471,18 @@ def webapp_main():
                     return {"ok": False, "msg": "That block has already ended."}
                 log("order block cleared from Settings:", key)
                 return {"ok": True, "msg": "Cleared. New orders on that market can go again; the unclear one is never resent."}
+            if a == "pot_quote":                    # the move sheet's numbers (reads only)
+                return jsonable(A.pot_transfer_quote(d.get("from"), d.get("to"), str(d.get("amount", ""))[:12]))
+            if a == "pot_move":                     # Pete's second tap on the move sheet: one move, never automatic
+                r = A.pot_transfer(d.get("from"), d.get("to"), str(d.get("amount", ""))[:12],
+                                   cid=str(d.get("cid") or "")[:40], paused=paused_now())
+                log("pot move from the app:", r.get("status") or ("refused" if not r.get("check") else "check"))
+                return jsonable(r)
+            if a == "pot_clear":                    # Pete clears an open move after checking Kalshi
+                if not A.pot_clear(str(d.get("cid", ""))[:40]):
+                    return {"ok": False, "msg": "That move isn't open any more."}
+                log("pot move cleared from Settings")
+                return {"ok": True, "msg": "Cleared. Moves between pots can go again; the unclear one is never resent."}
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
@@ -5835,6 +5907,18 @@ def start_hub(conf, E, odds=None):
             return {"value": list(E.fetch_account(max_age=15, every_league=True))}
         if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
             return {"pots": E.kalshi_pots()}
+        if op == "pot_move":                             # Pete's confirmed tap: move cash between pots (never automatic)
+            paused = bool(req.get("paused"))
+            try:
+                paused = paused or (os.path.exists(CONF) and bool(load_conf().get("paused")))
+            except (OSError, ValueError, AttributeError):
+                paused = True                            # can't read the Pause switch: never move on a guess
+            log("phone pot move:", str(req.get("amount"))[:12], str(req.get("frm"))[:4], "->", str(req.get("to"))[:4])
+            return E.pot_transfer(req.get("frm"), req.get("to"), req.get("amount"), cid=req.get("cid"), paused=paused)
+        if op == "pot_clear":
+            return {"ok": E.pot_clear(str(req.get("cid") or "")[:40])}
+        if op == "pot_moves":                            # read-only: recent moves, pending ones checked with Kalshi
+            return {"moves": E.pot_moves(refresh=True)}
         if op == "get":
             url = str(req.get("url", ""))
             if not url.startswith(E.HUB_GET_HOSTS):
@@ -5849,8 +5933,10 @@ def start_hub(conf, E, odds=None):
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
             method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
-            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path):
-                return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}
+            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path) or \
+                    (method != "GET" and (not re.fullmatch(r"[A-Za-z0-9_/.:-]+", path) or ".." in path or
+                                          re.search(r"transfer|balance_allocation|subaccount", path.lower()))):
+                return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}   # moves: pot_move only
             if method != "GET":
                 log("phone order:" if "/accept" in path or path.endswith("/orders") else "phone request:", method, path)
             try:
