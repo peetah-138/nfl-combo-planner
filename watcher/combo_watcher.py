@@ -12,7 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
-import base64, hashlib, hmac, importlib.util, json, os, re, sys, threading, time, traceback
+import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
 
@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.126"
+WATCHER_VERSION = "2026.11.21.127"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -321,15 +321,24 @@ def auto_updates(conf):
 
 
 GH_API = "https://api.github.com/repos/peetah-138/nfl-combo-planner"
+GH_GIT = "https://github.com/peetah-138/nfl-combo-planner.git"
 
 
 def repo_sha():
-    """The newest commit on main (40 hex characters), or "" when GitHub doesn't say."""
+    """The newest commit on main (40 hex characters), or "" when GitHub doesn't say. Asks the API first, then
+    git's own ref list (not counted against the API's hourly limit), so a rate limit can't hold an update back."""
     try:
         r = requests.get(GH_API + "/commits/main", timeout=10, headers={"Accept": "application/vnd.github.sha"})
         sha = r.text.strip()
         if r.ok and re.fullmatch(r"[0-9a-f]{40}", sha):
             return sha
+    except requests.RequestException:
+        pass
+    try:
+        r = requests.get(GH_GIT + "/info/refs", params={"service": "git-upload-pack"}, timeout=10)
+        m = re.search(rb"(?:^|\n)[0-9a-f]{4}([0-9a-f]{40}) refs/heads/main\n", r.content) if r.ok else None
+        if m:
+            return m.group(1).decode()
     except requests.RequestException:
         pass
     return ""
@@ -388,7 +397,8 @@ def update_if_newer(E, conf):
     if not sha:
         log(f"update {latest} waiting: GitHub didn't say which commit is newest, so the web app's files can't be checked")
         return False
-    # the web app's files must be the ones the phone approved, unless this Mac takes automatic updates anyway
+    # the web app's files must be the ones the phone approved, unless this Mac takes automatic updates anyway (on
+    # purpose, #160: a phone's digest that can't be read or lags must never hold a fix back from an automatic Mac)
     approved = None if auto_updates(conf) else ok.get("spa")
     if not auto_updates(conf) and not approved:
         log(f"update {latest} waiting: your phone hasn't approved this version's web app files yet")
@@ -412,13 +422,34 @@ def update_if_newer(E, conf):
                     os.remove(path)
             log(f"update {latest} skipped: couldn't write the new files ({err}); keeping this version")
             return False
+        prev = ENGINE + ".prev"                      # the running engine, kept until both files are in place
+        copied = False
         try:
+            if os.path.isfile(prev):
+                os.remove(prev)                       # never a leftover from an earlier, interrupted update
+            if os.path.isfile(ENGINE):
+                shutil.copy2(ENGINE, prev)
+                copied = True
             os.replace(ENGINE + ".new", ENGINE)
             os.replace(me + ".new", me)
         except OSError as err:
+            try:
+                if copied:
+                    os.replace(prev, ENGINE)          # never a new engine next to the old watcher
+            except OSError:
+                pass
+            for path in (ENGINE + ".new", me + ".new"):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             spa_restore(old_spa)
-            log(f"update {latest} failed while installing ({err}); the web app's files were put back")
+            log(f"update {latest} failed while installing ({err}); the old files were put back")
             return False
+        try:
+            os.remove(prev)
+        except OSError:
+            pass
         spa_drop(old_spa)
     conf.pop("waiting", None)
     log("updated to", latest, "(automatic)" if auto else "(approved by your phone)", "- restarting")
@@ -687,6 +718,10 @@ def spa_repair(conf=None):
             conf = load_conf()
         except (OSError, ValueError):
             conf = {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    if any(os.path.exists(os.path.join(d, ".git")) for d in (here, os.path.dirname(here))):
+        log("web app files: this watcher runs from a git checkout; its spa folder is the repo's, left alone")
+        return False
     approved = None
     if not auto_updates(conf):
         ok = conf.get("approve") or {}
@@ -715,7 +750,14 @@ def spa_repair(conf=None):
 
 
 def spa_repair_start(conf):
-    threading.Thread(target=spa_repair_loop, args=(conf,), daemon=True, name="spa-repair").start()
+    def run():
+        spa_repair_loop(conf)                       # returns only once the files are installed
+        if not UPDATED.get("now"):
+            return
+        time.sleep(20)                              # the main loop exits on UPDATED; if it's stuck, exit anyway
+        log("restarting for the web app files")
+        os._exit(0)
+    threading.Thread(target=run, daemon=True, name="spa-repair").start()
 
 
 def spa_repair_loop(conf=None):
@@ -4010,8 +4052,9 @@ def main():
 # SPA_LEGACY_Z: the web app exactly as it was when it moved out of this file (develop 395a7f4; zlib + base64 of
 # SPA, a zero byte, LOGIN_HTML), for ONE release only: a Mac on 2026.11.21.126 updates with its old updater, which
 # installs only the two Python files, so the first start of this version has no spa folder; it serves this copy
-# until spa_repair has fetched the files (seconds, or whenever GitHub answers). Remove it (and this paragraph) in the
-# release after the one that ships the split. tools/verify_spa_split.py checks it matches the split's source.
+# until spa_repair has fetched the files (seconds, or whenever GitHub answers). Remove it (and this paragraph) only once
+# every device (the Mac and the Pi) reports 2026.11.21.127 or later: a device that skips this release (offline, or a
+# Pi waiting on the phone) still comes from 126 with the old updater and needs it. tools/verify_spa_split.py checks it matches the split's source.
 SPA_LEGACY_Z = (
     "eNrsvcuS41iWILaPr0B6VATJSBABgg+nk0GPycyu6ip1ZlVaRXRXleWEqkASJJEOEiwA9Ecy2NYbmY1JZhqz0azGxqy1kZl2WkoLSQt9Sv/A9CfonHMv"
     "gPsCCPeInNVUZUSAwH2ee++5533efLGMF9nDPrA22Ta6foN/W5G/W88ugt0F/A785fWbbZD51mLjJ2mQzS4O2ao7vrh+xl7v/G0wu7gNg7t9nGQX1iLe"
