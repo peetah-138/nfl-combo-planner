@@ -73,7 +73,9 @@ pattern in a local `.git/hooks/pre-commit`.
   every price/count conversion incl. 1¢/99¢, NO prices, fractional counts and reduce-only IOC sells; the fake order
   desk `fakenet.ORDERS` in V2 / legacy / both / gone modes; 410 = clean skip, timeouts/5xx = check and never resent,
   no double buy on a repeated tap, the once-a-day push when Kalshi retires something; fixtures from the OpenAPI spec in
-  `fixtures/kalshi_orders_v2.json`).
+  `fixtures/kalshi_orders_v2.json`). A refusal's true reason (`t_buyfunds.py`): the Live buy idea that said "not
+  enough money" with $69.49 in the account (55 at 17¢, through the webapp copy relaying to the Mac's), Kalshi's
+  per-shard cash pots (`fakenet.ORDERS["balance"]`/`["shards"]`), and every documented order error code's words.
   Manual single buys (`t_singlebuy.py`, issue #113): the quote's math from the fake order book (ask, gap, depth, fair,
   edge, the panel's sizing, contracts, the cap), one V2 IOC order at the quoted price per quote (never more; sub-cent
   prices exact), a higher price / thin book / over the cap / Pause / closed or unlisted market refused before anything is
