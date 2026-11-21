@@ -366,6 +366,14 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   held when tracking began counts as the app's). The panel avoids games he already bet himself.
 
 ### Live page
+- **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
+  `icon`, `legs_info` (per leg: matchup "Away at Home" / "A vs B" when home and away aren't known, plain pick "wins by 8 or
+  more" / "Over 7.5 total goals", start time or the cached live score, `live`) and `chance`/`price_c`/`fair_c`/`edge`/`profit`
+  (all from the idea's own stake, pays and pct: chance = stake·pct/pays, profit = stake·(pct−1)). `store_suggestion` saves the
+  per-leg facts in `suggestions.info`; older ideas are worked out from their tickers (`idea_describe`, `idea_legs_info`,
+  `_idea_matchup`, `_idea_plain`); nothing is fetched, and an unknown field is left out. A single's card body opens its game
+  page (`ideaOpen`); a combo's leg rows open their games. A game you hold nothing on gets its page from the idea
+  (`idea_game_leg`, only games named by a current idea). Tests: `t_ideacards.py`, `test_ideacards.py`.
 - Hero card: worth now if sold (rolling number), change vs what's in, a chart of open-bet worth (`pulse` table),
   riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
 - Hero chart (`heroChart`/`wireChart`): Day (16 h, from `/app/api/live`) or Week (`/app/api/pulse?h=168`, read-only,

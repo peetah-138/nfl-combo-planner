@@ -2122,6 +2122,12 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .dcard.gone{opacity:.6;filter:saturate(.4);animation:goneout .5s ease 3.8s forwards}@keyframes goneout{to{opacity:0;transform:scale(.97)}}
 .dcard.warn{background:linear-gradient(100deg,var(--livebg),transparent 70%),var(--panel);border-color:color-mix(in srgb,var(--live) 45%,transparent)}
 .dcard h4{margin:0;font-size:15.5px;letter-spacing:-.01em}.dcard p{margin:2px 0 0;color:var(--sub);font-size:13px}
+.ihd{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);margin-bottom:3px}
+.igame{color:var(--sub);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+.ileg{display:grid;gap:1px;padding:8px 10px;margin-top:6px;border-radius:10px;background:var(--panel2);cursor:pointer;min-width:0}
+.ileg .ilg{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}.ileg b{font-size:14px;overflow-wrap:anywhere}.ileg small{color:var(--sub);font-size:12.5px;overflow-wrap:anywhere}
+.dcard.itap{cursor:pointer}
+.dnums.ifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px 12px}.dnums.ifacts div{min-width:0}.dnums.ifacts b{overflow-wrap:anywhere}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .dnums b{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em;text-transform:none}
 .dbtns{display:flex;gap:8px;grid-row:span 2}
@@ -2945,19 +2951,37 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" onclick="openCombo('${c.t}')">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+(ideas.length?ideaBlock(ideas):'');}
+/* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
+   plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
+function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
+ if(li.kick){try{return 'Starts '+new Date(li.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'});}catch(e){}}return '';}
+function ideaAge(ts){const s=Math.max(0,Math.round(Date.now()/1000-(ts||0)));return s<60?'Price '+s+'s old':s<3600?'Price '+Math.round(s/60)+'m old':'Price '+Math.round(s/3600)+'h old';}
+function ideaHead(x,li){const lg=li&&li.league_name||x.league_name||x.sport||'';
+ return `<div class="ihd"><span>${esc(li&&li.icon||x.icon||'')} ${esc(lg)}</span><span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?'<span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</div>
+  <h4>🎯 ${esc(li&&li.plain||x.picks)}</h4>${li&&(li.game||ideaWhen(li))?`<div class="igame">${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</div>`:''}`;}
+function ideaLeg(li){if(!li||!(li.plain||li.game))return '';const tk=/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
+ return `<div class="ileg" ${tk?`onclick="openGame('${tk}')"`:''}><span class="ilg">${esc(li.icon||'')} ${esc(li.league_name||'')}</span><b>${esc(li.plain||'')}</b><small>${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</small></div>`;}
+function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
+ return `<div class="dnums ifacts"><div>Kalshi price<b>${Math.round(x.price_c)}¢</b></div><div>Fair price<b>${Math.round(x.fair_c)}¢</b></div><div>Edge<b class="${(x.edge||0)>=0?'up':'down'}">${(x.edge||0)>=0?'+':'−'}${Math.abs(Math.round((x.edge||0)*100))}% expected</b></div>
+  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
+function ideaOpen(e,t){if(e&&e.target&&e.target.closest('button,a,input,select'))return;openGame(t);}
 function ideaBlock(ideas){S.ideaq=S.ideaq||{};
  return `<h2>Buy ideas <span class="n">${ideas.length}</span><span class="r m" style="font-size:12px">Kalshi priced these at or above your cut-off</span></h2><div class="doit">${ideas.map(x=>{const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
   const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;
   if(S.ideaGone&&S.ideaGone[x.id])return `<div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div>`;
-  if(x.n===1)return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>🎯 ${esc(x.picks)} <span class="tag" style="background:var(--panel2);color:var(--sub)">SINGLE GAME</span>${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4>
-   <p>${esc(x.sport)} · found ${ago2(x.ts)} ago · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
+  if(x.n===1){const li=(x.legs_info||[])[0],tk=li&&/^[A-Z0-9._-]{3,120}$/.test(li.ticker||'')?li.ticker:'';
+   return `<div class="dcard idea ${tk?'itap ':''}${S.hl===x.id?'flash':''}" id="idea-${x.id}" ${tk?`onclick="ideaOpen(event,'${tk}')"`:''}><div>${ideaHead(x,li)}
+   <p>${esc(ideaAge(x.ts))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   <div class="dnums">${fresh?`<div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div>`:`<div>Value<b>${pct(x.pct)} of fair</b></div>`}</div></div>
+   ${ideaFacts(x)||`<div class="dnums"><div>Value<b>${pct(x.pct)} of fair</b></div></div>`}
+   ${fresh?`<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy<b>${q.n} for ${money(q.stake)} → ${money(q.pays)}</b></div></div>`:''}</div>
    <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" ${q.edge>0?'':'disabled'} onclick="buySingle('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
-    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;
-  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair ${ago2(x.ts)} ago${x.kick?' · starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+    `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get today's price</button>`}</div></div>`;}
+  return `<div class="dcard idea ${S.hl===x.id?'flash':''}" id="idea-${x.id}"><div><h4>💡 ${esc(x.picks)}${x.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">IN PROGRESS</span>':''}</h4><p>${esc(x.sport)} · ${x.n} picks · priced at <b>${pct(x.pct)}</b> of fair · ${esc(ideaAge(x.ts))}${x.kick?' · first game starts '+new Date(x.kick*1000).toLocaleTimeString([],{weekday:'short',hour:'numeric',minute:'2-digit'}):''}</p>
+   ${(x.legs_info||[]).map(li=>ideaLeg(li)).join('')}
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
-   <div class="dnums"><div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
+   ${ideaFacts(x)}
+   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div></div>
    <div class="dbtns">${fresh?`<button class="btn ghost" onclick="S.ideaq['${x.id}']=null;renderLive()">Pass</button><button class="btn yes qb" onclick="buyIdea('${x.id}')">${qBar(q)}Buy · ${left}s</button>`:
     `<button class="btn ghost" onclick="hideIdea('${x.id}')">Not now</button><button class="btn acc" id="ib-${x.id}" onclick="priceIdea('${x.id}')">Get my price</button>`}</div></div>`;}).join('')}</div>`;}
 async function priceIdea(id){const b=$('#ib-'+id);if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
@@ -5020,6 +5044,11 @@ def webapp_main():
             if game and (x["t"].split("-") + ["", ""])[1] == game and x.get("state") in ("live", "pre"):
                 combos.append({"t": x["t"], "label": x["label"], "p": x.get("chance"), "pays": x["pays"],
                                "cost": x["cost"], "legs": 1, "single": True, "worth": x.get("worth"), "how": x.get("how")})
+        if leg is None and A.STORE.get("db"):               # a game from a buy idea you hold nothing on yet (display only)
+            try:
+                leg = A.idea_game_leg(t)
+            except Exception as err:
+                A.klive_log_once("ideagame", t, err)
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):

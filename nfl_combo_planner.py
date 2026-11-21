@@ -13021,11 +13021,15 @@ def store_suggestion(c, r, pct):
     live = any(started(l) for l in c["legs"])
     kicks = [x for x in (_kick_ts(l) for l in c["legs"]) if x and x > now]   # the next game still to start
     sid = f"{int(now)}{random.randint(100, 999)}"
-    store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live) "
-            "values(?,?,?,?,?,?,?,?,?,?,?,?)",
+    try:                                              # what the card says about each game (display only)
+        info = json.dumps(idea_legs_info(c["legs"]))
+    except Exception:
+        info = None
+    store_x("insert into suggestions(id, ts, lg, legs, picks, n, pct, pays, stake, fair, kick, live, info) "
+            "values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, now, LEAGUE["code"], json.dumps([l["ticker"] for l in c["legs"]]),
              " + ".join(l["pick"] for l in c["legs"]), len(c["legs"]), round(pct, 4), round(r["pays"], 2),
-             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live)))
+             r["stake"], round(c.get("fair") or 0, 2), min(kicks) if kicks else None, int(live), info))
     if len(c["legs"]) == 1 and c["legs"][0].get("fair"):
         store_x("update suggestions set pfair=? where id=?", (c["legs"][0]["fair"], sid))
     try:                                              # who's out, for the card (from ESPN's injury report)
@@ -13051,7 +13055,177 @@ def live_suggestions(max_age=3600, limit=6):
             continue
         seen.add(r["legs"])
         out.append(dict(r, legs=json.loads(r["legs"]), sport=LEAGUES.get(r["lg"], {}).get("short", r["lg"])))
-    return out[:limit]
+    out = out[:limit]
+    for r in out:
+        r.update(idea_describe(r))
+        r.pop("info", None)
+    return out
+
+
+IDEA_AT = ("nfl", "ncaaf", "nba", "ncaamb", "ncaawb", "nhl", "ahl")    # Kalshi lists these "away at home"
+IDEA_UNIT = {"nfl": "points", "ncaaf": "points", "nba": "points", "ncaamb": "points", "ncaawb": "points",
+             "euroleague": "points", "nhl": "goals", "ahl": "goals", "soccer": "goals"}
+
+
+def _idea_kind(leg):
+    ev = str(leg.get("event") or (leg.get("ticker") or "").rsplit("-", 1)[0]).upper()
+    return leg.get("kind") or ("spread" if "SPREAD" in ev else "total" if "TOTAL" in ev else "win")
+
+
+def _idea_matchup(code, leg, kind):
+    """('Baylor at TCU', away, home), or ('Baylor vs TCU', None, None) when home and away aren't known, or ('', None,
+    None). From what the idea already holds: the game text a spread/total search found, else the pick's team and its
+    opponent read off the event code and the team names already cached. No lookups."""
+    g = str(leg.get("game") or "").strip()
+    if " at " in g:
+        a, _, h = g.partition(" at ")
+        return g, a.strip(), h.strip()
+    t = str(leg.get("ticker") or "")
+    ev, _, suf = t.rpartition("-")
+    m = re.search(r"-\d{2}[A-Z]{3}\d{2}(?:\d{4})?([A-Z0-9]+)$", ev)
+    tail, ab = (m.group(1) if m else ""), re.sub(r"\d+$", "", suf.upper())
+    if kind in ("win", "spread") and tail and ab:
+        other, mine_away = None, None
+        if tail.startswith(ab) and not tail.endswith(ab):
+            other, mine_away = tail[len(ab):], True
+        elif tail.endswith(ab) and not tail.startswith(ab):
+            other, mine_away = tail[:-len(ab)], False
+        names = sport_teams(code)
+        mine = leg.get("me") or (leg.get("pick") if kind == "win" else None) or names.get(ab) or PICK_NAME.get(t)
+        if kind == "spread" and mine:
+            mine = re.sub(r"\s+(win|lose)\b.*$", "", str(mine), flags=re.I).strip()
+        opp = leg.get("vs") or ((names.get(other) or PICK_NAME.get(f"{ev}-{other}")) if other else None)
+        if mine and opp:
+            mine, opp = team_short(code, mine), team_short(code, opp)
+            if code in IDEA_AT and mine_away is not None:
+                a, h = (mine, opp) if mine_away else (opp, mine)
+                return f"{a} at {h}", a, h
+            return f"{mine} vs {opp}", None, None
+    m2 = re.search(r"\(([^()]+ (?:at|vs) [^()]+)\)\s*$", str(leg.get("pick") or ""))
+    if m2:
+        g = m2.group(1)
+        if " at " in g:
+            a, _, h = g.partition(" at ")
+            return g, a.strip(), h.strip()
+        return g, None, None
+    return "", None, None
+
+
+def _idea_plain(code, leg, kind):
+    """The pick in plain words: 'Baylor wins by 8 or more', 'Over 7.5 total goals'. Empty when it can't be told."""
+    pick = str(leg.get("pick") or "")
+    if kind == "total":
+        m = re.match(r"\s*(Over|Under)\s+(\d+(?:\.\d+)?)", pick, re.I)
+        if not m:
+            return ""
+        unit = IDEA_UNIT.get(code, "")
+        return f"{m.group(1).title()} {float(m.group(2)):g} total" + (f" {unit}" if unit else "")
+    if kind == "spread":
+        m = re.match(r"^(.*?)\s+win by\s+(\d+(?:\.\d+)?)\+?\s*$", pick, re.I)
+        if m:
+            n = float(m.group(2))
+            by = f"{int(n + 0.5)} or more" if n % 1 == 0.5 else f"more than {n:g}"
+            return f"{m.group(1).strip()} wins by {by}"
+        m = re.match(r"^(.*?)\s+lose by under\s+(\d+(?:\.\d+)?)\s*$", pick, re.I)
+        if m:
+            return f"{m.group(1).strip()} wins, or loses by fewer than {float(m.group(2)):g}"
+        return ""
+    name = team_short(code, pick)
+    return f"{name} to win" if name else ""
+
+
+def idea_legs_info(legs):
+    """Per-leg descriptive facts stored with a buy idea (display only): plain pick, matchup, start time."""
+    out = []
+    for l in legs:
+        t = l.get("ticker") or ""
+        code = ticker_sport(t) or LEAGUE["code"]
+        kind = _idea_kind(l)
+        game, away, home = _idea_matchup(code, l, kind)
+        kick = _kick_ts(l)
+        if kick is None and l.get("start"):
+            try:
+                kick = dt.datetime.fromisoformat(str(l["start"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                kick = None
+        out.append({"ticker": t, "kind": kind, "pick": l.get("pick"), "game": game, "away": away, "home": home,
+                    "plain": _idea_plain(code, l, kind), "kick": kick})
+    return out
+
+
+def _idea_score(t):
+    """Score and clock for a game under way, from the scores already cached (nothing is fetched here), or ''."""
+    try:
+        sc = display_score({"ticker": t})
+        if sc and sc.get("me") is not None and str(sc.get("state") or "") in ("in", "live", "post"):
+            return f"{sc.get('abbr') or ''} {sc['me']}–{sc['opp']} {sc.get('opp_abbr') or ''} · {sc.get('detail') or ''}".strip(" ·")
+    except Exception:
+        pass
+    return ""
+
+
+def idea_game_leg(t):
+    """A game page's top block for a game you hold nothing on yet, built from the buy idea that names it (display
+    only; only a game in a current idea, never an arbitrary ticker). None when no idea names it."""
+    for r in live_suggestions():
+        for li in r.get("legs_info") or []:
+            if li.get("ticker") != t:
+                continue
+            code = ticker_sport(t) or r.get("lg") or ""
+            sides = re.split(r" at | vs ", li.get("game") or "")
+            plain = li.get("plain") or ""
+            name = max((s for s in sides if s and plain.startswith(s)), key=len, default=sides[0] if sides[0:1] else plain)   # longest: "Michigan State" over "Michigan"
+            opp = next((s for s in sides if s and s != name), "")
+            kind = li.get("kind") or "win"
+            if kind == "total":                         # a total has no side: the page is headed by the game itself
+                name, opp = li.get("game") or plain, ""
+            sc = display_score({"ticker": t})
+            on = bool(li.get("live"))
+            return {"ticker": t, "t": t, "name": name, "opp": opp, "sport": code, "kind": kind,
+                    "label": plain, "state": "live" if on else "pre", "phase": "", "res": None,
+                    "chance": r.get("chance") if len(r.get("legs") or []) == 1 and not on else None, "live": None,
+                    "sc": {k: sc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if sc and sc.get("me") is not None else None,
+                    "note": "", "short": "", "idea": True,
+                    "starts": when_label(dt.datetime.fromtimestamp(li["kick"], dt.timezone.utc)) if li.get("kick") and not on else ""}
+    return None
+
+
+def idea_describe(row):
+    """What a Live buy-idea card says beyond the pick: league, each leg's matchup, plain pick and start (or live
+    score), the prices, the edge, and what the stake is expected to earn. All from the idea itself and caches; a
+    fact that can't be told is left out, never guessed. Never raises."""
+    out = {}
+    try:
+        legs = row["legs"] if isinstance(row["legs"], list) else json.loads(row["legs"])
+        try:
+            info = json.loads(row.get("info") or "[]")
+        except (ValueError, TypeError):
+            info = []
+        if len(info) != len(legs):                     # an older idea: work it out from the tickers
+            picks = str(row.get("picks") or "").split(" + ")
+            info = idea_legs_info([{"ticker": tk, "pick": picks[i] if len(picks) == len(legs) else ""}
+                                   for i, tk in enumerate(legs)])
+        now, rows = time.time(), []
+        for tk, i in zip(legs, info):
+            code = ticker_sport(tk) or row.get("lg") or ""
+            kick = i.get("kick") or (row.get("kick") if len(legs) == 1 else None)
+            under_way = bool(kick and kick <= now) or (bool(row.get("live")) and len(legs) == 1)
+            spec = LEAGUES.get(code) or SPORTS.get(code) or {}
+            rows.append({"ticker": tk, "game": i.get("game") or "", "plain": i.get("plain") or "", "kind": i.get("kind"),
+                         "league_name": LEAGUE_NAME.get(league_key(tk), "Soccer") if code == "soccer" else spec.get("name", ""),
+                         "icon": spec.get("icon", ""), "kick": kick, "live": under_way,
+                         "score": _idea_score(tk) if under_way else ""})
+        out["legs_info"] = rows
+        if rows:
+            out["league_name"], out["icon"] = rows[0]["league_name"], rows[0]["icon"]
+        stake, pays, pct = row.get("stake"), row.get("pays"), row.get("pct")
+        if stake and pays and pct and pays > 0:
+            chance = min(0.999, stake * pct / pays)       # pct = pays / fair payout, so stake*pct/pays = the chance
+            out.update(chance=round(chance, 4), price_c=round(stake / pays * 100, 1), fair_c=round(chance * 100, 1),
+                       edge=round(pct - 1, 4), profit=round(stake * (pct - 1), 2))
+    except Exception:
+        out = {}
+    return out
 
 
 def _killer_combo(i):
@@ -16270,7 +16444,7 @@ def store_open(path=None):
             db.execute("alter table suggestions add column live int")   # added after the first release
         except Exception:
             pass
-        for col in ("note text", "pfair real"):
+        for col in ("note text", "pfair real", "info text"):
             try:
                 db.execute(f"alter table suggestions add column {col}")
             except Exception:
