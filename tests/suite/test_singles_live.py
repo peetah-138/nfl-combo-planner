@@ -23,12 +23,24 @@ def load():
     A.MINE["cash"]["KXMVE-1"] = {"rfq": "estimate", "offer": 9.1, "frac": 1.0, "at": time.time()}
     return A
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 VW, VH = int(os.environ.get("VW", 1440)), int(os.environ.get("VH", 900)); TAG = os.environ.get("TAG", "d")
 SING=[{"t":"KXNFLSPREAD-26NOV22BUFKC-KC7","kind":"spread","sport":"nfl","side":"yes","label":"Kansas City wins by over 6.5 points","game":"Buffalo at Kansas City: Spread","event":"KXNFLSPREAD-26NOV22BUFKC","n":10,"cost":5.2,"pays":10,"worth":7.0,"chance":0.72,"state":"live","res":None,"score":"KC 24-14 BUF Q3 4:12","starts":"","how":"Covering now · +10, needs more than 6.5","url":"","own":False,"self":False,"sell_at":8.4},
  {"t":"KXNHLGAME-26NOV18SJSVGK-SJS","kind":"win","sport":"nhl","side":"yes","label":"San Jose to win","game":"San Jose vs Vegas Winner?","event":"KXNHLGAME-26NOV18SJSVGK","n":6,"cost":3,"pays":6,"worth":2.4,"chance":0.42,"state":"pre","res":None,"score":"","starts":"Tonight 7:00 PM","how":"","url":"","own":True,"self":False,"sell_at":None}]
+def wait(pg, js, secs=20):           # wait for a state on the page, not a fixed time (slow runners vary a lot)
+    t = time.time()
+    while time.time() - t < secs:
+        try:
+            if pg.evaluate(js): return True
+        except Exception: pass
+        time.sleep(.1)
+    return False
+# Count the page's own loads; once the first Live load is over, stop the page refreshing itself, so the bets this
+# test draws are never replaced by a load that was still in flight (the old flake: a fixed 6 s was sometimes short).
+SETTLE = """(()=>{const L=window.load;window.__loads=0;window.__done=0;
+  window.load=async(...a)=>{window.__loads++;try{return await L(...a)}finally{window.__loads--;window.__done++}};})()"""
 with sync_playwright() as pw:
     br = pw.chromium.launch()
     for W,H,tag in ((390,844,"phone"),(1280,900,"desk")):
@@ -36,33 +48,36 @@ with sync_playwright() as pw:
         errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
         ACTS=[]
         pg.route("**/app/api/act", lambda r: (ACTS.append(r.request.post_data), r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok":True,"msg":"Got it."}))))
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(6); pg.evaluate("window.load=async()=>{}")
-        pg.evaluate("(s=>{if(!S.live||S.live.error)S.live={at:Date.now()/1000,combos:[],riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{}};S.live.singles=s;S.live.auto_sell=true;if(S.live.combos[0])S.live.combos[0].own=true;S.filter='all';renderLive()})("+json.dumps(SING)+")"); time.sleep(.6)
+        pg.goto(B + "/app"); pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=30000)
+        pg.evaluate(SETTLE); pg.evaluate("go('live')")
+        if not wait(pg, "window.__done>0&&window.__loads===0", 60): print("PROBLEMS: Live never finished loading")
+        pg.evaluate("window.load=async()=>{}")
+        pg.evaluate("(s=>{if(!S.live||S.live.error)S.live={at:Date.now()/1000,combos:[],riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{}};S.live.singles=s;S.live.auto_sell=true;if(S.live.combos[0])S.live.combos[0].own=true;S.filter='all';renderLive()})("+json.dumps(SING)+")"); wait(pg, "document.querySelectorAll('.srow1').length===2", 5)
         n=pg.locator(".srow1").count(); txt=pg.locator(".stbl").inner_text() if pg.locator(".stbl").count() else ""
         print(tag,"single rows:",n,"| covering shown:","Covering now" in txt,"| tags:", "You, on Kalshi" in txt and "From the app" in txt, "| note:", pg.locator("text=leave them alone").count())
         if n!=2 or "Covering now" not in txt: print("PROBLEMS: singles not shown right")
-        pg.evaluate("(s=>{S.live.singles=s;S.live.auto_sell=true;renderLive()})("+json.dumps(SING)+")"); time.sleep(.2)
+        pg.evaluate("(s=>{S.live.singles=s;S.live.auto_sell=true;renderLive()})("+json.dumps(SING)+")"); wait(pg, "document.querySelectorAll('.stbl .ss').length===2", 5)
         chips = pg.locator(".stbl .ss"); print(tag, "smart sell chips:", chips.count(), "| first:", chips.first.inner_text())
         if chips.count() != 2 or "Smart sell" not in chips.first.inner_text() or "8.40" not in chips.first.inner_text(): print("PROBLEMS: smart sell chip missing")
-        chips.first.click(); time.sleep(1)
+        chips.first.click(); wait(pg, "/sell it/.test(document.querySelector('.stbl .ss').innerText)&&!!(document.querySelector('.toast')||{}).innerText", 10)
         t1 = pg.locator(".stbl .ss").first.inner_text(); toast = pg.evaluate("(document.querySelector('.toast')||{}).innerText")
         print(tag, "after tap:", t1, "| toast:", toast)
         if "sell it" not in t1 or not toast: print("PROBLEMS: switching to I'll sell it didn't take")
-        pg.locator(".stbl .ss").first.click(); time.sleep(1)
+        pg.locator(".stbl .ss").first.click(); wait(pg, "/Smart sell/.test(document.querySelector('.stbl .ss').innerText)", 10)
         if "Smart sell" not in pg.locator(".stbl .ss").first.inner_text(): print("PROBLEMS: switching back didn't take")
         if pg.locator(".srow1").first.evaluate("e=>e.classList.contains('open')") : pass
-        pg.evaluate("(s=>{S.live.singles=s;S.live.auto_sell=true;S.filter='nhl';renderLive()})("+json.dumps(SING)+")"); time.sleep(.3)
+        pg.evaluate("(s=>{S.live.singles=s;S.live.auto_sell=true;S.filter='nhl';renderLive()})("+json.dumps(SING)+")"); wait(pg, "document.querySelectorAll('.srow1').length===1", 5)
         nn=pg.locator(".srow1").count(); print("nhl rows:", nn, pg.evaluate("S.filter"), pg.evaluate("(S.live.singles||[]).length"))
         if nn!=1: print("PROBLEMS: sport chip doesn't filter singles")
-        pg.evaluate("S.filter='all';renderLive()"); time.sleep(.3)
+        pg.evaluate("S.filter='all';renderLive()"); wait(pg, "document.querySelectorAll('.srow1').length===2", 5)
         pg.locator(".stbl").scroll_into_view_if_needed(); pg.screenshot(path=f"singles_{tag}.png")
         ow = pg.evaluate("document.documentElement.scrollWidth>innerWidth+1")
         if ow: print("PROBLEMS: page scrolls sideways")
         pg.route("**/app/api/game?*", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"leg":dict(SING[0],live=.72,sc={"me":24,"opp":14,"abbr":"KC","opp_abbr":"BUF","detail":"Q3"}),"combos":[{"t":SING[0]["t"],"label":SING[0]["label"],"p":.72,"pays":10,"cost":5.2,"legs":1,"single":True,"how":"Covering now"}],"story":{"ticks":[],"plays":[]},"whatif":None})))
-        pg.evaluate("(s=>{S.live.singles=s;S.filter='all';renderLive()})("+json.dumps(SING)+")"); time.sleep(.3)
+        pg.evaluate("(s=>{S.live.singles=s;S.filter='all';renderLive()})("+json.dumps(SING)+")"); wait(pg, "document.querySelectorAll('.srow1').length===2", 5)
         pg.locator(".srow1").first.click()
         sheet = ""
-        for _ in range(40):                    # wait for the game sheet itself, not a fixed time
+        for _ in range(120):                    # wait for the game sheet itself, not a fixed time
             time.sleep(.25)
             sheet = pg.evaluate("(document.querySelector('#sheet')||{}).innerText||''")
             if "your bets on this game" in sheet.lower(): break
