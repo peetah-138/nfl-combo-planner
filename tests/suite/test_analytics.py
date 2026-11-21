@@ -23,7 +23,7 @@ def load():
     A.MINE["cash"]["KXMVE-1"] = {"rfq": "estimate", "offer": 9.1, "frac": 1.0, "at": time.time()}
     return A
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 from playwright.sync_api import sync_playwright
 VW, VH = int(os.environ.get("VW", 1440)), int(os.environ.get("VH", 900)); TAG = os.environ.get("TAG", "d")
@@ -38,17 +38,36 @@ AN={"at":time.time()-120,"levels":[{"band":"80–85%","n":12,"hit":0.2,"exp":0.2
   {"lg":"nhl","name":"NHL","kind":"total","on":False,"why":"Didn't clearly beat the old model on 3,000 past games","bt_games":3000,"bt_old":0.68,"bt_new":0.679,"live_n":0,"live_old":None,"live_new":None}],
  "notes":["Combos priced 95–100% of fair have done best so far: +3% riding to the end over 44 quotes.","Not enough results yet for 80–85% (30+ each before reading much into them)."]}
 SING=[{"t":"S1","kind":"spread","sport":"nfl","side":"yes","label":"KC wins by over 6.5","game":"BUF at KC","event":"E","n":10,"cost":5.2,"pays":10,"worth":7.0,"chance":0.72,"state":"live","res":None,"score":"","starts":"","how":"","url":"","own":True,"self":False,"sell_at":8.4}]
+def wait(pg, js, secs=30):           # wait for a state on the page, not a fixed time (slow runners vary a lot)
+    t = time.time()
+    while time.time() - t < secs:
+        try:
+            if pg.evaluate(js): return True
+        except Exception: pass
+        time.sleep(.1)
+    return False
+def saved(key, want, secs=15):        # the Mac's copy of a setting, polled until it says `want`
+    t = time.time(); v = None
+    while time.time() - t < secs:
+        try:
+            v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}, timeout=5).json().get("values", {}).get(key)
+        except Exception as e:
+            v = "unreachable: %s" % type(e).__name__
+        if v is want: break
+        time.sleep(.2)
+    return v
 with sync_playwright() as pw:
-    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark")
+    br = pw.chromium.launch(); pg = br.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme="dark"); pg.add_init_script(__import__("upwait").COUNT_FETCHES)   # counts requests from the boot load on
     errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.route("**/app/api/analytics", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(AN)))
-    pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('results')"); time.sleep(8)
+    pg.goto(B + "/app"); pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=30000)
+    pg.evaluate("go('results')"); wait(pg, "document.querySelectorAll('.an .anrow:not(.h)').length>=2", 40)
     print("card:", pg.locator(".an").count(), "| rows:", pg.locator(".an .anrow:not(.h)").count())
     if pg.locator("text=What's working").count() != 1 or pg.locator(".an .anrow:not(.h)").count() != 2: print("PROBLEMS: analytics card missing")
     for tab, want in (("Bet types", "Spreads & totals"), ("Sports", "NHL"), ("Selling", "Cashed out early")):
-        pg.locator(".ant button", has_text=tab).click(); time.sleep(.3)
+        pg.locator(".ant button", has_text=tab).click(); wait(pg, "(document.querySelector('.an')||{innerText:''}).innerText.includes(%s)" % json.dumps(want), 5)
         if pg.locator(".an", has_text=want).count() != 1: print("PROBLEMS: tab", tab, "didn't show", want)
-    pg.locator(".ant button", has_text="Bet types").click(); time.sleep(.3)
+    pg.locator(".ant button", has_text="Bet types").click(); wait(pg, "(document.querySelector('.an')||{innerText:''}).innerText.includes('Bought during the game')", 5)
     lt = pg.locator(".an").inner_text()
     if "Bought during the game, by league" not in lt or "NBA" not in lt or "EuroLeague, UFC and tennis" not in lt:
         print("PROBLEMS: bets bought during games aren't their own group by league in What's working:", lt[-300:])
@@ -56,7 +75,7 @@ with sync_playwright() as pw:
             or "Didn't clearly beat" not in lt or pg.locator(".an .tag.good", has_text="New").count() != 1:
         print("PROBLEMS: Results › What's working doesn't show spreads/totals old vs new with sample sizes and which model is on:", lt[-500:])
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Bet types tab scrolls sideways on a phone")
-    pg.locator(".ant button", has_text="Selling").click(); time.sleep(.3)
+    pg.locator(".ant button", has_text="Selling").click(); wait(pg, "!!document.querySelector('.an .cut-held')", 5)
     if pg.locator(".an", has_text="3 smart").count() != 1: print("PROBLEMS: auto-sale counts missing")
     ch = pg.locator(".an .cut-held").inner_text()
     if "2 too early in the game" not in ch or "1 halftime or a break" not in ch: print("PROBLEMS: loss cuts held back by the guards missing:", ch)
@@ -68,26 +87,25 @@ with sync_playwright() as pw:
     pg.locator(".ant button", has_text="Combo price levels").click(); time.sleep(.3)
     pg.locator(".an").scroll_into_view_if_needed(); pg.locator(".an").screenshot(path="an_phone.png")
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Results scrolls sideways on a phone")
-    pg.evaluate("go('settings')"); time.sleep(4)
+    pg.evaluate("go('settings')"); wait(pg, "[...document.querySelectorAll('label.srow')].some(e=>e.innerText.includes('Smarter spread/total pricing'))", 40)
     row = pg.locator("label.srow", has_text="Include games already under way")
     if row.count() != 1 or not row.locator("input").is_checked() or "EuroLeague" not in row.inner_text():
         print("PROBLEMS: Settings › Money has no 'Include games already under way' switch (on by default, naming the leagues left out)")
     else:
-        row.locator("input").click(); time.sleep(1.5)
-        v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get("panel_live")
+        row.locator("input").click(); v = saved("panel_live", False)
         if v is not False: print("PROBLEMS: turning off 'Include games already under way' didn't save:", v)
-        row.locator("input").click(); time.sleep(1.5)
+        row.locator("input").click()
+        if saved("panel_live", True) is not True: print("PROBLEMS: turning 'Include games already under way' back on didn't save")
     row = pg.locator("label.srow", has_text="Smarter spread/total pricing")
     if row.count() != 1 or not row.locator("input").is_checked() or "beaten the old model" not in row.inner_text():
         print("PROBLEMS: Settings › Money has no 'Smarter spread/total pricing' switch (auto by default)")
     else:
-        row.locator("input").click(); time.sleep(1.5)
-        v = __import__('requests').get(B + "/app/api/settings?lg=nba", headers={"X-CW": "x"}).json().get("values", {}).get("line_model")
+        row.locator("input").click(); v = saved("line_model", False)
         if v is not False: print("PROBLEMS: turning off 'Smarter spread/total pricing' didn't save:", v)
         row.locator("input").click(); time.sleep(1.5)
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
-    pg.evaluate("go('live')"); time.sleep(6); pg.evaluate("window.load=async()=>{}")
-    pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); time.sleep(1.2)
+    __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
+    pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s
     k = pg.locator(".kpis").inner_text().replace("\n"," | "); print("kpis:", k)
     if "2 bets" not in k or "$8.20" not in k or "$9.94" not in k or "$29" not in k: print("PROBLEMS: Live top numbers don't include singles")
     item = {"id": "single:X", "kind": "single", "live": True, "kick": time.time() - 1800, "buy_at": time.time(), "stake": 4,
