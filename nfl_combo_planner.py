@@ -2119,6 +2119,23 @@ def realized_ts(a, st=None):
     return a.get("cashed_at") or a.get("settled_at") or st
 
 
+def done_stamp(a, cache):
+    """When a settled bet's money moved, as a unix time, for the date on Live's Settled cards (issue #207, display
+    only): realized_ts (cash-out sell, else Kalshi's settlement time, else the Mac's own record of it settling, read
+    once per page build into `cache`). None when nothing is timestamped; never raises."""
+    try:
+        ts = a.get("cashed_at") or a.get("settled_at")
+        if not ts and STORE.get("db"):
+            if cache.get("mac") is None:
+                cache["mac"] = {r["combo"]: r["settled"] for r in store_rows(
+                    "select combo, settled from bets where settled is not null")}
+            ts = cache["mac"].get(a.get("ticker"))
+        ts = realized_ts(a, float(ts) if ts else None)
+        return float(ts) if ts else None
+    except Exception:
+        return None
+
+
 def realized_buckets(a, st=None):
     """(day, week_key) for the Results "Profit by day/week" bars, both from ONE realized date in ONE
     local timezone so a bet can't land in different buckets (issue #91). Precedence: the realized
@@ -9062,6 +9079,7 @@ def mine_page(live=False):
 
     order = {ev: i for i, ev in enumerate(all_games)}
     snap = {}
+    _done_cache = {}                               # the Mac's settle times, read once if a card needs them (#207)
     MINE["hold"] = {}
     MINE["tp"] = resting_sells() if can_trade() and any(a["status"] == "pending" for a in mine) else {}
     for i, (a, inf) in enumerate(zip(mine, infos), 1):
@@ -9259,7 +9277,8 @@ def mine_page(live=False):
         views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
                       "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
                       "full": a.get("full_pays") or 0, "when": when, "live": any_live and not gone_live, "sort": sort_t,
-                      "preview": preview, "legs": vlegs, "week": a.get("week")})
+                      "preview": preview, "legs": vlegs, "week": a.get("week"),
+                      "done_at": done_stamp(a, _done_cache) if group != "pending" else None})
         cards.append((group, f"<details class='crow' id='c-{e(a['ticker'])}' data-lg='{' '.join(sports)}' "
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "
                      f"data-p='{p:.5f}' data-i='{i}'><summary>"
