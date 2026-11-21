@@ -14178,11 +14178,12 @@ def store_suggestion(c, r, pct):
     return sid
 
 
-def live_suggestions(max_age=3600, limit=6):
-    """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks."""
+def live_suggestions(max_age=3600, limit=6, newest=False):
+    """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks (newest=True:
+    the newest quote of each, which is what the Live page ranks and dates)."""
     now = time.time()
     rows = store_rows("select * from suggestions where ts > ? and (kick is null or kick > ?) "
-                      "and (coalesce(live, 0) = 0 or ts > ?) order by pct desc",
+                      "and (coalesce(live, 0) = 0 or ts > ?) order by " + ("ts desc" if newest else "pct desc"),
                       (now - max_age, now + 300, now - 600))      # in-progress ideas go stale in 10 minutes
     seen, out = set(), []
     for r in rows:
@@ -14282,15 +14283,35 @@ def _idea_history(keys, now):
                           (now - 86400,))
         want = set(keys)
         for r in rows:
-            k = idea_key(json.loads(r["legs"]))
-            if k in want and r["stake"]:
-                out.setdefault(k, []).append([round(r["ts"]), round(r["stake"] / r["pays"] * 100, 1)])
+            try:
+                k = idea_key(json.loads(r["legs"]))
+                if k in want and r["stake"]:
+                    out.setdefault(k, []).append([round(r["ts"]), round(r["stake"] / r["pays"] * 100, 1)])
+            except (ValueError, TypeError, KeyError):
+                continue                                         # one odd row never loses everyone's price line
     except Exception:
         return {}
     return {k: v[-30:] for k, v in out.items() if len(v) >= 2}
 
 
-def live_ideas(now=None, info=None):
+def _held_idea_markets():
+    """(single tickers, combo leg sets) you already hold, from the Live snapshot the app last built (no lookups), so an
+    idea you bought another way (Build, another phone, the panel) doesn't stay offered. Empty when unknown."""
+    singles, combos = set(), set()
+    try:
+        view = MINE.get("view") or {}
+        for x in view.get("singles") or []:
+            if x.get("t") or x.get("ticker"):
+                singles.add(x.get("t") or x.get("ticker"))
+        for c in view.get("combos") or []:
+            if c.get("group") == "pending":
+                combos.add(frozenset(l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")))
+    except Exception:
+        pass
+    return singles, combos
+
+
+def live_ideas(now=None, info=None, keep=IDEA_KEEP):
     """The Buy ideas for Live: ranked by expected profit in dollars at the suggested stake (edge x stake after the
     fee, from fields the idea already holds), best first, ideas under the quality bar last. Each carries a stable
     `idea_id` and `key`, `rank`, `ep` (expected dollars), `below_bar`, `age` and `stale` (a price older than
@@ -14300,13 +14321,16 @@ def live_ideas(now=None, info=None):
     waiting}. Never raises."""
     now = now or time.time()
     try:
-        rows = live_suggestions(limit=IDEA_POOL)
+        rows = live_suggestions(limit=IDEA_POOL, newest=True)
         st = _idea_state(now)
+        held_s, held_c = _held_idea_markets()
         gone, hidden, out = [], 0, []
         for r in rows:
             r["key"], r["idea_id"] = idea_key(r["legs"]), idea_id(r["legs"])
             if r["key"] in st["bought"]:
                 continue
+            if (len(r["legs"]) == 1 and r["legs"][0] in held_s) or frozenset(r["legs"]) in held_c:
+                continue                                         # already yours (bought somewhere else)
             if not r.get("live") and any(li.get("live") for li in r.get("legs_info") or []):
                 continue                                         # a pre-game idea whose game has started
             base = st["items"].get(r["key"])
@@ -14328,7 +14352,7 @@ def live_ideas(now=None, info=None):
                     st2["items"].pop(k, None)
                 save_json(IDEA_DISMISS, st2)
         out.sort(key=lambda r: (r["below_bar"], -r["ep"], -(r.get("pct") or 0), -(r.get("ts") or 0)))
-        out = out[:IDEA_KEEP]
+        out = out[:keep]
         hist = _idea_history([r["key"] for r in out], now)
         for i, r in enumerate(out):
             r["rank"] = i + 1
@@ -14348,7 +14372,7 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None):
     currently on the list can be dismissed (an id the Mac doesn't know is ignored). Returns {'n', 'ids'}."""
     now = now or time.time()
     ids = {str(i) for i in (ids or [])}
-    cur = live_ideas(now)
+    cur = live_ideas(now, keep=IDEA_POOL)                  # Clear all clears the whole pool, not just the top few
     take = [r for r in cur if everything or r["idea_id"] in ids]
     if not take:
         return {"n": 0, "ids": []}

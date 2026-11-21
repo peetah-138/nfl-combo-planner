@@ -17,6 +17,9 @@ function foldTog(k){hap('selection');const o=!foldOpen(k);try{localStorage.setIt
  document.querySelectorAll(`.fold[data-fk="${k}"]`).forEach(f=>f.classList.toggle('shut',!o));}
 
 /* ---- the list */
+/* a notification that names an idea: open the fold and the "more" list if it sits in them, so it can be scrolled to */
+function ideaReveal(id){const d=S.live;if(!d||!Array.isArray(d.ideas))return;const all=ideaList(d),i=all.findIndex(x=>x.id===id);if(i<0)return;
+ try{localStorage.setItem('cw_fold_ideas','1');}catch(e){}if(i>=(+d.ideas_limit>0?+d.ideas_limit:all.length))S.ideasMore=true;renderLive();}
 function ideaList(d){const hid=S.idHide||{},now=Date.now();   // a dismissal shows at once; the Mac's own list takes over a few seconds later
  return (d.ideas||[]).filter(x=>{const t=hid[x.idea_id||x.id];return !(t&&now-t<9000);});}
 function ideaBar(x){return (x.below_bar?'<span class="tag" style="background:var(--panel2);color:var(--sub)">BELOW YOUR BAR</span>':'')+(x.stale?'<span class="tag itag-stale">REFRESHING</span>':'');}
@@ -61,9 +64,10 @@ function ideasMoreTog(b){hap('selection');S.ideasMore=!S.ideasMore;b.classList.t
    the gap, then the Mac remembers (until the price or edge improves, or tomorrow); Undo brings it straight back. */
 function ideaOut(ids,done){const els=ids.map(i=>document.querySelector(`.iw[data-id="${i}"]`)).filter(Boolean);
  if(!els.length||matchMedia('(prefers-reduced-motion: reduce)').matches){done();return;}
+ S.scrub=true;   // the page holds still while the cards slide out (a refresh now would put them back)
  els.forEach((el,i)=>{const h=el.offsetHeight;el.style.height=h+'px';el.style.overflow='hidden';el.style.setProperty('--d',(i*50)+'ms');el.offsetHeight;el.classList.add('out');});
  setTimeout(()=>els.forEach(el=>{el.style.height='0px';el.style.marginBottom='-10px';el.style.opacity='0';}),170+(els.length-1)*50);
- setTimeout(done,470+(els.length-1)*50);}
+ setTimeout(()=>{S.scrub=false;done();},470+(els.length-1)*50);}
 async function ideaSend(list,why){S.idHide=S.idHide||{};const keys=list.map(x=>x.idea_id||x.id);keys.forEach(k=>{S.idHide[k]=Date.now();});S.ideaBack=null;renderLive();
  const r=await api('/app/api/act',{a:'idea_dismiss',ids:keys,why}).catch(()=>null);
  if(!r||!r.ok){keys.forEach(k=>{delete S.idHide[k];});renderLive();toast('Couldn\'t hide that just now. Try again.',3500);return;}
@@ -80,7 +84,8 @@ function hideIdea(id){ideaX(id);}                       // the card's "Not now" 
 function ideaNotNowSheet(id){const x=ideaFind(id);closeModal();if(x)setTimeout(()=>ideaOut([x.id],()=>ideaSend([x],'later')),340);}
 function ideaClearAll(){const xs=ideaList(S.live||{});if(!xs.length)return;hap('light');ideaOut(xs.map(x=>x.id),()=>ideaSend(xs,'later'));}
 /* a bought idea (or one Kalshi no longer lists) is dropped quietly, no Undo: bought ones never come back */
-function ideaDrop(id,why){const x=ideaFind(id);if(!x)return;if(S.ideaOpen&&S.ideaOpen===(x.idea_id||x.id))closeModal();ideaSend([x],why);}
+function ideaDrop(id,why,x0){const x=ideaFind(id)||x0;if(!x)return;   // x0: the idea as it was when the buy started, in case a refresh replaced the list meanwhile
+ if(S.ideaOpen&&S.ideaOpen===(x.idea_id||x.id))closeModal();ideaSend([x],why);}
 function undoBar(msg,fn){let b=$('#undo');if(!b){b=document.createElement('div');b.id='undo';b.setAttribute('role','status');b.setAttribute('aria-live','polite');document.body.appendChild(b);}
  clearTimeout(b._t);b._fn=fn;b.innerHTML=`<span>${esc(msg)}</span><button type="button" onclick="undoGo()">Undo</button>`;b.hidden=false;void b.offsetWidth;b.classList.add('on');b._t=setTimeout(undoHide,6000);}
 function undoGo(){const b=$('#undo'),f=b&&b._fn;undoHide();if(f)f();}
@@ -124,7 +129,7 @@ function ideaSell(x){if(x.n>1)return `<p>Combos are sold back to Kalshi at its o
  const D=S.ideaDepth&&S.ideaDepth.id===(x.idea_id||x.id)?S.ideaDepth.d:null;if(!D)return `<p class="m">Checking Kalshi's order book…</p>`;if(D.err)return `<p class="m">${esc(D.err)}</p>`;
  const gap=D.spread!=null?Math.round(D.spread*100):null,c=v=>v!=null?Math.round(v*100)+'¢':'—';
  return `<div class="dkpis"><div><span>Bid</span><b>${c(D.bid)}</b></div><div><span>Ask</span><b>${c(D.ask)}</b></div><div><span>Gap</span><b>${gap!=null?gap+'¢':'—'}</b></div><div><span>At the ask</span><b>${D.ask_size!=null?Math.round(D.ask_size):'—'}</b></div></div>
-  <p class="m">${gap!=null&&gap<=6&&!D.thin?'Easy to sell back: the gap is small, so selling early would cost little.':'Harder to sell early: the gap is wide or the book is thin, so selling before the game would give up a lot.'}</p>`;}
+  <p class="m">${gap!=null&&gap<=6?'Easy to sell back: the gap is small, so selling early would cost little.'+(D.ask_size!=null&&D.ask_size<100?' Only '+Math.round(D.ask_size)+' contracts are at the ask, so a big sale could move the price.':''):'Harder to sell early: the gap is wide or the book is empty, so selling before the game would give up a lot.'}</p>`;}
 function ideaMoved(x){const h=x.hist;if(!h||h.length<2)return '';const v=h.map(p=>p[1]),lo=Math.min(...v)-.5,hi=Math.max(...v)+.5,W=300,H=56,last=v[v.length-1],first=v[0];
  if(Math.max(...v)-Math.min(...v)<.05)return `<h2 style="margin:18px 0 6px">How the price has moved</h2><p class="m">It hasn't moved since it was found: ${Math.round(first)}¢ (cents paid for each $1 it pays).</p>`;
  const path=sparkPath(h,W,H-6,lo,hi);const col=last<=first?'var(--yes)':'var(--no)';
@@ -148,7 +153,7 @@ function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').
  const x=ideaFind(id),sh=$('#sheet');
  if(!x){const sig='gone';if(S.ideaSig===sig)return;S.ideaSig=sig;pushFill('<h3>Not on the list any more</h3><p>This idea was bought, dismissed or has expired. New ones show up on Live.</p>','Buy idea');return;}
  const q=S.ideaq[x.id],fresh=q&&Date.now()/1000-q.at<20,left=fresh?Math.round(20-(Date.now()/1000-q.at)):0;
- const sig=JSON.stringify([x.id,x.price_c,x.edge,x.stale,x.hist&&x.hist.length,fresh?q.at:0,left,S.ideaDepth&&S.ideaDepth.id===id?S.ideaDepth.d:0]);
+ const sig=JSON.stringify([x.id,x.price_c,x.edge,x.stale,x.below_bar,Math.floor(Date.now()/15000),x.hist&&x.hist.length,fresh?q.at:0,left,S.ideaDepth&&S.ideaDepth.id===id?S.ideaDepth.d:0]);
  if(S.ideaSig===sig)return;S.ideaSig=sig;const top=sh.scrollTop;pushFill(ideaBody(x),'Buy idea');sh.scrollTop=top;}
 
 /* ---- getting a price and buying: the same guarded Mac paths as always */
@@ -157,9 +162,9 @@ async function priceIdea(id){document.querySelectorAll(`[data-ib="${id}"]`).forE
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
  S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single};renderLive();
  clearInterval(S.ideaT);S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
-async function buyIdea(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
- toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok||r.check)ideaDrop(id,'bought');else renderLive();load('live',true);}
-async function buySingle(id){const q=S.ideaq[id];if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
- toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok||r.check)ideaDrop(id,'bought');else renderLive();load('live',true);}
+async function buyIdea(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'buy',i:q.i});S.ideaq[id]=null;
+ toast(r.ok?`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`:(r.msg||'Didn\'t go through.'),6000);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
+async function buySingle(id){const q=S.ideaq[id],x0=ideaFind(id);if(!q)return;const r=await api('/app/api/act',{a:'singlebuy',id,n:q.n,price:q.price});S.ideaq[id]=null;
+ toast(r.msg||(r.ok?'Bought.':'Didn\'t go through.'),6000,r.ok?'good':null);if(r.ok||r.check)ideaDrop(id,'bought',x0);else renderLive();load('live',true);}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
  setTimeout(()=>{delete S.ideaGone[id];ideaDrop(id,'gone');},4500);}

@@ -2541,7 +2541,7 @@ def webapp_main():
             ideas = jsonable(A.live_ideas(info=info)) if A.STORE.get("db") else []
             ideas_extra = {"ideas_limit": A.ideas_shown(), "ideas_hidden": info.get("hidden", 0)}
         except Exception:
-            ideas, ideas_extra = [], {}
+            ideas, ideas_extra = None, {}                      # unreadable: the page leaves the section out, not "nothing clears"
         try:
             orders = jsonable(A.maker_summary()["open"]) if A.STORE.get("db") else []
         except Exception:

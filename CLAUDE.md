@@ -625,6 +625,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   ("Recent results aren't available right now", "Not available"). Bars and numbers slide/roll when the game changes them.
   The `GAME_DETAIL` sweep walks a copy (another web thread may insert). Tests: `t_gametabs`, `test_gametabs` (fixture
   `espn_game_tabs.json`: trimmed real ESPN responses). Other sports' tabs are still to come (#72).
+- **Buy ideas: ration, dismiss, fold, detail (GitHub #141, display and filtering only; buying still goes through
+  `priceIdea`/`buyIdea`/`buySingle` and the guarded Mac paths).** `live_ideas()` (engine) ranks the ideas by expected
+  profit in dollars at the suggested stake (`ep` = stake x (share of fair - 1), fields the idea already holds; ideas
+  under the green Buy's bar, `green_bar`, or a single with no edge left sort last and say "below your bar"), gives each a
+  stable `idea_id`/`key` (the sorted leg tickers, same on every re-offer), and marks a price older than 2 minutes
+  `stale` ("refreshing"; the card stays, Get today's price is the refresh). Dismissed ideas (X, swipe left, Not now,
+  Clear all) live in `combo_idea_dismiss.json` (today only; back when the edge improves 3+ points or the price drops
+  2+ cents; Undo toast), bought ones never come back (kept 3 days); `idea_dismiss`/`idea_undo`/`idea_depth` are
+  acts on the web app that take no app lock and move no money. Settings > Money > "Buy ideas shown" (`ideas_shown`,
+  default 3, 1-10, shared) sets how many show; the rest fold under "N more ideas". A pre-game idea whose game has
+  started is dropped. Live's three sections (Buy ideas, Your combos, Single bets & spreads) fold with a chevron
+  button (`cw_fold_*` per phone, count badge stays). Tapping a card body pushes a detail page (`openIdea`: price vs
+  fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
+  The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
+  is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

@@ -127,6 +127,12 @@ with sync_playwright() as pw:
         sw = pg.evaluate("({x:!!document.querySelector('.ilist .ix>.hsw'),f:!!document.querySelector('.lsec .fbtn>.hsw'),m:!!document.querySelector('.imore>.hsw'),c:!!document.querySelector('.dcard.idea>.hsw')})")
         if not (sw["x"] and sw["f"] and sw["m"]): bad(f"{tag}: the X, the fold button and the 'more' button are compact controls and should carry the haptic switch: {sw}")
         if sw["c"]: bad(f"{tag}: a whole card must not carry a haptic switch")
+        # ---- a notification naming an idea that sits in the folded section / the 'more' list opens them so it can be seen
+        last_id = pg.evaluate("S.live.ideas[4].id")
+        pg.evaluate("localStorage.setItem('cw_fold_ideas','0');renderLive()"); time.sleep(.4)
+        pg.evaluate("S.hl='%s';ideaReveal(S.hl)" % last_id); time.sleep(.8)
+        if not pg.evaluate("(()=>{const e=document.getElementById('idea-%s');return !!e&&e.getBoundingClientRect().height>30&&!e.closest('.fold.shut')})()" % last_id): bad(f"{tag}: an idea named by a notification should be revealed (section and 'more' list opened)")
+        pg.evaluate("localStorage.removeItem('cw_fold_ideas');S.hl=null;S.ideasMore=false;renderLive()"); time.sleep(.4)
         # ---- X dismisses: the card slides out, the list closes the gap, the Mac remembers, Undo brings it back
         docy2 = lambda i: pg.evaluate("(()=>{const e=document.querySelectorAll('.ilist .iw')[%d];return e.getBoundingClientRect().top+scrollY})()" % i)
         y_before = docy2(0)

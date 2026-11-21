@@ -154,3 +154,23 @@ open(E.IDEA_DISMISS, "w").write("{not json")
 ok("a broken dismissal file reads as nothing dismissed", len(E.live_ideas()) >= 4)
 open(E.IDEA_DISMISS, "w").write(json.dumps({"day": time.strftime("%Y-%m-%d"), "items": [1, 2], "bought": "x"}))
 ok("a wrong-shaped dismissal file is ignored too", len(E.live_ideas()) >= 4)
+
+# ---- review fixes: the newest quote is the one ranked and dated; an idea you already hold is dropped; Clear all clears the whole pool
+os.remove(E.IDEA_DISMISS)
+tN, sN = single("NNNXXX", 5.0, 20, 1.50)                                  # an old, rich quote...
+E.store_x("update suggestions set ts=? where id=?", (now - 1800, sN))
+single("NNNXXX", 5.0, 20, 1.04)                                            # ...then a newer, poorer one
+nn = [r for r in E.live_ideas() if r["picks"] == "NNNXXX"][0]
+ok("the newest quote of a market is the one ranked and dated (not its best of the hour)", abs(nn["edge"] - 0.04) < .001 and nn["age"] < 60 and not nn["stale"])
+E.MINE["view"] = {"singles": [{"t": tC, "state": "pre"}], "combos": [{"group": "pending", "legs": [{"ticker": c2}, {"ticker": c1}]}]}
+held = [r["picks"] for r in E.live_ideas()]
+ok("an idea for a single you already hold is dropped", "CCCXXX" not in held and "BBBXXX" in held)
+ok("so is a combo whose picks you already hold as a combo", not any(p.startswith("DDDXXX") for p in held))
+E.MINE.pop("view")
+ok("with nothing known to be held they all show again", "CCCXXX" in [r["picks"] for r in E.live_ideas()])
+for i in range(20):
+    single(f"Z{i:02d}XXX", 3.0, 10, 1.20 + i / 1000)
+total = len(E.live_suggestions(limit=E.IDEA_POOL, newest=True))
+ok("the page gets at most IDEA_KEEP ideas", len(E.live_ideas()) == E.IDEA_KEEP)
+r = E.idea_dismiss(everything=True)
+ok("Clear all clears the whole ranked pool, not just the top few", r["n"] == min(total, E.IDEA_POOL) and r["n"] > E.IDEA_KEEP and E.live_ideas() == [])
