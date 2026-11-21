@@ -13400,7 +13400,7 @@ def _line_pick_model(code, m, line, team_is_home, g, old, p):
 # fills.
 LINE_EDGE = {"max": 0.10, "step": 0.005, "games": 30, "band": 10, "gain": 0.02, "every": 7 * 86400, "days": 120}
 LINE_CLV = {"games": 30, "mean": -0.005, "t": 2.0, "close_win": 90 * 60, "days": 90}
-LINE_REC = {"check": 8, "panel_fill": 4, "big": 1000.0}
+LINE_REC = {"check": 8, "panel_fill": 4, "big": 1000.0, "budget": 3.0}   # budget: seconds for the book reads, in all
 LINE_LAST = {}
 LE_CACHE = {"path": None, "at": 0.0, "d": {}}
 CLV_STATE = {"db": None, "open": {}, "at": 0.0, "stats": None, "stats_at": 0.0}
@@ -13432,7 +13432,7 @@ def line_min_edge(lg, kind):
     for key, src in ((f"{lg}:{kind}", "own"), (f"{LINE_SPORT.get(lg) or lg}:{kind}", "sport"), (f"all:{kind}", "all")):
         e = d.get(key)
         try:
-            if isinstance(e, dict) and int(e.get("games") or 0) >= LINE_EDGE["games"]:
+            if isinstance(e, dict) and int(e.get("games_all", e.get("games")) or 0) >= LINE_EDGE["games"]:
                 v = min(max(float(e.get("v")), LINE_MIN_EDGE), LINE_EDGE["max"])
                 return {"v": round(v, 4), "key": key, "src": src, "why": e.get("why"), "at": e.get("at")}
         except (TypeError, ValueError):
@@ -13468,10 +13468,21 @@ def line_edge_tune(force=False, now=None):
     cover 10+ games and change the result by at least 2% of everything staked at the bar ($1 a strike), with 30+ games
     at the bar. One step at most; on a tie it stays (the smallest change wins); never under today's bar. Returns what
     changed, in words."""
-    now = now or time.time()
+    try:
+        return _line_edge_tune(force, now or time.time())
+    except Exception as err:                             # never stops the shadow loop's other weekly work
+        console_note(f"spread/total bar review: {type(err).__name__}: {err}")
+        return []
+
+
+def _line_edge_tune(force, now):
     d = load_json(_le_file(), {})
     d = d if isinstance(d, dict) else {}
-    if not force and now - float(d.get("_at") or 0) < LINE_EDGE["every"]:
+    try:
+        last = float(d.get("_at") or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if not force and now - last < LINE_EDGE["every"]:
         return []
     if not STORE["db"]:
         return []
@@ -13507,7 +13518,7 @@ def line_edge_tune(force=False, now=None):
         options.sort(key=lambda o: -o[0])
         if options and (len(options) == 1 or options[0][0] > options[1][0] + 1e-9):   # a tie: stay where it is
             best, why = round(options[0][1], 4), options[0][2]
-        new = dict(e, v=round(best, 4), games=games, n=len(at))
+        new = dict(e, v=round(best, 4), games=games, n=len(at), games_all=len({r["event"] for r in rows}))
         if why:
             new.update(why=why, at=now)
             moved.append(f"{key} {cur * 100:.1f}¢ → {best * 100:.1f}¢ ({why})")
@@ -13662,10 +13673,10 @@ def line_fill(ticker, fair, need, stake, asks=None):
             break
         take.append([p, k])
         spent += k * per
-    for _ in range(10000):                               # the rounded fee: stay inside the stake and the edge
-        n = sum(k for _, k in take)
-        if not n or (_fill_total(take) <= stake + 1e-9 and fair - _fill_total(take) / n >= need - 1e-9):
-            break
+    def fits(tk):
+        m = sum(k for _, k in tk)
+        return _fill_total(tk) <= stake + 1e-9 and fair - _fill_total(tk) / m >= need - 1e-9
+    while take and not fits(take):                       # the rounded fee: stay inside the stake and the edge
         take[-1][1] -= 1
         if take[-1][1] <= 0:
             take.pop()
@@ -13673,16 +13684,39 @@ def line_fill(ticker, fair, need, stake, asks=None):
     cost = _fill_total(take) if n else 0.0
     return {"n": n, "cost": round(cost, 2), "per": round(cost / n, 4) if n else None,
             "exp": round(n * fair - cost, 2) if n else 0.0, "depth": depth,
-            "best": asks[0][0] if asks else None, "capped": "depth" if n and n >= depth else "stake"}
+            "best": take[0][0] if take else inside[0][0] if inside else asks[0][0] if asks else None,
+            "capped": "depth" if n and n >= depth else "stake"}
 
 
-def _line_rec_one(code, x, base, now):
-    """One strike as a recommendation (the card's numbers), or (None, why not)."""
+def books_now(tickers, budget=None):
+    """{ticker: ask levels, or None}: the order books of these strikes, the ones not read in the last minute fetched
+    side by side, waiting at most `budget` seconds in all (a late or failed one = None, so it isn't recommended). Keeps
+    the Build page's lock and the shadow's lock from waiting on Kalshi one book at a time."""
+    budget = LINE_REC["budget"] if budget is None else budget
+    t0, out, need = time.time(), {}, []
+    for t in dict.fromkeys(t for t in tickers if t):
+        got = BOOK_LADDER.get(t)
+        if got and t0 - got[0] < 60:
+            out[t] = got[1]
+        else:
+            need.append(t)
+    ths = [threading.Thread(target=book_asks, args=(t,), daemon=True) for t in need]
+    for th in ths:
+        th.start()
+    for t, th in zip(need, ths):
+        th.join(max(0.0, budget - (time.time() - t0)))
+        got = BOOK_LADDER.get(t)
+        out[t] = got[1] if got and got[0] >= t0 - 1 else None
+    return out
+
+
+def _line_rec_one(code, x, base, now, asks):
+    """One strike as a recommendation (the card's numbers), or (None, why not). asks = its order book (None = unread)."""
+    if asks is None:
+        return None, "book"
     fair, need = x["fair"], x.get("min_edge") or LINE_MIN_EDGE
     stake = _size({"kind": "single", "chance": x["p"] + (fair - x["p"]) * 0.7, "price": x["p"]}, base)
-    fill = line_fill(x["ticker"], fair, need, stake)     # model prices: the edge shrunk 30% for sizing (as the buy sheet)
-    if fill is None:
-        return None, "book"
+    fill = line_fill(x["ticker"], fair, need, stake, asks=asks)   # sizing on the edge shrunk 30%, as the buy sheet
     if fill["n"] < 1:
         return None, "depth"
     ask = fill["best"]
@@ -13716,9 +13750,10 @@ def line_recommend(code, now=None):
     except Exception:
         base = 0.0
     out = []
+    books = books_now([x["ticker"] for x in cands[:LINE_REC["check"]]])
     for x in cands[:LINE_REC["check"]]:
         try:
-            r, why = _line_rec_one(code, x, base, now)
+            r, why = _line_rec_one(code, x, base, now, books.get(x["ticker"]))
         except Exception as err:
             r, why = None, type(err).__name__
         if r:
@@ -16286,12 +16321,18 @@ def panel_collect(book_snap, code, log=print):
                            f"Bought at fair or better; the Mac sells at {x['exit'] * 100:.0f}¢, which it reaches about "
                            f"{x['touch']:.0%} of the time.", price=x["p"], exit=x["exit"], opp=opp_of(games, x)))
     try:
-        for i, x in enumerate(line_candidates(code)):
+        lc = line_candidates(code)
+        try:                                             # part B: the top few strikes' books, side by side, on a budget
+            books = books_now([x["ticker"] for x in lc[:LINE_REC["panel_fill"]]])
+        except Exception:
+            books = {}
+        for i, x in enumerate(lc):
             if x["edge"] >= LINE_MIN_EDGE:
-                fill = None                              # part B: what can really be bought inside the edge (top few)
-                if i < LINE_REC["panel_fill"]:
+                fill = None                              # what can really be bought inside the edge (unread = no cap)
+                if books.get(x["ticker"]) is not None:
                     try:
-                        fill = line_fill(x["ticker"], x["fair"], x.get("min_edge") or LINE_MIN_EDGE, LINE_REC["big"])
+                        fill = line_fill(x["ticker"], x["fair"], x.get("min_edge") or LINE_MIN_EDGE, LINE_REC["big"],
+                                         asks=books[x["ticker"]])
                     except Exception:
                         fill = None
                 cands.append(_cand("line", code, [dict(x, start=x.get("start"))], x["fair"], x["edge"] / x["p"],
@@ -17018,8 +17059,11 @@ def _buy_panel_bet(c):
             return False, err or "nobody was selling at that price", {}
         d = {"filled": filled, "price": ask, "paid": ask, "bought_at": int(time.time())}
         if c["kind"] == "line":                          # logging only (never raises): its closing-line value
-            note_line_rec(dict(l, kind=c.get("line_kind"), league=c.get("line_lg"), bucket=c.get("bucket"),
-                               kick=c.get("kick"), code=c.get("code")), "buy", price=ask)
+            try:
+                note_line_rec(dict(l, kind=c.get("line_kind"), league=c.get("line_lg"), bucket=c.get("bucket"),
+                                   kick=c.get("kick"), code=c.get("code")), "buy", price=ask)
+            except Exception:
+                pass
         if c["kind"] == "early":
             e = post_sell(l["ticker"], filled, c["exit"])
             d["exit_order"] = "placed" if not e else f"failed: {e}"

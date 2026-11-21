@@ -323,6 +323,39 @@ def t_panel():
 safe("panel", t_panel)
 
 
+# ---------------------------------------------------------------- review fixes
+def t_review():
+    # a league's own raised bar never falls back to a looser borrowed one when fewer games sit at the new bar
+    bar_file({"nba:spread": {"v": 0.06, "games": 3, "games_all": 45}, "basketball:spread": {"v": 0.045, "games": 90}})
+    ok("review: a league's own stricter bar holds once it has 30+ games in all", E.line_min_edge("nba", "spread")["v"] == 0.06)
+    E.save_json(E._le_file(), {"_at": "junk", "nba:spread": "junk"})
+    E.LE_CACHE["at"] = 0.0
+    ok("review: a broken bar file never raises in the weekly review", isinstance(E.line_edge_tune(force=False, now=now), list))
+    bar_file({})
+    f = E.line_fill("T", 0.53, 0.04, 100, asks=[(0.44, 0.5), (0.45, 10)])
+    ok("review: the price shown is the one it can buy (a fractional top level is skipped)", f["best"] == 0.45 and f["n"] == 10)
+    # the order books are read side by side, on a time budget
+    import threading as _th
+    slow = _th.Event()
+    real = E.book_asks
+    E.book_asks = lambda t, max_age=60: slow.wait(5)
+    E.BOOK_LADDER.clear()
+    t0 = time.time()
+    got = E.books_now(["A", "B", "C", "D"], budget=0.5)
+    ok("review: slow order books never hold the page past the budget (late = not recommended)",
+       time.time() - t0 < 1.5 and got == {"A": None, "B": None, "C": None, "D": None})
+    slow.set()
+    E.book_asks = real
+    E.BOOK_LADDER["Z"] = (time.time(), [(0.4, 3)])
+    ok("review: a book read in the last minute is used as is", E.books_now(["Z"], budget=0)["Z"] == [(0.4, 3)])
+    js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build_sections.js")).read()
+    ok("review: the ticker reaches the tap through a data attribute, not a quoted JS string",
+       "lineFromBoard(this.dataset.t,this)" in js and "lineFromBoard('" not in js)
+
+
+safe("review", t_review)
+
+
 # ---------------------------------------------------------------- wiring
 def t_wiring():
     w = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "combo_watcher.py")).read()

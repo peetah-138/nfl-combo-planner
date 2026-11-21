@@ -179,7 +179,7 @@ function betCard(b){const x=b.x,ret=`<span class="ret">+${Math.round(b.score*100
  if(b.k==='line')return `<div class="bet"><div class="bt"><div><span class="kind">${x.kind==='spread'?'📏 Spread':'➕ Total'} · ${esc(x.game)}</span><b>${esc(x.pick.replace(/ \(.*\)$/,''))}</b></div>${ret}</div>
   <div class="bnums"><div>Chance<b>${pct(x.fair)}</b></div><div>Kalshi price<b>${Math.round(x.p*100)}¢</b></div><div>Edge<b class="up">${(x.edge*100).toFixed(1)}¢</b></div></div>
   <div class="why">${lineRoute(x)}. Expected ${smoney(x.exp)} on ${money(x.stake)}, after Kalshi's fee, at what you can really buy.</div>
-  <button class="btn acc" style="width:100%" onclick="lineFromBoard('${x.ticker}',this)">Get a price</button></div>`;
+  <button class="btn acc" style="width:100%" data-t="${esc(x.ticker)}" onclick="lineFromBoard(this.dataset.t,this)">Get a price</button></div>`;
  const c=x,o=S.quotes&&S.quotes[c.i],fresh=o&&Date.now()/1000-o.at<20;
  return `<div class="bet"><div class="bt"><div><span class="kind">★ ${c.legs.length}-team combo</span><b>${c.legs.map(l=>esc(short(l.pick))).join(' + ')}</b></div>${ret}</div>
   <div class="bnums"><div>Chance to hit<b>${pct(c.chance)}</b></div><div>Fair payout<b>${money(c.fair)}</b></div><div>Pays vs fair<b class="up">≈${pct(comboRet(c))}</b></div></div>
