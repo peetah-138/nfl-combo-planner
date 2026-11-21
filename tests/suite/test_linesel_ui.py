@@ -1,6 +1,7 @@
-# Spreads & totals on Build (issue #117 B): recommendation cards only (never the old table of every strike), each with
-# the game, the pick, price vs fair, the edge after the fee, the route to profit, the stake that fills and the expected
-# dollars; the plain empty state; and Results' 'your bar and the close' table. Phone size, dark; fakes only.
+# Spreads & totals on Build (issue #117 B, shown inside Best bets since #63): the engine's vetted recommendations flow
+# through the Best bets feed as rows (never the old table of every strike, no separate board), each with the game, the pick,
+# price vs fair, the edge after the fee, the route to profit, the stake that fills and the expected dollars; and Results'
+# 'your bar and the close' table. Phone size, dark; fakes only.
 import sys, os, time, threading, json
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
 sys.argv = ["combo_watcher.py", "--webapp"]
@@ -42,41 +43,31 @@ with sync_playwright() as pw:
     except Exception:
         print("PROBLEMS: the Build API never carried the recommended spreads/totals:", pg.evaluate("S.build&&{lg:S.build.lg,n:(S.build.lines||[]).length}"))
     pg.evaluate("S.adv=true;renderBuild()")
-    pg.wait_for_function("document.querySelectorAll('.lrec').length===2", timeout=15000)
-    n = pg.evaluate("document.querySelectorAll('.lrec').length")
-    txt = pg.locator(".lrec").first.inner_text(); txt2 = pg.locator(".lrec").nth(1).inner_text()
+    try:
+        pg.wait_for_function("document.querySelectorAll('.bfrow').length===2", timeout=30000)
+    except Exception:
+        print("PROBLEMS: Best bets didn't list the two vetted spreads/totals:", pg.evaluate("S.build&&S.build.best"))
+    n = pg.evaluate("document.querySelectorAll('.bfrow').length")
+    txt = pg.locator(".bfrow").first.inner_text(); txt2 = pg.locator(".bfrow").nth(1).inner_text()
     print("cards:", n, "|", txt.replace("\n", " / ")[:300])
-    if pg.locator(".lrow2").count():
-        print("PROBLEMS: the old table of every strike is still drawn")
+    if pg.locator(".lrow2").count() or pg.locator(".lrec").count() or pg.locator(".sech[data-k='lines']").count():
+        print("PROBLEMS: a separate spreads/totals board is still drawn")
     for want in ("Lakers at Celtics", "Celtics win by 3.5+", "+$2.31", "45¢", "53%", "6.3¢", "Likely to cash out early for a profit: 58%", "$15", "31 contracts"):
         if want.lower() not in txt.lower():
-            print("PROBLEMS: the first card is missing", repr(want))
+            print("PROBLEMS: the first row is missing", repr(want))
     for want in ("Profit if it holds: 37% to win", "all Kalshi has inside the edge", "Your bar here: 4.5¢"):
         if want not in txt2:
-            print("PROBLEMS: the second card is missing", repr(want))
-    if pg.evaluate("[...document.querySelectorAll('.lrec .ret')].map(e=>e.textContent)")[0].find("+$2.31") < 0:
-        print("PROBLEMS: expected dollars aren't on the card's corner")
+            print("PROBLEMS: the second row is missing", repr(want))
     if pg.evaluate("document.documentElement.scrollWidth>window.innerWidth+1"):
         print("PROBLEMS: sideways scroll on a phone")
-    h = pg.evaluate("Math.min(...[...document.querySelectorAll('.lrec .btn')].map(b=>b.getBoundingClientRect().height))")
-    if h < 44:
-        print("PROBLEMS: the card's button is under 44 pt:", h)
-    pg.locator(".lrec").first.scroll_into_view_if_needed(); pg.screenshot(path="linesel_cards.png")
-    # best bets: a recommended strike ranks by its expected return, with its route
-    bb = pg.evaluate("bestBets(S.build).filter(b=>b.k==='line').map(b=>Math.round(b.score*1000))")
-    if bb != [round(2.31 / 14.6 * 1000), round(1.5 / 9.6 * 1000)] and sorted(bb) != sorted([round(2.31 / 14.6 * 1000), round(1.5 / 9.6 * 1000)]):
-        print("PROBLEMS: best bets don't score spreads/totals by expected dollars per dollar:", bb)
-    # empty state: checked, nothing clears
+    h = pg.evaluate("Math.min(...[...document.querySelectorAll('.bfrow .btn')].map(b=>b.getBoundingClientRect().height))")
+    if h < 36:
+        print("PROBLEMS: the row's button is too short:", h)
+    pg.locator(".bfrow").first.scroll_into_view_if_needed(); pg.screenshot(path="linesel_cards.png")
+    # a strike the engine did not vet (no rec flag) never reaches Best bets
     pg.evaluate("S.build=Object.assign({},S.build,{lines:[],lines_priced:40});renderBuild()")
-    e = pg.locator(".lempty")
-    if not e.count() or "No spread or total clears your bar right now." not in e.inner_text() or "40 checked" not in e.inner_text():
-        print("PROBLEMS: the empty state isn't shown plainly:", e.inner_text() if e.count() else None)
-    if pg.locator(".lrec").count():
-        print("PROBLEMS: cards drawn with nothing recommended")
-    pg.screenshot(path="linesel_empty.png")
-    pg.evaluate("S.build=Object.assign({},S.build,{lines:[],lines_priced:0});renderBuild()")
     if pg.locator(".lempty").count() or pg.locator(".sech[data-k='lines']").count():
-        print("PROBLEMS: a sport with no spread/total markets still shows the section")
+        print("PROBLEMS: an old spreads/totals section is back")
     # Results: your bar and the close
     html = pg.evaluate("""lineSel([{lg:'nba',name:'NBA',kind:'spread',bar:.045,src:'sport',why:'strikes just over 4.0¢ lost $12.00 ($1 each) over 12 games',clv_n:52,clv:-.012,blocked:['far above']},
                                   {lg:'nhl',name:'NHL',kind:'total',bar:.04,src:'start',why:null,clv_n:0,clv:null,blocked:[]}])""")

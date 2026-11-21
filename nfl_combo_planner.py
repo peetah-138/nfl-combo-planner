@@ -16086,7 +16086,7 @@ def month_profit(month):
     return round(pl, 2)
 
 
-def sizing_base(balance=None):
+def sizing_base(balance=None, save=True):
     """The bankroll the panel sizes from: what's in Kalshi minus the profit set aside (until you say you've
     moved it out), and when it has grown, only 10% more a week than last time (losses count right away). A balance
     that can't be read is never guessed for real money: the base is then None (the panel isn't sized or bought) and
@@ -16121,7 +16121,8 @@ def sizing_base(balance=None):
     base = min(avail, prev * (1.10 ** weeks)) if avail > prev else avail
     if now - s.get("base_at", 0) > 86400 or avail < prev:
         s.update(base=round(base, 2), base_at=now)
-    save_json(SIZING_FILE, s)
+    if save:                                           # save=False: a display-only read leaves the panel's state alone
+        save_json(SIZING_FILE, s)
     return base, s
 
 
@@ -20803,8 +20804,145 @@ def smart_buy_ideas_gate(ideas, now=None):
         return list(ideas), []
 
 
+# ================================================================ Build's "Best bets today" (issue #63)
+# ONE ranked, recommend-only feed across single games, spreads/totals and value combos. A bet is listed only when it has
+# BOTH an edge at a fair price after fees AND a likely route to profit under smart sell's own exit policy
+# (simulate_exit: a good chance to cash out at +10%, or a hold with an acceptable win chance, smart_buy_ok). Ranked by
+# expected dollars at the suggested stake. Display only: nothing is bought here (every Buy goes through the guarded
+# paths: the Buy straight sheet, the combo quote), nothing is placed, Pause and every cap are untouched. Fails closed:
+# an unreadable balance (no stake), a bet the simulator can't model or any error = not listed, never a guess.
+BEST_MAX = 6                 # rows shown
+BEST_LOOK = 30               # candidates simulated at most (about 5-12 ms each, memoised 5 minutes)
+
+
+def _best_exposure(legs):
+    """How much of what you hold already needs these picks: {'n': open combos needing one, 'of': open combos, 'team',
+    'label'} or None. Display only; reads MINE['hold'] and changes nothing."""
+    hold = MINE.get("hold") or {}
+    tks = {l.get("ticker") for l in legs if l.get("ticker")}
+    if not hold or not tks:
+        return None
+    on = [h for h in hold.values() if any(k[1] in tks for k, _ in h.get("need") or [])]
+    if not on:
+        return None
+    share = len(on) / len(hold)
+    team = next((l.get("pick") for l in legs if any(k[1] == l.get("ticker") for h in on for k, _ in h.get("need") or [])), "")
+    label = "on every combo" if share >= 0.999 else "heavy" if share >= 0.5 else "watch it" if share >= 0.25 else "low"
+    return {"n": len(on), "of": len(hold), "team": team, "label": label}
+
+
+def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
+    """{'items': [...], 'why': text or None, 'looked': {...}} for Build. games = the board's {event: [sides]}, lines =
+    line_recommend's vetted rows (BUILD["lines"]), combos = [(index, combo dict, predicted share of fair or None)]. Never
+    raises; anything unreadable leaves the bet out."""
+    now = now or time.time()
+    looked = {"single": 0, "line": 0, "combo": 0}
+    try:
+        base = sizing_base(save=False)[0]          # display only: never writes the panel's sizing state
+        no_base = base is None                      # singles and combos need it to be sized; spreads/totals bring their own fill
+        cands = []
+        for e, sides in ({} if no_base else (games or {})).items():
+            for x in single_candidates({e: sides}):
+                if line_stale(x.get("line_at"), _kick_ts(x), now):
+                    continue
+                opp = next((y for y in sides if y is not x and not y.get("tie") and y.get("ticker") != x.get("ticker")), None)
+                legs = [{"ticker": x["ticker"], "event": x.get("event"), "pick": x["pick"], "p": x["p"], "fair": x["fair"],
+                         "vs": (opp or {}).get("pick")}]
+                c = _cand("single", ticker_sport(x["ticker"]) or "", legs, x["fair"], x["edge"] / x["p"], "",
+                          price=x["p"], pct=None)
+                c["game"] = f"{x['pick']} vs {opp['pick']}" if opp else x["pick"]
+                c["edge"] = x["edge"]
+                cands.append(c)
+        cut = CFG["accept_pct"] / 100
+        for i, c0, pct in ([] if no_base else combos or []):
+            if c0.get("kind") != "value" or pct is None or not c0.get("legs") or not c0.get("fair"):
+                continue
+            if pct < max(1.0, cut, combo_cutoff(ticker_sport(c0["legs"][0]["ticker"]) or "", len(c0["legs"]), c0["legs"])):
+                continue                                # at or above fair, and over the league's own learned cut-off
+            fm = 1 / math.prod(l["fair"] for l in c0["legs"] if l.get("fair"))
+            code = ticker_sport(c0["legs"][0]["ticker"]) or ""
+            c = _cand("combo", code, c0["legs"], 1 / fm, pct - 1, "", pct=round(pct, 4), fair_mult=round(fm, 3))
+            c["i"] = i
+            c["edge"] = round(pct - 1, 4)
+            cands.append(c)
+        for c in cands:
+            looked[c["kind"]] += 1
+        cands.sort(key=lambda c: -(c.get("ret") or 0))
+        out = []
+        # Spreads and totals arrive ALREADY VETTED by line_recommend (issue #117): the league's learned edge bar after the
+        # fee, no kind that keeps losing to the close, fillable inside the edge at the size that fills, a likely route to
+        # profit under smart sell's exit policy, and a minimum of expected dollars at that size. Listed as they are, with
+        # their own fillable stake and expected dollars; nothing is re-priced or loosened here. A row that isn't a vetted
+        # recommendation (no `rec`, no stake or no positive expected dollars) is left out. Only the held-combo exposure
+        # trim and the injury-news guard are added on top, and they can only shrink or drop a row.
+        for x in lines or []:
+            looked["line"] += 1
+            try:
+                if not x.get("rec") or not x.get("ticker") or (x.get("stake") or 0) <= 0 or (x.get("exp") or 0) <= 0:
+                    continue
+                lg_ = [{"ticker": x["ticker"], "event": x.get("event"), "pick": x.get("pick"), "game": x.get("game"), "p": x["p"], "fair": x["fair"]}]
+                code = ticker_sport(x["ticker"]) or ""
+                c = _cand("line", code, lg_, x["fair"], x["edge"] / x["p"] if x.get("p") else 0, "", price=x["p"])
+                if news_gap(c):
+                    continue
+                fx, _ = exposure_factor(lg_)
+                k = fx if fx < 1 else 1.0
+                kick = x.get("kick")
+                if kick is None and x.get("start"):
+                    try:
+                        kick = dt.datetime.fromisoformat(str(x["start"]).replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        kick = None
+                out.append({"id": "line:" + x["ticker"], "kind": "line", "code": code, "icon": c["icon"], "league": c["league"],
+                            "game": x.get("game") or "", "pick": leg_text(lg_[0], "line"), "legs": [{"pick": x.get("pick"), "ticker": x["ticker"]}],
+                            "ticker": x["ticker"], "i": None, "kick": kick, "price": x["p"], "fair": x["fair"],
+                            "chance": x["fair"], "edge": x["edge"], "stake": round(x["stake"] * k, 2), "ev": round(x["exp"] * k, 2),
+                            "route": x.get("route"), "p_exit": x.get("p_exit"), "win": x.get("win"), "exit_mins": x.get("exit_mins"),
+                            "n": x.get("n"), "capped": x.get("capped"), "min_edge": x.get("min_edge"),
+                            "exposure": _best_exposure(lg_)})
+            except Exception as err:
+                console_note(f"best bets line: {type(err).__name__}: {err}")
+        for c in cands[:BEST_LOOK]:
+            try:
+                sim = _sb_sim(c, now)
+                stake = _size(c, base)
+                if not smart_buy_ok(sim) or news_gap(c):
+                    continue                            # no route to profit, or priced under its chance right after injury news
+                fx, _ = exposure_factor(c["legs"])
+                stake = max(2.0, round(stake * fx, 2)) if fx < 1 else stake       # never above the sized stake
+                ev = round(sim["ev"] * stake / sim["stake"], 2)
+                if ev <= 0:
+                    continue
+                out.append({"id": c["id"], "kind": c["kind"], "code": c["code"], "icon": c["icon"], "league": c["league"],
+                            "game": c.get("game") or "", "pick": leg_text(c["legs"][0], c["kind"]) if c["kind"] != "combo" else bet_text(c),
+                            "legs": [{"pick": l.get("pick"), "game": l.get("game"), "ticker": l.get("ticker")} for l in c["legs"]],
+                            "ticker": c["legs"][0]["ticker"], "i": c.get("i"), "kick": c.get("kick"),
+                            "price": c.get("price"), "fair": c["legs"][0]["fair"] if c["kind"] != "combo" else None,
+                            "chance": c["chance"], "edge": c["edge"], "stake": stake, "ev": ev,
+                            "route": sim["route"], "p_exit": sim["p_exit"], "win": sim["win"],
+                            "exit_mins": sim.get("exit_mins"), "exposure": _best_exposure(c["legs"])})
+            except Exception as err:
+                console_note(f"best bets: {type(err).__name__}: {err}")
+        out.sort(key=lambda r: -r["ev"])
+        out = out[:limit]
+        why = None
+        if not out and no_base:
+            return {"items": [], "why": "I can't read your Kalshi balance right now, so I can't size a bet. Try again in a minute.",
+                    "looked": looked}
+        if not out:
+            n = sum(looked.values())
+            why = ("Nothing clears your bar right now." if not n else
+                   f"Nothing clears your bar right now. I checked {n} bet{'s' if n != 1 else ''} with an edge; none also has a "
+                   "likely way to profit by cashing out early or holding.")
+        return {"items": out, "why": why, "looked": looked}
+    except Exception as err:
+        console_note(f"best bets: {type(err).__name__}: {err}")
+        return {"items": [], "why": "Couldn't work out today's best bets right now. Nothing is recommended until it can.",
+                "looked": looked}
+
+
 # ---- the shadow price recorder: prices the engine already fetched, never a new request
-PRICE_SEEN = {}            # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
+PRICE_SEEN = {}          # ticker -> (time, bid, ask, depth) from any market list or order book the engine read
 PRICE_WATCH = {}           # ticker -> (watch until, kickoff) for markets we consider or hold
 PRICE_LAST = {}            # ticker -> (time, bid, ask) last written
 PRICE_STATE = {"flush": 0.0, "prune": 0.0}
