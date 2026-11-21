@@ -104,6 +104,37 @@ with sync_playwright() as pw:
         if v is not False: print("PROBLEMS: turning off 'Smarter spread/total pricing' didn't save:", v)
         row.locator("input").click(); time.sleep(1.5)
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: Settings scrolls sideways on a phone")
+    # Smart Buy (preview, issue #137 stage 1): a switch in Settings › Money, off by default; on = a folded card in What's working
+    row = pg.locator("label.srow", has_text="Smart Buy (preview)")
+    if row.count() != 1 or row.locator("input").is_checked() or "doesn't change what gets picked" not in row.inner_text():
+        print("PROBLEMS: Settings › Money has no 'Smart Buy (preview)' switch (off by default, saying it changes nothing yet)")
+    else:
+        row.locator("input").click(); v = saved("smart_buy", True)
+        if v is not True: print("PROBLEMS: turning on 'Smart Buy (preview)' didn't save:", v)
+        row.locator("input").click()
+        if saved("smart_buy", False) is not False: print("PROBLEMS: turning 'Smart Buy (preview)' back off didn't save")
+    SBP = {"on": False, "days": 7, "stake": 5, "markets": 42, "prices": 900,
+           "rows": [{"name": "NBA", "kind": "Single games", "n": 48, "ok": 20, "p_exit": 0.52, "ev": 0.41, "sell": 25, "hold": 10},
+                    {"name": "NFL", "kind": "Spreads & totals", "n": 12, "ok": 3, "p_exit": 0.31, "ev": -0.2, "sell": 2, "hold": 4}],
+           "calib": [{"name": "NBA", "kind": "Single games", "n": 9, "pred": 0.5, "actual": 0.44}]}
+    AN["smart_buy"] = SBP
+    pg.evaluate("go('results')"); wait(pg, "document.querySelectorAll('.an .anrow:not(.h)').length>=2", 40)
+    if pg.locator(".an .sbp").count(): print("PROBLEMS: the Smart Buy preview shows with its switch off")
+    AN["smart_buy"] = dict(SBP, on=True); pg.evaluate("S.an=null"); pg.evaluate("load('results',true)")
+    wait(pg, "!!document.querySelector('.an .sbp')", 20)
+    hd = pg.locator(".an .sbp .sbh")
+    if hd.count() != 1 or hd.get_attribute("aria-expanded") != "false" or "60 checked · 23 would pass" not in hd.inner_text() \
+            or pg.locator(".an .sbp .antbl").count():
+        print("PROBLEMS: the Smart Buy preview isn't a folded card with the counts:", hd.inner_text() if hd.count() else "missing")
+    else:
+        bb = hd.bounding_box()
+        if bb["height"] < 44: print("PROBLEMS: the Smart Buy preview's header is under 44pt tall:", bb)
+        hd.click(); wait(pg, "!!document.querySelector('.an .sbp .antbl')", 5)
+        sb = pg.locator(".an .sbp").inner_text()
+        if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "nothing is picked, bought or sold differently" not in sb \
+                or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
+            print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
+        if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: the Smart Buy preview scrolls sideways on a phone")
     __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s
     k = pg.locator(".kpis").inner_text().replace("\n"," | "); print("kpis:", k)
