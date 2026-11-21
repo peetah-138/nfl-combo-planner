@@ -559,7 +559,15 @@ body.pushed main,body.pushed .top{filter:brightness(.5)}
 .scrl{position:absolute;top:0;bottom:0;width:1.5px;margin-left:-.75px;background:var(--sub);opacity:0;pointer-events:none;transition:opacity .15s}
 .scrd{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid var(--panel);opacity:0;pointer-events:none;transition:opacity .15s;z-index:2}
 .sparkw.on .scrl,.sparkw.on .scrd{opacity:1}.sparkw.on .sdot{opacity:.25}
-.sbase{position:absolute;left:0;right:0;border-top:1px dashed var(--line);pointer-events:none}
+.spark .szero{stroke:var(--sub);stroke-opacity:.5;stroke-width:1.2}
+.spark .sstake{fill:var(--sub);fill-opacity:.09}
+.szl{position:absolute;right:0;transform:translateY(-115%);font-size:10px;font-style:normal;font-weight:700;color:var(--mute);pointer-events:none}
+.slg{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:11px;color:var(--mute);font-weight:600}
+.slg span{display:inline-flex;align-items:center;gap:6px}.slg i{display:inline-block;width:14px;height:8px;border-radius:2px}
+.slg .lpl{height:3px;background:linear-gradient(90deg,var(--yes) 50%,var(--no) 50%)}.slg .lst{background:var(--sub);opacity:.22}
+.slgn{margin-top:3px;font-size:11px;color:var(--mute);line-height:1.35}
+.sread b{font-weight:800}
+.sparkw[data-chart] .sread{top:-6px;z-index:3;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:2px 7px;color:var(--ink);font-variant-numeric:tabular-nums}
 .saxis{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--mute);font-weight:600}
 .rng2{display:flex;gap:2px}.rng2 button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;padding:4px 8px;border-radius:7px}
 .rng2 button.on{color:var(--ink)}

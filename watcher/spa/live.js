@@ -119,51 +119,66 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
    <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} <span data-num="h:dl" data-v="${Math.abs(dl).toFixed(2)}">${money(Math.abs(dl))}</span>${St?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/St*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
-   ${heroChart(d,cls)}</div>
+   ${heroChart(d)}</div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
    <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
-/* The hero chart: what the open bets were worth over the Day (16 h) or Week, gradient area, glowing end dot, the
-   staked line dashed. Press and drag on it to scrub: a line and dot follow the finger, the big number and the change
-   pill show the value at that moment, and every point crossed ticks a haptic. Release puts the live numbers back. */
+/* The hero chart (#221): profit and loss over the Day (16 h) or Week, not the worth of whatever happens to be open.
+   Each point = (worth of open bets − their cost) + (cash back − cost of bets that finished in the window), less the
+   same open-bet sum at the window's start, so the window starts at $0 and a bet leaving moves the line only by what
+   it really gained or lost. Bets already open at the start count from what they were worth then (the legend says so).
+   The Mac builds it (pnl_series). A flat zero line; green above, red below (one gradient split at zero); the glowing
+   end dot; what was staked at each moment as a faint stepped band behind, on its own scale. Press and drag to scrub:
+   a line and dot follow the finger, the readout shows the time, the profit or loss and what was staked then, and
+   every point crossed ticks a haptic. The big number above stays "worth now if sold". */
 try{S.rng=localStorage.getItem('cw_rng')==='week'?'week':'day'}catch(e){S.rng='day'}
 S.chartDraw=true;
 function setRng(k){if(S.rng===k)return;S.rng=k;try{localStorage.setItem('cw_rng',k)}catch(e){}S.chartDraw=true;renderLive();}
 function pulseWeek(){const w=S.pulseWeek;if(S.pwBusy||(w&&Date.now()-w.at<120e3))return;S.pwBusy=true;
- api('/app/api/pulse?h=168').then(r=>{S.pulseWeek={at:Date.now(),pts:(r&&r.pulse)||[]};}).catch(()=>{S.pulseWeek={at:Date.now(),pts:[]};})
+ api('/app/api/pulse?h=168').then(r=>{S.pulseWeek={at:Date.now(),v:(r&&r.pnl)||{pts:[]}};}).catch(()=>{S.pulseWeek={at:Date.now(),v:{pts:[]}};})
   .finally(()=>{S.pwBusy=false;S.chartDraw=true;if(S.view==='live'&&S.rng==='week')renderLive();});}
-function heroChart(d,cls){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';const pts=wk?(S.pulseWeek||{}).pts:(d.pulse||[]);S.chart=null;
+function plMoney(v){return (v>=.005?'+':v<=-.005?'−':'')+money(Math.abs(v));}
+function plCol(v){return v>=.005?'var(--yes)':v<=-.005?'var(--no)':'var(--sub)';}
+function heroChart(d){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';const v=wk?(S.pulseWeek||{}).v:(d.pnl||{pts:[]});S.chart=null;
  const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.rng===k?'on':''}" onclick="setRng('${k}')">${l}</button>`).join('')}</div>`;
- if(!pts)return `<div class="sparkw"><div class="hsk" style="padding:0"><i style="height:76px"></i></div></div><div class="saxis"><span>Loading the week…</span>${sw}</div>`;
- if(pts.length<3)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line x1="0" x2="600" y1="52" y2="52" stroke="var(--line)" stroke-width="2" stroke-dasharray="4 6" vector-effect="non-scaling-stroke"/></svg></div>
-  <div class="saxis"><span>${wk?'Not enough history for a week yet.':'The day\'s line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
- const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(...vs),hi=Math.max(...vs),rg=Math.max(hi-lo,.01);
- const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>H-6-(v-lo)/rg*(H-14);const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
- const col=cls==='down'?'var(--no)':cls==='up'?'var(--yes)':'var(--acc)';const lx=X(t1),ly=Y(vs[vs.length-1]);const st=pts[pts.length-1][2];
+ if(!v)return `<div class="sparkw"><div class="hsk" style="padding:0"><i style="height:76px"></i></div></div><div class="saxis"><span>Loading the week…</span>${sw}</div>`;
+ const pts=Array.isArray(v.pts)?v.pts.filter(p=>Array.isArray(p)&&isFinite(p[0])&&isFinite(p[1])):[];
+ if(pts.length<2)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line class="szero" x1="0" x2="600" y1="38" y2="38" vector-effect="non-scaling-stroke"/></svg></div>
+  <div class="saxis"><span>${wk?'Not enough history for a week yet.':'Your profit line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
+ const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),lo=Math.min(0,...vs),hi=Math.max(0,...vs),rg=Math.max(hi-lo,1);
+ const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>8+(hi-v)/rg*(H-16),zy=Y(0),f=(zy/H).toFixed(4);
+ const smax=Math.max(.01,...pts.map(p=>+p[2]||0)),SY=s=>H-Math.max(0,+s||0)/smax*H*.7;
+ const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
+ let band=`M0 ${H} V${SY(pts[0][2]).toFixed(1)}`;pts.slice(1).forEach(p=>{band+=` H${X(p[0]).toFixed(1)} V${SY(p[2]).toFixed(1)}`;});band+=` H${W} V${H}Z`;
+ const last=vs[vs.length-1],col=plCol(last),lx=X(t1),ly=Y(last);
  const lab=t=>{const x=new Date(t*1000);return wk?x.toLocaleDateString([], {weekday:'short'})+' '+x.toLocaleTimeString([], {hour:'numeric'}):x.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});};
- const draw=S.chartDraw?'draw':'';S.chartDraw=false;S.chart={pts,W,X,Y,lab};
- return `<div class="sparkw" data-chart="1"><span class="sread"></span>${st!=null&&st>=lo&&st<=hi?`<i class="sbase" style="top:${Y(st).toFixed(1)}px"></i>`:''}
-  <svg class="spark ${draw}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".32"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-  <path d="${path} L${W} ${H} L0 ${H}Z" fill="url(#sg)"/><path d="${path}" fill="none" stroke="${col}" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
-  </svg><i class="sdot ${draw}" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i><i class="scrl"></i><i class="scrd" style="background:${col}"></i></div>
-  <div class="saxis"><span>${esc(lab(t0))}</span>${sw}<span>Now</span></div>`;}
-function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.chart;if(!w||!c||w._wired)return;w._wired=1;
- const big=document.querySelector('.hv .big'),dlt=document.querySelector('.hv .delta');let idx=-1,saved=null;
+ const draw=S.chartDraw?'draw':'';S.chartDraw=false;S.chart={pts,W,H,X,Y,lab};
+ const end=v.end||t1,nowish=Date.now()/1000-end<600;
+ const notes=[(+pts[0][2]||0)>0?'Bets already open at the start count from what they were worth then.':'',
+  v.rough&&v.rough>t0?`Rough before ${esc(lab(v.rough))}: finished bets may show late.`:''].filter(Boolean);
+ return `<div class="sparkw" data-chart="1"><span class="sread"></span>
+  <svg class="spark ${draw}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs>
+   <linearGradient id="plg" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="0" y2="${H}"><stop offset="0" stop-color="var(--yes)"/><stop offset="${f}" stop-color="var(--yes)"/><stop offset="${f}" stop-color="var(--no)"/><stop offset="1" stop-color="var(--no)"/></linearGradient>
+   <linearGradient id="plf" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="0" y2="${H}"><stop offset="0" stop-color="var(--yes)" stop-opacity=".32"/><stop offset="${f}" stop-color="var(--yes)" stop-opacity=".03"/><stop offset="${f}" stop-color="var(--no)" stop-opacity=".03"/><stop offset="1" stop-color="var(--no)" stop-opacity=".32"/></linearGradient></defs>
+  <path class="sstake" d="${band}"/>
+  <path class="sfill" d="${path} L${lx.toFixed(1)} ${zy.toFixed(1)} L0 ${zy.toFixed(1)}Z" fill="url(#plf)"/>
+  <line class="szero" x1="0" x2="${W}" y1="${zy.toFixed(1)}" y2="${zy.toFixed(1)}" vector-effect="non-scaling-stroke"/>
+  <path class="spl" d="${path}" fill="none" stroke="url(#plg)" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg><i class="szl" style="top:${zy.toFixed(1)}px">$0</i><i class="sdot ${draw}" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i><i class="scrl"></i><i class="scrd" style="background:${col}"></i></div>
+  <div class="saxis"><span>${esc(lab(t0))}</span>${sw}<span>${nowish?'Now':esc(lab(end))}</span></div>
+  <div class="slg"><span><i class="lpl"></i>Profit/loss since ${esc(lab(t0))}</span><span><i class="lst"></i>Staked</span></div>
+  ${notes.length?`<div class="slgn">${notes.join(' ')}</div>`:''}`;}
+function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.chart;if(!w||!c||w._wired)return;w._wired=1;let idx=-1;
  const at=x=>{const r=w.getBoundingClientRect(),f=Math.max(0,Math.min(1,(x-r.left)/Math.max(1,r.width))),t=c.pts[0][0]+f*(c.pts[c.pts.length-1][0]-c.pts[0][0]);
   let i=0,b=Infinity;c.pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;};
- const show=i=>{if(i===idx)return;idx=i;const p=c.pts[i],fx=c.X(p[0])/c.W*100;
-  w.querySelector('.scrl').style.left=fx+'%';const dot=w.querySelector('.scrd');dot.style.left=fx+'%';dot.style.top=c.Y(p[1])+'px';
-  const rd=w.querySelector('.sread');rd.textContent=c.lab(p[0]);rd.style.left=Math.max(10,Math.min(90,fx))+'%';
-  if(big){big.textContent=money(p[1]);big.classList.add('scrub');}
-  if(dlt&&p[2]!=null){const dl=p[1]-p[2],k=Math.abs(dl)<.005?'flat':dl>0?'up':'down';dlt.className='delta '+k;
-   dlt.innerHTML=`${k==='up'?'▲':k==='down'?'▼':'•'} ${money(Math.abs(dl))}${p[2]?` (${dl>=0?'+':'−'}${Math.abs(Math.round(dl/p[2]*100))}%)`:''} <span style="font-weight:500;opacity:.8">vs ${money(p[2])} in</span>`;}
+ const show=i=>{if(i===idx)return;idx=i;const p=c.pts[i],fx=c.X(p[0])/c.W*100,col=plCol(p[1]);
+  w.querySelector('.scrl').style.left=fx+'%';const dot=w.querySelector('.scrd');dot.style.left=fx+'%';dot.style.top=c.Y(p[1])+'px';dot.style.background=col;
+  const rd=w.querySelector('.sread');rd.innerHTML=`<b style="color:${col}">${plMoney(p[1])}</b> · ${money(+p[2]||0)} staked · ${esc(c.lab(p[0]))}`;
+  const ww=w.clientWidth||1,hw=(rd.offsetWidth||0)/2,px=Math.max(hw,Math.min(ww-hw,fx/100*ww));rd.style.left=px+'px';
   hap('selection');};
- const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;
-  if(saved){if(big){big.innerHTML=saved.b;big.className=saved.bc;}if(dlt){dlt.innerHTML=saved.d;dlt.className=saved.dc;}saved=null;}
-  if(S.liveDirty){S.liveDirty=false;renderLive();}};
- w.addEventListener('pointerdown',e=>{if(e.button)return;S.scrub=true;saved={b:big&&big.innerHTML,bc:big&&big.className,d:dlt&&dlt.innerHTML,dc:dlt&&dlt.className};
-  w.classList.add('on');idx=-1;show(at(e.clientX));try{w.setPointerCapture(e.pointerId)}catch(x){}});
+ const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;if(S.liveDirty){S.liveDirty=false;renderLive();}};
+ w.addEventListener('pointerdown',e=>{if(e.button)return;S.scrub=true;w.classList.add('on');idx=-1;show(at(e.clientX));try{w.setPointerCapture(e.pointerId)}catch(x){}});
  w.addEventListener('pointermove',e=>{if(S.scrub)show(at(e.clientX));});
  ['pointerup','pointercancel','lostpointercapture'].forEach(k=>w.addEventListener(k,end));}
 function singlesLive(d){const all=d.singles||[];

@@ -7,7 +7,7 @@ from the-odds-api.com). It never places a bet.
 Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
-import csv, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
+import bisect, csv, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
 from collections import defaultdict
 from urllib.parse import quote, unquote
 import requests
@@ -19894,6 +19894,7 @@ create table if not exists cover(sunday text primary key, ts real, early text, l
   status text, result text);
 create table if not exists ticks(ts real, ticker text, chance real, state text, score text);
 create table if not exists pulse(ts real, worth real, staked real);
+create table if not exists pulse_more(ts real primary key, xworth real, xcost real);
 create index if not exists ticks_t on ticks(ticker, ts);
 create table if not exists offers(ts real, combo text, p real, pays real, hold real, offer real, real_offer int, verdict text);
 create index if not exists offers_c on offers(combo, ts);
@@ -20102,10 +20103,20 @@ def record_view(view):
         open_s = [x for x in view.get("singles") or [] if x.get("state") in ("live", "pre")]
         worth = sum(hero_worth(v) for v in pend) + sum(x.get("worth") or 0 for x in open_s)
         staked = sum(v.get("cost") or 0 for v in pend) + sum(x.get("cost") or 0 for x in open_s)
-        if (pend or open_s) and now - last.get(("pulse",), 0) >= 120:
+        # #221: singles whose game is over but Kalshi hasn't paid yet leave `worth`/`staked` above (unchanged, the
+        # hero's numbers) but still hold money; kept beside them in pulse_more so the profit line doesn't dip
+        # until the ledger has the payout. A separate table, so an older process's 3-value insert keeps working.
+        done_s = [x for x in view.get("singles") or [] if x.get("state") in ("over", "done")]
+        xworth = sum(_limbo_worth(x) for x in done_s)
+        xcost = sum(x.get("cost") or 0 for x in done_s)
+        busy = bool(pend or open_s or done_s)
+        if (busy or last.get(("pulse_on",))) and now - last.get(("pulse",), 0) >= 120:
             last[("pulse",)] = now
+            last[("pulse_on",)] = busy                 # one 0/0 row once everything is gone: "nothing open from here"
             store_x("create table if not exists pulse(ts real, worth real, staked real)")
             store_x("insert into pulse values(?,?,?)", (now, round(worth, 2), round(staked, 2)))
+            store_x("create table if not exists pulse_more(ts real primary key, xworth real, xcost real)")
+            store_x("insert or replace into pulse_more values(?,?,?)", (now, round(xworth, 2), round(xcost, 2)))
     except Exception:
         pass
     for x in view.get("singles") or []:             # single bets and spreads: their game's story too
@@ -20139,6 +20150,128 @@ def pulse_series(hours=16, points=150):
     return out
 
 
+def _limbo_worth(x):
+    """A finished single Kalshi hasn't paid yet: the payout once it's decided (won = every contract pays $1, lost =
+    nothing), else what it would sell for now, else its cost (no guess either way)."""
+    res, side = x.get("res"), x.get("side") or "yes"
+    if res in ("yes", "no"):
+        return float(x.get("pays") or x.get("n") or 0) if res == side else 0.0
+    if x.get("worth") is not None:
+        return float(x["worth"])
+    return float(x.get("cost") or 0)
+
+
+PNL = {}                       # (hours, points) -> {"at": ts, "v": series}: the hero chart's profit line, cached
+PNL_TTL = 20                   # seconds; pulse rows come every 2 minutes, Live rebuilds every ~8 s
+PNL_ALIGN = 900                # a finished bet's cash is placed where its stake left the pulse, if within 15 min
+
+
+def pnl_series(hours=16, points=150, now=None, max_age=PNL_TTL):
+    """Display only (#221): the Live hero chart's profit and loss over the last `hours`. Never raises; cached
+    `max_age` seconds; reads the history file only (pulse, pulse_more, ledger, bets), writes nothing.
+
+    At each moment: P/L = (worth of open bets − their cost) + (cash back − cost of every bet that finished in the
+    window) − (the same open-bet sum at the window's start). So the window starts at $0, a bet bought in the window
+    counts from what was paid for it, and a bet already open at the start counts from what it was worth then (its
+    cost basis is rebased to that worth). A bet leaving moves the line only by what it brought back beyond its last
+    worth, never by its whole value. Returns {"pts": [[ts, pl, staked], ...], "t0", "rough": ts or None, "end"}:
+    `rough` = the newest point recorded before pulse_more existed (singles that finished but weren't paid yet may
+    show a dip there until the payout lands)."""
+    key = (int(hours), int(points))
+    c = PNL.get(key)
+    now_t = now or time.time()
+    if c and now is None and now_t - c["at"] < max_age:
+        return c["v"]
+    try:
+        v = _pnl_series(hours, points, now_t)
+    except Exception as err:                        # display only: never into the Live build
+        console_note(f"pnl series: {type(err).__name__}: {err}")
+        return c["v"] if c else {"pts": [], "t0": None, "rough": None, "end": None}
+    if now is None:
+        PNL[key] = {"at": now_t, "v": v}
+    return v
+
+
+def _pnl_series(hours, points, now):
+    empty = {"pts": [], "t0": None, "rough": None, "end": None}
+    if not STORE["db"]:
+        return empty
+    start = now - hours * 3600
+    store_x("create table if not exists pulse(ts real, worth real, staked real)")
+    store_x("create table if not exists pulse_more(ts real primary key, xworth real, xcost real)")
+    rows = store_rows("select p.ts, p.worth, p.staked, m.xworth, m.xcost, m.ts as mts from pulse p "
+                      "left join pulse_more m on m.ts = p.ts where p.ts > ? and p.ts <= ? order by p.ts",
+                      (start - PNL_ALIGN, now))
+    for r in rows:
+        r["u"] = (r["worth"] or 0) + (r["xworth"] or 0) - (r["staked"] or 0) - (r["xcost"] or 0)
+        r["c"] = (r["staked"] or 0) + (r["xcost"] or 0)
+    base = [r for r in rows if r["ts"] <= start]
+    base = base[-1] if base else None
+    rows = [r for r in rows if r["ts"] > start]
+    # finished bets: the ledger (combos and singles, fees in), then any combo the ledger hasn't got from `bets`
+    ev = []
+    seen = set()
+    if any(x.get("name") == "ledger" for x in store_rows("select name from sqlite_master where type='table'")):
+        for r in store_rows("select ticker, cost, back, closed from ledger where closed > ? and closed <= ?",
+                            (start, now)):
+            seen.add(r["ticker"])
+            ev.append([r["closed"], (r["back"] or 0) - (r["cost"] or 0), r["cost"] or 0])
+    for r in store_rows("select combo, cost, back, settled from bets where status in ('won','lost','cashed') "
+                        "and settled > ? and settled <= ?", (start, now)):
+        if r["combo"] not in seen:
+            ev.append([r["settled"], (r["back"] or 0) - (r["cost"] or 0), r["cost"] or 0])
+    if not rows and not ev:
+        return empty
+    # where the bet left the open list: the first pulse row within 15 min after Kalshi's time whose stake fell by
+    # at least half this bet's cost. Else Kalshi's own time.
+    tss = [r["ts"] for r in rows]
+    for e in ev:
+        k = bisect.bisect_left(tss, e[0])
+        prev = rows[k - 1] if k else base
+        for r in rows[k:]:
+            if r["ts"] > e[0] + PNL_ALIGN:
+                break
+            if prev is not None and e[2] > 0 and prev["c"] - r["c"] >= 0.5 * e[2] - 0.01:
+                e[0] = r["ts"]
+                break
+            prev = r
+    ev.sort(key=lambda e: e[0])
+    if base is not None:
+        t0, u0, c0 = start, base["u"], base["c"]
+    elif rows:
+        t0 = min(rows[0]["ts"], ev[0][0] - 1 if ev else rows[0]["ts"])
+        u0, c0 = rows[0]["u"], (rows[0]["c"] if rows[0]["ts"] <= t0 else 0.0)
+    else:
+        t0, u0, c0 = ev[0][0] - 1, 0.0, 0.0
+    # merge the pulse rows and the cash events into one timeline
+    pts, cur_u, cur_c, real, i = [[t0, 0.0, c0]], u0, c0, 0.0, 0
+    times = sorted({r["ts"] for r in rows if r["ts"] > t0} | {e[0] for e in ev if e[0] > t0})
+    by_ts = {r["ts"]: r for r in rows}
+    for t in times:
+        while i < len(ev) and ev[i][0] <= t:
+            real += ev[i][1]
+            i += 1
+        r = by_ts.get(t)
+        if r is not None:
+            cur_u, cur_c = r["u"], r["c"]
+        pts.append([t, cur_u + real - u0, cur_c])
+    rough = None
+    for r in rows:
+        if r["mts"] is None:
+            rough = r["ts"]
+    end = pts[-1][0]
+    last = rows[-1] if rows else None
+    if last is not None and last["mts"] is not None and last["c"] <= 0.005 and abs(last["u"]) <= 0.005 and now - end > 60:
+        pts.append([now, pts[-1][1], 0.0])      # nothing open since that row: the line runs flat to now
+        end = now
+    step = max(1, -(-len(pts) // max(2, points)))    # at most `points` (+ the newest)
+    out = pts[::step]
+    if out[-1] is not pts[-1]:
+        out.append(pts[-1])
+    out = [[round(p[0]), round(p[1], 2), round(p[2], 2)] for p in out]
+    return {"pts": out, "t0": round(t0), "rough": round(rough) if rough is not None else None, "end": round(end)}
+
+
 def game_story(ticker, hours=8):
     """One game's live story for the game screen: its win chance over time and every score change."""
     return {"ticks": store_rows("select ts, chance, state, score from ticks where ticker=? and ts > ? order by ts",
@@ -20153,6 +20286,7 @@ def store_trim(days=120):
     store_x("delete from ticks where ts < ?", (time.time() - 30 * 86400,))
     try:
         store_x("delete from pulse where ts < ?", (time.time() - 30 * 86400,))
+        store_x("delete from pulse_more where ts < ?", (time.time() - 30 * 86400,))
     except Exception:
         pass
     store_x("delete from offers where ts < ?", (cut,))

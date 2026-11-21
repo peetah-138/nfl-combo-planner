@@ -2603,10 +2603,10 @@ def webapp_main():
         except Exception:
             orders = []
         try:
-            pulse = A.pulse_series() if A.STORE.get("db") else []
+            pnl = A.pnl_series() if A.STORE.get("db") else None    # #221: the hero chart's profit line (cached)
         except Exception:
-            pulse = []
-        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(), **ideas_extra,
+            pnl = None
+        return dict(out, ideas=ideas, orders=orders, pnl=pnl, sales=recent_sales(), **ideas_extra,
                     auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
 
     def recent_sales(hours=3):
@@ -3660,7 +3660,9 @@ def webapp_main():
                             h = max(1, min(720, int(q.get("h") or 16)))
                         except ValueError:
                             h = 16
-                        out = {"h": h, "pulse": A.pulse_series(hours=h, points=200) if A.STORE.get("db") else []}
+                        db = A.STORE.get("db")
+                        out = {"h": h, "pulse": A.pulse_series(hours=h, points=200) if db else [],
+                               "pnl": A.pnl_series(hours=h, points=200) if db else None}
                     elif path == "/app/api/settings":
                         out = api_settings(q.get("lg") or "")
                     else:

@@ -1,6 +1,6 @@
 """Makeover phase 1: press feedback and a haptic on every interactive thing (audited on every screen), distinct
 haptic patterns, the push transition into a game/combo page (slide, dimmed page behind, skeleton, Back, swipe back),
-the Live hero chart (Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.
+the Live hero chart (profit/loss, Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.
 Phone (390x844, touch) and desktop. Prints PROBLEMS on any failure."""
 import sqlite3
 import requests
@@ -84,7 +84,8 @@ with sync_playwright() as pw:
         pg.mouse.up(); time.sleep(.4)
         after = pg.evaluate("({on:document.querySelector('.sparkw').classList.contains('on'),big:document.querySelector('.hv .big').textContent,scrub:S.scrub})")
         print(tag, "scrub:", st, "ticks:", ticks, "| held during refresh:", still, "| after:", after, "| before:", before)
-        if not st["on"] or not st["read"] or not st["big"].startswith("$"): bad(f"{tag}: scrubbing didn't show the line, readout and value")
+        if not st["on"] or "staked" not in st["read"] or "$" not in st["read"]: bad(f"{tag}: scrubbing didn't show the line and the profit/staked readout")
+        if st["big"] != before: bad(f"{tag}: scrubbing changed the big 'worth now' number (#221: it stays the live value)")
         if ticks < 3: bad(f"{tag}: scrubbing gave only {ticks} haptic ticks")
         if not still: bad(f"{tag}: a refresh mid-scrub tore the chart down")
         if after["on"] or after["scrub"] or after["big"].replace("≈ ", "") != before.replace("≈ ", ""): bad(f"{tag}: releasing didn't put the live value back")

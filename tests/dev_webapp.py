@@ -124,6 +124,7 @@ def seed_pulse(A):
     for i in range(7 * 144, -1, -1):
         w = max(4.0, w + rnd.gauss(0.02, 0.45) + 0.6 * math.sin(i / 23.0) * 0.1)
         A.store_x("insert into pulse values(?,?,?)", (now - i * 600, round(w, 2), 18.0))
+        A.store_x("insert or replace into pulse_more values(?,?,?)", (now - i * 600, 0.0, 0.0))
 
 
 def announce():
