@@ -26,5 +26,5 @@
 #undo{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));z-index:51;display:flex;align-items:center;gap:6px;max-width:min(560px,92vw);padding:4px 4px 4px 16px;background:var(--ink);color:var(--bg);border-radius:12px;font-weight:600;font-size:14px;transform:translateX(-50%) translateY(20px);opacity:0;transition:transform .38s var(--spring),opacity .2s}
 #undo.on{opacity:1;transform:translateX(-50%)}#undo[hidden]{display:none!important}
 #undo button{min-height:44px;padding:0 14px;background:none;border:0;border-radius:9px;color:inherit;font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}
-@media (prefers-reduced-motion:reduce){.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
+@media (prefers-reduced-motion:reduce){.sfold .chev,.scard{transition:none!important}.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
 h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}

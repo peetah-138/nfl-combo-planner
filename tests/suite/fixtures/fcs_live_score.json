@@ -1,0 +1,231 @@
+{
+ "_note": "Captured 2026-11-21 ~22:38Z with plain unauthenticated GETs (ESPN scoreboard groups=90, Kalshi /markets, /milestones, /live_data/batch); trimmed to the fields the app reads. Issue #224: Jackson St. at Alcorn St. (FCS, SWAC) is in ESPN group 81/90, not 80.",
+ "espn_groups_90": {
+  "events": [
+   {
+    "id": "401871079",
+    "date": "2026-11-21T19:00Z",
+    "name": "Missouri State Bears at Jacksonville State Gamecocks",
+    "shortName": "MOST @ JXST",
+    "competitions": [
+     {
+      "id": "401871079",
+      "date": "2026-11-21T19:00Z",
+      "status": {
+       "clock": 0.0,
+       "displayClock": "0:00",
+       "period": 4,
+       "type": {
+        "id": "3",
+        "name": "STATUS_FINAL",
+        "state": "post",
+        "completed": true,
+        "description": "Final",
+        "detail": "Final",
+        "shortDetail": "Final"
+       }
+      },
+      "competitors": [
+       {
+        "id": "55",
+        "homeAway": "home",
+        "score": "25",
+        "team": {
+         "id": "55",
+         "location": "Jacksonville State",
+         "name": "Gamecocks",
+         "abbreviation": "JXST",
+         "displayName": "Jacksonville State Gamecocks",
+         "shortDisplayName": "Jax State"
+        }
+       },
+       {
+        "id": "2623",
+        "homeAway": "away",
+        "score": "20",
+        "team": {
+         "id": "2623",
+         "location": "Missouri State",
+         "name": "Bears",
+         "abbreviation": "MOST",
+         "displayName": "Missouri State Bears",
+         "shortDisplayName": "Missouri St"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "401868365",
+    "date": "2026-11-21T20:00Z",
+    "name": "Jackson State Tigers at Alcorn State Braves",
+    "shortName": "JKST @ ALCN",
+    "competitions": [
+     {
+      "id": "401868365",
+      "date": "2026-11-21T20:00Z",
+      "status": {
+       "clock": 563.0,
+       "displayClock": "9:23",
+       "period": 3,
+       "type": {
+        "id": "2",
+        "name": "STATUS_IN_PROGRESS",
+        "state": "in",
+        "completed": false,
+        "description": "In Progress",
+        "detail": "9:23 - 3rd Quarter",
+        "shortDetail": "9:23 - 3rd"
+       }
+      },
+      "competitors": [
+       {
+        "id": "2016",
+        "homeAway": "home",
+        "score": "14",
+        "team": {
+         "id": "2016",
+         "location": "Alcorn State",
+         "name": "Braves",
+         "abbreviation": "ALCN",
+         "displayName": "Alcorn State Braves",
+         "shortDisplayName": "Alcorn St"
+        }
+       },
+       {
+        "id": "2296",
+        "homeAway": "away",
+        "score": "38",
+        "team": {
+         "id": "2296",
+         "location": "Jackson State",
+         "name": "Tigers",
+         "abbreviation": "JKST",
+         "displayName": "Jackson State Tigers",
+         "shortDisplayName": "Jackson St"
+        }
+       }
+      ],
+      "situation": {
+       "down": -1,
+       "yardLine": 65,
+       "distance": -1,
+       "isRedZone": false,
+       "homeTimeouts": 0,
+       "awayTimeouts": 0
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "kalshi_markets": [
+  {
+   "ticker": "KXNCAAFGAME-26NOV21JKSTALCN-JKST",
+   "event_ticker": "KXNCAAFGAME-26NOV21JKSTALCN",
+   "title": "Jackson St. wins",
+   "yes_sub_title": "Jackson St.",
+   "no_sub_title": "Jackson St.",
+   "status": "active",
+   "expected_expiration_time": "2026-11-21T23:00:00Z",
+   "yes_bid_dollars": "0.9900",
+   "yes_ask_dollars": "1.0000",
+   "last_price_dollars": "0.9900"
+  },
+  {
+   "ticker": "KXNCAAFGAME-26NOV21JKSTALCN-ALCN",
+   "event_ticker": "KXNCAAFGAME-26NOV21JKSTALCN",
+   "title": "Alcorn St. wins",
+   "yes_sub_title": "Alcorn St.",
+   "no_sub_title": "Alcorn St.",
+   "status": "active",
+   "expected_expiration_time": "2026-11-21T23:00:00Z",
+   "yes_bid_dollars": "0.0000",
+   "yes_ask_dollars": "0.0100",
+   "last_price_dollars": "0.0100"
+  }
+ ],
+ "milestones": [
+  {
+   "category": "Sports",
+   "details": {
+    "away_team_id": "6a0aafe2-3ac5-4863-85cd-181ce0478a77",
+    "broadcasts": [
+     {
+      "name": "ESPN+",
+      "scope": "national"
+     }
+    ],
+    "conference": "SWAC",
+    "division": "FCS",
+    "home_team_id": "97d8759a-d9d8-4ffc-9745-116b80274d8b",
+    "league": "NCAAFB",
+    "main_game_event_ticker": "KXNCAAFGAME-26NOV21JKSTALCN",
+    "season": {
+     "type": "REG",
+     "week": 12,
+     "year": 2026
+    },
+    "status": "inprogress",
+    "tier": "D"
+   },
+   "id": "2a8cb965-d9a1-5f90-9955-af853f8c8c77",
+   "last_updated_ts": "2026-11-21T22:11:05.795762Z",
+   "notification_message": "The game is about to begin!",
+   "primary_event_tickers": [
+    "KXNCAAFGAME-26NOV21JKSTALCN",
+    "KXNCAAFSPREAD-26NOV21JKSTALCN",
+    "KXNCAAFTOTAL-26NOV21JKSTALCN"
+   ],
+   "related_event_tickers": [
+    "KXNCAAFGAME-26NOV21JKSTALCN",
+    "KXNCAAF1H-26NOV21JKSTALCN",
+    "KXNCAAFSPREAD-26NOV21JKSTALCN",
+    "KXNCAAFTOTAL-26NOV21JKSTALCN"
+   ],
+   "source_ids": {
+    "source_1_id": "2974621",
+    "source_2_id": "20261121D4AD4811",
+    "source_6_id": "18245729"
+   },
+   "start_date": "2026-11-21T20:00:00Z",
+   "title": "Jackson St. at Alcorn St.",
+   "type": "football_game"
+  }
+ ],
+ "live_datas": [
+  {
+   "details": {
+    "away_points": 38,
+    "away_timeouts_remaining": null,
+    "clock": "09:14",
+    "home_points": 14,
+    "home_timeouts_remaining": null,
+    "last_play": {
+     "description": "C.Wilt kickoff 56 yards to the JSU 14 D.Welch return 26 yards to the JSU 40 (K.Brown; J.Mcroy) PENALTY JSU Face Mask 15 yards from JSU 40 to JSU 25",
+     "occurence_ts": 1795300794,
+     "occurence_ts_source": "first_seen",
+     "opticodds_text": "#25 C.Wilt kickoff 56 yards to the JSU14 #17 D.Welch return 26 yards to the JSU40 (#26 K.Brown; #14 J.Mcroy) PENALTY JSU Face Mask 15 yards from JSU40 to JSU25"
+    },
+    "last_updated_ts": 1795300824,
+    "provider": "opticodds",
+    "quarter": 3,
+    "quarter_end_stability_required": true,
+    "situation": {
+     "down": 0,
+     "goal_to_go": false,
+     "possession_team_id": "6a0aafe2-3ac5-4863-85cd-181ce0478a77",
+     "side_team_id": "",
+     "yardline": 0,
+     "yfd": 0
+    },
+    "status": "inprogress",
+    "widget_status": "live",
+    "winner": ""
+   },
+   "milestone_id": "2a8cb965-d9a1-5f90-9955-af853f8c8c77",
+   "type": "football_game"
+  }
+ ]
+}
