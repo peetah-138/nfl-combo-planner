@@ -254,6 +254,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
+- **Odds API credits (issue #175).** Every odds-service answer's `x-requests-remaining/-used/-last` headers are
+  recorded (`odds_credits_note`, in `fetch_book_odds_one` and `tennis_keys`; no extra calls) in `combo_odds_credits.json`
+  (newest numbers plus a small history, under `file_lock`). `odds_credits()` gives remaining, burn per day (needs 6 h of
+  history since the last reset, looks back 7 days), projected run-out, and the reset date (a month after a reset we saw,
+  i.e. credits jumping back up; else the 1st of next month UTC, marked an estimate). **Low** = run-out before the reset,
+  or at/under the floor (max(40, 5% of the plan)), or none left. Settings › The Mac shows it ("Sportsbook odds credits":
+  N of M left, pace, runs out / lasts past the reset, resets (about) <date>, a bar; `odds_info` in `mac_settings` and
+  `/app/mac-info`, numbers only, never the key). **Low mode** (`odds_saving`, turns off only once comfortably back:
+  1.5x the floor and lasting 2+ days past the reset): `HubOdds.worth_credits` (and the phone's `fetch_book_odds`) only
+  asks for a league whose panel candidates, panel bets or held bets (`odds_interest`/`held_for_credits`, read-only) have
+  a game starting within 4 h or under way; other leagues keep free lines (old sharp lines still expire at 45 min). One
+  push per low state per reset cycle (`odds_low_alert`, "Odds credits"). It never buys, sells, prices or touches Pause.
+  Asking only for sharp bookmakers (`bookmakers=` instead of `regions=us,eu`, 1 credit instead of 2) was **not** done:
+  the fair price falls back to the median of all books when neither Pinnacle nor a sharp book lists a game, and a
+  bookmaker filter would change that. Tests: `t_oddscredits`, `test_oddscredits`.
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
