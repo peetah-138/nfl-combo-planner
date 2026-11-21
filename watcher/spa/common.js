@@ -68,6 +68,16 @@ function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT
 function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
+/* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
+   short plain reasons in a sheet. `where` is one of two fixed words, never page data. */
+function sbSkipLine(xs,where){xs=(Array.isArray(xs)?xs:[]).filter(x=>x&&x.text);S.sbSkip=S.sbSkip||{};S.sbSkip[where]=xs;if(!xs.length)return '';
+ const cr=xs.filter(x=>x.credits).length,who=cr===xs.length?'Saving odds credits: left out':cr?'Left out':'Smart Buy skipped';
+ return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">${who} ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} · Why?</button>`;}
+function sbSkipOpen(w){const xs=(S.sbSkip||{})[w]||[];
+ const cr=xs.filter(x=>x.credits).length,sb=xs.length-cr;
+ modal(`<h3>${cr&&!sb?'Left out to save odds credits':sb&&!cr?'Smart Buy skipped '+sb:'Left out '+xs.length}</h3>${sb?`<p class="m" style="font-size:13px;line-height:1.45">Smart Buy: priced better than their chance, but unlikely to make money once selling and holding are both played out. They're still tracked, so Smart Buy learns if skipping them was wrong. Switch it off in Settings › Money.</p>`:''}${cr?`<p class="m" style="font-size:13px;line-height:1.45">Odds credits are low, so sharp lines are only read for games starting soon. A game more than 4 hours away with only free lines isn't bought. Once the game is close (or credits recover) it can turn up again, as a new bet you can add.</p>`:''}
+  ${xs.map(x=>`<div class="sbrow" style="padding:10px 0;border-top:1px solid var(--line)"><b style="font-size:14px">${esc(x.text)}</b><div class="m" style="font-size:12.5px;margin-top:2px;line-height:1.4">${esc(x.why||'')}</div></div>`).join('')}
+  <button class="btn ghost" type="button" style="width:100%;justify-content:center;margin-top:12px" onclick="closeModal()">Close</button>`);}
 function closeModal(){const m=$('#modal');
  /* the buy sheet opened from a game page goes back to that game however it is closed (Cancel, backdrop, drag) */
  const sbBack=S.sb&&S.sb.back&&document.querySelector('#sheet #sbx')&&m.classList.contains('on')?S.sb.back:null;if(sbBack){S.sb=null;setTimeout(()=>openGame(sbBack),300);}
