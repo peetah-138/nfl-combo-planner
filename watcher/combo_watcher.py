@@ -1208,6 +1208,26 @@ class HubOdds:
         return True
 
 
+COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
+
+
+def combo_link(E, msg):
+    """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
+    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
+    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    try:
+        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
+        if len(named) != 1:
+            return None
+        want = "Combo " + named.pop()
+        mine = dict(E.MINE.get("snap") or {})
+        mine.update(E.MINE.get("hold") or {})
+        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
+        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+    except Exception:
+        return None
+
+
 class Notifier:
     """Urgent alerts (cash-outs, hedges, anything done automatically, combos at risk) go out at once.
     Everything else waits and goes out together, at most once every 30 minutes, never 10 PM-7 AM.
@@ -1239,7 +1259,7 @@ class Notifier:
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
                  pause_button=bool(self.E.CFG.get("auto_sell")), web_title="Combo Hub", web_urgent=True, tag="urgent",
-                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."))
+                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."), click=combo_link(self.E, msg))
             BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
@@ -3184,6 +3204,8 @@ def webapp_main():
                             else float(v) if isinstance(cur, float) else None
                     except (TypeError, ValueError):
                         continue
+                    if k == "auto_cap" and v is not None and A.auto_cap_limit(v) is None:
+                        v = A.AUTO_CAP_UNLIMITED            # any value over the slider's numbers = Unlimited (#217)
                     if v is not None:
                         A.CFG[k] = v
                 for t in ("upsets", "safer", "middle", "moonshot"):
@@ -4347,7 +4369,7 @@ def main():
     E.present = lambda *a, **k: None
     E.loading = lambda *a, **k: None
     E.notify = lambda msg: push(conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
-                                pause_button=bool(E.CFG.get("auto_sell")))
+                                pause_button=bool(E.CFG.get("auto_sell")), click=combo_link(E, msg))
     E.console_note = lambda msg: log(msg)
     E.auto_cash_checks = lambda: []        # no quotes on every combo; see estimate_offers
     E.set_league("nfl")                    # Live covers every sport; this only picks the main game list

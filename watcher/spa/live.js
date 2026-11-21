@@ -30,8 +30,14 @@ function settledBar(cs){const done=cs.filter(c=>c.group!=='pending');const f=S.s
   <div class="chips">${ch('sort','new','Newest')}${ch('sort','best','Biggest profit')}${ch('sort','worst','Biggest loss')}${ch('sort','pay','Biggest payout')}</div>
   <div class="snet">${n} settled · net <b class="${net>=0?'up':'down'}">${net>=0?'+':'−'}${money(Math.abs(net))}</b></div></div>`;}
 function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit'&&v>0)||(f.o==='loss'&&v<0)||f.o===c.group)&&(f.sp==='all'||c.sports.includes(f.sp));}
+/* A combo smart sell looks after (not "I'll sell it") shows SELL only when smart sell would sell it now (nudge, #210):
+   the older Let it ride plan's verdict flips on the Mac's estimated offer, so on its own it says HOLD and its sentence is
+   left out. "I'll sell it" combos keep the plan's advice. */
+function planOn(c){return !!(c.self||c.nudge);}
+function verdictShown(c){return planOn(c)?c.verdict:'hold';}
+function whyShown(c){return planOn(c)||c.verdict==='hold'?c.why:'';}
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
- if(c.verdict==='sell')return['sell','SELL'];if(c.verdict==='half')return['sell','SELL ½'];return['hold','HOLD'];}
+ const v=verdictShown(c);if(v==='sell')return['sell','SELL'];if(v==='half')return['sell','SELL ½'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
  const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
  if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
@@ -50,7 +56,7 @@ function _renderLive(){const d=S.live;const m=$('#main');
  const sports=[...new Set(cs.flatMap(c=>c.sports))];
  const shown=cs.filter(c=>S.filter==='all'?c.group==='pending':S.filter==='live'?c.group==='pending'&&c.live:S.filter==='done'?c.group!=='pending'&&settledOk(c):c.group==='pending'&&c.sports.includes(S.filter))
    .sort(S.filter==='done'?((a,b)=>S.sf.sort==='best'?plOf(b)-plOf(a):S.sf.sort==='worst'?plOf(a)-plOf(b):S.sf.sort==='pay'?(b.full||b.pays)-(a.full||a.pays):doneKey(b)-doneKey(a)||b.sort-a.sort)
-     :((a,b)=>(b.verdict==='sell')-(a.verdict==='sell')||(b.live-a.live)||a.sort-b.sort));
+     :((a,b)=>(verdictShown(b)==='sell')-(verdictShown(a)==='sell')||(b.live-a.live)||a.sort-b.sort));
  const todo=cs.filter(c=>(d.todo||[]).includes(c.t));
  const sumW=(d.cash_now||0)+sOpen.reduce((a,x)=>a+(x.worth||0),0),sumS=d.staked+sOpen.reduce((a,x)=>a+(x.cost||0),0),dl=sumW-sumS;
  m.innerHTML=`<div class="grid"><div>
@@ -69,9 +75,9 @@ function _renderLive(){const d=S.live;const m=$('#main');
 function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const items=[];
  for(const c of pend){
-  if((d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
+  if(planOn(c)&&(d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
   else if(c.offer_real&&c.overpay&&c.overpay>=1.03)items.push({c,kind:'overpay',w:(c.offer||0)*1.1});
-  else if(c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
+  else if(c.self&&c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
   else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
  }
  items.sort((a,b)=>b.w-a.w);
@@ -105,7 +111,8 @@ function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
 function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
  const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
  return `<span class="sweat" title="${w} of ${c.legs.length} picks won">${seg.map(s=>`<i class="${s}"></i>`).join('')}</span>`;}
-function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
+/* the moment bar: only when smart sell would sell it now, on a real offer (nudge, #210) */
+function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.nudge&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
  const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
  return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
   ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" onclick="sell('${c.t}')">Cash out</button>`}</div>`).join('')+more;}
@@ -213,7 +220,7 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" onclick="event.stopPropagation();openGame('${l.ticker}')"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
    <div class="who"><b>${ICON[l.sport]||''} ${esc(l.name)}</b> <span>${l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
-   ${c.why&&c.group==='pending'?`<div class="why">${esc(c.why)}</div>`:''}
+   ${whyShown(c)&&c.group==='pending'?`<div class="why">${esc(whyShown(c))}</div>`:''}
    ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${money(c.threshold)}+`:''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
     <button class="btn ghost" onclick="event.stopPropagation();openCombo('${c.t}')">Details</button>
     ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
@@ -222,7 +229,7 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
 function tog(t){S.open[t]=!S.open[t];renderLive();}
 function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);if(!ev.length)return '';
  const K={score:'🏟️',swing:'📈',advice:'⚡',settled:'🏁',alert:'🔔'};
- return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
+ return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" onclick="openGame('${e.ticker}')"`:e.kind==='advice'&&comboOk(e.combo)?`style="cursor:pointer" onclick="openCombo('${e.combo}')"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
  return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" onclick="openGame('${g.ticker||''}')"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>

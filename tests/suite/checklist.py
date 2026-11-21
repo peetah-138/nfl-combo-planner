@@ -12,7 +12,7 @@ t_settings t_https_push t_tailscale_safe t_status t_league t_hubcache t_kalshi_l
 t_live_panel t_hedge t_rebuild t_buynow t_addonce t_panelgame t_orderbook t_gamedetail t_realdate t_orders_v2
 t_buyfunds t_capmsg t_kalshi_feed_watch t_cover t_offer_live t_gametabs t_push_target t_linemodel t_singlebuy
 t_ideacards t_ideas_ration t_shards t_spa_files t_spa_update t_spa_transition t_safety t_pottransfer t_profit t_exitpolicy t_smartbuy t_oddscredits
-t_sbgate t_lowcredit t_refusals t_scoreboard t_linesel t_bestbets t_ownstake t_heropnl""".split()
+t_sbgate t_lowcredit t_refusals t_scoreboard t_linesel t_bestbets t_ownstake t_cashnudge t_autocap t_heropnl""".split()
 
 PAGE = """test_settings test_tap test_days test_singles_live test_analytics test_buildguard test_spa test_adv
 test_panel_ui test_panel_ui2 test_fun test_hist test_web3 test_speed test_sweep test_chips test_restart2
@@ -20,7 +20,7 @@ test_extra_ui test_mix test_allchip test_updbtn test_https test_settled test_bui
 test_motion test_livefresh test_klive test_makeover2 test_makeover3 test_rebuild_ui test_loadwidth test_addonce_ui
 test_haptics test_hsw test_chips_stay test_fieldstrip test_gamedetail_api test_realdate test_tabbar_stays
 test_orderblock test_buildbuttons test_cover test_pbptabs test_gamecard_opp test_offerlive test_gametabs
-test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits test_refusals test_scoreboard test_linesel_ui test_bestbets test_ownstake_ui test_heropnl""".split()
+test_singlebuy_ui test_ideacards test_ideas2 test_pottransfer_ui test_oddscredits test_refusals test_scoreboard test_linesel_ui test_bestbets test_ownstake_ui test_cashnudge_ui test_autocap_ui test_heropnl""".split()
 
 # Rough seconds each page test takes on a CI runner (measured on PR #157's run; only the balance of the split
 # depends on them, a missing or stale number never drops or doubles a test). Unknown tests count as DEFAULT.
@@ -37,7 +37,7 @@ SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedet
         "test_chips": 17, "test_hist": 16, "test_rebuild_ui": 16, "test_cover": 13, "test_https": 12,
         "test_realdate": 11, "test_analytics": 11, "test_fieldstrip": 10, "test_klive": 9, "test_singles_live": 8,
         "test_orderblock": 8, "test_gamecard_opp": 8, "test_buildguard": 6, "test_login_faceid": 6,
-        "test_bestbets": 45, "test_offerlive": 4, "test_web3": 1, "test_heropnl": 30}
+        "test_bestbets": 45, "test_cashnudge_ui": 25, "test_autocap_ui": 15, "test_offerlive": 4, "test_web3": 1, "test_heropnl": 50}
 
 # Page tests allowed ONE automatic rerun in CI (CHECK_RETRY=1), logged as "passed on retry". Keep it empty unless a
 # test is timing-bound by nature; a flaky test should be fixed at the root first.

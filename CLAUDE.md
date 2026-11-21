@@ -516,7 +516,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
-  It only acts while Auto cash-out is on; daily cap applies; singles sell into the order book (IOC at the bid,
+  It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5; λ from the sport's swing and time left (×1.3 at a slate
@@ -762,6 +762,24 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+- **"Time to cash out" only when smart sell would sell (GitHub #210, alerts and navigation only).** The Live toast
+  "Combo N: time to cash out" used to fire on every hold→sell flip of the older Let it ride plan (`plan_cashout`), which
+  takes the watcher's *estimated* offer as a fresh one (`fresh_offer` accepts `rfq="estimate"`) and, for a long shot
+  with a big payout, prefers a sure few dollars to a ~1% shot (log utility on the bankroll); the Monte Carlo chance's
+  noise (8,000 runs) pushes the estimate over its line now and then, so the verdict flickered and the toast repeated.
+  Now `cash_nudge(t, h)` decides every cash-out nudge: smart sell's rule (`take_profit_reason`/`exit_policy`) says
+  sell, a **real** fresh Kalshi offer (never an estimate), at or above cost and ≥ 97% of the rule's line, and a game
+  still to play is under way. `live_view` sets `v["nudge"]`; `nudge_event` (in `record_view`) raises the toast once
+  when it turns on (≤ 1 per `NUDGE_GAP` 10 min), worded "smart sell is cashing out at $X" with Auto cash-out on;
+  the phone's `cash_alerts` push needs it too. On the page, a combo smart sell looks after (not "I'll sell it") shows
+  SELL, the moment bar, the Do now cash-out/"check Kalshi's price" cards and the plan's sentence only with `nudge`
+  (`planOn`/`verdictShown`/`whyShown`); "I'll sell it" combos keep the plan's advice. Nothing that sells reads it:
+  `auto_sell_now`, smart sell, hedges are unchanged (they already refused a sale below cost and re-quote an estimate).
+  **Tapping opens the combo:** the toast is a button (`toast(m, ms, tone, onTap)`, `.toast.tap`) → `openCombo`; an
+  urgent push about exactly one combo carries `/#c=<ticker>` (watcher `combo_link`: the text names one "Combo N" on
+  this refresh's list; ticker `[A-Za-z0-9._-]` only), and `comboFromHash` (boot.js) opens Live, waits for its data and
+  pushes the combo only when it is on Live (unknown, old or malformed = just Live). Tests: `t_cashnudge`,
+  `t_push_target`, `test_cashnudge_ui`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and

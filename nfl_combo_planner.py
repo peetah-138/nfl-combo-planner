@@ -43,7 +43,7 @@ CFG = {
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
-    "auto_cap": 5,        # at most this many automatic cash-outs a day (per device)
+    "auto_cap": 5,        # at most this many automatic cash-outs a day (per device); AUTO_CAP_UNLIMITED = no limit
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
@@ -4570,6 +4570,26 @@ def log_decision(rec):
     console_note("auto cash-out: " + json.dumps(rec))
 
 
+AUTO_CAP_MAX = 10           # the Auto cash-outs a day slider's highest number; its next stop is "Unlimited"
+AUTO_CAP_UNLIMITED = 1000   # stored for "Unlimited" (issue #217): an older process reads it as a cap of 1000 a day
+
+
+def auto_cap_limit(v=None):
+    """Today's limit on automatic cash-outs: a number, or None for Unlimited (anything over AUTO_CAP_MAX).
+    A value that can't be read falls back to the default 5, never to unlimited."""
+    try:
+        n = int(float(CFG.get("auto_cap", 5) if v is None else v))
+    except (TypeError, ValueError, OverflowError):
+        n = 5
+    return None if n > AUTO_CAP_MAX else n
+
+
+def auto_cap_reached():
+    """This device already made today's allowed automatic cash-outs ("check" sales count). Never with Unlimited."""
+    lim = auto_cap_limit()
+    return lim is not None and sold_today() >= lim
+
+
 def sold_today():
     """Automatic cash-outs made by this device today."""
     today = dt.date.today().isoformat()
@@ -4987,6 +5007,31 @@ def take_profit_reason(t, h, cut_ok=False):
     return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
 
 
+def cash_nudge(t, h, tp=None):
+    """Whether a "time to cash out" alert (the Live toast, the moment bar, a Do now card, the phone's push) may go out
+    for this live combo (#210). Alerts only: it reads, never sells, and auto cash-out does not look at it. All of:
+      - smart sell's own rule says sell now (exit_policy via take_profit_reason; tp = its answer when already worked
+        out this refresh), not the older Let it ride plan, which also says "sell" for a long shot on an estimate;
+      - a real Kalshi offer that is still fresh (never the watcher's estimate);
+      - that offer is at least what was paid, and at least 97% of the line the rule sells at;
+      - one of the games still to play is under way (between games nothing changes, so nothing to say).
+    Returns {'why', 'offer' (whole combo)} or None."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None
+    why, floor = tp if tp is not None else take_profit_reason(t, h)
+    if not why:
+        return None
+    o = MINE["cash"].get(t) or {}
+    if o.get("rfq") in (None, "estimate") or not o.get("offer") or not fresh_offer(t):
+        return None
+    whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
+    if whole < (h.get("cost") or 0) or whole < 0.97 * (floor or 0):
+        return None
+    if not any(lv for _, lv, _ in h.get("legs_left") or []):
+        return None
+    return {"why": why, "offer": round(whole, 2)}
+
+
 def auto_sell_now(plan):
     """Auto cash-out (Settings, off by default): sells what the plan says to cash out, by itself,
     the same advice the card shows as Cash out. That already means a pick has won and Kalshi's
@@ -5060,11 +5105,11 @@ def auto_sell_now(plan):
                    "chance": round(h["p"], 4), "cost": round(h["cost"], 2), "pays": h["pays"],
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
                    "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes"}
-            if sold_today() >= int(CFG.get("auto_cap", 5)):
+            if auto_cap_reached():
                 log_decision(dict(rec, result="skipped", why="daily cap reached"))
                 if MINE.get("cap_told") != dt.date.today().isoformat():
                     MINE["cap_told"] = dt.date.today().isoformat()
-                    out.append(f"🤖 Auto cash-out reached today's cap of {CFG.get('auto_cap', 5)} sales. "
+                    out.append(f"🤖 Auto cash-out reached today's cap of {auto_cap_limit()} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
@@ -5448,7 +5493,7 @@ def smart_sell_singles():
             continue                                  # a sell waiting, or an order whose outcome is unknown
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side}
-        if sold_today() >= int(CFG.get("auto_cap", 5)):
+        if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
         sold, err = sell_single_now(x["t"], side, x["n"], bid)
@@ -5748,8 +5793,9 @@ def live_view(mine, views, plan, chance_one, balance):
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
+            v["nudge"] = cash_nudge(t, h, (why, floor))     # the only thing that may say "time to cash out" (#210)
         except Exception:
-            v["moment"] = None
+            v["moment"] = v["nudge"] = None
         try:
             hg = hedge_for(t)
             v["hedge"] = {k: hg.get(k) for k in ("name", "cost", "locked", "price", "done")} if hg else None
@@ -8850,6 +8896,8 @@ def cash_alerts(plan):
     so the alert and the buttons always agree). It needs all of:
       - the plan recommends cashing something out, judged after the latest refresh;
       - each combo in it has a pick already won (before that, you hold: it was bought for the upside);
+      - smart sell's own rule would sell it now, on a real offer at or above cost, with a game under way
+        (cash_nudge, #210);
       - it's worth at least $2, or 3% of what it locks in, more to you than holding;
       - it's new: same advice again only if the offer rose 20%+ or half became all, and never
         within 10 minutes of the last alert for that combo."""
@@ -8863,8 +8911,8 @@ def cash_alerts(plan):
     news = []
     for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]):
         o, h = fresh_offer(t), MINE["hold"].get(t)
-        if not (f and o and h):
-            continue
+        if not (f and o and h) or not cash_nudge(t, h):
+            continue                   # smart sell wouldn't sell it now: no "cash out" push (#210)
         amt = acts_price(t) * h["pays"] * f
         last = told.get(t)
         if last and (time.time() - last["at"] < 600 or (amt < last["amt"] * 1.2 and f <= last["f"])):
@@ -11755,7 +11803,8 @@ def settings_page(all_games, days, counts):
                         + slider("ride", "Let it ride", 0, len(RIDE) - 1, 1, "",
                                  names=[n for n, _ in RIDE])
                         + switch("auto_sell", "Auto cash-out at my Let it ride level")
-                        + slider("auto_cap", "Auto cash-outs a day, at most", 1, 10, 1, "")
+                        + slider("auto_cap", "Auto cash-outs a day, at most", 1, AUTO_CAP_MAX + 1, 1, "",
+                                 names=[str(i) for i in range(AUTO_CAP_MAX + 1)] + ["Unlimited"])
                         + switch("auto_hedge", "Hedge instead when that locks in more (only on a fresh live "
                                  "score, never at a break, at least what you paid, held 3+ min, fresh price)")
                         + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
@@ -11919,6 +11968,8 @@ def settings_page(all_games, days, counts):
             for k, v in vals.items():
                 if k in CFG:
                     CFG[k] = type(CFG[k])(v) if isinstance(CFG[k], (int, bool)) and not isinstance(v, dict) else v
+            if auto_cap_limit() is None:
+                CFG["auto_cap"] = AUTO_CAP_UNLIMITED   # the slider's "Unlimited" stop is stored as the clear sentinel
             save_cfg(cleared)
             if choice != "save" and before != {k: CFG.get(k) for k in WATCHER_SYNCED}:
                 import threading               # left Settings another way: the Pi still hears of it
@@ -20010,6 +20061,27 @@ def resolve_quotes(limit=200):
     return n
 
 
+NUDGE_GAP = 600          # seconds: one "time to cash out" toast per combo at most this often (#210)
+
+
+def nudge_event(t, v, view, last, now):
+    """The Live toast "Combo N: time to cash out" (#210). It used to follow the Let it ride plan's verdict, which
+    flips between hold and sell on the watcher's estimated offer, so a long shot that smart sell would never sell
+    (a 12-pick combo on an estimate below cost, games days away) got the toast every few minutes. Now it goes out
+    only when the combo's `nudge` (cash_nudge: smart sell's rule says sell, on a real offer at or above cost, a game
+    under way) turns on, at most once per NUDGE_GAP. Tapping it opens the combo (the SPA's moments.js)."""
+    nd = v.get("nudge")
+    was = last.get(("nudge", t))
+    last[("nudge", t)] = bool(nd)
+    if not nd or was or now - last.get(("nudge_at", t), 0) < NUDGE_GAP:
+        return []
+    last[("nudge_at", t)] = now
+    amt = money(nd.get("offer") or v.get("offer") or 0)
+    smart = view.get("auto_sell") and not v.get("self")
+    return [{"kind": "advice", "combo": t,
+             "text": f"{v['label']}: smart sell is cashing out at {amt}" if smart else f"{v['label']}: time to cash out ({amt})"}]
+
+
 def record_view(view):
     """Called each time the Mac refreshes Live: writes ticks and offers that changed, notes new bets and
     results, and returns the events worth pushing to open screens (scores, big swings, settled combos)."""
@@ -20087,8 +20159,7 @@ def record_view(view):
                 store_x("insert into offers values(?,?,?,?,?,?,?,?)",
                         (now, t, v.get("p"), v.get("pays"), v.get("hold_value"), v.get("offer"),
                          int(bool(v.get("offer_real"))), v.get("verdict")))
-                if prev and prev[1][2] != sig[2] and sig[2] in ("sell", "half"):
-                    ev.append({"kind": "advice", "combo": t, "text": f"{v['label']}: time to {'cash out' if sig[2] == 'sell' else 'cash out half'}"})
+            ev += nudge_event(t, v, view, last, now)
             _legs(t, v["legs"])
         elif ("done", t) not in last:
             last[("done", t)] = 1
