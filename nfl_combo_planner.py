@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.20.125"
+VERSION = "2026.11.21.127"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -7803,16 +7803,58 @@ def send_watcher_settings(with_cfg=True):
         return False
 
 
+def spa_approval_digest():
+    """The SHA-256 of the web app (watcher/spa/) exactly as the watcher assembles it: the shell with its
+    @@SPA_CSS@@ / @@SPA_JS@@ lines replaced by the listed files in order, then a zero byte and the login page.
+    A watcher on approved updates installs only web app files with this digest. "" when it can't be read."""
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor, wait
+    try:                        # only ever the files at GitHub's newest commit (plain main links can be minutes stale)
+        r = requests.get("https://api.github.com/repos/peetah-138/nfl-combo-planner/commits/main", timeout=10,
+                         headers={"Accept": "application/vnd.github.sha"})
+        if not (r.ok and re.fullmatch(r"[0-9a-f]{40}", r.text.strip())):
+            return ""                               # no exact commit: approve nothing rather than an old copy
+        base = UPDATE_URL.rsplit("/", 1)[0] + "/" + r.text.strip() + "/watcher/spa/"
+    except requests.RequestException:
+        return ""
+
+    def get(name):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_]+\.(html|css|js)|MANIFEST\.json", name):
+            raise ValueError("bad file name")
+        r = requests.get(base + name, params={"t": int(time.time())}, timeout=15, headers={"Cache-Control": "no-cache"})
+        if not r.ok:
+            raise ValueError(f"{name}: {r.status_code}")
+        return r.content.decode("utf-8")
+    pool = ThreadPoolExecutor(max_workers=8)        # the files at once, with one overall deadline (slow cell signal)
+    try:
+        m = json.loads(get("MANIFEST.json"))
+        names = [m["shell"], *m["css"], *m["js"], m["login"]]
+        jobs = {n: pool.submit(get, n) for n in dict.fromkeys(names)}
+        done, late = wait(jobs.values(), timeout=40)
+        if late:
+            return ""
+        got = {n: j.result() for n, j in jobs.items()}
+        spa = got[m["shell"]].replace("@@SPA_CSS@@\n", "".join(got[n] for n in m["css"])) \
+            .replace("@@SPA_JS@@\n", "".join(got[n] for n in m["js"]))
+        return hashlib.sha256((spa + "\0" + got[m["login"]]).encode("utf-8")).hexdigest()
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+    finally:
+        pool.shutdown(wait=False)
+
+
 def approve_pi_update(version, engine_bytes):
     """After this phone updates: tell the Pi it may install exactly this version (the engine and
-    watcher files, by their SHA-256), signed like any setting. The Pi installs nothing else."""
+    watcher files, by their SHA-256, and the web app by spa_approval_digest), signed like any setting.
+    The Pi installs nothing else."""
     import hashlib
     try:
         w = requests.get(UPDATE_URL + "/watcher/combo_watcher.py", params={"t": int(time.time())}, timeout=20)
         w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
     except requests.RequestException:
         w_sha = ""
-    save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha})
+    save_json(PI_APPROVE, {"version": version, "engine": hashlib.sha256(engine_bytes).hexdigest(), "watcher": w_sha,
+                           "spa": spa_approval_digest()})
     if watcher_conf():
         send_watcher_settings(with_cfg=False)
 
@@ -7831,8 +7873,12 @@ def refresh_pi_approval():
                          headers={"Cache-Control": "no-cache"})
         w_sha = hashlib.sha256(w.content).hexdigest() if w.ok else ""
         e_sha = hashlib.sha256(mine).hexdigest()
-        if w_sha and (ok.get("version") != VERSION or ok.get("watcher") != w_sha or ok.get("engine") != e_sha):
-            save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha})
+        same = ok.get("version") == VERSION and ok.get("watcher") == w_sha and ok.get("engine") == e_sha
+        if same and ok.get("spa"):
+            return                                  # already approved in full: no need to read the web app again
+        s_sha = spa_approval_digest() or (ok.get("spa") if ok.get("version") == VERSION else "") or ""
+        if w_sha and (not same or ok.get("spa") != s_sha):
+            save_json(PI_APPROVE, {"version": VERSION, "engine": e_sha, "watcher": w_sha, "spa": s_sha})
             send_watcher_settings(with_cfg=False)
     except (OSError, requests.RequestException):
         pass

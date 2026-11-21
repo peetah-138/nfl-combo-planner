@@ -50,6 +50,7 @@ os.environ["COMBO_NO_TAILSCALE"] = "1"                  # the dev app never runs
 os.environ["COMBOWATCH_NTFY"] = "http://127.0.0.1:9"      # notifications go nowhere (and the fake refuses it anyway)
 
 shutil.copy(os.path.join(REPO, "watcher", "combo_watcher.py"), os.path.join(HOME, "combo_watcher.py"))   # never run from the repo path
+shutil.copytree(os.path.join(REPO, "watcher", "spa"), os.path.join(HOME, "spa"))   # the web app's files (read at import: restart to see edits)
 sys.argv = [os.path.join(HOME, "combo_watcher.py"), "--webapp"]
 spec = importlib.util.spec_from_file_location("W", os.path.join(HOME, "combo_watcher.py"))
 W = importlib.util.module_from_spec(spec)

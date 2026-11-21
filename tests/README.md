@@ -47,7 +47,17 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## What's in it
 
-- **compile, JavaScript syntax, undefined names, secret grep.**
+- **compile, JavaScript syntax, undefined names, secret grep.** JavaScript: `node --check` on every
+  `watcher/spa/*.js` file and on the assembled page and login page (the watcher's own `spa_assemble`).
+- **The web app's files** (`t_spa_files.py`): every file in `watcher/spa/` is listed once in `MANIFEST.json`,
+  non-empty, each script parses, the assembly is deterministic and complete, and a missing or broken folder never
+  stops the watcher importing (holding page, loud log, repair at start). `t_spa_update.py` runs the real
+  `update_if_newer`/`spa_repair` against a fake GitHub: a normal update, a file missing, cut short or changed in
+  transit, a manifest naming a file GitHub lacks, a script that doesn't parse, a shell without its placeholder, no
+  exact commit, a failed install (the old web app goes back), the phone-approved path, the first update from a
+  version without a spa folder, and the self-repair after an older updater installed the watcher alone.
+  Tests that look for the page's code in "the watcher's source" read `wsrc.watcher_text()` (the watcher plus its
+  spa files). The one-time proof that the split was a pure move is `python3 tools/verify_spa_split.py`.
 - **Engine tests** (`suite/t_*.py`): review fixes, spread/total game matching, restart and extras, your own
   Kalshi bets, started games (pre-game-priced bets never bought once a game starts; `t_live_panel.py`: games under way only when priced live on a fresh score, the switch, recheck before buying, refusals are skips), smart sell for singles, the combo lab and analytics, self-tuning smart
   sell, AHL, AHL live scores (the league's feed, faked), tennis/EuroLeague/UFC scores from Kalshi's public live data
@@ -94,7 +104,8 @@ pattern in a local `.git/hooks/pre-commit`.
   evidence, the Mac's own record, the Settings switch), both prices logged, gate off = today's prices byte for byte,
   and the panel choosing the same bets with only the chances changed when it is on.
 - **Simulated Mac** (`suite/macsmoke/run.py`): the real watcher for ~45 s against fake services; the log must be
-  clean, a requested panel rebuild must run; and an update install into a temp home.
+  clean, a requested panel rebuild must run; and an update install into a temp home (engine, watcher and the
+  web app's files from a fake GitHub file list; the new files must be swapped in with nothing left over).
 - **Page tests** (`suite/test_*.py`, Playwright): every screen at phone and desktop sizes; no JS errors, no
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion
@@ -131,4 +142,24 @@ pattern in a local `.git/hooks/pre-commit`.
 - Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
   for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
   `window.load=async()=>{}` after the page has loaded.
-- Add every new test to the lists in `run_checks.sh`.
+- Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
+  is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
+- Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
+- Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can
+  overwrite it: `pg.add_init_script(upwait.COUNT_FETCHES)` before `goto`, then `upwait.go_and_hold(pg, "live")`
+  (waits for every request, the boot load included, then stops the page refreshing itself).
+- A partial run (`CHECK_GROUPS`, `CHECK_SHARD` or `CHECK_ONLY`, e.g. `CHECK_ONLY="test_klive"` while fixing one test)
+  ends with `PART PASSED (...)`, never `ALL CHECKS PASSED`.
+
+## In CI: parallel jobs
+
+`.github/workflows/ci.yml` runs the same `run_checks.sh` in parallel jobs, each with part of it:
+`CHECK_GROUPS=static` (ruff, compile on 3.10 and 3.12, JavaScript, names, secrets, versions), `engine`, `sim`
+(the simulated Mac and the update install), and `pages` split into shards with `CHECK_SHARD=i/N` (each shard on its
+own runner, 3 lanes, its own ports). `suite/checklist.py` does the split: deterministic, longest tests first, every
+test in exactly one shard (checked by `t_shards.py`, which also checks CI runs every shard and every group). A final
+job named `checks` (the one branch protection requires) passes only when all of them passed. pip and the Playwright
+browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test listed in `checklist.RETRY` once and the log says
+`RETRIED`; it holds only `test_rebuild_ui` (see why there): fix a flaky test instead of adding it. Locally, `bash tests/run_checks.sh` still runs everything, and
+you can run one part the same way, e.g. `CHECK_GROUPS=pages CHECK_SHARD=2/5 bash tests/run_checks.sh`. Each page
+test's PASS line shows its seconds.
