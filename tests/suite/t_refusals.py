@@ -104,6 +104,60 @@ ok("after the hold, the next buy is let through (Kalshi takes it) and the note c
    and not E.restriction_info()["buy"]["active"])
 ok("a later buy isn't held", E.hold_refusal("buy") == (None, ""))
 
+# ---- (3b) Pete's own buy tap is never held: it goes through the usual guards and is the check; a new refusal renews the hold
+reset(next=fakenet.R(BODY, 403))
+E.buy_single(BAY, n, ask)                                   # an automatic attempt: refused, the hold starts
+e0 = E.restriction_info()["buy"]
+ok("setup: a hold is on", e0["holding"] and e0["count"] == 1)
+before = len(D["sent"])
+ok("automatic paths are still held", E.hold_refusal("buy")[0] is not None and E.buy_single(BAY, n, ask)[0] == 0
+   and len(D["sent"]) == before)
+with E.manual_tap():
+    ok("a manual tap isn't held (hold_refusal)", E.hold_refusal("buy") == (None, ""))
+    ok("...and sells keep their own rule", E.hold_refusal("sell") == (None, ""))
+ok("the mark ends with the tap: automatic paths are held again", E.hold_refusal("buy")[0] is not None)
+time.sleep(0.05)
+d = E.load_json(E.RESTRICT_FILE, {})
+d["buy"]["hold_until"] = time.time() + 600                  # 10 minutes of the hold left
+E.save_json(E.RESTRICT_FILE, d)
+D["next"] = fakenet.R(BODY, 403)
+with E.manual_tap():
+    filled, err = E.buy_single(BAY, n, ask)
+ok(f"Buy straight during a hold: the request goes to Kalshi ({len(D['sent']) - before} sent)", len(D["sent"]) > before)
+ok(f"Kalshi refused it again: Kalshi's words, filled nothing ({err})", filled == 0 and NEV in err
+   and "nothing was sent" not in err)
+e1 = E.restriction_info()["buy"]
+ok("the refusal renews the hold (same level, from now), it does not escalate on a tap",
+   e1["holding"] and e1["count"] == 2 and 25 * 60 < e1["hold_until"] - time.time() <= 30 * 60 + 5)
+ref = E.refusal_take()
+ok("the page gets the refusal, not a 'held' note", ref and ref["restricted"] and not ref.get("held"))
+D["next"] = None
+with E.manual_tap():
+    filled, err = E.buy_single(BAY, n, ask)
+ok("Kalshi takes the tap: bought, and the note clears", filled == n and err is None
+   and not E.restriction_info()["buy"]["active"])
+reset(next=fakenet.R(BODY, 403))
+E.buy_single(BAY, n, ask)
+E.CTX.setdefault("offers", {})[1] = {"rfq": "r1", "stake": 5, "market": "M", "legs": []}
+before = len(D["sent"])
+with E.manual_tap():
+    try:
+        r = E.accept_offer(1, skip_cap=True)
+    except Exception:
+        r = {}
+ok("a manual accept isn't stopped by the hold", not r.get("restricted"))
+E.CTX["offers"].pop(1, None)
+with E.manual_tap():
+    try:
+        r = E.get_offer(1, 5, check_cap=False)
+    except Exception:
+        r = {}
+ok("a manual quote isn't stopped by the hold", not r.get("restricted"))
+before = len(D["sent"])
+with E.manual_tap():
+    msg = E.place_hedge("T", hg={"n": 5, "price": .4, "ticker": BAY, "name": "x", "fee": .01, "done": 0, "cost": 2}, auto=True)
+ok("an automatic hedge stays held even inside a tap's mark", "wasn't placed" in msg and len(D["sent"]) == before)
+
 # ---- (4) a refusal that is not about the region says Kalshi's own reason, not a guess about the key
 reset(next=fakenet.R({"error": {"code": "forbidden", "message": "This market is closed to new orders."}}, 403))
 filled, err = E.buy_single(BAY, n, ask)

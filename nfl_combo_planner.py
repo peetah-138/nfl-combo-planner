@@ -425,6 +425,20 @@ def save_cfg(cleared=()):
 _REFUSAL = threading.local()       # this thread's latest definite refusal (issue #134: the web app attaches it to the tap's answer)
 
 
+class manual_tap:
+    """Marks this thread as running Pete's own tap (a Buy, Buy straight or idea buy). During a Kalshi region hold
+    (#134) the automatic paths wait, but his tap goes through the usual guards and is the check: if Kalshi refuses it
+    again the hold is renewed (`_restrict_note`). Pause, the caps and rule 8 are untouched."""
+    def __enter__(self):
+        self.was = getattr(_REFUSAL, "manual", False)
+        _REFUSAL.manual = True
+        return self
+
+    def __exit__(self, *exc):
+        _REFUSAL.manual = self.was
+        return False
+
+
 def in_scope(kind):
     """Decorator: refusals inside this function count as sell-side ('sell') instead of buy-side."""
     def wrap(fn):
@@ -5934,7 +5948,7 @@ def place_hedge(ticker, hg=None, auto=False):
     hg = hg or hedge_for(ticker)
     if not hg or not hg.get("n"):
         return "Nothing to hedge on this combo now."
-    if auto and hold_refusal("buy")[0]:               # Kalshi is refusing this account's orders: no automatic hedge (#134)
+    if auto and hold_refusal("buy", strict=True)[0]:               # Kalshi is refusing this account's orders: no automatic hedge (#134)
         return "The hedge wasn't placed: Kalshi isn't allowing orders for your account right now."
 
     def unsure(err):
@@ -9737,10 +9751,12 @@ def _restrict_note(scope, status, code, msg, what):
         live = bool(e.get("active")) and now - float(e.get("at") or 0) < RESTRICT_STALE
         streak = int(e.get("streak") or 0) if live else 0
         until = float(e.get("hold_until") or 0)
+        steps = RESTRICT_STEPS.get(scope) or RESTRICT_STEPS["buy"]
         if not live or now >= until:                      # the first refusal, or the check after a hold: a longer hold
             streak += 1
-            steps = RESTRICT_STEPS.get(scope) or RESTRICT_STEPS["buy"]
             until = now + steps[min(streak, len(steps)) - 1]
+        else:                                             # refused again inside a hold (Pete's tap): the same hold, renewed
+            until = max(until, now + steps[min(max(streak, 1), len(steps)) - 1])
         codes = dict(e.get("codes") or {}) if live else {}
         k = (code or "no code")[:60]
         codes[k] = int(codes.get(k) or 0) + 1
@@ -9807,8 +9823,11 @@ def restriction_words(e, scope="buy"):
             + (f"Kalshi said: {said} " if said else "") + f"The app checks again after {at}.")
 
 
-def hold_refusal(scope="buy"):
-    """An automatic or tapped attempt that waits out Kalshi's restriction: (record, words), or (None, "")."""
+def hold_refusal(scope="buy", strict=False):
+    """An automatic attempt that waits out Kalshi's restriction: (record, words), or (None, "").
+    Pete's own buy tap (`manual_tap`) is never held: it is the check after a hold, and a new refusal renews the hold."""
+    if scope == "buy" and not strict and getattr(_REFUSAL, "manual", False):
+        return None, ""                              # (strict = an automatic path: held whatever this thread is doing)
     e = restriction_holding(scope)
     if not e:
         return None, ""
@@ -17094,7 +17113,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                     _set_items(day, mode, {c["id"]: {"hold": hold}})
                 continue
             if mode == "real":                            # Kalshi is refusing this account's orders (#134): wait it out
-                held, words = hold_refusal("buy")         # without a request; nothing is skipped or swapped meanwhile
+                held, words = hold_refusal("buy", strict=True)         # without a request; nothing is skipped or swapped meanwhile
                 if held:
                     if c.get("hold") != "region":
                         _set_items(day, mode, {c["id"]: {"hold": "region"}})

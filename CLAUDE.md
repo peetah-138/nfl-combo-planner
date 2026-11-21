@@ -346,9 +346,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   the account or region (`is_restriction`: 400/401/403/451 with words like "residents ... not allowed", "jurisdiction",
   "region") is written to `combo_kalshi_block.json` (git-ignored; `note_refusal`, `restriction_info`) and the Mac **holds
   back** the same refused request: buys wait 30 min, then 1 h, 2 h, 4 h while it keeps refusing; automatic sales 10-30
-  min (`hold_refusal`, `sell_held`). Held: new quotes and accepts, Buy ideas, the panel (`hold: "region"`, back to
-  "scheduled", never "failed" or "check"), the automatic hedge, auto cash-out and smart sell. Pete's own sell taps are
-  never held. After a hold the next buy Pete already approved (or his tap) is the check; Kalshi taking an order clears the
+  min (`hold_refusal`, `sell_held`). Held (automatic paths only): the shadow's buy-idea quotes, the panel (`hold: "region"`, back to
+  "scheduled", never "failed" or "check"), killer deals, standing orders, the automatic hedge (`hold_refusal(..., strict=True)`),
+  auto cash-out and smart sell. **Pete's own taps are never held** (`manual_tap`, set around `api_act` and the hub's build
+  form: Get price, Buy, Buy straight, idea buys; his sell taps too): they go through the usual guards (Pause, caps, rule 8)
+  and are the check after a hold; if Kalshi refuses one again the hold is renewed at the same level (`_restrict_note`), not
+  escalated by taps. After a hold the next buy Pete already approved is the check for the panel. Kalshi taking an order clears the
   note (`restriction_clear`), a note a day old is ignored. No harmless read reveals a cleared restriction, so nothing is
   placed just to look. The page shows a calm banner under the header (`rsBan`, `#rsban`) and a sheet with the full message
   (`refusalSheet`, selectable, Copy); `restrict` rides on Live, Build, Settings and panel answers and `refusal` on a refused

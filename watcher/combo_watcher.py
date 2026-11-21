@@ -2266,7 +2266,8 @@ class WebBuild:
             H.set_league(b["lg"])
             H.CTX.clear()
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={}, build_id=None)
-            r = H.get_offer(i)
+            with H.manual_tap():                    # Pete's own tap: a region hold doesn't stop it (#134)
+                r = H.get_offer(i)
             if r.get("error"):
                 return r["error"]
             b["offers"][i] = dict(H.CTX["offers"][i], got=time.time(), pct=r.get("pct"), ok=r.get("ok"))
@@ -2286,7 +2287,8 @@ class WebBuild:
             H.CTX.clear()
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
             log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
-            r = H.accept_offer(i)
+            with H.manual_tap():
+                r = H.accept_offer(i)
         b["offers"].pop(i, None)
         if r.get("error"):
             return r["error"]
@@ -3215,7 +3217,8 @@ def webapp_main():
             return {"ok": False, "msg": msg, "error": msg, "busy": True}
         try:
             A.refusal_take()                                # this thread's last Kalshi refusal belongs to this tap only
-            r = _api_act(d)
+            with A.manual_tap():                            # Pete's own tap: not held by a region hold, and it renews one (#134)
+                r = _api_act(d)
             ref = A.refusal_take()
             if ref and isinstance(r, dict) and (r.get("error") or r.get("ok") is False):
                 r = dict(r, refusal=ref)                    # Kalshi's own words, in full, for the page (#134)
