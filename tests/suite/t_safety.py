@@ -460,6 +460,8 @@ i = WSRC.index("def orphan_check")
 ok("the web app's shutdown waits (bounded) for the tap lock", "alock.acquire(timeout=" in WSRC[i:i + 500])
 ok("combo buy, cash-out, hedge and single-buy taps mark themselves mid-order",
    WSRC.count("with tap_mark(") >= 3)
+i = WSRC.index("A.idea_single_buy(")
+ok("a Live buy idea's single-game buy marks itself mid-order too", "with tap_mark():" in WSRC[i - 200:i])
 
 # ================================================================ (7) the ledger across processes
 ledger_reset()
@@ -526,3 +528,27 @@ ok("...and it can't be approved", okk is False and "balance" in why, (okk, why))
 E.fetch_account = lambda **k: ([], 250.0, None)
 base, _ = E.sizing_base()
 ok("balance readable again: sized from it", base is not None and abs(base - 250.0) < 1e-6, base)
+
+# ================================================================ (10) release review fixes
+W.RESTARTING = os.path.join(E.HERE, "restarting.json")
+E.save_json(W.RESTARTING, {"at": time.time()})
+fresh = W.restarting()
+E.save_json(W.RESTARTING, {"at": time.time() - 3600})
+ok("an installed update is seen by the web app (a stale mark isn't)", fresh and not W.restarting())
+i = WSRC.index("def update_loop")
+u = WSRC[i:WSRC.index("\ndef ", i + 10)]
+ok("after installing, the watcher waits for quiet taps before it restarts",
+   before(u, "restart_when_quiet()", 'UPDATED["now"] = True'))
+i = WSRC.index("    def api_act(d):")
+ok("the web app takes no new taps once an update is installed", "restarting()" in WSRC[i:i + 300])
+ok("the proxy's 'check' words are only for taps that can move money (pot moves too, never price reads)",
+   "pot_move" in W.ORDER_ACTS and not {"quote", "idea", "singlequote", "ask", "askhalf"} & set(W.ORDER_ACTS))
+i = WSRC.index('if a == "buy":')
+ok("an unexpected error on a combo Buy says 'may or may not', never 'nothing was bought'",
+   "may or may not" in WSRC[i:i + 1400] and "nothing was bought. Try again" not in WSRC[i:i + 1400])
+E.MINE["hold"] = {"CHK": {"label": "Combo X"}}
+E._HEDGE_UNSURE_MEM["CHK"] = {"check": int(time.time())}
+m = E.place_hedge("CHK", hg={"ticker": "KXNBAGAME-26NOV19NYKMIN-MIN", "name": "Wolves", "price": 0.3, "n": 20.0,
+                             "fee": 0.3, "done": 0, "cost": 6.3, "locked": 13.7})
+E._HEDGE_UNSURE_MEM.pop("CHK", None)
+ok("a manual Hedge tap after an unclear (or unsaved) hedge buys nothing", m.startswith("⚠️") and "nothing was bought" in m)
