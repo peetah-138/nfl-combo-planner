@@ -188,8 +188,8 @@ ok(f"panel: a 410 is a clean skip (False, not 'check'), no JSON in the note ({no
 reset("v2")
 D["next"] = (400, "insufficient_balance")
 filled, err = E.buy_single(T, 5, 0.52)
-ok("400 insufficient_balance (account holds plenty, pots unknown): refused, says which pot, never 'not enough money'",
-   filled == 0 and "separate pots" in err and "enough money" not in err and not E.order_unsure(T))
+ok("400 insufficient_balance (account holds plenty, pots unknown): refused, the code, never 'not enough money in your account'",
+   filled == 0 and "code insufficient_balance" in err and "enough money in your" not in err and not E.order_unsure(T))
 
 # ---- (4) unknown outcomes: "check", never sent again; no double buy on repeated taps
 for what, nxt in (("timeout", requests.Timeout("slow")), ("connection lost", requests.ConnectionError("gone")),

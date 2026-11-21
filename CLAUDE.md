@@ -211,13 +211,16 @@ key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it 
   `DELETE /portfolio/events/orders/{id}?market_ticker=…`. V2 first; legacy only on a 405 or a 404 with no error code
   (route missing), and a 410 there is final (never loops). A 4xx is a definite refusal (plain words via `kalshi_plain`, nothing placed, panel
   skips; `ORDER_WORDS` covers every code on Kalshi's Order Errors page, tested in `t_buyfunds`). **Cash pots (exchange
-  shards):** Kalshi keeps cash per shard (combos 1, crypto 2, tennis/baseball/basketball 3, everything else 0) and
-  `GET /portfolio/balance`'s `balance` is the total; API orders don't move cash between shards (the Kalshi app does).
-  So `insufficient_balance` means the market's pot is short: `balance_words` re-reads the balance (`balance_breakdown`)
-  and the market's `exchange_index` (public `GET /markets/{t}`), 3 s each (`POTS_WAIT`), logs the pots, and says which
-  pot is short and where to move money (kalshi.com › Account › Exchange indexes); "not enough money in your Kalshi
-  account" only when the total really is below the order's cost (never for a sale). The app never moves cash between
-  pots by itself. A timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
+  shards, issue #126):** Kalshi's docs say cash is kept per shard (combos 1, crypto 2, tennis/baseball/basketball 3,
+  everything else 0), `GET /portfolio/balance`'s `balance` is the total, and `insufficient_balance` means the
+  market's shard is short. Kalshi's own app shows one total; Pete's real breakdown hadn't been seen when this shipped.
+  `_fetch_account` keeps `balance_breakdown` (`note_pots` → `ACCT_POTS`, one copy per process) and logs
+  "Kalshi balance by pot: index 0 $x, index 1 $y, total $z" when it changes; Settings › Money shows it read-only
+  (`kalshi_pots`, hub op `pots`). On `insufficient_balance`, `balance_words` re-reads the balance and the market's
+  `exchange_index` (public `GET /markets/{t}`), 3 s each (`POTS_WAIT`), and claims a cause only when the numbers show
+  it: the total below the order's cost ("not enough money in your Kalshi account", never for a sale), or a listed
+  multi-pot breakdown with this market's pot short. Otherwise: the code, the total, "Check Kalshi". The app never
+  moves cash between pots. A timeout, lost connection, 408/5xx, `order_already_exists` or an unreadable answer is `OrderUnknown`:
   "check", logged in `combo_orders.json`, and that market+side gets no order for 2 h, which Pete can lift sooner with Settings › Money › "Clear order block" (confirm, logged; the unclear order itself is never resent) (killer "check"s alert and count
   toward the caps; a "check" sale counts toward `auto_cap`). The same order (market, side, size, price) within 10 s
   (a double tap) isn't sent. V2 takes reduce-only only with IOC, so standing sell orders (take-profit ladders,

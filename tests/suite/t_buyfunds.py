@@ -55,20 +55,29 @@ ok("Live buy idea: V2 bid on the YES book, price '0.1700' dollars, count '55.00'
    p.endswith("/portfolio/events/orders") and body["side"] == "bid" and body["price"] == "0.1700"
    and body["count"] == "55.00" and body["time_in_force"] == "immediate_or_cancel" and filled == 55 and err is None)
 need = E.order_cost(E.order_intent(dict(body)))
-ok(f"what the order needs in cash: 55 x (17c + fee) = ${need:.2f}", abs(need - 55 * (0.17 + E.single_fee(0.17))) < 1e-9)
-ok("a NO buy costs its NO price: ask at YES 0.70 for 10 = 10 x (30c + fee)",
-   abs(E.order_cost({"side": "ask", "yes": E._dec("0.70"), "count": E._dec("10")}) - 10 * (0.3 + E.single_fee(0.3))) < 1e-9)
+import math
+ok(f"what the order needs in cash: 55 x 17c + the fee rounded up to the cent = ${need:.2f}",
+   abs(need - (55 * 0.17 + math.ceil(round(55 * E.single_fee(0.17) * 100, 6)) / 100)) < 1e-9
+   and need >= 55 * (0.17 + E.single_fee(0.17)))
+ok("a NO buy costs its NO price: ask at YES 0.70 for 10 = 10 x 30c + fee",
+   abs(E.order_cost({"side": "ask", "yes": E._dec("0.70"), "count": E._dec("10")})
+       - (3.0 + math.ceil(round(10 * E.single_fee(0.3) * 100, 6)) / 100)) < 1e-9)
 
 # ---- (2) Pete's case: $69.49 in all, but the sports pot (shard 0) holds $4.10 and the combos pot the rest
 reset(next=(400, "insufficient_balance"), balance=pots(69.49, (0, 4.10), (1, 65.39)))
 filled, err = E.buy_single(BAY, n, ask)
-ok(f"the true reason: this market's pot is short, the rest is in another pot, where to move it ({err})",
-   filled == 0 and "this market's pot has only $4.10" in err and "$69.49" in err and "Exchange indexes" in err
-   and "isn't enough money" not in err)
+ok(f"breakdown shows this market's pot short: says so with the total and the pot ({err})",
+   filled == 0 and "money available for this market isn't enough" in err and "your total is $69.49" in err
+   and "this market's pot has $4.10" in err and "isn't enough money in your" not in err)
 ok("a refusal: nothing placed, no 'check', no block on the market, one order sent",
    not E.order_unsure(BAY) and not E.order_blocks() and len([x for x in D["sent"] if x[0] == "POST"]) == 1)
-ok("the cash in each pot is logged once for the diagnosis (no account ids)",
-   any("Kalshi cash by pot: 0: $4.10, 1: $65.39" in x and "pot 0" in x for x in LOGS))
+ok("the balance by pot is logged (no account ids), once while it doesn't change",
+   sum("Kalshi balance by pot: index 0 $4.10, index 1 $65.39, total $69.49" == x for x in LOGS) == 1)
+ok("Settings can read it: total and each pot", E.kalshi_pots() == {"total": 69.49, "by": [[0, 4.1], [1, 65.39]],
+                                                                    "at": E.kalshi_pots()["at"]})
+reset(next=(400, "insufficient_balance"), balance=pots(69.49, (0, 4.10), (1, 65.39)))
+E.buy_single(BAY, n, ask)
+ok("the same pots again: not logged twice", sum("Kalshi balance by pot:" in x for x in LOGS) == 1)
 reset(balance=pots(69.49, (0, 69.49)))
 filled, err = E.buy_single(BAY, n, ask)
 ok("once Pete moves the cash, a fresh tap goes through (a refusal never blocks the next try)", filled == 55 and err is None)
@@ -80,16 +89,22 @@ ok(f"really short ($3.00 for a ${need:.2f} order): says so, with both numbers ({
    filled == 0 and "isn't enough money in your Kalshi account" in err and "$3.00" in err and f"${need:.2f}" in err)
 reset(next=(400, "insufficient_balance"), balance=pots(69.49, (0, 50.00), (1, 19.49)))
 filled, err = E.buy_single(BAY, n, ask)
-ok(f"the pot shows enough: says open orders hold cash, never 'not enough money' ({err})",
-   filled == 0 and "open orders" in err and "isn't enough money" not in err)
+ok(f"the pot shows enough: no cause claimed, the code, the total, 'Check Kalshi' ({err})",
+   filled == 0 and "code insufficient_balance" in err and "$69.49" in err and "Check Kalshi" in err
+   and "pot" not in err and "isn't enough money in your" not in err)
+reset(next=(400, "insufficient_balance"), balance=pots(69.49, (0, 69.49)))
+filled, err = E.buy_single(BAY, n, ask)
+ok(f"a single pot: no pot story, the code and the total ({err})",
+   filled == 0 and "code insufficient_balance" in err and "Your total shows $69.49" in err and "pot" not in err)
 reset(next=(400, "insufficient_balance"), balance=fakenet.R({"error": "down"}, 503))
 filled, err = E.buy_single(BAY, n, ask)
-ok("balance can't be read: the general pot explanation, still a clean refusal",
-   filled == 0 and "separate pots" in err and "isn't enough money" not in err and not E.order_unsure(BAY))
+ok(f"balance can't be read: the code and 'Check Kalshi', no cause claimed, still a clean refusal ({err})",
+   filled == 0 and "code insufficient_balance" in err and "pot" not in err and "isn't enough money" not in err
+   and not E.order_unsure(BAY))
 reset(next=(400, "insufficient_balance"), balance={"balance": 6949}, shards={})
 filled, err = E.buy_single(BAY, n, ask)
-ok("no breakdown and no pot for the market (an older answer): the general pot explanation",
-   filled == 0 and "separate pots" in err and "isn't enough money" not in err)
+ok(f"no breakdown (an older answer): the code and the total, no pot story ({err})",
+   filled == 0 and "code insufficient_balance" in err and "$69.49" in err and "pot" not in err)
 
 # ---- (4) the real Live path: the webapp's engine copy relays to the Mac's copy, which signs and sends
 A = engine("A")
@@ -109,7 +124,7 @@ A.hub_call = hub_call
 reset(next=(400, "insufficient_balance"), balance=pots(69.49, (0, 4.10), (1, 65.39)))
 filled, err = A.buy_single(BAY, n, ask)
 ok(f"through the Mac (as on Pete's phone): the same true words, no status code, no raw JSON ({err})",
-   filled == 0 and err.startswith("Kalshi didn't take the order: Kalshi keeps your cash in separate pots")
+   filled == 0 and err.startswith("Kalshi didn't take the order: Kalshi says the money available for this market")
    and "(400)" not in err and "{" not in err and not E.order_unsure(BAY))
 reset()
 filled, err = A.buy_single(BAY, n, ask)
@@ -124,12 +139,12 @@ ok("api_act singlebuy shows buy_single's words as they are (no money words of it
 WANT = {
     (400, "invalid_order"): "as sent", (400, "invalid_parameters"): "as sent", (400, "missing_parameters"): "as sent",
     (400, "bad_request"): "as sent", (400, "invalid_price"): "price", (400, "invalid_order_size"): "number of contracts",
-    (400, "insufficient_balance"): "separate pots", (400, "too_many_open_orders"): "too many open orders",
+    (400, "insufficient_balance"): "code insufficient_balance", (400, "too_many_open_orders"): "too many open orders",
     (400, "exceeded_order_group_contracts_limit"): "as sent", (400, "EXPIRED_TIMESTAMP"): "time limit",
     (400, "Cannot_specify_both_IoC_and_expiration_timestamp"): "time limit",
     (400, "Post_only_but_execution_type_can't_rest"): "as sent", (400, "ID_parse_error: bad"): "as sent",
     (404, "market_not_found"): "doesn't list that market",
-    (404, "insufficient_shard_balance"): "no cash set aside for this kind of market",
+    (404, "insufficient_shard_balance"): "no cash set up for this kind of market",
     (409, "fill_or_kill_insufficient_resting_volume"): "enough contracts for sale",
     (409, "market_inactive"): "isn't open for trading", (409, "trading_is_paused"): "paused",
     (409, "exchange_is_paused"): "paused", (409, "TRADING_BLOCKED"): "isn't letting this account",
@@ -139,8 +154,9 @@ WANT = {
 }
 bad = {k: E.kalshi_plain(*k) for k, w in WANT.items() if w not in E.kalshi_plain(*k)}
 ok(f"the error-code table: all {len(WANT)} documented codes give their own words ({bad or 'all right'})", not bad)
-ok("no code but insufficient_balance itself ever says 'not enough money'",
-   not [k for k in WANT if "enough money" in E.kalshi_plain(*k)])
+ok("no code but insufficient_balance itself talks about money, and none blames the whole account without numbers",
+   not [k for k in WANT if "enough money" in E.kalshi_plain(*k) and k[1] != "insufficient_balance"] and
+   not [k for k in WANT if "enough money in your" in E.kalshi_plain(*k)])
 ok("a 404 not_found outside a cancel doesn't talk about an order; an unknown 403 isn't called a location block",
    "order" not in E.kalshi_plain(404, "not_found", "not found") and
    "from here" not in E.kalshi_plain(403, "account_suspended", "suspended"))
@@ -161,7 +177,7 @@ ok(f"a sale refused for insufficient_balance never says 'not enough money' (no p
 reset(next=(400, "insufficient_balance"), balance={"balance": 6949, "balance_breakdown": [
     {"exchange_index": 0, "balance": 410}, {"exchange_index": 1, "balance_dollars": "65.3900"}]})
 filled, err = E.buy_single(BAY, n, ask)
-ok(f"pot amounts read with the same unit rule as the total (410 cents = $4.10) ({err})", "pot has only $4.10" in err)
+ok(f"pot amounts read with the same unit rule as the total (410 cents = $4.10) ({err})", "pot has $4.10" in err)
 ok("the diagnostic reads are short (the phone's relay waits 40 s for the whole order)", E.POTS_WAIT <= 5)
 ok("an unknown code reads Kalshi's message, without JSON", E.kalshi_plain(400, "new_code", '{"m": "odd thing"}')
    == "Kalshi said: m: odd thing")
@@ -176,3 +192,41 @@ for st, code, outcome in ((400, "insufficient_balance", "refused"), (404, "insuf
         got = "unknown" if E.order_unsure(BAY) else "?"
     ok(f"{st} {code}: {outcome}" + (" (a clean refusal, can be tried again)" if outcome == "refused" else
                                      " (marked 'check', never resent)"), got == outcome)
+
+reset(next=(400, "insufficient_balance"), balance=pots(69.49, (1, 69.49)))
+filled, err = E.buy_single(BAY, n, ask)
+ok(f"all the cash in the combos pot and this market's pot not listed (= $0): named ({err})",
+   "this market's pot has $0.00" in err and "your total is $69.49" in err)
+reset(next=(400, "insufficient_balance"), balance={"balance": 6949, "balance_breakdown": [
+    {"exchange_index": "0", "balance": "4.1000"}, {"exchange_index": True, "balance": "1.0000"},
+    {"exchange_index": 1, "balance": "65.3900"}]})
+filled, err = E.buy_single(BAY, n, ask)
+ok(f"a digit-string index is read, a true/false one ignored ({err})", "pot has $4.10" in err and
+   E.shard_balances({"balance_breakdown": [{"exchange_index": True, "balance": "1.0"}]}) == {})
+before = dict(E.ACCT_POTS["by"])
+E.note_pots({"balance": 5000})
+ok("a balance answer without a breakdown keeps the last pots (total updated)", E.ACCT_POTS["by"] == before and
+   E.ACCT_POTS["total"] == 50.0)
+
+
+def refuse(*a, **k):
+    raise RuntimeError(E.kalshi_plain(400, "insufficient_balance") + " (400)")
+
+
+E.CTX.setdefault("offers", {})[7] = {"rfq": "r1", "quote": "q1", "stake": 5.0, "pays": 20.0, "market": "M", "price": 0.25}
+real_send, E.kalshi_send = E.kalshi_send, refuse
+r = E.accept_offer(7, skip_cap=True)
+E.kalshi_send = real_send
+ok(f"a combo accept refused for insufficient_balance isn't called 'probably expired' ({r.get('error')})",
+   "probably expired" not in r.get("error", "") and "insufficient_balance" in r.get("error", ""))
+
+# ---- (6) Settings › Money shows the pots, read-only, from the Mac when paired
+ok("the webapp asks the Mac for the pots (hub op 'pots'), and an older Mac without it gives none",
+   (setattr(A, "hub_call", lambda op, timeout=0, **k: {"pots": E.kalshi_pots()} if op == "pots" else None) or
+    A.kalshi_pots() == E.kalshi_pots()) and
+   (setattr(A, "hub_call", lambda op, timeout=0, **k: {"err": "kalshi", "msg": "unknown request"}) or A.kalshi_pots() is None))
+ok("the hub answers 'pots' from the Mac's engine", 'if op == "pots":' in src and 'E.kalshi_pots()' in src)
+ok("Settings › Money: 'Kalshi balance by pot', says Kalshi's own app shows one total, no button (read-only)",
+   "potRow(d.pots)" in src and "Kalshi balance by pot" in src and "Kalshi's own app shows one total" in src and
+   "onclick" not in src[src.index("function potRow"):src.index("function clearBlock")] and "As of " in src)
+ok("Settings saves don't wait on the pots (read only on a plain read)", "pots = _pots() if vals is None else None" in src)
