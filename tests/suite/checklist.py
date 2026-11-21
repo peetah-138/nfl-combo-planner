@@ -33,7 +33,7 @@ SECS = {"test_hsw": 160, "test_makeover3": 159, "test_sweep": 111, "test_gamedet
         "test_pbptabs": 39, "test_panel_ui": 37, "test_allchip": 37, "test_days": 37, "test_panel_ui2": 31,
         "test_updbtn": 31, "test_chips_stay": 30, "test_tabbar_stays": 29, "test_spa": 24, "test_speed": 23,
         "test_settled": 23, "test_extra_ui": 22, "test_restart2": 21, "test_livefresh": 20, "test_adv": 20,
-        "test_addonce_ui": 20, "test_mix": 19, "test_buildsec": 19, "test_haptics": 18, "test_fun": 17,
+        "test_addonce_ui": 20, "test_pctchange": 39, "test_mix": 19, "test_buildsec": 19, "test_haptics": 18, "test_fun": 17,
         "test_chips": 17, "test_hist": 16, "test_rebuild_ui": 16, "test_cover": 13, "test_https": 12,
         "test_realdate": 11, "test_analytics": 11, "test_fieldstrip": 10, "test_klive": 9, "test_singles_live": 8,
         "test_orderblock": 8, "test_gamecard_opp": 8, "test_buildguard": 6, "test_login_faceid": 6,

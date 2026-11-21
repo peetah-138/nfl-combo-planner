@@ -710,10 +710,15 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
 - **Change vs paid (GitHub #100, display only).** Combo rows (next to the offer, `offNow`), single/spread/total rows (Worth now) and
-  the combo detail's Offer show the change against what was paid, e.g. "−7%" and "−$0.22" (`chgHtml` in `live.js`, formats `chg`/`chgd`
-  in `fmtNum`, rolling `data-num`, tabular numerals, always a sign, neutral when it rounds to zero). The hero's delta pill rolls its
-  percent too (`heroChg`). A "Change vs paid" switch (`% + $` / `%` / `$`, `S.chg`, `cw_chg`, remembered like the Day/Week
-  switch) above the tables picks what shows. Same number the row already shows; no engine change. Test: `test_pctchange`.
+  the combo detail's Offer (also shown from `offNow`) carry the change against what was paid: "−7%" over "−$0.22" (`chgHtml` in
+  `live.js`; formats `chg`/`chgd`/`absm` in `fmtNum`; dollars always with cents; rounding symmetric on magnitude, `rndm`; a zero
+  prints no sign). Both parts are rolling `data-num` numbers, tabular, always two lines so a sign flip never moves the row. An
+  estimate (no real Kalshi offer) is prefixed with "≈" (rows and detail via `data-pre`, the hero pill via CSS). The colour follows what
+  is SHOWN in the chosen mode (`data-b` both / `data-p` % / `data-u` $: paid $10, offer $9.97 in % mode is a grey "0%"). The hero pill
+  rolls its percent and its signed dollar change the same way (`heroChg`; the pill's own tint still follows the dollars). A "Change vs paid"
+  switch (`% + $` / `%` / `$`, 44pt hit targets, `aria-pressed`, `:focus-visible`) shows above every table with a change line (also singles-only
+  and the Settled view); it only sets `<html data-chg>` (`setChg`, remembered as `cw_chg`, like the Day/Week switch), so CSS shows the
+  parts and nothing redraws (scroll and folds stay). Same number the row already shows; no engine change. Test: `test_pctchange`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
