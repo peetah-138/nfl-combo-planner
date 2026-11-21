@@ -1,0 +1,5 @@
+# What CI installs for the check list (the pip cache is keyed on this file). Same as tests/README.md's setup.
+requests
+pyflakes
+playwright
+ruff==0.17.5

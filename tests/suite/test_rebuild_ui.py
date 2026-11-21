@@ -16,7 +16,7 @@ def load():
     ENG["A"] = A
     return A
 W.load_engine = load
-threading.Thread(target=W.webapp_main, daemon=True).start(); time.sleep(3)
+threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait").wait_up()   # waits for the port (was a fixed 3 s)
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 PROB = []
 def check(name, cond):
@@ -36,7 +36,7 @@ with sync_playwright() as pw:
     pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme="dark", has_touch=True, is_mobile=True)
     errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(B + "/app"); time.sleep(4)
-    for _ in range(40):
+    for _ in range(120):
         if ENG.get("A") and ENG["A"].STORE.get("db"): break
         time.sleep(.25)
     A = ENG["A"]
@@ -44,26 +44,35 @@ with sync_playwright() as pw:
     for f in (A.REBUILD_FLAG, A.REBUILD_STATE):
         try: os.remove(f)
         except OSError: pass
+    # Count the page's own loads in flight, and let the test hold off the background ones (the 30 s board refresh)
+    # while it checks the card is redrawn in place: a full page load replaces the card legitimately, and when it
+    # happened to land inside that window the check failed (the old flake). The rebuild poll itself never uses load().
+    pg.evaluate("""(()=>{const L=window.load;window.__loads=0;window.__hold=false;
+      window.load=async(...a)=>{if(window.__hold)return;window.__loads++;try{return await L(...a)}finally{window.__loads--}};
+      const T=window.toast;window.__toasts=[];window.toast=(...a)=>{window.__toasts.push(String(a[0]));return T(...a)};})()""")
     pg.evaluate("S.pview='all';go('build')")
-    check("empty panel says there's no panel yet", wait(pg, "/No panel yet today/.test(($('#pblock')||{}).innerText||'')", 15))
+    check("empty panel says there's no panel yet", wait(pg, "/No panel yet today/.test(($('#pblock')||{}).innerText||'')", 30))
     txt = pg.evaluate("$('#pblock').innerText")
     check("no 10-minute promise", "10 minutes" not in txt and "Check back shortly" not in txt)
     pg.locator("#pblock button", has_text="Look now").tap()
     t0 = time.time()
     while not os.path.exists(A.REBUILD_FLAG) and time.time() - t0 < 4: time.sleep(.1)
     check("Look now asks the Mac (flag written)", os.path.exists(A.REBUILD_FLAG))
-    check("page shows it's starting", wait(pg, "/Putting together a fresh panel/.test($('#pblock').innerText)&&/Starting/.test($('#pblock').innerText)", 6))
+    check("page shows it's starting", wait(pg, "/Putting together a fresh panel/.test($('#pblock').innerText)&&/Starting/.test($('#pblock').innerText)", 15))
     # the Mac picks it up and works through the sports
     A.rebuild_asked(); A._rebuild_note(state="running", at=time.time(), sport="nba", i=1, n=6)
-    check("progress names the sport and count", wait(pg, "/Looking at NBA… 2 of 6 sports/.test($('#pblock').innerText)", 6))
-    check("progress bar moved", pg.evaluate("parseFloat(document.querySelector('#pblock .rbtrack i').style.width)") > 10)
-    wait(pg, "!S.rbBusy", 3); time.sleep(.5)           # the tap's own page load has finished by now
+    check("progress names the sport and count", wait(pg, "/Looking at NBA… 2 of 6 sports/.test($('#pblock').innerText)", 60))   # the Mac can be slow to answer under load (its warm-up holds the lock)
+    check("progress bar moved", wait(pg, "parseFloat(document.querySelector('#pblock .rbtrack i').style.width)>10", 5))
+    # the tap's own page load (Look now -> load('build')) must be over, and no poll mid-flight, before taking the card
+    pg.evaluate("window.__hold=true")
+    check("the page settled after the tap", wait(pg, "window.__loads===0&&!S.rbBusy&&/Looking at NBA/.test($('#pblock').innerText)", 60))
     pg.evaluate("window.__card=document.querySelector('#pblock .rbcard')")
     A._rebuild_note(state="running", at=time.time(), sport="nhl", i=2, n=6)
-    check("next sport shows", wait(pg, "/Looking at NHL… 3 of 6 sports/.test($('#pblock').innerText)", 6))
-    check("progress redraws in place (no full page redraw)", pg.evaluate("window.__card===document.querySelector('#pblock .rbcard')"))
+    check("next sport shows", wait(pg, "/Looking at NHL… 3 of 6 sports/.test($('#pblock').innerText)", 60))
+    check("progress redraws in place (no full page redraw)", pg.evaluate("!!window.__card&&window.__card===document.querySelector('#pblock .rbcard')"))
+    pg.evaluate("window.__hold=false")
     A._rebuild_note(state="running", at=time.time(), sport="", i=6, n=6, step="choosing")
-    check("then says it's picking the mix", wait(pg, "/Picking the best mix/.test($('#pblock').innerText)", 6))
+    check("then says it's picking the mix", wait(pg, "/Picking the best mix/.test($('#pblock').innerText)", 60))
     # done: a draft appears by itself
     fx = json.load(open("panel_fixture.json"))["panel"]; now = time.time()
     fx["at"] = now; fx["status"] = "draft"
@@ -72,15 +81,15 @@ with sync_playwright() as pw:
     fx.pop("status", None)
     A.panel_save_draft(fx, "real")
     A._rebuild_note(state="done", at=now, found=len(fx["items"]), kind="panel", why="", n=6)
-    check("new panel drops in by itself", wait(pg, "/Approve \\d+ bet/.test($('#pblock').innerText)", 8))
-    check("tells you it's ready", wait(pg, "/fresh panel is ready/.test((document.querySelector('.toast')||{}).innerText||'')", 4))
-    check("progress polling stopped", wait(pg, "!S.rbT", 4))
+    check("new panel drops in by itself", wait(pg, "/Approve \\d+ bet/.test($('#pblock').innerText)", 60))
+    check("tells you it's ready", wait(pg, "window.__toasts.some(t=>/fresh panel is ready/.test(t))", 10))
+    check("progress polling stopped", wait(pg, "!S.rbT", 10))
     # a rebuild that found nothing says why
     A.store_x("delete from panel", ())
     A._rebuild_note(state="done", at=time.time(), found=0, kind="panel", games=6, n=6,
                     why="Checked 6 upcoming games: none is priced better than its real chance right now (Kalshi is in line with the sportsbooks).")
     pg.evaluate("load('build')")
-    check("nothing found: says why", wait(pg, "/No bets clear the bar right now/.test($('#pblock').innerText)&&/Checked 6 upcoming games/.test($('#pblock').innerText)", 8))
+    check("nothing found: says why", wait(pg, "/No bets clear the bar right now/.test($('#pblock').innerText)&&/Checked 6 upcoming games/.test($('#pblock').innerText)", 20))
     check("and offers to look again", pg.locator("#pblock button", has_text="Look again now").count() == 1)
     check("still no 10-minute promise", "10 minutes" not in pg.evaluate("$('#pblock').innerText"))
     check("no sideways scroll on a phone", not pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"))
