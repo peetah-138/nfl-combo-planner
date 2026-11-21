@@ -116,9 +116,13 @@ Real money is involved. Pete uses it daily.
 - *Pause:* `E.TRADING_PAUSED` (watcher: `watcher_paused`, the live `conf["paused"]`; web app: `paused_now`) is read
   by `accept_offer`, `killer_act` and `maker_pass`; the web app's combo quote/idea/Buy refuse while paused; turning
   killer/standing orders/Auto cash-out on while paused is undone if `send_synced` failed.
-- *Taps and updates:* the hub's proxy gives `/app/api/act` `PROXY_ACT_TIMEOUT` (150 s) and answers a timeout with
-  JSON 504 "may or may not have gone through"; order taps write `combo_tap_busy.json` (`tap_mark`) and `update_loop`
-  waits while it's fresh; the web app's `orphan_check` waits (≤ 120 s) for the tap lock before exiting.
+- *Taps and updates:* the hub's proxy gives `/app/api/act` `PROXY_ACT_TIMEOUT` (300 s) and answers a timeout with
+  JSON 504 "may or may not have gone through" (`check` only for `ORDER_ACTS`, the taps that can move money: buy, go,
+  hedgego, singlebuy, pot_move); order taps write `combo_tap_busy.json` (`tap_mark`) and `update_loop` waits while it's
+  fresh; once an update (or web app repair) is installed, `restart_when_quiet` writes `combo_restarting.json` (the web
+  app refuses new taps while it's fresh; the restarted watcher deletes it) and waits (≤ 240 s) for two quiet checks
+  before the watcher exits; the web app's `orphan_check` waits (≤ 120 s) for the tap lock before exiting. A manual
+  Hedge tap refuses while `hedge_unsure` (an earlier hedge unclear, or bought but not saved).
 
 ## How Pete wants work done
 

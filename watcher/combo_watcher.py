@@ -498,6 +498,35 @@ def tap_busy():
     return 0 <= time.time() - at < TAP_BUSY_MAX
 
 
+RESTARTING = os.path.join(HOME, "combo_restarting.json")   # an update is installed: the web app takes no new taps
+RESTART_MAX = 300                                          # a mark older than this is stale (the restart happened)
+
+
+def restarting():
+    try:
+        with open(RESTARTING, encoding="utf-8") as f:
+            at = float(json.load(f).get("at", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return 0 <= time.time() - at < RESTART_MAX
+
+
+def restart_when_quiet(wait=TAP_BUSY_MAX):
+    """Before the watcher exits for an update: tell the web app to take no new taps, then wait (bounded) until no
+    tap is mid-order (two quiet checks in a row), so the hub that relays its order isn't killed under it."""
+    try:
+        with open(RESTARTING, "w", encoding="utf-8") as f:
+            json.dump({"at": time.time()}, f)
+    except OSError:
+        pass
+    end, quiet = time.time() + wait, 0
+    while time.time() < end and quiet < 2:
+        time.sleep(1)
+        quiet = 0 if tap_busy() else quiet + 1
+    if quiet < 2:
+        log("restarting although a tap still looks busy (it waited the most it may)")
+
+
 def update_loop(E, conf):
     """Checks for new versions on its own thread, so nothing else going wrong in the watcher can ever
     stop an update (a fix) from arriving. After installing, the watcher exits and launchd starts the new one."""
@@ -513,6 +542,7 @@ def update_loop(E, conf):
                     time.sleep(15)
                     continue
                 if update_if_newer(E, conf):
+                    restart_when_quiet()            # no tap is cut off mid-order by the restart
                     UPDATED["now"] = True
                     time.sleep(20)                  # let the main loop exit cleanly; if it's stuck, exit anyway
                     log("restarting for the update")
@@ -811,6 +841,7 @@ def spa_repair_loop(conf=None):
         try:
             if spa_repair(conf):
                 log("restarting so Combo Hub uses its web app files")
+                restart_when_quiet()
                 UPDATED["now"] = True
                 return
         except Exception as err:
@@ -3098,7 +3129,7 @@ def webapp_main():
     SHUT = {"on": False}
 
     def api_act(d):
-        if SHUT["on"]:
+        if SHUT["on"] or restarting():
             msg = "The Mac is restarting. Nothing was done; try again in a moment."
             return {"ok": False, "msg": msg, "error": msg, "busy": True}
         try:
@@ -3255,8 +3286,9 @@ def webapp_main():
                     traceback.print_exc()
                     if A.order_outcome(err) == "refused":       # a definite refusal: nothing was bought
                         r = {"error": A.order_words(err)}
-                    else:                                       # accept_offer handles everything after the accept
-                        r = {"error": f"That didn't work ({type(err).__name__}), so nothing was bought. Try again."}
+                    else:                                       # unexpected: it may have gone out, so never "nothing"
+                        r = {"error": f"Something went wrong ({type(err).__name__}). It may or may not have been "
+                                      "bought: check Kalshi before trying again.", "check": True}
                 print(f"buy combo {i}:", r, flush=True)
                 LIVE["at"] = 0
                 if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
@@ -3669,7 +3701,7 @@ def webapp_proxy(handler, tok, method, path, body=b""):
 
 PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
 #                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
-ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "quote", "idea", "singlequote", "ask", "askhalf")
+ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "pot_move")   # taps that can move money (the rest only read)
 
 
 def _proxy_send(handler, code, ctype, data, where=""):
@@ -4061,6 +4093,10 @@ def main():
         spa_repair_start(conf)
     if is_backup(conf):
         os.environ["COMBO_ROLE"] = "backup"           # every engine copy this process loads knows it never trades
+    try:
+        os.remove(RESTARTING)                         # this is the restarted watcher: taps may go again
+    except OSError:
+        pass
     E = load_engine()
     backup_safe(conf, E)
     # headless: nothing to draw, notifications go to ntfy, no cash-out quotes from here

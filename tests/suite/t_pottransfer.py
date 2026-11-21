@@ -282,3 +282,10 @@ ok("no code path moves cash on its own: pot_transfer is called only from the hub
 j = src.index('if a == "pot_move":')
 ok("the tap runs under the web app's tap lock (inside act_lock, like orders)",
    src.rfind("with act_lock():", 0, j) > src.rfind("def _api_act", 0, j))
+
+# ---- a move kept in memory (its note couldn't be written) steps aside once the file has it
+reset()
+E._POT_SHARED.unsure["mem-cid"] = {"cid": "mem-cid", "status": "pending", "amount": 1.0}
+saved = E._pot_save([{"cid": "mem-cid", "status": "complete", "amount": 1.0}])
+ok("a saved move drops its memory copy (it can't override the file or block later saves)",
+   saved and "mem-cid" not in E._POT_SHARED.unsure and E._pot_ledger()[0]["status"] == "complete")

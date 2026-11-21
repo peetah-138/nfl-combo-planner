@@ -5532,6 +5532,9 @@ def place_hedge(ticker, hg=None, auto=False):
     Returns a message."""
     import uuid
     h = MINE["hold"].get(ticker) or {}
+    if hedge_unsure(ticker):                          # an earlier hedge here may have filled (or wasn't saved): never again
+        return (f"⚠️ An earlier hedge on {h.get('label', 'this combo')} had no clear answer or couldn't be saved, so "
+                "nothing was bought. Check Kalshi first.")
     hg = hg or hedge_for(ticker)
     if not hg or not hg.get("n"):
         return "Nothing to hedge on this combo now."
@@ -9868,6 +9871,9 @@ def _pot_save(moves):
         save_json(POT_LEDGER, {"moves": moves}, strict=True)
     except Exception:
         return False
+    saved = {m.get("cid") for m in moves}
+    for k in [k for k in _POT_SHARED.unsure if k in saved]:   # the file has it now: the memory copy steps aside
+        _POT_SHARED.unsure.pop(k, None)
     return [m.get("cid") for m in _pot_ledger()] == [m.get("cid") for m in moves]
 
 
@@ -15981,6 +15987,12 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
         save_json(SIZING_FILE, sk)
         out.append(f"💰 {sk['skim_note']} The app no longer bets with it; move it out of Kalshi, then tap "
                    f"\"I moved it\" in Settings › Money. Set aside so far: {money(sk.get('reserved', 0))}.")
+    no_base = {}                                      # the balance read once a pass (a failed read isn't cached)
+
+    def base_unread():
+        if "v" not in no_base:
+            no_base["v"] = sizing_base()[0] is None
+        return no_base["v"]
     for mode in ("real", "paper"):
         p = panel_get(mode)
         if not p or p["status"] not in ("approved", "paper"):
@@ -16009,7 +16021,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
                         out.append(f"⏭️ Panel: skipped {picks}: " + ("games under way are switched off." if c.get("live")
                                                                      else "its game starts too soon to buy safely."))
                     continue
-            if mode == "real" and not paused and may_trade and (p.get("base_guess") or sizing_base()[0] is None):
+            if mode == "real" and not paused and may_trade and (p.get("base_guess") or base_unread()):
                 if c.get("hold") != "balance":            # never buy on a guessed bankroll: wait for the balance
                     _set_items(day, mode, {c["id"]: {"hold": "balance"}})
                 continue
