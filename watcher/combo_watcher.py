@@ -3338,7 +3338,9 @@ def webapp_main():
         ids = [i for i in (d.get("ids") or []) if ok_id(i)][:40] if isinstance(d.get("ids"), list) else []
         try:
             if a == "idea_dismiss":
-                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought")
+                seen = d.get("seen") if isinstance(d.get("seen"), dict) else {}
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought",
+                                   seen={k: v for k, v in list(seen.items())[:40] if k in ids})
                 return {"ok": True, "n": r["n"], "ids": r["ids"]}
             if a == "idea_undo":
                 r = A.idea_undismiss(ids, everything=d.get("all") is True)
