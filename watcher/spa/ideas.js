@@ -27,11 +27,17 @@ function ideaAgeNote(x){return ideaAge(x.ts)+(x.stale?' · refreshing':'');}
 /* #252: what a fresh price says about the idea. The Buy button follows it, so it is never green (or silently off) when
    the price on screen says otherwise: 'no' = no edge left after Kalshi's fee (no Buy; get a new price), 'warn' = under
    your bar, or the chance fell 5+ points since the idea was found (yellow Buy anyway), '' = clears it (green Buy).
-   Display only: the Mac's own guards on every buy are unchanged. */
+   Display only: the Mac's own guards on every buy are unchanged.
+   #255: a game under way is priced only on a live fair chance (a fresh live line or the live model). With none (fair null,
+   or a combo whose game under way has only a pre-game chance) there is no edge to claim: yellow Buy anyway, never green. */
+function ideaNoFair(q){return `No fair price to check this against${q.nofair?`: ${q.nofair}`:''}. You'd be going on Kalshi's price alone.`;}
 function ideaVerdict(x,q){if(!q)return {k:''};
- if(x.n===1){const c=Math.round(q.price*100),f=pct(q.fair),drop=x.chance!=null&&q.fair!=null&&x.chance-q.fair>=0.05,was=drop?` (it was ${pct(x.chance)} when this idea was found)`:'';
+ if(x.n===1&&q.fair==null)return {k:'warn',why:ideaNoFair(q)};
+ if(x.n!==1&&q.nofair)return {k:'warn',why:ideaNoFair(q)};
+ if(x.n===1){const c=Math.round(q.price*100),f=pct(q.fair),drop=!q.live&&x.chance!=null&&q.fair!=null&&x.chance-q.fair>=0.05,was=drop?` (it was ${pct(x.chance)} when this idea was found)`:'';
   if(!(q.edge>0))return {k:'no',why:`No longer a good bet. Kalshi wants ${c}¢ and the fair chance is now ${f}${was}, so there's no edge left after the fee.`};
   if(drop)return {k:'warn',why:`The fair chance has dropped to ${f}${was}. Only a small edge is left.`};
+  if(q.clears===false&&q.live&&(q.warn||[]).some(w=>w.k==='thin'))return {k:'warn',why:`The market is thin right now (a wide gap between buy and sell), so this price may not be a real one.`};
   if(q.clears===false)return {k:'warn',why:`The edge left (${(q.edge*100).toFixed(1)}¢ a contract after the fee) is under your bar.`};
   return {k:''};}
  if(q.clears===false)return {k:'warn',why:`Kalshi's price now is ${pct(q.pct)} of fair, under your bar.`};
@@ -42,17 +48,24 @@ function ideaButtons(x,q,fresh,left,det){const one=x.n===1,busy=!!(S.ibuy&&S.ibu
   :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
  return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}onclick="ideaPass('${x.id}',${det?'true':'false'})">Pass</button>${buy}`:
   `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
-function ideaVd(x,q){const v=ideaVerdict(x,q);return v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'';}
+function ideaVd(x,q){const v=ideaVerdict(x,q);return (v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'')+ideaWarn(q);}
+/* where the fresh fair chance came from (#255), and Buy straight's cautions for a game under way (the first one, "under way",
+   is said by the source line already) */
+const IFSRC={'live line':'live line','live model':'live model','none':'no fair price'};
+function ideaSrc(q){return q.fair_src?`<small class="ifsrc">${esc(IFSRC[q.fair_src]||q.fair_src)}</small>`:'';}
+function ideaWarn(q){return (q&&q.warn||[]).filter(w=>w.k!=='live').map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('');}
+function ideaLiveNote(q){return q&&q.live?`<div class="m inow">Kalshi's price now · game under way</div>`:`<div class="m inow">Kalshi's price now</div>`;}
 /* the last answer to a Buy tap on this idea, in plain words, on the card and the detail page (a toast alone sat behind
    the detail page, so a refusal there looked like nothing happened) */
 function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];return a?`<div class="ians ${a.tone||''}" role="status">${esc(a.m)}</div>`:'';}
 /* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
 function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
- const rec=m.rec||x.stake||5;return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null})
+ const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
+ return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null,small})
   +(fresh&&q.note?`<div class="stkm" data-w="depth">${esc(q.note)}</div>`:'');}
 function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,false);const vd=ideaVd(x,q);
- return (x.n===1?`<div class="m inow">Kalshi's price now</div><div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b></div><div>Edge after fee<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b></div><div>Buy now<b>${q.n} contract${q.n===1?'':'s'} · ${money(q.stake)}</b></div><div>Pays if it wins<b>${money(q.pays)}</b></div></div>`
-  :`<div class="dnums"><div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div></div>`)+vd+ideaAnsHtml(x)+ideaStake(x,q,true);}
+ return (x.n===1?`${ideaLiveNote(q)}<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b>${ideaSrc(q)}</div><div>Edge after fee${q.edge==null?'<b>—</b>':`<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b>`}</div><div>Buy now<b>${q.n} contract${q.n===1?'':'s'} · ${money(q.stake)}</b></div><div>Pays if it wins<b>${money(q.pays)}</b></div></div>`
+  :`<div class="dnums"><div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b>${ideaSrc(q)}</div></div>`)+vd+ideaAnsHtml(x)+ideaStake(x,q,true);}
 /* once a fresh price is on screen, the numbers from when the idea was found are marked as older (#252) */
 function ideaOld(html,x,fresh){return fresh&&html?`<div class="iold"><div class="m">When this idea was found · ${esc(ideaAge(x.ts).replace(/^Price /,''))} · older than the price below</div>${html}</div>`:html;}
 function ideaCard(x){const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
@@ -71,7 +84,7 @@ function ideaCard(x){const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<2
    ${(x.legs_info||[]).map(li=>ideaLeg(li)).join('')}
    ${x.note?`<p style="margin-top:6px">🩹 ${esc(x.note)}</p>`:''}
    ${ideaOld(ideaFacts(x),x,fresh)}
-   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b></div>`:''}</div>${fresh?ideaVd(x,q):''}${ideaAnsHtml(x)}${ideaStake(x,q,fresh)}</div>
+   <div class="dnums">${x.price_c!=null?'':`<div>Last price<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Fair payout<b>${money(x.fair)}</b></div>`}${fresh?`<div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b>${ideaSrc(q)}</div>`:''}</div>${fresh?ideaVd(x,q):''}${ideaAnsHtml(x)}${ideaStake(x,q,fresh)}</div>
    ${ideaButtons(x,q,fresh,left,false)}${xb}</div></div>`;}
 function ideaSection(d){if(!Array.isArray(d.ideas))return '';S.ideaq=S.ideaq||{};
  const all=ideaList(d),lim=+d.ideas_limit>0?+d.ideas_limit:(all.length||1),top=all.slice(0,lim),more=all.slice(lim),open=!!S.ideasMore;
@@ -183,7 +196,7 @@ function ideaSell(x){if(x.n>1)return `<p>Combos are sold back to Kalshi at its o
  const D=S.ideaDepth&&S.ideaDepth.id===(x.idea_id||x.id)?S.ideaDepth.d:null;if(!D)return `<p class="m">Checking Kalshi's order book…</p>`;if(D.err)return `<p class="m">${esc(D.err)}</p>`;
  const gap=D.spread!=null?Math.round(D.spread*100):null,c=v=>v!=null?Math.round(v*100)+'¢':'—';
  return `<div class="dkpis"><div><span>Bid</span><b>${c(D.bid)}</b></div><div><span>Ask</span><b>${c(D.ask)}</b></div><div><span>Gap</span><b>${gap!=null?gap+'¢':'—'}</b></div><div><span>Contracts at the ask</span><b>${D.ask_size!=null?ideaCount(D.ask_size):'—'}</b></div></div>
-  <p class="m">${gap!=null&&gap<=6?'Easy to sell back: the gap is small, so selling early would cost little.'+(D.ask_size!=null&&D.ask_size<100?' Only '+Math.round(D.ask_size)+' contracts are at the ask, so a big sale could move the price.':''):'Harder to sell early: the gap is wide or the book is empty, so selling before the game would give up a lot.'}</p>`;}
+  <p class="m">${gap!=null&&gap<=6?'Easy to sell back: the gap is small, so selling early would cost little.'+(D.ask_size!=null&&D.ask_size<100?' Only '+Math.round(D.ask_size)+' contracts are at the ask, so a big sale could move the price.':''):'Harder to sell early: the gap is wide or the book is empty, so selling '+(x.live||(S.ideaq[x.id]||{}).live?'now':'before the game')+' would give up a lot.'}</p>`;}
 function ideaCount(n){n=Math.round(+n||0);return n>=999500?(n/1e6).toFixed(1).replace(/\.0$/,'')+'M':n>=1e4?Math.round(n/1000)+'k':n.toLocaleString();}   // 94080 -> 94k
 function ideaMoved(x){const h=x.hist;if(!h||h.length<2)return '';const v=h.map(p=>p[1]),lo=Math.min(...v)-.5,hi=Math.max(...v)+.5,W=300,H=56,last=v[v.length-1],first=v[0];
  if(Math.max(...v)-Math.min(...v)<.05)return `<h2 style="margin:18px 0 6px">How the price has moved</h2><p class="m">It hasn't moved since it was found: ${Math.round(first)}¢ (cents paid for each $1 it pays).</p>`;
@@ -199,7 +212,7 @@ function ideaBody(x){const li=(x.legs_info||[])[0]||{},one=x.n===1,q=S.ideaq[x.i
    <h3 style="font-size:22px;overflow-wrap:anywhere">${esc(one?(li.plain||x.picks):x.picks)}</h3>${when?`<div class="m">${esc(when)}</div>`:''}</div></div>
   ${ideaOld(kp,x,fresh)}<p class="m">${esc(ideaAgeNote(x))}${x.stale?'. Tap Get today\'s price for the live number before you buy.':''}</p>
   ${one?'':`<h2 style="margin:6px 0 4px">Picks <span class="n">${x.n}</span></h2>${(x.legs_info||[]).map(l=>ideaLeg(l)).join('')}`}
-  <h2 style="margin:18px 0 6px">Why it was picked</h2><p>${esc(ideaWhy(x))}</p>${x.note?`<p>🩹 ${esc(x.note)}</p>`:''}
+  <h2 style="margin:18px 0 6px">Why it was picked</h2><p>${(x.live||fresh&&q.live)&&one?'Before the game: ':''}${esc(ideaWhy(x))}</p>${x.note?`<p>🩹 ${esc(x.note)}</p>`:''}
   ${ideaMoved(x)}
   <h2 style="margin:18px 0 6px">Could you sell it?</h2>${ideaSell(x)}
   ${ideaQuote(x,q,fresh)}
@@ -216,7 +229,7 @@ async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySel
  const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
  if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note};
+ S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn};
  S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
  clearInterval(S.ideaT);S.ideaTid=id;S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 /* Buy (#252): every tap ends with an answer in plain words, on the page itself (the card, or the detail page, where a toast

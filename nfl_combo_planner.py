@@ -15254,7 +15254,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             nofair = "spreads and totals have no live fair price"
         else:
             try:
-                f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(t)))
+                f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(t),   # a live side's fair is Kalshi's
+                                                line_live=x.get("line_live") and not x.get("live")))   # mid, not a line (#255)
             except Exception as err:                    # a scores hiccup: no fair price, never a crash
                 f, how, w = None, None, f"the live score couldn't be read ({type(err).__name__})"
             if f is None and w == "the game is over":
@@ -15327,7 +15328,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             need = max(need, line_min_edge(_line_lg(ticker_sport(t) or "", t), kind)["v"])
         except Exception:
             pass
-    clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
+    doubt = any(w["k"] in ("decided", "disagree") for w in warn)   # the panel leaves these out entirely (#255)
+    clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start and not doubt
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -15608,6 +15610,100 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
     part = f" of {n}" if sold < n else ""
     return {"ok": True, "sold": sold, "price": px, "got": got, "cost": cost, "pick": q["pick"],
             "msg": f"✅ Sold {sold:g}{part} at {px * 100:.0f}¢ or better: about {money(got)} back after Kalshi's fee."}
+
+
+IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}
+
+
+def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None):
+    """Where a single-game Buy idea's fresh price gets its fair chance (issue #255). Before the game: the board's side
+    (else the idea's own model chance for a spread/total), exactly as before. Once the game is under way: only
+    live_side_fair (a live sportsbook line read in the last LIVE_LINE_AGE seconds, else the live model on a fresh
+    score), never the board's number (which can be the pre-game price, or Kalshi's own mid from when Build was built);
+    with neither there is no fair price at all. Returns {"live", "fair", "how", "src" (what the card says: "live
+    line" / "live model" / "none" for a game under way; before it "sportsbooks" / "line model" / "Kalshi's price" /
+    "from when it was found" (the idea's own chance, no board side)),
+    "nofair" (why none), "warn" (Buy straight's cautions for a game under way: live, nearly decided, far from the live
+    chance, thin), "thin", "over" (the game is finished)}. Reads only; never raises (a hiccup = no fair price)."""
+    now = now or time.time()
+    side = dict(side or {})
+    x = dict(side, ticker=tk)
+    if not x.get("event") and "-" in tk:
+        x["event"] = tk.rsplit("-", 1)[0]
+    kind = single_kind(tk) or (side.get("kind") if side.get("kind") in ("spread", "total") else None)
+    out = {"live": False, "fair": None, "how": None, "src": "none", "nofair": None, "warn": [], "thin": False,
+           "over": False}
+    try:
+        live = bool(row_live) or bool(kick and float(kick) <= now) or started(x)
+    except Exception:
+        live = bool(row_live) or bool(kick and float(kick) <= now)
+    if not live:                                       # before the game: unchanged (the board's fair, else the model's)
+        f = side.get("fair") or pfair or None
+        if f:
+            out["fair"] = float(f)
+            out["how"] = out["src"] = ("line model" if kind in ("spread", "total") else
+                                       "from when it was found" if not side.get("fair") else
+                                       "sportsbooks" if side.get("src") else "Kalshi's price")
+        return out
+    out["live"] = True
+    try:
+        if _game_over(tk):
+            out.update(over=True, nofair="the game is over")
+            return out
+    except Exception:
+        pass
+    book = book or {}
+    ask, bid = book.get("ask"), book.get("bid")
+    f = None
+    if kind in ("spread", "total"):
+        out["nofair"] = "spreads and totals have no live fair price"
+    elif kind != "win":
+        out["nofair"] = "this kind of market has no live fair price"
+    else:
+        try:
+            f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(tk),   # Build's live side holds Kalshi's
+                                            line_live=x.get("line_live") and not x.get("live")), now)   # mid, not a line
+        except Exception as err:                       # a scores hiccup: no fair price, never a crash
+            console_note(f"idea live fair: {type(err).__name__}: {err}")
+            f, how, w = None, None, "the live score couldn't be read just now"
+        if f is None and w == "the game is over":
+            out.update(over=True, nofair=w)
+            return out
+        if f is None:
+            out["nofair"] = w
+        else:
+            f = round(f, 4)
+            out.update(fair=f, how=how, src=IDEA_FAIR_SRC.get(how, how))
+            if f >= LIVE_DECIDED or f <= 1 - LIVE_DECIDED:
+                out["warn"].append({"k": "decided", "t": "The game is nearly decided, so there's little left to win."})
+            if bid is not None and ask is not None and abs(f - (ask + bid) / 2) >= LIVE_DISAGREE:
+                out["warn"].append({"k": "disagree", "t": f"Kalshi's live price and our live chance ({f:.0%}) are far "
+                                    "apart. That's usually something the score doesn't show (an injury, a power play)."})
+    out["warn"].insert(0, {"k": "live", "t": "This game is under way. " + (
+        f"Our chance is live ({out['src']}), not the pre-game one." if f is not None else
+        "There's no live fair price, so you'd be going on Kalshi's price alone.")})
+    gap = round(ask - bid, 4) if ask is not None and bid is not None else None
+    if gap is None or gap > LIVE_SPREAD:
+        out["thin"] = True
+        out["warn"].append({"k": "thin", "t": "Thin market: " + (f"{gap * 100:.0f}¢ between the buy and sell prices"
+                                                               if gap is not None else "nobody is bidding")
+                            + ", so this price may not be a real one."})
+    return out
+
+
+def idea_combo_live_gap(legs, now=None):
+    """A combo idea's legs whose game is under way: their picks, [] when none. Build's chance for such a leg is the
+    pre-game price (built before the start, or left out by its live checks) or Kalshi's own mid from when Build was
+    built (circular, and minutes old), never a live_side_fair one, so a combo with one has no fair price to check
+    against (issue #255, Pete's ruling). Never raises: a leg it can't judge counts as such a leg."""
+    out = []
+    for l in legs or []:
+        try:
+            if started(l):
+                out.append(l.get("pick") or l.get("ticker") or "a game")
+        except Exception:
+            out.append((l.get("pick") or l.get("ticker") or "a game") + " (start time unclear)")
+    return out
 
 
 IDEA_TAP_SECS = 120            # one order per Live single-game idea in this long (a double tap or a retry sends nothing)

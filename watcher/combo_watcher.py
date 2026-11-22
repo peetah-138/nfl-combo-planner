@@ -3463,17 +3463,26 @@ def webapp_main():
                         api_build(row["lg"], rebuild=True)
                     side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
                     dpt = A.book_depth(tk, max_age=0)
-                    fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
-                    if not fair or not dpt or dpt.get("ask") is None:
+                    if not dpt or dpt.get("ask") is None:
+                        return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
+                    # the fair chance (#255): before the game the board's (spreads/totals: the model's), as before; a
+                    # game under way only a live one (a fresh live line, else the live model), never the board's number
+                    fi = A.idea_single_fair(tk, side, row.get("pfair"), dpt, kick=row.get("kick"),
+                                            row_live=bool(row.get("live")))
+                    if fi["over"]:
+                        return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
+                    fair = fi["fair"]
+                    if fair is None and not fi["live"]:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
                     if bad:
                         return {"ok": False, "msg": bad, "bad_stake": True}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
-                    edge = fair - ask - fee
-                    pct = fair / (ask + fee) if ask else 0
-                    rec = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
+                    edge = fair - ask - fee if fair is not None else None
+                    pct = (fair / (ask + fee) if ask else 0) if fair is not None else None
+                    rec = (A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair) if fair is not None else
+                           max(A.OWN_MIN, 2.0))                # no fair price: Buy straight's smallest bet, no edge claimed
                     stake = own if own is not None else rec
                     n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
                     note = None
@@ -3493,10 +3502,14 @@ def webapp_main():
                     for k in [k for k, v in IDEA_Q.items() if time.time() - v["at"] > IDEA_Q_SECS * 4]:
                         IDEA_Q.pop(k, None)
                     IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
+                    doubt = any(w["k"] in ("thin", "decided", "disagree") for w in fi["warn"])   # under way: as the panel
+                    clears = fair is not None and edge >= A.SINGLE_MIN_EDGE * 0.6 and not (fi["live"] and doubt)
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
-                                     "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
-                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6, "rec": rec, "own": own is not None,
-                                     "ev": round(n * fair - cost, 2), "note": note, "min": A.OWN_MIN, "max": A.OWN_MAX,
+                                     "pays": float(n), "pct": pct, "edge": round(edge, 4) if edge is not None else None,
+                                     "fair": fair, "clears": bool(clears), "rec": rec, "own": own is not None,
+                                     "ev": round(n * fair - cost, 2) if fair is not None else None, "note": note, "min": A.OWN_MIN,
+                                     "max": A.OWN_MAX, "live": fi["live"], "how": fi["how"], "fair_src": fi["src"],
+                                     "nofair": fi["nofair"], "warn": fi["warn"],
                                      "room": round(max(0.0, budget - spent), 2) if spent is not None else None})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
@@ -3510,14 +3523,25 @@ def webapp_main():
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
                     return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
+                c = (A.CTX.get("combos") or [])[k - 1] if 1 <= k <= len(A.CTX.get("combos") or []) else {}
+                gap = A.idea_combo_live_gap(c.get("legs"))   # #255: a game under way the board only has pre-game for
+                small = None
+                if gap and own is None:                 # no fair price: priced at the smallest usual stake, never
+                    small = round(max(A.OWN_MIN, 2.0), 2)   # sized on a pre-game or stale edge (Buy straight's $2)
                 try:
-                    r = combo_offer(k, own)
+                    r = combo_offer(k, own if small is None else small)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
-                return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                                 "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}})
+                out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}}
+                if gap:                                 # no fair price to check it against: yellow Buy anyway only
+                    out.update(clears=False, pct=None, ev=None, live=True, fair_src="none",
+                               **({"rec": small, "own": False} if small is not None else {}),
+                               nofair=f"the {' and '.join(gap[:2])} game{'s have' if len(gap) > 1 else ' has'} started, "
+                                      "and a combo with a game under way has no live fair price")
+                return jsonable(out)
             if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That market isn't recognized."}
