@@ -89,7 +89,7 @@ ok("a soccer league borrows soccer's, only stricter", E.knob("smart_floor", "epl
    and E.knob("smart_lam", "epl", st, now) == 1.0 and E.knob("smart_loss", "epl", st, now) is None)
 ok("nothing recorded: the start", E.knob("smart_floor", "nhl", st, now) == 1.5 and E.knob("exit_q_min", "nhl", st, now) == 0.5)
 ok("borrowed from everyone, never under the start", E.knob("sb_dial", "nhl", st, now) == 2)
-st["brake"]["nba"] = {"at": now - 60, "until": now + 86400}
+st["brake"]["nba"] = {"at": now - 60, "until": now + 86400, "mode": "live"}
 ok("a braked league is back at its start", E.knob("smart_floor", "nba", st, now) == 1.5)
 ok("an invariant is its live value", E.knob("cap_read_age", "nba", st, now) == E.CAP_READ_AGE)
 

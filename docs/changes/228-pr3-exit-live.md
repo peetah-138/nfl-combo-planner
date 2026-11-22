@@ -27,7 +27,9 @@ step that changes live selling, behind a master switch, and only for smart sell'
   differ from their start; `{}` when off, braked, nothing learned or on any error), and `smart_params` answers through
   `knob_smart_params` (falls back to the old walk, logged, if it ever errs). Per number, `knob_live_value`: the league's
   own value, else its sport's, else everyone's; **a borrowed value only stricter** than the start (#259; the loss cut is
-  never borrowed); the start while the league's brake holds. A group's own value is self-tuning's record (`lv` in
+  never borrowed). While a league's **live** brake holds its own values are set aside: the start, or a borrowed
+value when that is stricter (a brake never makes selling looser; a test brake recorded while the switch was off never
+changes live selling, `_knob_braked_live`). A group's own value is self-tuning's record (`lv` in
   `combo_knobs.json`, with when, `lat`) unless smart_tune moved the same number later (while the switch was off), else
   smart_tune's own (n ≥ 30) for the floor/risk/loss. A recorded value outside the registry's bounds or not a number is
   ignored (`_knob_valid`). `combo_knobs.json` is cached 60 s for the sellers (`knob_state_cached`; this process's saves
@@ -37,7 +39,9 @@ step that changes live selling, behind a master switch, and only for smart sell'
   values, and **never writes smart_tune's file** (or any setting or CFG). Every run starts every knob from the value
   live uses for that group's own record (re-read each run; the shadow no longer drifts from live).
 - **The stepper, live.** Weekly, per group: at most **one live step** (exit knobs, status `stepped`, `lv`/`lat`,
-  `lstep_at`, a `hist` entry with `live` and the words) and, separately, at most one shadow "would step" (the loss
+  `lstep_at`, a `hist` entry with `live` and the words; every live knob is judged from the value live really uses, a
+  borrowed stricter one included, `knob_live_value`; at everyone's or soccer's level a step is live only when a league
+  would take it, i.e. stricter than the start and not the loss cut, else it stays a test) and, separately, at most one shadow "would step" (the loss
   guards, Smart Buy's dial; `v`, `step_at`). Judges: `_replay` for the floor, risk weight, loss cut (only where the
   live loss guards held), least chance, take profit's minimum, the lock-in numbers and the cut's accept, run with
   Pete's own take-profit % and lock-in switch; the estimate allowances wait (the replay has no real Kalshi offer to
@@ -53,9 +57,13 @@ step that changes live selling, behind a master switch, and only for smart sell'
   single fee), holding = `sale_outcomes`' figure; a bet still waiting for its result, or void, counts neither way;
   only the app's own (not the Pi), after the league's last brake ended, within 30 days. Fires on 4 such losses in a
   row, or (4+ sales) the month's sales getting more than 5% of their stake less than holding. **Live:** the league is
-  back on its starting numbers for 14 days (the read path returns the starts while it holds; its own self-tuned values
-  are put back to the start, newer than anything smart_tune set, so they stay there until a new step clears the bar),
-  logged `braked`, **one push** per league per 14 days when it changed something ("Self-tuning brake: in NBA, ...").
+  back on its starting numbers for 14 days (its own values are set aside while it holds, a stricter borrowed value
+  still applies; its own self-tuned values are put back to the start, newer than anything smart_tune set, so they
+  stay there until a new step clears the bar), logged `braked`, **one push** per league per 14 days when it changed
+  something ("Self-tuning brake: in NBA, ... Nothing to do; it can start tuning again after <date>."). A brake that
+  changed nothing doesn't restart the league's evidence window. **Doubt for Pete (#284):** measured on the realized
+  result, this brake will fire often once leagues have sales (smart sell sells mostly favourites, below fair by
+  design); an expected-value measure may be what he meant.
   Shadow (switch off): "would brake", as in PR2.
 - **Every change is logged and shown.** `knob_shadow` rows (`stepped` with knob, league, from, to, why; `braked`), the
   watcher's log ("knobs: self-tuning changed NBA: ..."), and Results › What's working › Selling: the card becomes

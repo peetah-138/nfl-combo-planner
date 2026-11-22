@@ -249,8 +249,16 @@ ok(f"on random states NBA's decisions change ({diff_nba}) and NHL's never ({diff
 S0 = E.knob_state()
 S0["brake"]["nba"] = {"at": now - 60, "until": now + 14 * 86400, "why": "x"}
 set_knobs(S0)
-ok("a braked league is back at its starting numbers", E.knob_exit_prm([NBA]) == {}
+ok("a test brake (made while self-tuning was off) never changes live selling", E.knob_exit_prm([NBA]) != {})
+S0["brake"]["nba"]["mode"] = "live"
+set_knobs(S0)
+ok("a live brake: the league's own numbers are set aside, back at the starts", E.knob_exit_prm([NBA]) == {}
    and E.smart_params([NBA]) == dict(E.SMART_DEFAULT, key=None))
+S0["groups"]["all"] = {"lv": {"trail_floor": 1.3, "exit_q_min": 0.4}, "lat": {}}
+set_knobs(S0)
+ok("...but a brake never makes selling looser: a stricter borrowed number still applies (a looser one doesn't)",
+   E.knob_exit_prm([NBA]) == {"trail_floor": 1.3})
+del S0["groups"]["all"]
 S0["brake"]["nba"]["until"] = now - 1
 set_knobs(S0)
 ok("...until the brake ends", E.knob_exit_prm([NBA]) != {})
@@ -398,7 +406,10 @@ ok("4 sales in a row that got less than holding (even at a profit): brake, one p
    and not any(w in msgs[0].lower() for w in ("auto", "hedge", "cash out", "paused", "can't", "at risk")))
 ok("live: NBA is back at its starting numbers for 14 days, its own learned floor put back",
    abs(b.get("until", 0) - (now + 14 * 86400)) < 2 and b.get("mode") == "live" and b.get("reset", {}).get("smart_floor") == 1.8
-   and E.smart_params(["KXNBAGAME-X1-LAL"]) == dict(E.SMART_DEFAULT, key=None) and E.knob_exit_prm(["KXNBAGAME-X1-LAL"]) == {})
+   and E.smart_params(["KXNBAGAME-X1-LAL"]) == dict(E.SMART_DEFAULT, key=None)
+   and set(E.knob_exit_prm(["KXNBAGAME-X1-LAL"])) <= set((E.knob_state()["groups"].get("all") or {}).get("lv") and
+                                                       ["trail_drop", "trail_floor", "q_min", "tp_min", "trail_arm",
+                                                        "trail_arm_cost", "cut_accept", "est_smart", "est_tp"] or []))
 ok("the brake is logged and shown", any(r["status"] == "braked" for r in E.store_rows("select status from knob_shadow"))
    and [x for x in E.knob_shadow_view(now)["leagues"] if x["key"] == "nba"][0]["brake"])
 ok("while braked: no second push, the stepper skips the league", E.knob_brake_pass(now + 60, force=True) == []
@@ -434,3 +445,33 @@ open(E.KNOBS_FILE, "w").write("{not json"); E.KNOB_STATE_CACHE["d"] = None
 ok("an unreadable record = the starting numbers", E.knob_exit_prm([NBA]) == {} and E.smart_params([NHL])["floor"] == 1.5)
 json.dumps(E.knob_shadow_view(now))
 ok("the view is plain JSON", True)
+
+# ---- 9. a league that borrows a stricter number is judged from that number, not its start (profit review)
+os.remove(E.KNOBS_FILE) if os.path.exists(E.KNOBS_FILE) else None
+json.dump({"all": {"n": 300, "floor": 1.8, "lam": 1.0, "loss": None}}, open(E.SMART_FILE, "w")); E.SMART_CACHE["at"] = 0
+SEEN = {}
+def seen_judge(jd, rows, cur_, name, to, cache=None, **kw):
+    if rows is ROWS["replay"].get("ncaaf"):
+        SEEN[name] = cur_[name]
+    return [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows]
+E.knob_judge = seen_judge
+ROWS["replay"] = {"ncaaf": bets, "all": bets}
+E.knob_tune(now, force=True)
+ok("a league borrowing everyone's stricter floor (1.8) is judged from 1.8, what live uses", SEEN.get("smart_floor") == 1.8
+   and E.smart_params(["KXNCAAFGAME-26NOV22OSUMICH-OSU"])["floor"] == 1.8)
+
+# ---- 10. above league level, a live step only where a league would borrow it (stricter, never the loss cut)
+os.remove(E.KNOBS_FILE) if os.path.exists(E.KNOBS_FILE) else None
+json.dump({}, open(E.SMART_FILE, "w")); E.SMART_CACHE["at"] = 0
+def loose_judge(jd, rows, cur_, name, to, cache=None, **kw):
+    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows]
+    if (name == "smart_floor" and to < cur_[name]) or (name == "smart_loss" and to is not None):
+        return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
+    return base
+E.knob_judge = loose_judge
+ROWS["replay"] = {"all": bets}
+E.knob_tune(now, force=True)
+la = {r["knob"]: r["status"] for r in E.knob_state()["groups"]["all"]["last"]}
+ok("everyone's looser floor or loss cut (which no league would take) stays a test, never 'stepped'",
+   la.get("smart_floor") in ("would step", "qualifies") and la.get("smart_loss") in ("would step", "qualifies")
+   and not (E.knob_state()["groups"]["all"].get("lv") or {}))

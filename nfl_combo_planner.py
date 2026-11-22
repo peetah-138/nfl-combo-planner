@@ -20356,8 +20356,8 @@ def _knob_braked(st, key, now):
 
 def knob_switch_on():
     """Settings › Money › 'Let smart sell tune its own numbers' (`knobs_live`, on by default: Pete's #228 opt-in). Read
-    from the shared settings file too (like the other switches), at most every 10 seconds. Unreadable = off (today's
-    numbers, the conservative side)."""
+    from the shared settings file too (like the other switches), at most every 10 seconds; a damaged file falls back to
+    the default (on), and an error reading it counts as off (today's numbers)."""
     t = time.monotonic()
     if KNOB_SWITCH["on"] is None or t - KNOB_SWITCH["at"] > 10:
         try:
@@ -20390,7 +20390,8 @@ def _knob_own_live(name, g, st, smart):
     if fld and (se.get("n") or 0) >= SMART_MIN_N:
         if mine and float(lat.get(name) or 0) >= float(se.get("at") or 0):
             return True, lv[name]
-        return True, se.get(fld, SMART_DEFAULT[fld])
+        sv = se.get(fld, SMART_DEFAULT[fld])
+        return True, (sv if _knob_valid(name, sv) else KNOB_BY[name]["start"])   # a damaged file: the start
     if mine:
         return True, lv[name]
     return False, None
@@ -20409,18 +20410,30 @@ def _knob_valid(name, v):
 def knob_live_value(name, key, chain=None, st=None, smart=None, now=None):
     """(value, whose record) live smart sell uses for an exit knob while the switch is on: the league's own, else its
     sport's, else everyone's, a borrowed value only stricter than the start (#259; the loss cut is never borrowed);
-    (start, 'brake') while the league's brake holds; (start, None) when nobody has one."""
+    (start, None) when nobody has one. While the league's (live) brake holds, its OWN values are set aside: it uses
+    the start, or a borrowed value when that is stricter (a brake never makes selling looser); whose = 'brake'."""
     k = KNOB_BY[name]
     now = now or time.time()
     st = knob_state_cached() if st is None else st
     smart = smart_table() if smart is None else smart
-    if _knob_braked(st, key, now):
-        return k["start"], "brake"
+    braked = _knob_braked_live(st, key, now)
     for g in (chain or _knob_chain(key)):
+        if braked and g == key:
+            continue
         has, v = _knob_own_live(name, g, st, smart)
         if has:
-            return (v, g) if g == key else (knob_stricter(name, v), g)
-    return k["start"], None
+            if g == key:
+                return v, g
+            v = knob_stricter(name, v)
+            return (v, "brake") if braked and v == k["start"] else (v, g)
+    return k["start"], ("brake" if braked else None)
+
+
+def _knob_braked_live(st, key, now):
+    """A brake the live sellers honour: one recorded while self-tuning was live (a test brake made while the switch was
+    off never changes live selling, even if the switch is turned on before it ends)."""
+    b = (st.get("brake") or {}).get(key)
+    return _knob_braked(st, key, now) and isinstance(b, dict) and b.get("mode") == "live"
 
 
 def _knob_bet_chain(tickers):
@@ -20460,12 +20473,10 @@ def knob_exit_prm(tickers):
     try:
         k, chain = _knob_bet_chain(tickers)
         st, now = knob_state_cached(), time.time()
-        if _knob_braked(st, k, now):
-            return {}
         out = {}
         for name, pk in KNOB_EXIT_PRM.items():
             v, g = knob_live_value(name, k, chain, st, {}, now)
-            if g is not None and v is not None and v != KNOB_BY[name]["start"]:
+            if g not in (None, "brake") and v is not None and v != KNOB_BY[name]["start"]:
                 out[pk] = v
         return out
     except Exception as err:
@@ -20819,9 +20830,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             cur = {}
             for k in tun:                             # where each knob stands for this group now: what live uses from
                 n_ = k["name"]                        # its OWN record, re-read every run (#267)
-                if live and n_ in KNOB_LIVE:
-                    has, x = _knob_own_live(n_, g, st, smart)
-                    cur[n_] = x if has else k["start"]
+                if live and n_ in KNOB_LIVE:          # what live really uses, a borrowed (stricter) value included,
+                    cur[n_] = knob_live_value(n_, g, None, st, smart, now)[0]   # so a step is judged from there
                 else:
                     cur[n_] = _knob_seed(n_, g, smart, dial)
             last, best, best_live = [], None, None
@@ -20863,6 +20873,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         done = False
                         break
                     is_live = live and n_ in KNOB_LIVE
+                    if is_live and g in ("all", "soccer") and (k.get("borrow") == "own" or knob_stricter(n_, to) != to):
+                        is_live = False               # leagues borrow only stricter, never the loss cut: a step here
+                    #                                   that no league would take stays a test
                     ev = knob_evidence(ds, staked, e.get("lstep_at") if is_live else e.get("step_at"))
                     if ev["band"] == 0 and ev["hold_n"] == 0:
                         continue                      # changes nothing: nothing to log
@@ -21025,8 +21038,9 @@ def _knob_off_start(e, g, st, smart, live):
     """The numbers a brake would put back for group g: {knob: value now} for the ones off their start (live: what live
     smart sell uses from the group's own record; shadow: the test's values)."""
     vals = e.get("v") if isinstance(e.get("v"), dict) else {}
-    off = {n: x for n, x in vals.items() if n in KNOB_BY and x != KNOB_BY[n]["start"]}
+    off = {n: x for n, x in vals.items() if n in KNOB_BY and x != KNOB_BY[n]["start"] and not (live and n in KNOB_LIVE)}
     if live:
+        off = {}                                      # live: what live smart sell really changes back
         for n in KNOB_LIVE:
             has, x = _knob_own_live(n, g, st, smart)
             if has and x != KNOB_BY[n]["start"]:
@@ -21079,8 +21093,10 @@ def knob_brake_pass(now=None, force=False):
                 push_ok = bool(off) and now - float(old.get("pushed") or 0) >= days * 86400
                 d["brake"][lg] = {"at": now, "until": now + days * 86400, "why": why, "reset": off,
                                   "pushed": now if push_ok else old.get("pushed"), "mode": "live" if live else KNOB_MODE}
-                e = dict(e, v={n: KNOB_BY[n]["start"] for n in vals if n in KNOB_BY}, step_at=now)
-                if live:                              # its own self-tuned numbers back to the start, newer than
+                e = dict(e, v={n: KNOB_BY[n]["start"] for n in vals if n in KNOB_BY})
+                if vals:
+                    e["step_at"] = now                # a brake that changed nothing doesn't restart the evidence window
+                if live and off:                              # its own self-tuned numbers back to the start, newer than
                     lv = dict(e.get("lv") or {}) if isinstance(e.get("lv"), dict) else {}     # anything smart_tune set
                     lat = dict(e.get("lat") or {}) if isinstance(e.get("lat"), dict) else {}
                     for n in off:
@@ -21092,7 +21108,8 @@ def knob_brake_pass(now=None, force=False):
                 d["groups"][lg] = e
                 if push_ok and live:
                     msgs.append(f"Self-tuning brake: in {league_label(lg)}, {why}. Smart sell in {league_label(lg)} is "
-                                f"back on its starting numbers for {days} days.")
+                                f"back on its starting numbers for {days} days. Nothing to do; it can start tuning again after "
+                                f"{dt.datetime.fromtimestamp(now + days * 86400, PACIFIC).strftime('%b %-d')}.")
                 elif push_ok:
                     msgs.append(f"Self-tuning test, nothing changed: in {league_label(lg)}, {why}. With self-tuning on, "
                                 f"{league_label(lg)} would go back to its starting numbers for {days} days.")

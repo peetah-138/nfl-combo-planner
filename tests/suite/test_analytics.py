@@ -117,8 +117,8 @@ with sync_playwright() as pw:
         if saved("smart_buy_gate", True) is not True: print("PROBLEMS: turning 'Smart Buy' back on didn't save")
     # self-tuning (#228 PR3): a switch in Settings › Money, on by default (Pete's standing opt-in)
     row = pg.locator("label.srow", has_text="Let smart sell tune its own numbers")
-    if row.count() != 1 or not row.locator("input").is_checked() or "newest ones agree" not in row.inner_text() \
-            or "14 days" not in row.inner_text() or "shows every change" not in row.inner_text():
+    if row.count() != 1 or not row.locator("input").is_checked() or "newest bets agree" not in row.inner_text() \
+            or "14 days" not in row.inner_text() or "Every change shows" not in row.inner_text():
         print("PROBLEMS: Settings › Money has no 'Let smart sell tune its own numbers' switch (on by default, with the bar, "
               "the brake and where changes show)")
     else:
