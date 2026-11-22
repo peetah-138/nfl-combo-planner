@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.21.131"
+VERSION = "2026.11.21.132"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -2232,9 +2232,10 @@ def money_mark():
 
 
 def money_seen():
-    """When money last moved (the stamp's time), or 0.0 if never. Never raises."""
+    """When money last moved (the stamp's time), or 0.0 if never. Never raises. Never in the future (a clock
+    stepped back must not make every read look stale)."""
     try:
-        return os.path.getmtime(MONEY_FLAG)
+        return min(os.path.getmtime(MONEY_FLAG), time.time())
     except Exception:
         return 0.0
 

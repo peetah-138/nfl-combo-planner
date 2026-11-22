@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.131). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.132). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -85,9 +85,20 @@ Real money is involved. Pete uses it daily.
    session used a local `.git/hooks/pre-commit` that refuses known secret strings; set one up on this machine too.
    Ask Pete for the strings it should block, and **never write them into any tracked file** (including this one).
 2. **No new automatic money movement** without Pete explicitly opting in. Existing opt-ins: auto cash-out (with
-   smart sell, take profit, lock-in, learned loss-cutting), auto-hedge (≤ $100 a hedge), killer deals,
-   standing orders, approving the daily panel, and "Add to today's panel". Everything else buys or sells only on
+   smart sell, take profit, lock-in, learned loss-cutting), auto-hedge (≤ `hedge_cap` a hedge, default $100), killer
+   deals, standing orders, approving the daily panel, and "Add to today's panel". Everything else buys or sells only on
    his tap. The Pause switch must always be respected. The Pi never trades.
+   **Self-tuning limits (Pete's standing opt-in, issue #228, 2026-11-21; not live yet):** the guessed numbers smart
+   sell, the loss guards and auto-hedge decide with may tune themselves **per league, on evidence**. This supersedes the
+   fixed $100 hedge cap: the system may raise `hedge_cap` up to a ceiling of **$150**, and may adjust auto cash-out's
+   daily cap (`auto_cap`) **with no ceiling**. A change needs 10+ bets in the band it changes, a gain of ≥ 2% of stake
+   and ≥ 2 standard errors, 20 new results since the last step, and must hold on the newest 30% kept back (holdout);
+   borrowed values (sport, everyone) may only move the stricter way. **Brake:** 4 automatic-sale losses in a row, or
+   losses over 5% of the month's automatic-sale stake, send that league back to the start numbers for 14 days. The
+   manual stop-loss switch becomes **Never / Let it tune itself (default) / Allow (guarded)**. **Never tuned
+   (invariants):** Pause, `can_trade`/the Pi never trades, rule 8, caps failing closed, fresh score and price ages,
+   in play, a real fresh quote before any sale or hedge, secrets. Today only the read-only registry (#262, Selling) is
+   built: the stepper is **shadow-only until #228 PR2-PR7 ship**, and nothing moves by itself yet.
    **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
    the bar (50+ settled bets, ahead in dollars, ≥ 55% of days up, CLV ≥ 0, the shadow beating plain), it may
    graduate by itself: stage 2 = its own suggestions (recommend-only); stage 3 = bigger stakes and extra auto-buys,
@@ -163,7 +174,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.131`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.132`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -564,7 +575,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   than the start; only a league's own record can loosen it. A stop-loss sale is logged with `stop_loss: true` and
   notifies "Stop-loss (your switch)".
 - **Auto-hedge guards (issue #27, Pete approved):** auto-hedge (with Auto cash-out on, replaces an already-chosen
-  sale when the combo has one pick left and the hedge locks in ≥ 95% of the cash-out, ≤ `hedge_cap`, default $100)
+  sale when the combo has one pick left and the hedge locks in ≥ 95% of the cash-out, ≤ `hedge_cap`, default $100;
+  Pete's #228 opt-in lets the system raise it to at most $150 on evidence once the stepper ships, Hard rule 2)
   now buys only when `hedge_guard` passes: the last game **in play on a fresh score** (`fresh_live_score`, shared with
   the loss guards; missing/stale = no hedge), **not at a break** (`at_break`), the hedge **locks in at least the
   combo's cost** (`locked = contracts − hedge cost ≥ h["cost"]`), all held on **3+ checks over ≥ 3 min** (`_sl_confirm`
@@ -672,6 +684,36 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     ahead, ≥ 55% of days up, CLV on singles/spreads ≥ 0, skips beating plain). Display only: nothing acts on it yet.
     The panel (every view) and the Buy ideas show a calm "Smart Buy skipped N · Why?" (`sbSkipLine`/`sbSkipOpen`): a sheet of
     short plain reasons.
+- **The knob registry, read-only (issue #228 PR1; no behaviour change).** First step of the self-tuning limits Pete
+  opted in to (Hard rule 2). **`KNOBS`** (engine, after `smart_summary`) lists every number smart sell, the loss guards,
+  auto-hedge and Smart Buy decide with: `name`, `group` (profit / loss / hedge / sell / buy / evidence / invariant), `cls`
+  (`tunable` = a guess that may move on evidence later; `setting` = Pete's setting he let the system raise: `auto_cap`
+  (no ceiling), `hedge_cap` (25-150); `evidence` = the bar a change must clear, never moved by data; `invariant` =
+  safety/data integrity, with `why`), `label`/`what`, `owner` (live function), `src` (the constant or setting the live
+  code reads, `"NAME"`/`"NAME.key"`), `start`, `min`/`max` (a hedge may never lock in under 1x cost), `step`,
+  `step_kind` (`add`/`mult`: risk weight x0.85/x1.15), `on_value` (loss cut's first value 0.15), `shared_with` (other
+  decisions it drives: confirmation counts also confirm hedges, `SB_EV_MIN` also sets Build's spreads/totals list,
+  `CASH_SLIP` also your own Cash out retries, `LIVE_SPREAD` also live buys, so it must be split before it can move),
+  `unit`, `stricter` (the direction in which the app does less on its own), `borrow` (`own`/`chain`/`chain-stricter`/
+  `none`), `learned` (the function that already moves it) and `metric`/`judge`. `KNOB_BY`, `KNOB_GROUPS`,
+  `KNOB_EVIDENCE` (PR2's bar above) and `KNOB_BRAKE` are written down; **no live code reads any of them** (only
+  `analytics` calls `knob_view`). Numbers that were inline are now module constants with the same values so the
+  registry can name them: `EXIT_Q_MIN`, `EXIT_EST_SMART`, `EXIT_EST_TP`, `CUT_ACCEPT`, `TRAIL_ARM_COST`, `TRAIL_FLOOR`
+  (exit_policy), `SB_ROUTE_EXIT` (simulate_exit), `SWING_BASE`, `CHECKPOINT_LAM`, `SL_UNDER`, `HEDGE_LOCK_COST`/
+  `HEDGE_LOCK_SHARE`/`HEDGE_LOCK_EXTRA`, `SINGLES_SELL_AGE`, `DISC_PRE`/`DISC_LIVE`, `CUSHION_PER_PICK`/`CUSHION_MAX`;
+  `t_exitpolicy`, `t_replaypolicy`, `t_hedge`, `t_stoploss`, `t_cutloss` pass unchanged. **Invariants listed:** Pause,
+  the Pi never trades, Pete's switches (Auto cash-out, Smart sell, Let it ride, auto-hedge, the stop-loss override,
+  "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3, `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
+  score (150 s), in play, live price age (180 s), live-buy score age (120 s), singles' price age (180 s), a real fresh
+  offer before any sale or hedge, secrets. **`knob_view()`** (`analytics()["knobs"]`, cached with it) gives every knob's
+  start/bounds in plain words (`knob_say`) and, for the six already learned per league (floor, risk weight, loss cut,
+  the loss guards' timing and fall, Smart Buy's dial), the value per league and whose record set it, by the same walk
+  as `smart_params`/`stoploss_params`/`sb_dial` (a damaged league entry hides only that league; Mix listed like a
+  league; never raises, an error = `{}`). **Results › What's working › Selling:** a folded card "🎛️ The numbers selling
+  runs on" (`knobCard`, `watcher/spa/knobs.js`): groups, value/start/range/source, league chips, the bar a change must
+  clear, "Never moves by itself" with reasons; only the fold and chips are controls. Tests: `t_knobs.py` (completeness,
+  bounds, every `src` equals its start, no inline numbers left, nothing but analytics reads it, per-league values equal
+  the live resolvers, never raises), `test_knobs_ui.py`.
 - The **Let it ride** slider sets boldness: Cautious sells sooner, Bold later, "Ride it out" turns smart sell off.
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
@@ -766,6 +808,21 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   down by itself, only for NBA/college basketball/NHL/AHL, and only once two polls showed it running (a clock that
   hasn't moved for 25 s is treated as stopped); football and soccer show the last value. Tests: `t_hubcache.py`,
   `test_livefresh.py`.
+- **Live and Results catch up right after a sale (issue #242, display and caches only).** A sale is made by the Mac
+  watcher, but the pages are drawn by the web app with its own caches (account 60 s/30 s, open singles 30 s, the Live
+  snapshot, `profit_board` 2 min, the hero's profit line `PNL` 20 s), so a sold bet could stay on Live for over a minute
+  and Results never refreshed by itself. Now the engine's `money_mark()` writes a small stamp, `combo_money.json` next
+  to the engine (git-ignored by `combo_*.json`; only its time matters, `money_seen()`), for every sale-type sell-log line
+  (`log_decision`: sold, hedged, check, failed, hedge check/failed) and, after every direct account read, when anything a
+  screen shows changed (`money_note`: a combo's status/cost/back/pays, any position, the balance; a process's first read
+  only remembers). It never raises and never waits (one small file write), so the trading loop is never held up. The
+  hub's `account` op reads Kalshi fresh (`max_age=0`) when the stamp is newer than its cached copy; the web app's
+  `money_check()` (one file stat) drops its account, singles, scoreboard and profit-line caches when the stamp moves;
+  `api_live` rebuilds when the stamp is newer than the moment the snapshot on hand began (`LIVE["from"]`), the warmer
+  does it ahead of an open page, and `api_results` checks it first. Each Mac tick carries the stamp (`{"kind": "tick",
+  "money": ...}`); `moneyTick` re-reads Live/Games and Results when it moves (a finger on a chart or an open sheet waits
+  for the next tick); a Sold moment for a Mac sale re-reads Live 3 s later (`soldReload`). Nothing here buys, sells or
+  decides; `analytics()` (10 min) is unchanged. Tests: `t_moneyflag.py`, `test_moneyrefresh.py`.
 - **Live football game page (GitHub #72, display only).** On a live NFL/college-football game sheet the engine's
   `game_detail` (one ESPN summary fetch, cached 6 s; `_parse_game_detail`, `_situation_info`) feeds `api_game`'s `detail`
   block: the field strip (`fieldStrip`: ball, first-down line, red zone, possession arrow; everything inside `.grass` is
@@ -823,6 +880,33 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `ideaPass` drops the quote and its countdown (`S.ideaTid`), then goes through the same dismiss path (`ideaX` /
   `ideaNotNowSheet`: slides out, remembered in `combo_idea_dismiss.json`, Undo toast). Pass is disabled while a buy is
   on its way (`S.ibuy[id]`, set around `buyIdea` / `buySingle`). Display only. Test: `test_ideas2.py`.
+  **The Buy button is never green and dead (#252, display only; the Mac's buy paths and guards unchanged).** `ideaVerdict(x, q)`
+  reads the fresh price: a single with no edge left after the fee says so in full ("No longer a good bet. Kalshi wants 60¢
+  and the fair chance is now 40% (it was 54% when this idea was found), so there's no edge left after the fee."), shows no
+  Buy and offers **Get a new price**; a single whose fair chance fell 5+ points since it was found or is under the bar, and
+  a combo under the green bar (`clears` false), get a yellow **Buy anyway** with the reason; otherwise the green Buy. The Buy
+  is `disabled` only while that buy is on its way ("Buying…"). `ideaBuyGo` (behind `buyIdea`/`buySingle`) ends every tap with
+  a plain answer in `S.ideaAns[id]`, drawn on the card and the detail page (`.ians`): bought, Kalshi's or the guard's own
+  refusal words, "check", "That price ran out before your tap, so nothing was sent", or "Couldn't reach your Mac, so this
+  may or may not have gone through"; a second tap while one is on its way sends nothing. On the detail page a refusal shows
+  on the page; a buy or "check" closes it with a toast; toasts now sit above sheets and pages (`z-index:70`). Once a fresh
+  price is on screen the numbers from when the idea was found are dimmed under "When this idea was found · 3m old"
+  (`ideaOld`); the fresh single block reads Price now, Fair chance, Edge after fee, "Buy now: 4 contracts · $2.47", "Pays if
+  it wins: $4"; "Contracts at the ask: 94k" (`ideaCount`). Untouched: Pause, caps (fail closed), rule 8, one order per
+  idea/market per 2 min, the fresh book re-read, the Mac's `IDEA_Q` size/price check. Open doubt for Pete: a single idea's
+  fresh quote takes its fair chance from the Build board's side for that game (`api_act` "idea"). Test:
+  `test_idea_detail_buy.py`.
+  **Pass clears the idea and keeps it cleared (#256, hides only).** Pass (the card's X / Not now, and the detail page's
+  Pass) removes the idea at once, shows Undo and stays gone. With the Mac unreachable the idea stays hidden
+  (`S.idHide[key]` until the Mac confirms, then the usual 9 s mask) and the dismiss is retried in the background
+  (`ideaSave`, `IDEA_SAVE_WAIT`: now, 2.5 s, 7 s, 15 s, 30 s, 1 min, 1 min, 2 min); after four failures "Hidden on this
+  phone. Your Mac hasn't got that yet, still trying."; if all fail it says the idea may come back after a refresh. Undo
+  waits for a save on its way, so Undo is always the last word; a second tap sends nothing. The detail page's Pass no
+  longer clears the quote first (the card slides out as it is). The phone sends the fresh price and edge it showed
+  (`seen`) and the Mac measures the way back from the better of that and the listed price (`idea_dismiss(..., seen=)`,
+  `_idea_seen`; only ids it dismisses, at most 40, numbers checked), which only ever raises the bar to come back; a clearly
+  better price (3 points of edge or 2 cents under what he saw) still brings it back. The Undo bar is as wide as its words.
+  Test: `test_pass_detail.py`.
 - **"Time to cash out" only when smart sell would sell (GitHub #210, alerts and navigation only).** The Live toast
   "Combo N: time to cash out" used to fire on every hold→sell flip of the older Let it ride plan (`plan_cashout`), which
   takes the watcher's *estimated* offer as a fresh one (`fresh_offer` accepts `rfq="estimate"`) and, for a long shot
@@ -869,6 +953,18 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   asks for the price there). It is not behind a switch (it only recommends; the Smart Buy switch does not hide it). Type
   chips filter it (`cw_bftype`). Code: `watcher/spa/build.js` (`bestFeed`, `bfRow`). Tests: `t_bestbets.py`,
   `test_bestbets.py`. Still to do (ROADMAP): confidence per league and type, realized return per type, a detail page.
+- **The date range lives on Build (#248) and the combo slip sits with the games board (#249), placement only.** The
+  per-league dates combos and the board are built over (`next_day` today/tomorrow for daily leagues and the Mix's "same
+  day"; `thursday`/`saturday`/`monday` for slate-week leagues, Sunday always in; `mix_window`, `MIX_WINDOWS`) moved from
+  Settings › Games & picks (now one pointer row with Open Build) to a compact card at the top of Build under the league
+  chips (`dayRange(d)` in `watcher/spa/build_sections.js`). Same keys and per-league values (not in `SHARED_KEYS`), saved
+  through `/app/api/settings` with the league (`api_settings`, `send_synced`), read by the Mac's `by_day`/`day_on` as
+  before. `setDays(vals)` ticks, shows the choice at once, saves, reloads Build, drops picks and any quote from the old
+  board (a combo is only priced from what is on screen), and on a refused save puts the old choice back ("Nothing was
+  changed"). Up to 1360px (`narrowBuild()`) the "Your combo" slip renders right under the games board, before "More combo
+  ideas" (`.slip.inl`); wider it stays in the sticky side column. Exactly one slip is ever in the page; crossing the line
+  re-renders and keeps the picks (`S.slip`). The floating slip bar, quote/Buy phases, the Buy straight sheet and the flip-leg
+  animation are untouched. Tests: `test_buildlayout.py` (plus `test_days.py`, `test_singlebuy_ui.py`, `test_motion.py`).
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
   is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
@@ -964,7 +1060,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
-  per-league smart-sell tuning).
+  per-league smart-sell tuning), and the read-only knob registry card (#228 PR1, see Selling). Results re-reads
+  itself after a sale or any money change (#242, see Live page).
 - **Profit scoreboard (issue #138, read-only).** Top of Results (`pbBlock` in `watcher/spa/scoreboard.js`; it replaces
   the old combo-only KPI row once it has data). Source of truth is the **`ledger` table**: one row per finished market
   (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and

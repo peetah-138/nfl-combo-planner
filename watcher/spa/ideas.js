@@ -127,7 +127,7 @@ async function ideasRestore(){hap('light');const r=await api('/app/api/act',{a:'
  if(!r||!r.ok){toast('Couldn\'t bring them back just now.',3000);return;}
  S.idHide={};renderLive();await load('live',true);toast('Hidden ideas are back on the list.',2800);}
 function ideaFind(id){return ((S.live&&S.live.ideas)||[]).find(i=>i.id===id||i.idea_id===id);}
-function ideaX(id){const x=ideaFind(id);if(!x)return;hap('light');ideaOut([id],()=>ideaSend([x],'later'));}
+function ideaX(id){if(S.ibuy&&S.ibuy[id]){toast('That buy is still on its way.',2500);return;}const x=ideaFind(id);if(!x)return;hap('light');ideaOut([id],()=>ideaSend([x],'later'));}
 function hideIdea(id){ideaX(id);}                       // the card's "Not now" means dismiss
 /* Pass (after Get price) closes the idea just like the X: through the same dismiss path (it slides out, the Mac remembers,
    Undo). On the detail page the page closes back to Live first, then the card slides out. Off while a buy is on its way. */
@@ -184,7 +184,7 @@ function ideaSell(x){if(x.n>1)return `<p>Combos are sold back to Kalshi at its o
  const gap=D.spread!=null?Math.round(D.spread*100):null,c=v=>v!=null?Math.round(v*100)+'¢':'—';
  return `<div class="dkpis"><div><span>Bid</span><b>${c(D.bid)}</b></div><div><span>Ask</span><b>${c(D.ask)}</b></div><div><span>Gap</span><b>${gap!=null?gap+'¢':'—'}</b></div><div><span>Contracts at the ask</span><b>${D.ask_size!=null?ideaCount(D.ask_size):'—'}</b></div></div>
   <p class="m">${gap!=null&&gap<=6?'Easy to sell back: the gap is small, so selling early would cost little.'+(D.ask_size!=null&&D.ask_size<100?' Only '+Math.round(D.ask_size)+' contracts are at the ask, so a big sale could move the price.':''):'Harder to sell early: the gap is wide or the book is empty, so selling before the game would give up a lot.'}</p>`;}
-function ideaCount(n){n=Math.round(+n||0);return n>=1e6?(n/1e6).toFixed(1).replace(/\.0$/,'')+'M':n>=1e4?Math.round(n/1000)+'k':n.toLocaleString();}   // 94080 -> 94k
+function ideaCount(n){n=Math.round(+n||0);return n>=999500?(n/1e6).toFixed(1).replace(/\.0$/,'')+'M':n>=1e4?Math.round(n/1000)+'k':n.toLocaleString();}   // 94080 -> 94k
 function ideaMoved(x){const h=x.hist;if(!h||h.length<2)return '';const v=h.map(p=>p[1]),lo=Math.min(...v)-.5,hi=Math.max(...v)+.5,W=300,H=56,last=v[v.length-1],first=v[0];
  if(Math.max(...v)-Math.min(...v)<.05)return `<h2 style="margin:18px 0 6px">How the price has moved</h2><p class="m">It hasn't moved since it was found: ${Math.round(first)}¢ (cents paid for each $1 it pays).</p>`;
  const path=sparkPath(h,W,H-6,lo,hi);const col=last<=first?'var(--yes)':'var(--no)';
