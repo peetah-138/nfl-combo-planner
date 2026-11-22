@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The learned loss cut (smart sell, per league) gets the stop-loss switch's guards (issue #27): it can only sell at a
 # loss late in a game, on a fresh score, not at a break, after a big fall from the pregame chance that held 3+ checks
 # over 3+ minutes. Off until a league's own record turns it on (never borrowed). No real orders: every trading call

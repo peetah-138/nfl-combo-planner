@@ -1,3 +1,4 @@
+# CHECK: group=page secs=49
 """Makeover phase 2: live game cards on Games (singles and spreads included, score pulse + haptic, chance line, tap
 pushes the game page), scrubbing the game page's chance chart, the Sold moment (tap and smart sell; calm for a loss),
 the big-hit celebration, Results profit bars by day/week (scrub with haptic ticks, tap a bar for its bets), and the

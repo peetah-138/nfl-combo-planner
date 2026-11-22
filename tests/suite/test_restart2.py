@@ -1,3 +1,4 @@
+# CHECK: group=page secs=21
 import sys, os, time, threading, re, json
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
 sys.argv = ["combo_watcher.py", "--webapp"]

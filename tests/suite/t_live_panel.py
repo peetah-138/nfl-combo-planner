@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Games already under way in the daily panel (Pete's call): eligible when priced live from a fresh score (never the
 # pre-game price), the switch, buying with a fresh recheck, Kalshi refusals are skips, finished games never bought.
 import os, time, tempfile, importlib.util, json
@@ -10,6 +11,7 @@ E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
 E.fetch_account = lambda **k: ([], 300.0, None)
 E.account_events = lambda *a, **k: set()
 E.fetch_scores = lambda *a, **k: None                       # no network: the tests set the score cache themselves
+E.injury_note = lambda code, *teams, hours=48: ([], False)    # no injury news: never ESPN's real report (it changes by the hour)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 now = time.time()
 day = E.ticker_day("KXNBAGAME-" + time.strftime("%y%b%d", time.gmtime()).upper() + "BOSNYK") or _dt.date.today()

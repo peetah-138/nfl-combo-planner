@@ -1,9 +1,25 @@
 {
   "about": "The web app's files. combo_watcher.py joins them into SPA and LOGIN_HTML at import: the shell's @@SPA_CSS@@ line becomes the css files and its @@SPA_JS@@ line the js files, in this order. The Mac's updater downloads every file listed here (checked against GitHub's own file hashes) before it installs anything. Add a new file here, in the place it must load.",
   "shell": "index.html",
-  "css": ["app.css"],
+  "css": [
+    "app.css",
+    "game.css",
+    "settings.css",
+    "responsive.css",
+    "motion.css",
+    "games.css",
+    "chrome.css",
+    "build.css",
+    "results.css",
+    "ideas.css",
+    "stake.css",
+    "bestbets.css",
+    "refusals.css",
+    "scoreboard.css"
+  ],
   "js": [
     "common.js",
+    "stake.js",
     "live.js",
     "ideas.js",
     "build.js",

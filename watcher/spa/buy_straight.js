@@ -8,7 +8,7 @@ function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i>
 async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
  const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
  if(S.sb!==s)return;s.busy=false;
- if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';hap('error');sbPaint();return;}
+ if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';if(r&&r.bad_stake)s.stake=null;hap('error');sbPaint();return;}
  r.at=Date.now()/1000;s.q=r;s.stake=r.stake;hap(r.blocked||!r.clears?'warning':'success');sbPaint();
  clearInterval(S.sbT);S.sbT=setInterval(sbTick,1000);}
 function sbTick(){const s=S.sb,q=s&&s.q,box=$('#sbx');if(!q||!box||!$('#modal').classList.contains('on')){clearInterval(S.sbT);return;}
@@ -32,6 +32,8 @@ function sbPaint(){const s=S.sb,box=$('#sbx');if(!s||!box)return;
    ${Math.abs(q.sug-q.stake)>=.005?`<button class="chip" onclick="sbQuote(${q.sug})">Suggested $${(+q.sug).toFixed(2).replace(/\.00$/,'')}</button>`:'<span class="m" style="font-size:12px">suggested size</span>'}</div>
   <div class="sum">Contracts<b>${q.n} at ${Math.round(q.ask*100)}¢</b></div><div class="sum">You pay (with Kalshi's fee)<b>${m2(q.cost)}</b></div>
   <div class="sum">Pays if it wins<b class="up">${m2(q.pays)} <span class="m" style="font-weight:600">(${smoney(q.profit)})</span></b></div>
+  ${q.ev!=null?`<div class="sum" data-w="ev">Expected profit<b class="${q.ev>0?'up':q.ev<0?'down':''}">${smoney(q.ev)}</b></div>`:''}
+  ${q.sug>0&&q.stake/q.sug>=1.5?`<div class="stkw" data-w="big">${(q.stake/q.sug).toFixed(1).replace(/\.0$/,'')}× the suggested size: more risk for the same edge.</div>`:''}
   ${q.room!=null?`<div class="sum">Room under your cap<b>${m2(q.room)} of ${m2(q.budget)}</b></div>`:''}
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}

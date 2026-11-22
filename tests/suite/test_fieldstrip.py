@@ -1,3 +1,4 @@
+# CHECK: group=page secs=10
 """Slice 1 of the live game page (issue #72): the football field strip, situation line, last play and the
 enhanced scoreboard on the pushed game-detail page. Display only. The game answer (with its ESPN-derived
 `detail` block) is scripted; nothing real is touched. Phone (390x844) and desktop: no JS errors, no sideways
