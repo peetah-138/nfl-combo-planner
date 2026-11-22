@@ -1407,7 +1407,10 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   pushes the combo only when it is on Live (unknown, old or malformed = just Live). Tests: `t_cashnudge`,
   `t_push_target`, `test_cashnudge_ui`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
-  states currently on screen.
+  states currently on screen. **A known score decides a live leg's colour (GitHub #320, display only):** `legCls` (chips,
+  leg rings, legend, Games card, game page board) says ahead = green, behind = red, level = Tied (a 0-0 kickoff is never
+  red because the chance is under 50%); only a leg with no numeric score (a fight, a feed with no points) falls back to the
+  chance (≥ 60% green, ≤ 40% red). `pick_state` and every money path never read it. Test: `test_tiedleg.py`.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
   dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
 
