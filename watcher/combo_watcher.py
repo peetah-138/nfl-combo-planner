@@ -2491,6 +2491,18 @@ def webapp_main():
         except (OSError, ValueError, AttributeError):
             return True
     A.TRADING_PAUSED = paused_now                   # the engine's own buy paths (accept_offer) read it too
+
+    def backup_now():
+        """This device is the alerts-only backup (the Pi), read fresh; a settings file that can't be read counts as
+        the backup. Pete's own single-bet Sell skips Pause (#245) but never this."""
+        if A.role_backup():
+            return True
+        if not os.path.exists(CONF):
+            return False
+        try:
+            return is_backup(load_conf())
+        except (OSError, ValueError, AttributeError):
+            return True
     try:
         if is_backup(load_conf()):
             A.ROLE_BACKUP = True                    # a web app on the Pi never trades either
@@ -3515,10 +3527,14 @@ def webapp_main():
             if a == "sellquote":                        # Sell a single (issue #238): what it gets now, from a fresh book
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That bet isn't recognized."}
-                return jsonable(A.single_sell_quote(t, paused=paused_now()))
+                if backup_now():                        # the Pi never trades (Pause no longer stops this tap: #245)
+                    return {"ok": False, "msg": A.NO_SELL_MSG}
+                return jsonable(A.single_sell_quote(t, paused=paused_now()))   # Pause only adds the calm note
             if a == "singlesell":                       # Pete's second tap on the sell sheet: the quote on screen, once
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q") or "")):
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
+                    return {"ok": False, "msg": A.NO_SELL_MSG}
                 with tap_mark():                        # an update never restarts the web app mid-order
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0

@@ -15430,7 +15430,7 @@ def _single_send(q, qid, now, log):
 # fill-now-or-cancel, reduce-only order at the quoted bid or better), after Pause, trading access and the market's
 # unknown-outcome block are checked again and the book is re-read (a lower bid is refused, nothing sent). An unclear
 # answer is "check": the market is blocked (the order adapter marks the ledger) and the sale is never resent (rule 8).
-SELL_PAUSE_MSG = "Paused from an alert, so nothing is sold. To resume, save Settings with Auto cash-out on."
+SELL_PAUSED_NOTE = "Pause is on. This is your own sale, so it still works."   # #245: Pause never blocks Pete's own Sell
 NO_SELL_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be sold."
 SELL_UNSURE_MSG = ("An earlier order on this market had no clear answer, so the app won't send another for now. "
                    "Check Kalshi; you can lift the block in Settings › Money.")
@@ -15462,15 +15462,14 @@ def _sell_side_book(book, side):
 def single_sell_quote(t, paused=False, now=None):
     """What selling one held single (or spread/total) would get right now, for the sell sheet and Live's "Get new
     price": Kalshi's bid for your side read now, the gap, how many contracts the bid takes, Kalshi's fee, what comes
-    back, profit vs what you paid, holding's chance, warnings, and a quote id good for 20 seconds. Never sells."""
+    back, profit vs what you paid, holding's chance, warnings, and a quote id good for 20 seconds. Never sells.
+    Pause does not block it (Pete, #245: his own tap closing a bet he holds); `paused` only adds the sheet's calm note."""
     import secrets
     now = now or time.time()
     t = str(t or "")
     if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or is_combo(t):
         return {"ok": False, "msg": "That bet isn't recognized."}
-    if paused:                                          # Pause first: nothing is read or quoted
-        return {"ok": False, "paused": True, "blocked": SELL_PAUSE_MSG, "msg": SELL_PAUSE_MSG}
-    if not can_trade():
+    if not can_trade():                                 # the Pi / no trading key: never a sale (Pause doesn't matter)
         return {"ok": False, "msg": NO_SELL_MSG}
     try:
         x = _held_single(t)
@@ -15521,6 +15520,7 @@ def single_sell_quote(t, paused=False, now=None):
     elif n < 1:
         blocked = ("You hold under one whole contract, which can't be sold here." if have < 1 else
                    "Kalshi's buyers want under one contract at that price right now.")
+    pz = _paused_now(paused)                            # display only: the sheet's calm "still works" line
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -15533,7 +15533,7 @@ def single_sell_quote(t, paused=False, now=None):
             "fee": round(n * fee, 2), "got": got, "cost": cost, "profit": round(got - cost, 2),
             "chance": ch, "pays": round(n, 2), "worth": round(have * bid, 2), "thin": thin,
             "clears": not thin and not blocked, "blocked": blocked, "warn": warn, "secs": SINGLE_QUOTE_SECS,
-            "self": bool(x.get("self"))}
+            "self": bool(x.get("self")), "paused": pz, "paused_note": SELL_PAUSED_NOTE if pz else None}
 
 
 def _paused_now(paused):
@@ -15546,7 +15546,8 @@ def _paused_now(paused):
 
 def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
     """Sell a quoted single (Pete's second tap on the sell sheet). One order per quote, ever: the quote must be the one
-    on screen, under 20 seconds old and unused; Pause, trading access and the unknown-outcome block are checked again;
+    on screen, under 20 seconds old and unused; trading access and the unknown-outcome block are checked again (Pause
+    is not: Pete's decision on #245, his own sale of a bet he holds works while paused; `paused` is only logged);
     a thin market needs Sell anyway; the book is re-read and a lower bid is refused (nothing sent). Then one
     fill-now-or-cancel, reduce-only sale at the quoted price or better. {"ok", "msg", "sold", "got", "cost"} or
     {"ok": False, "check": True} when Kalshi's answer was unclear (never resent; the market is blocked for 2 hours)."""
@@ -15560,8 +15561,6 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
             return {"ok": False, "msg": "This price was already used for a sale. Check Live before selling again."}
         if now - q["at"] > SINGLE_QUOTE_SECS:
             return {"ok": False, "expired": True, "msg": "That price is more than 20 seconds old. Get a fresh one."}
-        if _paused_now(paused):
-            return {"ok": False, "paused": True, "msg": SELL_PAUSE_MSG}
         if not trade_ok:
             return {"ok": False, "msg": NO_SELL_MSG}
         if q["blocked"]:
@@ -15580,10 +15579,9 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if order_unsure(t):
             return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. "
                                         "Check Kalshi."}
-        if _paused_now(paused):                       # Pause read again after the book re-read (it can take seconds)
-            return {"ok": False, "paused": True, "msg": SELL_PAUSE_MSG}
         coid = f"cw-ss-{qid}"
-        log(f"manual single sale: selling {n} of {t} ({side}) at {px:.2f}+ (IOC, reduce-only, quote {qid})")
+        log(f"manual single sale: selling {n} of {t} ({side}) at {px:.2f}+ (IOC, reduce-only, quote {qid})"
+            + (" while Pause is on (your own tap, #245)" if _paused_now(paused) else ""))
         try:
             sold, err = sell_single_now(t, side, n, px, coid=coid)
         except Exception as err2:                       # anything unexpected after the send: it may have gone through

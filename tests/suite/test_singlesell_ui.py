@@ -1,7 +1,7 @@
 # CHECK: group=page secs=30
 """Sell a single bet by Pete's tap (issue #238): Live's single cards show "Get new price" and "Sell"; the price refresh
 updates the card's Worth now; Sell opens a sheet (what comes back after the fee, profit, holding's chance, warnings),
-needs two taps, then shows the Sold moment; a thin market says Sell anyway; an unclear answer says Check Kalshi. The
+needs two taps, then shows the Sold moment; a thin market says Sell anyway; an unclear answer says Check Kalshi; while paused the sheet says the sale still works (#245). The
 web app's answers are scripted at the page's request layer (nothing is priced or sold). Phone (390x844, touch, dark)
 and desktop. Saves screenshots (SHOTS dir, if set). Prints PROBLEMS on any failure."""
 import sys, os, time, threading, json
@@ -144,7 +144,29 @@ with sync_playwright() as pw:
         if "dropped" not in pg.evaluate("(document.querySelector('#ssx')||{}).innerText||''") or "fresh price" not in pg.evaluate("document.querySelector('#sssell').innerText"):
             bad(f"{tag}: a refused sale must show why and offer a fresh price")
         pg.evaluate("closeModal()"); time.sleep(.4)
+        # Pause on (#245): Pete's own sale still works; the sheet says so calmly (no warning, a green Sell)
+        NOTE = "Pause is on. This is your own sale, so it still works."
+        NEXT["quote"] = Q(paused=True, paused_note=NOTE)
         NEXT["sell"] = {"ok": True, "sold": 16, "price": .95, "got": 15.13, "cost": 9.6, "pick": "Over 157.5 points", "msg": "✅ Sold"}
+        ACTS.clear()
+        pg.evaluate(put); wait(pg, "document.querySelectorAll('.srow1').length===3", 8)
+        pg.locator(f"[data-sss='{T0}']").click(); wait(pg, "!!document.querySelector('#ssx #sssell')", 8)
+        pn = pg.evaluate("(document.querySelector(\"#ssx [data-w='paused']\")||{}).innerText||''")
+        pcls = pg.evaluate("document.querySelector('#sssell').className")
+        pbg = pg.evaluate("(e=>e?getComputedStyle(e).backgroundColor:'')(document.querySelector(\"#ssx [data-w='paused']\"))")
+        wbg = pg.evaluate("(()=>{const d=document.createElement('div');d.className='sbw';document.querySelector('#ssx').appendChild(d);const c=getComputedStyle(d).backgroundColor;d.remove();return c})()")
+        print(tag, "paused note:", repr(pn), "| button:", pcls, "| bg:", pbg, "vs warning", wbg)
+        if NOTE not in pn or "yes" not in pcls or pg.locator("#ssx [data-w='blocked']").count():
+            bad(f"{tag}: while paused the sheet must show the calm note and a green Sell ({pn!r}, {pcls})")
+        if not pbg or pbg == wbg:
+            bad(f"{tag}: the paused note must not look like a warning ({pbg} vs {wbg})")
+        time.sleep(.8); shot(pg, f"single_sell_paused_{tag}.png")
+        pg.locator("#sssell").click(); pg.locator("#sssell").click()
+        wait(pg, "/Got back/i.test((document.querySelector('#sheet .okcard.sold')||{}).innerText||'')", 8)
+        if len([a for a in ACTS if a.get("a") == "singlesell"]) != 1:
+            bad(f"{tag}: while paused the sale must still send once")
+        pg.evaluate("closeModal()"); time.sleep(.4)
+        NEXT["quote"] = Q()
         ow = pg.evaluate("document.documentElement.scrollWidth>innerWidth+1")
         if ow:
             bad(f"{tag}: the page scrolls sideways")

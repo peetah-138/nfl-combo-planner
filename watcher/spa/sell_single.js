@@ -2,8 +2,9 @@
    "Your bets on this game") get "Get new price" (Kalshi's order book read now: the card's Worth now and what selling
    gets after the fee) and "Sell", which opens a sheet with a 20-second quote. The sale needs two taps (the first arms
    the button for 4 s); the Mac re-reads the book, refuses a lower bid, and sends one fill-now-or-cancel, reduce-only
-   sale at the quoted price or better. Pause, the unknown-outcome block and rule 8 are checked on the Mac; an unclear
-   answer is "Check Kalshi" and is never resent. Nothing here sells by itself. */
+   sale at the quoted price or better. The unknown-outcome block and rule 8 are checked on the Mac; an unclear
+   answer is "Check Kalshi" and is never resent. Pause doesn't stop this tap (Pete, #245: it's his own sale of a bet
+   he holds); the sheet says so calmly. Nothing here sells by itself. */
 S.sellq=S.sellq||{};
 function ssAge(at){const s=Math.max(0,Math.round(Date.now()/1000-at));return s<5?'just now':s<60?s+'s ago':Math.round(s/60)+' min ago';}
 function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';const p=S.sellq[x.t],busy=S.ssBusy&&S.ssBusy[x.t];
@@ -44,6 +45,7 @@ function ssPaint(){const s=S.ss,box=$('#ssx');if(!s||!box)return;
   <div class="sum">Contracts<b>${q.n}${q.n<Math.floor(q.have)?' of '+Math.floor(q.have):''} at ${Math.round(q.px*100)}¢ or better</b></div>
   <div class="sum">You paid<b>${m2(q.cost)}</b></div>
   ${q.chance!=null?`<div class="sum">If you hold<b>${pct(q.chance)} chance of ${m2(q.pays)}</b></div>`:''}
+  ${q.paused?`<div class="sbw sbcalm" data-w="paused"><i>⏸</i><span>${esc(q.paused_note||'Pause is on. This is your own sale, so it still works.')}</span></div>`:''}
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
   ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}
