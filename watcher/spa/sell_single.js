@@ -45,7 +45,7 @@ function ssPaint(){const s=S.ss,box=$('#ssx');if(!s||!box)return;
   <div class="sum">Contracts<b>${q.n}${q.n<Math.floor(q.have)?' of '+Math.floor(q.have):''} at ${Math.round(q.px*100)}¢ or better</b></div>
   <div class="sum">You paid<b>${m2(q.cost)}</b></div>
   ${q.chance!=null?`<div class="sum">If you hold<b>${pct(q.chance)} chance of ${m2(q.pays)}</b></div>`:''}
-  ${q.paused?`<div class="sbw sbcalm" data-w="paused"><i>⏸</i><span>${esc(q.paused_note||'Pause is on. This is your own sale, so it still works.')}</span></div>`:''}
+  ${q.paused&&!q.blocked?`<div class="sbw sbcalm" data-w="paused"><i>⏸</i><span>${esc(q.paused_note||'Pause is on. This is your own sale, so it still works.')}</span></div>`:''}
   ${(q.warn||[]).map(w=>`<div class="sbw" data-w="${esc(w.k)}"><i>⚠️</i><span>${esc(w.t)}</span></div>`).join('')}
   ${q.blocked?`<div class="sbw sbx" data-w="blocked"><i>✕</i><span>${esc(q.blocked)}</span></div>`:''}
   ${s.fail?`<div class="sbw sbx" data-w="failed"><i>✕</i><span>${esc(s.fail)}</span></div>`:''}

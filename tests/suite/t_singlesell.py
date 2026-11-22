@@ -173,8 +173,14 @@ ok("Pause on + a quote over 20 s old: expired", not r["ok"] and r.get("expired")
 
 # ---- (3b) everything else still stops under Pause: every buy and every automatic sale
 reset()
-ok("Buy straight: no quote while paused", not E.single_buy_quote({"t": T}, 5, paused=True)["ok"] and not D["sent"])
-ok("Buy straight: the buy itself refuses while paused", not E.single_buy("0" * 16, T, paused=True)["ok"] and not D["sent"])
+r = E.single_buy_quote({"ticker": T}, 5, paused=True)
+ok("Buy straight: no quote while paused (the Pause refusal itself)", not r["ok"] and r.get("paused")
+   and r["msg"] == E.PAUSE_MSG and not READS and not D["sent"])
+with E._SQ["lock"]:                                  # a live, unused buy quote, as the sheet would hold
+    E._SQ["q"]["abcdef0123456789"] = {"t": T, "used": False, "at": time.time(), "blocked": None, "thin": False}
+r = E.single_buy("abcdef0123456789", T, paused=True)
+ok("Buy straight: the buy itself refuses while paused (a live quote, nothing sent)", not r["ok"]
+   and "Paused" in r["msg"] and not D["sent"])
 r = E.idea_single_buy(T, 3, 0.50, paused=True, log=LOG.append, key="i1")
 ok("Live idea single buy: refused while paused, nothing sent", not r["ok"] and r["msg"] == E.PAUSE_MSG and not D["sent"])
 E.CTX.setdefault("offers", {})[901] = {"rfq": "rfq-x", "pays": 10, "stake": 5}
@@ -270,7 +276,7 @@ i = WSRC.index('if a == "singlesell":')
 ok("the act passes Pause as a callable read fresh (paused_now) and marks the tap busy", "paused=paused_now," in WSRC[i:i + 900]
    and "tap_mark()" in WSRC[i:i + 900] and WSRC.rindex("with act_lock():", 0, i) > WSRC.index("def _api_act"))
 ok("both sell acts refuse on the Pi (backup_now, read fresh) before anything else",
-   WSRC.count("if backup_now():") == 2 and WSRC.index("if backup_now():", WSRC.index('if a == "sellquote":')) < i + 300
+   WSRC.count("if backup_now():") == 2 and "if backup_now():" in WSRC[WSRC.index('if a == "sellquote":'):i]
    and "if backup_now():" in WSRC[i:i + 400])
 ok("Sell anyway only on an explicit true", 'd.get("anyway") is True' in WSRC[i:i + 900])
 ok("singlesell is a money tap for the proxy ('may or may not' on a timeout)",

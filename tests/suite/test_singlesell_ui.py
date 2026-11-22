@@ -166,6 +166,12 @@ with sync_playwright() as pw:
         if len([a for a in ACTS if a.get("a") == "singlesell"]) != 1:
             bad(f"{tag}: while paused the sale must still send once")
         pg.evaluate("closeModal()"); time.sleep(.4)
+        NEXT["quote"] = Q(paused=True, paused_note=NOTE, blocked="An earlier order on this market had no clear answer.", clears=False)
+        pg.evaluate(put); wait(pg, "document.querySelectorAll('.srow1').length===3", 8)
+        pg.locator(f"[data-sss='{T0}']").click(); wait(pg, "!!document.querySelector('#ssx #sssell')", 8)
+        if pg.locator("#ssx [data-w='paused']").count() or not pg.locator("#ssx [data-w='blocked']").count():
+            bad(f"{tag}: a blocked sale must not say it still works while paused")
+        pg.evaluate("closeModal()"); time.sleep(.4)
         NEXT["quote"] = Q()
         ow = pg.evaluate("document.documentElement.scrollWidth>innerWidth+1")
         if ow:

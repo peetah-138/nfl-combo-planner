@@ -15427,8 +15427,8 @@ def _single_send(q, qid, now, log):
 # ---- Sell a single bet, spread or total by Pete's own tap (issue #238). Smart sell already sells singles by itself
 # (smart_sell_singles); this is the manual Sell button on Live's single cards and the game page. Nothing here sells by
 # itself: a quote reads Kalshi's order book now and is good for 20 seconds; the sale sends that quote once (one
-# fill-now-or-cancel, reduce-only order at the quoted bid or better), after Pause, trading access and the market's
-# unknown-outcome block are checked again and the book is re-read (a lower bid is refused, nothing sent). An unclear
+# fill-now-or-cancel, reduce-only order at the quoted bid or better), after trading access and the market's
+# unknown-outcome block are checked again (not Pause: Pete's own sale works while paused, #245) and the book is re-read (a lower bid is refused, nothing sent). An unclear
 # answer is "check": the market is blocked (the order adapter marks the ledger) and the sale is never resent (rule 8).
 SELL_PAUSED_NOTE = "Pause is on. This is your own sale, so it still works."   # #245: Pause never blocks Pete's own Sell
 NO_SELL_MSG = "This device can't trade on Kalshi (no Kalshi key with trading access), so nothing can be sold."
