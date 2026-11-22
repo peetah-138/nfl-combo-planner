@@ -27,7 +27,7 @@ WATCHER_VERSION = "2026.11.21.133"
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
-          "line_model", "panel_rank_dollars", "idea_bar_strict")
+          "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
 
 
 def log(*a):
@@ -3219,7 +3219,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3265,6 +3265,11 @@ def webapp_main():
                     if k in ("killer_mode", "maker_mode"):
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
+                        continue
+                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                        if v in A.SL_MODES:             # for older copies (on only for 'Allow (guarded)')
+                            A.CFG[k] = v
+                            A.CFG["stop_loss"] = v == "allow"
                         continue
                     try:
                         v = bool(v) if isinstance(cur, bool) else int(round(float(v))) if isinstance(cur, int) \

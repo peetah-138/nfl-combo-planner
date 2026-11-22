@@ -139,7 +139,7 @@ with sync_playwright() as pw:
         pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         txt = pg.locator(".an .ksp").inner_text()
         for want in ("Self-tuning is on", "Changed", "Profit floor: 1.5× what you paid → 1.6× what you paid",
-                     "the newest 30% agree", "Tested, not live yet", "Where it stands now", "Tuning itself: 13 of smart sell"):
+                     "the newest 30% agree", "Tested, not live yet", "Where it stands now", "Tuning itself: %d of its selling, loss and hedge numbers" % sum(1 for n in A.KNOB_LIVE if n in A.KNOB_JUDGED)):
             if want not in txt: P.append(tag + ": live NBA missing %r" % want)
         if "nothing changes yet" in txt: P.append(tag + ": live card still says nothing changes")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): P.append(tag + ": the live card scrolls sideways")

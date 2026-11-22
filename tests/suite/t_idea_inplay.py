@@ -120,7 +120,7 @@ ok("combo: a leg under way the board priced live (screen_live: Kalshi's mid) is 
 ok("combo: nothing under way = nothing named", E.idea_combo_live_gap([dict(pre_side)]) == [])
 
 # ---- the web app's idea quote uses it (the Build board's side is no longer the fair chance on its own)
-W = open("wahome/combo_watcher.py", encoding="utf-8").read()
+W = open("wtest/combo_watcher.py", encoding="utf-8").read()   # the watcher is in wtest/, the engine in wahome/
 blk = W[W.index('if a == "idea":'):W.index('if a == "singlequote":')]
 ok("the idea quote prices through idea_single_fair (live: live_side_fair only)", "A.idea_single_fair(tk, side" in blk
    and '(side or {}).get("fair") or row.get("pfair")' not in blk)
