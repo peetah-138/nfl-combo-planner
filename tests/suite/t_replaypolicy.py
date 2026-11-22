@@ -12,6 +12,7 @@ E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtem
 E.DISCOUNT_FILE = os.path.join(E.HERE, "disc.json"); E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
 E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+E.CFG["knobs_live"] = False; E.KNOB_SWITCH["on"] = None   # the weekly tuner as it runs with self-tuning off (#228 PR3)
 
 ns = dict(vars(E))                                   # the old replay sees the engine's own helpers and constants
 exec(open("fixtures/replay_old.py.txt").read(), ns)

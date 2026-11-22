@@ -22,6 +22,7 @@ t0 = time.time()
 while "A" not in ENG and time.time() - t0 < 30:
     time.sleep(.1)
 A = ENG["A"]
+A.CFG["knobs_live"] = False; A.KNOB_SWITCH["on"] = False; A.KNOB_SWITCH["at"] = 1e18   # PR1's card: self-tuning off
 tmp = tempfile.mkdtemp()
 A.SMART_FILE = os.path.join(tmp, "smart.json"); A.SMART_CACHE["at"] = 0
 A.SB_DIAL_FILE = os.path.join(tmp, "sb.json"); A.SB_GATE["dial"] = None
@@ -30,6 +31,10 @@ json.dump({"nba": {"n": 45, "floor": 1.7, "lam": 1.15, "loss": 0.2, "sl_n": 60, 
            "epl": {"n": 4}, "all": {"n": 300, "floor": 1.4, "lam": 1.0, "loss": None}}, open(A.SMART_FILE, "w"))
 json.dump({"all": {"n": 40, "level": 2}}, open(A.SB_DIAL_FILE, "w"))
 KV = A.knob_view()
+A.KNOB_SWITCH["on"] = True
+KV_LIVE = A.knob_view()                              # PR3: the same card with self-tuning on
+A.KNOB_SWITCH["on"] = False
+assert KV["live"] is False and KV_LIVE["live"] is True
 AN = {"at": time.time() - 60, "levels": [], "types": [], "sports": [], "live": [], "exits": [], "auto": {}, "cut_held": {},
       "hedge_held": {}, "tuning": [], "notes": [], "knobs": KV}
 from playwright.sync_api import sync_playwright
@@ -65,7 +70,7 @@ with sync_playwright() as pw:
         for want in ("Taking a profit", "Selling at a loss", "Hedging", "Smart Buy", "The bar a change must clear",
                      "Never moves by itself", "Profit floor", "Least chance to take a profit", "Pause stops every order",
                      "The Pi never trades", "Starts at 50% · range 35% to 65% · fixed for now",
-                     "Most on one hedge", "Your switches always win", "range $25 to $150", "None of that is switched on yet"):
+                     "Most on one hedge", "Your switches always win", "range $25 to $150", "so none of that is switched on"):
             if want not in txt: P.append(tag + ": missing %r" % want)
         def floor_row():
             return pg.locator('.an .knp .knr[data-k="smart_floor"]').inner_text()
@@ -92,6 +97,13 @@ with sync_playwright() as pw:
         pg.locator(".an .knp").screenshot(path=os.path.join(os.environ.get("SHOT_DIR", "."), "knobs_%s.png" % tag))
         hd.click(); wait(pg, "!document.querySelector('.an .knp .knr')", 5)
         if pg.locator(".an .knp .knr").count(): P.append(tag + ": folding it again didn't close it")
+        # PR3: self-tuning on: the card says so, the exit numbers show per league, a borrowed floor only stricter
+        html = pg.evaluate("v=>{const o=S.knOpen,l=S.knLg;S.knOpen=true;S.knLg='epl';const h=knobCard(v);S.knOpen=o;S.knLg=l;return h}", KV_LIVE)
+        for want in ("Self-tuning is on", "the newest 30% agree", "never looser than its start", "still a test"):
+            if want not in html: P.append(tag + ": live registry card missing %r" % want)
+        if "none of that is switched on" in html: P.append(tag + ": live registry card still says it is off")
+        if 'data-k="exit_q_min"' not in html or "fixed for now" in html.split('data-k="exit_q_min"')[1].split('class="knr')[0]:
+            P.append(tag + ": with self-tuning on the least chance should show per league, not 'fixed for now'")
         if errs: P.append(tag + ": JS errors %r" % errs[:3])
         pg.close()
     br.close()

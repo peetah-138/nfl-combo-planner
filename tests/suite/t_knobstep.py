@@ -17,6 +17,7 @@ E.SB_DIAL_FILE = os.path.join(E.HERE, "sb.json"); E.SB_GATE["dial"] = None
 E.DISCOUNT_FILE = os.path.join(E.HERE, "disc.json")
 E.KNOBS_FILE = os.path.join(E.HERE, "knobs.json")
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+E.CFG["knobs_live"] = False; E.KNOB_SWITCH["on"] = None   # PR2's shadow world: self-tuning off (t_knoblive.py has it on)
 now = time.time()
 EV = E.KNOB_EVIDENCE
 
@@ -26,7 +27,8 @@ def ds_of(gains, n=60, kick0=now - 40 * 86400):
     return [(kick0 + i * 86400 / 2, gains.get(i, 0.0), 5.0) for i in range(n)]
 good = {i: (0.9 if i % 3 else 0.6) for i in range(0, 60, 4)}              # 15 bets, spread over old and new
 ev = E.knob_evidence(ds_of(good), 300.0, 0)
-ok("a clear, broad gain clears the bar", ev["ok"] and ev["band"] == 15 and ev["share"] >= 0.02 and ev["t"] >= 2)
+ok("a clear, broad gain clears the bar (judged on the older 70%: 11 of its 15 bets)", ev["ok"] and ev["band"] == 11
+   and ev["share"] >= 0.02 and ev["t"] >= 2 and ev["hold_n"] == 4)
 ev = E.knob_evidence(ds_of({i: 0.9 for i in range(0, 36, 4)}), 300.0, 0)  # 9 bets in the band
 ok("9 bets in the band: below the bar (needs 10)", not ev["ok"] and not ev["checks"]["band"])
 ev = E.knob_evidence(ds_of({i: 0.3 for i in range(0, 60, 4)}), 300.0, 0)   # 15 x 0.3 = 4.5 = 1.5% of 300
@@ -80,14 +82,14 @@ ok("a borrowed risk weight is never over the start (1.0: higher sells sooner)", 
    and E.knob_stricter("smart_lam", 0.85) == 0.85)
 ok("the loss cut is never borrowed", E.knob_stricter("smart_loss", 0.25) is None)
 ok("the loss guards borrow only stricter", E.knob_stricter("sl_prog", 0.4) == 0.5 and E.knob_stricter("sl_drop", 0.3) == 0.3)
-st = {"groups": {"nba": {"v": {"smart_floor": 1.3}}, "soccer": {"v": {"smart_floor": 1.3, "smart_lam": 1.3, "smart_loss": 0.2}},
-                 "all": {"v": {"sb_dial": 2}}}, "brake": {}, "settings": {}}
+st = {"groups": {"nba": {"lv": {"smart_floor": 1.3}}, "soccer": {"lv": {"smart_floor": 1.3, "smart_lam": 1.3, "smart_loss": 0.2}},
+                 "all": {"v": {"sb_dial": 2}}}, "brake": {}, "settings": {}}   # exit knobs: the live record (PR3)
 ok("own value used as is (even looser than the start)", E.knob("smart_floor", "nba", st, now) == 1.3)
 ok("a soccer league borrows soccer's, only stricter", E.knob("smart_floor", "epl", st, now) == 1.5
    and E.knob("smart_lam", "epl", st, now) == 1.0 and E.knob("smart_loss", "epl", st, now) is None)
 ok("nothing recorded: the start", E.knob("smart_floor", "nhl", st, now) == 1.5 and E.knob("exit_q_min", "nhl", st, now) == 0.5)
 ok("borrowed from everyone, never under the start", E.knob("sb_dial", "nhl", st, now) == 2)
-st["brake"]["nba"] = {"at": now - 60, "until": now + 86400}
+st["brake"]["nba"] = {"at": now - 60, "until": now + 86400, "mode": "live"}
 ok("a braked league is back at its start", E.knob("smart_floor", "nba", st, now) == 1.5)
 ok("an invariant is its live value", E.knob("cap_read_age", "nba", st, now) == E.CAP_READ_AGE)
 
@@ -153,7 +155,7 @@ ok("only the knobs with a judge are judged", stepped <= set(E.KNOB_JUDGED))
 st_of = {r["knob"]: r["status"] for r in nba["last"]}
 ok("shared knobs are blocked, tied ones move only through their partner, the rest wait for their test",
    st_of.get("live_spread") == "shared" and st_of.get("cash_slip") == "shared" and st_of.get("sb_ev_min") == "shared"
-   and st_of.get("sl_checks") == "shared" and st_of.get("swing_base") == "tied" and st_of.get("exit_q_min") == "waits")
+   and st_of.get("sl_checks") == "shared" and st_of.get("swing_base") == "tied" and st_of.get("exit_est_smart") == "waits" and st_of.get("exit_q_min") != "waits")
 nhl = S["groups"].get("nhl") or {}
 ok("a thin history (12 bets) does nothing", not any(r.get("status") in ("would step", "qualifies") for r in nhl.get("last", []))
    and {r["status"] for r in nhl["last"] if r["knob"] == "smart_floor"} == {"thin"} and "smart_floor" not in (nhl.get("v") or {}))
@@ -171,7 +173,8 @@ ok("Pete's own caps are recorded apart (#260)", S["settings"]["hedge_cap"] == {"
 ok("weekly: a second call does nothing", E.knob_tune(now + 3600) == [] and S["_next"] >= now + E.KNOB_TUNE_EVERY - 1)
 said2 = E.knob_tune(now + 2 * 86400, force=True)
 nba2 = E.knob_state()["groups"]["nba"]
-ok("the next step waits for 20 new results since the last", nba2["v"]["smart_floor"] == 1.8
+ok("the next step waits for 20 new results since the last (judged only on games after it, #264), and the test starts "
+   "again from the live value (#267)", nba2["v"]["smart_floor"] == 1.7
    and not any(r.get("status") == "would step" for r in nba2["last"]))
 # ties: two equal gains, smallest change wins; then the registry's order
 def tie_judge(jd, rows, cur_, name, to, cache=None, **kw):
@@ -234,9 +237,13 @@ os.remove(E.KNOBS_FILE)
 E.knob_judge = judge
 E.knob_tune(now, force=True)                                   # nba's shadow floor now 1.8 (off its start)
 E._ledger_table()
-def sale(ts, t, offer, cost, by="mac", kind="combo"):
-    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by) values(?,?,?,?,?,?,?,?,?)",
-              (ts, t, "sold", kind, offer, cost, 20.0, 1.0, by))
+def sale(ts, t, offer, cost, by="mac", kind="combo", held="cost"):
+    """A sold bet; holding paid `held` (default: what it cost, so a sale under cost did worse than holding: a loss under
+    Pete's #266 rule); None = no result yet."""
+    held = cost if held == "cost" else held
+    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by, outcome, held) "
+              "values(?,?,?,?,?,?,?,?,?,?,?)", (ts, t, "sold", kind, offer, cost, 20.0, 1.0, by,
+                                              None if held is None else "won", held))
 E._combo_league_of = lambda t: "nba" if "NBA" in t else "nhl"
 for i in range(3):
     sale(now - 3000 + i, "KXMVENBA-%d" % i, 3.0, 5.0)
