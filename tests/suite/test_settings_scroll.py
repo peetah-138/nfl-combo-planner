@@ -108,11 +108,16 @@ with sync_playwright() as pw:
         bb = pg.locator(f"#s-{k} .sfold").bounding_box()
         pg.touchscreen.tap(bb["x"] + 40, bb["y"] + bb["height"] / 2); time.sleep(.6)
         if pg.evaluate(f"document.getElementById('s-{k}').classList.contains('shut')"): bad(f"{tag}: a tap on a folded section's header didn't open it")
-        pg.evaluate("window.scrollTo(0,0)"); frames(pg); bb = pg.locator(".smac").bounding_box()
-        pg.touchscreen.tap(bb["x"] + 40, bb["y"] + bb["height"] / 2); time.sleep(1.2)
-        # (it jumps with a smooth scroll; Chromium's touch emulation stops that partway down, on the old code too, so this
-        # asserts the jump started towards The Mac and opened it, not where the smooth scroll ends)
-        if pg.evaluate("scrollY<300||document.getElementById('s-mac').classList.contains('shut')"): bad(f"{tag}: a tap on the Mac line didn't jump to The Mac")
+        # the Mac line: its tap reaches sJump('mac') (counted), which opens The Mac and starts a smooth scroll towards it.
+        # Where that smooth scroll ends isn't asserted: Chromium's touch emulation stops it partway (the old code too), and
+        # the header tucking back in after scrollTo(0,0) moves the line, so the tap waits for the page to settle first.
+        pg.evaluate("window.scrollTo(0,0)"); time.sleep(.5); frames(pg)
+        pg.wait_for_function("document.getAnimations().every(a=>a.playState!=='running'||!isFinite(a.effect.getComputedTiming().endTime))", timeout=10000)
+        pg.evaluate("(()=>{window.__mj=[];const o=sJump;window.sJump=function(i){__mj.push(i);return o(i);};})()")
+        bb = pg.locator(".smac").bounding_box()
+        pg.touchscreen.tap(bb["x"] + 40, bb["y"] + bb["height"] / 2)
+        try: pg.wait_for_function("__mj.includes('mac')&&scrollY>100&&!document.getElementById('s-mac').classList.contains('shut')", timeout=5000)
+        except Exception: bad(f"{tag}: a tap on the Mac line didn't jump to The Mac: " + str(pg.evaluate("[__mj,scrollY]")))
         sm = pg.evaluate("(()=>{const c=[...document.querySelectorAll('main .seg button,main .stp button,main .sact .btn,main #sleagues .chip')].filter(e=>e.offsetWidth);return {n:c.length,sw:c.filter(e=>e.querySelector(':scope>.hsw')).length};})()")
         print(tag, "small controls with a switch:", sm)
         if sm["n"] < 5 or sm["sw"] != sm["n"]: bad(f"{tag}: small Settings controls lost their switches: {sm}")
