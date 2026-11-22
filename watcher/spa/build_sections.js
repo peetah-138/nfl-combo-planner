@@ -9,13 +9,29 @@ function makerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac place stan
  S.set.maker.mode=m;setv('maker_mode',m);renderSettings();toast(m==='on'?'Standing orders: on. They appear on Live.':m==='watch'?'Standing orders: watch only.':'Standing orders off. Any open ones are cancelled on the next pass.',5000);}
 function ordersCard(d){const os=d.orders||[];if(!os.length)return '';
  return `<div class="card"><h3>Standing orders <span>${os[0].mode==='on'?'on Kalshi':'watching'}</span></h3>${os.map(x=>`<div class="moment"><span class="k">${x.mode==='on'?'📌':'👀'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">${x.n} at ${Math.round(x.price*100)}¢ · fair ${pct(x.fair)}</span></span><time>${ago2(x.ts)}</time></div>`).join('')}</div>`;}
-function dayBar(d){const v=d.days;if(!v)return '';const b=(on,lab,js)=>`<button class="${on?'on':''}" onclick="${js}">${lab}</button>`;
- if(v.mode==='day')return `<div class="seg daybar">${b(!v.next_day,'Today',"setDays({next_day:false})")}${b(v.next_day,'Tomorrow',"setDays({next_day:true})")}</div>`;
- if(v.mode==='mix')return `<div class="seg daybar">${v.windows.map((w,i)=>b(v.mix_window===i,esc(w),`setDays({mix_window:${i}})`)).join('')}</div>`;
- return `<div class="seg daybar">${b(v.thursday,v.wed?'+ Wed & Thu':'+ Thursday',`setDays({thursday:${!v.thursday}})`)}${b(true,'Sunday','')}${b(v.saturday,'+ Saturday',`setDays({saturday:${!v.saturday}})`)}${b(v.monday,'+ Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
-async function setDays(vals){hap();Object.assign(S.build.days,vals);renderBuild();
- const r=await api('/app/api/settings',{lg:S.lg,values:vals}).catch(()=>({ok:false}));if(!r.ok){toast('Couldn\'t change the days.');return;}
- S.build=null;renderBuild();load('build',true);}
+/* The dates combos are built over (#248; it used to live in Settings > Games & picks). The same saved per-league settings as
+   before (next_day, thursday, saturday, monday, mix_window), read from Build's own `days` and saved through the same settings
+   call, so the Mac and every device share them. Display and placement only: nothing here buys, sizes or changes a cap. */
+function dayRange(d){const v=d.days;if(!v)return '';
+ const seg=(on,lab,js)=>`<button type="button" class="${on?'on':''}" aria-pressed="${!!on}" onclick="${js}">${lab}</button>`;
+ const two=(k,on)=>`<div class="seg daybar">${seg(!on,'Today',`setDays({${k}:false})`)}${seg(on,'Tomorrow',`setDays({${k}:true})`)}</div>`;
+ let title='Games to build over',sub='',body='';
+ if(v.mode==='day'){sub=`Combos and the board use ${v.next_day?'tomorrow\'s':'today\'s'} ${esc(d.name)} games.`;body=two('next_day',!!v.next_day);}
+ else if(v.mode==='mix'){title='Games from';sub='Which games Mixed sports can combine.';
+  body=`<div class="seg daybar">${v.windows.map((w,i)=>seg(v.mix_window===i,esc(w),`setDays({mix_window:${i}})`)).join('')}</div>`
+   +(v.mix_window===0?`<div class="drl2">Same day means</div>${two('next_day',!!v.next_day)}`:'');}
+ else{sub='Sunday is always in.';
+  const chip=(on,lab,js)=>`<button type="button" class="chip ${on?'on':''}" aria-pressed="${!!on}" onclick="${js}">${lab}</button>`;
+  body=`<div class="chips daychips">${chip(v.thursday,v.wed?'Wed & Thu':'Thursday',`setDays({thursday:${!v.thursday}})`)}<span class="dsun">Sunday is always in</span>${chip(v.saturday,'Saturday',`setDays({saturday:${!v.saturday}})`)}${chip(v.monday,'Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
+ return `<div class="dayrange" id="dayrange"><div class="drl"><b>${title}</b><small>${sub}</small></div>${body}</div>`;}
+/* Same call the Settings screen makes (/app/api/settings with this league); on a failure the old choice comes back. */
+async function setDays(vals){hap('selection');const days=(S.build||{}).days;if(!days)return;const lg=S.lg;
+ const was={};Object.keys(vals).forEach(k=>{was[k]=days[k];});Object.assign(days,vals);renderBuild();
+ const r=await api('/app/api/settings',{lg,values:vals}).catch(()=>({ok:false}));
+ if(!r||!r.ok){if(S.lg===lg&&S.build&&S.build.days)Object.assign(S.build.days,was);toast('Couldn\'t change the dates. Nothing was changed.');renderBuild();return;}
+ /* other dates = another board: picks and a price made on the old one are dropped, so a combo is only ever priced from what's on screen */
+ S.set=null;S.slip=[];S.custom=null;S.build=null;renderBuild();load('build',true);
+ if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
 try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
 function secOpen(k){return S.bsec[k]!==false;}
 /* folding a Build section: the chevron turns and the section rises in, instead of jumping */
