@@ -123,6 +123,10 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
    from each breakdown into its setting, tagging Live Buy idea buys apart from Build, and feeding the scorecard to
    `smart_tune` as its target (a selling change: needs Pete's go-ahead).
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
+   The weekly tuner's replay now runs exit_policy (#228 PR0 shipped). Still different from live, for later #228 PRs:
+   take profit isn't replayed; the checkpoint x1.3 risk weight isn't modelled (recorded paths don't say which picks had
+   won); the estimate stands in for Kalshi's real offer (learn it in PR4: `sale_outcomes` + `CASH_SLIP`); the live
+   risk weight's `swing_lambda` time-left shrink and Let it ride scaling aren't in the replay (it keeps `0.35 x swing`).
 - Finding from stage 1 to put to Pete: at the 1.5x profit floor, a single bought above ~67c can never be sold for a
   profit by smart sell (only held), and on modest-edge bets selling at the bid gives up part of the edge (the
   simulator's blended EV is below hold EV). Stage 5's continuation-value rule is meant to fix both.
