@@ -21,7 +21,7 @@ function foldTog(k){hap('selection');const o=!foldOpen(k);try{localStorage.setIt
 function ideaReveal(id){const d=S.live;if(!d||!Array.isArray(d.ideas))return;const all=ideaList(d),i=all.findIndex(x=>x.id===id);if(i<0)return;
  try{localStorage.setItem('cw_fold_ideas','1');}catch(e){}if(i>=(+d.ideas_limit>0?+d.ideas_limit:all.length))S.ideasMore=true;renderLive();}
 function ideaList(d){const hid=S.idHide||{},now=Date.now();   // a dismissal shows at once; the Mac's own list takes over a few seconds later
- return (d.ideas||[]).filter(x=>{const t=hid[x.idea_id||x.id];return !(t&&now-t<9000);});}
+ return (d.ideas||[]).filter(x=>{const t=hid[x.idea_id||x.id];return !(t===true||(t&&now-t<9000));});}   // true = passed, the Mac hasn't confirmed yet (#256): it stays off the screen
 function ideaBar(x){return (x.below_bar?'<span class="tag" style="background:var(--panel2);color:var(--sub)">BELOW YOUR BAR</span>':'')+(x.stale?'<span class="tag itag-stale">REFRESHING</span>':'');}
 function ideaAgeNote(x){return ideaAge(x.ts)+(x.stale?' · refreshing':'');}
 /* #252: what a fresh price says about the idea. The Buy button follows it, so it is never green (or silently off) when
@@ -93,12 +93,35 @@ function ideaOut(ids,done){const els=ids.map(i=>document.querySelector(`.iw[data
  els.forEach((el,i)=>{const h=el.offsetHeight;el.style.height=h+'px';el.style.overflow='hidden';el.style.setProperty('--d',(i*50)+'ms');el.offsetHeight;el.classList.add('out');});
  setTimeout(()=>els.forEach(el=>{el.style.height='0px';el.style.marginBottom='-10px';el.style.opacity='0';}),170+(els.length-1)*50);
  setTimeout(()=>{S.scrub=false;done();},470+(els.length-1)*50);}
-async function ideaSend(list,why){S.idHide=S.idHide||{};const keys=list.map(x=>x.idea_id||x.id);keys.forEach(k=>{S.idHide[k]=Date.now();});S.ideaBack=null;renderLive();
- const r=await api('/app/api/act',{a:'idea_dismiss',ids:keys,why}).catch(()=>null);
- if(!r||!r.ok){keys.forEach(k=>{delete S.idHide[k];});renderLive();toast('Couldn\'t hide that just now. Try again.',3500);return;}
- if(why==='later')undoBar(list.length>1?list.length+' ideas hidden':'Idea hidden until its price improves, or tomorrow',()=>ideaUndo(keys));}
-async function ideaUndo(keys){const r=await api('/app/api/act',{a:'idea_undo',ids:keys}).catch(()=>null);
- if(!r||!r.ok){toast('Couldn\'t bring it back just now.',3000);return;}
+/* Pass / X / Not now / swipe / Clear all (#256): the idea leaves the screen at once and STAYS off it. The Mac is told in the
+   background (with `seen`, the fresh price Pete was looking at, so that very price can't bring the idea back), retried a few
+   times if the link is down ("Reconnecting to your Mac"), and if it never gets through the idea stays hidden on this phone
+   and says so. It used to put the card back when the first try failed, which looked like Pass doing nothing. */
+let IDEA_SAVE_WAIT=[0,2500,7000,15000,30000,60000,60000,120000],IDEA_SAY=4;   // tries, then the pause before each; it says so after IDEA_SAY failed tries and keeps trying
+function ideaSeen(x){const q=S.ideaq&&S.ideaq[x.id];if(!q||!q.stake||!q.pays||q.pct==null||Date.now()/1000-q.at>180)return null;
+ const p=q.stake/q.pays*100,e=q.pct-1;return isFinite(p)&&isFinite(e)?{price_c:Math.round(p*10)/10,edge:Math.round(e*10000)/10000}:null;}
+async function ideaSave(keys,why,seen,job){let r=null,said=false;
+ for(let i=0;i<IDEA_SAVE_WAIT.length;i++){
+  if(IDEA_SAVE_WAIT[i])await new Promise(f=>setTimeout(f,IDEA_SAVE_WAIT[i]));
+  if(job.undone)return 'undone';
+  r=await api('/app/api/act',{a:'idea_dismiss',ids:keys,why,seen}).catch(()=>null);
+  if(r&&r.ok)return 'ok';
+  if(job.undone)return 'undone';
+  if(!said&&i+1>=IDEA_SAY&&i+1<IDEA_SAVE_WAIT.length){said=true;toast('Hidden on this phone. Your Mac hasn\'t got that yet, still trying.',5000);}}
+ return 'failed';}
+async function ideaSend(list,why){S.idHide=S.idHide||{};S.idJob=S.idJob||{};
+ const keys=list.map(x=>x.idea_id||x.id).filter(k=>S.idHide[k]!==true);if(!keys.length)return;   // a second tap on the same idea sends nothing
+ const seen={};list.forEach(x=>{const k=x.idea_id||x.id,v=ideaSeen(x);if(v)seen[k]=v;if(S.ideaq)S.ideaq[x.id]=null;});
+ const job={undone:false};keys.forEach(k=>{S.idHide[k]=true;S.idJob[k]=job;});S.ideaBack=null;renderLive();
+ if(why==='later')undoBar(list.length>1?list.length+' ideas hidden':'Idea hidden until its price improves, or tomorrow',()=>ideaUndo(keys));
+ job.p=ideaSave(keys,why,seen,job);const res=await job.p;
+ keys.forEach(k=>{if(S.idJob[k]===job)delete S.idJob[k];});
+ if(res==='ok')keys.forEach(k=>{if(S.idHide[k]===true)S.idHide[k]=Date.now();});   // the Mac's own list takes over a few seconds later
+ else if(res==='failed')toast('Hidden on this phone, but your Mac never got it. It may come back after a refresh.',6000);}
+async function ideaUndo(keys){const jobs=keys.map(k=>S.idJob&&S.idJob[k]).filter(Boolean);
+ jobs.forEach(j=>{j.undone=true;});await Promise.all(jobs.map(j=>j.p));   // a save still on its way finishes (or stops) first, so Undo is always the last word
+ const r=await api('/app/api/act',{a:'idea_undo',ids:keys}).catch(()=>null);
+ if(!r||!r.ok){keys.forEach(k=>{if(S.idHide[k]===true)S.idHide[k]=Date.now();});toast('Couldn\'t bring it back just now.',3000);return;}
  keys.forEach(k=>{delete S.idHide[k];});S.ideaBack=keys;renderLive();await load('live',true);setTimeout(()=>{S.ideaBack=null;},900);}
 async function ideasRestore(){hap('light');const r=await api('/app/api/act',{a:'idea_undo',all:true}).catch(()=>null);
  if(!r||!r.ok){toast('Couldn\'t bring them back just now.',3000);return;}
@@ -106,13 +129,13 @@ async function ideasRestore(){hap('light');const r=await api('/app/api/act',{a:'
 function ideaFind(id){return ((S.live&&S.live.ideas)||[]).find(i=>i.id===id||i.idea_id===id);}
 function ideaX(id){const x=ideaFind(id);if(!x)return;hap('light');ideaOut([id],()=>ideaSend([x],'later'));}
 function hideIdea(id){ideaX(id);}                       // the card's "Not now" means dismiss
-/* Pass (after Get price) closes the idea just like the X: the quote and its countdown are dropped, then the card goes
-   through the same dismiss path (it slides out, the Mac remembers, Undo). Off while a buy is on its way. */
-function ideaPass(id,det){if(S.ibuy&&S.ibuy[id])return;S.ideaq=S.ideaq||{};S.ideaq[id]=null;
+/* Pass (after Get price) closes the idea just like the X: through the same dismiss path (it slides out, the Mac remembers,
+   Undo). On the detail page the page closes back to Live first, then the card slides out. Off while a buy is on its way. */
+function ideaPass(id,det){if(S.ibuy&&S.ibuy[id])return;
  if(S.ideaTid===id){clearInterval(S.ideaT);S.ideaT=null;S.ideaTid=null;}
- if(!ideaFind(id)){renderLive();return;}
+ if(!ideaFind(id)){if(det)closeModal();renderLive();return;}
  if(det)ideaNotNowSheet(id);else ideaX(id);}
-function ideaNotNowSheet(id){const x=ideaFind(id);closeModal();if(x)setTimeout(()=>ideaOut([x.id],()=>ideaSend([x],'later')),340);}
+function ideaNotNowSheet(id){const x=ideaFind(id);hap('light');closeModal();if(x)setTimeout(()=>ideaOut([x.id],()=>ideaSend([x],'later')),340);}
 function ideaClearAll(){const xs=ideaList(S.live||{});if(!xs.length)return;hap('light');ideaOut(xs.map(x=>x.id),()=>ideaSend(xs,'later'));}
 /* a bought idea (or one Kalshi no longer lists) is dropped quietly, no Undo: bought ones never come back */
 function ideaDrop(id,why,x0){const x=ideaFind(id)||x0;if(!x)return;   // x0: the idea as it was when the buy started, in case a refresh replaced the list meanwhile

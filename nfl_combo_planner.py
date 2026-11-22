@@ -15878,12 +15878,26 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
         return []
 
 
-def idea_dismiss(ids=None, everything=False, bought=False, now=None):
+def _idea_seen(v):
+    """What the phone showed when Pete passed (#256): {'price_c', 'edge'} from the fresh quote on screen, or None when
+    it isn't two sane numbers. Only ever used to make the re-offer bar higher, never lower."""
+    try:
+        p, e = float(v.get("price_c")), float(v.get("edge"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return {"price_c": round(p, 1), "edge": round(e, 4)} if 0 < p < 100 and -1 < e < 1 else None
+
+
+def idea_dismiss(ids=None, everything=False, bought=False, now=None, seen=None):
     """Hide ideas Pete passed on: each stays hidden until its edge improves by 3 points or its price drops 2 cents, or
     until tomorrow. `bought` ideas never come back. `everything` = every idea on the list (Clear all). Only ideas
-    currently on the list can be dismissed (an id the Mac doesn't know is ignored). Returns {'n', 'ids'}."""
+    currently on the list can be dismissed (an id the Mac doesn't know is ignored). `seen` ({idea_id: {'price_c',
+    'edge'}}) is the fresh quote Pete was looking at when he passed (#256): the bar to come back is measured from the
+    better of that and the listed price, so the quote he just looked at can't re-offer the idea by itself (a price a
+    few cents under the listed one is what he already saw). Returns {'n', 'ids'}."""
     now = now or time.time()
     ids = {str(i) for i in (ids or [])}
+    seen = seen if isinstance(seen, dict) else {}
     cur = live_ideas(now, keep=IDEA_POOL)                  # Clear all clears the whole pool, not just the top few
     take = [r for r in cur if everything or r["idea_id"] in ids]
     if not take:
@@ -15894,7 +15908,14 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None):
             if bought:
                 st["bought"][r["key"]] = now
             else:
-                st["items"][r["key"]] = {"at": now, "edge": r.get("edge"), "price_c": r.get("price_c")}
+                base = {"at": now, "edge": r.get("edge"), "price_c": r.get("price_c")}
+                sv = _idea_seen(seen.get(r["idea_id"]))
+                if sv:
+                    if base["edge"] is None or sv["edge"] > base["edge"]:
+                        base["edge"] = sv["edge"]
+                    if base["price_c"] is None or sv["price_c"] < base["price_c"]:
+                        base["price_c"] = sv["price_c"]
+                st["items"][r["key"]] = base
         save_json(IDEA_DISMISS, st)
     return {"n": len(take), "ids": [r["idea_id"] for r in take]}
 
