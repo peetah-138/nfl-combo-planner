@@ -23030,22 +23030,30 @@ def record_view(view):
                     if flip or now - last.get(("play", lg["ticker"]), 0) > 60:
                         last[("play", lg["ticker"])] = now
                         store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
-                    if flip:
+                    a_kind, me_n, opp_n = alert_pick(lg)
+                    if flip and a_kind != "total":       # a lead means nothing to an Over/Under
                         ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": pts[0] > pts[1],
-                                   "text": f"Your {short_name(lg['name'])} {'take the lead' if pts[0] > pts[1] else 'fall behind'}"
-                                           f" {pts[0]}–{pts[1]} vs {short_name(lg.get('opp') or sc.get('opp_abbr', ''))}"
+                                   "text": f"Your {me_n} {'take the lead' if pts[0] > pts[1] else 'fall behind'}"
+                                           f" {pts[0]}–{pts[1]}" + (f" vs {opp_n}" if opp_n else "")
                                            + (f" · {sc['detail']}" if sc.get("detail") else "")})
                 elif had is not None:
                     store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
                     mine = pts[0] - had[0] > 0
                     word = SPORT_SCORE_WORD.get(lg.get("sport"), "Score")
-                    me_n, opp_n = short_name(lg["name"]), short_name(lg.get("opp") or sc.get("opp_abbr", ""))
+                    a_kind, me_n, opp_n = alert_pick(lg)
                     lead = "lead" if pts[0] > pts[1] else "trail" if pts[0] < pts[1] else "tied"
-                    ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": mine,
-                               "text": (f"{word} for your {me_n}! " if mine else f"{opp_n} {word.lower()} against your {me_n}. ")
-                                       + (f"Tied {pts[0]}–{pts[1]}" if lead == "tied" else
-                                          f"{'Up' if lead == 'lead' else 'Down'} {max(pts)}–{min(pts)}")
-                                       + (f" · {sc['detail']}" if sc.get("detail") else "")})
+                    dtl = f" · {sc['detail']}" if sc.get("detail") else ""
+                    if a_kind == "total":                # any score helps an Over and hurts an Under
+                        over = me_n.startswith("Over")
+                        ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": over,
+                                   "text": f"{word}! {float(pts[0] or 0) + float(pts[1] or 0):g} total so far, your {me_n}"
+                                           f" ({pts[0]}–{pts[1]}){dtl}"})
+                    else:
+                        ev.append({"kind": "score", "combo": t, "ticker": lg["ticker"], "good": mine,
+                                   "text": (f"{word} for your {me_n}! " if mine else
+                                            f"{opp_n + ' ' + word.lower() if opp_n else word} against your {me_n}. ")
+                                           + (f"Tied {pts[0]}–{pts[1]}" if lead == "tied" else
+                                              f"{'Up' if lead == 'lead' else 'Down'} {max(pts)}–{min(pts)}") + dtl})
                 else:
                     store_x("insert into plays values(?,?,?,?,?)", (now, lg["ticker"], pts[0], pts[1], sc.get("detail") or ""))
             skey = ("swing", lg["ticker"])
@@ -23055,8 +23063,10 @@ def record_view(view):
                     last[skey] = ch
                 elif abs(ch - base) >= 0.12:              # a real swing, once per game, not per combo
                     last[skey] = ch
+                    a_kind, me_n, _ = alert_pick(lg)
+                    goal = {"spread": "to cover", "total": "to hit"}.get(a_kind, "to win")
                     ev.append({"kind": "swing", "combo": t, "ticker": lg["ticker"],
-                               "text": f"{short_name(lg['name'])} {'up' if ch > base else 'down'} to {ch:.0%} to win"})
+                               "text": f"{me_n} {'up' if ch > base else 'down'} to {ch:.0%} {goal}"})
 
     for v in view.get("combos") or []:
         t = v["t"]
@@ -23118,9 +23128,61 @@ def record_view(view):
 SPORT_SCORE_WORD = {"nhl": "Goal", "ahl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
 
 
-def short_name(name):
-    w = (name or "").split()
-    return w[-1] if len(w) > 1 and len(name) > 12 else name
+def _alert_team(code, ref):
+    """A team code ('LAC') as a live alert names it (#324): 'Chargers' for pro leagues, the full name elsewhere.
+    Empty when the code isn't one this league's team list knows."""
+    ref = str(ref or "").strip().upper()
+    full = sport_teams(code).get(ref) if ref else None
+    return team_short(code, full) if full else ""
+
+
+def _alert_name(code, name):
+    """A team's full name ('New York Jets') -> 'Jets' for pro leagues; a code it knows -> that team; else as given."""
+    name = str(name or "").strip()
+    return _alert_team(code, name) or (team_short(code, name) if " " in name and len(name.split()[-1]) > 2 else name)
+
+
+def alert_pick(lg):
+    """How a live alert names the pick a leg is on (#324, display only). Returns (kind, me, opp):
+    kind 'win' / 'spread' / 'total'; me = 'Chargers', 'Chargers (-2.5)' or 'Over 47.5'; opp = the other team (empty
+    for a total or when unknown). Leg names can be whole bet descriptions ('Los Angeles C wins by over 2.5 points'),
+    so the team comes from the score's own side (`sc.abbr`, already the side this bet needs), then the ticker's team
+    code, then the text before 'wins by'/'to win' (kept whole); the line from the description. A total's YES is the
+    Over. Never raises: an odd leg is just 'your pick'."""
+    try:
+        return _alert_pick(lg)
+    except Exception:
+        return "win", "pick", ""
+
+
+def _alert_pick(lg):
+    t = str(lg.get("ticker") or "")
+    code = lg.get("sport") or ticker_sport(t) or ""
+    kind = lg.get("kind") if lg.get("kind") in ("win", "spread", "total") else _bet_kind(t)
+    kind = kind if kind in ("spread", "total") else "win"
+    no = lg.get("side", "yes") == "no"
+    sc = lg.get("sc") or {}
+    text = str(lg.get("label") or "")
+    if _line_num(text) is None:
+        text = str(lg.get("name") or text)
+    negated = bool(re.match(r"^\s*(Not:|Against)\s", text, re.I))
+    text = re.sub(r"^\s*(Not:|Against)\s*", "", text, flags=re.I)
+    line = _line_num(text)
+    if kind == "total":
+        word = "Under" if no else "Over"
+        return "total", (f"{word} {line:g}" if line is not None else f"the {word.lower()}"), ""
+    tail = re.sub(r"\d+$", "", t.rsplit("-", 1)[-1]) if t.count("-") >= 2 else ""
+    me = _alert_team(code, sc.get("abbr")) or (_alert_team(code, tail) if not no else "")
+    if not me and not negated and (not no or (kind == "win" and "label" not in lg)):
+        # the words before 'wins by' / 'to win' ('Los Angeles C', 'Duke'); a combo's 'not X' win leg is already
+        # named after the other side, so it counts too (a single's NO label may name the team it bets against, so
+        # it doesn't). Shortened only when the last word is a real nickname.
+        me = _alert_name(code, re.sub(r"\s+(wins by|win by|to win|over|under)\b.*$", "", text, flags=re.I).strip())
+    me = me or str(sc.get("abbr") or "").strip() or "pick"
+    opp = _alert_name(code, lg.get("opp")) if lg.get("opp") else _alert_team(code, sc.get("opp_abbr")) or str(sc.get("opp_abbr") or "")
+    if kind == "spread" and line is not None:
+        me = f"{me} ({'+' if no else '-'}{line:g})"
+    return kind, me, opp
 
 
 def pulse_series(hours=16, points=150):

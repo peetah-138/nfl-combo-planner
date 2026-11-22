@@ -1202,6 +1202,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **Score/swing alert wording (issue #324, text only):** `record_view`'s score, lead-change and swing events name the
+  pick through `alert_pick(lg)` (kind, me, opp): the team from the score's own side (`sc.abbr`), else the ticker's team
+  code, else the words before "wins by"/"to win" (never the last word of a bet description; the old `short_name` is
+  gone); a spread adds its line ("Jets score against your Chargers (-2.5)"), a total says "Score! 13 total so far, your
+  Over 47.5" (good for an Over, bad for an Under; no lead-change alert), swings say "to cover"/"to hit"/"to win".
+  Ticks, plays and every buy/sell/pick_state path are untouched. Test: `t_alertwords`.
 - **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
   sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
   (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
