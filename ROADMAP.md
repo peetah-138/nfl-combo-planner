@@ -123,7 +123,8 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
    from each breakdown into its setting, tagging Live Buy idea buys apart from Build, and feeding the scorecard to
    `smart_tune` as its target (a selling change: needs Pete's go-ahead).
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
-   The weekly tuner's replay now runs exit_policy (#228 PR0 shipped). Still different from live, for later #228 PRs:
+   The weekly tuner's replay now runs exit_policy (#228 PR0 shipped) and the knob registry is listed read-only (#228 PR1
+   shipped; PR2-PR7, the evidence stepper (shadow first), brake and stop-loss modes, are next). Still different from live, for later #228 PRs:
    take profit isn't replayed; the checkpoint x1.3 risk weight isn't modelled (recorded paths don't say which picks had
    won); the estimate stands in for Kalshi's real offer (learn it in PR4: `sale_outcomes` + `CASH_SLIP`); the live
    risk weight's `swing_lambda` time-left shrink and Let it ride scaling aren't in the replay (it keeps `0.35 x swing`).
