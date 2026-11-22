@@ -122,12 +122,18 @@ lit = {"exit_policy": has_lit(E.exit_policy, [r"q >= 0\.5", r"/ 0\.95", r"/ 0\.9
        "smart_sell_singles": has_lit(E.smart_sell_singles, [r"> 180\b"])}
 ok("no live function still writes a registry number inline" + (f" {lit}" if any(lit.values()) else ""), not any(lit.values()))
 
-# ---- 4. no live decision reads the registry (PR1 describes; nothing acts on it)
+# ---- 4. no live decision reads the registry (PR1 describes it; PR2's stepper only proposes, in shadow)
 eng = open("wahome/engine.py", encoding="utf-8").read()
-start, end = eng.index("KNOB_UNITS = ("), eng.index("def knob_view(")
-outside = eng[:start] + eng[eng.index("\n\n\n", end):]
-uses = [m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_BY|KNOB_EVIDENCE|KNOB_BRAKE|knob_live|knob_say|knob_view|_knob_\w+)\b", outside)]
-ok("only analytics reads the registry (via knob_view)" + (f" {uses}" if uses != ["knob_view"] else ""), uses == ["knob_view"])
+start, end = eng.index("KNOB_UNITS = ("), eng.index("\ndef prune_drafts(")     # the registry and its shadow stepper
+outside = eng[:start] + eng[end:]
+uses = [m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", outside)]
+ok("only analytics reads the registry (knob_view, knob_shadow_view); no live code calls knob()" + (f" {uses}" if uses != ["knob_view", "knob_shadow", "knob_shadow_view"] else ""),
+   uses == ["knob_view", "knob_shadow", "knob_shadow_view"])
+wsrc_ = open("wtest/combo_watcher.py", encoding="utf-8").read() if os.path.exists("wtest/combo_watcher.py") else None
+if wsrc_ is not None:
+    wu = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", wsrc_)})
+    ok("the watcher only runs the shadow pass (knob_pass)" + (f" {wu}" if wu != ["knob_pass", "knob_shadow"] else ""),
+       wu == ["knob_pass", "knob_shadow"])
 
 # ---- 5. knob_view mirrors the live resolvers league by league
 TICK = {"nba": "KXNBAGAME-26NOV19LALBOS-LAL", "nhl": "KXNHLGAME-26NOV19PHIBOS-PHI", "epl": "KXEPLGAME-26NOV22ARSCHE-ARS",

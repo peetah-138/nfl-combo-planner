@@ -18606,6 +18606,7 @@ def analytics(max_age=600):
     except Exception:
         out["tuning"] = []
     out["knobs"] = knob_view()                          # the knob registry, read-only (issue #228); never raises
+    out["knob_shadow"] = knob_shadow_view()            # what self-tuning would change, not active yet (#228 PR2)
     ANALYTICS.update(at=now, v=out)
     return out
 
@@ -20181,6 +20182,625 @@ def knob_view(now=None):
                 "evidence": dict(KNOB_EVIDENCE), "brake": dict(KNOB_BRAKE)}
     except Exception as err:
         print("knob view:", type(err).__name__, err)
+        return {}
+
+
+# ---------------------------------------------------------------- the knob stepper, holdout and brake (#228 PR2: SHADOW)
+# PR2 builds the machinery and runs it in SHADOW ONLY: once a week the stepper replays each league's settled bets with
+# one knob one step away from where it stands, holds the step to Pete's bar (KNOB_EVIDENCE: 10+ bets the step changes,
+# a gain of 2%+ of everything staked, 2+ standard errors clear of luck, 20+ new results since the group's last step,
+# and the newest 30% of bets must agree), and writes what it WOULD do to the `knob_shadow` table and combo_knobs.json
+# (git-ignored). The brake watches real automatic sales: 4 losses in a row, or the last 30 days' sales losing more than
+# 5% of what they staked, would send that league back to its starting numbers for 14 days, with one push.
+# NO LIVE DECISION READS ANY OF THIS: smart_params, stoploss_params, sb_dial, exit_policy, hedge_guard and auto_cap
+# read their own constants and files exactly as before (t_knobstep.py checks it byte for byte). PR3 makes the exit
+# knobs live by having the live code call knob().
+KNOBS_FILE = os.path.join(HERE, "combo_knobs.json")   # git-ignored (combo_*.json)
+KNOB_MODE = "shadow"            # PR2: proposals only. Nothing live calls knob() / knob_cap() yet.
+KNOB_TUNE_EVERY = 7 * 86400     # the stepper's run: weekly, like smart_tune
+KNOB_RETRY = 86400              # a run cut short by its time budget continues a day later
+KNOB_BRAKE_EVERY = 1800         # the brake looks at real automatic sales at most every 30 minutes
+KNOB_BUDGET = 60.0              # seconds one run may spend replaying; what's left waits for the next run
+KNOB_DAYS = 60                  # settled bets the judges replay (smart_tune's window)
+KNOB_KEEP_DAYS = 180            # shadow log rows kept
+KNOB_MONTH = 30 * 86400         # "the month" for the brake: the last 30 days
+KNOB_BRAKE_MIN_SALES = 4        # the month rule needs at least this many automatic sales (one loss isn't a month)
+KNOB_EPS = 0.005                # a replayed result that moved less than half a cent didn't change
+# Which judge replays each knob in PR2 (the registry's `judge`): smart sell's replay for the profit floor, the risk
+# weight and the loss cut; the loss guards' replay for their timing and fall; Smart Buy's band for its dial. Every
+# other tunable knob waits for the PR that teaches its judge to take it as a parameter (exit_policy's constants: PR3).
+KNOB_JUDGED = {"smart_floor": "replay", "smart_lam": "replay", "smart_loss": "replay", "sl_prog": "sl", "sl_drop": "sl",
+               "sb_dial": "sb"}
+KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N"}   # results a group needs (the evidence knobs)
+# #258: knobs that do the same job never drift together. A tied knob is never stepped (it moves through its partner);
+# in a one-of set only one knob may stand off its start in a league; and the risk weight's whole product (each factor
+# as a share of its start) stays inside the risk weight's own range.
+KNOB_TIED = {"swing_base": "smart_lam"}
+KNOB_ONE_OF = (("swing_base", "smart_lam"), ("trail_arm_cost", "trail_drop", "trail_floor"))
+KNOB_PRODUCT = {"names": ("smart_lam", "swing_base", "checkpoint_lam"), "lo": 0.5, "hi": 2.0}
+KNOB_RUN = {"brake_at": 0.0}
+
+
+def _knob_shadow_table():
+    if STORE["db"] and not STORE.get("knob_ok"):
+        store_x("create table if not exists knob_shadow(ts real, league text, knob text, from_v text, to_v text, "
+                "status text, gain real, share real, band int, t real, new int, hold real, hold_n int, why text)")
+        store_x("create index if not exists knob_shadow_t on knob_shadow(ts)")
+        STORE["knob_ok"] = True
+
+
+def knob_state():
+    """combo_knobs.json: {'groups': {key: {'n', 'v': {knob: value}, 'step_at', 'why': {knob: words}, 'last': [...]}},
+    'brake': {league: {'at', 'until', 'why', 'pushed', 'reset'}}, 'settings': {name: {'pete', 'system'}}, '_at', 'run'}.
+    A missing or damaged file is an empty state (every knob at its start)."""
+    d = load_json(KNOBS_FILE, {})
+    d = d if isinstance(d, dict) else {}
+    for k in ("groups", "brake", "settings"):
+        if not isinstance(d.get(k), dict):
+            d[k] = {}
+    return d
+
+
+def _knob_save(fn):
+    """Read-modify-write of combo_knobs.json under its file lock (the watcher's two engine copies share it); fn(d)
+    changes d. A failed write raises (strict), so a run never believes it saved what it didn't."""
+    with file_lock(KNOBS_FILE):
+        d = knob_state()
+        out = fn(d)
+        save_json(KNOBS_FILE, d, strict=True)
+    return out
+
+
+def _knob_chain(key):
+    return [g for g in dict.fromkeys((key, _knob_sport(key), "all")) if g]
+
+
+def knob_stricter(name, v):
+    """A value borrowed from another group, never looser than the start (Pete, 2026-11-21): it may only move the way
+    the app does less on its own (`stricter`). A knob borrowed only from its own record (`borrow: own`, the loss cut)
+    or with no stricter side gives its start."""
+    k = KNOB_BY[name]
+    s, way = k["start"], k.get("stricter")
+    if k.get("borrow") == "own" or way is None or v is None or s is None or isinstance(s, dict):
+        return s
+    return max(v, s) if way == "up" else min(v, s)
+
+
+def _knob_braked(st, key, now):
+    b = (st.get("brake") or {}).get(key)
+    return isinstance(b, dict) and float(b.get("until") or 0) > now
+
+
+def knob(name, key, st=None, now=None):
+    """The value a knob has for a league key on the stepper's record: the league's own, else its sport's, else
+    everyone's, a borrowed one never looser than the start; the start while the league is braked or nothing is
+    recorded. PR2 (shadow): NO live decision calls this; the live code still reads its own constant or file."""
+    k = KNOB_BY[name]
+    if k["cls"] == "setting":
+        return knob_cap(name, st=st, now=now)
+    if k["cls"] != "tunable":
+        return k["start"] if k.get("src") is None else knob_live(name)
+    now = now or time.time()
+    st = st if st is not None else knob_state()
+    if _knob_braked(st, key, now):
+        return k["start"]
+    for g in _knob_chain(key):
+        e = st["groups"].get(g)
+        if isinstance(e, dict) and isinstance(e.get("v"), dict) and name in e["v"]:
+            return e["v"][name] if g == key else knob_stricter(name, e["v"][name])
+    return k["start"]
+
+
+def _knob_pete(name):
+    if name == "auto_cap":
+        return auto_cap_limit()                       # None = Unlimited
+    try:
+        return float(CFG.get("hedge_cap", 100))
+    except (TypeError, ValueError):
+        return None
+
+
+def knob_cap(name, pete="read", st=None, now=None):
+    """#260: one of Pete's caps (auto_cap, hedge_cap) with any raise the system made kept apart from his own value:
+    the larger of Pete's and the system's raise (the raise never above the registry's ceiling: hedge_cap $150, auto_cap
+    none), Pete's own while any league is braked or nothing was raised. Pete's value is never lowered or clamped, even
+    when it is above the ceiling. PR2: nothing raises (no judge yet) and nothing live calls this."""
+    k = KNOB_BY[name]
+    pete = _knob_pete(name) if pete == "read" else pete
+    if pete is None:
+        return None                                   # Unlimited (or unreadable): never lowered by this
+    now = now or time.time()
+    st = st if st is not None else knob_state()
+    sysv = ((st.get("settings") or {}).get(name) or {}).get("system")
+    if sysv is None or any(_knob_braked(st, g, now) for g in st.get("brake") or {}):
+        return pete
+    try:
+        sysv = float(sysv)
+    except (TypeError, ValueError):
+        return pete
+    if k.get("max") is not None:
+        sysv = min(sysv, k["max"])
+    return max(pete, sysv)
+
+
+def knob_candidates(name, v):
+    """One step either way from `v`, inside the registry's bounds (a `mult` knob multiplies by 1 -/+ step; a knob
+    that starts off switches on at its `on_value`, and off again from below its range)."""
+    k = KNOB_BY[name]
+    lo, hi, step = k.get("min"), k.get("max"), k.get("step")
+    if step is None or lo is None:
+        return []
+    if v is None:
+        return [k["on_value"]] if k.get("on_value") is not None else []
+    out = []
+    for sgn in (-1, 1):
+        x = v * (1 + sgn * step) if k.get("step_kind") == "mult" else v + sgn * step
+        x = round(min(max(x, lo), hi if hi is not None else x), 4)
+        if isinstance(k["start"], int) and not isinstance(k["start"], bool):
+            x = int(round(x))
+        if abs(x - v) > 1e-9:
+            out.append(x)
+    if k.get("on_value") is not None and v - step < lo - 1e-9:
+        out.append(None)                              # below the range: the next step down is off
+    return list(dict.fromkeys(out))
+
+
+def _knob_dist(name, a, b):
+    """How big a change is, in steps (ties go to the smallest)."""
+    k = KNOB_BY[name]
+    if a is None or b is None:
+        return 0.0 if a is b else 1.0
+    if k.get("step_kind") == "mult" and a > 0 and b > 0:
+        return abs(math.log(b / a)) / math.log(1 + k["step"])
+    return abs(b - a) / (k.get("step") or 1)
+
+
+def _knob_blocked(name, to, cur):
+    """Why a step of `name` to `to` is not allowed given the group's other values (#258), or None."""
+    for grp in KNOB_ONE_OF:
+        if name in grp:
+            off = [n for n in grp if n != name and n in cur and cur[n] != KNOB_BY[n]["start"]]
+            if off:
+                return f"only one of these moves off its start at a time ({KNOB_BY[off[0]]['label']} already has)"
+    p = KNOB_PRODUCT
+    if name in p["names"]:
+        prod = 1.0
+        for n in p["names"]:
+            v = to if n == name else cur.get(n, KNOB_BY[n]["start"])
+            prod *= (v / KNOB_BY[n]["start"]) if v is not None and KNOB_BY[n]["start"] else 1.0
+        if not p["lo"] - 1e-9 <= prod <= p["hi"] + 1e-9:
+            return f"the whole risk weight would be {prod:.2f}× its start, outside {p['lo']:g}× to {p['hi']:g}×"
+    return None
+
+
+def knob_evidence(ds, staked, last_at, ev=None):
+    """Pete's bar for one proposed step, on the per-bet changes `ds` = [(kick, dollars gained, stake)] (every bet of
+    the group, 0 where the step changes nothing). The band is the bets the step changes. Returns the numbers and,
+    for each part of the bar, whether it holds; 'ok' only when all do. The holdout is the newest 30% of the group's
+    bets by start time: the step must gain there too, on at least one bet it changes."""
+    ev = ev or KNOB_EVIDENCE
+    band = [d for _, d, _ in ds if abs(d) > KNOB_EPS]
+    gain = sum(band)
+    share = gain / staked if staked else 0.0
+    if len(band) >= 2:
+        m, sd = gain / len(band), statistics.pstdev(band)
+        t = m / (sd / math.sqrt(len(band))) if sd > 0 else (math.inf if m > 0 else -math.inf if m < 0 else 0.0)
+    else:
+        t = 0.0
+    new = sum(1 for kick, _, _ in ds if (kick or 0) > (last_at or 0))
+    srt = sorted(ds, key=lambda x: x[0] or 0)
+    cut = int(len(srt) * (1 - ev["holdout"])) if srt else 0
+    hold = [d for _, d, _ in srt[min(cut, max(len(srt) - 1, 0)):] if abs(d) > KNOB_EPS]
+    h_gain = sum(hold)
+    checks = {"band": len(band) >= ev["band_n"], "gain": share >= ev["gain"] - 1e-12, "se": t >= ev["se"],
+              "new": new >= ev["new"], "holdout": bool(hold) and h_gain > KNOB_EPS}
+    return {"band": len(band), "gain": round(gain, 2), "share": round(share, 4),
+            "t": round(t, 2) if math.isfinite(t) else (99.0 if t > 0 else -99.0), "new": new,
+            "hold": round(h_gain, 2), "hold_n": len(hold), "checks": checks, "ok": all(checks.values())}
+
+
+def _knob_res_replay(c, path, slp, vals, cache):
+    key = (id(c), vals["smart_floor"], vals["smart_lam"], vals["smart_loss"], vals["sl_prog"], vals["sl_drop"])
+    if key not in cache:
+        loss = vals["smart_loss"]
+        cut_at = _cut_guard_ts(c, slp, loss, vals["sl_prog"], vals["sl_drop"]) if loss else None
+        r = _replay(c, path, vals["smart_floor"], vals["smart_lam"], loss, cut_at=cut_at)
+        cache[key] = r[0] if r else c["pl"]
+    return cache[key]
+
+
+def _knob_res_sl(c, slp, vals, cache):
+    key = (id(c), "sl", vals["sl_prog"], vals["sl_drop"])
+    if key not in cache:
+        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"])
+        cache[key] = r if r is not None else c["pl"]
+    return cache[key]
+
+
+def knob_judge(judge, rows, cur, name, to, cache=None):
+    """The per-bet change [(kick, dollars gained, stake)] of moving `name` from cur[name] to `to`, every other knob at
+    the group's current value, by the judge the registry names: smart sell's replay (`_replay`, the loss cut only where
+    the live guards would have held), the loss guards' replay (`_sl_replay`), or Smart Buy's band (a bet the new level
+    skips loses its result, one it keeps gains it, $5 each)."""
+    cache = {} if cache is None else cache
+    new = dict(cur, **{name: to})
+    out = []
+    if judge == "sb":
+        for r in rows:
+            a, b = _sb_pass(r["ev"], cur[name]), _sb_pass(r["ev"], to)
+            d = 0.0 if a == b else (r["out"] if b else -r["out"])
+            out.append((r.get("kick") or 0, d, 5.0))
+        return out
+    for c, path, slp in rows:
+        if judge == "sl":
+            d = _knob_res_sl(c, slp, new, cache) - _knob_res_sl(c, slp, cur, cache)
+        else:
+            d = _knob_res_replay(c, path, slp, new, cache) - _knob_res_replay(c, path, slp, cur, cache)
+        out.append((c.get("kick") or 0, round(d, 4), c["stake"]))
+    return out
+
+
+class KnobOutOfTime(Exception):
+    pass
+
+
+def _knob_rows(now, deadline=None):
+    """Each group's evidence: {'replay': {key: [(bet, prices, score lines)]}, 'sl': {...} (combos with score lines),
+    'sb': {key: [result rows]}} — the same bets smart_tune and smart_buy_learn learn from."""
+    rp, sl, sb = defaultdict(list), defaultdict(list), defaultdict(list)
+    for c in _tune_items(KNOB_DAYS):
+        if deadline is not None and time.monotonic() > deadline:
+            raise KnobOutOfTime()
+        tks = [x["ticker"] for x in c.get("legs") or [] if x.get("ticker")]
+        if not tks or not c.get("stake"):
+            continue
+        path = _paths(c)
+        if len(path) < 3:
+            continue
+        slp = _sl_paths(c)
+        k = bet_key(tks)
+        for key in {k, ticker_sport(tks[0]) if k != "mix" else None, "all"}:
+            if key:
+                rp[key].append((c, path, slp))
+                if c.get("kind") == "combo" and slp and len(slp) >= SL_CHECKS:
+                    sl[key].append((c, path, slp))
+    try:
+        for r in _sb_results(now):
+            if r.get("out") is None:
+                continue
+            for key in {"all", r.get("sport"), r.get("league")}:
+                if key:
+                    sb[key].append(r)
+    except Exception as err:                          # Smart Buy's results unreadable: its dial just isn't judged
+        print("knob stepper: smart buy results:", type(err).__name__, err)
+    return {"replay": rp, "sl": sl, "sb": sb}
+
+
+def _knob_seed(name, key, smart, dial):
+    """Where the stepper starts a group's knob the first time: the value today's live tuner gave that group from its
+    OWN record (smart_tune, _sl_tune, smart_buy_learn), else the start. Borrowed values are never seeded."""
+    k = KNOB_BY[name]
+    e = smart.get(key) if isinstance(smart.get(key), dict) else {}
+    try:
+        if name in ("smart_floor", "smart_lam", "smart_loss") and e.get("n", 0) >= SMART_MIN_N:
+            return e.get(name.split("_", 1)[1], k["start"])
+        if name in ("sl_prog", "sl_drop") and e.get("sl_n", 0) >= SL_MIN_N and e.get("sl_prog") is not None:
+            return float(e.get(name, k["start"]))
+        de = dial.get(key) if isinstance(dial.get(key), dict) else {}
+        if name == "sb_dial" and int(de.get("n") or 0) >= SB_LEARN_N:
+            return max(0, min(SB_DIAL_MAX, int(de.get("level") or 0)))
+    except (TypeError, ValueError):
+        pass
+    return k["start"] if k.get("src") is None else knob_live(name)
+
+
+def knob_step_say(name, frm, to, ev, n=None):
+    """One proposed step in plain words."""
+    k = KNOB_BY[name]
+    u = k["unit"]
+    head = f"{k['label']}: {knob_say(u, frm)} → {knob_say(u, to)}"
+    if not ev:
+        return head
+    body = (f"{ev['band']} of {n} recent bets would have ended differently, " if n else
+            f"{ev['band']} recent bets would have ended differently, ") + \
+        f"{'+' if ev['gain'] >= 0 else '−'}${abs(ev['gain']):.2f} in all ({ev['share']:+.1%} of what was staked, " \
+        f"{ev['t']:g} standard errors from luck)"
+    if ev["checks"].get("holdout"):
+        tail = f"; the newest 30% agree ({'+' if ev['hold'] >= 0 else '−'}${abs(ev['hold']):.2f})"
+    elif ev["hold_n"]:
+        tail = f"; but the newest 30% disagree ({'+' if ev['hold'] >= 0 else '−'}${abs(ev['hold']):.2f}), so it waits"
+    else:
+        tail = "; but none of the newest 30% of bets would change, so it waits"
+    return f"{head}. {body}{tail}."
+
+
+def _knob_why_not(ev):
+    c = ev["checks"]
+    miss = [w for w, ok in (("too few bets it changes", c["band"]), ("gain under 2% of what was staked", c["gain"]),
+                            ("within luck", c["se"]), ("too few new results since the last step", c["new"]),
+                            ("the newest bets disagree", c["holdout"])) if not ok]
+    return ", ".join(miss)
+
+
+def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
+    """Weekly, in SHADOW: for each group (everyone, each sport, each league) and each tunable knob the registry names a
+    judge for, replay one step either way and hold it to Pete's bar (knob_evidence). A group takes at most ONE step a
+    run (the biggest gain; on a tie the smallest change, then the registry's order); every other step that clears the
+    bar is noted as qualifying. Knobs with no judge yet, shared with another decision, or tied to a partner are listed
+    and never stepped; invariants, evidence and settings are never stepped. A braked league is skipped. Writes the
+    proposals to `knob_shadow` and the would-be values to combo_knobs.json (never smart_tune's or Smart Buy's files,
+    never a setting). Bounded by `budget` seconds; never raises; returns what it would change, in words."""
+    now = now or time.time()
+    try:
+        if ROLE_BACKUP or not STORE.get("db"):
+            return []
+        st = knob_state()
+        if not force and now < float(st.get("_next") or 0):
+            return []
+        t0 = time.monotonic()
+        try:
+            rows = _knob_rows(now, t0 + budget)
+        except KnobOutOfTime:
+            _knob_save(lambda d: d.update(_next=now + KNOB_RETRY, run={"at": now, "done": False, "mode": KNOB_MODE,
+                                                                        "secs": round(time.monotonic() - t0, 1)}))
+            return ["ran out of time reading the bets; tries again in a day"]
+        smart = load_json(SMART_FILE, {})
+        smart = smart if isinstance(smart, dict) else {}
+        try:
+            dial = load_json(SB_DIAL_FILE, {})
+            dial = dial if isinstance(dial, dict) else {}
+        except Exception:
+            dial = {}
+        keys = set(rows["replay"]) | set(rows["sb"])
+        order = (["all"] if "all" in keys else []) + sorted(k for k in keys if k != "all")
+        tun = [k for k in KNOBS if k["cls"] == "tunable"]
+        groups, said, logrows, done = {}, [], [], True
+        for g in order:
+            if time.monotonic() - t0 > budget:
+                done = False
+                break
+            e = dict(st["groups"].get(g) or {}) if isinstance(st["groups"].get(g), dict) else {}
+            v = dict(e.get("v") or {}) if isinstance(e.get("v"), dict) else {}
+            why = dict(e.get("why") or {}) if isinstance(e.get("why"), dict) else {}
+            if _knob_braked(st, g, now):
+                e["last"] = [{"knob": "*", "status": "braked", "say": "Back at its starting numbers until "
+                              + dt.datetime.fromtimestamp(float(st["brake"][g]["until"]), PACIFIC).strftime("%b %-d")}]
+                groups[g] = e
+                continue
+            cur = {}
+            for k in tun:                             # where each knob stands for this group now
+                n_ = k["name"]
+                cur[n_] = v[n_] if n_ in v else _knob_seed(n_, g, smart, dial)
+            last, best, cache = [], None, {}
+            for k in tun:
+                n_ = k["name"]
+                jd = KNOB_JUDGED.get(n_)
+                if n_ in KNOB_TIED:                   # moves only through its partner (they do the same job)
+                    last.append({"knob": n_, "status": "tied"})
+                    continue
+                if k.get("shared_with"):              # also drives another decision: split before it can move
+                    last.append({"knob": n_, "status": "shared"})
+                    continue
+                if not jd:                            # its own test isn't built yet (PR3+)
+                    last.append({"knob": n_, "status": "waits"})
+                    continue
+                rs = rows[jd].get(g) or []
+                if len(rs) < globals()[KNOB_MIN_N[jd]]:
+                    last.append({"knob": n_, "status": "thin", "n": len(rs),
+                                 "say": f"{k['label']}: needs {globals()[KNOB_MIN_N[jd]]} results of its own (has {len(rs)})"})
+                    continue
+                v[n_] = cur[n_]                       # the group's own record from here on
+                staked = (5.0 * len(rs)) if jd == "sb" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
+                top = SB_DIAL_MAX if len(rs) >= SB_DIAL_SOFT_N else SB_DIAL_SOFT
+                for to in knob_candidates(n_, cur[n_]):
+                    if jd == "sb" and to > top and to > cur[n_]:
+                        continue                      # Smart Buy's soft top until 100 results (as smart_buy_learn)
+                    blk = _knob_blocked(n_, to, cur)
+                    if blk:
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "blocked",
+                                     "say": f"{knob_step_say(n_, cur[n_], to, None)}: {blk}"})
+                        continue
+                    ev = knob_evidence(knob_judge(jd, rs, cur, n_, to, cache), staked, e.get("step_at"))
+                    if ev["band"] == 0:
+                        continue                      # changes nothing: nothing to log
+                    status = "qualifies" if ev["ok"] else ("vetoed" if all(
+                        x for w, x in ev["checks"].items() if w != "holdout") else "below")
+                    row = {"knob": n_, "from": cur[n_], "to": to, "status": status, "n": len(rs),
+                           **{x: ev[x] for x in ("gain", "share", "band", "t", "new", "hold", "hold_n")},
+                           "say": knob_step_say(n_, cur[n_], to, ev, len(rs)) +
+                           ("" if ev["ok"] or status == "vetoed" else f" Not yet: {_knob_why_not(ev)}.")}
+                    last.append(row)
+                    if ev["ok"]:
+                        rank = (-ev["gain"], _knob_dist(n_, cur[n_], to))
+                        if best is None or rank < best[0]:
+                            best = (rank, row)
+                if time.monotonic() - t0 > budget:
+                    done = False
+                    break
+            if best:
+                row = best[1]
+                row["status"] = "would step"
+                v[row["knob"]] = row["to"]
+                why[row["knob"]] = row["say"]
+                e["step_at"] = now
+                e["hist"] = (list(e.get("hist") or []) + [{"at": int(now), "knob": row["knob"], "from": row["from"],
+                                                           "to": row["to"]}])[-12:]
+                said.append(f"{league_label(g)}: {row['say']}")
+            e.update(v=v, why=why, last=last, at=now)
+            groups[g] = e
+            for r in last:
+                if r.get("status") in ("would step", "qualifies", "vetoed", "below"):
+                    logrows.append((now, g, r["knob"], json.dumps(r.get("from")), json.dumps(r.get("to")), r["status"],
+                                    r.get("gain"), r.get("share"), r.get("band"), r.get("t"), r.get("new"),
+                                    r.get("hold"), r.get("hold_n"), r.get("say", "")[:600]))
+            if not done:
+                break
+
+        def put(d):
+            d["groups"].update(groups)
+            d["_at"] = now
+            d["_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
+            d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": done, "groups": len(groups),
+                        "mode": KNOB_MODE}
+            for name in ("auto_cap", "hedge_cap"):     # #260: Pete's own value, kept apart from any system raise
+                s = d["settings"].get(name) if isinstance(d["settings"].get(name), dict) else {}
+                d["settings"][name] = {"pete": _knob_pete(name), "system": s.get("system")}
+        _knob_save(put)
+        _knob_shadow_table()
+        for r in logrows:
+            store_x("insert into knob_shadow(ts, league, knob, from_v, to_v, status, gain, share, band, t, new, hold, "
+                    "hold_n, why) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+        store_x("delete from knob_shadow where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
+        ANALYTICS["at"] = 0
+        return [f"(not active yet) {s}" for s in said] + ([] if done else ["ran out of time; the rest waits a day"])
+    except Exception as err:
+        print("knob stepper:", type(err).__name__, err)
+        return []
+
+
+def _knob_sale_league(t, cache):
+    if t not in cache:
+        cache[t] = _combo_league_of(t) if is_combo(t) else league_key(t)
+    return cache[t]
+
+
+def knob_brake_check(sales, ev=None):
+    """The brake's rule on one league's automatic sales [(ts, profit, stake)], oldest first: its last
+    KNOB_BRAKE['losses'] sales all lost money, or (with at least KNOB_BRAKE_MIN_SALES sales) together they lost more
+    than KNOB_BRAKE['month_share'] of what they staked. Returns the reason in words, or None."""
+    ev = ev or KNOB_BRAKE
+    n = ev["losses"]
+    if len(sales) >= n and all(p < -KNOB_EPS for _, p, _ in sales[-n:]):
+        return f"the last {n} sales the app made on its own all lost money (${-sum(p for _, p, _ in sales[-n:]):.2f})"
+    stake = sum(s for _, _, s in sales)
+    net = sum(p for _, p, _ in sales)
+    if len(sales) >= KNOB_BRAKE_MIN_SALES and stake > 0 and net < -ev["month_share"] * stake:
+        return (f"the sales the app made on its own lost ${-net:.2f} over the last 30 days, {-net / stake:.0%} of the "
+                f"${stake:.2f} they staked (the brake is at {ev['month_share']:.0%})")
+    return None
+
+
+def knob_brake_pass(now=None, force=False):
+    """Every 30 minutes, on real automatic sales (the history file's sell_log; profit = what the sale got after the
+    fee minus what that share cost), per league since its last brake and within 30 days: when knob_brake_check fires,
+    SHADOW records 'would brake': the league's would-be values go back to their starts for KNOB_BRAKE['days'], its
+    next step needs 20 new results, and one push per league per 14 days, only when the brake would change something
+    (a value off its start). Nothing live changes. Returns the push messages; never raises."""
+    now = now or time.time()
+    try:
+        if ROLE_BACKUP or not STORE.get("db"):
+            return []
+        if not force and now - KNOB_RUN["brake_at"] < KNOB_BRAKE_EVERY:
+            return []
+        KNOB_RUN["brake_at"] = now
+        _ledger_table()
+        st = knob_state()
+        rows = store_rows("select ts, ticker, kind, offer, cost, pays, frac from sell_log where result='sold' and ts > ? "
+                          "and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
+        by, lg_of = defaultdict(list), {}
+        for r in rows:
+            try:
+                t = r["ticker"] or ""
+                frac = float(r["frac"] or 1.0)
+                offer, cost = float(r["offer"] or 0), float(r["cost"] or 0) * frac
+                pf = float(r["pays"] or 0) * frac
+                fee = single_fee(offer / pf) * pf if r.get("kind") != "combo" and not is_combo(t) and pf and offer else 0.0
+                lg = _knob_sale_league(t, lg_of)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            b = st["brake"].get(lg) if isinstance(st["brake"].get(lg), dict) else {}
+            if cost > 0 and r["ts"] > float(b.get("at") or 0):
+                by[lg].append((r["ts"], round(offer - fee - cost, 2), cost))
+        fire = {}
+        for lg, sales in by.items():
+            if _knob_braked(st, lg, now):
+                continue
+            why = knob_brake_check(sales)
+            if why:
+                fire[lg] = why
+        if not fire:
+            return []
+        days = KNOB_BRAKE["days"]
+
+        def put(d):
+            msgs = []
+            for lg, why in fire.items():
+                if _knob_braked(d, lg, now):
+                    continue
+                old = d["brake"].get(lg) if isinstance(d["brake"].get(lg), dict) else {}
+                e = d["groups"].get(lg) if isinstance(d["groups"].get(lg), dict) else {}
+                vals = e.get("v") if isinstance(e.get("v"), dict) else {}
+                off = {n: x for n, x in vals.items() if n in KNOB_BY and x != KNOB_BY[n]["start"]}
+                push_ok = bool(off) and now - float(old.get("pushed") or 0) >= days * 86400
+                d["brake"][lg] = {"at": now, "until": now + days * 86400, "why": why, "reset": off,
+                                  "pushed": now if push_ok else old.get("pushed"), "mode": KNOB_MODE}
+                if vals:
+                    e = dict(e, v={n: KNOB_BY[n]["start"] for n in vals if n in KNOB_BY}, step_at=now)
+                    d["groups"][lg] = e
+                if push_ok:
+                    msgs.append(f"Self-tuning test, nothing changed: in {league_label(lg)}, {why}. Once self-tuning is "
+                                f"live, {league_label(lg)} would go back to its starting numbers for {days} days.")
+            return msgs
+        msgs = _knob_save(put)
+        _knob_shadow_table()
+        for lg, why in fire.items():
+            store_x("insert into knob_shadow(ts, league, knob, status, why) values(?,?,?,?,?)",
+                    (now, lg, "*", "would brake", why[:600]))
+        ANALYTICS["at"] = 0
+        return msgs
+    except Exception as err:
+        print("knob brake:", type(err).__name__, err)
+        return []
+
+
+def knob_pass(now=None):
+    """The watcher's call (outside odds.lock): the brake (every 30 min), then the stepper (weekly). Returns
+    (lines to log, messages to push). Never raises."""
+    try:
+        pushes = knob_brake_pass(now)
+        steps = knob_tune(now)
+        return [f"brake (not active yet): {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes
+    except Exception as err:
+        print("knob pass:", type(err).__name__, err)
+        return [], []
+
+
+def knob_shadow_view(now=None):
+    """Results › What's working › Selling: what self-tuning would change (not active yet), per league, from
+    combo_knobs.json only (no replay, no Kalshi). Never raises ({} on an error)."""
+    now = now or time.time()
+    try:
+        st = knob_state()
+        run = st.get("run") if isinstance(st.get("run"), dict) else {}
+        out = []
+        for g, e in st["groups"].items():
+            if not isinstance(e, dict) or not isinstance(e.get("last"), list):
+                continue
+            last = [r for r in e["last"] if isinstance(r, dict)]
+            b = st["brake"].get(g) if isinstance(st["brake"].get(g), dict) else None
+            brake = None
+            if b and float(b.get("until") or 0) > now:
+                brake = {"why": str(b.get("why") or ""), "until": b.get("until"),
+                         "until_say": dt.datetime.fromtimestamp(float(b["until"]), PACIFIC).strftime("%b %-d")}
+            pick = lambda *s: [{x: r.get(x) for x in ("knob", "status", "say", "gain", "band", "t", "hold")}
+                               for r in last if r.get("status") in s]
+            moved = {n: x for n, x in (e.get("v") or {}).items() if n in KNOB_BY and x != KNOB_BY[n]["start"]}
+            out.append({"key": g, "name": league_label(g), "steps": pick("would step"), "also": pick("qualifies"),
+                        "vetoed": pick("vetoed"), "below": len(pick("below")), "thin": pick("thin"),
+                        "brake": brake, "moved": [{"knob": n, "label": KNOB_BY[n]["label"],
+                                                   "say": knob_say(KNOB_BY[n]["unit"], x),
+                                                   "start": knob_say(KNOB_BY[n]["unit"], KNOB_BY[n]["start"])}
+                                                  for n, x in moved.items()]})
+        out.sort(key=lambda x: (x["key"] != "all", -len(x["steps"]) - len(x["also"]), x["name"]))
+        tun = [k for k in KNOBS if k["cls"] == "tunable"]
+        return {"mode": KNOB_MODE, "at": st.get("_at"), "next": st.get("_next"), "done": run.get("done"),
+                "leagues": out, "judged": [KNOB_BY[n]["label"] for n in KNOB_JUDGED],
+                "waits": sum(1 for k in tun if k["name"] not in KNOB_JUDGED and not k.get("shared_with")
+                             and k["name"] not in KNOB_TIED),
+                "shared": [k["label"] for k in tun if k.get("shared_with")],
+                "evidence": dict(KNOB_EVIDENCE), "brake": dict(KNOB_BRAKE)}
+    except Exception as err:
+        print("knob shadow view:", type(err).__name__, err)
         return {}
 
 

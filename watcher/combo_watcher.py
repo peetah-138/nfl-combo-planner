@@ -1922,6 +1922,14 @@ def shadow_loop(odds, notifier=None, every=600):
                 log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
         except Exception as err:
             log("smart-sell scorecard skipped:", type(err).__name__, err)
+        try:                                              # self-tuning (#228 PR2): SHADOW only, OUTSIDE odds.lock.
+            lines, pushes = odds.engine().knob_pass()     # brake every 30 min, stepper weekly, time-bounded; reads
+            for m in lines:                               # history only and writes combo_knobs.json + knob_shadow:
+                log("knobs:", m)                          # nothing live reads them yet
+            for m in pushes if notifier else []:
+                notifier.add(m)                           # information only: one per league per 14 days
+        except Exception as err:
+            log("self-tuning test skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
             # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
             # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
