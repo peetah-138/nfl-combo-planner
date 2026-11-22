@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Auto cash-outs a day can be Unlimited (issue #217): unlimited never blocks, a number still does, the sentinel
 survives a settings round trip, and an older process reads it as a cap it never reaches."""
 import os, re, json, time, tempfile, importlib.util

@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Sell a single bet by Pete's tap (issue #238): Live's single cards get "Get new price" and "Sell". The quote reads
 # Kalshi's order book now (never a cached copy) and is good for 20 s; the sale re-reads the book, refuses a lower bid,
 # and sends one fill-now-or-cancel, reduce-only sale at the quoted price, once per quote. Pause refuses; an unclear

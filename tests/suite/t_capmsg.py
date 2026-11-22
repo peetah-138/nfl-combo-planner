@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The over-the-cap message (issue #71): its words follow the window the cap really counts (today / this week (Wed to
 # Mon) / games still to play for the Mix; never "this weekend", Pete's decision on #71), it names the Settings item to
 # change ("Weekly cap", renamed from "Weekend cap") and says how much room is left. The rule itself (week_spend, the

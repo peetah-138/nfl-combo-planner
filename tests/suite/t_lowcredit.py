@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Low-credit mode and buying: while odds credits are low, panel bets and Buy ideas with a game-winner pick more than
 # 4 hours away that only has free lines (no odds-service line) are LEFT OUT. Remove-only: nothing added, no stake or
 # order changed; normal mode is unchanged; spreads/totals and live picks are untouched; errors keep the bet.

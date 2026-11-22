@@ -1,3 +1,4 @@
+# CHECK: group=page secs=65
 """Buy straight (issue #113): the Build slip's Single bet / Combo switch, the game page's pinned buy buttons and the buy
 sheet (render, stake presets, warning / blocked states, the 20 s price life, arm-then-confirm for big stakes, the Bought
 moment, a refusal, an unclear answer). The quote and buy answers are scripted at the page's own request layer (nothing is
@@ -31,6 +32,10 @@ def wait(pg, js, secs=12):
             pass
         time.sleep(.2)
     return False
+def settle(pg, secs=10):
+    """the sheet's own request (a quote or a buy) has answered and been drawn: wait on that state, never a fixed time
+    (a fixed sleep read the button while the answer was still on its way under load, e.g. 'Buying… confirming')"""
+    return wait(pg, "!S.sb||(!S.sb.busy&&!S.sb.sending)", secs)
 def shot(pg, name):
     if SHOTS:
         pg.screenshot(path=os.path.join(SHOTS, name))
@@ -138,12 +143,12 @@ with sync_playwright() as pw:
         shot(pg, f"2_sheet_good_{tag}.png")
         # presets
         n0 = len(SENT)
-        pg.locator("#sbx .sbst .chip", has_text="$5").first.click(); time.sleep(.6)
+        pg.locator("#sbx .sbst .chip", has_text="$5").first.click(); settle(pg)
         if len(SENT) <= n0 or SENT[-1].get("stake") != 5: bad(f"{tag}: the $5 preset should re-price at $5: {SENT[-1:]}")
         if sheet(pg)["on"] != ["$5"]: bad(f"{tag}: the $5 preset should show as chosen: {sheet(pg)['on']}")
         # ---- (3) warnings: yellow Buy anyway
         ST["quote"] = Q(clears=False, fair=.70, edge=-.034, ret=-.046, warn=[{"k": "above", "t": "Kalshi's price is above our 70% chance."}, {"k": "thin", "t": "Thin market: 9¢ between the buy and sell prices."}], gap=.09, sug=2)
-        pg.evaluate("sbQuote()"); time.sleep(.6)
+        pg.evaluate("sbQuote()"); settle(pg)
         s = sheet(pg)
         if "warn" not in s["cls"] or "Buy anyway" not in s["btn"] or s["warn"] != ["above", "thin"]: bad(f"{tag}: a poor price should be a yellow Buy anyway with its warnings: {s}")
         if "−5%" not in s["txt"]: bad(f"{tag}: a negative edge should read −5%: {s['txt'][:200]!r}")
@@ -151,19 +156,19 @@ with sync_playwright() as pw:
         # live, no fair price
         ST["quote"] = Q(clears=False, live=True, fair=None, how=None, edge=None, ret=None, nofair="no pre-game line to start from",
                         warn=[{"k": "live", "t": "This game is under way. There's no live fair price, so you'd be going on Kalshi's price alone."}])
-        pg.evaluate("sbQuote()"); time.sleep(.6)
+        pg.evaluate("sbQuote()"); settle(pg)
         s = sheet(pg)
         if "LIVE" not in s["txt"] or "no fair price" not in s["txt"] or "Buy anyway" not in s["btn"]: bad(f"{tag}: a live game with no fair price should say so: {s}")
         shot(pg, f"4_sheet_live_{tag}.png")
         # blocked (over the cap)
         ST["quote"] = Q(clears=False, blocked="That would bring your spending this week to $105, over your $100 cap. You have $5 left.")
-        pg.evaluate("sbQuote()"); time.sleep(.6)
+        pg.evaluate("sbQuote()"); settle(pg)
         s = sheet(pg)
         if not s["dis"] or "blocked" not in s["warn"] or "over your $100 cap" not in s["txt"]: bad(f"{tag}: over the cap the Buy should be off with the cap message: {s}")
         shot(pg, f"5_sheet_blocked_{tag}.png")
         # ---- (4) arm-then-confirm above the threshold, then the Bought moment
         ST["quote"] = Q(stake=30, n=40, cost=29.36, pays=40, profit=10.64)
-        pg.evaluate("sbQuote()"); time.sleep(.6)
+        pg.evaluate("sbQuote()"); settle(pg)
         n0 = len(SENT)
         pg.locator("#sbbuy").click(); time.sleep(.3)
         if len(SENT) != n0 or "Tap again" not in (sheet(pg)["btn"] or ""): bad(f"{tag}: a $29 buy should ask for a second tap first: {sheet(pg)}")
@@ -177,12 +182,12 @@ with sync_playwright() as pw:
         # ---- (5) a refusal stays in the sheet; an unclear answer is Check Kalshi
         ST["quote"] = Q(); ST["buy"] = {"ok": False, "moved": True, "msg": "The price moved to 75¢ (you saw 72¢). Nothing was bought. Get a fresh price."}
         pg.evaluate(f"sbOpen('{tk}','nba')"); wait(pg, "!!document.querySelector('#sbx #sbbuy')", 6); time.sleep(.3)
-        pg.locator("#sbbuy").click(); time.sleep(.8)
+        pg.locator("#sbbuy").click(); settle(pg)
         s = sheet(pg)
         if not s or "failed" not in s["warn"] or "price moved" not in s["txt"] or "fresh price" not in (s["btn"] or ""): bad(f"{tag}: a refusal should show why and offer a fresh price: {s}")
         shot(pg, f"7_refused_{tag}.png")
         n0 = len(SENT)
-        pg.locator("#sbbuy").click(); time.sleep(.6)
+        pg.locator("#sbbuy").click(); settle(pg)
         if not SENT[n0:] or SENT[n0]["a"] != "singlequote": bad(f"{tag}: Get a fresh price should ask for a new quote, never resend the buy: {SENT[n0:]}")
         ST["buy"] = {"ok": False, "check": True, "msg": "Kalshi didn't answer clearly, so this may or may not have been bought."}
         pg.locator("#sbbuy").click()

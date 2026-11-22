@@ -1,0 +1,47 @@
+/* ---- makeover phase 2: live game cards, the Sold moment, the big hit, Results charts you can scrub */
+.gc{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 16px 12px;display:grid;gap:10px;cursor:pointer;position:relative;overflow:hidden;transition:border-color .3s}
+.gc.live{border-color:color-mix(in srgb,var(--live) 45%,transparent)}.gc.live.lup{border-color:color-mix(in srgb,var(--yes) 50%,transparent)}.gc.live.ldown{border-color:color-mix(in srgb,var(--no) 50%,transparent)}
+.gc .gh{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
+.gc .gh .lv{color:var(--live);display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:12px}
+.gc .gh .lv i{width:7px;height:7px;border-radius:50%;background:var(--no);animation:pulse2 1.4s infinite}
+.gc .tms{display:grid;gap:4px}.gc .gtr{display:flex;align-items:center;gap:10px;font-size:16px}.gc .gtr .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.gc .gtr.them .nm{font-weight:500;color:var(--sub)}.gc .gtr .pts{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;min-width:30px;text-align:right}
+.gc .gtr.them .pts{color:var(--sub)}.gc .gtr .mine{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:var(--acc);background:var(--accbg);padding:2px 6px;border-radius:6px}
+.gc .gl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center}
+.gc .gl .ch b{display:block;font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1}.gc .gl .ch small{color:var(--mute);font-size:11.5px}
+.gc .gl .gbar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.gc .gl .gbar i{display:block;height:100%;border-radius:2px;transition:width .6s var(--ease)}
+.mline{position:relative;height:46px}.mline svg{width:100%;height:46px;display:block;overflow:visible}
+.mline .sdot{width:8px;height:8px;margin:-4px 0 0 -4px}
+.gc .bets{display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--line);padding-top:10px;align-items:center}
+.gc .bets .bt{font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;background:var(--panel2);color:var(--sub);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gc .bets .bt.s{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}.gc .bets .rd{margin-left:auto;font-weight:700;font-size:12.5px;color:var(--ink)}
+.gc.scored{animation:scored 1.6s var(--ease)}.gc.scored.good{--sg:var(--yes)}.gc.scored.bad{--sg:var(--no)}
+@keyframes scored{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--sg,var(--live)) 70%,transparent);background:color-mix(in srgb,var(--sg,var(--live)) 16%,var(--panel))}40%{box-shadow:0 0 0 10px transparent}100%{}}
+.gc .pts.bump{animation:bump .7s var(--spring)}@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.45);color:var(--sg,var(--live))}100%{transform:none}}
+.gc.done{opacity:.72}
+.gsk{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:grid;gap:12px}.gsk i{display:block;background:var(--panel2);border-radius:8px}
+.scrub{position:relative;touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
+.scrub .scrl,.scrub .scrd,.scrub .sread{position:absolute}.scrub.on .scrl,.scrub.on .scrd,.scrub.on .sread{opacity:1}
+.scrub .sread{top:-4px}
+.plc .plh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}
+.plc .plh b{font-size:26px;font-weight:800;letter-spacing:-.03em;display:block;line-height:1.1}.plc .plh small{color:var(--mute);font-size:12px;display:block;min-height:15px}
+.plc svg{width:100%;height:150px;display:block}.plc rect.brc{transition:opacity .15s}.plc.on rect.brc{opacity:.35}.plc.on rect.brc.sel{opacity:1}
+.plc .xl{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin-top:6px}
+.plc .rng2{flex:none}.plc .hint{font-size:11.5px;color:var(--mute);margin-top:6px}
+.blist .hrow2{margin-bottom:8px}
+.okcard .stamp{display:inline-block;font:700 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;color:var(--sub);border:1px dashed var(--line);border-radius:6px;padding:3px 8px;margin-bottom:8px;animation:rise .4s .25s both}
+.okcard .plp{display:inline-block;margin-top:4px;font-weight:800;font-size:14px;padding:4px 12px;border-radius:999px;background:var(--yesbg);color:var(--yes);animation:rise .4s .5s both}
+.okcard .tkt{display:flex;justify-content:center;gap:0;margin:14px auto 4px;max-width:300px;border-top:1px dashed var(--line);padding-top:12px;animation:rise .4s .6s both}
+.okcard .tkt div{flex:1;font-size:12px;color:var(--mute)}.okcard .tkt b{display:block;font-size:16px;color:var(--ink)}
+.okcard.okloss circle{stroke:var(--sub);fill:var(--panel2)}.okcard.okloss path{stroke:var(--sub)}.okcard.okloss .amt{color:var(--ink)}.okcard.okloss .plp{background:var(--nobg);color:var(--no)}
+.bigwin{position:fixed;inset:0;z-index:98;display:grid;place-items:center;background:radial-gradient(circle at 50% 42%,color-mix(in srgb,var(--yes) 26%,rgba(6,9,14,.9)),rgba(6,9,14,.94) 60%);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:fadein .3s var(--ease);padding:16px}
+.bigwin.out{opacity:0;transition:opacity .35s}
+.bigwin .bw{text-align:center;max-width:360px;animation:bwin .7s var(--spring) both}
+@keyframes bwin{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.bigwin .ey{font-size:12px;font-weight:800;letter-spacing:.24em;color:var(--yes);text-transform:uppercase}
+.bigwin .amt{font-size:58px;font-weight:900;letter-spacing:-.05em;color:#fff;text-shadow:0 0 34px color-mix(in srgb,var(--yes) 80%,transparent);line-height:1.05;margin:8px 0 4px;font-variant-numeric:tabular-nums}
+.bigwin .lb{font-size:16px;font-weight:700;color:#fff}.bigwin .mx{display:inline-block;margin-top:10px;font-weight:800;color:var(--yes);background:rgba(0,0,0,.35);padding:5px 12px;border-radius:999px}
+.bigwin .ring2{position:absolute;left:50%;top:42%;width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;border:3px solid var(--yes);animation:ring2 1.4s var(--out) infinite;pointer-events:none}
+.bigwin .ring2.b{animation-delay:.45s}@keyframes ring2{from{transform:scale(1);opacity:.9}to{transform:scale(14);opacity:0}}
+.bigwin .btn{margin-top:22px}
+@media (prefers-reduced-motion:reduce){.bigwin .ring2{display:none}.bigwin .bw{animation:none}.gc.scored{animation:none}}

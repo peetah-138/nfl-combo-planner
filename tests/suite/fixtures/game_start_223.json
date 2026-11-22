@@ -1,0 +1,106 @@
+{
+ "_note": "Real shapes, read 2026-11-21 22:35 UTC (issue #223): Kalshi's public /markets for KXNCAAFGAME-26NOV21UKMIZZ (expected_expiration_time is the 23:00 UTC placeholder most college football games carry that Saturday) and ESPN's public college-football scoreboard event for the same game (kick-off 00:30 UTC = 7:30 PM Eastern). Trimmed to the fields the engine reads.",
+ "kalshi_markets": [
+  {
+   "ticker": "KXNCAAFGAME-26NOV21UKMIZZ-UK",
+   "event_ticker": "KXNCAAFGAME-26NOV21UKMIZZ",
+   "market_type": "binary",
+   "title": "Kentucky wins",
+   "yes_sub_title": "Kentucky",
+   "no_sub_title": "Kentucky",
+   "open_time": "2026-11-07T20:07:00Z",
+   "close_time": "2026-11-23T20:00:00Z",
+   "expected_expiration_time": "2026-11-21T23:00:00Z",
+   "latest_expiration_time": "2026-11-23T20:00:00Z",
+   "status": "active",
+   "yes_bid_dollars": "0.3500",
+   "yes_ask_dollars": "0.3600",
+   "last_price_dollars": "0.3600",
+   "result": ""
+  },
+  {
+   "ticker": "KXNCAAFGAME-26NOV21UKMIZZ-MIZZ",
+   "event_ticker": "KXNCAAFGAME-26NOV21UKMIZZ",
+   "market_type": "binary",
+   "title": "Missouri wins",
+   "yes_sub_title": "Missouri",
+   "no_sub_title": "Missouri",
+   "open_time": "2026-11-07T20:07:00Z",
+   "close_time": "2026-11-23T20:00:00Z",
+   "expected_expiration_time": "2026-11-21T23:00:00Z",
+   "latest_expiration_time": "2026-11-23T20:00:00Z",
+   "status": "active",
+   "yes_bid_dollars": "0.6400",
+   "yes_ask_dollars": "0.6500",
+   "last_price_dollars": "0.6500",
+   "result": ""
+  }
+ ],
+ "espn_scoreboard": {
+  "events": [
+   {
+    "id": "401856751",
+    "date": "2026-11-22T00:30Z",
+    "name": "Kentucky Wildcats at Missouri Tigers",
+    "shortName": "UK @ MIZ",
+    "status": {
+     "type": {
+      "name": "STATUS_SCHEDULED",
+      "state": "pre",
+      "completed": false,
+      "detail": "Sat, November 21st at 7:30 PM EST",
+      "shortDetail": "11/21 - 7:30 PM EST"
+     }
+    },
+    "competitions": [
+     {
+      "id": "401856751",
+      "date": "2026-11-22T00:30Z",
+      "timeValid": true,
+      "startDate": "2026-11-22T00:30Z",
+      "status": {
+       "clock": 0,
+       "displayClock": "0:00",
+       "period": 0,
+       "type": {
+        "name": "STATUS_SCHEDULED",
+        "state": "pre",
+        "completed": false,
+        "detail": "Sat, November 21st at 7:30 PM EST",
+        "shortDetail": "11/21 - 7:30 PM EST"
+       }
+      },
+      "competitors": [
+       {
+        "id": "142",
+        "homeAway": "home",
+        "score": "0",
+        "team": {
+         "id": "142",
+         "abbreviation": "MIZ",
+         "displayName": "Missouri Tigers",
+         "shortDisplayName": "Missouri",
+         "location": "Missouri",
+         "name": "Tigers"
+        }
+       },
+       {
+        "id": "96",
+        "homeAway": "away",
+        "score": "0",
+        "team": {
+         "id": "96",
+         "abbreviation": "UK",
+         "displayName": "Kentucky Wildcats",
+         "shortDisplayName": "Kentucky",
+         "location": "Kentucky",
+         "name": "Wildcats"
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

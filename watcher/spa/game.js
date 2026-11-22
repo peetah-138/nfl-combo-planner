@@ -6,6 +6,7 @@ async function openGame(t){if(!t)return;S.comboOpen=null;S.ideaOpen=null;S.gameO
 function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
 async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
  if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
+ if(typeof gtabHeld==='function'&&gtabHeld()){clearTimeout(S.gtabRT);S.gtabRT=setTimeout(drawGame,700);return;}   // #218: a finger on the tab row too
  const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
   if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}

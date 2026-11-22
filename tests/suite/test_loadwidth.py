@@ -1,3 +1,4 @@
+# CHECK: group=page secs=53
 """A new screen never draws too wide (GitHub: "Text overflows the screen for a moment on every new screen").
 Cause that was fixed: the page-entrance class on <main> was called `fresh`, the same name as the small grey
 "Updated Ns ago" stamp, so for ~1.6 s after every tab switch the whole screen inherited that stamp's `white-space:

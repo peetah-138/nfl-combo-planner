@@ -1,3 +1,4 @@
+# CHECK: group=page secs=30
 """Sell a single bet by Pete's tap (issue #238): Live's single cards show "Get new price" and "Sell"; the price refresh
 updates the card's Worth now; Sell opens a sheet (what comes back after the fee, profit, holding's chance, warnings),
 needs two taps, then shows the Sold moment; a thin market says Sell anyway; an unclear answer says Check Kalshi. The

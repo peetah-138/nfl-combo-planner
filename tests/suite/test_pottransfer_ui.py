@@ -1,3 +1,4 @@
+# CHECK: group=page
 # Moving cash between Kalshi's pots, on the page (issue #144), at phone size: Settings › Money › Kalshi balance by pot
 # names the pots and has "Move money between pots"; the tool's Review opens a confirm sheet with both pots before and
 # after and the plain words; Move needs a second tap ("Tap again"), sends one move with the sheet's own id, then the

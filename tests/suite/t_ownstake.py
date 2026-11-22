@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Pete sets his own bet amount (issue #145). The page only says what he wants; the engine checks every amount again
 # (own_stake: a real, finite number inside the limits, rounded down to the cent) and never trusts the page: negative,
 # zero, NaN, infinite, text, booleans and out-of-range amounts are refused with plain words and nothing is priced or
@@ -8,6 +9,7 @@
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SIZING_FILE = os.path.join(E.HERE, "s.json"); E.CUTOFF_FILE = os.path.join(E.HERE, "c.json")
