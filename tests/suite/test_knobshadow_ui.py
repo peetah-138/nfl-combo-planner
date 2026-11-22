@@ -109,7 +109,7 @@ with sync_playwright() as pw:
         pg.locator(".an .ksp .kslg button", has_text="NHL").click()
         wait(pg, "!!document.querySelector('.an .ksp .ksbrk')", 5)
         if "would stay at its starting numbers" not in pg.locator(".an .ksp").inner_text() or \
-                "keeping any stricter one" not in pg.locator(".an .ksp").inner_text():   # #284: never looser
+                "keeping any number it had made stricter" not in pg.locator(".an .ksp").inner_text():   # #284: never looser
             P.append(tag + ": NHL's brake (test) banner not shown")
         pg.locator(".an .ksp .kslg button", has_text="Everything").click()
         wait(pg, "!!document.querySelector('.an .ksp .ksempty')", 5)
@@ -126,6 +126,11 @@ with sync_playwright() as pw:
         html0 = pg.evaluate("v=>{const o=S.ksOpen;S.ksOpen=true;const h=knobShadow(v);S.ksOpen=o;return h}", EMPTY)
         if "first test run happens within a week" not in html0: P.append(tag + ": no first-run note: " + html0[:200])
         if pg.evaluate("knobShadow({})+knobShadow(null)") != "": P.append(tag + ": an empty answer should draw nothing")
+        pre = {"mode": "live", "at": None, "leagues": [{"key": "nhl", "name": "NHL", "brake": {"why": "x", "until": now + 86400,
+               "until_say": "Dec 6"}, "steps": [], "changes": [], "moved": []}]}
+        html1 = pg.evaluate("v=>{const o=S.ksOpen;S.ksOpen=true;const h=knobShadow(v);S.ksOpen=o;return h}", pre)
+        if "ksbrk" not in html1 or "first run happens" in html1:   # PR4: a brake before any run is shown
+            P.append(tag + ": a brake before the first run is hidden: " + html1[:200])
         # PR3: self-tuning on: what it changed, a live brake, the knobs still in test
         pg.evaluate("v=>{S.ksOpen=false;S.ksLg=null;document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         hd2 = pg.locator(".an .ksp .ksh")

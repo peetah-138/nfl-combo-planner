@@ -21492,14 +21492,14 @@ def knob_brake_pass(now=None, force=False):
                                                                  "why": why[:600], "reset": off}])[-12:])
                 d["groups"][lg] = e
                 if push_ok and live:
-                    msgs.append(f"Self-tuning brake: in {league_label(lg)}, {why}. Smart sell in {league_label(lg)} is "
-                                f"back on its starting numbers for {days} days (any number it had made stricter stays). "
-                                f"Nothing to do; it can start tuning again after "
-                                f"{dt.datetime.fromtimestamp(now + days * 86400, PACIFIC).strftime('%b %-d')}.")
+                    msgs.append(f"Self-tuning brake, nothing to do: smart sell in {league_label(lg)} is back on its "
+                                f"starting numbers until "
+                                f"{dt.datetime.fromtimestamp(now + days * 86400, PACIFIC).strftime('%b %-d')} (any number "
+                                f"it had made stricter stays). Why: {why}.")
                 elif push_ok:
-                    msgs.append(f"Self-tuning test, nothing changed: in {league_label(lg)}, {why}. With self-tuning on, "
-                                f"{league_label(lg)} would go back to its starting numbers for {days} days (keeping any "
-                                f"stricter one).")
+                    msgs.append(f"Self-tuning test, nothing changed: with self-tuning on, {league_label(lg)} would go "
+                                f"back to its starting numbers for {days} days (keeping any number it had made stricter). "
+                                f"Why: {why}.")
             return msgs, done_
         msgs, braked = _knob_save(put)
         _knob_shadow_table()
