@@ -20002,10 +20002,10 @@ def book_info(payload):
     yes, no = next((b for b in books if b[0] and b[1]), None) or next((b for b in books if b[0] or b[1]), ([], []))
     if not yes or not no:
         return {"bid": yes[-1][0] if yes else None, "ask": 1 - no[-1][0] if no else None,
-                "spread": None, "ask_size": no[-1][1] if no else 0, "bid_size": yes[-1][1] if yes else 0, "thin": True}
+                "spread": None, "ask_size": no[-1][1] if no else 0, "thin": True}
     bid, ask = yes[-1][0], 1 - no[-1][0]
     spread = round(ask - bid, 4)                  # rounded: 0.53 - 0.49 is 0.04000000000000001 in floats
-    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1], "bid_size": yes[-1][1],
+    return {"bid": bid, "ask": ask, "spread": spread, "ask_size": no[-1][1],
             "thin": spread > 0.04 or no[-1][1] < 100}
 
 
@@ -20022,6 +20022,7 @@ def book_depth(ticker, max_age=60):
             return None                           # 429/5xx: unknown, not an empty book (and not cached)
         js = r.json()
         info = book_info(js)
+        info["bid_size"] = _bid_size(js)          # contracts at the best YES bid (a manual sale's depth, #238)
     except (requests.RequestException, ValueError):
         return None
     BOOK_DEPTH[ticker] = (now, info)
@@ -20032,6 +20033,18 @@ def book_depth(ticker, max_age=60):
             BOOK_DEPTH.pop(k, None)
             BOOK_LADDER.pop(k, None)
     return info
+
+
+def _bid_size(payload):
+    """Contracts wanted at the best YES bid, from an order book answer (either shape). Never raises; odd = 0."""
+    try:
+        for k in ("orderbook_fp", "orderbook"):
+            yes = book_levels(payload.get(k) if isinstance(payload, dict) else None, "yes")
+            if yes:
+                return float(yes[-1][1])
+    except Exception:
+        pass
+    return 0.0
 
 
 def _ask_ladder(payload):
