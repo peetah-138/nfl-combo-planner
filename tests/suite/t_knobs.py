@@ -128,11 +128,19 @@ eng = open("wahome/engine.py", encoding="utf-8").read()
 start, end = eng.index("KNOB_UNITS = ("), eng.index("\ndef prune_drafts(")     # the registry and its shadow stepper
 outside = eng[:start] + eng[end:]
 uses = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", outside)})
-LIVE_OK = ["knob_exit_prm", "knob_shadow", "knob_shadow_view", "knob_smart_params", "knob_switch_on", "knob_view"]
+LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view", "knob_smart_params", "knob_switch_on",
+           "knob_view"]
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
 _callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_settings", "smart_params", "smart_tune")
                 if n in inspect.getsource(getattr(E, f))] for n in ("knob_exit_prm", "knob_smart_params", "knob_switch_on")}
+ok("#228 PR4: smart sell's own slip (auto_slip) is read only by auto_sell_now, for a combo's automatic sale",
+   (lambda a: "knob_auto_slip(" in a and "CASH_SLIP" not in a.replace("AUTO_CASH_SLIP", ""))(
+       eng_src[eng_src.index("\ndef auto_sell_now("):eng_src.index("\ndef ", eng_src.index("\ndef auto_sell_now(") + 5)])
+   and "CASH_SLIP * agreed" in inspect.getsource(E._accept_with_retries))
+ok("...and your own Cash out retries keep CASH_SLIP, listed as never moving by itself",
+   E.KNOB_BY["cash_slip"]["cls"] == "invariant" and E.KNOB_BY["auto_slip"]["cls"] == "tunable"
+   and E.AUTO_CASH_SLIP == E.CASH_SLIP == 0.97 and not E.KNOB_BY["auto_slip"].get("shared_with"))
 ok("...and exactly where: the two sellers and Smart Buy's exit settings take the exit numbers, smart_params the "
    "floor/risk/loss, smart_tune only asks the switch", _callers == {
        "knob_exit_prm": ["take_profit_reason", "single_sell_reason", "exit_settings"],

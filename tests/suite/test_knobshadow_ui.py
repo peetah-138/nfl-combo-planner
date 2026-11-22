@@ -56,9 +56,9 @@ json.dump({"_at": now - 3600, "_next": now + 6 * 86400, "run": {"done": True, "m
                                        {"knob": "sl_prog", "status": "would step", "say": "Not before this much of the game: 50% → 55%. A test."}]},
                       "nhl": {"v": {}, "lv": {}, "last": [],
                               "hist": [{"at": int(now - 60), "knob": "*", "brake": True, "live": True,
-                                        "why": "the last 4 sales the app made on its own all got less than holding would have paid ($9.10 less)"}]}},
+                                        "why": "the last 4 sales the app made on its own all got less than holding was expected to pay when they sold ($9.10 less)"}]}},
            "brake": {"nhl": {"at": now - 60, "until": now + 14 * 86400, "mode": "live",
-                             "why": "the last 4 sales the app made on its own all got less than holding would have paid ($9.10 less)"}},
+                             "why": "the last 4 sales the app made on its own all got less than holding was expected to pay when they sold ($9.10 less)"}},
            "settings": {}}, open(A.KNOBS_FILE, "w"))
 A.SMART_CACHE.update(at=time.time() + 1e6, d={})
 KS_LIVE = A.knob_shadow_view(now)
@@ -108,7 +108,8 @@ with sync_playwright() as pw:
             if want not in txt: P.append(tag + ": NBA missing %r" % want)
         pg.locator(".an .ksp .kslg button", has_text="NHL").click()
         wait(pg, "!!document.querySelector('.an .ksp .ksbrk')", 5)
-        if "would stay at its starting numbers" not in pg.locator(".an .ksp").inner_text():
+        if "would stay at its starting numbers" not in pg.locator(".an .ksp").inner_text() or \
+                "keeping any number it had made stricter" not in pg.locator(".an .ksp").inner_text():   # #284: never looser
             P.append(tag + ": NHL's brake (test) banner not shown")
         pg.locator(".an .ksp .kslg button", has_text="Everything").click()
         wait(pg, "!!document.querySelector('.an .ksp .ksempty')", 5)
@@ -125,6 +126,11 @@ with sync_playwright() as pw:
         html0 = pg.evaluate("v=>{const o=S.ksOpen;S.ksOpen=true;const h=knobShadow(v);S.ksOpen=o;return h}", EMPTY)
         if "first test run happens within a week" not in html0: P.append(tag + ": no first-run note: " + html0[:200])
         if pg.evaluate("knobShadow({})+knobShadow(null)") != "": P.append(tag + ": an empty answer should draw nothing")
+        pre = {"mode": "live", "at": None, "leagues": [{"key": "nhl", "name": "NHL", "brake": {"why": "x", "until": now + 86400,
+               "until_say": "Dec 6"}, "steps": [], "changes": [], "moved": []}]}
+        html1 = pg.evaluate("v=>{const o=S.ksOpen;S.ksOpen=true;const h=knobShadow(v);S.ksOpen=o;return h}", pre)
+        if "ksbrk" not in html1 or "first run happens" in html1:   # PR4: a brake before any run is shown
+            P.append(tag + ": a brake before the first run is hidden: " + html1[:200])
         # PR3: self-tuning on: what it changed, a live brake, the knobs still in test
         pg.evaluate("v=>{S.ksOpen=false;S.ksLg=null;document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         hd2 = pg.locator(".an .ksp .ksh")
@@ -133,7 +139,7 @@ with sync_playwright() as pw:
         pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         txt = pg.locator(".an .ksp").inner_text()
         for want in ("Self-tuning is on", "Changed", "Profit floor: 1.5× what you paid → 1.6× what you paid",
-                     "the newest 30% agree", "Tested, not live yet", "Where it stands now", "Tuning itself: 10 of smart sell"):
+                     "the newest 30% agree", "Tested, not live yet", "Where it stands now", "Tuning itself: 13 of smart sell"):
             if want not in txt: P.append(tag + ": live NBA missing %r" % want)
         if "nothing changes yet" in txt: P.append(tag + ": live card still says nothing changes")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): P.append(tag + ": the live card scrolls sideways")
@@ -142,7 +148,8 @@ with sync_playwright() as pw:
         pg.locator(".an .ksp").screenshot(path=os.path.join(os.environ.get("SHOT_DIR", "."), "knoblive_%s.png" % tag))
         pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nhl';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         txt = pg.locator(".an .ksp").inner_text()
-        if "is back on its starting numbers until" not in txt or "Brake: back to the starting numbers" not in txt:
+        if "is back on its starting numbers until" not in txt or "Brake: back to the starting numbers" not in txt \
+                or "keeping any number it had made stricter" not in txt or "expected to pay" not in txt:
             P.append(tag + ": NHL's live brake not shown: " + txt[:300])
         if pg.locator(".an .ksp input, .an .ksp select, .an .ksp textarea").count():
             P.append(tag + ": the live card has a setting control (it must be read-only)")

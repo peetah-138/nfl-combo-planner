@@ -154,8 +154,9 @@ ok("invariants, evidence knobs and settings are never judged or stepped", not (s
 ok("only the knobs with a judge are judged", stepped <= set(E.KNOB_JUDGED))
 st_of = {r["knob"]: r["status"] for r in nba["last"]}
 ok("shared knobs are blocked, tied ones move only through their partner, the rest wait for their test",
-   st_of.get("live_spread") == "shared" and st_of.get("cash_slip") == "shared" and st_of.get("sb_ev_min") == "shared"
-   and st_of.get("sl_checks") == "shared" and st_of.get("swing_base") == "tied" and st_of.get("exit_est_smart") == "waits" and st_of.get("exit_q_min") != "waits")
+   st_of.get("live_spread") == "shared" and "cash_slip" not in st_of and st_of.get("sb_ev_min") == "shared"
+   and st_of.get("sl_checks") == "shared" and st_of.get("swing_base") == "tied" and st_of.get("hedge_lock_share") == "waits"
+   and all(st_of.get(n) not in ("waits", "shared") for n in ("exit_q_min", "exit_est_smart", "exit_est_tp", "auto_slip")))
 nhl = S["groups"].get("nhl") or {}
 ok("a thin history (12 bets) does nothing", not any(r.get("status") in ("would step", "qualifies") for r in nhl.get("last", []))
    and {r["status"] for r in nhl["last"] if r["knob"] == "smart_floor"} == {"thin"} and "smart_floor" not in (nhl.get("v") or {}))
@@ -237,13 +238,14 @@ os.remove(E.KNOBS_FILE)
 E.knob_judge = judge
 E.knob_tune(now, force=True)                                   # nba's shadow floor now 1.8 (off its start)
 E._ledger_table()
-def sale(ts, t, offer, cost, by="mac", kind="combo", held="cost"):
-    """A sold bet; holding paid `held` (default: what it cost, so a sale under cost did worse than holding: a loss under
-    Pete's #266 rule); None = no result yet."""
+def sale(ts, t, offer, cost, by="mac", kind="combo", held="cost", chance=0.5):
+    """A sold bet. #284: a loss = holding was EXPECTED to pay more at the sale: Kalshi's usual offer at the logged
+    chance (0.5 x $20 x the in-play discount = $8.20) against the offer; `held` (the realized result) no longer
+    matters."""
     held = cost if held == "cost" else held
-    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by, outcome, held) "
-              "values(?,?,?,?,?,?,?,?,?,?,?)", (ts, t, "sold", kind, offer, cost, 20.0, 1.0, by,
-                                              None if held is None else "won", held))
+    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by, outcome, held, chance) "
+              "values(?,?,?,?,?,?,?,?,?,?,?,?)", (ts, t, "sold", kind, offer, cost, 20.0, 1.0, by,
+                                                None if held is None else "won", held, chance))
 E._combo_league_of = lambda t: "nba" if "NBA" in t else "nhl"
 for i in range(3):
     sale(now - 3000 + i, "KXMVENBA-%d" % i, 3.0, 5.0)
@@ -256,8 +258,10 @@ S = E.knob_state()
 b = S["brake"].get("nba") or {}
 ok("4 losses in a row: would brake, one push, plain words, no urgent words", len(msgs) == 1 and "NBA" in msgs[0]
    and "nothing changed" in msgs[0] and not any(w in msgs[0].lower() for w in ("auto", "hedge", "cash out", "paused", "can't")))
-ok("the brake lasts 14 days and resets only the shadow values", abs(b.get("until", 0) - (now + 14 * 86400)) < 2
-   and S["groups"]["nba"]["v"]["smart_floor"] == 1.5 and b.get("reset", {}).get("smart_floor") == 1.8)
+ok("the brake lasts 14 days and resets only the shadow values, never looser than they were (#284): the looser risk "
+   "weight 1.15 back to 1.0, the stricter floor 1.8x kept", abs(b.get("until", 0) - (now + 14 * 86400)) < 2
+   and S["groups"]["nba"]["v"]["smart_floor"] == 1.8 and S["groups"]["nba"]["v"]["smart_lam"] == 1.0
+   and b.get("reset") == {"smart_lam": 1.15})
 ok("while braked: no second push, the stepper skips the league", E.knob_brake_pass(now + 60, force=True) == []
    and E.knob_tune(now + 60, force=True) is not None
    and E.knob_state()["groups"]["nba"]["last"][0]["status"] == "braked")
