@@ -23,8 +23,12 @@ function rideIn(el){const names=(S.set&&S.set.ride)||[],n=Math.max(2,names.lengt
 function stp(k,lo,hi){const v=S.set.values[k];return `<div class="stp"><button onclick="bump('${k}',-1,${lo},${hi})">−</button><span>${v}</span><button onclick="bump('${k}',1,${lo},${hi})">＋</button></div>`;}
 function bump(k,d,lo,hi){const v=Math.min(hi,Math.max(lo,(S.set.values[k]||0)+d));if(v===S.set.values[k])return;setv(k,v);
  const t=k.split('_')[0];const mn=t+'_min',mx=t+'_max';if(S.set.values[mn]>S.set.values[mx]){const o=k===mn?mx:mn;setv(o,S.set.values[k]);}renderSettings();}
+/* #281 (scrolling first, as #151): the section headers (.sfold) and the Mac line (.smac) are full-width buttons, and with most
+   sections folded they are a stack covering ~2/3 of a phone screen. Each carried a see-through iOS switch (method N), and a
+   switch under the finger can stop iOS scrolling, so swiping the folded page mostly didn't scroll. They get no switch
+   (data-hsw="0"): no iOS tick on them, but their press feedback and tap stay; the small controls keep theirs. */
 function scard(id,ic,title,sub,inner){const o=sOpen(id);   // every section folds (GitHub #212): the header is the toggle, the body is a .fold
- return `<section class="scard ${o?'':'shut'}" id="s-${id}" data-sid="${id}"><header><h3><button type="button" class="sfold" aria-expanded="${o}" aria-controls="sb-${id}" onclick="sTog('${id}')"><span class="ic">${ic}</span><span class="st">${title}</span><span class="sbadge"></span><span class="chev">▾</span></button></h3>${sub?`<p>${sub}</p>`:''}</header><div class="fold ${o?'':'shut'}" id="sb-${id}" data-fk="set_${id}"><div class="fin">${inner}</div></div></section>`;}
+ return `<section class="scard ${o?'':'shut'}" id="s-${id}" data-sid="${id}"><header><h3><button type="button" class="sfold" data-hsw="0" aria-expanded="${o}" aria-controls="sb-${id}" onclick="sTog('${id}')"><span class="ic">${ic}</span><span class="st">${title}</span><span class="sbadge"></span><span class="chev">▾</span></button></h3>${sub?`<p>${sub}</p>`:''}</header><div class="fold ${o?'':'shut'}" id="sb-${id}" data-fk="set_${id}"><div class="fin">${inner}</div></div></section>`;}
 /* ---- Settings: folds, jump chips, search and the Mac line (GitHub #212). Display only: no setting, switch, slider, save or
    Mac action changes. Every section folds with a chevron (remembered per phone as cw_fold_set_<id>; Money and The Mac start
    open, the rest folded). A folded body is still in the page (hidden, so nothing re-draws) and opens with the same height
@@ -65,10 +69,10 @@ function sBadges(){const d=S.set;if(!d)return;
   const b=c.querySelector('.sbadge');if(b&&b.textContent!==t)b.textContent=t;});}
 /* the Mac's version and whether it's current, right under the title; a tap jumps to Settings › The Mac */
 function macLine(){const m=S.mac,nm=LOCAL?'This Mac':'The Mac';
- if(!m||!m.ok)return `<button type="button" class="smac" onclick="sJump('mac')"><span class="dot off"></span><span class="t"><b>${nm}</b> · status isn't available right now</span><span class="go">›</span></button>`;
+ if(!m||!m.ok)return `<button type="button" class="smac" data-hsw="0" onclick="sJump('mac')"><span class="dot off"></span><span class="t"><b>${nm}</b> · status isn't available right now</span><span class="go">›</span></button>`;
  const v=esc(m.engine||m.watcher||'?');let st='running',up=true;
  if(!LOCAL&&m.latest){if(m.latest===m.engine)st='up to date';else{up=false;st='update available · '+esc(m.latest)+(m.waiting?' · waiting for approval':' · installing soon');}}
- return `<button type="button" class="smac" onclick="sJump('mac')"><span class="dot ${up?'':'upd'}"></span><span class="t"><b>${nm}</b> · version ${v} · <i class="${up?'ok':'upd'}">${st}</i></span><span class="go">›</span></button>`;}
+ return `<button type="button" class="smac" data-hsw="0" onclick="sJump('mac')"><span class="dot ${up?'':'upd'}"></span><span class="t"><b>${nm}</b> · version ${v} · <i class="${up?'ok':'upd'}">${st}</i></span><span class="go">›</span></button>`;}
 function sAfter(m,hadF,a,b){sBadges();if(S.sq)sFind(S.sq);
  if(!m._sch){m._sch=1;m.addEventListener('change',e=>{if(e.target&&e.target.closest&&e.target.closest('.scard'))sBadges();});}
  if(hadF){const i=$('#sq');if(i){i.focus({preventScroll:true});try{i.setSelectionRange(a,b);}catch(e){}}}

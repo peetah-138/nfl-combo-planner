@@ -9,7 +9,7 @@
 .scard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:18px;scroll-margin-top:84px}
 .scard>header{padding:0;display:block}.scard>header .ic{font-size:18px;line-height:1.2}
 .scard h3{margin:0;font-size:15.5px;letter-spacing:-.01em}.scard header p{margin:-4px 0 0;padding:0 22px 14px 52px;color:var(--mute);font-size:12.5px;max-width:612px}
-/* Settings folds, jump chips, search and the Mac line (GitHub #212): a section's header is a 56pt toggle (a real button under 64pt tall, so it keeps its iOS tick) */
+/* Settings folds, jump chips, search and the Mac line (GitHub #212): a section's header is a 56pt toggle. It is full width, so it carries no see-through switch (data-hsw=0, #281: a stack of them stopped iOS scrolling) */
 .sfold{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:14px 22px;background:none;border:0;border-radius:var(--r);color:inherit;font:inherit;text-align:left;cursor:pointer}
 .sfold .ic{flex:none;width:22px;text-align:center}.sfold .st{flex:1;min-width:0}
 .sfold .sbadge{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mute);font-size:12.5px;font-weight:600;letter-spacing:0}.sfold .sbadge:empty{display:none}
