@@ -1,3 +1,4 @@
+# CHECK: group=page secs=16 retry
 # Build page while a fresh panel is put together: no "10 minutes" promise, a Look now button, live progress from the
 # Mac's notes (redrawn in place every 2 s), and the new panel (or the reason there isn't one) dropping in by itself.
 import sys, os, time, threading, re, json

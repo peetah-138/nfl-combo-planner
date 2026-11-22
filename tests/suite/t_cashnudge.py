@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Issue #210: the repeated "Combo 24: time to cash out" toast, and alert taps that open the combo.
 
 Pete's Combo 24 is a 12-pick NFL combo: 1 pick won, 11 still to play (next one Sunday), $4.99 paid, Live showing a

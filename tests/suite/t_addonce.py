@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # "Add to today's panel" is safe to tap again and again (issue #62): two adds of the same extra (one after the other,
 # or two at once) make one panel row and at most one order; an added extra leaves the extras card at once; a bet that
 # was bought, is being bought, failed or needs a check is never offered again as an extra the same day (a skipped

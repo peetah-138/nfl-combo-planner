@@ -1,3 +1,4 @@
+# CHECK: group=none
 import sys, os, json, time, threading, datetime as dt, re
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 import requests

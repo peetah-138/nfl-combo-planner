@@ -1,3 +1,4 @@
+# CHECK: group=page secs=55
 """Live "Buy ideas" cards say which game they are for (GitHub #129): league icon + name, the matchup, start time (or the live
 score), the pick in plain words, Kalshi's price vs fair, the edge, the stake and expected profit, the chance to win and how
 fresh the price is. The ideas come from the real engine (saved with store_suggestion, read with live_suggestions): a

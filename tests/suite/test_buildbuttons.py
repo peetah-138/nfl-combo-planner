@@ -1,3 +1,4 @@
+# CHECK: group=page secs=52
 """Build combo idea cards (GitHub #65): (1) the button row always fits inside its card, at 360, 390 and 430 pt, in every
 state: Get price, price asked, Buy, Buy anyway $5 -> $7.29, Buying (confirming with Kalshi) and Bought; "Not this one"
 never runs off the edge and no label is clipped. (2) the Get price button doesn't flicker or get replaced: once a price is

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=15
 """Settings' "Auto cash-outs a day, at most" slider has an Unlimited top stop (issue #217): at a phone size, moving it to
 the top shows "Unlimited", saves the sentinel 1000, and a reload still shows Unlimited; a number stop still saves the number.
 Prints PROBLEMS."""

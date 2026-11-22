@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Kalshi refusals shown honestly (issue #134). When Kalshi turns an order down for the account or the region ("Nevada
 # residents are not currently allowed to open positions in Sports markets..."), the app: shows Kalshi's whole message
 # (never clipped), says it is Kalshi's rule and not "your API key needs write access", and stops sending the same

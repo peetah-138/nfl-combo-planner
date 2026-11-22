@@ -1,3 +1,4 @@
+# CHECK: group=page secs=30
 """The game page's tab row scrolls sideways on an iPhone (GitHub #218). Two causes, both fixed and both checked here at 390x844:
 1. Every tab carried a see-through haptic switch (method N, #60), and WebKit's switch grabs a drag that starts on it as a
    slide of its own knob: the row, nothing but tabs, could not be dragged sideways. Controls inside sideways strips now get

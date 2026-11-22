@@ -1,3 +1,4 @@
+# CHECK: group=page secs=66
 """Slice 3 of the live game page (issue #72): the BOX SCORE, TEAM STATS, INJURY REPORT, LAST 5 GAMES and SEASON LEADERS tabs.
 Display only. The game answer's detail block is built by the real engine from fixtures/espn_game_tabs.json (trimmed copies of
 real public ESPN responses) through a fake network, then served to the page; nothing real is touched. Covers each tab's render,

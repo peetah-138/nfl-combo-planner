@@ -1,3 +1,4 @@
+# CHECK: group=page secs=65
 """Buy straight (issue #113): the Build slip's Single bet / Combo switch, the game page's pinned buy buttons and the buy
 sheet (render, stake presets, warning / blocked states, the 20 s price life, arm-then-confirm for big stakes, the Bought
 moment, a refusal, an unclear answer). The quote and buy answers are scripted at the page's own request layer (nothing is

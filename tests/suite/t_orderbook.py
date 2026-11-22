@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Kalshi changed its public order book answer (issue #70): GET /markets/<ticker>/orderbook now returns
 # {"orderbook_fp": {"yes_dollars": [["0.52", "3703.51"], ...], "no_dollars": [...]}} (dollar strings, lowest price
 # first) instead of {"orderbook": {"yes": [[52, 3703], ...], "no": [...]}} (whole cents). The app read only the old

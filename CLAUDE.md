@@ -30,7 +30,7 @@ Real money is involved. Pete uses it daily.
     "on the phone"; the real Pythonista app is untouched.
 - `watcher/combo_watcher.py` — the Mac watcher, the hub and the web app's server.
 - `watcher/spa/` — the whole web UI as plain files, one per screen (GitHub #124), so parallel PRs on different
-  screens don't conflict: `index.html` (the shell), `app.css`, the scripts in load order (`common.js` core/net/
+  screens don't conflict: `index.html` (the shell), the css files (`app.css` is the base; `game.css`, `settings.css`, `responsive.css`, `motion.css`, `games.css`, `chrome.css`, `build.css`, `results.css`, `ideas.css`, `stake.css`, `bestbets.css`, `refusals.css`, `scoreboard.css` follow it in this order, each one a contiguous slice of the old single file; put a new rule in the file of the screen it styles, or add a new css file to the end of the `css` list in `MANIFEST.json`), the scripts in load order (`common.js` core/net/
   toasts/sheets/press feedback/tabs/number rolls/freshness/load, `live.js`, `build.js` (panel, slip, quotes, Buy),
   `haptics.js` (incl. the see-through switch, method N), `results.js`, `access.js` (Face ID, web push, secure
   address rows), `build_cards.js` (killer deals, singles), `buy_straight.js`, `build_sections.js` (standing orders,
@@ -171,6 +171,16 @@ Real money is involved. Pete uses it daily.
   orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
+- **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
+  parallel PRs conflicted every time). Instead it adds **one new file `docs/changes/<issue-or-slug>.md`**: what
+  shipped or changed in the product, written in the style of the product sections below, plus a `ROADMAP:` line when
+  it adds or removes a roadmap item (template: `docs/changes/README.md`). **The release owner folds those files into
+  `CLAUDE.md` / `ROADMAP.md` at release and deletes them** (in the release PR). Until folded, `CLAUDE.md` plus
+  `docs/changes/` is the whole brief: read both. Only a **rule or decision** change (hard rules, workflow, Pete's
+  standing decisions) edits `CLAUDE.md` directly, and the PR description says so. The same goes for shared lists:
+  a new test is one new file (`tests/suite/` header, see Testing), a new screen's styles go in its own css file
+  (`watcher/spa/`, listed in `MANIFEST.json`). Run `git config rerere.enabled true` once per clone so a repeated
+  conflict is only resolved once.
 - **Decisions Pete made on 2026-11-18:**
   - At most **3 subagents** at once.
   - **Rebuild `Combo-Watcher.zip` in the release PR** whenever `install_mac.sh`, `setup_wizard.py`,
@@ -205,7 +215,7 @@ the watcher's venv if it has the modules, else a git-ignored `.venv-tests/` it b
 whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the test ports when two runs overlap. It runs in a temp folder with fake services and a fake
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
-and the test lists are in `tests/suite/checklist.py`) plus an aggregate job named `checks` (the required one). What it covers:
+and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` header, found by `tests/suite/checklist.py`; adding a test is adding one file, see `tests/README.md`) plus an aggregate job named `checks` (the required one). What it covers:
 - **Writing tests** (`tests/README.md`): hermetic (engine tests run under `suite/netguard/`, which fails any real
   connection; `st_hermetic` checks it), wait for state not sleeps (`upwait.go_and_hold` before drawing data in), own
   port/temp files/unique ids.

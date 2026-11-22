@@ -1,3 +1,4 @@
+# CHECK: group=page
 # Spreads & totals on Build (issue #117 B, shown inside Best bets since #63): the engine's vetted recommendations flow
 # through the Best bets feed as rows (never the old table of every strike, no separate board), each with the game, the pick,
 # price vs fair, the edge after the fee, the route to profit, the stake that fills and the expected dollars; and Results'

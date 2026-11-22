@@ -1,3 +1,4 @@
+# CHECK: group=page secs=159
 """Makeover phase 3: every remaining screen in the same motion system. Checked on a phone (390x844, touch) in dark and
 light, and on a desktop: no JS errors and no sideways scroll anywhere; press feedback + a haptic on everything you can
 tap (the phase 1 audit, now also on Build's full board, the panel, an open sheet and the login page); the calm

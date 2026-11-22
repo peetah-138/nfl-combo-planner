@@ -1,3 +1,4 @@
+# CHECK: group=engine
 import os,importlib.util
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)

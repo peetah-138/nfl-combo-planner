@@ -1,0 +1,49 @@
+/* ---- makeover phase 3: every remaining screen in the same motion system ---- */
+:root{color-scheme:dark;--fs-xs:11px;--fs-s:12.5px;--fs-m:14px;--fs-l:17px;--sp:16px}
+@media (prefers-color-scheme:light){:root{color-scheme:light}
+ .own{background:rgba(217,119,6,.13);color:#a85a06}.ss.me{background:rgba(217,119,6,.11);border-color:rgba(217,119,6,.38);color:#a85a06}
+ .sheet{box-shadow:0 24px 60px rgba(16,24,40,.18)}.modal:not(.push){background:rgba(15,20,32,.32)}
+ .segind,.seg button.on{box-shadow:0 1px 3px rgba(16,24,40,.16)}.tg{background:#e2e6ee}.tg::after{box-shadow:0 1px 3px rgba(16,24,40,.28)}
+ .btn.warn{background:#f2a531}.slipbar{box-shadow:0 8px 28px rgba(36,104,255,.28)}#ptr,.netbar{box-shadow:0 6px 20px rgba(16,24,40,.12)}
+ .flipnote.mid b.v{color:#b26b00}.kpis.hero:before{opacity:.8}}
+/* safe areas for the Home Screen app (notch, rounded corners, home indicator) */
+@media (max-width:900px){main{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
+ .top{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+ .modal:not(.push) .sheet{border-radius:22px 22px 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
+/* keyboard-aware sheets: the sheet rides up above the on-screen keyboard */
+.modal:not(.push){padding-bottom:var(--kb,0px);transition:opacity .22s var(--ease),padding-bottom .25s var(--out)}
+@media (max-width:900px){.modal:not(.push){padding-bottom:var(--kb,0px)}}
+.modal.on:not(.push){-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+/* the scroll-linked header: it tucks itself in once you scroll */
+.ts span{transition:opacity .2s,max-height .3s var(--ease);max-height:16px;overflow:hidden}
+.top{transition:transform .27s var(--out),filter .27s var(--out),padding .3s var(--ease),box-shadow .3s,height .3s var(--ease)}
+.brand{transition:transform .3s var(--ease);transform-origin:left center}
+body.hc .top{box-shadow:0 8px 24px rgba(0,0,0,.16)}
+@media (max-width:900px){body.hc .top{padding-top:calc(5px + env(safe-area-inset-top));padding-bottom:5px}body.hc .brand{transform:scale(.84)}body.hc .ts span{opacity:0;max-height:0}}
+/* the calm reconnecting banner */
+.netbar{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 68px);z-index:26;transform:translate(-50%,-16px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;
+ padding:8px 14px;border-radius:999px;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:12.5px;font-weight:650;color:var(--ink);
+ -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);transition:transform .4s var(--spring),opacity .25s;white-space:nowrap;max-width:calc(100vw - 32px)}
+.netbar.on{opacity:1;transform:translate(-50%,0)}.netbar i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse2 1.4s infinite;flex:none}
+.netbar small{color:var(--mute);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
+/* pull to refresh, on every tab: rubber band, a ring that fills, a spin, a check */
+#ptr svg{width:20px;height:20px;overflow:visible}#ptr circle{fill:none;stroke:var(--acc);stroke-width:2.4;stroke-linecap:round;transform:rotate(-90deg);transform-origin:10px 10px;transition:stroke-dashoffset .05s}
+#ptr path{fill:none;stroke:var(--yes);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;opacity:0}
+#ptr.go svg{animation:sp .7s linear infinite}#ptr.go circle{stroke-dashoffset:12!important}
+#ptr.done circle{stroke:var(--yes);stroke-dashoffset:0!important}#ptr.done path{opacity:1;animation:okc .3s var(--ease) forwards}
+#ptr{transition:transform .35s var(--spring),opacity .25s}#ptr.drag{transition:none}
+main.ptrd{transition:none!important}
+/* switches and sliders */
+.tg::after{transition:transform .34s var(--spring),width .18s var(--ease)}.tg:active::after{width:25px}.tg:checked:active::after{transform:translateX(13px)}
+.tg:checked{box-shadow:0 0 0 3px color-mix(in srgb,var(--yes) 10%,transparent)}
+.rng output{transition:color .2s}.rng output.bump,.saved.bump{animation:obump .32s var(--spring)}@keyframes obump{40%{transform:scale(1.14)}}
+.rdet{flex-wrap:wrap;row-gap:6px}.rdet .tks{flex-basis:100%;display:flex;justify-content:space-between;padding:0 8px;margin-right:98px}
+.rdet .tks i{width:5px;height:5px;border-radius:50%;background:var(--line);transition:background .25s,transform .3s var(--spring)}.rdet .tks i.on{background:var(--acc)}.rdet .tks i.at{transform:scale(1.7)}
+.rdet output{min-width:84px}
+/* buttons that report back: working, done, didn't work */
+.btn.st-ok{background:var(--yesbg)!important;color:var(--yes)!important;border-color:color-mix(in srgb,var(--yes) 40%,transparent)!important;animation:obump .4s var(--spring)}
+.btn.st-bad{background:var(--nobg)!important;color:var(--no)!important;border-color:color-mix(in srgb,var(--no) 40%,transparent)!important;animation:sh3 .4s}
+@keyframes sh3{25%,75%{transform:translateX(-4px)}50%{transform:translateX(4px)}}
+.btn.arm{position:relative;overflow:hidden;background:var(--live)!important;color:#1b1203!important}
+.btn.arm:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.75);transform-origin:left;animation:qdrain 4s linear forwards}
+@keyframes qdrain{from{transform:scaleX(1)}to{transform:scaleX(0)}}

@@ -1,3 +1,4 @@
+# CHECK: group=page secs=18
 """Settings > Test haptics (GitHub #60: no haptics felt on an iPhone running iOS 27 in the Home Screen app).
 The card renders with one lettered button per method; every button runs its method synchronously inside its own tap
 (and nothing else buzzes: the global tap listener leaves these buttons alone); each shows a "sent" flash; the

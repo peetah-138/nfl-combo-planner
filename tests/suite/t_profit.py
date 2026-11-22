@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Profit leaks from the audit (issue #142): each check fails on the code before the fix.
 #  A  the panel ranks by expected dollars, the chance the day ends ahead kept as a floor (switch: old rule)
 #  B  stale sharp lines: expired on an empty refresh, give way to fresh free lines, never price a game starting soon
