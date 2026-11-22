@@ -1844,8 +1844,6 @@ def history_loop(E, every=900):
             got = E.resolve_quotes()
             E.resolve_closes()
             E.smart_buy_learn()                    # Smart Buy: results of checked bets, then the dial per league
-            E.smart_buy_backfill()                 # (#137) history's panel bets on paper, daily; never twice
-            E.sb_paper_build()                     # (#137) the paper book of graduated stakes, hourly; display only
             if got:
                 log(f"history: {got} quotes settled")
             n += 1
@@ -1974,14 +1972,23 @@ def quick_rounds(odds, notifier, until, gap=150):
 
 
 def smart_buy_universe(odds):
-    """Smart Buy's paper scoring of every market the panel looks priced (#137): simulation only, bounded to 0.15 s,
-    OUTSIDE odds.lock (the lock panel_loop holds to place a real approved buy). Writes exit_shadow rows only."""
+    """Smart Buy's paper work (#137), all OUTSIDE odds.lock (the lock panel_loop holds to place a real approved buy)
+    and in the shadow engine (H), never the trading one: score every market the panel looks priced (0.15 s of
+    simulation a pass), then, when due, the backfill from history (daily, 3 s a run) and the paper book (every 6 h).
+    Writes exit_shadow rows and the sb_paper table only; each step self-throttles and never raises."""
     try:
         H = odds.engine()
-        if hasattr(H, "smart_buy_universe"):
-            H.smart_buy_universe()
     except Exception as err:
         log("smart buy paper scoring skipped:", type(err).__name__, err)
+        return
+    for name in ("smart_buy_universe", "smart_buy_backfill", "sb_paper_build"):
+        try:
+            if hasattr(H, name):
+                n = getattr(H, name)()
+                if n and name != "smart_buy_universe":
+                    log(f"smart buy on paper: {name} wrote {n} rows")
+        except Exception as err:
+            log(f"smart buy paper {name} skipped:", type(err).__name__, err)
 
 
 

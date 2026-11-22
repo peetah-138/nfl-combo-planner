@@ -138,6 +138,7 @@ with sync_playwright() as pw:
                      "optin": {"n": 34, "n_need": 50, "ahead": 8.2, "days_up": 0.6, "days": 5, "clv": 0.012, "beats": True, "met": False,
                                "paper": True}},
                     {"league": "nfl", "name": "NFL", "state": "learning", "own": 12, "need": 30, "level": 0, "from": None,
+                     "scored": {"n": 30, "settled": 20},
                      "skipped": 0, "saved": 0, "why": None,
                      "optin": {"n": 12, "n_need": 50, "ahead": -3.0, "days_up": 0.4, "days": 3, "clv": None, "beats": None, "met": False}}]}
     AN["smart_buy"] = SBP
@@ -155,13 +156,20 @@ with sync_playwright() as pw:
         hd.click(); wait(pg, "!!document.querySelector('.an .sbp .antbl')", 5)
         sb = pg.locator(".an .sbp").inner_text()
         if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "Learning (12 of 30)" not in sb \
-                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes: not yet · 34 of 50 settled" not in sb \
+                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes, on paper: not yet · 34 of 50 settled · +$8.20" not in sb or "Bigger stakes: not yet · 12 of 50" not in sb \
                 or "It only ever skips" not in sb or "preview" in sb.lower() \
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
-        if "Scored on paper: 387 bets, 299 settled" not in sb or "191 from your history" not in sb or "63 every other priced market" not in sb \
-                or "Scored on paper: 96 bets, 41 settled" not in sb or "+$8.20 on paper" not in sb or "Only the panel-grade ones move the strictness" not in sb:
+        if "Scored on paper: 387 bets, 299 settled" not in sb or "191 past bets" not in sb or "63 other markets the Mac priced" not in sb \
+                or "133 panel picks" not in sb or "Only bets good enough for the panel teach Smart Buy how picky to be" not in sb \
+                or "Learning (12 of 30) · only bets good enough for the panel count" not in sb or "panel-grade" in sb:
             print("PROBLEMS: the Smart Buy card doesn't say how many bets were scored on paper, by source and per league:", sb[:600])
+        h = pg.evaluate("()=>{const o=S.sbOpen;S.sbOpen=true;const h=sbCard({on:true,gate:[],rows:[],calib:[],scored:{n:5,settled:1,by:{backfill:{n:1,settled:1}}}});S.sbOpen=o;return h}")
+        if "No live checks yet. 5 bets are already scored on paper" not in h or "1 past bet." not in h:
+            print("PROBLEMS: with no live checks the card should say the paper count, not 'Nothing checked yet':", h[:300])
+        h = pg.evaluate("()=>sbLine({name:'Premier League',state:'learning',own:3,need:30,level:1,early:true,key:'all',from:'Everything',optin:{}})")
+        if "already a bit stricter, from all leagues' first results" not in h or "Everything" in h:
+            print("PROBLEMS: an early level borrowed from everyone should read 'from all leagues' first results':", h[:300])
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: the Smart Buy preview scrolls sideways on a phone")
     __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s

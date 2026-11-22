@@ -14007,12 +14007,12 @@ def line_candidates(code, everything=False):
         lg = _line_lg(code, m["ticker"])
         bucket = line_bucket(code, m["kind"], line, center)
         need = line_min_edge(lg, m["kind"])["v"]          # part B: the league's learned bar (never under LINE_MIN_EDGE)
-        clears = edge >= need - 1e-9 and edge / p >= 0.06 and not line_clv_block(lg, m["kind"], bucket)
+        clears = edge >= need - 1e-9 and edge / p >= 0.06 and (everything or not line_clv_block(lg, m["kind"], bucket))
         if edge > 0:                                    # Smart Buy's paper scoring (#137): every strike priced with
             uni.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "start": g.get("start"), "kick": kick,
                         "league": lg, "code": code, "cand": bool(clears)})   # an edge; 'cand' = the panel's own rule
-        if everything or clears:
+        if everything or clears:                        # (with everything=True the CLV block isn't read, as before)
             out.append({"ticker": m["ticker"], "event": m.get("event_ticker"), "pick": label, "fair": round(fair, 4),
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
@@ -22860,7 +22860,7 @@ def _sb_early(d, g):
     """A group's early level (stricter only, from blocks of SB_BORROW_N results) while it has fewer than SB_LEARN_N;
     0 otherwise (at SB_LEARN_N its own level takes over, both ways)."""
     e = d.get(g) if g else None
-    if not isinstance(e, dict) or not SB_BORROW_N <= int(e.get("n") or 0) < SB_LEARN_N:
+    if not isinstance(e, dict) or int(e.get("n") or 0) >= SB_LEARN_N or not e.get("early_blk"):
         return 0
     return max(0, min(SB_DIAL_SOFT, int(e.get("early") or 0)))
 
@@ -22960,9 +22960,14 @@ def sb_resolve(now=None, limit=150):
         if not STORE.get("db"):
             return 0
         _exit_shadow_table()
-        rows = store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and kick < ? "
-                          "and kick > ? group by tickers order by k desc limit ?",  # newest first, and a week at most:
-                          (now - 4 * 3600, now - 7 * 86400, limit))                # a void market is given up on
+        rows = store_rows("select tickers, max(kick) k, min(case when source in ('panel','idea') then 0 else 1 end) u "
+                          "from exit_shadow where res is null and kick is not null and kick < ? and kick > ? "
+                          "group by tickers order by u, k desc limit ?",   # the gate's own bets first (#137: universe
+                          (now - 4 * 3600, now - 7 * 86400, limit))        # rows wait their turn), newest first, a
+        if len(rows) >= limit:                                             # week at most (a void is given up on)
+            rows += store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
+                               "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
+                               (now - 4 * 3600, now - 7 * 86400, limit))
         sets = {}
         for r in rows:
             try:
@@ -22994,25 +22999,36 @@ def sb_resolve(now=None, limit=150):
     return n
 
 
-def _sb_results(now=None, wide=False, settled=True):
+def _sb_game(tickers):
+    """The game(s) a bet is on, as one key: a spread or total counts as its game (SPREAD-/TOTAL- -> GAME-)."""
+    return "+".join(sorted({re.sub(r"(SPREAD|TOTAL)-", "GAME-", t.rsplit("-", 1)[0]) for t in tickers or () if t}))
+
+
+def _sb_results(now=None, wide=False, settled=True, uni=False):
     """One row per checked bet (last 60 days): its last check before its game (or its first check when it was only
     ever seen in play), as {'league', 'sport', 'ev', 'out', 'day', 'tickers', 'price', 'kind', 'skip', 'kick', 'ts',
-    'fair', 'pays', 'ok', 'grade', 'source'}; 'source' is the best of the bet's rows (panel, idea, universe, backfill).
-    settled=True: only bets with a known result.
-    wide=False is the dial's evidence (smart_buy_learn, the knob stepper): live checks of bets that pass the panel's own
-    rule: panel candidates, Buy ideas and universe markets graded 'cand'. Two kinds are left out on purpose:
-    universe markets with an edge below the panel's rule ('wide': a different population; the biggest edges are the
-    ones most often a pricing mistake, so mixing small-edge bets into a band would make it look better than the
-    candidates the gate really judges, i.e. looser) and the backfill (smart sell's settings today were tuned on those
-    same settled bets, a look-ahead). wide=True: every scored bet, for the paper book and the card."""
+    'fair', 'pays', 'ok', 'grade', 'source', 'game', 'first_price', 'first_ts'}; 'source' is the best of the bet's rows
+    (panel, idea, universe, backfill); 'grade' is the chosen row's; 'first_price' is the ask at its first panel-grade
+    check (what a graduated buy would have paid). settled=True: only bets with a known result.
+    wide=False is the dial's evidence (smart_buy_learn's two-way steps, its 30-result count, the knob stepper): the
+    gate's own checks, panel candidates and Buy ideas, exactly as before this change. uni=True adds universe markets
+    graded 'cand' (the panel's own rule), at most ONE per game and none on a game a panel bet or Buy idea already
+    covers (a game's strikes and sides move together: a whole ladder would overstate how sure a band is); these feed
+    only the stricter-only early looks, never a step down or a league's own count (they skip the panel's news guard,
+    low-credit filter and fill cap, so they are close to the gate's population, not the same). Never in the dial:
+    universe markets below the panel's rule ('wide': the biggest edges are the ones most often a pricing mistake, so
+    mixing small-edge bets into a band would make it look better than the candidates the gate judges, i.e. looser)
+    and the backfill (smart sell's settings today were tuned on those same settled bets: a look-ahead).
+    wide=True: every scored bet, for the paper book and the card; its 'gate_skip' is the gate's own verdict (the last
+    panel/idea check before the game) when there was one."""
     now = now or time.time()
     _exit_shadow_table()
-    first, last_pre, src, cand = {}, {}, {}, set()
+    first, last_pre, src, fc, gate = {}, {}, {}, {}, {}
+    keep = "" if wide else (" and source in ('panel', 'idea', 'universe') and coalesce(grade, 'cand') != 'wide'" if uni
+                            else " and source in ('panel', 'idea')")
     sql = ("select ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
-           "exit_shadow where ts > ?" + (" and outcome is not null" if settled else "") + " order by ts")
+           "exit_shadow where ts > ?" + (" and outcome is not null" if settled else "") + keep + " order by ts")
     for r in store_rows(sql, (now - SB_LEARN_DAYS * 86400,)):
-        if not wide and (r["source"] == "backfill" or r["grade"] == "wide"):
-            continue
         k = r["tickers"]
         first.setdefault(k, r)
         if r["kick"] is None or r["ts"] <= r["kick"]:
@@ -23020,8 +23036,10 @@ def _sb_results(now=None, wide=False, settled=True):
         rk = SB_SRC_RANK.get(r["source"], 2)
         if rk < SB_SRC_RANK.get(src.get(k), 9):
             src[k] = r["source"]
-        if r["grade"] != "wide":
-            cand.add(k)                                # passed the panel's own rule at some check
+        if r["grade"] != "wide" and k not in fc:
+            fc[k] = r                                  # its first panel-grade check
+        if r["source"] in ("panel", "idea") and (r["kick"] is None or r["ts"] <= r["kick"] or k not in gate):
+            gate[k] = r                                # what the gate itself said (its last check before the game)
     by = {k: last_pre.get(k, r) for k, r in first.items()}
     out = []
     for key, r in by.items():
@@ -23031,11 +23049,20 @@ def _sb_results(now=None, wide=False, settled=True):
             continue
         lg, sport = _sb_groups(tks)
         day = dt.datetime.fromtimestamp(r["kick"] or r["ts"], PACIFIC).date().isoformat()
+        f0 = fc.get(key) or first[key]
         out.append({"league": lg, "sport": sport, "ev": r["ev"], "out": r["outcome"], "day": day, "tickers": tks,
                     "price": r["price"], "kind": r["kind"], "skip": bool(r["skip"]), "kick": r["kick"] or r["ts"],
                     "ts": r["ts"], "fair": r["fair"], "pays": r["pays"], "ok": bool(r["new"]),
-                    "grade": "cand" if key in cand else "wide",
-                    "source": src.get(key) or r["source"]})
+                    "grade": "wide" if r["grade"] == "wide" else "cand", "source": src.get(key) or r["source"],
+                    "game": _sb_game(tks), "first_price": f0["price"], "first_ts": f0["ts"],
+                    "gate_skip": bool(gate[key]["skip"]) if key in gate else None})
+    if uni and not wide:                               # universe bets: one per game, never on a covered game
+        covered, drop = {x["game"] for x in out if x["source"] != "universe"}, set()
+        for x in sorted((x for x in out if x["source"] == "universe"), key=lambda x: json.dumps(x["tickers"])):
+            if x["game"] in covered:
+                drop.add(id(x))
+            covered.add(x["game"])
+        out = [x for x in out if id(x) not in drop]   # the rest in their own order
     return out
 
 
@@ -23075,6 +23102,12 @@ def smart_buy_learn(now=None, force=False):
             return _sb_load_dial(now)
         SB_GATE["learn_at"] = now
         rs = _sb_results(now)
+        early_by = defaultdict(list)                       # the stricter-only early looks may also use universe
+        for r in _sb_results(now, uni=True):               # markets graded 'cand' (one per game)
+            early_by["all"].append(r)
+            if r["sport"]:
+                early_by[r["sport"]].append(r)
+            early_by[r["league"]].append(r)
         old = load_json(SB_DIAL_FILE, {})
         old = old if isinstance(old, dict) else {}
         groups = defaultdict(list)
@@ -23085,19 +23118,25 @@ def smart_buy_learn(now=None, force=False):
             groups[r["league"]].append(r)
         lg_of = {r["league"]: r["sport"] for r in rs}
         new = {}
-        order = ["all"] + sorted({r["sport"] for r in rs if r["sport"]}) + sorted({r["league"] for r in rs})
+        order = ["all"] + sorted({r["sport"] for r in rs if r["sport"]}) + sorted({r["league"] for r in rs}) + \
+            sorted(k for k in early_by if k != "all")
         for g in dict.fromkeys(order):
             xs = groups[g]
             e = dict(old.get(g) or {}) if isinstance(old.get(g), dict) else {}
             n = len(xs)
             e.update(n=n)
             lvl = int(e.get("level") or 0)
-            if SB_BORROW_N <= n < SB_LEARN_N and n // SB_BORROW_N > int(e.get("early_blk") or 0):
+            ex = early_by.get(g) or xs
+            ne = len(ex)
+            if n >= SB_LEARN_N or ne < SB_BORROW_N:
+                for f in ("early", "early_blk", "early_why", "early_at"):
+                    e.pop(f, None)                        # its own record rules (or too few): no stale early level
+            elif ne // SB_BORROW_N > int(e.get("early_blk") or 0):
                 cur = int(e.get("early") or 0)            # borrowing sooner: one look per new block of 10 results,
-                k, why = _sb_step([(x["ev"], x["out"]) for x in xs], cur)   # and only ever a step up (stricter)
+                k, why = _sb_step([(x["ev"], x["out"]) for x in ex], cur)   # and only ever a step up (stricter)
                 if k > cur:
                     e.update(early=k, early_why=why, early_at=now)
-                e["early_blk"] = n // SB_BORROW_N
+                e["early_blk"] = ne // SB_BORROW_N
             if n >= SB_LEARN_N and not e.get("own"):
                 if g != "all":                            # first time on its own record: start from what it borrowed
                     for b in (lg_of.get(g), "all"):
@@ -23105,7 +23144,8 @@ def smart_buy_learn(now=None, force=False):
                         if be and be.get("n", 0) >= SB_LEARN_N:
                             lvl = max(0, int(be.get("level") or 0))
                             break
-                lvl = max([lvl, _sb_early(old, g)] + [_sb_early(new, b) for b in (lg_of.get(g), "all") if b and b != g])
+                lvl = max(lvl, _sb_early(old, g))          # and its own early level (a lender's early one stays
+                                                          # theirs: its own record now takes over)
                 e.update(own=True, last_n=n, at=now, why=(f"started at strictness {lvl}, borrowed" if lvl else
                                                           "started at 0: skips nothing until results say so"))
             elif n >= SB_LEARN_N and sum(1 for x in xs if x["kick"] > float(e.get("at") or 0)) >= SB_DIAL_NEW:
@@ -23151,13 +23191,13 @@ def _sb_league_card(lg, rs, d, now, paper=None):
     pb = paper or {}
     if pb.get("scored"):                              # the paper book: graduated stakes, real sizing rules, on paper
         bar.update(n=pb["n"], ahead=pb["ahead"], days_up=pb["days_up"], days=pb["days"], clv=pb["clv"],
-                   beats=pb["beats"], staked=pb["staked"], plain=pb["plain"], extra=pb["extra"], hist=pb["hist"],
-                   paper=True)
+                   beats=pb["beats"], staked=pb["staked"], plain=pb["plain"], extra_n=pb["extra_n"],
+                   extra_ahead=pb["extra_ahead"], hist_n=pb["hist_n"], hist_ahead=pb["hist_ahead"], paper=True)
     bar["met"] = bool(bar["n"] >= SB_OPTIN["n"] and bar["ahead"] > 0 and bar["days_up"] >= SB_OPTIN["days_up"] and
                       (bar["clv"] is None or bar["clv"] >= 0) and bar["beats"])
     return {"league": lg, "name": league_label(lg), "state": dial["state"], "own": dial["own"], "need": SB_LEARN_N,
             "level": lvl, "from": league_label(dial["key"]) if dial.get("key") and dial["key"] != lg else None,
-            "early": bool(dial.get("early")), "skipped": len(skipped), "saved": round(saved, 2), "why": e.get("why"),
+            "early": bool(dial.get("early")), "key": dial.get("key"), "skipped": len(skipped), "saved": round(saved, 2), "why": e.get("why"),
             "optin": bar, "scored": {"n": pb.get("scored", 0), "settled": pb.get("settled", 0), "by": pb.get("by", {})}}
 
 
@@ -23516,6 +23556,10 @@ def price_prune(now=None):
     for tbl, keep, cap in (("price_path", PRICE_KEEP_DAYS, PRICE_MAX_ROWS), ("exit_shadow", 60, 200000)):
         store_x(f"delete from {tbl} where ts < ?", (now - keep * 86400,))
         n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        if n > cap and tbl == "exit_shadow":           # #137: paper-only universe rows go first, the gate's own last
+            store_x("delete from exit_shadow where rowid in (select rowid from exit_shadow where source='universe' "
+                    "order by ts limit ?)", (n - cap,))
+            n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
 
@@ -23573,7 +23617,11 @@ def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
             fair = l0.get("fair") if len(c["legs"]) == 1 else c.get("chance")
             edge = (fair - price - single_fee(price)) if price and fair else c.get("ret")
             store_x(SB_ROW_SQL, _sb_row(c, spec, sim, source, key, now, on, "cand", price, fair, edge))
-            SB_CACHE.setdefault("tk", {})[json.dumps(tks)] = now   # the universe pass skips a market scored here
+            tkc = SB_CACHE.setdefault("tk", {})
+            tkc[json.dumps(tks)] = now                   # the universe pass skips a market scored here
+            if len(tkc) > 20000:
+                for k_ in [k_ for k_, v in list(tkc.items()) if now - v > SB_UNI_FAR]:
+                    tkc.pop(k_, None)
             n += 1
     except Exception as err:
         print("smart buy shadow:", type(err).__name__, err)
@@ -23646,7 +23694,8 @@ def smart_buy_shadow_ideas(now=None):
 SB_UNI_ON = True
 SB_UNI_NEAR, SB_UNI_FAR = 1800, 3 * 3600   # re-scored every 30 min within 3 h of its game (or in play), else every 3 h
 SB_UNI_POOL_AGE = 15 * 60                  # a pre-game pool older than this isn't scored (live sides: LIVE_POOL_AGE)
-SB_UNI_MAX_ROWS = 120000                   # universe rows kept at most (compacted to a few a bet after its game)
+SB_UNI_MAX_ROWS = 80000                    # universe rows kept at most (compacted to a few a bet after its game), so
+                                           # with the table's 200,000 cap the gate's own rows always have 120,000
 SB_UNI = {"pool": {}, "lines": {}, "seen": {}, "err": 0.0}
 SB_BORROW_N = 10                           # a short group's record counts, stricter only, in blocks of this many
 SB_SRC_RANK = {"panel": 0, "idea": 1, "universe": 2, "backfill": 3}
@@ -23654,8 +23703,9 @@ SB_PAPER = {"at": 0.0, "bf": 0.0}
 
 
 def _sb_note(where, err):
-    if time.time() - SB_UNI["err"] > 600:
-        SB_UNI["err"] = time.time()
+    last = SB_UNI.setdefault("errs", {})
+    if time.time() - last.get(where, 0) > 600:
+        last[where] = time.time()
         console_note(f"smart buy {where}: {type(err).__name__}: {err}")
 
 
@@ -23700,26 +23750,31 @@ def sb_universe_stash(code, games, live_ok=()):
         _sb_note("universe", err)
 
 
-def _sb_insert(rows):
-    """exit_shadow rows in one transaction (one sync, the history lock held once, briefly), like _price_insert."""
+def _sb_insert(rows, sql=None, raise_=False):
+    """Rows in small transactions (500 at a time: one sync each, the history lock held briefly, released between
+    them), like _price_insert; inside someone else's transaction they simply join it. Never raises unless raise_."""
     db = STORE.get("db")
     if not db or not rows:
         return
-    with _SLOCK:
-        own = not db.in_transaction
-        try:
-            if own:
-                db.execute("begin")
-            db.executemany(SB_ROW_SQL, rows)
-            if own:
-                db.execute("commit")
-        except Exception as err:
-            if own and db.in_transaction:
-                try:
-                    db.execute("rollback")
-                except Exception:
-                    pass
-            _sb_note("universe rows", err)
+    for i in range(0, len(rows), 500):
+        with _SLOCK:
+            own = not db.in_transaction
+            try:
+                if own:
+                    db.execute("begin")
+                db.executemany(sql or SB_ROW_SQL, rows[i:i + 500])
+                if own:
+                    db.execute("commit")
+            except Exception as err:
+                if own and db.in_transaction:
+                    try:
+                        db.execute("rollback")
+                    except Exception:
+                        pass
+                _sb_note("rows", err)
+                if raise_:
+                    raise
+                return
 
 
 def smart_buy_universe(now=None, budget=SB_BUDGET):
@@ -23779,13 +23834,14 @@ def _sb_compact(now=None):
     before the game, for each grade), and universe rows stay under SB_UNI_MAX_ROWS (oldest first)."""
     now = now or time.time()
     try:
-        rows = store_rows("select rowid id, tickers, grade, ts, kick from exit_shadow where source='universe' and kick "
-                          "is not null and kick < ? and kick > ? order by ts", (now - 86400, now - 5 * 86400))
+        rows = store_rows("select rowid id, tickers, grade, ts, kick from exit_shadow where source='universe' and "
+                          "coalesce(kick, ts) < ? and coalesce(kick, ts) > ? order by ts",   # a day after its game (or,
+                          (now - 86400, now - 10 * 86400))                                   # with no start, its check)
         keep, first, last = set(), {}, {}
         for r in rows:
             g = (r["tickers"], r["grade"])
             first.setdefault(g, r["id"])
-            if r["ts"] <= r["kick"]:
+            if r["kick"] is None or r["ts"] <= r["kick"]:
                 last[g] = r["id"]
         keep = set(first.values()) | set(last.values())
         drop = [r["id"] for r in rows if r["id"] not in keep]
@@ -23845,42 +23901,46 @@ def smart_buy_backfill(now=None, force=False, budget=SB_BF_BUDGET):
                                                  (now - SB_LEARN_DAYS * 86400,))}
         tables = {r["name"] for r in store_rows("select name from sqlite_master where type='table'")}
         held = {}
-        for r in store_rows("select ticker, status, outcome from ledger where kind in ('win','spread','total')") \
+        for r in store_rows("select ticker, side, status, outcome from ledger where kind in ('win','spread','total')") \
                 if "ledger" in tables else []:
-            held[r["ticker"]] = r["outcome"] or (r["status"] if r["status"] in ("won", "lost") else None)
+            if (r["side"] or "yes") == "yes":              # the result of YES (a NO position's would be inverted)
+                held[r["ticker"]] = r["outcome"] or (r["status"] if r["status"] in ("won", "lost") else None)
         on = smart_buy_on()
         t_end = time.perf_counter() + budget
         todo = []
         for p in store_rows("select day, mode, ts, body from panel where ts > ? order by ts",
                             (now - SB_LEARN_DAYS * 86400,)) if "panel" in tables else []:
-            if not (str(p["mode"]).startswith("real") or p["mode"] == "paper"):
+            if not str(p["mode"]).startswith(("real", "paper")):
                 continue
             try:
                 body = json.loads(p["body"] or "{}")
             except ValueError:
                 continue
             for it in (body.get("items") or []) + (body.get("longer") or []):
-                if not isinstance(it, dict) or it.get("kind") not in ("single", "line", "combo") or it.get("live"):
+                try:                                   # one odd item never stops the run
+                    if not isinstance(it, dict) or it.get("kind") not in ("single", "line", "combo") or it.get("live"):
+                        continue
+                    legs = [l for l in it.get("legs") or [] if isinstance(l, dict)]
+                    tks = [l.get("ticker") for l in legs]
+                    if not legs or not all(tks):
+                        continue
+                    res = it.get("result") if it.get("result") in ("won", "lost") else \
+                        (held.get(tks[0]) if len(tks) == 1 else None)
+                    at = float(it.get("bought_at") or it.get("at") or body.get("at") or p["ts"] or 0)
+                    kick = float(it.get("kick") or 0)
+                    if res not in ("won", "lost") or not at or not kick or at >= kick:
+                        continue                       # a known result, checked before its game: else nothing honest
+                    c = dict(it, legs=[dict(l) for l in legs])
+                    if len(legs) == 1 and it.get("paid") and 0 < float(it["paid"]) < 1:
+                        c["legs"][0]["p"] = float(it["paid"])         # the price really paid
+                    l0 = c["legs"][0]
+                    price = l0.get("p") if len(legs) == 1 else None
+                    fair = l0.get("fair") if len(legs) == 1 else it.get("chance")
+                    edge = (fair - price - single_fee(price)) if price and fair else it.get("ret")
+                    todo.append((json.dumps(tks), c, at, kick, res, "cand", "backfill:" + str(it.get("id") or tks),
+                                 price, fair, edge))
+                except (TypeError, ValueError, AttributeError):
                     continue
-                legs = it.get("legs") or []
-                tks = [l.get("ticker") for l in legs]
-                if not legs or not all(tks):
-                    continue
-                res = it.get("result") if it.get("result") in ("won", "lost") else \
-                    (held.get(tks[0]) if len(tks) == 1 else None)
-                at = float(it.get("bought_at") or it.get("at") or body.get("at") or p["ts"] or 0)
-                kick = it.get("kick")
-                if res not in ("won", "lost") or not at or not kick or at >= kick:
-                    continue                           # a known result, checked before its game: else nothing honest
-                c = dict(it, legs=[dict(l) for l in legs])
-                if len(legs) == 1 and it.get("paid") and 0 < float(it["paid"]) < 1:
-                    c["legs"][0]["p"] = float(it["paid"])             # the price really paid
-                l0 = c["legs"][0]
-                price = l0.get("p") if len(legs) == 1 else None
-                fair = l0.get("fair") if len(legs) == 1 else it.get("chance")
-                edge = (fair - price - single_fee(price)) if price and fair else it.get("ret")
-                todo.append((json.dumps(tks), c, at, kick, res, "cand", "backfill:" + str(it.get("id") or tks),
-                             price, fair, edge))
         last = {}
         for r in store_rows("select ticker, ts, sport, league, kind, price, fair_old, fair_cal, used, kick, outcome "
                             "from line_fairs where outcome in ('yes','no') and kick > ? and ts < kick order by ts",
@@ -23906,26 +23966,20 @@ def smart_buy_backfill(now=None, force=False, budget=SB_BF_BUDGET):
             if time.perf_counter() > t_end:
                 more = True                            # the rest at the next history pass
                 break
-            got = _sb_bf_row(c, at, kick, res, grade, cid, on, price, fair, edge)
             have.add(key)
+            try:
+                got = _sb_bf_row(c, at, kick, res, grade, cid, on, price, fair, edge)
+            except Exception as err:                   # one bet the simulator can't take: skipped, the rest go on
+                _sb_note("backfill", err)
+                got = None
             if got:
                 rows.append(got)
     except Exception as err:
         _sb_note("backfill", err)
     SB_PAPER["bf_more"] = more
     try:
-        if rows:
-            sql = SB_ROW_SQL.replace("strict, grade)", "strict, grade, res, outcome)").replace("?,?)", "?,?,?,?)")
-            db = STORE["db"]
-            for i in range(0, len(rows), 500):         # small transactions: the history lock is never held long
-                with _SLOCK:
-                    db.execute("begin")
-                    try:
-                        db.executemany(sql, rows[i:i + 500])
-                        db.execute("commit")
-                    except Exception:
-                        db.execute("rollback")
-                        raise
+        _sb_insert(rows, SB_ROW_SQL.replace("strict, grade)", "strict, grade, res, outcome)").replace("?,?)", "?,?,?,?)"),
+                   raise_=True)
         return len(rows)
     except Exception as err:
         _sb_note("backfill", err)
@@ -23936,12 +23990,12 @@ def smart_buy_backfill(now=None, force=False, budget=SB_BF_BUDGET):
 def _sb_paper_table():
     store_x("create table if not exists sb_paper(bet text primary key, ts real, day text, league text, sport text, "
             "kind text, source text, grade text, role text, price real, fair real, ev real, pays real, stake real, "
-            "plain real, outcome real, clv real, at real)")
+            "plain real, outcome real, clv real, at real, game text)")
     store_x("create index if not exists sb_paper_t on sb_paper(ts)")
 
 
 def _sb_paper_role(r):
-    if r["skip"]:
+    if r.get("gate_skip") if r.get("gate_skip") is not None else r["skip"]:
         return "skip"                                  # the gate turned it down then: scored at $5, never staked
     if r.get("grade") in (None, "cand"):
         return "stake"                                 # a panel-grade bet the gate kept: graduated stake
@@ -23949,52 +24003,60 @@ def _sb_paper_role(r):
                                                        # itself would pick it (smart_buy_ok), else only watched
 
 
+SB_PAPER_PER_GAME = 2      # as the panel: at most two bets on one game a day (stakes and extras each)
+
+
 def sb_paper_build(now=None, force=False):
-    """Rebuild the paper book from every scored bet (one row per bet, its last check before the game): role, the
-    stake graduated sizing would give it (_size: quarter Kelly on a 30%-shrunk edge, $2 at least, 5% of the base at
-    most; bets taken in the order they were found until the day's panel budget is used), and what that stake made.
-    The base is the panel's saved one (combo_sizing.json; never a Kalshi read), else the bankroll setting. Its own
-    table: never `panel`, `ledger`, the $300 gate or analytics()'s gate numbers. Hourly; never raises."""
+    """Rebuild the paper book from every scored bet (one row per bet, its last check before the game): its role, the
+    stake graduated sizing would give it and what that stake made if held. Sizing: _size (quarter Kelly on a
+    30%-shrunk edge, $2 at least, 5% of the base at most); each day the bets are taken best expected dollars first,
+    at most two a game, until the day's panel budget is used (stakes and extras each have their own budget, as stage 3
+    adds extras on top of the panel); less than $2 of room = not bought. CLV is measured from the first panel-grade
+    check's price (when a graduated buy would have bought), not the last one. The base is the panel's saved one
+    (combo_sizing.json; never a Kalshi read), else the bankroll setting. Its own table: never `panel`, `ledger`, the
+    $300 gate or analytics()'s gate numbers. Every 6 hours; never raises. Simpler than the real panel on purpose (no
+    ahead floor, no 30% share for spreads/totals, no fill cap: see the docs), so it is a progress line, not a gate."""
     now = now or time.time()
-    if not STORE.get("db") or (not force and now - SB_PAPER["at"] < SB_LEARN_EVERY):
+    if not STORE.get("db") or (not force and now - SB_PAPER["at"] < 6 * 3600):
         return 0
     SB_PAPER["at"] = now
     try:
-        rs = sorted(_sb_results(now, wide=True, settled=False), key=lambda r: r["ts"])
+        rs = _sb_results(now, wide=True, settled=False)
         base = float(load_json(SIZING_FILE, {}).get("base") or 0) or float(CFG.get("bankroll") or 0)
         budget = float(CFG.get("panel_budget", PANEL["budget"]))
-        tks = sorted({r["tickers"][0] for r in rs if r["kind"] in ("single", "line") and r["price"]})
+        tks = sorted({r["tickers"][0] for r in rs if r["kind"] in ("single", "line") and r.get("first_price")})
         cl = {}
         for i in range(0, len(tks), 400):
             cl.update(close_prices(tks[i:i + 400], mid=True))
-        left, out = defaultdict(lambda: budget), []
-        for r in rs:
+        left = defaultdict(lambda: budget)
+        per_game = defaultdict(int)
+        out = []
+        for r in sorted(rs, key=lambda r: (r["day"], -(r["ev"] or 0), r["ts"])):
             role, stake = _sb_paper_role(r), 0.0
             pays = r.get("pays")
-            if role in ("stake", "extra") and base > 0 and pays and r.get("fair") and 0 < r["fair"] < 1:
-                s = _size({"kind": "combo", "chance": r["fair"], "pct": pays / SB_STAKE, "fair_mult": 1.0}, base)
-                s = min(s, left[r["day"]])
+            pot = (role, r["source"] == "backfill")        # history has its own budget: it never crowds out live bets
+            if role in ("stake", "extra") and base > 0 and pays and r.get("fair") and 0 < r["fair"] < 1 \
+                    and per_game[(pot, r["day"], r["game"])] < SB_PAPER_PER_GAME:
+                b = pays / SB_STAKE - 1
+                kelly = r["fair"] * b - (1 - r["fair"]) if b > 0 else -1
+                s = _size({"kind": "combo", "chance": r["fair"], "pct": pays / SB_STAKE, "fair_mult": 1.0}, base) \
+                    if kelly > 0 else 0.0                  # no edge at the fair chance: not bought (_size's $2 floor
+                s = min(s, left[(pot, r["day"])])         # is for bets that have one)
                 stake = round(s, 2) if s >= 2.0 else 0.0   # no room left in the day's budget: not bought
-                left[r["day"]] -= stake
+                if stake:
+                    left[(pot, r["day"])] -= stake
+                    per_game[(pot, r["day"], r["game"])] += 1
             o = r.get("out")
             got = round(o * stake / SB_STAKE, 4) if o is not None and stake else (0.0 if o is not None else None)
-            c = cl.get(r["tickers"][0]) if r["kind"] in ("single", "line") and r["price"] else None
+            fp = r.get("first_price")
+            c = cl.get(r["tickers"][0]) if r["kind"] in ("single", "line") and fp else None
             out.append((json.dumps(r["tickers"]), r["ts"], r["day"], r["league"], r["sport"], r["kind"], r["source"],
                         r.get("grade"), role, r["price"], r.get("fair"), r["ev"], pays, stake, o, got,
-                        round(c / r["price"] - 1, 4) if c else None, now))
+                        round(c / fp - 1, 4) if c else None, now, r["game"]))
         _sb_paper_table()
-        db = STORE["db"]
-        for i in range(0, len(out), 500):              # small transactions: the history lock is never held long
-            with _SLOCK:
-                db.execute("begin")
-                try:
-                    db.executemany("insert or replace into sb_paper values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                   out[i:i + 500])
-                    db.execute("commit")
-                except Exception:
-                    db.execute("rollback")
-                    raise
+        _sb_insert(out, "insert or replace into sb_paper values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", raise_=True)
         store_x("delete from sb_paper where ts < ? or at < ?", (now - SB_LEARN_DAYS * 86400, now - 1))
+        SB_PAPER.pop("legs", None)
         return len(out)
     except Exception as err:
         _sb_note("paper book", err)
@@ -24002,42 +24064,55 @@ def sb_paper_build(now=None, force=False):
 
 
 def sb_paper_leagues(now=None):
-    """{league: the paper book's numbers} plus '_all': scored bets and settled ones, by source; for graduated stakes
-    the settled bets staked, dollars ahead, share of days up, CLV, extras, how many came from history, and whether the
-    skips beat plain (the bets skipped lost money at $5). Read-only; {} when the book isn't built yet."""
+    """{league: the paper book's numbers} plus '_all' (cached 2 minutes). 'scored'/'settled'/'by' = every bet scored on
+    paper, by source. The graduation progress (n, ahead, days_up, days, clv, beats) counts ONLY what graduation would
+    stand on: live-scored (never the backfill) panel-grade bets the gate kept and staked, ONE per game a day (a game's
+    strikes move together), settled; extras and the history are reported apart (extra_n/extra_ahead,
+    hist_n/hist_ahead) and never count toward the bar. Read-only; {} when the book isn't built yet."""
     now = now or time.time()
+    got = SB_PAPER.get("legs")
+    if got and now - got[0] < 120:
+        return got[1]
     out = {}
     try:
         if not STORE.get("db"):
             return {}
         _sb_paper_table()
-        rows = store_rows("select league, source, role, day, stake, plain, outcome, clv from sb_paper where ts > ?",
+        rows = store_rows("select league, source, role, day, stake, plain, outcome, clv, game from sb_paper where ts > ?",
                           (now - SB_LEARN_DAYS * 86400,))
     except Exception as err:
         _sb_note("paper book", err)
         return {}
-    for lg in {r["league"] for r in rows} | {"_all"}:
-        xs = [r for r in rows if lg == "_all" or r["league"] == lg]
-        if not xs:
-            continue
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r["league"]].append(r)
+        groups["_all"].append(r)
+    for lg, xs in groups.items():
         by = defaultdict(lambda: {"n": 0, "settled": 0})
         for r in xs:
             by[r["source"]]["n"] += 1
             by[r["source"]]["settled"] += r["plain"] is not None
-        st = [r for r in xs if r["role"] in ("stake", "extra") and r["stake"] and r["outcome"] is not None]
+        staked = [r for r in xs if r["stake"] and r["outcome"] is not None]
+        live = [r for r in staked if r["role"] == "stake" and r["source"] != "backfill"]
+        games = {}
+        for r in live:                                 # one per game a day: the first staked one
+            games.setdefault((r["day"], r["game"] or id(r)), r)
         days = defaultdict(float)
-        for r in st:
+        for r in live:
             days[r["day"]] += r["outcome"]
-        sk = [r["plain"] for r in xs if r["role"] == "skip" and r["plain"] is not None]
-        clv = [r["clv"] for r in st if r["clv"] is not None]
+        sk = [r["plain"] for r in xs if r["role"] == "skip" and r["plain"] is not None and r["source"] != "backfill"]
+        clv = [r["clv"] for r in games.values() if r["clv"] is not None]
+        ext = [r for r in staked if r["role"] == "extra" and r["source"] != "backfill"]
+        hist = [r for r in staked if r["source"] == "backfill"]
         out[lg] = {"scored": len(xs), "settled": sum(r["plain"] is not None for r in xs), "by": dict(by),
-                   "n": len(st), "ahead": round(sum(r["outcome"] for r in st), 2),
-                   "staked": round(sum(r["stake"] for r in st), 2), "plain": round(sum(r["plain"] for r in st), 2),
+                   "n": len(games), "ahead": round(sum(r["outcome"] for r in live), 2),
+                   "staked": round(sum(r["stake"] for r in live), 2), "plain": round(sum(r["plain"] for r in live), 2),
                    "days": len(days), "days_up": round(sum(1 for v in days.values() if v > 0) / len(days), 3) if days else 0.0,
                    "clv": round(sum(clv) / len(clv), 4) if clv else None,
-                   "extra": sum(1 for r in st if r["role"] == "extra"),
-                   "hist": sum(1 for r in st if r["source"] == "backfill"),
+                   "extra_n": len(ext), "extra_ahead": round(sum(r["outcome"] for r in ext), 2),
+                   "hist_n": len(hist), "hist_ahead": round(sum(r["outcome"] for r in hist), 2),
                    "skips": len(sk), "beats": (sum(sk) < 0) if sk else None}
+    SB_PAPER["legs"] = (now, out)
     return out
 
 

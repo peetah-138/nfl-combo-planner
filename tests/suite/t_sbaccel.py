@@ -151,7 +151,8 @@ E.sport_pay_index = lambda: {}
 rng = random.Random(137)
 diff = 0
 for trial in range(60):
-    dial({lg: {"n": rng.choice([0, 12, 30, 80]), "level": rng.randint(0, 6), "own": True, "early": rng.randint(0, 3)}
+    dial({lg: {"n": rng.choice([0, 12, 30, 80]), "level": rng.randint(0, 6), "own": True, "early": rng.randint(0, 3),
+              "early_blk": 1}
           for lg in ("nba", "all") if rng.random() < 0.8})
     pool_ = [cand(trial * 20 + i, rng.uniform(-1, 1)) for i in range(rng.randint(1, 10))]
     E.PANEL_POOL.clear()
@@ -189,7 +190,8 @@ sl = wsrc[wsrc.index("def shadow_loop("):wsrc.index("def quick_rounds(")]
 qr = wsrc[wsrc.index("def quick_rounds("):wsrc.index("def smart_buy_universe(odds)")]
 calls = re.findall(r"\n( *)smart_buy_universe\(odds\)", sl + qr)
 ok("the watcher runs the paper scoring OUTSIDE odds.lock (the lock a real approved buy takes): loop level, never in a with-block",
-   len(calls) == 2 and all(len(c) == 8 for c in calls) and "H.smart_buy_universe()" in wsrc)
+   len(calls) == 2 and all(len(c) == 8 for c in calls)
+   and '("smart_buy_universe", "smart_buy_backfill", "sb_paper_build")' in wsrc)
 
 # ---- the dial's evidence: one row per bet, last check before the game; 'wide' and the backfill are left out
 E.simulate_exit = real_sim
@@ -210,9 +212,17 @@ row("KXNHLGAME-26NOV19B-A", K - 600, K, -0.2, -5.0, source="universe", grade="wi
 row("KXNHLGAME-26NOV19C-A", K - 600, K, 0.2, 4.5, source="backfill", grade="cand")
 row("KXNHLGAME-26NOV19D-A", K - 600, K, 0.2, -5.0, source="universe", grade="cand")
 narrow = {r["tickers"][0][-3:]: r for r in E._sb_results(now)}
+uni = {r["tickers"][0][-3:]: r for r in E._sb_results(now, uni=True)}
 wide = {r["tickers"][0][-3:]: r for r in E._sb_results(now, wide=True)}
-ok("the dial's evidence: one row per bet (its last check before the game), panel-grade live checks only",
-   set(narrow) == {"A-A", "D-A"} and narrow["A-A"]["ev"] == 0.3 and narrow["A-A"]["source"] == "panel")
+ok("the dial's evidence (two-way steps, its 30-result count): the gate's own checks only, exactly as before",
+   set(narrow) == {"A-A"} and narrow["A-A"]["ev"] == 0.1 and narrow["A-A"]["source"] == "panel")
+ok("the stricter-only early looks may add universe 'cand' markets (never 'wide', never the backfill)",
+   set(uni) == {"A-A", "D-A"} and uni["D-A"]["source"] == "universe")
+row("KXNHLGAME-26NOV19D-B", K - 600, K, 0.2, -5.0, source="universe", grade="cand")   # same game as D-A
+row("KXNHLGAME-26NOV19A-B", K - 600, K, 0.2, -5.0, source="universe", grade="cand")   # game a panel bet covers
+uni = {r["tickers"][0][-3:]: r for r in E._sb_results(now, uni=True)}
+ok("...one per game, and none on a game the panel already covers (a game's strikes move together)",
+   set(uni) == {"A-A", "D-A"})
 ok("the wide view has every scored bet, each once, with its source", set(wide) == {"A-A", "B-A", "C-A", "D-A"}
    and wide["B-A"]["grade"] == "wide" and wide["C-A"]["source"] == "backfill")
 
@@ -231,6 +241,22 @@ n_after = E.store_rows("select count(*) n from exit_shadow")[0]["n"]
 ok(f"after its game a universe bet keeps at most 2 rows per grade ({n_after} rows for 300 bets, was 3900)", n_after <= 600)
 r2 = {r["tickers"][0]: r for r in E._sb_results(now, wide=True, settled=False)}
 ok("...and still the same last-before-the-game check", len(r2) == 300)
+E.store_x("delete from exit_shadow")
+kick = now - 30 * 3600
+for j, (src_, gr) in enumerate([("universe", "cand"), ("universe", "wide"), ("universe", "cand"), ("universe", "wide"),
+                                ("panel", None), ("universe", "cand")]):
+    E._sb_insert([(kick - 7200 + j * 600, "x", src_, "nhl", "single", json.dumps(["KXNHLGAME-MIX-A"]), kick, 0.5, 0.55,
+                   0.03, 0.5, 0.2, 0.3, 0.1, 0.1, 0.1 * j, 30, "hold", 1, 1, 1, 9.5, None, 0, gr)])
+before = [(r["ev"], r["source"], r["grade"]) for r in E._sb_results(now, wide=True, settled=False)] + \
+    [(r["ev"], r["source"]) for r in E._sb_results(now, settled=False, uni=True)]
+E._sb_compact(now)
+after = [(r["ev"], r["source"], r["grade"]) for r in E._sb_results(now, wide=True, settled=False)] + \
+    [(r["ev"], r["source"]) for r in E._sb_results(now, settled=False, uni=True)]
+ok("compaction with mixed grades and sources on one market keeps exactly what the results read", before == after
+   and E.store_rows("select count(*) n from exit_shadow")[0]["n"] < 6)
+E.store_x("delete from exit_shadow")
+E._sb_insert([(now - 3600 + i, "u", "universe", "nba", "single", json.dumps([f"KXNBAGAME-C{i}"]), now + 3600, 0.5, 0.52, 0.01,
+               0.5, 0.2, 0.3, 0.1, 0.1, 0.05, 30, "hold", 0, 0, 1, 9.5, None, 0, "wide") for i in range(150)])
 E.SB_UNI_MAX_ROWS = 100
 E._sb_compact(now)
 ok("universe rows are capped (oldest first)", E.store_rows("select count(*) n from exit_shadow where source='universe'")[0]["n"] == 100)
@@ -301,9 +327,12 @@ ok("a day's paper stakes never go over the daily panel budget", all(v <= 40 + 1e
 E.CFG["panel_budget"] = 4
 E.sb_paper_build(now=now, force=True)
 days = {}
-for r in E.store_rows("select day, stake from sb_paper"):
-    days[r["day"]] = days.get(r["day"], 0) + r["stake"]
-ok("...even a tight one ($4: the rest are left out, never squeezed under $2)", all(v <= 4 + 1e-9 for v in days.values()))
+for r in E.store_rows("select day, role, source='backfill' h, stake from sb_paper"):
+    k_ = (r["day"], r["role"], r["h"])
+    days[k_] = days.get(k_, 0) + r["stake"]
+ok("...even a tight one ($4 each for stakes, extras and history: the rest are left out, never squeezed under $2)",
+   all(v <= 4 + 1e-9 for v in days.values()) and all(r["stake"] in (0, 0.0) or r["stake"] >= 2
+                                                       for r in E.store_rows("select stake from sb_paper")))
 E.CFG["panel_budget"] = 40
 E.sb_paper_build(now=now, force=True)
 ok("the paper book never touches the panel table (the $300 gate) or the ledger",
@@ -311,9 +340,9 @@ ok("the paper book never touches the panel table (the $300 gate) or the ledger",
    not E.store_rows("select name from sqlite_master where name='ledger'") or not E.store_rows("select * from ledger"))
 pl = E.sb_paper_leagues(now)
 nhl = pl.get("nhl") or {}
-ok("per league: scored, settled, staked bets, dollars ahead, days up, extras and how many came from history",
-   nhl.get("scored", 0) >= 6 and nhl.get("settled") == nhl.get("scored") and nhl.get("n", 0) >= 4 and nhl.get("extra") == 1
-   and nhl.get("hist") == 2 and nhl.get("skips") == 1 and nhl.get("beats") is True and nhl.get("days") == 1)
+ok("per league: scored, settled; the bar counts only live panel-grade stakes, one a game (extras, history apart)",
+   nhl.get("scored", 0) >= 6 and nhl.get("settled") == nhl.get("scored") and nhl.get("n") == 2 and nhl.get("extra_n") == 1
+   and nhl.get("hist_n") == 2 and nhl.get("skips") == 1 and nhl.get("beats") is True and nhl.get("days") == 1)
 ok("...split by source", set(nhl["by"]) == {"panel", "universe", "backfill"})
 dial({"nhl": {"n": 3, "level": 0}})
 g = next(x for x in E.smart_buy_gate_summary(now=now) if x["league"] == "nhl")
@@ -327,19 +356,19 @@ ok("the card's 'what it checked' table still counts only panel candidates and Bu
 
 # ---- 4. borrowing sooner, stricter only
 EPL = "KXEPLGAME-26NOV21ARSCHE-ARS"
-dial({"soccer": {"n": 15, "level": 0, "early": 2}})
+dial({"soccer": {"n": 15, "level": 0, "early": 2, "early_blk": 1}})
 d = E.sb_dial([EPL], now)
 ok("a league with no results borrows its sport's early level from 15 results (not waiting for 30)",
    d["level"] == 2 and d["key"] == "soccer" and d["early"] and d["state"] == "learning")
 dial({"soccer": {"n": 9, "level": 0, "early": 2}})
-ok("...not under 10 results", E.sb_dial([EPL], now)["level"] == 0)
+ok("...not without a look from 10 results (no early_blk)", E.sb_dial([EPL], now)["level"] == 0)
 dial({"soccer": {"n": 40, "level": 0, "own": True, "early": 3}})
 ok("a lender with 30+ results lends its own level only (its old early level is gone)", E.sb_dial([EPL], now)["level"] == 0)
-dial({"soccer": {"n": 40, "level": 4, "own": True}, "all": {"n": 20, "level": 0, "early": 1}})
+dial({"soccer": {"n": 40, "level": 4, "own": True}, "all": {"n": 20, "level": 0, "early": 1, "early_blk": 2}})
 ok("an early level never lowers what is borrowed today (stricter only)", E.sb_dial([EPL], now)["level"] == 4)
-dial({"all": {"n": 20, "level": 0, "early": 9}})
+dial({"all": {"n": 20, "level": 0, "early": 9, "early_blk": 2}})
 ok("an early level is capped at the soft top (3: skips expected losers only)", E.sb_dial([EPL], now)["level"] == 3)
-dial({"epl": {"n": 35, "level": 1, "own": True}, "soccer": {"n": 15, "early": 3}})
+dial({"epl": {"n": 35, "level": 1, "own": True}, "soccer": {"n": 15, "early": 3, "early_blk": 1}})
 ok("at its own 30 a league's own record takes over, both ways", E.sb_dial([EPL], now)["level"] == 1)
 E.store_x("delete from exit_shadow")
 RES = {}
@@ -381,6 +410,35 @@ for i in range(30, 40):
 got = E.smart_buy_learn(now=now + 30, force=True)
 ok("at 30 of its own a league starts from the early level it was using, then its own record moves it",
    got["nhl"]["own"] and got["nhl"]["n"] >= 30 and got["nhl"]["level"] == 2)
+# the universe may only make the dial stricter sooner: relearn with and without its rows
+E.store_x("delete from exit_shadow")
+
+
+def ahl_row(i, ev, won, source="panel", grade=None):
+    t = f"KXAHLGAME-26NOV10{i:03d}ABCDEF-A"
+    kick = now - 3 * 86400
+    E.store_x("insert into exit_shadow(ts, cand, source, league, kind, tickers, kick, price, ev, route, old, new, ver, pays, res, "
+              "outcome, grade) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              (kick - 3600, source + ":" + t, source, "ahl", "single", json.dumps([t]), kick, 0.5, ev, "hold", 1, 1, 1, 9.5,
+               "won" if won else "lost", 4.5 if won else -5.0, grade))
+
+
+for i in range(6):
+    ahl_row(i, 0.5, i % 2 == 0)
+dial({})
+base_ = E.smart_buy_learn(now=now, force=True)
+for i in range(6, 40):
+    ahl_row(i, -0.5 if i < 20 else 0.5, i >= 20 and i % 2 == 0, source="universe", grade="cand")
+for i in range(40, 70):
+    ahl_row(i, 0.5, True, source="universe", grade="wide")
+dial({})
+with_ = E.smart_buy_learn(now=now, force=True)
+same = all(with_.get(g, {}).get(f) == base_.get(g, {}).get(f) for g in ("ahl", "all") for f in ("n", "level", "own"))
+ok("universe markets never change a group's own count, level or 'own' (no step down, no early 'active')", same
+   and not with_["ahl"].get("own"))
+ok("...they only give the stricter-only early look more to go on (14 universe bets expected to lose did lose)",
+   with_["ahl"].get("early", 0) >= 1 and E.sb_dial(["KXAHLGAME-26NOV21ABCDEF-A"], now)["level"] >= 1
+   and not base_["ahl"].get("early"))
 ok("the registry lists the new evidence bar (10) and it matches the code", E.KNOB_BY["sb_borrow_n"]["start"] == 10
    and E.knob_live("sb_borrow_n") == 10 and E.KNOB_BY["sb_borrow_n"]["cls"] == "evidence")
 ok("still no request of any kind", not CALLS)
