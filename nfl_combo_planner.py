@@ -20228,6 +20228,10 @@ def _knob_shadow_table():
                 "status text, gain real, share real, band int, t real, new int, hold real, hold_n int, why text, n int, "
                 "staked real, live text, ver text)")
         store_x("create index if not exists knob_shadow_t on knob_shadow(ts)")
+        have = {r["name"] for r in store_rows("pragma table_info(knob_shadow)")}
+        for col, typ in (("n", "int"), ("staked", "real"), ("live", "text"), ("ver", "text")):
+            if have and col not in have:
+                store_x(f"alter table knob_shadow add column {col} {typ}")
         STORE["knob_ok"] = True
 
 
@@ -20514,6 +20518,8 @@ def knob_step_say(name, frm, to, ev, n=None):
         f"{ev['t']:g} standard errors from luck)"
     if ev["checks"].get("holdout"):
         tail = f"; the newest 30% agree ({'+' if ev['hold'] >= 0 else '−'}${abs(ev['hold']):.2f})"
+    elif 0 < ev["hold_n"] < KNOB_HOLD_MIN:
+        tail = f"; but only {ev['hold_n']} of the newest 30% would change (it needs {KNOB_HOLD_MIN}), so it waits"
     elif ev["hold_n"]:
         tail = f"; but the newest 30% disagree ({'+' if ev['hold'] >= 0 else '−'}${abs(ev['hold']):.2f}), so it waits"
     else:
