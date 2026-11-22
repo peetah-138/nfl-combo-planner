@@ -167,8 +167,12 @@ def fetch_settings(conf, E):
         if data.get("at", 0) <= conf.get("settings_at", 0):
             continue
         for k in SYNCED:
-            if k in data.get("cfg", {}):
+            if k in data.get("cfg", {}) and k not in ("stop_loss", "stop_loss_mode"):
                 E.CFG[k] = data["cfg"][k]
+        if hasattr(E, "sl_sync"):                      # 'Selling at a loss' (#228): a stale old switch never loosens it
+            E.sl_sync(E.CFG, data.get("cfg", {}))
+        elif "stop_loss" in data.get("cfg", {}):
+            E.CFG["stop_loss"] = data["cfg"]["stop_loss"]
         if isinstance(data.get("approve"), dict) and data["approve"].get("version"):
             if data["approve"].get("version") != getattr(E, "VERSION", "") and \
                     data["approve"] != conf.get("approve"):
@@ -3267,9 +3271,11 @@ def webapp_main():
                             A.CFG[k] = v
                         continue
                     if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
-                        if v in A.SL_MODES:             # for older copies (on only for 'Allow (guarded)')
-                            A.CFG[k] = v
-                            A.CFG["stop_loss"] = v == "allow"
+                        A.sl_sync(A.CFG, {k: v})
+                        continue
+                    if k == "stop_loss":                # an older page's on/off may only make it stricter
+                        if "stop_loss_mode" not in vals:
+                            A.sl_sync(A.CFG, {k: bool(v)})
                         continue
                     try:
                         v = bool(v) if isinstance(cur, bool) else int(round(float(v))) if isinstance(cur, int) \

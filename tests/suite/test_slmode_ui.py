@@ -46,7 +46,7 @@ with sync_playwright() as pw:
         if "Manual override" in pg.evaluate("document.body.innerText"): bad("the old 'Manual override' switch is still shown")
         if saved()[0] is None and pg.evaluate(ON) != ["Allow (guarded)"]:
             bad(f"an old saved 'on' shows {pg.evaluate(ON)}, not Allow (guarded)")
-        for want, words, old in (("never", "never sells for less than you paid", False),
+        for want, words, old in (("never", "Nothing sells for less than you paid", False),
                                  ("tune", "own results show", False), ("allow", "late in a game", True)):
             pg.evaluate(f"document.querySelector('#slrow button[data-slm={want}]').click()")
             time.sleep(.3)

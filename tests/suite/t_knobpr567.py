@@ -169,7 +169,7 @@ ok("...and not without enough recorded decisions", E.knob_cap_step(rows[:10], {"
 # ---- the hedge judge's sign
 r = {"whole": 20.0, "locked": 19.5, "hcost": 30.0, "cost": 10.0, "cap": 100.0, "prefer": True, "ok": True}
 ok("hedge judge: lowering the share to hedge a 97.5% lock-in counts what it locked in",
-   E._knob_res_hedge(r, {"hedge_lock_share": 0.95}) == 19.5 and E._knob_res_hedge(r, {"hedge_lock_share": 0.99}) == 20.0)
+   abs(E._knob_res_hedge(r, {"hedge_lock_share": 0.95}) - 19.5 * E.KNOB_HAIRCUT["hedge"]) < 1e-9 and E._knob_res_hedge(r, {"hedge_lock_share": 0.99}) == 20.0)
 ok("...never where the game wasn't in play on a fresh score, or over the cap",
    E._knob_res_hedge(dict(r, ok=False), {"hedge_lock_share": 0.9}) == 20.0
    and E._knob_res_hedge(r, {"hedge_lock_share": 0.9, "hedge_cap": 25}) == 20.0)
@@ -221,10 +221,50 @@ sbr = [{"ev": 0.3, "out": -2.0, "kick": 1}, {"ev": 0.2, "out": 1.0, "kick": 2}]
 ds = E.knob_judge("sbev", sbr, {"sb_ev_min": 0.25}, "sb_ev_min", 0.35)
 ok("Smart Buy's smallest expected profit is judged (a bet the higher bar drops loses its result)",
    ds[0][1] == 2.0 and ds[1][1] == 0.0 and "sb_ev_min" not in E.KNOB_LIVE)
-ok("the loss guards and the hedge numbers may step live; the break rule and Smart Buy only in shadow",
-   {"sl_prog", "sl_drop", "sl_auto", "sl_checks", "sl_span", "sl_gap", "hedge_lock_share", "hedge_lock_cost"} <= set(E.KNOB_LIVE)
+ok("the loss guards may step live; the break rule, the hedge lock-in numbers and Smart Buy only in shadow",
+   {"sl_prog", "sl_drop", "sl_auto", "sl_checks", "sl_span", "sl_gap"} <= set(E.KNOB_LIVE)
    and not {"brk_on", "brk_move", "sb_ev_min", "sb_dial"} & set(E.KNOB_LIVE)
    and all(E.KNOB_JUDGED.get(n) for n in ("sl_auto", "brk_on", "brk_move", "hedge_lock_share", "sb_ev_min")))
 ok("invariants stay untouched (never judged, never live)",
    all(K[n]["cls"] == "invariant" and n not in E.KNOB_JUDGED and n not in E.KNOB_LIVE
        for n in ("pause", "can_trade", "rule8", "cap_read_age", "sl_feed_age", "in_play", "fresh_quote", "secrets")))
+ok("the confirmation counts can't be loosened below 3 checks over 3 minutes",
+   all(K[n]["min"] == K[n]["start"] for n in ("sl_checks", "sl_span", "hedge_checks", "hedge_span")))
+ok("turning the stop-loss on by itself needs 3 standard errors (a stricter bar)",
+   "sl_auto" in E.KNOB_STRICT_BAR and E.KNOB_EVIDENCE_STRICT["se"] == 3.0)
+
+# ---- settings sync: a stale old switch never loosens 'Selling at a loss' (code review of #228 PR5)
+def sync(cur, inc):
+    c = dict(cur); E.sl_sync(c, inc); return c
+ok("a valid choice wins and keeps the old switch in step",
+   sync({"stop_loss": True, "stop_loss_mode": "allow"}, {"stop_loss_mode": "never", "stop_loss": True})
+   == {"stop_loss": False, "stop_loss_mode": "never"})
+ok("a phone with no control (None) and a stale 'on' can't undo Never or Let it tune itself",
+   sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss_mode": None, "stop_loss": True})["stop_loss_mode"] == "never"
+   and sync({"stop_loss": False, "stop_loss_mode": "tune"}, {"stop_loss": True})["stop_loss_mode"] == "tune")
+ok("an old page's 'off' turns Allow into Let it tune itself, never looser",
+   sync({"stop_loss": True, "stop_loss_mode": "allow"}, {"stop_loss": False}) == {"stop_loss": False, "stop_loss_mode": "tune"}
+   and sync({"stop_loss": True, "stop_loss_mode": None}, {"stop_loss": False})["stop_loss_mode"] == "tune"
+   and sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss": False})["stop_loss_mode"] == "never")
+W_ = open("wtest/combo_watcher.py").read()
+ok("the watcher applies phone settings through sl_sync (never the raw value)", "E.sl_sync(E.CFG" in W_
+   and 'k not in ("stop_loss", "stop_loss_mode")' in W_ and "A.sl_sync(A.CFG" in W_)
+ok("the hedge lock-in numbers and the cap raise stay watch-only until judged on real results",
+   not {"hedge_lock_share", "hedge_lock_cost"} & set(E.KNOB_LIVE) and E.HEDGE_RAISE_LIVE is False)
+
+# ---- Never sell at a loss: a single never sells below what it cost, the learned cut included
+E.CFG.update(stop_loss_mode="never", smart_sell=True, auto_sell=True)
+E.SINGLES.update(at=time.time(), items=[{"t": T1, "side": "yes", "state": "live", "n": 10, "cost": 6.0, "label": "BOS",
+                                          "kind": "win", "chance": 0.2, "sport": "nba"}],
+                 mk={T1: {"yes_bid_dollars": "0.30", "yes_ask_dollars": "0.32"}})
+SOLD = []
+E.single_sell_reason = lambda x, bid, ask, track=True, cut_ok=False: ("cut loss", 0.1)
+E.sell_single_now = lambda *a: (SOLD.append(a), (10, None))[1]
+E.resting_single_sells = lambda: set(); E.order_unsure = lambda t: False; E.hands_off = lambda t: False
+E.sell_held = lambda out: False; E.auto_cap_reached = lambda: False; E.log_decision = lambda r: None
+E.smart_sell_singles()
+ok("Never sell at a loss: a single's loss cut never sells it below cost", SOLD == [])
+E.CFG["stop_loss_mode"] = "allow"
+E.smart_sell_singles()
+ok("...with Allow the same cut goes through (the guards are the cut's own)", len(SOLD) == 1)
+E.CFG["stop_loss_mode"] = None
