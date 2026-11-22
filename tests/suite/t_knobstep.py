@@ -1,4 +1,4 @@
-# CHECK: group=engine secs=20
+# CHECK: group=engine
 # Issue #228, PR2: the knob stepper, its holdout and the brake, in SHADOW ONLY. Checks: Pete's bar (10+ bets in the
 # band, 2% of stake, 2 SE, 20 new results, the newest 30% must agree) fires only when every part holds; candidates stay
 # inside the registry's bounds (mult steps, the loss cut's on/off); borrowed values only stricter; one step a league a
@@ -36,6 +36,15 @@ ev = E.knob_evidence(ds_of(noisy), 100.0, 0)
 ok("a gain within luck (under 2 SE): below the bar", not ev["ok"] and not ev["checks"]["se"] and ev["checks"]["gain"])
 ev = E.knob_evidence(ds_of(good), 300.0, now - 5 * 86400)                 # last step 5 days ago: ~10 new results
 ok("fewer than 20 new results since the last step: below the bar", not ev["ok"] and not ev["checks"]["new"])
+_ds = ds_of(good)
+ok("exactly 19 new results: below; exactly 20: the bar's new part holds",
+   E.knob_evidence(_ds, 300.0, _ds[-20][0])["new"] == 19 and not E.knob_evidence(_ds, 300.0, _ds[-20][0])["checks"]["new"]
+   and E.knob_evidence(_ds, 300.0, _ds[-21][0])["new"] == 20 and E.knob_evidence(_ds, 300.0, _ds[-21][0])["checks"]["new"])
+ok("the holdout needs at least 3 bets it changes", E.knob_evidence(ds_of({**{i: 0.9 for i in range(0, 42, 3)}, 50: 1.0, 55: 1.0}), 300.0, 0)["checks"]["holdout"] is False
+   and E.knob_evidence(ds_of({**{i: 0.9 for i in range(0, 42, 3)}, 50: 1.0, 55: 1.0, 58: 1.0}), 300.0, 0)["checks"]["holdout"])
+ok("a one-step change counts as one step either way (ties are real ties)",
+   E._knob_dist("smart_lam", 1.0, 0.85) == E._knob_dist("smart_lam", 1.0, 1.15) == 1.0
+   and E._knob_dist("smart_floor", 1.7, 1.6) == E._knob_dist("smart_floor", 1.7, 1.8) == 1.0)
 old_only = {i: 0.9 for i in range(0, 42, 3)}                              # 14 gains, all in the oldest 70%
 ev = E.knob_evidence(ds_of(old_only), 300.0, 0)
 ok("the holdout vetoes a step none of the newest 30% would change",
@@ -112,7 +121,7 @@ ROWS = {"replay": {"nba": bets, "all": bets, "nhl": bets[:12]}, "sl": {"nba": be
         "sb": {"all": [{"ev": 0.0, "out": 0.0, "kick": now} for _ in range(40)]}}
 E._knob_rows = lambda now, deadline=None: ROWS
 CALLS = []
-def judge(jd, rows, cur_, name, to, cache=None):
+def judge(jd, rows, cur_, name, to, cache=None, **kw):
     CALLS.append((name, to))
     base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd != "sb" else [(r["kick"], 0.0, 5.0) for r in rows]
     if name == "smart_floor" and to == 1.8:          # a clear gain, spread over old and new
@@ -153,6 +162,10 @@ ok("the live tuners' files are untouched", open(E.SMART_FILE, "rb").read() == sm
 rows = E.store_rows("select league, knob, status from knob_shadow")
 ok("proposals are logged in the shadow table", any(r["league"] == "nba" and r["knob"] == "smart_floor" and r["status"] == "would step" for r in rows)
    and any(r["status"] == "vetoed" for r in rows))
+lr = E.store_rows("select n, staked, live, ver from knob_shadow where league='nba' and knob='smart_floor' and status='would step'")
+ok("each row carries the group's size and stake, the live value then and the bar's version",
+   lr and lr[0]["n"] == 60 and lr[0]["staked"] == 300.0 and json.loads(lr[0]["live"]) == 1.7 and "hold_min" in lr[0]["ver"])
+ok("thin rows are logged with their counts", any(r["status"] == "thin" and r["league"] == "nhl" for r in rows))
 ok("Pete's own caps are recorded apart (#260)", S["settings"]["hedge_cap"] == {"pete": 100.0, "system": None}
    and S["settings"]["auto_cap"]["pete"] == E.auto_cap_limit())
 ok("weekly: a second call does nothing", E.knob_tune(now + 3600) == [] and S["_next"] >= now + E.KNOB_TUNE_EVERY - 1)
@@ -161,7 +174,7 @@ nba2 = E.knob_state()["groups"]["nba"]
 ok("the next step waits for 20 new results since the last", nba2["v"]["smart_floor"] == 1.8
    and not any(r.get("status") == "would step" for r in nba2["last"]))
 # ties: two equal gains, smallest change wins; then the registry's order
-def tie_judge(jd, rows, cur_, name, to, cache=None):
+def tie_judge(jd, rows, cur_, name, to, cache=None, **kw):
     base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd != "sb" else [(r["kick"], 0.0, 5.0) for r in rows]
     if name in ("smart_floor", "smart_lam"):
         return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
@@ -191,6 +204,25 @@ def slow_rows(now, deadline=None):
 E._knob_rows = slow_rows
 ok("reading the bets past the budget: no proposals, tries again in a day", "ran out of time" in " ".join(E.knob_tune(now, force=True)))
 E._knob_rows = lambda now, deadline=None: ROWS
+open(E.KNOBS_FILE, "w").write("{not json")
+E.knob_judge = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+os.remove(E.KNOBS_FILE) if os.path.exists(E.KNOBS_FILE) else None
+E.KNOB_RUN["tune_next"] = 0
+E.knob_tune(now)
+CALLS.clear(); E.knob_judge = judge
+ok("a run that hit an error waits a day (not every 10-minute pass), and says why",
+   E.knob_tune(now + 600) == [] and not CALLS and "error" in (E.knob_shadow_view(now).get("why") or ""))
+E.KNOB_RUN["tune_next"] = 0
+# a run cut short resumes where it stopped, within the same weekly cycle
+os.remove(E.KNOBS_FILE)
+E.knob_tune(now, force=True, budget=1e9)
+full = set(E.knob_state()["groups"])
+S0 = E.knob_state(); S0["run"] = {"done": False, "cycle": now - 10}; S0["groups"]["all"]["at"] = now - 5
+S0["groups"]["nba"]["at"] = now - 20; json.dump(S0, open(E.KNOBS_FILE, "w"))
+CALLS.clear()
+E.knob_tune(now + 86400, force=True)
+ok("a resumed run skips the groups already judged this cycle", full >= {"all", "nba"} and E.knob_state()["groups"]["all"]["at"] == now - 5
+   and E.knob_state()["groups"]["nba"]["at"] == now + 86400)
 open(E.KNOBS_FILE, "w").write("{not json")
 ok("a damaged knobs file is an empty state", E.knob_state()["groups"] == {} and isinstance(E.knob_shadow_view(now), dict))
 E.ROLE_BACKUP = True
@@ -227,6 +259,10 @@ v = E.knob_shadow_view(now)
 nb = [x for x in v.get("leagues", []) if x["key"] == "nba"]
 ok("the view shows the brake and when it ends", nb and nb[0]["brake"] and nb[0]["brake"]["until_say"])
 # the month rule, and old sales before the brake never count again
+for i in range(3):
+    sale(now - 300 + i, "KXMVENHL-PARTS", 1.0, 5.0)          # one bet sold in 3 parts: one sale for the brake
+ok("a bet sold in parts counts once", E.knob_brake_pass(now, force=True) == [] and "nhl" not in E.knob_state()["brake"])
+E.store_x("delete from sell_log where ticker='KXMVENHL-PARTS'")
 ok("the month rule: 5% of the stake lost (with 4+ sales)",
    E.knob_brake_check([(1, 1.0, 5), (2, -3.0, 5), (3, 0.5, 5), (4, -0.5, 5)]) is not None
    and E.knob_brake_check([(1, 1.0, 5), (2, -1.0, 5), (3, 0.5, 5), (4, -0.5, 5)]) is None

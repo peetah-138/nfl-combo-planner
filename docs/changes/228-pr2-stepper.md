@@ -14,12 +14,14 @@ it**. `smart_params`, `stoploss_params`, `sb_dial`, `exit_policy`, `hedge_guard`
   start while the league is braked or nothing is recorded. Invariants and evidence knobs give their live value.
   `knob_cap(name)` (#260) keeps Pete's own `hedge_cap`/`auto_cap` apart from any system raise: the larger of Pete's and
   the raise (the raise never over the registry ceiling: $150 hedge, none for auto_cap), Pete's own while any league is
-  braked; Pete's own value is never lowered or clamped, even above the ceiling. Nothing raises a cap in PR2.
-- **State** `combo_knobs.json` (git-ignored by `combo_*.json`; read-modify-written under `file_lock`, `save_json(...,
-  strict=True)`): per group (`all`, each sport, each league) the would-be values `v`, `step_at`, `why`, the last run's
+  braked; Pete's own value is never lowered or clamped, even above the ceiling; an unreadable hedge cap is the default
+  $100, never "no limit". Nothing raises a cap in PR2.
+- **State** `combo_knobs.json` (git-ignored by `combo_*.json`; read-modify-written under `file_lock`, read back
+  after the write so a failed save raises, without the money-state alarm): per group (`all`, each sport, each league) the would-be values `v`, `step_at`, `why`, the last run's
   rows `last` and a short `hist`; `brake` per league; `settings` = Pete's own caps and any system raise (#260);
   `_at`/`_next`/`run`. Every proposal is also a row in the history file's **`knob_shadow`** table (knob, league,
-  from, to, status, gain, share, band, t, new, holdout gain and count, words), kept 180 days.
+  from, to, status, gain, share, band, t, new, holdout gain and count, words, the group's bet count and stake, the value
+  the live code uses for that group today, and the bar's version), "thin" rows included, kept 180 days.
 - **Stepper** `knob_tune` (weekly, `KNOB_TUNE_EVERY`): for each group and each `cls == "tunable"` knob with a judge,
   one step either way (`knob_candidates`: `add` or `mult` steps, clamped to `min`/`max`; a knob that starts off
   switches on at `on_value`, and off from below its range), every other knob at the group's current value, judged by
@@ -28,8 +30,8 @@ it**. `smart_params`, `stoploss_params`, `sb_dial`, `exit_policy`, `hedge_guard`
   **Smart Buy's band** for its dial (a bet the new level skips loses its result, one it keeps gains it, $5 each).
   Groups start from today's live value from their **own** record (`_knob_seed`), never a borrowed one. Pete's bar
   (`knob_evidence`, `KNOB_EVIDENCE`): **10+ bets the step changes, a gain of 2%+ of everything the group staked, 2+
-  standard errors from luck (t of the band's per-bet gains), 20+ results from games after the group's last step, and
-  the newest 30% of the group's bets (by start) must gain too** on at least one bet the step changes; the bars are on
+  standard errors from luck (t of the band's per-bet gains, sample standard deviation), 20+ results from games after the group's last step, and
+  the newest 30% of the group's bets (by start) must gain too** on at least 3 bets the step changes (`KNOB_HOLD_MIN`); the bars are on
   all the bets, the holdout must agree. A group needs `SMART_MIN_N` (30) / `SL_MIN_N` (50) / `SB_LEARN_N` (30) results
   of its own first ("thin" otherwise). **One step per group per run**: the biggest gain; ties go to the smallest change
   (in steps), then the registry's order; other steps that clear the bar are noted as "qualifies", a step failing only
@@ -40,11 +42,14 @@ it**. `smart_params`, `stoploss_params`, `sb_dial`, `exit_policy`, `hedge_guard`
   Buy's simulator constants: PR7), listed as "waits". #258's bounds: in a **one-of** set (`KNOB_ONE_OF`: swing base /
   risk weight; the lock-in trio) only one knob may stand off its start per league, and the **risk product**
   (`KNOB_PRODUCT`: risk weight × swing base × checkpoint, each as a share of its start) stays inside 0.5×–2.0×.
-  A braked league is skipped. Time-bounded (`KNOB_BUDGET` 60 s, the bet reading included; a run cut short continues a
-  day later), never raises, Pi never (`ROLE_BACKUP`).
+  A braked league is skipped. Time-bounded (`KNOB_BUDGET` 60 s, the bet reading and each replay included); a run cut
+  short continues a day later from the groups not yet judged in that weekly cycle (`run.cycle`), and a group cut in the
+  middle takes no step; a run that hits an error waits a day too (in memory, `KNOB_RUN`, and in the file), and the card
+  says why (`run.why`). One replay cache is shared across groups. Never raises, Pi never (`ROLE_BACKUP`).
 - **Brake** `knob_brake_pass` (every 30 min, `KNOB_BRAKE_EVERY`): per league, the history file's real automatic sales
-  (`sell_log` `result='sold'`, not the Pi; profit = the offer after the single-bet fee minus that share's cost) since its
-  last brake and within 30 days. `knob_brake_check`: the **last 4 all lost money**, or (with 4+ sales) together they
+  (`sell_log` `result='sold'`, not the Pi; profit = the offer after the single-bet fee minus that share's cost; **one bet
+  counts once** however many parts it was sold in) made after its last brake **ended** (sales during a brake never count
+  after it) and within 30 days. `knob_brake_check`: the **last 4 all lost money**, or (with 4+ sales) together they
   **lost more than 5% of what they staked** (`KNOB_BRAKE`). Shadow records "would brake": the league's would-be values
   back to their starts for 14 days, its next step needing 20 new results, a `knob_shadow` row, and **one push per league
   per 14 days**, only when it would change something (a value off its start), worded without the notifier's urgent

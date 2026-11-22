@@ -131,9 +131,9 @@ ok("only analytics reads the registry (knob_view, knob_shadow_view); no live cod
    uses == ["knob_view", "knob_shadow", "knob_shadow_view"])
 wsrc_ = open("wtest/combo_watcher.py", encoding="utf-8").read() if os.path.exists("wtest/combo_watcher.py") else None
 if wsrc_ is not None:
-    wu = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", wsrc_)})
-    ok("the watcher only runs the shadow pass (knob_pass)" + (f" {wu}" if wu != ["knob_pass", "knob_shadow"] else ""),
-       wu == ["knob_pass", "knob_shadow"])
+    code_ = "\n".join(l.split("#")[0] for l in wsrc_.split("\n"))          # code only, not comments
+    wu = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", code_)})
+    ok("the watcher only runs the shadow pass (knob_pass)" + (f" {wu}" if wu != ["knob_pass"] else ""), wu == ["knob_pass"])
 
 # ---- 5. knob_view mirrors the live resolvers league by league
 TICK = {"nba": "KXNBAGAME-26NOV19LALBOS-LAL", "nhl": "KXNHLGAME-26NOV19PHIBOS-PHI", "epl": "KXEPLGAME-26NOV22ARSCHE-ARS",

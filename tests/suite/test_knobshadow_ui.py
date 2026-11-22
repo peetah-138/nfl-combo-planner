@@ -76,7 +76,7 @@ with sync_playwright() as pw:
             P.append(tag + ": the header resets all its styles (no focus ring)")
         hd.click(); wait(pg, "!!document.querySelector('.an .ksp .kslg')", 5)
         txt = pg.locator(".an .ksp").inner_text()
-        for want in ("nothing changes yet", "standard errors from luck", "Tested so far", "Profit floor"):
+        for want in ("nothing changes yet", "judged against luck", "Tested so far", "Profit floor"):
             if want not in txt: P.append(tag + ": missing %r" % want)
         pg.locator(".an .ksp .kslg button", has_text="NBA").click()
         wait(pg, "!!document.querySelector('.an .ksp .kss')", 5)

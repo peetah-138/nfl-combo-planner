@@ -20205,6 +20205,7 @@ KNOB_DAYS = 60                  # settled bets the judges replay (smart_tune's w
 KNOB_KEEP_DAYS = 180            # shadow log rows kept
 KNOB_MONTH = 30 * 86400         # "the month" for the brake: the last 30 days
 KNOB_BRAKE_MIN_SALES = 4        # the month rule needs at least this many automatic sales (one loss isn't a month)
+KNOB_HOLD_MIN = 3               # the newest 30% must hold at least this many bets the step changes (profit review)
 KNOB_EPS = 0.005                # a replayed result that moved less than half a cent didn't change
 # Which judge replays each knob in PR2 (the registry's `judge`): smart sell's replay for the profit floor, the risk
 # weight and the loss cut; the loss guards' replay for their timing and fall; Smart Buy's band for its dial. Every
@@ -20218,13 +20219,14 @@ KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N"}   #
 KNOB_TIED = {"swing_base": "smart_lam"}
 KNOB_ONE_OF = (("swing_base", "smart_lam"), ("trail_arm_cost", "trail_drop", "trail_floor"))
 KNOB_PRODUCT = {"names": ("smart_lam", "swing_base", "checkpoint_lam"), "lo": 0.5, "hi": 2.0}
-KNOB_RUN = {"brake_at": 0.0}
+KNOB_RUN = {"brake_at": 0.0, "tune_next": 0.0}   # in memory too: a failed run never retries every pass
 
 
 def _knob_shadow_table():
     if STORE["db"] and not STORE.get("knob_ok"):
         store_x("create table if not exists knob_shadow(ts real, league text, knob text, from_v text, to_v text, "
-                "status text, gain real, share real, band int, t real, new int, hold real, hold_n int, why text)")
+                "status text, gain real, share real, band int, t real, new int, hold real, hold_n int, why text, n int, "
+                "staked real, live text, ver text)")
         store_x("create index if not exists knob_shadow_t on knob_shadow(ts)")
         STORE["knob_ok"] = True
 
@@ -20243,11 +20245,13 @@ def knob_state():
 
 def _knob_save(fn):
     """Read-modify-write of combo_knobs.json under its file lock (the watcher's two engine copies share it); fn(d)
-    changes d. A failed write raises (strict), so a run never believes it saved what it didn't."""
+    changes d. A failed write raises (read back and compared), so a run never believes it saved what it didn't."""
     with file_lock(KNOBS_FILE):
         d = knob_state()
         out = fn(d)
-        save_json(KNOBS_FILE, d, strict=True)
+        save_json(KNOBS_FILE, d)                      # not money state: no "MONEY STATE" alarm, but checked
+        if load_json(KNOBS_FILE, None) != json.loads(json.dumps(d)):
+            raise OSError("self-tuning state not saved: " + os.path.basename(KNOBS_FILE))
     return out
 
 
@@ -20297,7 +20301,7 @@ def _knob_pete(name):
     try:
         return float(CFG.get("hedge_cap", 100))
     except (TypeError, ValueError):
-        return None
+        return float(KNOB_BY["hedge_cap"]["start"])   # unreadable: the default $100, never "no limit"
 
 
 def knob_cap(name, pete="read", st=None, now=None):
@@ -20351,8 +20355,9 @@ def _knob_dist(name, a, b):
     if a is None or b is None:
         return 0.0 if a is b else 1.0
     if k.get("step_kind") == "mult" and a > 0 and b > 0:
-        return abs(math.log(b / a)) / math.log(1 + k["step"])
-    return abs(b - a) / (k.get("step") or 1)
+        r = abs(math.log(b / a))
+        return round(r / abs(math.log(1 + k["step"] if b > a else 1 - k["step"])), 6)
+    return round(abs(b - a) / (k.get("step") or 1), 6)
 
 
 def _knob_blocked(name, to, cur):
@@ -20383,7 +20388,7 @@ def knob_evidence(ds, staked, last_at, ev=None):
     gain = sum(band)
     share = gain / staked if staked else 0.0
     if len(band) >= 2:
-        m, sd = gain / len(band), statistics.pstdev(band)
+        m, sd = gain / len(band), statistics.stdev(band)
         t = m / (sd / math.sqrt(len(band))) if sd > 0 else (math.inf if m > 0 else -math.inf if m < 0 else 0.0)
     else:
         t = 0.0
@@ -20393,7 +20398,7 @@ def knob_evidence(ds, staked, last_at, ev=None):
     hold = [d for _, d, _ in srt[min(cut, max(len(srt) - 1, 0)):] if abs(d) > KNOB_EPS]
     h_gain = sum(hold)
     checks = {"band": len(band) >= ev["band_n"], "gain": share >= ev["gain"] - 1e-12, "se": t >= ev["se"],
-              "new": new >= ev["new"], "holdout": bool(hold) and h_gain > KNOB_EPS}
+              "new": new >= ev["new"], "holdout": len(hold) >= KNOB_HOLD_MIN and h_gain > KNOB_EPS}
     return {"band": len(band), "gain": round(gain, 2), "share": round(share, 4),
             "t": round(t, 2) if math.isfinite(t) else (99.0 if t > 0 else -99.0), "new": new,
             "hold": round(h_gain, 2), "hold_n": len(hold), "checks": checks, "ok": all(checks.values())}
@@ -20417,7 +20422,7 @@ def _knob_res_sl(c, slp, vals, cache):
     return cache[key]
 
 
-def knob_judge(judge, rows, cur, name, to, cache=None):
+def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
     """The per-bet change [(kick, dollars gained, stake)] of moving `name` from cur[name] to `to`, every other knob at
     the group's current value, by the judge the registry names: smart sell's replay (`_replay`, the loss cut only where
     the live guards would have held), the loss guards' replay (`_sl_replay`), or Smart Buy's band (a bet the new level
@@ -20432,6 +20437,8 @@ def knob_judge(judge, rows, cur, name, to, cache=None):
             out.append((r.get("kick") or 0, d, 5.0))
         return out
     for c, path, slp in rows:
+        if deadline is not None and time.monotonic() > deadline:
+            raise KnobOutOfTime()
         if judge == "sl":
             d = _knob_res_sl(c, slp, new, cache) - _knob_res_sl(c, slp, cur, cache)
         else:
@@ -20534,15 +20541,19 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
     try:
         if ROLE_BACKUP or not STORE.get("db"):
             return []
+        if not force and now < KNOB_RUN["tune_next"]:
+            return []
         st = knob_state()
         if not force and now < float(st.get("_next") or 0):
             return []
+        KNOB_RUN["tune_next"] = now + KNOB_RETRY      # until this run finishes: a failure waits a day, never 10 minutes
         t0 = time.monotonic()
         try:
             rows = _knob_rows(now, t0 + budget)
         except KnobOutOfTime:
-            _knob_save(lambda d: d.update(_next=now + KNOB_RETRY, run={"at": now, "done": False, "mode": KNOB_MODE,
-                                                                        "secs": round(time.monotonic() - t0, 1)}))
+            _knob_save(lambda d: d.update(_next=now + KNOB_RETRY, run={
+                "at": now, "done": False, "mode": KNOB_MODE, "secs": round(time.monotonic() - t0, 1),
+                "why": "ran out of time reading the settled bets; tries again in a day"}))
             return ["ran out of time reading the bets; tries again in a day"]
         smart = load_json(SMART_FILE, {})
         smart = smart if isinstance(smart, dict) else {}
@@ -20554,12 +20565,17 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         keys = set(rows["replay"]) | set(rows["sb"])
         order = (["all"] if "all" in keys else []) + sorted(k for k in keys if k != "all")
         tun = [k for k in KNOBS if k["cls"] == "tunable"]
-        groups, said, logrows, done = {}, [], [], True
+        ver = json.dumps({"ev": KNOB_EVIDENCE, "hold_min": KNOB_HOLD_MIN, "days": KNOB_DAYS, "mode": KNOB_MODE})
+        prev = st.get("run") if isinstance(st.get("run"), dict) else {}
+        cycle = float(prev.get("cycle") or 0) if prev.get("done") is False and prev.get("cycle") else now
+        groups, said, logrows, done, cache = {}, [], [], True, {}   # the cache is shared: groups hold the same bets
         for g in order:
             if time.monotonic() - t0 > budget:
                 done = False
                 break
             e = dict(st["groups"].get(g) or {}) if isinstance(st["groups"].get(g), dict) else {}
+            if cycle < now and float(e.get("at") or 0) >= cycle:
+                continue                              # already judged in this weekly cycle (a run cut short resumes)
             v = dict(e.get("v") or {}) if isinstance(e.get("v"), dict) else {}
             why = dict(e.get("why") or {}) if isinstance(e.get("why"), dict) else {}
             if _knob_braked(st, g, now):
@@ -20571,7 +20587,11 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             for k in tun:                             # where each knob stands for this group now
                 n_ = k["name"]
                 cur[n_] = v[n_] if n_ in v else _knob_seed(n_, g, smart, dial)
-            last, best, cache = [], None, {}
+            last, best = [], None
+            try:                                      # what the live code uses for this group today, logged beside each row
+                live_now = {n_: x for n_, (x, _) in _knob_league(g, smart, now).items()}
+            except Exception:
+                live_now = {}
             for k in tun:
                 n_ = k["name"]
                 jd = KNOB_JUDGED.get(n_)
@@ -20600,12 +20620,17 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         last.append({"knob": n_, "from": cur[n_], "to": to, "status": "blocked",
                                      "say": f"{knob_step_say(n_, cur[n_], to, None)}: {blk}"})
                         continue
-                    ev = knob_evidence(knob_judge(jd, rs, cur, n_, to, cache), staked, e.get("step_at"))
+                    try:
+                        ds = knob_judge(jd, rs, cur, n_, to, cache, deadline=t0 + budget)
+                    except KnobOutOfTime:
+                        done = False
+                        break
+                    ev = knob_evidence(ds, staked, e.get("step_at"))
                     if ev["band"] == 0:
                         continue                      # changes nothing: nothing to log
                     status = "qualifies" if ev["ok"] else ("vetoed" if all(
                         x for w, x in ev["checks"].items() if w != "holdout") else "below")
-                    row = {"knob": n_, "from": cur[n_], "to": to, "status": status, "n": len(rs),
+                    row = {"knob": n_, "from": cur[n_], "to": to, "status": status, "n": len(rs), "staked": round(staked, 2),
                            **{x: ev[x] for x in ("gain", "share", "band", "t", "new", "hold", "hold_n")},
                            "say": knob_step_say(n_, cur[n_], to, ev, len(rs)) +
                            ("" if ev["ok"] or status == "vetoed" else f" Not yet: {_knob_why_not(ev)}.")}
@@ -20614,9 +20639,11 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         rank = (-ev["gain"], _knob_dist(n_, cur[n_], to))
                         if best is None or rank < best[0]:
                             best = (rank, row)
-                if time.monotonic() - t0 > budget:
+                if not done or time.monotonic() - t0 > budget:
                     done = False
                     break
+            if not done:
+                break                                 # a group cut in the middle takes no step and waits for the retry
             if best:
                 row = best[1]
                 row["status"] = "would step"
@@ -20629,32 +20656,39 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             e.update(v=v, why=why, last=last, at=now)
             groups[g] = e
             for r in last:
-                if r.get("status") in ("would step", "qualifies", "vetoed", "below"):
+                if r.get("status") in ("would step", "qualifies", "vetoed", "below", "thin"):
                     logrows.append((now, g, r["knob"], json.dumps(r.get("from")), json.dumps(r.get("to")), r["status"],
                                     r.get("gain"), r.get("share"), r.get("band"), r.get("t"), r.get("new"),
-                                    r.get("hold"), r.get("hold_n"), r.get("say", "")[:600]))
-            if not done:
-                break
+                                    r.get("hold"), r.get("hold_n"), r.get("say", "")[:600], r.get("n"),
+                                    r.get("staked"), json.dumps(live_now.get(r["knob"])), ver))
 
         def put(d):
             d["groups"].update(groups)
             d["_at"] = now
             d["_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
             d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": done, "groups": len(groups),
-                        "mode": KNOB_MODE}
+                        "mode": KNOB_MODE, "cycle": cycle,
+                        "why": None if done else "ran out of time; the rest waits a day"}
             for name in ("auto_cap", "hedge_cap"):     # #260: Pete's own value, kept apart from any system raise
                 s = d["settings"].get(name) if isinstance(d["settings"].get(name), dict) else {}
                 d["settings"][name] = {"pete": _knob_pete(name), "system": s.get("system")}
         _knob_save(put)
+        KNOB_RUN["tune_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
         _knob_shadow_table()
         for r in logrows:
             store_x("insert into knob_shadow(ts, league, knob, from_v, to_v, status, gain, share, band, t, new, hold, "
-                    "hold_n, why) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+                    "hold_n, why, n, staked, live, ver) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
         store_x("delete from knob_shadow where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
         ANALYTICS["at"] = 0
         return [f"(not active yet) {s}" for s in said] + ([] if done else ["ran out of time; the rest waits a day"])
     except Exception as err:
         print("knob stepper:", type(err).__name__, err)
+        msg = f"the last try hit an error ({type(err).__name__}); tries again in a day"
+        try:
+            _knob_save(lambda d: d.update(_next=now + KNOB_RETRY, run=dict(
+                d.get("run") if isinstance(d.get("run"), dict) else {}, failed=now, why=msg)))
+        except Exception:
+            pass
         return []
 
 
@@ -20676,7 +20710,7 @@ def knob_brake_check(sales, ev=None):
     net = sum(p for _, p, _ in sales)
     if len(sales) >= KNOB_BRAKE_MIN_SALES and stake > 0 and net < -ev["month_share"] * stake:
         return (f"the sales the app made on its own lost ${-net:.2f} over the last 30 days, {-net / stake:.0%} of the "
-                f"${stake:.2f} they staked (the brake is at {ev['month_share']:.0%})")
+                f"${stake:.2f} they staked")
     return None
 
 
@@ -20697,7 +20731,7 @@ def knob_brake_pass(now=None, force=False):
         st = knob_state()
         rows = store_rows("select ts, ticker, kind, offer, cost, pays, frac from sell_log where result='sold' and ts > ? "
                           "and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
-        by, lg_of = defaultdict(list), {}
+        per, lg_of = {}, {}                            # one bet counts once, however many parts it was sold in
         for r in rows:
             try:
                 t = r["ticker"] or ""
@@ -20709,8 +20743,14 @@ def knob_brake_pass(now=None, force=False):
             except (TypeError, ValueError, ZeroDivisionError):
                 continue
             b = st["brake"].get(lg) if isinstance(st["brake"].get(lg), dict) else {}
-            if cost > 0 and r["ts"] > float(b.get("at") or 0):
-                by[lg].append((r["ts"], round(offer - fee - cost, 2), cost))
+            if cost > 0 and r["ts"] > max(float(b.get("at") or 0), float(b.get("until") or 0)):
+                x = per.setdefault((lg, t), [r["ts"], 0.0, 0.0])          # sales during a brake never count after it
+                x[0] = r["ts"]
+                x[1] += offer - fee - cost
+                x[2] += cost
+        by = defaultdict(list)
+        for (lg, _), (ts, pl, cost) in sorted(per.items(), key=lambda kv: kv[1][0]):
+            by[lg].append((ts, round(pl, 2), cost))
         fire = {}
         for lg, sales in by.items():
             if _knob_braked(st, lg, now):
@@ -20723,10 +20763,11 @@ def knob_brake_pass(now=None, force=False):
         days = KNOB_BRAKE["days"]
 
         def put(d):
-            msgs = []
+            msgs, done_ = [], []
             for lg, why in fire.items():
                 if _knob_braked(d, lg, now):
                     continue
+                done_.append(lg)
                 old = d["brake"].get(lg) if isinstance(d["brake"].get(lg), dict) else {}
                 e = d["groups"].get(lg) if isinstance(d["groups"].get(lg), dict) else {}
                 vals = e.get("v") if isinstance(e.get("v"), dict) else {}
@@ -20740,10 +20781,10 @@ def knob_brake_pass(now=None, force=False):
                 if push_ok:
                     msgs.append(f"Self-tuning test, nothing changed: in {league_label(lg)}, {why}. Once self-tuning is "
                                 f"live, {league_label(lg)} would go back to its starting numbers for {days} days.")
-            return msgs
-        msgs = _knob_save(put)
+            return msgs, done_
+        msgs, braked = _knob_save(put)
         _knob_shadow_table()
-        for lg, why in fire.items():
+        for lg, why in ((x, fire[x]) for x in braked):
             store_x("insert into knob_shadow(ts, league, knob, status, why) values(?,?,?,?,?)",
                     (now, lg, "*", "would brake", why[:600]))
         ANALYTICS["at"] = 0
@@ -20794,6 +20835,7 @@ def knob_shadow_view(now=None):
         out.sort(key=lambda x: (x["key"] != "all", -len(x["steps"]) - len(x["also"]), x["name"]))
         tun = [k for k in KNOBS if k["cls"] == "tunable"]
         return {"mode": KNOB_MODE, "at": st.get("_at"), "next": st.get("_next"), "done": run.get("done"),
+                "why": run.get("why"),
                 "leagues": out, "judged": [KNOB_BY[n]["label"] for n in KNOB_JUDGED],
                 "waits": sum(1 for k in tun if k["name"] not in KNOB_JUDGED and not k.get("shared_with")
                              and k["name"] not in KNOB_TIED),
