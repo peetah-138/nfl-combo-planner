@@ -61,8 +61,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
  let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
  // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
- const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
- const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
+ const offAbbr=possTeam(d);                        // '' when nobody is known to have it (never guessed from the ball spot)
+ const homeHas=!!offAbbr&&!!home.abbr&&offAbbr===home.abbr.toUpperCase();
  const haveBall=ytz!=null;
  // Field goes 0..100 left→right in the 100-yard playing area. Everything inside .grass (ball, arrow, ticks, first-down line,
  // red zone) is positioned in % of the GRASS box, which already sits between the two end zones, so a spot at N yards from the
@@ -81,8 +81,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  const ticks=Array.from({length:11},(_,i)=>`<i style="left:${i*10}%"></i>`).join('');
  // The ball marker + possession arrow point the direction of the drive.
  const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
- const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
-   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
+ const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>${offAbbr?`
+   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:''}`:'';
  // Only draw the first-down line when a ball marker is shown, so a partial feed can't leave a floating line with no ball.
  const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
  // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
@@ -91,7 +91,7 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  // The situation line: down & distance, ball spot, who has it; and the last play + its type.
  const dd=sit.downDistanceText||dr.downDistanceText||'';
  const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
- const offName=homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
+ const offName=!offAbbr?'':homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
  const lastPlay=(sit.lastPlayText||'').trim();const lastType=(sit.lastPlayType||'').trim();
  return `<div class="fstrip${reduce?' noanim':''}">
   <div class="fld" role="img" aria-label="Field position">
@@ -111,6 +111,11 @@ function _teamSide(d,abbr){if(!d||!d.board||!abbr)return null;const a=(abbr||'')
 function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situation||{};if(!side)return '';
  const to=side==='home'?sit.homeTimeouts:sit.awayTimeouts;if(to==null)return '';
  return `<div class="tdots">${[0,1,2].map(i=>`<i class="${i<to?'on':''}"></i>`).join('')}</div>`;}
-function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
- const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
- return has?'<span class="poss" title="has the ball">🏈</span>':'';}
+/* Who has the ball (#318): the board team's code in capitals, or '' when it isn't known. One answer for the whole page, so
+   the scoreboard can never put a ball on both teams. The current drive's team first (the strip's direction uses it too), then
+   the scoreboard's possession team (possAbbr, from ESPN's situation.possession id). Never ESPN's possessionText: that is the
+   ball SPOT ("PHI 8" = on Philadelphia's 8 while Pittsburgh has it), not the team with the ball. */
+function possTeam(d){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};
+ for(const c of [dr.teamAbbr,sit.possAbbr]){const a=String(c||'').toUpperCase();if(a&&_teamSide(d,a))return a;}return '';}
+function scbPoss(d,abbr){if(!abbr||!_teamSide(d,abbr))return '';
+ return possTeam(d)===abbr.toUpperCase()?'<span class="poss" title="has the ball">🏈</span>':'';}

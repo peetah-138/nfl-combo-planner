@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.21.134"
+VERSION = "2026.11.22.135"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -7565,6 +7565,11 @@ def fetch_scores(max_age=None, code=None):
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
+            # The team with the ball, by code (#318): ESPN's possession id matched to a competitor; '' when unknown.
+            # (possessionText is the ball spot, "PHI 8", not who has it.) Display only.
+            pid = str(sit.get("possession") or "") if sit_info and isinstance(sit, dict) else ""
+            poss_abbr = next(((c.get("team") or {}).get("abbreviation") or "" for c in teams
+                              if pid and str(c.get("id") or (c.get("team") or {}).get("id") or "") == pid), "")
             for me, opp in ((teams[0], teams[1]), (teams[1], teams[0])):
                 tm = me.get("team") or {}
                 name = tm.get("displayName")
@@ -7585,6 +7590,7 @@ def fetch_scores(max_age=None, code=None):
                 if sit_info:                      # football live situation (display only), seen from this team's side
                     info["situation"] = dict(sit_info,
                                              possession=str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
+                                             possAbbr=poss_abbr,
                                              myTimeouts=sit_info["homeTimeouts"] if me.get("homeAway") == "home" else sit_info["awayTimeouts"],
                                              theirTimeouts=sit_info["awayTimeouts"] if me.get("homeAway") == "home" else sit_info["homeTimeouts"])
                 for alt in {name, norm_team(name), norm_team(tm.get("shortDisplayName") or ""),

@@ -187,6 +187,54 @@ def run_nodrive(pg, label):
     return probs
 
 
+BALLS = "[...document.querySelectorAll('#sheet .board2 .tm2')].filter(e=>e.querySelector('.poss')).map(e=>e.innerText.replace(/\\s+/g,' ').trim())"
+
+
+def run_one_ball(pg, label):
+    """#318: Pete's screenshot. IND has the ball on the other team's 8 (possessionText "HOU 8", the ball SPOT, starts with the
+    other team's code): exactly one football, on IND, and the strip says "Colts ball". Then: no drive and no possession team
+    = no football anywhere and no "X ball" guess; the scoreboard's possession team alone still gives one ball."""
+    probs = []
+    pg.route("**/app/api/game*", answer)
+    g = game(8, "1st", "10", "Timeout #1 by HOU at 13:12.", "Timeout", "IND", clock="Q4 13:12")
+    g["detail"]["situation"]["possessionText"] = "HOU 8"
+    g["detail"]["situation"]["possAbbr"] = "IND"
+    state["g"] = g
+    pg.goto(B + "/app"); time.sleep(.6)
+    pg.evaluate(f"openGame('{TK}')")
+    if not until(pg, "!!document.querySelector('#sheet .board2 .poss')"):
+        probs.append(label + ": no football on the scoreboard"); return probs
+    balls = pg.evaluate(BALLS)
+    if len(balls) != 1 or "IND" not in balls[0]:
+        probs.append(label + ": expected one football, on IND: " + repr(balls))
+    situ = pg.evaluate("(document.querySelector('#sheet .fstrip .situ')||{}).innerText||''")
+    if "Colts ball" not in situ or "Texans ball" in situ:
+        probs.append(label + ": situation line names the wrong team: " + repr(situ))
+    time.sleep(1.2)                                # let the sheet's entrance finish so the picture shows the page
+    pg.screenshot(path="oneball_%s.png" % label)
+    # the scoreboard's possession team alone (no drive block): still one ball, on IND
+    g2 = json.loads(json.dumps(g)); g2["detail"].pop("drive", None); state["g"] = g2
+    pg.evaluate("S.gameSig=null;drawGame()")
+    time.sleep(.4)
+    balls = pg.evaluate(BALLS)
+    if len(balls) != 1 or "IND" not in balls[0]:
+        probs.append(label + ": possAbbr alone should give one football, on IND: " + repr(balls))
+    # nobody known to have it: no football at all, no "X ball", no direction arrow
+    g3 = json.loads(json.dumps(g2)); g3["detail"]["situation"].pop("possAbbr", None); g3["detail"]["situation"]["possession"] = False
+    state["g"] = g3
+    pg.evaluate("S.gameSig=null;drawGame()")
+    if not until(pg, "!document.querySelector('#sheet .board2 .poss')", 5):
+        probs.append(label + ": unknown possession still shows a football: " + repr(pg.evaluate(BALLS)))
+    situ = pg.evaluate("(document.querySelector('#sheet .fstrip .situ')||{}).innerText||''")
+    if " ball" in situ.replace("ball on", ""):
+        probs.append(label + ": unknown possession still names a team: " + repr(situ))
+    if pg.evaluate("!!document.querySelector('#sheet .fstrip .fdir')"):
+        probs.append(label + ": unknown possession still draws a direction arrow")
+    pg.evaluate("closeModal()")
+    state["g"] = game(73, "1st", "10", "C.Stroud pass intended for N.Collins INTERCEPTED by A.Smith at IND 40.", "Interception", "IND")
+    return probs
+
+
 def run_reduced(pg, label):
     """Reduced motion: the strip carries the .noanim class and the ball's left transition is off, so changing the
     line of scrimmage doesn't animate."""
@@ -217,6 +265,7 @@ with sync_playwright() as pw:
     probs += run(pg, "phone", True)
     probs += run_home(pg, "phone")                 # the home-possession branch (ball on the home side, red zone left)
     probs += run_nodrive(pg, "phone")              # a detail block with a situation but no drive: render from yardLine
+    probs += run_one_ball(pg, "phone")             # #318: one football at most, never read off the ball spot
     pg.close()
     pg = br.new_page(viewport={"width": 1280, "height": 900}, color_scheme="dark")
     pg.on("pageerror", lambda e: errs.append(str(e)))
