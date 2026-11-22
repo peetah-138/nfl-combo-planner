@@ -63,7 +63,11 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 
 ### Self-tuning smart sell, first moves (≈ 1–2 weeks)
 - Nothing to build: each league starts moving once it has ~30 settled bets with recorded game prices. Worth a check
-  that the first changes (Results › Selling) look sensible, and that the reasons read clearly.
+  that the first changes (Results › Selling, "🎛️ What self-tuning changed") look sensible, and that the reasons read
+  clearly. Since 2026.11.21.133 the exit numbers tune live behind `knobs_live` (#228 PR2-PR4); at release every league
+  was too thin for a step, so nothing changed on day one.
+- **#228 PR5-PR7 (next):** loss guards / `break_ok` in shadow first (PR5), hedge knobs and the `hedge_cap` raise (PR6),
+  Smart Buy simulator constants (PR7); split any shared knob first. Follow-ups from PR4's reviews: #298-#302.
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
@@ -123,11 +127,16 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
    from each breakdown into its setting, tagging Live Buy idea buys apart from Build, and feeding the scorecard to
    `smart_tune` as its target (a selling change: needs Pete's go-ahead).
 5. **Joint tuning** of both halves; continuation-value exits and partial exits (Pete's "dollars, not pennies").
-   The weekly tuner's replay now runs exit_policy (#228 PR0 shipped) and the knob registry is listed read-only (#228 PR1
-   shipped; PR2-PR7, the evidence stepper (shadow first), brake and stop-loss modes, are next). Still different from live, for later #228 PRs:
-   take profit isn't replayed; the checkpoint x1.3 risk weight isn't modelled (recorded paths don't say which picks had
-   won); the estimate stands in for Kalshi's real offer (learn it in PR4: `sale_outcomes` + `CASH_SLIP`); the live
+   The weekly tuner's replay runs exit_policy (#228 PR0), the knob registry (PR1), the stepper and brake (PR2-PR4, live
+   behind `knobs_live`) shipped; the self-tuning judge replays against real Kalshi offers (`_replay_real`, PR4). Still
+   different from live in the plain `_replay`: take profit isn't replayed; the checkpoint x1.3 risk weight isn't
+   modelled (recorded paths don't say which picks had won); the live
    risk weight's `swing_lambda` time-left shrink and Let it ride scaling aren't in the replay (it keeps `0.35 x swing`).
+- **Smart Buy faster evidence, next** (#137, after #297): universe markets for the leagues the Mac's panel doesn't look
+  at (soccer, tennis, EuroLeague, UFC: priced only by the web app's Build board today); game-winner backfill once a
+  start time and result are recorded with each check; price paths for universe markets if exit calibration needs them
+  (would grow `price_path`); the paper book choosing like the panel (choose_panel's ahead floor and type shares, fill
+  caps).
 - Finding from stage 1 to put to Pete: at the 1.5x profit floor, a single bought above ~67c can never be sold for a
   profit by smart sell (only held), and on modest-edge bets selling at the bid gives up part of the edge (the
   simulator's blended EV is below hold EV). Stage 5's continuation-value rule is meant to fix both.
