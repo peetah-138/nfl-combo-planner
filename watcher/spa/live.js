@@ -1,7 +1,12 @@
 // ---------------- LIVE
+/* Display only (issue #320): the colour of a leg's chip, ring and the legend. A known score decides it: ahead = green,
+   behind = red, level (0-0 at kickoff included) = tied, never red because the chance is under 50%. Only a leg with no
+   numeric score (a fight, a feed with no points) falls back to the chance. pick_state and every money path never read this. */
 function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';if(l.state!=='live'||l.phase==='probably_over'||l.phase==='over'||l.phase==='waiting')return '';
- const lead=l.sc?(l.sc.me-l.sc.opp):0;const ch=l.live!=null?l.live:l.chance;
- if(lead>0||(!lead&&ch!=null&&ch>=.6))return 'up';if(lead<0||(!lead&&ch!=null&&ch<=.4))return 'down';return 'live';}
+ const sc=l.sc,num=v=>typeof v==='number'&&isFinite(v);
+ if(sc&&num(sc.me)&&num(sc.opp))return sc.me>sc.opp?'up':sc.me<sc.opp?'down':'live';
+ const ch=l.live!=null?l.live:l.chance;
+ if(ch!=null&&ch>=.6)return 'up';if(ch!=null&&ch<=.4)return 'down';return 'live';}
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
  const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
