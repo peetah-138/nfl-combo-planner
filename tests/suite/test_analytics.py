@@ -127,12 +127,16 @@ with sync_playwright() as pw:
         row.locator("input").click()
         if saved("knobs_live", True) is not True: print("PROBLEMS: turning 'Let smart sell tune its own numbers' back on didn't save")
     SBP = {"on": False, "days": 7, "stake": 5, "markets": 42, "prices": 900,
+           "scored": {"n": 387, "settled": 299, "by": {"panel": {"n": 133, "settled": 108}, "universe": {"n": 63, "settled": 0},
+                                                         "backfill": {"n": 191, "settled": 191}}},
            "rows": [{"name": "NBA", "kind": "Single games", "n": 48, "ok": 20, "p_exit": 0.52, "ev": 0.41, "sell": 25, "hold": 10},
                     {"name": "NFL", "kind": "Spreads & totals", "n": 12, "ok": 3, "p_exit": 0.31, "ev": -0.2, "sell": 2, "hold": 4}],
            "calib": [{"name": "NBA", "kind": "Single games", "n": 9, "pred": 0.5, "actual": 0.44}],
            "gate": [{"league": "nba", "name": "NBA", "state": "active", "own": 41, "need": 30, "level": 2, "from": None,
                      "skipped": 7, "saved": 12.5, "why": "the 7 bets it would skip lost $12.50 on $5 each",
-                     "optin": {"n": 34, "n_need": 50, "ahead": 8.2, "days_up": 0.6, "days": 5, "clv": 0.012, "beats": True, "met": False}},
+                     "scored": {"n": 96, "settled": 41},
+                     "optin": {"n": 34, "n_need": 50, "ahead": 8.2, "days_up": 0.6, "days": 5, "clv": 0.012, "beats": True, "met": False,
+                               "paper": True}},
                     {"league": "nfl", "name": "NFL", "state": "learning", "own": 12, "need": 30, "level": 0, "from": None,
                      "skipped": 0, "saved": 0, "why": None,
                      "optin": {"n": 12, "n_need": 50, "ahead": -3.0, "days_up": 0.4, "days": 3, "clv": None, "beats": None, "met": False}}]}
@@ -155,6 +159,9 @@ with sync_playwright() as pw:
                 or "It only ever skips" not in sb or "preview" in sb.lower() \
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
+        if "Scored on paper: 387 bets, 299 settled" not in sb or "191 from your history" not in sb or "63 every other priced market" not in sb \
+                or "Scored on paper: 96 bets, 41 settled" not in sb or "+$8.20 on paper" not in sb or "Only the panel-grade ones move the strictness" not in sb:
+            print("PROBLEMS: the Smart Buy card doesn't say how many bets were scored on paper, by source and per league:", sb[:600])
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: the Smart Buy preview scrolls sideways on a phone")
     __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s

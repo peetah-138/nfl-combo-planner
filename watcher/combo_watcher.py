@@ -1844,6 +1844,8 @@ def history_loop(E, every=900):
             got = E.resolve_quotes()
             E.resolve_closes()
             E.smart_buy_learn()                    # Smart Buy: results of checked bets, then the dial per league
+            E.smart_buy_backfill()                 # (#137) history's panel bets on paper, daily; never twice
+            E.sb_paper_build()                     # (#137) the paper book of graduated stakes, hourly; display only
             if got:
                 log(f"history: {got} quotes settled")
             n += 1
@@ -1916,6 +1918,7 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)                          # (#137) paper scoring of every priced market, OUTSIDE odds.lock
         try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
             n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
             if n_out:
@@ -1967,6 +1970,18 @@ def quick_rounds(odds, notifier, until, gap=150):
                     notifier.add(m, "idea")
         except Exception as err:
             log("quick check skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)
+
+
+def smart_buy_universe(odds):
+    """Smart Buy's paper scoring of every market the panel looks priced (#137): simulation only, bounded to 0.15 s,
+    OUTSIDE odds.lock (the lock panel_loop holds to place a real approved buy). Writes exit_shadow rows only."""
+    try:
+        H = odds.engine()
+        if hasattr(H, "smart_buy_universe"):
+            H.smart_buy_universe()
+    except Exception as err:
+        log("smart buy paper scoring skipped:", type(err).__name__, err)
 
 
 
