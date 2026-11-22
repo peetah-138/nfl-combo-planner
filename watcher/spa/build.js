@@ -234,10 +234,30 @@ async function swapCombo(i,b){hap();if(b){b.disabled=true;b.innerHTML='<span cla
  const r=await api('/app/api/act',{a:'swap',i}).catch(()=>({ok:false}));if(S.quotes)delete S.quotes[i];if(S.stk)delete S.stk['cc:'+i];if(S.ccRec)delete S.ccRec[i];if(S.flips)delete S.flips[i];
  if(!r.ok){hap('error');toast(r.msg||'Couldn\'t find another one.');renderBuild();return;}
  const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;S.ccJust=i;renderBuild();S.ccJust=null;hap('success');}
-async function flipLeg(i,t){hap();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
- if(!r.ok){hap('error');toast(r.msg||'Couldn\'t flip that one.',6000);return;}
- const k=S.build.combos.findIndex(x=>x.i===i);if(k>=0)S.build.combos[k]=r.combo;if(S.quotes)delete S.quotes[i];
- S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};hap(r.verdict==='good'?'success':r.verdict==='bad'?'warning':'light');S.ccJust=i;renderBuild();S.ccJust=null;}
+/* Flip a leg (issue #104, display only: the 'flip' act and the combo it returns are exactly as before). The moment you tap, the
+   price asked for earlier is dropped (it was for other legs, so Buy can never be tapped on it) and the card shows a loading state
+   (phase 'flip': the tapped row folds away, the numbers that depend on the flip shimmer, Get price waits). When the answer is in
+   (after at least FLIP_MIN ms, so a quick answer still reads as one turn) the new row turns in, the numbers roll, the note slides in. */
+const FLIP_MIN=220;
+/* One polite announcer for the whole page (outside the cards, which are redrawn): set its text, never re-added. */
+function flipSay(m){let e=document.getElementById('flipsay');if(!e){e=document.createElement('div');e.id='flipsay';e.className='sr';e.setAttribute('role','status');e.setAttribute('aria-live','polite');document.body.appendChild(e);}e.textContent=m;}
+async function flipLeg(i,t){const c0=(S.build&&S.build.combos||[]).find(c=>c.i===i);if(!c0||S.buying)return;
+ const ph0=ccPhase(c0);if(ph0==='flip'||ph0==='buy')return;
+ const k=c0.legs.findIndex(l=>l.ticker===t),hadFocus=!!(document.activeElement&&document.activeElement.classList&&document.activeElement.classList.contains('lrow'));
+ const lg=S.lg,sig=ccSig(c0),cel=document.querySelector(`#main .ccard[data-i="${i}"]`),qel=cel&&cel.querySelector('.qline,.stk'),bel=cel&&cel.querySelector('.brow'),hq=qel&&bel?Math.max(0,bel.offsetTop-qel.offsetTop-10):0,tok={t:Date.now(),sig,k,hq};   // hq = the quote line AND the amount row (the stake control hides while a flip is on its way), so the buttons never move (the 10 is the card's row gap, which the placeholder brings again)   // tok is also this flip's token: only it may clear itself
+ S.fpend=S.fpend||{};S.fpend[i]=tok;if(S.quotes)delete S.quotes[i];flipSay('Updating…');renderBuild();
+ const t0=Date.now();const r=await api('/app/api/act',{a:'flip',i,t}).catch(()=>({ok:false}));
+ const rest=FLIP_MIN-(Date.now()-t0);if(rest>0)await new Promise(res=>setTimeout(res,rest));
+ const mine=!!S.fpend&&S.fpend[i]===tok;if(mine)delete S.fpend[i];
+ if(!mine){renderBuild();return;}   // a newer flip owns this card now: this answer is dropped
+ const cur=S.build&&S.build.combos&&S.build.combos.find(x=>x.i===i);
+ if(S.lg!==lg||!cur||ccSig(cur)!==sig){renderBuild();return;}   // another board, a rebuild or a swap happened meanwhile: never write this answer over it
+ try{
+  if(!r.ok){const msg=r.msg||'Couldn\'t flip that one.';toast(msg,6000);S.flips=S.flips||{};S.flips[i]={v:'bad',text:msg,err:1};flipSay(msg);S.ccJust=null;S.fturn={i,k,fail:1,hq:tok.hq};renderBuild();}
+  else{const kk=S.build.combos.findIndex(x=>x.i===i);if(kk>=0)S.build.combos[kk]=r.combo;if(S.quotes)delete S.quotes[i];
+   S.flips=S.flips||{};S.flips[i]={v:r.verdict,text:r.text};flipSay((r.verdict==='good'?'Good flip. ':r.verdict==='bad'?'Worse bet. ':'Trade-off. ')+(r.text||''));S.ccJust=i;S.fturn={i,k,hq:tok.hq};renderBuild();}
+ }finally{S.ccJust=null;S.fturn=null;}
+ if(hadFocus){const row=document.querySelector(`#main .ccard[data-i="${i}"] .lrow.flip:nth-child(${k+1})`);if(row)row.focus({preventScroll:true});}}
 /* A bet's leg, Kalshi-style: sport icon, the pick in bold, then who it plays, the league and when, with the price on the right
    (and the live score when the game is under way). Display only: it reads the Build board the page already has. */
 function gameOf(l){const ev=l.event||String(l.ticker||'').replace(/-[^-]*$/,'');const b=S.build&&S.build.board;if(!b)return undefined;
@@ -245,7 +265,7 @@ function gameOf(l){const ev=l.event||String(l.ticker||'').replace(/-[^-]*$/,'');
 function legWhere(l){const g=gameOf(l)||{};const opp=(g.sides||[]).find(s=>!s.tie&&s.ticker!==l.ticker);return {g,opp,sp:g.sport||''};}
 function legRow(l,o){o=o||{};const {g,opp,sp}=legWhere(l);const meta=[opp?'vs '+opp.pick:'',SPN[sp]||'',g.started?'':(g.label||'')].filter(Boolean).join(' · ');
  const live=g.started?(legLive(l)||'<span class="legsc even">● Live</span>'):'';
- return `<div class="lrow${o.flip?' flip':''}"${o.flip?` onclick="flipLeg(${o.i},'${l.ticker}')" title="Tap to flip to the other team"`:''}>${ICON[sp]?`<span class="li">${ICON[sp]}</span>`:''}<div class="lm"><b>${esc(l.pick)}</b><small>${esc(meta)}</small>${live}</div><span class="lp">${l.fair!=null?pct(l.fair):''}${o.flip?'<i>⇄</i>':''}</span></div>`;}
+ return `<div class="lrow${o.flip?' flip':''}${o.wait?' wait':''}${o.turn?' turn':''}${o.shake?' shake':''}"${o.flip?` role="button" tabindex="0" aria-label="Flip ${esc(l.pick)} to the other team" aria-busy="${o.wait?'true':'false'}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();flipLeg(${o.i},'${l.ticker}')}" onclick="flipLeg(${o.i},'${l.ticker}')" title="Tap to flip to the other team"`:''}>${ICON[sp]?`<span class="li">${ICON[sp]}</span>`:''}<div class="lm"><b>${esc(l.pick)}</b><small>${esc(meta)}</small>${live}</div><span class="lp">${l.fair!=null?pct(l.fair):''}${o.flip?'<i>⇄</i>':''}</span></div>`;}
 function legSummary(ls){return (ls||[]).map(l=>{const {opp,sp}=legWhere(l);return `${ICON[sp]||''} ${l.pick}${opp?' vs '+opp.pick:''}`.trim();}).join(' · ');}
 function legLive(l){const ev=(l.event||String(l.ticker||'').replace(/-[^-]*$/,''));const g=(S.build&&S.build.board||[]).find(x=>x.event===ev);if(!g||!g.sc)return '';
  const sc=g.sc,me=l.ticker===g.first?sc.me:sc.opp,th=l.ticker===g.first?sc.opp:sc.me;return `<span class="legsc ${me>th?'up':me<th?'down':'even'}">● ${me}–${th} · ${esc(sc.detail||'live')}</span>`;}
@@ -254,20 +274,22 @@ function qNew(o){return o&&Date.now()/1000-o.at<1.2?'new':'';}
 function qBar(o){return o?`<i class="qt" style="animation-delay:-${Math.max(0,Date.now()/1000-o.at).toFixed(2)}s"></i>`:'';}
 function ccSig(c){return (c&&c.legs||[]).map(l=>l.ticker).join('|');}
 function ccPhase(c){const o=S.quotes&&S.quotes[c.i],wait=v=>v&&Date.now()-v.t<60000&&v.sig===ccSig(c);   // a price or a buy still on its way (never stuck for more than a minute)
- return wait(S.bpend&&S.bpend[c.i])?'buy':wait(S.qpend&&S.qpend[c.i])?'ask':o&&Date.now()/1000-o.at<20?'quote'+o.at:'idle';}
-function ccard(c){const o=S.quotes&&S.quotes[c.i];const fresh=o&&Date.now()/1000-o.at<20;const fl=S.flips&&S.flips[c.i];const ph=ccPhase(c);const busy=ph==='buy'||ph==='ask';
+ return wait(S.bpend&&S.bpend[c.i])?'buy':wait(S.fpend&&S.fpend[c.i])?'flip':wait(S.qpend&&S.qpend[c.i])?'ask':o&&Date.now()/1000-o.at<20?'quote'+o.at:'idle';}
+function ccard(c){const o=S.quotes&&S.quotes[c.i];const fl=S.flips&&S.flips[c.i];const ph=ccPhase(c);const fresh=o&&Date.now()/1000-o.at<20&&ph!=='flip';const busy=ph==='buy'||ph==='ask'||ph==='flip';const fp=ph==='flip'?S.fpend[c.i]:null,ft=S.fturn&&S.fturn.i===c.i?S.fturn:null;
  if(c.bought)return `<div class="ccard" style="opacity:.62"><div class="hd"><div><div class="tier" style="color:var(--yes)">✓ You bought this</div><b>${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold">${pct(c.chance)}</span></div>
   <div class="lrows">${c.legs.map(l=>legRow(l)).join('')}</div>
   <div class="brow"><button class="btn ghost pri" onclick="go('live')">See it on Live</button><button class="btn ghost sec" onclick="swapCombo(${c.i},this)">↻ Another</button></div></div>`;
- return `<div class="ccard ${S.ccJust===c.i?'flash':''}" data-i="${c.i}" data-ph="${ph}" data-sig="${esc(ccSig(c))}"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b data-num="cf:${c.i}" data-v="${(+c.fair||0).toFixed(2)}">${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold" data-num="cc:${c.i}" data-v="${c.chance}" data-f="pct">${pct(c.chance)}</span></div>
-  <div class="lrows">${c.legs.map(l=>legRow(l,{flip:1,i:c.i})).join('')}</div>
-  ${fl?`<div class="flipnote ${fl.v}"><b class="v">${fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}
-  <div class="s" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh?'':'Get a price to see what Kalshi pays.'}
+ return `<div class="ccard ${S.ccJust===c.i?'flash':''}" data-i="${c.i}" data-ph="${ph}" data-sig="${esc(ccSig(c))}"><div class="hd"><div><div class="tier" ${c.kind==='value'?'style="color:var(--yes)"':''}>${c.kind==='value'?'★ Value pick':esc(c.tier||c.kind||'')}</div><b class="dep" data-num="cf:${c.i}" data-v="${(+c.fair||0).toFixed(2)}">${money(c.fair)}</b> <span class="m">fair payout</span></div><span class="verdict hold dep" data-num="cc:${c.i}" data-v="${c.chance}" data-f="pct">${pct(c.chance)}</span></div>
+  <div class="lrows">${c.legs.map((l,n)=>legRow(l,{flip:1,i:c.i,wait:fp&&fp.k===n,turn:ft&&!ft.fail&&ft.k===n,shake:ft&&ft.fail&&ft.k===n})).join('')}</div>
+  <div class="fnw">${fl?`<div class="flipnote ${fl.v}${ft&&!ft.fail?' in':''}${ph==='flip'?' dep':''}"><b class="v">${fl.err?'Couldn\'t flip':fl.v==='good'?'Good flip':fl.v==='bad'?'Worse bet':'Trade-off'}</b>${esc(fl.text)}</div>`:`<div class="m" style="font-size:11.5px">Tap a team to flip it to the other side.</div>`}</div>
+  <div class="s dep" style="font-size:12.5px">${c.pred&&c.pred.n>=20?`<span class="pred ${c.pred.p_clear>=.6?'good':c.pred.p_clear<.2?'bad':''}">Likely ≈ ${pct(c.pred.pct)} of fair · ${c.pred.p_clear>=.9?'very likely':c.pred.p_clear>=.6?'likely':c.pred.p_clear>=.35?'maybe':'unlikely'} to clear your cut-off</span><div class="m" style="font-size:11.5px;margin-top:4px">Guess from ${c.pred.n} past Kalshi prices. Get price for the real one.</div>`:c.est?`Kalshi will likely pay about ${money(c.est)} (${pct(c.est_pct)} of fair)`:fresh||(fp&&fp.hq)?'':'Get a price to see what Kalshi pays.'}
    ${c.size?`<div class="m" style="margin-top:6px">Suggested bet ${money(c.size)}${c.exposure?` · smaller: you already need ${esc(short(c.exposure.team))} a lot`:''}</div>`:c.exposure?`<div class="m" style="margin-top:6px">You already need ${esc(short(c.exposure.team))} in a lot of combos</div>`:''}</div>
+  ${ph==='flip'&&fp&&fp.hq?`<div class="qgap" aria-hidden="true" style="height:${fp.hq}px"></div>`:ft&&ft.hq?`<div class="qgap out" aria-hidden="true" style="--h:${ft.hq}px"></div>`:''}
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'above':'below'} your ${o.cut||''}% cut-off · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>`:''}
   ${ccStake(c,o,fresh,busy)}
   <div class="brow">${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin"></span> Buying… confirming with Kalshi</button>`:
    ph==='ask'?`<button class="btn pri" id="q${c.i}" disabled><span class="spin"></span> Asking Kalshi…</button>`:
+   ph==='flip'?`<button class="btn pri" id="q${c.i}" disabled data-stale="1"><span class="spin"></span> Updating…</button>`:
    fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn pri" id="q${c.i}" onclick="quote(${c.i})">Get price${stkLbl('cc:'+c.i)}</button>`}<button class="btn ghost sec" title="Not this one: show a different combo" ${busy?'disabled':''} onclick="swapCombo(${c.i},this)">↻ Not this one</button></div></div>`;}
 /* the amount row on a combo card: once a price came in (or Pete already chose an amount); hidden while asking or buying */
@@ -275,6 +297,7 @@ function ccStake(c,o,fresh,busy){const key='cc:'+c.i,mine=stkGet(key);if(busy||(
  const m=(fresh&&o)||S.ccRec[c.i]||{};const rec=m.rec||c.size||(S.build&&S.build.stake)||5;
  return stakeCtl({key,rec,cur:fresh?o.stake:mine,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?o.ev:null});}
 async function quote(i){hap();S.qpend=S.qpend||{};const cur0=(S.build&&S.build.combos||[]).find(c=>c.i===i),sig=ccSig(cur0);
+ if(cur0&&ccPhase(cur0)==='flip')return;   // a flip is being worked out: the legs on screen aren't settled, so no price is asked until it lands
  if(S.qpend[i]&&Date.now()-S.qpend[i].t<60000&&S.qpend[i].sig===sig)return;S.qpend[i]={t:Date.now(),sig};const b=$('#q'+i);
  if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';const sc=b.parentNode.querySelector('.sec');if(sc)sc.disabled=true;const cc=b.closest('.ccard');if(cc)cc.dataset.ph='ask';}
  const shown=((S.build&&S.build.combos||[]).find(c=>c.i===i)||{}).legs;
@@ -293,7 +316,9 @@ function qTick(){if(S.view!=='build')return;const now=Date.now()/1000;
  const over=Object.values(S.quotes||{}).some(old)||old(S.custom&&S.custom.offer);
  if(over&&!S.buying){Object.values(S.quotes||{}).forEach(q=>{if(old(q))q.x=1;});if(old(S.custom&&S.custom.offer))S.custom.offer.x=1;renderBuild();}
  if(!Object.values(S.quotes||{}).some(q=>q&&now-q.at<21)&&!(S.custom&&S.custom.offer&&now-S.custom.offer.at<21))clearInterval(S.qT);}
-async function buy(i,custom,btn){if(S.buying)return;S.buying=true;
+async function buy(i,custom,btn){if(S.buying)return;
+ if(!custom){const cb=(S.build&&S.build.combos||[]).find(x=>x.i===i);if(cb&&ccPhase(cb)==='flip')return;}   // a flip is being worked out: no buy on this card
+ S.buying=true;
  if(!custom){S.bpend=S.bpend||{};S.bpend[i]={t:Date.now(),sig:ccSig((S.build&&S.build.combos||[]).find(x=>x.i===i))};const cc=btn&&btn.closest('.ccard');if(cc)cc.dataset.ph='buy';const sc=btn&&btn.parentNode&&btn.parentNode.querySelector('.sec');if(sc)sc.disabled=true;}
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
  let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
