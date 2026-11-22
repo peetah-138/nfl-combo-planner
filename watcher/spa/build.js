@@ -9,6 +9,11 @@ function renderBuild(){const keep=[...document.querySelectorAll('#main .ccard[da
    old.querySelectorAll('.qline.new').forEach(e=>e.classList.remove('new'));
    if(q)old.querySelectorAll('.qt').forEach(t=>{t.style.animationDelay='-'+Math.max(0,Date.now()/1000-q.at).toFixed(2)+'s';});}});
  rollNums($('#main'));rbWatch();}
+/* One column up to 1360px (the CSS collapses .grid there): the slip then sits right under the games board, in the same column,
+   so picking a team and seeing the combo happen in one place (#249). On a wide screen it stays in the sticky side column. */
+const NARROW='(max-width:1360px)';
+function narrowBuild(){try{return !!(window.matchMedia&&matchMedia(NARROW).matches);}catch(e){return true;}}
+try{matchMedia(NARROW).addEventListener('change',()=>{if(S.view==='build'&&S.build)renderBuild();});}catch(e){}
 function _renderBuild(){const d=S.build;const m=$('#main');
  /* The chip row never changes while a league loads: the list of leagues and the per-league game counts are remembered
     (also on this phone) instead of read from the data that is cleared on a tap; the built-in list is only for a phone that has never loaded */
@@ -17,8 +22,8 @@ function _renderBuild(){const d=S.build;const m=$('#main');
  const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
  const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
- const adv=S.adv||S.slip.length>0;
- m.innerHTML=chipRow+`<div class="grid"><div>
+ const adv=S.adv||S.slip.length>0,narrow=narrowBuild();
+ m.innerHTML=chipRow+dayRange(d)+`<div class="grid"><div>
   <div id="pblock">${panelBlock(S.panel)}</div>
   ${bestFeed(d)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games ▾`}</button>
@@ -27,10 +32,11 @@ function _renderBuild(){const d=S.build;const m=$('#main');
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
     return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
+  ${narrow?slip(d):''}
   ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
   ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
- </div><aside>${adv?slip(d)+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
+ </div><aside>${adv?(narrow?'':slip(d))+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
@@ -212,9 +218,9 @@ function sideBy(t){for(const g of S.build.board)for(const s of g.sides)if(s.tick
 function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=stkGet('slip:c')||d.stake||5;
  const fairChance=legs.reduce((a,l)=>a*(l.fair||l.p||0),1),kal=legs.reduce((a,l)=>a*(l.p||0),1);const c=S.custom;
  const one=S.slipMode==='single';
- return `<div class="card slip"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
+ return `<div class="card slip${narrowBuild()?' inl':''}"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
   <div style="margin:-2px 0 8px">${slipTog()}</div>
-  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use a suggestion below.'}</div>`}
+  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use one of the ideas.'}</div>`}
   ${legs.length===1?`<button class="btn ${one?'acc':'ghost'}" id="sbslip" style="width:100%;margin-top:10px;justify-content:center" onclick="sbOpen('${esc(legs[0].ticker)}',S.lg)">Buy ${esc(short(legs[0].pick))} straight${legs[0].p!=null?' · '+Math.round(legs[0].p*100)+'¢':''}</button>`:''}
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
