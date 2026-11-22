@@ -69,7 +69,7 @@ with sync_playwright() as pw:
         txt = pg.locator(".an .knp").inner_text()
         for want in ("Taking a profit", "Selling at a loss", "Hedging", "Smart Buy", "The bar a change must clear",
                      "Never moves by itself", "Profit floor", "Least chance to take a profit", "Pause stops every order",
-                     "The Pi never trades", "Starts at 50% · range 35% to 65% · fixed for now",
+                     "The Pi never trades", "Starts at 50% · range 50% to 65% · fixed for now",
                      "Most on one hedge", "Your switches always win", "range $25 to $150", "so none of that is switched on"):
             if want not in txt: P.append(tag + ": missing %r" % want)
         def floor_row():

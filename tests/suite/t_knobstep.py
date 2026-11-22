@@ -69,7 +69,7 @@ ok("the loss cut: off switches on at 0.15; at its lowest the next step down is o
    and E.knob_candidates("smart_loss", 0.3) == [0.25])
 ok("Smart Buy's dial steps whole levels inside 0-8", E.knob_candidates("sb_dial", 0) == [1]
    and E.knob_candidates("sb_dial", 8) == [7] and all(isinstance(x, int) for x in E.knob_candidates("sb_dial", 3)))
-ok("rules and invariants have no steps", E.knob_candidates("break_guard", True) == [] and E.knob_candidates("pause", True) == [])
+ok("rules and invariants have no steps", E.knob_candidates("below_cost", True) == [] and E.knob_candidates("pause", True) == [])
 for k in E.KNOBS:
     if k["cls"] == "tunable" and k["unit"] not in ("rule", "table") and k["start"] is not None:
         for x in E.knob_candidates(k["name"], k["start"]):
@@ -125,7 +125,7 @@ E._knob_rows = lambda now, deadline=None: ROWS
 CALLS = []
 def judge(jd, rows, cur_, name, to, cache=None, **kw):
     CALLS.append((name, to))
-    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd != "sb" else [(r["kick"], 0.0, 5.0) for r in rows]
+    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd not in ("sb", "sbev") else [(r["kick"], 0.0, 5.0) for r in rows]
     if name == "smart_floor" and to == 1.8:          # a clear gain, spread over old and new
         return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
     if name == "smart_lam" and to < cur_[name]:      # an equally clear but smaller gain
@@ -154,8 +154,8 @@ ok("invariants, evidence knobs and settings are never judged or stepped", not (s
 ok("only the knobs with a judge are judged", stepped <= set(E.KNOB_JUDGED))
 st_of = {r["knob"]: r["status"] for r in nba["last"]}
 ok("shared knobs are blocked, tied ones move only through their partner, the rest wait for their test",
-   st_of.get("live_spread") == "shared" and "cash_slip" not in st_of and st_of.get("sb_ev_min") == "shared"
-   and st_of.get("sl_checks") == "shared" and st_of.get("swing_base") == "tied" and st_of.get("hedge_lock_share") == "waits"
+   st_of.get("live_spread") == "shared" and "cash_slip" not in st_of and st_of.get("sb_ev_min") != "shared"
+   and st_of.get("sl_checks") != "shared" and st_of.get("swing_base") == "tied" and st_of.get("hedge_gap") == "waits"
    and all(st_of.get(n) not in ("waits", "shared") for n in ("exit_q_min", "exit_est_smart", "exit_est_tp", "auto_slip")))
 nhl = S["groups"].get("nhl") or {}
 ok("a thin history (12 bets) does nothing", not any(r.get("status") in ("would step", "qualifies") for r in nhl.get("last", []))
@@ -179,7 +179,7 @@ ok("the next step waits for 20 new results since the last (judged only on games 
    and not any(r.get("status") == "would step" for r in nba2["last"]))
 # ties: two equal gains, smallest change wins; then the registry's order
 def tie_judge(jd, rows, cur_, name, to, cache=None, **kw):
-    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd != "sb" else [(r["kick"], 0.0, 5.0) for r in rows]
+    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows] if jd not in ("sb", "sbev") else [(r["kick"], 0.0, 5.0) for r in rows]
     if name in ("smart_floor", "smart_lam"):
         return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
     return base

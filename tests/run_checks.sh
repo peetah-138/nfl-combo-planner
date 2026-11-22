@@ -111,7 +111,12 @@ if on engine; then
   # naming the host, so a test that slips past its stubs fails at once instead of depending on ESPN (GitHub #189)
   NG="$WORK/netguard${PYTHONPATH:+:$PYTHONPATH}"
   for t in $ENG; do
-    o=$(PYTHONPATH="$NG" "$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
+    # a test that crashes after some PASS lines used to count as passed: its exit status counts too
+    o=$(PYTHONPATH="$NG" "$PY" $t.py 2>&1); rc=$?
+    if echo "$o" | grep -q FAIL; then bad "engine $t" "$(echo "$o" | grep FAIL)"
+    elif [ "$rc" -ne 0 ]; then bad "engine $t" "stopped with exit status $rc: $(echo "$o" | tail -4)"
+    elif echo "$o" | grep -q PASS; then ok "engine $t ($(echo "$o" | grep -c PASS) checks)"
+    else bad "engine $t" "$o"; fi
   done
 fi
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,

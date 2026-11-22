@@ -47,7 +47,8 @@ CFG = {
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
-    "stop_loss": False,   # manual override: auto cash-out may sell below what you paid when a game turns against you
+    "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
+    "stop_loss_mode": None,   # #228 PR5: 'never' / 'tune' / 'allow'; None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
@@ -256,7 +257,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
 
 
 def next_league():
@@ -4728,7 +4729,20 @@ SL_UNDER = 0.5                                 # a loss sale needs the pick unde
 def stoploss_params(tickers):
     """How late in the game, and how big a fall from the pregame chance, the stop-loss switch needs for this bet:
     its league's own learned settings once it has enough results, else its sport's, else everyone's, else the
-    conservative start. Borrowed settings can only make it stricter, never looser than the start."""
+    conservative start. Borrowed settings can only make it stricter, never looser than the start.
+    #228 PR5: with 'Let smart sell tune its own numbers' on, both come from self-tuning's live record
+    (knob_live_value: the same walk, its own steps included, the start while the league's brake holds); off, or on
+    any error, exactly as before."""
+    if knob_switch_on():
+        try:
+            k, chain = _knob_bet_chain(tickers)
+            st, smart, now = knob_state_cached(), smart_table(), time.time()
+            pv, pg = knob_live_value("sl_prog", k, chain, st, smart, now)
+            dv, _ = knob_live_value("sl_drop", k, chain, st, smart, now)
+            if _knob_valid("sl_prog", pv) and _knob_valid("sl_drop", dv):
+                return {"prog": float(pv), "drop": float(dv), "key": None if pg == "brake" else pg}
+        except Exception as err:
+            _knob_err("the loss guards' numbers", err)
     d = smart_table()
     k = bet_key(tickers)
     sport = ticker_sport(next(iter(tickers), "") or "") if k != "mix" else None
@@ -4758,6 +4772,157 @@ def at_break(sc):
         bool(re.search(r"\b0:00$", det)) or bool(re.search(r"\b(Q|P|H)\d+ 0\.0$", det))
 
 
+# ---------------------------------------------------------------- acting at a break (#228 PR5: break_ok, WATCH-ONLY)
+# A loss sale or a hedge waits out halftime, an intermission or the end of a period, because the book thins and prices
+# wander. Pete (2026-11-21): that shouldn't be a hard limit, since real news can land at a break (a star ruled out at
+# halftime). The rule that would replace it, `break_ok`: act at a break only when a fresh two-sided order book (gap
+# within LIVE_SPREAD) shows the pick's price has moved at least `brk_move` (start 8 points) since the break began, held
+# on BRK_READS reads at least BRK_SPACE seconds apart (fresh injury news halves the move), and a real fresh Kalshi price
+# is still read before anything is sold. It starts OFF in every league and NEVER acts live in this build (BRK_LIVE is
+# False and `brk_on` is not a live knob): today it only records break episodes (`break_ep` table, from prices the engine
+# already read: no new Kalshi or ESPN request) and what it would have done, so the weekly judge can replay it (40+
+# episodes of a league's own, a gain of 2%+, 2+ standard errors, the newest 30% agreeing) before a later build may let
+# it act.
+BRK_MOVE = 0.08                 # the move a break must show (share of the payout: 8 points)
+BRK_READS, BRK_SPACE = 2, 60    # held on 2 reads at least 60 s apart
+BRK_FRESH = 60                  # a book read older than this isn't fresh
+BRK_MIN_N = 40                  # a league's own break episodes before the judge may step it
+BRK_LIVE = False                # the hard gate: nothing acts at a break in this build, whatever is recorded
+BRK_EP = {}                     # (ticker, side) -> the open break episode
+
+
+def _brk_book(ticker, side, now):
+    """(bid, ask, mid) on the pick's side from the last price the engine read for this market, only when it is fresh
+    and two-sided with a gap within LIVE_SPREAD; else None. Never fetches."""
+    seen = PRICE_SEEN.get(ticker)
+    if not seen or now - seen[0] > BRK_FRESH:
+        return None
+    bid, ask = seen[1], seen[2]
+    if not bid or not ask or ask < bid or ask - bid > LIVE_SPREAD + 1e-9:
+        return None
+    if side == "no":
+        bid, ask = round(1 - ask, 4), round(1 - bid, 4)
+    return bid, ask, round((bid + ask) / 2, 4)
+
+
+def _brk_news(ticker, sc):
+    """Fresh injury news (the last 3 hours) for either team, from a report already cached (never fetched here)."""
+    try:
+        code = ticker_sport(ticker) or ""
+        got = INJ.get(code)
+        if not got or time.time() - got[0] > 1800:
+            return False
+        teams = [x for x in (sc.get("name"), sc.get("team"), sc.get("opp_name")) if isinstance(x, str) and x]
+        return bool(teams) and bool(injury_note(code, *teams, hours=3)[1])
+    except Exception:
+        return False
+
+
+def brk_fires(reads, mid0, move, news=False):
+    """The index of the read at which break_ok's rule holds: the pick's mid at least `move` (half with news) from where
+    the break began, on BRK_READS reads in a row spanning BRK_SPACE seconds. None = it never does. reads = [(ts, bid,
+    mid)]."""
+    if move is None or mid0 is None:
+        return None
+    need = move / 2 if news else move
+    run = []
+    for i, (ts, _, mid) in enumerate(reads or ()):
+        if mid is not None and abs(mid - mid0) >= need - 1e-9:
+            run.append(ts)
+            if len(run) >= BRK_READS and run[-1] - run[0] >= BRK_SPACE:
+                return i
+        else:
+            run = []
+    return None
+
+
+def _brk_table():
+    if STORE.get("db") and not STORE.get("brk_ok"):
+        store_x("create table if not exists break_ep(ts real, ticker text, side text, league text, detail text, "
+                "news int, reads text, after_bid real, after_ts real, would real)")
+        store_x("create index if not exists break_ep_t on break_ep(ts)")
+        STORE["brk_ok"] = bool(store_rows("select name from sqlite_master where type='table' and name='break_ep'"))
+
+
+def break_watch(ticker, side, sc, now=None):
+    """Records break episodes for the judge (watch-only, never raises, never fetches): while this pick's game is at a
+    break, the pick's price every 20 s or more from prices the engine already read; once play resumes, the price just
+    after the break, and the episode is written to `break_ep` (with when break_ok would have acted, at the league's
+    test value of brk_move). A game that ends at the break, or an episode over 2 hours old, is dropped."""
+    try:
+        now = now or time.time()
+        key = (ticker, side or "yes")
+        ep = BRK_EP.get(key)
+        if ep and now - ep["start"] > 7200:
+            BRK_EP.pop(key, None)
+            ep = None
+        if not sc or sc.get("state") != "in":
+            BRK_EP.pop(key, None)
+            return
+        if at_break(sc):
+            if ep is None:
+                if len(BRK_EP) > 400:
+                    BRK_EP.clear()
+                ep = BRK_EP[key] = {"start": now, "detail": str(sc.get("detail") or "")[:40], "reads": [],
+                                    "news": _brk_news(ticker, sc), "would": None}
+                price_watch([ticker], hours=3)        # its price path (with score lines) is recorded too
+            bk = _brk_book(ticker, key[1], now)
+            if bk and (not ep["reads"] or now - ep["reads"][-1][0] >= 20) and len(ep["reads"]) < 60:
+                ep["reads"].append((round(now), bk[0], bk[2]))
+                if ep["would"] is None:
+                    mv = knob("brk_move", _knob_bet_chain([ticker])[0], st=knob_state_cached())
+                    i = brk_fires(ep["reads"], ep["reads"][0][2], mv, ep["news"])
+                    if i is not None:
+                        ep["would"] = ep["reads"][i][0]
+            return
+        if ep is None:
+            return
+        BRK_EP.pop(key, None)
+        bk = _brk_book(ticker, key[1], now)
+        if not bk or not ep["reads"] or not STORE.get("db"):
+            return
+        _brk_table()
+        store_x("insert into break_ep(ts, ticker, side, league, detail, news, reads, after_bid, after_ts, would) "
+                "values(?,?,?,?,?,?,?,?,?,?)",
+                (ep["start"], ticker, key[1], _knob_bet_chain([ticker])[0], ep["detail"], int(bool(ep["news"])),
+                 json.dumps(ep["reads"]), bk[0], round(now), ep["would"]))
+    except Exception as err:
+        if time.time() - BRK_ERR["at"] > 600:
+            BRK_ERR["at"] = time.time()
+            print("break episodes:", type(err).__name__, err)
+
+
+BRK_ERR = {"at": 0.0, "hedge": 0.0}
+
+
+def break_ok(ticker, side, sc, now=None, what="loss"):
+    """At a break: may a loss sale or hedge act anyway? Records the episode (break_watch) and answers False in this
+    build: BRK_LIVE is off and `brk_on` is not a live knob, so the old rule (wait out the break) always stands. When a
+    later build turns it on, a league's own record must have switched `brk_on` on, the rule must hold on its reads
+    (brk_fires at its brk_move) and a fresh order book read now (max_age=0) must still show the move."""
+    break_watch(ticker, side, sc, now)
+    if not BRK_LIVE or "brk_on" not in KNOB_LIVE or not knob_switch_on():
+        return False
+    try:                                              # never reached in this build (the gates above)
+        k = _knob_bet_chain([ticker])[0]
+        if knob("brk_on", k) != 1:
+            return False
+        ep = BRK_EP.get((ticker, side or "yes"))
+        if not ep or not ep["reads"]:
+            return False
+        mv = knob("brk_move", k)
+        if brk_fires(ep["reads"], ep["reads"][0][2], mv, ep["news"]) is None:
+            return False
+        bk = book_depth(ticker, max_age=0)
+        if not bk or not bk.get("bid") or not bk.get("ask") or bk.get("spread") is None or bk["spread"] > LIVE_SPREAD:
+            return False
+        mid = (bk["bid"] + bk["ask"]) / 2
+        mid = 1 - mid if (side or "yes") == "no" else mid
+        return abs(mid - ep["reads"][0][2]) >= (mv / 2 if ep["news"] else mv) - 1e-9
+    except Exception:
+        return False
+
+
 def game_played(sc):
     """Share of the game played (0..1) from the score feed's period and clock, or None when it can't say."""
     if not sc or sc.get("state") != "in" or sc.get("frac") is None:
@@ -4785,7 +4950,7 @@ def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
         return False, why
     if pre is None or now_ch is None:
         return False, "no pregame chance"
-    if at_break(sc):
+    if at_break(sc) and not break_ok(ticker, side, sc, now, "loss"):
         return False, "halftime or a break"
     played = game_played(sc)
     if played is None or played < pr["prog"]:
@@ -4795,21 +4960,112 @@ def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
     return True, ""
 
 
-def _sl_confirm(key, hit, why, now):
+def _sl_confirm(key, hit, why, now, cf=None):
     """The 'held on SL_CHECKS checks in a row spanning SL_SPAN seconds, none more than SL_GAP apart' part of the
-    loss guards, counted under `key` (one count per bet and per kind of loss sale). Any miss starts it again."""
+    loss guards, counted under `key` (one count per bet and per kind of loss sale). Any miss starts it again.
+    cf = (checks, span, gap) from sl_confirm_params / hedge_confirm_params (#228 PR5/PR6); None = the constants."""
+    checks, span, gap = cf or (SL_CHECKS, SL_SPAN, SL_GAP)
     streak = MINE.setdefault("sl_streak", {})
     seen = streak.get(key) or []
     if not hit:
         streak.pop(key, None)
         return False, why
-    if seen and now - seen[-1] > SL_GAP:
+    if seen and now - seen[-1] > gap:
         seen = []
     seen = (seen + [now])[-20:]
     streak[key] = seen
-    if len(seen) < SL_CHECKS or now - seen[0] < SL_SPAN:
+    if len(seen) < checks or now - seen[0] < span:
         return False, "waiting to confirm the drop"
     return True, ""
+
+
+SL_MODES = ("never", "tune", "allow")
+SL_MODE_SAY = {"never": "Never sell at a loss", "tune": "Let it tune itself", "allow": "Allow (guarded)"}
+
+
+def sl_mode():
+    """Settings › Cash out › Selling at a loss (#228 PR5): 'never' (no automatic sale below what you paid: neither the
+    stop-loss nor the learned loss cut), 'tune' (the default: the stop-loss sells only in a league whose own record
+    turned it on, `sl_allowed`) or 'allow' (the old switch on: every guard still holds). A setting saved before this
+    (only the old on/off `stop_loss`) reads as 'allow' when it was on, else 'tune'; anything unreadable reads that way
+    too."""
+    m = CFG.get("stop_loss_mode")
+    if m in SL_MODES:
+        return m
+    return "allow" if CFG.get("stop_loss") is True else "tune"
+
+
+def sl_sync(cfg, incoming):
+    """Applies a settings message's 'Selling at a loss' to `cfg` (the watcher's copy of the phone's or web app's
+    settings, the web app's own save). A valid stop_loss_mode wins and the old switch is kept in step (on only for
+    Allow). A message without one (an older phone or page that only knows the on/off switch, or a phone with no control
+    for it, which sends None) may only make it STRICTER: 'off' turns Allow into Let it tune itself; 'on' is ignored, so a
+    stale old switch can never undo Never or Let it tune itself."""
+    m = incoming.get("stop_loss_mode")
+    if m in SL_MODES:
+        cfg["stop_loss_mode"] = m
+        cfg["stop_loss"] = m == "allow"
+        return
+    if incoming.get("stop_loss") is False:
+        cur = cfg.get("stop_loss_mode")
+        cur = cur if cur in SL_MODES else ("allow" if cfg.get("stop_loss") is True else "tune")
+        cfg["stop_loss_mode"] = "tune" if cur == "allow" else cur
+        cfg["stop_loss"] = False
+
+
+def sl_allowed(tickers):
+    """Whether the stop-loss may sell this combo below what it cost (every guard still has to hold): 'allow' = yes;
+    'tune' = only with self-tuning on and this league's OWN record having turned `sl_auto` on (never borrowed, off
+    while its brake holds); 'never' = no. Off on any error."""
+    m = sl_mode()
+    if m == "allow":
+        return True
+    if m != "tune" or not knob_switch_on():
+        return False
+    try:
+        k, chain = _knob_bet_chain(tickers)
+        v, g = knob_live_value("sl_auto", k, chain, knob_state_cached(), {}, time.time())
+        return v == 1 and g == k
+    except Exception as err:
+        _knob_err("the stop-loss switch's own record", err)
+        return False
+
+
+def _knob_err(what, err):
+    if time.time() - KNOB_PRM_ERR["at"] > 600:
+        KNOB_PRM_ERR["at"] = time.time()
+        print(f"self-tuning: {what} unreadable, using the starting ones:", type(err).__name__, err)
+
+
+def _knob_nums(names, starts, tickers):
+    """Self-tuning's live values for a few count/time knobs of a bet's league (the starts while the switch is off,
+    nothing is learned, the league is braked, or on any error)."""
+    if not knob_switch_on():
+        return starts
+    try:
+        k, chain = _knob_bet_chain(tickers)
+        st, now = knob_state_cached(), time.time()
+        out = []
+        for n, s0 in zip(names, starts):
+            if n not in KNOB_LIVE:                    # a watch-only knob (the hedge's lock-in numbers): its start
+                out.append(s0)
+                continue
+            v, _ = knob_live_value(n, k, chain, st, {}, now)
+            out.append(v if _knob_valid(n, v) and v is not None else s0)
+        return tuple(out)
+    except Exception as err:
+        _knob_err("the confirmation counts", err)
+        return starts
+
+
+def sl_confirm_params(tickers):
+    """(checks, span, gap) a loss sale must hold for, for this bet's league (#228 PR5: split from the hedge's)."""
+    return _knob_nums(("sl_checks", "sl_span", "sl_gap"), (SL_CHECKS, SL_SPAN, SL_GAP), tickers)
+
+
+def hedge_confirm_params(tickers):
+    """(checks, span, gap) an auto-hedge must hold for (#228 PR6: its own numbers, starting at the loss guards')."""
+    return _knob_nums(("hedge_checks", "hedge_span", "hedge_cgap"), (HEDGE_CHECKS, HEDGE_SPAN, HEDGE_CGAP), tickers)
 
 
 def stop_loss_check(t, h, now=None, also=True, key=None):
@@ -4840,7 +5096,7 @@ def stop_loss_check(t, h, now=None, also=True, key=None):
             why = w
     if hit and not also:
         hit, why = False, "not under the cut-off"
-    return _sl_confirm(key or t, hit, why, now)
+    return _sl_confirm(key or t, hit, why, now, sl_confirm_params([tk for _, tk in need]))
 
 
 def single_pre(x):
@@ -4865,7 +5121,7 @@ def cut_loss_single_check(x, loss, now=None):
     ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now)
     if ok and not (loss and q is not None and q <= loss):
         ok, why = False, "not under the cut-off"
-    return _sl_confirm("cut:" + x["t"], ok, why, now)
+    return _sl_confirm("cut:" + x["t"], ok, why, now, sl_confirm_params([x["t"]]))
 
 
 def note_cut_held(t, label, why, guard, hedge=False):
@@ -4891,6 +5147,7 @@ HEDGE_GAP = 0.06                                   # the widest bid/ask gap on t
 HEDGE_LOCK_COST = 1.0                              # a hedge must lock in at least this x what the combo cost
 HEDGE_LOCK_SHARE = 0.95                            # "Hedge instead" on: hedge when it locks in 95%+ of the cash-out
 HEDGE_LOCK_EXTRA = 0.5                             # ...off: only when it locks in $0.50+ more than the cash-out
+HEDGE_CHECKS, HEDGE_SPAN, HEDGE_CGAP = SL_CHECKS, SL_SPAN, SL_GAP   # its own confirmation, starting at the loss guards'
 
 
 def hedge_guard(t, h, hg, now=None):
@@ -4899,15 +5156,16 @@ def hedge_guard(t, h, hg, now=None):
     now = now or time.time()
     need = h.get("need") or []
     hit, why = False, "not down to one pick"
+    tks = [tk for (_, tk), _ in need]
     if len(need) == 1:
         (side, tk), _ = need[0]
         sc, why = fresh_live_score(tk, side, now)
         hit = sc is not None
-        if hit and at_break(sc):
+        if hit and at_break(sc) and not break_ok(tk, side, sc, now, "hedge"):
             hit, why = False, "halftime or a break"
-        if hit and hg["locked"] < HEDGE_LOCK_COST * h["cost"]:
+        if hit and hg["locked"] < hedge_lock_cost(tks) * h["cost"]:
             hit, why = False, "wouldn't lock in what you paid"
-    ready, why = _sl_confirm("hedge:" + t, hit, why, now)
+    ready, why = _sl_confirm("hedge:" + t, hit, why, now, hedge_confirm_params(tks))
     return ready, ("waiting to confirm" if why == "waiting to confirm the drop" else why)
 
 
@@ -4923,20 +5181,101 @@ def hedge_fresh(t, h, whole):
     hg = hedge_for(t, price=bk["ask"])
     if not hg or not hg.get("n"):
         return None, "no fresh price for the hedge"
-    if hg["cost"] > float(CFG.get("hedge_cap", 100)):
+    tks = [tk for (_, tk), _ in h.get("need") or []]
+    if hg["cost"] > hedge_cap_now():
         return None, "over the hedge cap at the fresh price"
-    if not hedge_beats(hg, whole):
+    if not hedge_beats(hg, whole, tks):
         return None, "no longer beats the cash-out at the fresh price"
-    if hg["locked"] < HEDGE_LOCK_COST * h["cost"]:
+    if hg["locked"] < hedge_lock_cost(tks) * h["cost"]:
         return None, "wouldn't lock in what you paid at the fresh price"
     return hg, ""
 
 
-def hedge_beats(hg, whole):
-    """Whether hedging locks in enough compared with the whole cash-out offer `whole`."""
+def hedge_beats(hg, whole, tickers=None):
+    """Whether hedging locks in enough compared with the whole cash-out offer `whole` (#228 PR6: the 95% share is
+    self-tuning's for the combo's league while the switch is on; the constant otherwise)."""
     if CFG.get("prefer_hedge", True):
-        return hg["locked"] >= whole * HEDGE_LOCK_SHARE
+        share = _knob_nums(("hedge_lock_share",), (HEDGE_LOCK_SHARE,), tickers)[0] if tickers else HEDGE_LOCK_SHARE
+        return hg["locked"] >= whole * share
     return hg["locked"] >= whole + HEDGE_LOCK_EXTRA
+
+
+HEDGE_MIN_N = 30                                   # recorded hedge decisions a group needs before the judge steps
+HEDGE_SEEN = {}                                    # ticker -> when last recorded (one row per combo per 10 minutes)
+
+
+def hedge_seen_note(t, h, hg, whole):
+    """The hedge judge's evidence (#228 PR6, watch-only, never raises, never fetches): each time auto cash-out weighs
+    a hedge against a due sale, what the hedge would cost and lock in, the whole cash-out offer, the combo's cost, your
+    cap and 'Prefer hedging', and whether the last game was in play on a fresh score and not at a break (the guards a
+    hedge can never skip). One row per combo per 10 minutes, in `hedge_seen`."""
+    try:
+        now = time.time()
+        if not STORE.get("db") or now - HEDGE_SEEN.get(t, 0) < 600:
+            return
+        HEDGE_SEEN[t] = now
+        if len(HEDGE_SEEN) > 2000:
+            HEDGE_SEEN.clear()
+        need = h.get("need") or []
+        ok = False
+        if len(need) == 1:
+            (side, tk), _ = need[0]
+            sc, _ = fresh_live_score(tk, side, now)
+            ok = sc is not None and not at_break(sc)
+        try:
+            cap = float(CFG.get("hedge_cap", 100))
+        except (TypeError, ValueError):
+            cap = 100.0
+        if not STORE.get("hseen_ok"):
+            store_x("create table if not exists hedge_seen(ts real, ticker text, league text, whole real, locked real, "
+                    "hcost real, cost real, cap real, prefer int, ok int)")
+            store_x("create index if not exists hedge_seen_t on hedge_seen(ts)")
+            STORE["hseen_ok"] = bool(store_rows("select name from sqlite_master where type='table' and name='hedge_seen'"))
+        store_x("insert into hedge_seen(ts, ticker, league, whole, locked, hcost, cost, cap, prefer, ok) "
+                "values(?,?,?,?,?,?,?,?,?,?)",
+                (now, t, _knob_sale_league(t, {}), round(whole, 2), round(float(hg["locked"]), 2),
+                 round(float(hg["cost"]), 2), round(float(h.get("cost") or 0), 2), cap,
+                 int(bool(CFG.get("prefer_hedge", True))), int(ok)))
+    except Exception as err:
+        if time.time() - BRK_ERR["hedge"] > 600:
+            BRK_ERR["hedge"] = time.time()
+            print("hedge record:", type(err).__name__, err)
+
+
+def break_watch_held():
+    """Break episodes for every live pick of the combos you hold (watch-only, from cached scores and prices)."""
+    try:
+        now = time.time()
+        for h in list((MINE.get("hold") or {}).values()):
+            for (side, tk), _ in h.get("need") or []:
+                sc = leg_score({"ticker": tk, "side": side})
+                if sc and sc.get("state") == "in":
+                    break_watch(tk, side, sc, now)
+                else:
+                    BRK_EP.pop((tk, side or "yes"), None)
+    except Exception as err:
+        print("break episodes:", type(err).__name__, err)
+
+
+def hedge_lock_cost(tickers):
+    """A hedge must lock in at least this x the combo's cost (never under 1: a hedge never locks in a loss)."""
+    return max(1.0, _knob_nums(("hedge_lock_cost",), (HEDGE_LOCK_COST,), tickers)[0])
+
+
+def hedge_cap_now():
+    """The most one auto-hedge may spend: your setting; with self-tuning on, any raise the system made on evidence (up
+    to $150, never lowering yours, your own value while any league's brake holds: knob_cap). Unreadable: $100."""
+    try:
+        pete = float(CFG.get("hedge_cap", 100))
+    except (TypeError, ValueError):
+        pete = 100.0
+    if not knob_switch_on():
+        return pete
+    try:
+        return float(knob_cap("hedge_cap", pete=pete, st=knob_state_cached()))
+    except Exception as err:
+        _knob_err("the hedge cap's raise", err)
+        return pete
 
 
 def hedge_unsure(t):
@@ -5175,12 +5514,15 @@ def auto_sell_now(plan):
         cands = [(t, f, "plan") for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]) if f]
         asked = MINE.setdefault("tp_asked", {})
         cands = [c for c in cands if not hands_off(c[0])]
+        break_watch_held()                                # break episodes for the judge (watch-only, #228 PR5)
+        mode = sl_mode()                                  # Settings › Selling at a loss (#228 PR5)
         sl_ready = {}                                     # the stop-loss switch: only once every guard holds
-        if CFG.get("stop_loss"):
+        if mode != "never":
             for t, h in list(MINE["hold"].items()):
-                sl_ready[t] = stop_loss_check(t, h)[0]
+                if mode == "allow" or sl_allowed([tk for (_, tk), _ in h.get("need") or []]):
+                    sl_ready[t] = stop_loss_check(t, h)[0]
         cut_ready = {}                                    # the learned loss cut: the same guards, counted apart
-        if CFG.get("smart_sell", True) and ride_lam() is not None:
+        if CFG.get("smart_sell", True) and ride_lam() is not None and mode != "never":
             for t, h in list(MINE["hold"].items()):
                 loss = smart_params([tk for (_, tk), _ in h.get("need") or []])["loss"]
                 if not loss:
@@ -5242,17 +5584,22 @@ def auto_sell_now(plan):
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
-            if below and why != "cut loss" and not (CFG.get("stop_loss") and sl_ready.get(t)):
+            if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             if below and why != "cut loss":
                 rec["stop_loss"] = True
+                rec["sl_mode"] = mode
             hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
-            better = hedge_beats(hg, whole) if hg and hg.get("n") else False
+            tks_ = [tk for (_, tk), _ in h.get("need") or []]
+            better = hedge_beats(hg, whole, tks_) if hg and hg.get("n") else False
+            if hg and hg.get("n"):
+                hedge_seen_note(t, h, hg, whole)          # the hedge judge's evidence (watch-only, #228 PR6)
             if better:
-                if hg["cost"] > float(CFG.get("hedge_cap", 100)):
-                    rec["hedge_skipped"] = f"hedge would cost {money(hg['cost'])}, over the {money(CFG.get('hedge_cap', 100))} cap"
+                cap_ = hedge_cap_now()
+                if hg["cost"] > cap_:
+                    rec["hedge_skipped"] = f"hedge would cost {money(hg['cost'])}, over the {money(cap_)} cap"
                     better = False
             if better:
                 ready, gw = hedge_guard(t, h, hg)
@@ -5293,7 +5640,10 @@ def auto_sell_now(plan):
                     "cut loss": "🤖 Cut a loss: in this league, selling a bet this far behind has done better than holding. "}.get(
                 why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
             if rec.get("stop_loss"):
-                lead = ("🤖 Stop-loss (your switch): late in the game a pick fell well below its pregame chance "
+                lead = ("🤖 Stop-loss (tuned for this league): sold for less than you paid. In this league, selling a "
+                        "combo this far behind late in a game has beaten holding. "
+                        if mode == "tune" else
+                        "🤖 Stop-loss (your Allow setting): late in the game a pick fell well below its pregame chance "
                         "and stayed there, so it sold for less than you paid. ")
             out.append(lead + msg)
             if msg.startswith("✅"):
@@ -5608,7 +5958,8 @@ def smart_sell_singles():
         bid = dollars(m, f"{side}_bid")
         ask = dollars(m, f"{side}_ask")
         cut_ok = False                                # the learned loss cut: only once every loss guard held
-        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None else None
+        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None \
+            and sl_mode() != "never" else None        # 'Never sell at a loss' (#228 PR5): no cut either
         if loss:
             cut_ok, gw = cut_loss_single_check(x, loss)
             if not cut_ok and x.get("state") == "live" and x.get("chance") is not None and x["chance"] <= loss:
@@ -5627,6 +5978,9 @@ def smart_sell_singles():
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
                "live": x.get("state") == "live", "ask": ask}
+        if sl_mode() == "never" and x["n"] * (bid - single_fee(bid)) < (x.get("cost") or 0):
+            log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
+            continue
         if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
@@ -8303,7 +8657,7 @@ WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refr
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
                   "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                  "panel_rank_dollars", "idea_bar_strict")
+                  "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
 PI_APPROVE = os.path.join(HERE, "combo_pi_approve.json")   # the exact files the Pi may update to
 WATCH = {"at": 0, "hb": None}
 
@@ -19594,10 +19948,12 @@ def _sl_paths(c):
     return out
 
 
-def _sl_held(c, path, prog, drop, also=None):
+def _sl_held(c, path, prog, drop, also=None, cf=None):
     """Walks a bet's recorded prices and score lines with the live loss guards (a pick late enough, not at a break,
     under 50% and far enough below its pregame chance, plus `also(cur)` if given, held 3+ checks over 3+ minutes)
-    and yields (time, prices) at each check where all of them held. Stops once every pick is decided."""
+    and yields (time, prices) at each check where all of them held. Stops once every pick is decided.
+    cf = (checks, span, gap) to confirm with (#228 PR5); None = the constants."""
+    checks, span, gap = cf or (SL_CHECKS, SL_SPAN, SL_GAP)
     tks = [l["ticker"] for l in c["legs"]]
     pre = {l["ticker"]: l.get("p") for l in c["legs"]}
     seen = []
@@ -19619,28 +19975,29 @@ def _sl_held(c, path, prog, drop, also=None):
         if not hit:
             seen = []
             continue
-        if seen and ts - seen[-1] > SL_GAP:
+        if seen and ts - seen[-1] > gap:
             seen = []
         seen.append(ts)
-        if len(seen) >= SL_CHECKS and ts - seen[0] >= SL_SPAN:
+        if len(seen) >= checks and ts - seen[0] >= span:
             yield ts, cur
 
 
-def _sl_replay(c, path, prog, drop):
+def _sl_replay(c, path, prog, drop, cf=None, hair=False):
     """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
     far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
-    it would have sold, None when it would have held."""
+    it would have sold, None when it would have held. hair: the sale price cut to KNOB_HAIRCUT['combo'] of the
+    estimate (#285: a step that has it sell more is judged on a pessimistic price)."""
     P, stake = c.get("pays") or 0, c["stake"]
     tks = [l["ticker"] for l in c["legs"]]
-    if not P or len(path) < SL_CHECKS:
+    if not P or len(path) < (cf or (SL_CHECKS,))[0]:
         return None
-    for ts, cur in _sl_held(c, path, prog, drop):
-        est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P
+    for ts, cur in _sl_held(c, path, prog, drop, cf=cf):
+        est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P * (KNOB_HAIRCUT["combo"] if hair else 1.0)
         return round(est - stake, 2) if est < stake else None
     return None
 
 
-def _cut_guard_ts(c, slp, loss, prog=None, drop=None):
+def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
     """The times at which the learned loss cut's guards held for this bet (the same as live: under the cut-off and
     every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
     prog/drop given, the league's current stop-loss settings."""
@@ -19651,10 +20008,10 @@ def _cut_guard_ts(c, slp, loss, prog=None, drop=None):
         pr = stoploss_params(tks)
         prog, drop = pr["prog"], pr["drop"]
     return {round(ts) for ts, _ in _sl_held(c, slp, prog, drop,
-                                            also=lambda cur: math.prod(cur[t][0] for t in tks) <= loss)}
+                                            also=lambda cur: math.prod(cur[t][0] for t in tks) <= loss, cf=cf)}
 
 
-def _sl_tune(e, rows):
+def _sl_tune(e, rows, move=True):
     """One league's stop-loss settings: replay its combos with nearby settings and move one small step toward what
     clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Updates `e`, returns why or ''."""
     cur = {"prog": float(e.get("sl_prog", SL_DEFAULT["prog"])), "drop": float(e.get("sl_drop", SL_DEFAULT["drop"]))}
@@ -19662,7 +20019,7 @@ def _sl_tune(e, rows):
     e["sl_n"] = n
     e.setdefault("sl_prog", cur["prog"])
     e.setdefault("sl_drop", cur["drop"])
-    if n < SL_MIN_N:
+    if n < SL_MIN_N or not move:
         return ""
     staked = sum(c["stake"] for c, _ in rows) or 1
 
@@ -19777,7 +20134,7 @@ def smart_tune(force=False):
         d[key] = e
     for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
         e = dict(d.get(key) or {})
-        why = _sl_tune(e, rows)
+        why = _sl_tune(e, rows, move=not owned)          # #228 PR5: with the switch on, self-tuning moves them (#267)
         if why:
             moved.append(f"{league_label(key)}: {why}")
         d[key] = e
@@ -19837,7 +20194,7 @@ KNOBS = (
      "learned": "smart_tune", "metric": "return on stake of settled bets, sold vs held", "judge": "_replay"},
     {"name": "exit_q_min", "group": "profit", "cls": "tunable", "label": "Least chance to take a profit",
      "what": "Smart sell takes a profit only while the bet is still at least this likely to win.",
-     "owner": "exit_policy", "src": "EXIT_Q_MIN", "start": 0.5, "min": 0.35, "max": 0.65, "step": 0.05,
+     "owner": "exit_policy", "src": "EXIT_Q_MIN", "start": 0.5, "min": 0.5, "max": 0.65, "step": 0.05,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars sold for vs what holding paid (sell_scorecard)", "judge": "_replay"},
     {"name": "swing_base", "group": "profit", "cls": "tunable", "label": "Base risk of a late turn",
@@ -19854,12 +20211,12 @@ KNOBS = (
     {"name": "exit_est_smart", "group": "profit", "cls": "tunable", "label": "Estimate allowance (smart sell)",
      "what": "Smart sell may act when a combo's estimate is within 5% of its line (Kalshi's real offer is checked "
              "before any sale).",
-     "owner": "exit_policy", "src": "EXIT_EST_SMART", "start": 0.95, "min": 0.85, "max": 1.0, "step": 0.01,
+     "owner": "exit_policy", "src": "EXIT_EST_SMART", "start": 0.95, "min": 0.95, "max": 1.0, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "real offers vs the estimate when the line was reached", "judge": "_replay (real offers)"},
     {"name": "exit_est_tp", "group": "profit", "cls": "tunable", "label": "Estimate allowance (take profit)",
      "what": "...and within 10% of your take-profit line.",
-     "owner": "exit_policy", "src": "EXIT_EST_TP", "start": 0.9, "min": 0.8, "max": 1.0, "step": 0.01,
+     "owner": "exit_policy", "src": "EXIT_EST_TP", "start": 0.9, "min": 0.9, "max": 1.0, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "real offers vs the estimate when the line was reached", "judge": "_replay (real offers)"},
     {"name": "tp_min_gain", "group": "profit", "cls": "tunable", "label": "Take profit needs at least",
@@ -19897,7 +20254,7 @@ KNOBS = (
      "metric": "return on stake, cutting vs holding, only where the live guards held", "judge": "_replay + _cut_guard_ts"},
     {"name": "cut_accept", "group": "loss", "cls": "tunable", "label": "A loss cut accepts at least",
      "what": "A combo's loss cut takes an offer of at least this share of what you paid.",
-     "owner": "exit_policy", "src": "CUT_ACCEPT", "start": 0.02, "min": 0.0, "max": 0.1, "step": 0.01,
+     "owner": "exit_policy", "src": "CUT_ACCEPT", "start": 0.02, "min": 0.02, "max": 0.1, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars a cut got vs what holding paid", "judge": "_replay"},
     {"name": "sl_prog", "group": "loss", "cls": "tunable", "label": "Not before this much of the game",
@@ -19916,32 +20273,44 @@ KNOBS = (
      "unit": "share", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
     {"name": "sl_checks", "group": "loss", "cls": "tunable", "label": "Checks in a row",
-     "what": "A loss sale or a hedge waits until its reason held on this many checks in a row.",
-     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_CHECKS", "start": 3, "min": 2, "max": 6, "step": 1,
+     "what": "A loss sale waits until its reason held on this many checks in a row (a hedge has its own count).",
+     "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_CHECKS", "start": 3, "min": 3, "max": 6, "step": 1,
      "unit": "count", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
     {"name": "sl_span", "group": "loss", "cls": "tunable", "label": "Held for at least",
      "what": "...over at least this long.",
-     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_SPAN", "start": 180, "min": 60, "max": 600, "step": 30,
+     "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_SPAN", "start": 180, "min": 180, "max": 600, "step": 30,
      "unit": "secs", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
     {"name": "sl_gap", "group": "loss", "cls": "tunable", "label": "Checks no further apart than",
      "what": "...with no two checks further apart than this (a longer gap starts the count again).",
-     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
+     "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
      "unit": "secs", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
-    {"name": "break_guard", "group": "loss", "cls": "tunable", "label": "Waits out halftime and breaks",
-     "what": "No loss sale or hedge at halftime, an intermission or the end of a period. To become conditional "
-             "(act at a break only on a fresh, moved, two-sided book or fresh injury news), learned per league.",
-     "owner": "stop_loss_leg, hedge_guard, _sl_held (at_break)", "src": None, "start": True, "min": None,
-     "max": None, "step": None, "unit": "rule", "stricter": "up", "borrow": "none", "learned": None,
-     "metric": "break-time price paths vs what came after", "judge": "_sl_replay (break episodes)"},
+    {"name": "sl_auto", "group": "loss", "cls": "tunable", "label": "Sells at a loss by itself",
+     "what": "With \"Selling at a loss\" on \"Let it tune itself\": off until this league's own record shows that selling "
+             "a combo that turned against you late in a game (every guard holding) beats holding it.",
+     "owner": "sl_allowed (auto_sell_now)", "src": None, "start": 0, "min": 0, "max": 1, "step": 1, "unit": "rule",
+     "stricter": "down", "borrow": "own", "learned": None,
+     "metric": "return on stake of combos, selling at a loss vs holding (sale prices cut 3%)", "judge": "_sl_replay"},
+    {"name": "brk_on", "group": "loss", "cls": "tunable", "label": "Acts at a break on real news",
+     "what": "At halftime, an intermission or the end of a period, a loss sale or a hedge waits. This would let it act "
+             "only when a fresh two-sided order book moved a long way (below) on two reads a minute apart. Watch-only "
+             "for now: it never acts live until a league has 40+ break episodes that show it pays.",
+     "owner": "break_ok (stop_loss_leg, hedge_guard)", "src": None, "start": 0, "min": 0, "max": 1, "step": 1,
+     "unit": "rule", "stricter": "down", "borrow": "own", "learned": None,
+     "metric": "selling at the break vs right after it, per contract", "judge": "break episodes"},
+    {"name": "brk_move", "group": "loss", "cls": "tunable", "label": "A break move must be at least",
+     "what": "...the price must have moved this many points since the break began (half that with fresh injury news).",
+     "owner": "break_ok", "src": "BRK_MOVE", "start": 0.08, "min": 0.04, "max": 0.2, "step": 0.01, "unit": "pts",
+     "stricter": "up", "borrow": "chain-stricter", "learned": None,
+     "metric": "selling at the break vs right after it, per contract", "judge": "break episodes"},
     # ---- hedging (auto-hedge, with Auto cash-out on)
     {"name": "hedge_lock_share", "group": "hedge", "cls": "tunable", "label": "Hedge when it locks in",
      "what": "With \"Prefer hedging\" on, hedge when it locks in at least this share of the cash-out.",
      "owner": "hedge_beats", "src": "HEDGE_LOCK_SHARE", "start": 0.95, "min": 0.9, "max": 1.05, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
-     "metric": "what hedges locked in vs what the cash-out paid", "judge": "sale_outcomes (hedges)"},
+     "metric": "what hedges locked in vs what the cash-out paid", "judge": "hedge decisions (hedge_seen)"},
     {"name": "hedge_lock_extra", "group": "hedge", "cls": "tunable", "label": "Without \"Prefer hedging\": needs",
      "what": "With \"Prefer hedging\" off, hedge only when it locks in this much more than the cash-out.",
      "owner": "hedge_beats", "src": "HEDGE_LOCK_EXTRA", "start": 0.5, "min": 0.0, "max": 2.0, "step": 0.25,
@@ -19952,18 +20321,33 @@ KNOBS = (
              "in a loss).",
      "owner": "hedge_guard, hedge_fresh", "src": "HEDGE_LOCK_COST", "start": 1.0, "min": 1.0, "max": 1.2,
      "step": 0.02, "unit": "x", "stricter": "up", "borrow": "none", "learned": None,
-     "metric": "what hedges locked in vs what holding paid", "judge": "sale_outcomes (hedges)"},
+     "metric": "what hedges locked in vs what the cash-out paid", "judge": "hedge decisions (hedge_seen)"},
     {"name": "hedge_gap", "group": "hedge", "cls": "tunable", "label": "Widest hedge-side gap",
      "what": "It won't hedge into an order book whose bid/ask gap is wider than this.",
      "owner": "hedge_fresh", "src": "HEDGE_GAP", "start": 0.06, "min": 0.02, "max": 0.1, "step": 0.01,
      "unit": "cents", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "price paid for hedges vs the mid", "judge": "sale_outcomes (hedges)"},
+    {"name": "hedge_checks", "group": "hedge", "cls": "tunable", "label": "Hedge: checks in a row",
+     "what": "A hedge waits until its reason held on this many checks in a row.",
+     "owner": "hedge_guard (via hedge_confirm_params)", "src": "HEDGE_CHECKS", "start": 3, "min": 3, "max": 6, "step": 1,
+     "unit": "count", "stricter": "up", "borrow": "none", "learned": None,
+     "metric": "what hedges locked in vs what the cash-out paid", "judge": None},
+    {"name": "hedge_span", "group": "hedge", "cls": "tunable", "label": "Hedge: held for at least",
+     "what": "...over at least this long.",
+     "owner": "hedge_guard (via hedge_confirm_params)", "src": "HEDGE_SPAN", "start": 180, "min": 180, "max": 600,
+     "step": 30, "unit": "secs", "stricter": "up", "borrow": "none", "learned": None,
+     "metric": "what hedges locked in vs what the cash-out paid", "judge": None},
+    {"name": "hedge_cgap", "group": "hedge", "cls": "tunable", "label": "Hedge: checks no further apart than",
+     "what": "...with no two checks further apart than this.",
+     "owner": "hedge_guard (via hedge_confirm_params)", "src": "HEDGE_CGAP", "start": 300, "min": 120, "max": 300,
+     "step": 30, "unit": "secs", "stricter": "down", "borrow": "none", "learned": None,
+     "metric": "what hedges locked in vs what the cash-out paid", "judge": None},
     {"name": "hedge_cap", "group": "hedge", "cls": "setting", "label": "Most on one hedge",
      "what": "Your Settings › \"Most to spend on one hedge\". You opted in to the system raising it up to $150 on "
              "evidence; it never lowers what you set except by the brake, back to your own value.",
      "owner": "auto_sell_now, hedge_fresh (CFG hedge_cap)", "src": "DEFAULTS.hedge_cap", "start": 100,
      "min": 25, "max": 150, "step": 10, "unit": "usd", "stricter": "down", "borrow": "none", "learned": None,
-     "metric": "hedges skipped over the cap vs what they would have locked in", "judge": "sale_outcomes (hedges)"},
+     "metric": "hedges skipped over the cap vs what they would have locked in", "judge": "hedge decisions (hedge_seen)"},
     # ---- selling: limits and checks
     {"name": "auto_cap", "group": "sell", "cls": "setting", "label": "Automatic sales a day",
      "what": "Your Settings › \"Auto cash-outs a day\". You opted in to the system raising it (no ceiling) on evidence.",
@@ -20012,7 +20396,7 @@ KNOBS = (
      "what": "A recommendation needs at least this much expected profit on a $5 bet.",
      "owner": "smart_buy_ok", "shared_with": "Build's spreads & totals list (line_recommend)", "src": "SB_EV_MIN", "start": 0.25, "min": 0.1, "max": 1.0,
      "step": 0.05, "unit": "usd", "stricter": "up", "borrow": "none", "learned": None,
-     "metric": "results of recommended vs skipped bets", "judge": "exit_shadow outcomes"},
+     "metric": "results of recommended vs skipped bets (watch-only)", "judge": "exit_shadow outcomes"},
     {"name": "sb_win_min", "group": "buy", "cls": "tunable", "label": "Hold route needs a win chance of",
      "what": "A bet with no likely cash-out counts as a hold only with at least this chance to win.",
      "owner": "simulate_exit", "src": "SB_WIN_MIN", "start": 0.4, "min": 0.3, "max": 0.6, "step": 0.05,
@@ -20280,9 +20664,12 @@ def _knob_league(key, d, now=None):
             out[n] = (x, "back at its start until the brake ends" if g == "brake" else
                       "off until this league's own record turns it on" if n == "smart_loss" and g != key else
                       _knob_from(g, key, own_n if n in KNOB_SMART_FIELD else None))
-        out.update({"sl_prog": (sl["prog"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
-                    "sl_drop": (sl["drop"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
-                    "sb_dial": (sb["level"], _knob_from(sb["key"], key, sb.get("own")))})
+            if n in KNOB_SL_FIELD and g not in ("brake",) and g is not None:
+                out[n] = (x, _knob_from(g, key, (d.get(key) or {}).get("sl_n") if g == key else None))
+            if n in ("sl_auto",) and g != "brake":
+                out[n] = (x, "on: this league's own record" if x == 1 and g == key else
+                          "off until this league's own record turns it on")
+        out["sb_dial"] = (sb["level"], _knob_from(sb["key"], key, sb.get("own")))
         return out
     sm, sg = _knob_smart(key, d)
     return {
@@ -20351,6 +20738,13 @@ def knob_view(now=None):
             else:                                         # one value for every league today
                 if k["name"] in settings:
                     v, frm = settings[k["name"]], "your setting"
+                    if k["name"] == "hedge_cap" and v is not None:      # #228 PR6: a raise the system made shows
+                        try:
+                            raised = hedge_cap_now()
+                        except Exception:
+                            raised = v
+                        if raised > v:
+                            v, frm = raised, f"raised by self-tuning on evidence (your setting: {knob_say(u, settings['hedge_cap'])})"
                     if v is not None and k.get("max") is not None and v > k["max"]:
                         frm = "your setting (above the most the system may raise it to; it never lowers yours)"
                 elif k["name"] in learnt:
@@ -20405,16 +20799,26 @@ KNOB_EPS = 0.005                # a replayed result that moved less than half a 
 KNOB_JUDGED = {"smart_floor": "replay", "smart_lam": "replay", "smart_loss": "replay", "exit_q_min": "replay",
                "exit_est_smart": "replay", "exit_est_tp": "replay", "auto_slip": "replay",
                "tp_min_gain": "replay", "trail_arm": "replay", "trail_arm_cost": "replay", "trail_drop": "replay",
-               "trail_floor": "replay", "cut_accept": "replay", "sl_prog": "sl", "sl_drop": "sl", "sb_dial": "sb"}
+               "trail_floor": "replay", "cut_accept": "replay", "sl_prog": "sl", "sl_drop": "sl", "sb_dial": "sb",
+               # #228 PR5-PR7: the stop-loss's own switch and its confirmation (the loss guards' replay), the break rule
+               # (its recorded episodes, watch-only), the hedge's lock-in numbers (its recorded decisions) and Smart
+               # Buy's smallest expected profit (its checked bets' results, watch-only)
+               "sl_auto": "sl", "sl_checks": "sl", "sl_span": "sl", "sl_gap": "sl", "brk_on": "brk", "brk_move": "brk",
+               "hedge_lock_share": "hedge", "hedge_lock_cost": "hedge", "sb_ev_min": "sbev"}
 # The haircut for loosening steps: a combo with no real offer recorded near the sale sells at 97% of the estimate (an
 # offer right at the slip line); a single with no recorded bid sells 3 cents a contract under its chance (half the
 # widest gap smart sell sells into), not the plain replay's 1 cent.
-KNOB_HAIRCUT = {"combo": 0.97, "single": 0.03}
+KNOB_HAIRCUT = {"combo": 0.97, "single": 0.03, "hedge": 0.98}
+# The two knobs that let the app put more money at risk by itself (the stop-loss's own switch, a raise of your hedge
+# cap) need a stricter bar: 3 standard errors from luck instead of 2 (profit review of #228 PR5/PR6).
+KNOB_EVIDENCE_STRICT = dict(KNOB_EVIDENCE, se=3.0)
+KNOB_STRICT_BAR = ("sl_auto",)
 # The brake's measure (Pete, #284): what a sale got against what holding was EXPECTED to pay when it sold, both on the
 # footing smart sell itself uses: a combo's offer against Kalshi's usual offer at that chance (kalshi_discount x chance x
 # payout), a single's sale after its fee against the chance after the fee less half the gap it sold into (at least 1c).
 KNOB_BRAKE_BID = 0.01
-KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N"}   # results a group needs (the evidence knobs)
+KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N", "brk": "BRK_MIN_N", "hedge": "HEDGE_MIN_N",
+              "sbev": "SB_LEARN_N"}   # results a group needs (the evidence knobs)
 # #258: knobs that do the same job never drift together. A tied knob is never stepped (it moves through its partner);
 # in a one-of set only one knob may stand off its start in a league; and the risk weight's whole product (each factor
 # as a share of its start) stays inside the risk weight's own range.
@@ -20430,7 +20834,17 @@ KNOB_RUN = {"brake_at": 0.0, "tune_next": 0.0}   # in memory too: a failed run n
 # what it was before this PR (the constants and smart_tune's file, its old either-way borrowing included).
 # The loss guards (sl_prog / sl_drop, smart_tune's), the hedge knobs and Smart Buy's dial stay in shadow (PR5-PR7).
 KNOB_LIVE = ("smart_floor", "smart_lam", "smart_loss", "exit_q_min", "exit_est_smart", "exit_est_tp", "tp_min_gain",
-             "trail_arm", "trail_arm_cost", "trail_drop", "trail_floor", "cut_accept", "auto_slip")
+             "trail_arm", "trail_arm_cost", "trail_drop", "trail_floor", "cut_accept", "auto_slip",
+             # #228 PR5: the loss guards (smart_tune's sl_prog / sl_drop, the stop-loss's own switch for 'Let it tune
+             # itself', its confirmation counts, split from the hedge's); PR6: the hedge's lock-in share, its least
+             # lock-in and its own confirmation counts. The break rule (brk_on / brk_move) and Smart Buy stay in shadow.
+             "sl_prog", "sl_drop", "sl_auto", "sl_checks", "sl_span", "sl_gap",
+             "hedge_checks", "hedge_span", "hedge_cgap")
+# The hedge's lock-in share and least lock-in, and a raise of your hedge cap, are judged in SHADOW only for now: their
+# judge counts a hedge at what it locked in (never its upside) against a sale at the offer, so it can't yet tell a good
+# hedge from a bad one on real results (code review of #228 PR6). They go live once judged on how the games ended.
+HEDGE_RAISE_LIVE = False
+KNOB_SL_FIELD = {"sl_prog": "prog", "sl_drop": "drop"}                                   # smart_tune's sl_* fields
 KNOB_SMART_FIELD = {"smart_floor": "floor", "smart_lam": "lam", "smart_loss": "loss"}     # smart_tune's file names
 KNOB_EXIT_PRM = {"exit_q_min": "q_min", "exit_est_smart": "est_smart", "exit_est_tp": "est_tp", "tp_min_gain": "tp_min",
                  "trail_arm": "trail_arm", "trail_arm_cost": "trail_arm_cost", "trail_drop": "trail_drop",
@@ -20534,6 +20948,15 @@ def _knob_own_live(name, g, st, smart):
     fld = KNOB_SMART_FIELD.get(name)
     se = smart.get(g) if isinstance(smart, dict) and isinstance(smart.get(g), dict) else {}
     mine = name in lv and _knob_valid(name, lv[name])
+    fs = KNOB_SL_FIELD.get(name)
+    if fs and (se.get("sl_n") or 0) >= SL_MIN_N and se.get("sl_prog") is not None:
+        if mine and float(lat.get(name) or 0) >= float(se.get("sl_at") or 0):
+            return True, lv[name]
+        try:
+            sv = float(se.get("sl_" + fs, SL_DEFAULT[fs]))
+        except (TypeError, ValueError):
+            sv = None
+        return True, (sv if _knob_valid(name, sv) else KNOB_BY[name]["start"])
     if fld and (se.get("n") or 0) >= SMART_MIN_N:
         if mine and float(lat.get(name) or 0) >= float(se.get("at") or 0):
             return True, lv[name]
@@ -20908,11 +21331,12 @@ def _knob_res_replay(c, path, slp, vals, cache, hair=False):
     if vals.get("auto_slip") is not None:
         ex["cash_slip"] = vals["auto_slip"]
     tp, trail = cache.setdefault("_cfg", _knob_replay_cfg())
+    cf = (vals.get("sl_checks", SL_CHECKS), vals.get("sl_span", SL_SPAN), vals.get("sl_gap", SL_GAP))
     key = (id(c), vals["smart_floor"], vals["smart_lam"], vals["smart_loss"], vals["sl_prog"], vals["sl_drop"],
-           tuple(sorted(ex.items())), bool(hair))
+           tuple(sorted(ex.items())), bool(hair), cf)
     if key not in cache:
         loss = vals["smart_loss"]
-        cut_at = _cut_guard_ts(c, slp, loss, vals["sl_prog"], vals["sl_drop"]) if loss else None
+        cut_at = _cut_guard_ts(c, slp, loss, vals["sl_prog"], vals["sl_drop"], cf) if loss else None
         mk = dict(c.get("_mk") or {}, hair=bool(hair))
         r = _replay_real(c, path, vals["smart_floor"], vals["smart_lam"], loss, trail=trail, cut_at=cut_at, tp=tp,
                          ex=ex, mk=mk)
@@ -20928,10 +21352,14 @@ def knob_loosens(name, frm, to):
     return knob_stricter_of(name, frm, to) == frm
 
 
-def _knob_res_sl(c, slp, vals, cache):
-    key = (id(c), "sl", vals["sl_prog"], vals["sl_drop"])
+def _knob_res_sl(c, slp, vals, cache, hair=False):
+    """One combo's result under the loss guards' values: what the stop-loss would have got with them (as if it were
+    on; knob_judge holds a combo at its settled result for sl_auto off), with the haircut on a loosening step's sale
+    price (#285)."""
+    cf = (vals.get("sl_checks", SL_CHECKS), vals.get("sl_span", SL_SPAN), vals.get("sl_gap", SL_GAP))
+    key = (id(c), "sl", vals["sl_prog"], vals["sl_drop"], cf, bool(hair))
     if key not in cache:
-        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"])
+        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"], cf, hair)
         cache[key] = r if r is not None else c["pl"]
     return cache[key]
 
@@ -20950,12 +21378,31 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
             d = 0.0 if a == b else (r["out"] if b else -r["out"])
             out.append((r.get("kick") or 0, d, 5.0))
         return out
-    hair = judge == "replay" and knob_loosens(name, cur[name], to)   # #285: a loosening step on pessimistic prices
+    if judge == "sbev":                              # Smart Buy's smallest expected profit (watch-only): a bet is
+        for r in rows:                               # recommended at a bar when its expected dollars on $5 reach it
+            a, b = (r["ev"] or 0) >= cur[name] - 1e-9, (r["ev"] or 0) >= to - 1e-9
+            d = 0.0 if a == b else (r["out"] if b else -r["out"])
+            out.append((r.get("kick") or 0, d, 5.0))
+        return out
+    if judge == "brk":
+        for r in rows:
+            d = _knob_res_brk(r, new) - _knob_res_brk(r, cur)
+            out.append((r.get("kick") or 0, round(d, 4), 1.0))
+        return out
+    if judge == "hedge":
+        for r in rows:
+            d = _knob_res_hedge(r, new) - _knob_res_hedge(r, cur)
+            out.append((r.get("kick") or 0, round(d, 4), r.get("cost") or 1.0))
+        return out
+    hair = judge in ("replay", "sl") and knob_loosens(name, cur[name], to)   # #285: a loosening step on pessimistic prices
     for c, path, slp in rows:
         if deadline is not None and time.monotonic() > deadline:
             raise KnobOutOfTime()
-        if judge == "sl":
-            d = _knob_res_sl(c, slp, new, cache) - _knob_res_sl(c, slp, cur, cache)
+        if judge == "sl" and name == "sl_auto":      # the stop-loss's own switch: on = what it would have got, off = held
+            d = (_knob_res_sl(c, slp, new, cache, hair) if new[name] else c["pl"]) - \
+                (_knob_res_sl(c, slp, cur, cache, hair) if cur[name] else c["pl"])
+        elif judge == "sl":
+            d = _knob_res_sl(c, slp, new, cache, hair) - _knob_res_sl(c, slp, cur, cache, hair)
         else:
             d = _knob_res_replay(c, path, slp, new, cache, hair) - _knob_res_replay(c, path, slp, cur, cache, hair)
         out.append((c.get("kick") or 0, round(d, 4), c["stake"]))
@@ -20964,6 +21411,31 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
 
 class KnobOutOfTime(Exception):
     pass
+
+
+def _knob_res_brk(r, vals):
+    """One break episode under (brk_on, brk_move), per contract: selling at the break, at the bid on the read where the
+    rule holds, against selling just after the break (the first price read once play resumed); 0 when it wouldn't act."""
+    if not vals.get("brk_on"):
+        return 0.0
+    reads = r.get("reads") or []
+    if not reads or r.get("after") is None:
+        return 0.0
+    i = brk_fires(reads, reads[0][2], vals.get("brk_move", BRK_MOVE), r.get("news"))
+    return 0.0 if i is None else reads[i][1] - r["after"]
+
+
+def _knob_res_hedge(r, vals):
+    """One recorded hedge decision under (hedge_lock_share, hedge_lock_cost, hedge_cap): what it would have ended with,
+    counting a hedge at what it LOCKED IN (its least; it can pay more) and a sale at the whole cash-out offer. A hedge
+    only where its game was in play on a fresh score, not at a break, 'Prefer hedging' as then, and the hedge within
+    the cap."""
+    share = vals.get("hedge_lock_share", HEDGE_LOCK_SHARE)
+    lc = max(1.0, vals.get("hedge_lock_cost", HEDGE_LOCK_COST))
+    cap = vals.get("hedge_cap", r.get("cap") or 100.0)
+    beats = r["locked"] >= r["whole"] * share if r.get("prefer") else r["locked"] >= r["whole"] + HEDGE_LOCK_EXTRA
+    hedge = bool(r.get("ok")) and beats and r["locked"] >= lc * r["cost"] and r["hcost"] <= cap + 1e-9
+    return r["locked"] * KNOB_HAIRCUT["hedge"] if hedge else r["whole"]   # a hedge on a 2% worse fill than recorded
 
 
 def _knob_rows(now, deadline=None):
@@ -20999,7 +21471,47 @@ def _knob_rows(now, deadline=None):
                     sb[key].append(r)
     except Exception as err:                          # Smart Buy's results unreadable: its dial just isn't judged
         print("knob stepper: smart buy results:", type(err).__name__, err)
-    return {"replay": rp, "sl": sl, "sb": sb}
+    brk, hed = _knob_rows_brk_hedge(now)
+    return {"replay": rp, "sl": sl, "sb": sb, "sbev": sb, "brk": brk, "hedge": hed}
+
+
+def _knob_rows_brk_hedge(now):
+    """The break episodes (break_ep) and recorded hedge decisions (hedge_seen, one per combo: its latest) of the last
+    KNOB_DAYS, by group. Unreadable = none (those knobs just aren't judged)."""
+    brk, hed = defaultdict(list), defaultdict(list)
+    cut = now - KNOB_DAYS * 86400
+    try:
+        _brk_table()
+        for r in store_rows("select ts, league, news, reads, after_bid from break_ep where ts > ? order by ts", (cut,)):
+            try:
+                reads = [tuple(x) for x in json.loads(r["reads"] or "[]")]
+            except ValueError:
+                continue
+            lg = r["league"] or ""
+            e = {"kick": r["ts"], "reads": reads, "after": r["after_bid"], "news": bool(r["news"])}
+            for key in {lg or None, _knob_sport(lg) if lg and lg != "mix" else None, "all"}:
+                if key:
+                    brk[key].append(e)
+    except Exception as err:
+        print("knob stepper: break episodes:", type(err).__name__, err)
+    try:
+        if STORE.get("db"):
+            have = store_rows("select name from sqlite_master where type='table' and name='hedge_seen'")
+            last = {}
+            for r in (store_rows("select * from hedge_seen where ts > ? order by ts", (cut,)) if have else []):
+                last[r["ticker"]] = r
+            for r in last.values():
+                if not r["cost"] or r["whole"] is None or r["locked"] is None:
+                    continue
+                lg = r["league"] or ""
+                e = {"kick": r["ts"], "whole": r["whole"], "locked": r["locked"], "hcost": r["hcost"] or 0.0,
+                     "cost": r["cost"], "cap": r["cap"], "prefer": bool(r["prefer"]), "ok": bool(r["ok"])}
+                for key in {lg or None, _knob_sport(lg) if lg and lg != "mix" else None, "all"}:
+                    if key:
+                        hed[key].append(e)
+    except Exception as err:
+        print("knob stepper: hedge decisions:", type(err).__name__, err)
+    return brk, hed
 
 
 def _knob_items(days=KNOB_DAYS):
@@ -21170,7 +21682,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             dial = dial if isinstance(dial, dict) else {}
         except Exception:
             dial = {}
-        keys = set(rows["replay"]) | set(rows["sb"])
+        for j in ("sbev", "brk", "hedge"):            # judges whose evidence may be missing (an older caller)
+            rows.setdefault(j, rows.get("sb", {}) if j == "sbev" else {})
+        keys = set(rows["replay"]) | set(rows["sb"]) | set(rows["brk"]) | set(rows["hedge"])
         order = (["all"] if "all" in keys else []) + sorted(k for k in keys if k != "all")
         tun = [k for k in KNOBS if k["cls"] == "tunable"]
         ver = json.dumps({"ev": KNOB_EVIDENCE, "hold_min": KNOB_HOLD_MIN, "days": KNOB_DAYS, "mode": KNOB_MODE,
@@ -21199,6 +21713,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 n_ = k["name"]                        # its OWN record, re-read every run (#267)
                 if live and n_ in KNOB_LIVE:          # what live really uses, a borrowed (stricter) value included,
                     cur[n_] = knob_live_value(n_, g, None, st, smart, now)[0]   # so a step is judged from there
+                elif n_ in KNOB_SL_FIELD:             # #285 item 2: the loss guards as stoploss_params has them
+                    cur[n_] = _knob_sl(g, smart)[0][KNOB_SL_FIELD[n_]]           # (a borrowed value only stricter)
                 else:
                     cur[n_] = _knob_seed(n_, g, smart, dial)
             last, best, best_live = [], None, None
@@ -21212,9 +21728,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 if n_ in KNOB_TIED:                   # moves only through its partner (they do the same job)
                     last.append({"knob": n_, "status": "tied"})
                     continue
-                if k.get("shared_with"):              # also drives another decision: split before it can move
-                    last.append({"knob": n_, "status": "shared"})
-                    continue
+                if k.get("shared_with") and (n_ in KNOB_LIVE or not jd):   # also drives another decision: split
+                    last.append({"knob": n_, "status": "shared"})              # before it can move (watch-only steps
+                    continue                                                   # of a shared one change nothing live)
                 if not jd:                            # its own test isn't built yet (PR3+)
                     last.append({"knob": n_, "status": "waits"})
                     continue
@@ -21224,7 +21740,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                  "say": f"{k['label']}: needs {globals()[KNOB_MIN_N[jd]]} results of its own (has {len(rs)})"})
                     continue
                 v[n_] = cur[n_]                       # the group's own record from here on
-                staked = (5.0 * len(rs)) if jd == "sb" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
+                staked = (5.0 * len(rs)) if jd in ("sb", "sbev") else float(len(rs)) if jd == "brk" else \
+                    (sum(r["cost"] for r in rs) or 1.0) if jd == "hedge" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
                 top = SB_DIAL_MAX if len(rs) >= SB_DIAL_SOFT_N else SB_DIAL_SOFT
                 for to in knob_candidates(n_, cur[n_]):
                     if jd == "sb" and to > top and to > cur[n_]:
@@ -21243,7 +21760,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     if is_live and g in ("all", "soccer") and (k.get("borrow") == "own" or knob_stricter(n_, to) != to):
                         is_live = False               # leagues borrow only stricter, never the loss cut: a step here
                     #                                   that no league would take stays a test
-                    ev = knob_evidence(ds, staked, e.get("lstep_at") if is_live else e.get("step_at"))
+                    ev = knob_evidence(ds, staked, e.get("lstep_at") if is_live else e.get("step_at"),
+                                       KNOB_EVIDENCE_STRICT if n_ in KNOB_STRICT_BAR and to != k["start"] else None)
                     if ev["band"] == 0 and ev["hold_n"] == 0:
                         continue                      # changes nothing: nothing to log
                     status = "qualifies" if ev["ok"] else ("vetoed" if all(
@@ -21295,6 +21813,19 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                     r.get("hold"), r.get("hold_n"), r.get("say", "")[:600], r.get("n"),
                                     r.get("staked"), json.dumps(live_now.get(r["knob"])), ver))
 
+        cap_raise = None                              # #228 PR6: your hedge cap, raised by the system only on evidence
+        if done and not _knob_braked_any(st, now):
+            try:
+                cap_raise = knob_cap_step(rows["hedge"].get("all") or [], st, live and HEDGE_RAISE_LIVE, now)
+            except Exception as err:
+                print("knob stepper: hedge cap:", type(err).__name__, err)
+            if cap_raise:
+                r = cap_raise
+                said.append(("changed " if r["status"] == "stepped" else "(not active yet) ") + "everyone: " + r["say"])
+                logrows.append((now, "all", "hedge_cap", json.dumps(r["from"]), json.dumps(r["to"]), r["status"],
+                                r.get("gain"), r.get("share"), r.get("band"), r.get("t"), r.get("new"), r.get("hold"),
+                                r.get("hold_n"), r["say"][:600], r.get("n"), r.get("staked"), json.dumps(r["from"]), ver))
+
         def put(d):
             d["groups"].update(groups)
             d["_at"] = now
@@ -21304,7 +21835,11 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         "why": None if done else "ran out of time; the rest waits a day"}
             for name in ("auto_cap", "hedge_cap"):     # #260: Pete's own value, kept apart from any system raise
                 s = d["settings"].get(name) if isinstance(d["settings"].get(name), dict) else {}
-                d["settings"][name] = {"pete": _knob_pete(name), "system": s.get("system")}
+                d["settings"][name] = dict(s, pete=_knob_pete(name), system=s.get("system"))
+            if cap_raise and cap_raise["status"] == "stepped":
+                d["settings"]["hedge_cap"].update(system=cap_raise["to"], at=now, why=cap_raise["say"][:600])
+            elif cap_raise:
+                d["settings"]["hedge_cap"].update(would=cap_raise["to"], would_at=now)
         _knob_save(put)
         KNOB_RUN["tune_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
         _knob_shadow_table()
@@ -21312,6 +21847,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             store_x("insert into knob_shadow(ts, league, knob, from_v, to_v, status, gain, share, band, t, new, hold, "
                     "hold_n, why, n, staked, live, ver) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
         store_x("delete from knob_shadow where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
+        for tb in ("break_ep", "hedge_seen"):          # the judges' evidence: kept as long as the shadow log
+            if store_rows("select name from sqlite_master where type='table' and name=?", (tb,)):
+                store_x(f"delete from {tb} where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
         ANALYTICS["at"] = 0
         return said + ([] if done else ["ran out of time; the rest waits a day"])
     except Exception as err:
@@ -21323,6 +21861,38 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         except Exception:
             pass
         return []
+
+
+def _knob_braked_any(st, now):
+    return any(_knob_braked(st, g, now) for g in (st.get("brake") or {}))
+
+
+def knob_cap_step(rows, st, live, now):
+    """#228 PR6 (Pete's opt-in): one raise of the hedge cap by the system, $10 at a time and never above the $150
+    ceiling, judged on the recorded hedge decisions everyone made (hedge_seen: a hedge counted at what it locked in, a
+    sale at the whole offer, the other hedge numbers at their starts) with the usual bar (knob_evidence, at least
+    HEDGE_MIN_N decisions, judged only on decisions after the last raise). Never lowers your own value; a brake anywhere
+    gives it back (knob_cap). Live only with self-tuning on; else noted as a test. Returns the row, or None."""
+    k = KNOB_BY["hedge_cap"]
+    if len(rows) < HEDGE_MIN_N:
+        return None
+    pete = _knob_pete("hedge_cap")
+    cur = float(knob_cap("hedge_cap", pete=pete, st=st, now=now))
+    to = min(cur + k["step"], k["max"])
+    if to <= cur + 1e-9:
+        return None
+    base = {"hedge_lock_share": HEDGE_LOCK_SHARE, "hedge_lock_cost": HEDGE_LOCK_COST}
+    ds = [(r.get("kick") or 0, round(_knob_res_hedge(r, dict(base, hedge_cap=to))
+                                    - _knob_res_hedge(r, dict(base, hedge_cap=cur)), 4), r.get("cost") or 1.0)
+          for r in rows]
+    s_ = (st.get("settings") or {}).get("hedge_cap") or {}
+    ev = knob_evidence(ds, sum(r.get("cost") or 0 for r in rows) or 1.0, s_.get("at") if live else s_.get("would_at"),
+                       KNOB_EVIDENCE_STRICT)
+    if not ev["ok"]:
+        return None
+    return {"knob": "hedge_cap", "from": cur, "to": to, "status": "stepped" if live else "would step", "n": len(rows),
+            **{x: ev[x] for x in ("gain", "share", "band", "t", "new", "hold", "hold_n")},
+            "say": knob_step_say("hedge_cap", cur, to, ev, len(rows))}
 
 
 def _knob_sale_league(t, cache):
@@ -21503,6 +22073,9 @@ def knob_brake_pass(now=None, force=False):
                              hist=(list(e.get("hist") or []) + [{"at": int(now), "knob": "*", "brake": True, "live": True,
                                                                  "why": why[:600], "reset": off}])[-12:])
                 d["groups"][lg] = e
+                hc = d["settings"].get("hedge_cap") if isinstance(d["settings"].get("hedge_cap"), dict) else None
+                if live and hc and hc.get("system") is not None:   # #228 PR6: the brake also takes back a cap raise
+                    hc.update(system=None, at=now, why="taken back by the brake: " + why[:400])
                 if push_ok and live:
                     msgs.append(f"Self-tuning brake, nothing to do: smart sell in {league_label(lg)} is back on its "
                                 f"starting numbers until "

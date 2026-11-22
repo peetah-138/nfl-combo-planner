@@ -58,8 +58,9 @@ ok("the invariants Pete named are listed and untunable",
 ok("a hedge can never be tuned into locking in a loss (min 1x cost); the loss cut's first value is the tuner's",
    E.KNOB_BY["hedge_lock_cost"]["min"] == 1.0 and E.KNOB_BY["smart_loss"]["on_value"] == 0.15
    and E.KNOB_BY["smart_lam"]["step_kind"] == "mult")
-ok("the break guard is tunable (Pete: conditional break_ok later), not an invariant",
-   E.KNOB_BY["break_guard"]["cls"] == "tunable" and E.KNOB_BY["break_guard"]["start"] is True)
+ok("the break guard is tunable (Pete: conditional break_ok, #228 PR5), not an invariant, and starts off",
+   E.KNOB_BY["brk_on"]["cls"] == "tunable" and E.KNOB_BY["brk_on"]["start"] == 0 and E.KNOB_BY["brk_on"]["borrow"] == "own"
+   and E.KNOB_BY["brk_move"]["start"] == 0.08 and "break_guard" not in E.KNOB_BY)
 ok("Pete's caps: hedge_cap may rise to $150, auto_cap has no ceiling",
    E.KNOB_BY["hedge_cap"]["max"] == 150 and E.KNOB_BY["auto_cap"]["max"] is None
    and E.KNOB_BY["hedge_cap"]["cls"] == E.KNOB_BY["auto_cap"]["cls"] == "setting")
@@ -75,7 +76,7 @@ drift = [(k["name"], E.knob_live(k["name"]), k["start"]) for k in E.KNOBS
          if k.get("src") and E.knob_live(k["name"]) != k["start"]]
 ok("every knob's live value equals its registry start" + (f" {drift}" if drift else ""), not drift)
 ok("the knobs without a number are the rules and the Smart Buy dial's start",
-   {k["name"] for k in E.KNOBS if not k.get("src")} == {"break_guard", "sb_dial", "pause", "can_trade", "rule8",
+   {k["name"] for k in E.KNOBS if not k.get("src")} == {"sl_auto", "brk_on", "sb_dial", "pause", "can_trade", "rule8",
                                                          "in_play", "fresh_quote", "secrets", "below_cost",
                                                          "your_switches"})
 ok("below-cost guard (start: on): automatic sales still skip an offer under what was paid",
@@ -129,7 +130,12 @@ start, end = eng.index("KNOB_UNITS = ("), eng.index("\ndef prune_drafts(")     #
 outside = eng[:start] + eng[end:]
 uses = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", outside)})
 LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view", "knob_smart_params", "knob_switch_on",
-           "knob_view"]
+           "knob_view",
+           # #228 PR5/PR6: the loss guards, the stop-loss's own switch, the hedge's numbers and cap (behind the switch),
+           # and break_ok's watch-only episodes
+           "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_err", "_knob_nums", "_knob_sale_league",
+           "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached"]
+LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
 _callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_settings", "smart_params", "smart_tune")

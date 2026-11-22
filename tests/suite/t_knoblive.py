@@ -306,7 +306,7 @@ JUDGE = {"mode": "good"}
 
 
 def judge(jd, rows, cur_, name, to, cache=None, **kw):
-    base = [(c.get("kick"), 0.0, 5.0) for c, _, _ in rows]
+    base = [((x[0] if isinstance(x, tuple) else x).get("kick"), 0.0, 5.0) for x in rows]
     m = JUDGE["mode"]
     if name == "smart_floor" and to == 1.8 and m == "good":           # a clear gain, old and new bets alike
         return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
@@ -333,14 +333,13 @@ ok("one live step for the league, the biggest gain: the profit floor 1.7 → 1.8
    and sum(1 for r in nba["last"] if r["status"] == "stepped") == 1)
 ok("the other exit step that clears the bar waits its turn", st_.get("trail_drop") == "qualifies" and "trail_drop" not in nba["lv"])
 ok("the newest 30% veto a step chosen on the older bets (#264)", st_.get("exit_q_min") == "vetoed" and "exit_q_min" not in nba["lv"])
-ok("the loss guards stay a test: 'would step', in the shadow record only", st_.get("sl_prog") == "would step"
-   and "sl_prog" not in nba["lv"] and nba["v"]["sl_prog"] > 0.5 and E.stoploss_params([NBA]) == E.stoploss_params([NBA]))
+ok("the loss guards are live too since #228 PR5: one that clears the bar waits its turn (one live step a run)",
+   st_.get("sl_prog") == "qualifies" and "sl_prog" not in nba["lv"] and E.stoploss_params([NBA])["prog"] == 0.5)
 ok("smart sell uses the new floor in NBA now, and nowhere else", E.smart_params(["KXNBAGAME-X1-LAL"])["floor"] == 1.8
    and E.smart_params([NHL])["floor"] == 1.5)
 ok("smart_tune's file, the settings and CFG are untouched", open(E.SMART_FILE, "rb").read() == smart_bytes
    and json.dumps(E.CFG, sort_keys=True, default=str) == cfg_before)
-ok("it says what changed, in plain words", any(s.startswith("changed NBA: Profit floor") for s in said)
-   and any("not active yet" in s for s in said))
+ok("it says what changed, in plain words", any(s.startswith("changed NBA: Profit floor") for s in said))
 rows = E.store_rows("select league, knob, from_v, to_v, status, why from knob_shadow where status='stepped'")
 ok("every change is logged: what, league, from, to, why", any(r["league"] == "nba" and r["knob"] == "smart_floor"
    and json.loads(r["from_v"]) == 1.7 and json.loads(r["to_v"]) == 1.8 and "Profit floor" in r["why"] for r in rows))
@@ -494,8 +493,8 @@ ok("the master switch fails closed: a damaged settings file = off, a missing one
 # ---- 8. what never moves
 ok("only tunable exit knobs are live; no invariant, evidence knob, setting or guard",
    all(E.KNOB_BY[n]["cls"] == "tunable" for n in E.KNOB_LIVE)
-   and not set(E.KNOB_LIVE) & {"sl_prog", "sl_drop", "sl_under", "sl_checks", "sl_span", "sl_gap", "break_guard",
-                               "below_cost", "hedge_lock_share", "hedge_lock_extra", "hedge_lock_cost", "hedge_gap",
+   and not set(E.KNOB_LIVE) & {"sl_under", "brk_on", "brk_move",          # #228 PR5/PR6 made the loss guards and the
+                               "below_cost", "hedge_lock_extra", "hedge_gap",   # hedge's lock-in numbers live
                                "cash_slip", "live_spread", "sb_dial", "sb_ev_min"})
 ok("knob_exit_prm only ever gives exit_policy's own numbers", set(E.KNOB_EXIT_PRM.values()) <= set(START))
 set_knobs({"groups": {"all": {"lv": {"exit_q_min": "junk"}}, "nhl": {"lv": {"smart_floor": "junk", "trail_drop": 9.0}}},
