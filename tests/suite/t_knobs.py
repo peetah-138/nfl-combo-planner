@@ -13,6 +13,7 @@ E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 E.SB_DIAL_FILE = os.path.join(E.HERE, "sb.json"); E.SB_GATE["dial"] = None
 E.DISCOUNT_FILE = os.path.join(E.HERE, "disc.json")
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+E.CFG["knobs_live"] = False; E.KNOB_SWITCH["on"] = None   # PR1's view with self-tuning off; section 7 turns it on
 now = time.time()
 
 # ---- 1. every entry complete and consistent
@@ -122,12 +123,33 @@ lit = {"exit_policy": has_lit(E.exit_policy, [r"q >= 0\.5", r"/ 0\.95", r"/ 0\.9
        "smart_sell_singles": has_lit(E.smart_sell_singles, [r"> 180\b"])}
 ok("no live function still writes a registry number inline" + (f" {lit}" if any(lit.values()) else ""), not any(lit.values()))
 
-# ---- 4. no live decision reads the registry (PR1 describes; nothing acts on it)
+# ---- 4. no live decision reads the registry (PR1 describes it; PR2's stepper only proposes, in shadow)
 eng = open("wahome/engine.py", encoding="utf-8").read()
-start, end = eng.index("KNOB_UNITS = ("), eng.index("def knob_view(")
-outside = eng[:start] + eng[eng.index("\n\n\n", end):]
-uses = [m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_BY|KNOB_EVIDENCE|KNOB_BRAKE|knob_live|knob_say|knob_view|_knob_\w+)\b", outside)]
-ok("only analytics reads the registry (via knob_view)" + (f" {uses}" if uses != ["knob_view"] else ""), uses == ["knob_view"])
+start, end = eng.index("KNOB_UNITS = ("), eng.index("\ndef prune_drafts(")     # the registry and its shadow stepper
+outside = eng[:start] + eng[end:]
+uses = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", outside)})
+LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view", "knob_smart_params", "knob_switch_on",
+           "knob_view"]
+ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
+   + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
+_callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_settings", "smart_params", "smart_tune")
+                if n in inspect.getsource(getattr(E, f))] for n in ("knob_exit_prm", "knob_smart_params", "knob_switch_on")}
+ok("#228 PR4: smart sell's own slip (auto_slip) is read only by auto_sell_now, for a combo's automatic sale",
+   (lambda a: "knob_auto_slip(" in a and "CASH_SLIP" not in a.replace("AUTO_CASH_SLIP", ""))(
+       eng_src[eng_src.index("\ndef auto_sell_now("):eng_src.index("\ndef ", eng_src.index("\ndef auto_sell_now(") + 5)])
+   and "CASH_SLIP * agreed" in inspect.getsource(E._accept_with_retries))
+ok("...and your own Cash out retries keep CASH_SLIP, listed as never moving by itself",
+   E.KNOB_BY["cash_slip"]["cls"] == "invariant" and E.KNOB_BY["auto_slip"]["cls"] == "tunable"
+   and E.AUTO_CASH_SLIP == E.CASH_SLIP == 0.97 and not E.KNOB_BY["auto_slip"].get("shared_with"))
+ok("...and exactly where: the two sellers and Smart Buy's exit settings take the exit numbers, smart_params the "
+   "floor/risk/loss, smart_tune only asks the switch", _callers == {
+       "knob_exit_prm": ["take_profit_reason", "single_sell_reason", "exit_settings"],
+       "knob_smart_params": ["smart_params"], "knob_switch_on": ["smart_params", "smart_tune"]})
+wsrc_ = open("wtest/combo_watcher.py", encoding="utf-8").read() if os.path.exists("wtest/combo_watcher.py") else None
+if wsrc_ is not None:
+    code_ = "\n".join(l.split("#")[0] for l in wsrc_.split("\n"))          # code only, not comments
+    wu = sorted({m.group(0) for m in re.finditer(r"\b(KNOBS|KNOB_[A-Z_]+|_?knob_\w+|knob(?=\())", code_)})
+    ok("the watcher only runs the shadow pass (knob_pass)" + (f" {wu}" if wu != ["knob_pass"] else ""), wu == ["knob_pass"])
 
 # ---- 5. knob_view mirrors the live resolvers league by league
 TICK = {"nba": "KXNBAGAME-26NOV19LALBOS-LAL", "nhl": "KXNHLGAME-26NOV19PHIBOS-PHI", "epl": "KXEPLGAME-26NOV22ARSCHE-ARS",
@@ -215,5 +237,28 @@ try:
    and "nba" not in [l["key"] for l in r["leagues"]])
 except Exception as err:
     ok("a damaged settings file never raises: " + repr(err), False)
+_real_smart_table = E.smart_table
 E.smart_table = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
 ok("an error inside gives an empty view, never an exception", E.knob_view(now) == {})
+
+# ---- 7. with self-tuning on (#228 PR3), knob_view still shows exactly what the live code uses, per league
+E.smart_table = _real_smart_table
+E.CFG["knobs_live"] = True; E.KNOB_SWITCH["on"] = None
+json.dump(table, open(E.SMART_FILE, "w")); E.SMART_CACHE["at"] = 0; E.SB_GATE["dial"] = None
+E.KNOBS_FILE = os.path.join(E.HERE, "knobs.json"); E.KNOB_STATE_CACHE["d"] = None
+v3 = E.knob_view(now)
+b3 = {k["name"]: k for k in v3.get("knobs", [])}
+mism = []
+for lg, t in TICK.items():
+    if lg not in [l["key"] for l in v3.get("leagues", [])]:
+        continue
+    sp = E.smart_params([t])
+    got = {n: b3[n]["values"][lg]["v"] for n in ("smart_floor", "smart_lam", "smart_loss")}
+    if got != {"smart_floor": sp["floor"], "smart_lam": sp["lam"], "smart_loss": sp["loss"]}:
+        mism.append((lg, got, sp))
+ok("switch on: per league, knob_view's floor/risk/loss are what smart_params gives" + (f" {mism}" if mism else ""), not mism)
+ok("switch on: epl borrows soccer's numbers only stricter (#259): floor 1.5 not 1.3, risk weight 0.85, no loss cut",
+   b3["smart_floor"]["values"]["epl"]["v"] == 1.5 and b3["smart_lam"]["values"]["epl"]["v"] == 0.85
+   and b3["smart_loss"]["values"]["epl"]["v"] is None and E.smart_params([TICK["epl"]])["floor"] == 1.5)
+ok("switch on: the exit numbers show per league (all at their start with nothing learned)",
+   b3["exit_q_min"].get("values", {}).get("nba", {}).get("v") == 0.5 and b3["trail_drop"]["values"]["all"]["v"] == 0.2)

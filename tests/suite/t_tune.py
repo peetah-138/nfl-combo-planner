@@ -5,6 +5,7 @@ spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = impo
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+E.CFG["knobs_live"] = False; E.KNOB_SWITCH["on"] = None   # the weekly tuner as it runs with self-tuning off (#228 PR3)
 now = time.time()
 E.CFG.update(smart_sell=True, ride=2, take_profit=0, lock_trail=True)
 

@@ -1,7 +1,8 @@
 # CHECK: group=engine
 # Sell a single bet by Pete's tap (issue #238): Live's single cards get "Get new price" and "Sell". The quote reads
 # Kalshi's order book now (never a cached copy) and is good for 20 s; the sale re-reads the book, refuses a lower bid,
-# and sends one fill-now-or-cancel, reduce-only sale at the quoted price, once per quote. Pause refuses; an unclear
+# and sends one fill-now-or-cancel, reduce-only sale at the quoted price, once per quote. Pause does not block it
+# (Pete's own tap, #245), but every buy and every automatic sale still stop under Pause; an unclear
 # answer is "check", the market is blocked and nothing is resent (rule 8); a thin market warns and needs Sell anyway.
 # Also: a total's "On track" line follows the pace, not the running total (an Over is always under the line mid-game).
 # Real signing code with a throwaway key; the network is fakenet (V2 order desk), so nothing can reach Kalshi.
@@ -108,14 +109,25 @@ body = D["sent"][-1][2]
 ok("a NO bet's sale goes on the YES book as a bid at 1 - 95c = '0.0500'", r["ok"] and body["side"] == "bid"
    and body["price"] == "0.0500" and body.get("reduce_only") is True)
 
-# ---- (3) Pause refuses, before anything is read or sent
+# ---- (3) Pause does NOT block Pete's own sale (Pete's decision on #245); every other guard still holds
 reset()
 qp = E.single_sell_quote(T, paused=True)
-ok("Pause: no quote, nothing read", not qp["ok"] and qp.get("paused") and not READS and "Paused" in qp["msg"])
-q = E.single_sell_quote(T)
-r = sell(q, paused=True)
-ok("Pause after the quote: the sale is refused, nothing sent", not r["ok"] and "Paused" in r["msg"] and not D["sent"])
-q = E.single_sell_quote(T)
+ok("Pause on: a quote still comes, from a fresh book, with the calm note",
+   qp["ok"] and qp.get("paused") is True and READS == [0] and qp["clears"]
+   and qp.get("paused_note") == "Pause is on. This is your own sale, so it still works.")
+ok("Pause off: no note", E.single_sell_quote(T).get("paused") is False and not E.single_sell_quote(T).get("paused_note"))
+LOG.clear()
+r = sell(qp, paused=True)
+m, p, body, _ = D["sent"][-1]
+ok(f"Pause on: the sale goes through, one IOC reduce-only order at the quoted bid ({r.get('msg')})",
+   r["ok"] and len(D["sent"]) == 1 and body["side"] == "ask" and body["price"] == "0.9400"
+   and body["time_in_force"] == "immediate_or_cancel" and body.get("reduce_only") is True
+   and body["client_order_id"] == "cw-ss-" + qp["q"])
+ok("...and the log says it was Pete's own tap while paused", any("while Pause is on" in x for x in LOG))
+ok("Pause on: the same quote again is still refused (one order per quote)", not sell(qp, paused=True)["ok"]
+   and len(D["sent"]) == 1)
+reset()
+q = E.single_sell_quote(T, paused=True)
 _flip, _bd = {"p": False}, E.book_depth
 def _bd_pause(tk, max_age=60):                      # Pause comes on while the book is re-read
     _flip["p"] = True
@@ -123,12 +135,73 @@ def _bd_pause(tk, max_age=60):                      # Pause comes on while the b
 E.book_depth = _bd_pause
 r = sell(q, paused=lambda: _flip["p"])
 E.book_depth = _bd
-ok("Pause turned on during the book re-read: refused, nothing sent", not r["ok"] and r.get("paused") and not D["sent"])
-q = E.single_sell_quote(T)
-ok("Pause that can't be read counts as paused", not sell(q, paused=lambda: 1 / 0)["ok"] and not D["sent"])
-q = E.single_sell_quote(T)
-r = sell(q, paused=lambda: False)
-ok("a callable Pause that stays off: sold", r["ok"] and D["sent"])
+ok("Pause turned on during the book re-read: still sells (one order)", r["ok"] and len(D["sent"]) == 1)
+reset()
+q = E.single_sell_quote(T, paused=lambda: 1 / 0)
+ok("a Pause that can't be read: the note shows (counts as paused), the sale still works",
+   q["ok"] and q["paused"] and sell(q, paused=lambda: 1 / 0)["ok"] and len(D["sent"]) == 1)
+reset()
+E.can_trade = lambda: False
+ok("Pause on + no trading access (the Pi): no quote, nothing read", not E.single_sell_quote(T, paused=True)["ok"]
+   and not READS)
+E.can_trade = lambda: True
+q = E.single_sell_quote(T, paused=True)
+E.can_trade = lambda: False
+ok("Pause on + trading access lost after the quote: refused, nothing sent", not sell(q, paused=True)["ok"] and not D["sent"])
+E.can_trade = lambda: True
+reset()
+book(0.80, 0.90)
+q = E.single_sell_quote(T, paused=True)
+ok("Pause on + thin market: still needs Sell anyway", not sell(q, paused=True)["ok"] and not D["sent"])
+reset()
+q = E.single_sell_quote(T, paused=True)
+book(0.92, 0.95)
+r = sell(q, paused=True)
+ok("Pause on + the bid dropped: refused, nothing sent", not r["ok"] and r.get("moved") and not D["sent"])
+reset()
+q = E.single_sell_quote(T, paused=True)
+D["next"] = requests.Timeout("slow")
+r = sell(q, paused=True)
+ok("Pause on + unclear answer: 'check', blocked, one order", r.get("check") and E.order_unsure(T) and len(D["sent"]) == 1)
+q2 = E.single_sell_quote(T, paused=True)
+ok("Pause on + the unknown-outcome block: blocked, never resent", q2["blocked"] and not sell(q2, paused=True, anyway=True)["ok"]
+   and len(D["sent"]) == 1)
+reset()
+q = E.single_sell_quote(T, paused=True)
+r = E.single_sell(q["q"], T, paused=True, now=time.time() + 25, log=LOG.append)
+ok("Pause on + a quote over 20 s old: expired", not r["ok"] and r.get("expired") and not D["sent"])
+
+# ---- (3b) everything else still stops under Pause: every buy and every automatic sale
+reset()
+r = E.single_buy_quote({"ticker": T}, 5, paused=True)
+ok("Buy straight: no quote while paused (the Pause refusal itself)", not r["ok"] and r.get("paused")
+   and r["msg"] == E.PAUSE_MSG and not READS and not D["sent"])
+with E._SQ["lock"]:                                  # a live, unused buy quote, as the sheet would hold
+    E._SQ["q"]["abcdef0123456789"] = {"t": T, "used": False, "at": time.time(), "blocked": None, "thin": False}
+r = E.single_buy("abcdef0123456789", T, paused=True)
+ok("Buy straight: the buy itself refuses while paused (a live quote, nothing sent)", not r["ok"]
+   and "Paused" in r["msg"] and not D["sent"])
+r = E.idea_single_buy(T, 3, 0.50, paused=True, log=LOG.append, key="i1")
+ok("Live idea single buy: refused while paused, nothing sent", not r["ok"] and r["msg"] == E.PAUSE_MSG and not D["sent"])
+E.CTX.setdefault("offers", {})[901] = {"rfq": "rfq-x", "pays": 10, "stake": 5}
+E.TRADING_PAUSED = lambda: True
+r = E.accept_offer(901)
+E.TRADING_PAUSED = None
+ok("combo buy (accept_offer): refused while paused, no accept sent",
+   r.get("paused") and not any(x[0] == "PUT" for x in D["sent"]))
+E.CFG["auto_sell"] = False                            # what Pause sets (watcher pause())
+ok("auto cash-out / smart sell / auto-hedge: off while paused (auto_sell_now does nothing)",
+   E.auto_sell_now({"acts": {"KXMVE-X": 1.0}}) == [] and not D["sent"])
+PSRC = open("wtest/combo_watcher.py", encoding="utf-8").read()
+pz = PSRC[PSRC.index("def pause(conf, E):"):PSRC.index("def pause(conf, E):") + 1200]
+ok("Pause turns off auto cash-out (smart sell, hedge), killer deals and standing orders",
+   'E.CFG["auto_sell"] = False' in pz and 'E.CFG["killer_mode"] = "watch"' in pz and 'E.CFG["maker_mode"] = "watch"' in pz)
+ok("the panel's buys get Pause", 'H.panel_exec(log=log, paused=bool(conf.get("paused"))' in PSRC)
+ok("the web app's combo quote/idea/Buy, Buy straight and idea buys still pass Pause",
+   'if a in ("quote", "idea", "buy") and paused_now():' in PSRC
+   and 'single_buy_quote(single_side(t, lg), d.get("stake"), paused=paused_now())' in PSRC
+   and 'A.single_buy(str(d["q"]), t, anyway=bool(d.get("anyway")), paused=paused_now(), log=log)' in PSRC
+   and "A.idea_single_buy(tk, n, price, paused=paused_now()" in PSRC)
 reset()
 E.can_trade = lambda: False
 ok("no trading access: no quote", not E.single_sell_quote(T)["ok"])
@@ -200,9 +273,12 @@ ok("someone else's quote id: refused", not E.single_sell("0" * 16, T, log=LOG.ap
 # ---- (7) the web app's act: inside the app lock, Pause read fresh, a money tap for the proxy
 WSRC = open("wtest/combo_watcher.py", encoding="utf-8").read()
 i = WSRC.index('if a == "singlesell":')
-ok("the act passes Pause as a callable read fresh (paused_now) and marks the tap busy", "paused=paused_now," in WSRC[i:i + 600]
-   and "tap_mark()" in WSRC[i:i + 600] and WSRC.rindex("with act_lock():", 0, i) > WSRC.index("def _api_act"))
-ok("Sell anyway only on an explicit true", 'd.get("anyway") is True' in WSRC[i:i + 600])
+ok("the act passes Pause as a callable read fresh (paused_now) and marks the tap busy", "paused=paused_now," in WSRC[i:i + 900]
+   and "tap_mark()" in WSRC[i:i + 900] and WSRC.rindex("with act_lock():", 0, i) > WSRC.index("def _api_act"))
+ok("both sell acts refuse on the Pi (backup_now, read fresh) before anything else",
+   WSRC.count("if backup_now():") == 2 and "if backup_now():" in WSRC[WSRC.index('if a == "sellquote":'):i]
+   and "if backup_now():" in WSRC[i:i + 400])
+ok("Sell anyway only on an explicit true", 'd.get("anyway") is True' in WSRC[i:i + 900])
 ok("singlesell is a money tap for the proxy ('may or may not' on a timeout)",
    re.search(r'ORDER_ACTS = \([^)]*"singlesell"', WSRC) is not None)
 ok("no automatic path calls the manual sale", WSRC.count("single_sell(") == 1)

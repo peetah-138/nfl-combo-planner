@@ -35,3 +35,4 @@ h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5
 .ians{animation:ians .32s var(--spring,ease-out)}@keyframes ians{from{opacity:0;transform:translateY(4px)}}
 .iold{opacity:.6}.iold>.m{font-size:12px;margin:2px 0 4px}.inow{font-size:12px;margin:12px 0 2px;font-weight:700}
 @media (prefers-reduced-motion:reduce){.ians{animation:none}}
+.ifsrc{display:block;font-size:11px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--mute);margin-top:1px}

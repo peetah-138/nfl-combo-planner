@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.132"
+WATCHER_VERSION = "2026.11.21.133"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1916,12 +1916,21 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)                          # (#137) paper scoring of every priced market, OUTSIDE odds.lock
         try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
             n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
             if n_out:
                 log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
         except Exception as err:
             log("smart-sell scorecard skipped:", type(err).__name__, err)
+        try:                                              # self-tuning (#228), OUTSIDE odds.lock: brake every 30 min,
+            lines, pushes = odds.engine().knob_pass()     # stepper weekly, time-bounded; reads history only and writes
+            for m in lines:                               # combo_knobs.json + knob_shadow. With 'Let smart sell tune
+                log("knobs:", m)                          # its own numbers' on, smart sell's exit numbers read them
+            for m in pushes if notifier else []:          # (PR3); everything else stays a test
+                notifier.add(m)                           # a brake only: one per league per 14 days
+        except Exception as err:
+            log("self-tuning test skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
             # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
             # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
@@ -1959,6 +1968,27 @@ def quick_rounds(odds, notifier, until, gap=150):
                     notifier.add(m, "idea")
         except Exception as err:
             log("quick check skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)
+
+
+def smart_buy_universe(odds):
+    """Smart Buy's paper work (#137), all OUTSIDE odds.lock (the lock panel_loop holds to place a real approved buy)
+    and in the shadow engine (H), never the trading one: score every market the panel looks priced (0.15 s of
+    simulation a pass), then, when due, the backfill from history (daily, 3 s a run) and the paper book (every 6 h).
+    Writes exit_shadow rows and the sb_paper table only; each step self-throttles and never raises."""
+    try:
+        H = odds.engine()
+    except Exception as err:
+        log("smart buy paper scoring skipped:", type(err).__name__, err)
+        return
+    for name in ("smart_buy_universe", "smart_buy_backfill", "sb_paper_build"):
+        try:
+            if hasattr(H, name):
+                n = getattr(H, name)()
+                if n and name != "smart_buy_universe":
+                    log(f"smart buy on paper: {name} wrote {n} rows")
+        except Exception as err:
+            log(f"smart buy paper {name} skipped:", type(err).__name__, err)
 
 
 
@@ -2491,6 +2521,18 @@ def webapp_main():
         except (OSError, ValueError, AttributeError):
             return True
     A.TRADING_PAUSED = paused_now                   # the engine's own buy paths (accept_offer) read it too
+
+    def backup_now():
+        """This device is the alerts-only backup (the Pi), read fresh; a settings file that can't be read counts as
+        the backup. Pete's own single-bet Sell skips Pause (#245) but never this."""
+        if A.role_backup():
+            return True
+        if not os.path.exists(CONF):
+            return False
+        try:
+            return is_backup(load_conf())
+        except (OSError, ValueError, AttributeError):
+            return True
     try:
         if is_backup(load_conf()):
             A.ROLE_BACKUP = True                    # a web app on the Pi never trades either
@@ -3177,7 +3219,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3443,17 +3485,26 @@ def webapp_main():
                         api_build(row["lg"], rebuild=True)
                     side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
                     dpt = A.book_depth(tk, max_age=0)
-                    fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
-                    if not fair or not dpt or dpt.get("ask") is None:
+                    if not dpt or dpt.get("ask") is None:
+                        return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
+                    # the fair chance (#255): before the game the board's (spreads/totals: the model's), as before; a
+                    # game under way only a live one (a fresh live line, else the live model), never the board's number
+                    fi = A.idea_single_fair(tk, side, row.get("pfair"), dpt, kick=row.get("kick"),
+                                            row_live=bool(row.get("live")))
+                    if fi["over"]:
+                        return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
+                    fair = fi["fair"]
+                    if fair is None and not fi["live"]:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
                     if bad:
                         return {"ok": False, "msg": bad, "bad_stake": True}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
-                    edge = fair - ask - fee
-                    pct = fair / (ask + fee) if ask else 0
-                    rec = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
+                    edge = fair - ask - fee if fair is not None else None
+                    pct = (fair / (ask + fee) if ask else 0) if fair is not None else None
+                    rec = (A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair) if fair is not None else
+                           max(A.OWN_MIN, 2.0))                # no fair price: Buy straight's smallest bet, no edge claimed
                     stake = own if own is not None else rec
                     n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
                     note = None
@@ -3473,10 +3524,14 @@ def webapp_main():
                     for k in [k for k, v in IDEA_Q.items() if time.time() - v["at"] > IDEA_Q_SECS * 4]:
                         IDEA_Q.pop(k, None)
                     IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
+                    doubt = any(w["k"] in ("thin", "decided", "disagree") for w in fi["warn"])   # under way: as the panel
+                    clears = fair is not None and edge >= A.SINGLE_MIN_EDGE * 0.6 and not (fi["live"] and doubt)
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
-                                     "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
-                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6, "rec": rec, "own": own is not None,
-                                     "ev": round(n * fair - cost, 2), "note": note, "min": A.OWN_MIN, "max": A.OWN_MAX,
+                                     "pays": float(n), "pct": pct, "edge": round(edge, 4) if edge is not None else None,
+                                     "fair": fair, "clears": bool(clears), "rec": rec, "own": own is not None,
+                                     "ev": round(n * fair - cost, 2) if fair is not None else None, "note": note, "min": A.OWN_MIN,
+                                     "max": A.OWN_MAX, "live": fi["live"], "how": fi["how"], "fair_src": fi["src"],
+                                     "nofair": fi["nofair"], "warn": fi["warn"],
                                      "room": round(max(0.0, budget - spent), 2) if spent is not None else None})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
@@ -3490,14 +3545,25 @@ def webapp_main():
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
                     return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
+                c = (A.CTX.get("combos") or [])[k - 1] if 1 <= k <= len(A.CTX.get("combos") or []) else {}
+                gap = A.idea_combo_live_gap(c.get("legs"))   # #255: a game under way the board only has pre-game for
+                small = None
+                if gap and own is None:                 # no fair price: priced at the smallest usual stake, never
+                    small = round(max(A.OWN_MIN, 2.0), 2)   # sized on a pre-game or stale edge (Buy straight's $2)
                 try:
-                    r = combo_offer(k, own)
+                    r = combo_offer(k, own if small is None else small)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
-                return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                                 "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}})
+                out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}}
+                if gap:                                 # no fair price to check it against: yellow Buy anyway only
+                    out.update(clears=False, pct=None, ev=None, live=True, fair_src="none",
+                               **({"rec": small, "own": False} if small is not None else {}),
+                               nofair=f"the {' and '.join(gap[:2])} game{'s have' if len(gap) > 1 else ' has'} started, "
+                                      "and a combo with a game under way has no live fair price")
+                return jsonable(out)
             if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That market isn't recognized."}
@@ -3515,10 +3581,14 @@ def webapp_main():
             if a == "sellquote":                        # Sell a single (issue #238): what it gets now, from a fresh book
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That bet isn't recognized."}
-                return jsonable(A.single_sell_quote(t, paused=paused_now()))
+                if backup_now():                        # the Pi never trades (Pause no longer stops this tap: #245)
+                    return {"ok": False, "msg": A.NO_SELL_MSG}
+                return jsonable(A.single_sell_quote(t, paused=paused_now()))   # Pause only adds the calm note
             if a == "singlesell":                       # Pete's second tap on the sell sheet: the quote on screen, once
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q") or "")):
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
+                    return {"ok": False, "msg": A.NO_SELL_MSG}
                 with tap_mark():                        # an update never restarts the web app mid-order
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
