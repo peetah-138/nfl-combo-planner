@@ -1,3 +1,4 @@
+# CHECK: group=page secs=200
 """A newer version on the Mac (GitHub #150, display only): the page learns the running version from every Live answer,
 reloads by itself only when idle (with an 'Updated to' note after), shows a tap-to-refresh pill when busy (never
 reloads under a sheet, a pending quote/buy, a finger), has no reload loop, and Settings shows the version. Nothing real."""

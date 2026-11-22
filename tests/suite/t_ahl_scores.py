@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """AHL live scores from the league's own public feed (ESPN has no AHL scoreboard). The network is faked."""
 import os, importlib.util, datetime as dt
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")

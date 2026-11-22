@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Profit leaks from the audit (issue #142): each check fails on the code before the fix.
 #  A  the panel ranks by expected dollars, the chance the day ends ahead kept as a floor (switch: old rule)
 #  B  stale sharp lines: expired on an empty refresh, give way to fresh free lines, never price a game starting soon
@@ -8,6 +9,7 @@
 import os, sys, time, json, types, tempfile, inspect, importlib.util, traceback
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.CUTOFF_FILE = os.path.join(E.HERE, "cut.json")
 E.MAIN_SAVED = os.path.join(E.HERE, "no_shared_settings.json")      # switches come from CFG here

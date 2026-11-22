@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """A newer version on the Mac reaches the open page (GitHub #150): the page carries a version placeholder the web
 app fills in, update.js is in the manifest and loads before boot, the service worker file changes with every release and
 can never serve a cached page (no fetch handler), and the version note is stamped in at serve time."""

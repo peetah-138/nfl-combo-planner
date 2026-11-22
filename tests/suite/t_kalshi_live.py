@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Live scores for tennis, EuroLeague and UFC from Kalshi's public live data (ESPN has none). Display only.
 The network is faked from real response shapes in fixtures/kalshi_live.json (captured with plain unauthenticated GETs)."""
 import os, json, copy, inspect, importlib.util, datetime as dt

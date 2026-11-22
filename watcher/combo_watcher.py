@@ -3207,6 +3207,8 @@ def webapp_main():
                             else float(v) if isinstance(cur, float) else None
                     except (TypeError, ValueError):
                         continue
+                    if k == "auto_cap" and v is not None and A.auto_cap_limit(v) is None:
+                        v = A.AUTO_CAP_UNLIMITED            # any value over the slider's numbers = Unlimited (#217)
                     if v is not None:
                         A.CFG[k] = v
                 for t in ("upsets", "safer", "middle", "moonshot"):

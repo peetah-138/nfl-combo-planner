@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Issue #91: Results "Profit by day" AND "Profit by week" group each bet by when the money actually
 # moved (cash-out / settlement), not the NFL game/slate date. Display-only: no bet, P/L, or buy/sell
 # logic changes — only how a settled bet is DATED in Results.

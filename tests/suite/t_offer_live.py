@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """The display-only live-priced estimate (Refs #80): the Live hero's "worth now if sold" number made to
 follow the live Kalshi leg prices instead of the frozen Monte-Carlo chance. `live_offer_est` is pure
 (no network, no account); nothing here changes what is bought or sold. It also statically asserts that no

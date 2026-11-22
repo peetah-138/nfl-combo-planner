@@ -1,3 +1,4 @@
+# CHECK: group=page secs=19
 import sys, os, time, threading, re, json
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
 sys.argv = ["combo_watcher.py", "--webapp"]
@@ -32,6 +33,7 @@ with sync_playwright() as pw:
     errs=[]; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('settings')"); time.sleep(4)
     pg.evaluate("sport('nfl')"); time.sleep(6)
+    pg.evaluate("sShow('mix',true)"); time.sleep(.7)   # Settings sections start folded (#212): open the Combo mix card
     el = pg.locator(".mixl").first; el.scroll_into_view_if_needed(); time.sleep(.5)
     pg.locator(".scard", has=pg.locator(".mixl")).first.screenshot(path="mix.png") if pg.locator(".scard", has=pg.locator(".mixl")).count() else el.screenshot(path="mix.png")
     b = pg.locator(".mixr").first.locator(".stp button").last; b.click(); time.sleep(2)

@@ -1,9 +1,11 @@
+# CHECK: group=engine
 # The panel buys right after Pete approves it (issue #51), not ~45 minutes before each game. Every safeguard stays:
 # the fresh price recheck (swap or skip), the start rules, Pause, unknown outcome = "check" never retried, no double
 # buy from two passes at once, games under way switched off after approval = skipped. Fake Kalshi throughout.
 import os, sys, time, tempfile, threading, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SIZING_FILE = os.path.join(E.HERE, "s.json"); E.CUTOFF_FILE = os.path.join(E.HERE, "c.json")

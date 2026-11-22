@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Slice 3 of the live game page (issue #72): box score, team stats, injury report, last 5 games and season leaders.
 Display only, football first. The network is faked from fixtures/espn_game_tabs.json (trimmed copies of real public ESPN
 responses: the site summary, each team's schedule, the core feed's season leaders and two athletes). Covers each parser

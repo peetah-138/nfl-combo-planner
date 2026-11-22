@@ -1,7 +1,9 @@
+# CHECK: group=engine
 import os,json,time,tempfile,random
 os.environ["COMBOWATCH_HOME"]=os.path.abspath("wahome")
 import importlib.util
 spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.util.module_from_spec(spec);spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(),"h.db"))
 E.HERE=tempfile.mkdtemp(); E.SIZING_FILE=os.path.join(E.HERE,"s.json"); E.CUTOFF_FILE=os.path.join(E.HERE,"c.json")
 E.fetch_account=lambda **k: ([],300.0,None)
