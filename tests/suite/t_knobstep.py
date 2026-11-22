@@ -49,9 +49,9 @@ old_only = {i: 0.9 for i in range(0, 42, 3)}                              # 14 g
 ev = E.knob_evidence(ds_of(old_only), 300.0, 0)
 ok("the holdout vetoes a step none of the newest 30% would change",
    not ev["ok"] and ev["checks"]["band"] and ev["checks"]["gain"] and ev["checks"]["se"] and not ev["checks"]["holdout"])
-dis = dict(old_only); dis.update({50: -1.5, 55: -1.4})
+dis = dict(old_only); dis.update({50: -1.5, 55: -1.4, 58: -1.0})
 ev = E.knob_evidence(ds_of(dis), 300.0, 0)
-ok("...and one the newest 30% disagree with", not ev["ok"] and ev["hold_n"] == 2 and ev["hold"] < 0 and not ev["checks"]["holdout"])
+ok("...and one the newest 30% disagree with", not ev["ok"] and ev["hold_n"] == 3 and ev["hold"] < 0 and not ev["checks"]["holdout"])
 say = E.knob_step_say("smart_floor", 1.5, 1.6, E.knob_evidence(ds_of(dis), 300.0, 0), 60)
 ok("a vetoed step says so in plain words", "newest 30% disagree" in say and "1.5× what you paid → 1.6× what you paid" in say)
 ok("nothing at all: below the bar, no error", not E.knob_evidence([], 0, 0)["ok"])
