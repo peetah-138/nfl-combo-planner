@@ -2215,6 +2215,46 @@ def realized_buckets(a, st=None):
 
 ACCT_CACHE = {"at": 0, "value": None}
 
+# Display only (issue #242): a stamp that money moved (a sale, hedge, fill or settlement), so the web app drops its
+# Live snapshot and Results caches and open pages refetch within seconds instead of waiting out their caches. Only
+# its time matters (the file's mtime). Nothing that buys, sells or sizes reads it.
+MONEY_FLAG = os.path.join(HERE, "combo_money.json")     # git-ignored (combo_*.json)
+MONEY_FP = {"v": None}                 # this copy's last account fingerprint (None = not read yet: no stamp at start)
+
+
+def money_mark():
+    """Note that money moved (touch the stamp file). Never raises, never waits."""
+    try:
+        with open(MONEY_FLAG, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"at": round(time.time(), 3)}))
+    except Exception:
+        pass
+
+
+def money_seen():
+    """When money last moved (the stamp's time), or 0.0 if never. Never raises."""
+    try:
+        return os.path.getmtime(MONEY_FLAG)
+    except Exception:
+        return 0.0
+
+
+def money_note(bets, positions, balance):
+    """After a direct account read: stamp when anything a screen shows changed (a combo's status or money, any
+    position, the balance). The first read of a process only remembers. Never raises."""
+    try:
+        fp = hash((tuple(sorted((str(a.get("ticker")), str(a.get("status")), a.get("back"), a.get("cost"), a.get("pays"))
+                                for a in bets or [])),
+                   tuple(sorted((str(p.get("ticker") or p.get("market_ticker")),
+                                 str(p.get("position_fp") if p.get("position_fp") is not None else p.get("position")))
+                                for p in positions or [] if isinstance(p, dict))),
+                   str(balance)))
+        if MONEY_FP["v"] is not None and fp != MONEY_FP["v"]:
+            money_mark()
+        MONEY_FP["v"] = fp
+    except Exception:
+        pass
+
 
 def in_week(a, week):
     """A combo belongs to every NFL week it has a game in (one can mix this week and next)."""
@@ -2411,6 +2451,7 @@ def _fetch_account():
     except Exception as err:
         console_note(f"ledger: {type(err).__name__}: {err}")
     balance = dollars(bal, "balance")
+    money_note(bets, positions, balance)         # display only (#242): open screens refresh when money moved
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
 
 
@@ -4620,6 +4661,8 @@ def log_decision(rec):
                 _trim_sell_log()
     except OSError:
         pass
+    if rec.get("result") in SALE_RESULTS:
+        money_mark()                             # display only (#242): open screens refresh now
     try:
         if rec.get("result") in SALE_RESULTS:
             sale_store(rec)
