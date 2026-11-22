@@ -167,6 +167,7 @@ with sync_playwright() as pw:
       if(h.matches('select,input[type=range]')){native.push(h.tagName);return;}
       if(h.matches('a[href]')){links++;return;}   // links carry no switch on purpose (navigation, long-press menu)
       if(h.closest(HSWX)){links++;return;}   // #218: controls inside sideways-scrolling strips carry none on purpose (the switch grabs a sideways drag)
+      if(h.closest('[data-hsw="0"]')){bigs++;return;}   // #281: full-width Settings headers and the Mac line: scroll surface first, no switch on purpose
       if(h.matches('input[type=checkbox]')){if(!h.hasAttribute('switch'))miss.push('checkbox without switch: '+h.className);return;}
       if(h.matches('label')){if(!h.querySelector('input[switch]')&&!h.querySelector('select,input[type=range],input[type=text],textarea'))miss.push('label: '+(h.innerText||'').slice(0,20));return;}
       let x=h,big=false;while(x&&!x.querySelector(':scope>.hsw')){if(x.matches(HSWQ)&&hswBig(x))big=true;x=x.parentElement&&x.parentElement.closest(HSWQ);}
