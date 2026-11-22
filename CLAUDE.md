@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.133). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.134). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -104,8 +104,10 @@ Real money is involved. Pete uses it daily.
    "loss" is a sale that got less than holding was **expected** to pay at the time of the sale (not how the game
    ended), and when the brake trips a league goes back to its start numbers but **never looser than what it had
    learned** (per number, the stricter of the two). Nothing raises `hedge_cap` or `auto_cap` yet (a later #228 PR wires
-   their judge); a value Pete sets himself is never lowered or clamped. The loss guards, hedge knobs and Smart Buy
-   simulator constants stay shadow/fixed until #228 PR5-PR7.
+   their judge); a value Pete sets himself is never lowered or clamped. **Since 2026.11.21.134** (#228 PR5-PR7) the
+   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok`,
+   the hedge lock-in numbers, the `hedge_cap` raise (ceiling $150, `HEDGE_RAISE_LIVE = False`) and Smart Buy's
+   `sb_ev_min` are still watch-only (Selling).
    **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
    the bar (50+ settled bets, ahead in dollars, ≥ 55% of days up, CLV ≥ 0, the shadow beating plain), it may
    graduate by itself: stage 2 = its own suggestions (recommend-only); stage 3 = bigger stakes and extra auto-buys,
@@ -189,7 +191,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.133`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.134`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -567,7 +569,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
 - Rule: sell when the offer beats the risk-adjusted value of holding,
-  `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; self-tuning may lower it to 0.35 under #228, the profit floor still applies); λ from the sport's swing and time left (×1.3 at a slate
+  `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; never lowered by self-tuning since #306); λ from the sport's swing and time left (×1.3 at a slate
   checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
   migrated off). There is **no 80% floor** (removed at Pete's request).
 - **Self-tuning, per league** (weekly, `smart_tune`): replays settled bets on their recorded game prices with
@@ -576,13 +578,15 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   selling a sliding bet beats holding). On a tie, the smallest change wins. Results › Selling shows each league's
   settings and why they last changed. With `knobs_live` on (#228 PR3, below), `smart_tune` no longer moves the floor,
   risk weight or loss cut (`knob_tune` does, on the stricter evidence bar), and borrowed values are only stricter (#259).
-- Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. `stop_loss` stays as a
-  labelled **manual override** ("Manual override: sell at a loss when a game turns", off by default, separate from the
-  learned per-league loss cut). Pete to confirm whether to keep or remove it.
-- **Stop-loss guards (issue #27):** with `stop_loss` on, auto cash-out may sell a combo below cost only when
+- Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. The old
+  `stop_loss` on/off override is now **Settings › Cash out & hedging › Selling at a loss**, three choices (Pete, #228):
+  **Never sell at a loss**, **Let it tune itself** (default) and **Allow (guarded)** (`stop_loss_mode`; details in
+  "Self-tuning PR5-PR7" below).
+- **Stop-loss guards (issue #27):** with Selling at a loss on Allow (or tuned on for the league), auto cash-out may sell a combo below cost only when
   `stop_loss_check` passes: a pick on a **fresh** score feed (`leg_score`, never Kalshi's display-only data; scores
   older than 150 s or missing = never, and any other pick whose game has started must have a fresh score too), game
-  in play and **not at halftime/a break/end of a period** (`at_break`), **game played ≥ the league's `prog`** (start
+  in play and **not at halftime/a break/end of a period** (`at_break`; `break_ok` may lift this one day, watch-only
+  today), **game played ≥ the league's `prog`** (start
   50%, bounds 35–90%), pick under 50% and **≥ `drop` points below its pregame chance** (start 20 points, bounds
   10–45; `pre_of` on each held combo), all held on **3+ checks in a row spanning ≥ 3 min** (none > 5 min apart).
   `prog`/`drop` are learned weekly in `smart_tune` (`_sl_tune`/`_sl_replay` on recorded ticks + score lines, 50+
@@ -596,7 +600,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   now buys only when `hedge_guard` passes: the last game **in play on a fresh score** (`fresh_live_score`, shared with
   the loss guards; missing/stale = no hedge), **not at a break** (`at_break`), the hedge **locks in at least the
   combo's cost** (`locked = contracts − hedge cost ≥ h["cost"]`), all held on **3+ checks over ≥ 3 min** (`_sl_confirm`
-  under `hedge:<ticker>`). Then `hedge_fresh` re-reads the hedge side's order book (`book_depth(max_age=0)`; no ask or
+  under `hedge:<ticker>`, with the hedge's own counts `hedge_confirm_params` since #228 PR6). Then `hedge_fresh` re-reads the hedge side's order book (`book_depth(max_age=0)`; no ask or
   a gap > 6¢ = no hedge) and redoes the sums on the fresh ask (still beats the cash-out, within the cap, ≥ cost); the
   IOC order goes at that ask. While confirming, the sale waits; any other failed guard = it cashes out as if
   auto-hedge were off. A hedge order with an unknown outcome (timeout, lost Mac, 5xx) is marked `check` in
@@ -898,8 +902,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   - **What is live** (`KNOB_LIVE`): the profit floor, risk weight and loss cut (`smart_floor`, `smart_lam`,
     `smart_loss`), the least chance to take a profit (`exit_q_min`), the two estimate allowances (`exit_est_smart`,
     `exit_est_tp`), take profit's minimum (`tp_min_gain`), the lock-in numbers (`trail_arm`, `trail_arm_cost`,
-    `trail_drop`, `trail_floor`) and the loss cut's accept (`cut_accept`). Everything else stays shadow: the loss guards
-    (`sl_prog`/`sl_drop`, still smart_tune's), the hedge knobs, Smart Buy's dial and constants, the shared and tied
+    `trail_drop`, `trail_floor`) and the loss cut's accept (`cut_accept`). Everything else stays shadow (as of PR3; PR5
+    made the loss guards `sl_*` and the hedge confirmation counts live, below): the hedge lock-in knobs, Smart Buy's dial and constants, the shared and tied
     knobs. Never tuned: Pause, can_trade / the Pi, rule 8, cap fail-closed, fresh score/price age, in-play, a real fresh
     quote before a sale, the stop-loss/hedge/break guards, secrets.
   - **exit_policy takes its numbers as parameters** (`prm` keys `q_min`, `est_smart`, `est_tp`, `tp_min`, `trail_arm`,
@@ -1050,6 +1054,83 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   It also still drives the original combo cash-out plan (sell when the offer beats waiting another game).
 - Bets Pete places on Kalshi himself are tagged "You, on Kalshi" (the app records every buy it makes; everything
   held when tracking began counts as the app's). The panel avoids games he already bet himself.
+
+- **Self-tuning PR5-PR7: the stop-loss as a 3-way choice, the loss guards and hedge numbers live, break_ok and Smart
+  Buy watch-only (issues #228, #306; shipped in 2026.11.21.134).**
+  - **#306 (Pete: tighten).** A league's own record may no longer loosen four exit numbers below their start:
+    `cut_accept` (min 0.02), `exit_q_min` (min 0.5), `exit_est_smart` (min 0.95), `exit_est_tp` (min 0.9) now have `min`
+    = `start` in the registry, so `knob_candidates` only steps them stricter and `_knob_valid` ignores a value recorded
+    below the start before this change (the start is used).
+  - **Selling at a loss: three choices (PR5).** Settings › Cash out & hedging › **Selling at a loss** replaces the old
+    on/off "Manual override" switch: **Never sell at a loss** (no automatic sale below what you paid: neither the stop-
+    loss nor the learned loss cut, combos and singles), **Let it tune itself** (the default) and **Allow (guarded)**
+    (the old switch on; every guard still holds). Setting `stop_loss_mode` (shared, synced to the watcher, `SL_MODES`);
+    `sl_mode()` reads it, and an older saved file with only `stop_loss` reads as Allow when it was on, else Let it tune
+    itself (nothing is rewritten; anything unreadable = Let it tune itself). The web app writes both, keeping
+    `stop_loss` = (mode is Allow) for older copies (the Pythonista app, a watcher not yet updated). Let it tune itself
+    starts OFF in every league: `sl_allowed(tickers)` is true only with self-tuning on and the league's **own** record
+    having turned the new knob `sl_auto` on (borrow `own`: never borrowed; off while its live brake holds). `sl_auto` is
+    judged by the loss guards' replay (`_sl_replay`: on = what selling at a loss would have got, on a sale price cut to
+    97% for this loosening step (#285); off = held) on Pete's bar. Turning `sl_auto` on needs 3 standard errors
+    (`KNOB_EVIDENCE_STRICT`), not 2. With Never, a single never sells below what it cost either. A tuned stop-loss sale
+    says "Stop-loss (tuned for this league)" and logs `sl_mode`. Pete's Mac today has `stop_loss` on, so it reads as
+    Allow (guarded): unchanged.
+  - **The loss guards and confirmation counts go live (PR5).** `sl_prog`, `sl_drop`, `sl_auto`, `sl_checks`, `sl_span`,
+    `sl_gap` are in `KNOB_LIVE`: with "Let smart sell tune its own numbers" on, `stoploss_params` and the new
+    `sl_confirm_params` read them through `knob_live_value` (league's own, else sport's, else everyone's, borrowed only
+    stricter, the start while braked; smart_tune's own `sl_*` record counts as the league's own, as before), and
+    smart_tune's `_sl_tune` only counts while the switch is on (one mover, #267). The confirmation counts are **split
+    from the hedge's** (`hedge_checks`, `hedge_span`, `hedge_cgap`, constants `HEDGE_CHECKS/SPAN/CGAP`,
+    `hedge_confirm_params`); `_sl_confirm`, `_sl_held`, `_sl_replay`, `_cut_guard_ts` take `cf = (checks, span, gap)`.
+    #285 item 2: the stepper judges the loss guards (and the learned cut's guards) from the values `stoploss_params`
+    really uses, stricter borrowed ones included (`_knob_sl`), not the group's own only.
+  - **break_ok, watch-only (PR5).** The fixed "never at a break" rule becomes the conditional `break_ok(ticker, side,
+    sc, now, what)` in `stop_loss_leg` and `hedge_guard`: act at a break only on a fresh two-sided book (gap within
+    `LIVE_SPREAD`) whose pick's mid moved `brk_move` (start 8 points, 4-20) since the break began, held on `BRK_READS` 2
+    reads `BRK_SPACE` 60 s apart (`brk_fires`), half the move with fresh injury news (`_brk_news`, from a cached report
+    only), and a fresh order book read (max_age=0) still showing the move. It **never acts in this build**: `BRK_LIVE =
+    False`, and `brk_on`/`brk_move` are not live knobs (start off per league, borrow `own`). Today it only records break
+    episodes: `break_watch` (from `auto_sell_now` via `break_watch_held`, and from the guards) notes the pick's bid/mid
+    every 20 s+ from prices the engine already read (`PRICE_SEEN`, no new Kalshi or ESPN request) while the game is at a
+    break, the price once play resumes, and when the rule would have acted, into table `break_ep`; the leg is also
+    price-watched so its path with score lines is recorded. The weekly judge (`_knob_res_brk`: selling at the break vs
+    just after it, per contract) needs `BRK_MIN_N` 40 own episodes and the usual bar; its steps are "would step" only.
+  - **Hedge knobs (PR6), watch-only for now.** The hedge's confirmation counts are split from the loss sale's and are
+    live knobs (no judge yet, so they stay at their start; their minimums equal the start: 3 checks over 3 minutes,
+    never looser). `hedge_lock_share` (the 95%) and `hedge_lock_cost` (never under 1x: a hedge never locks in a loss)
+    now read through `hedge_beats(hg, whole, tickers)` / `hedge_lock_cost(tickers)`, but are **not live knobs**: their
+    judge (new evidence, `hedge_seen_note`: each time auto cash-out weighs a hedge against a due sale, one row per combo
+    per 10 min, table `hedge_seen` with the whole offer, what the hedge locks in and costs, the combo's cost, your cap,
+    Prefer hedging, and whether the game was in play on a fresh score and not at a break; `_knob_res_hedge` counts a
+    hedge at what it locked in on a 2% worse fill, never where the game wasn't in play/fresh) only sees a hedge's least,
+    never how the game ended, so the code review found it would always push the share up. They step in shadow
+    (`HEDGE_MIN_N` 30 decisions) until a judge on real outcomes exists. **The hedge cap raise** (Pete's opt-in, ceiling
+    $150): `knob_cap_step` ($10 a run, 3 standard errors, never above $150, never lowering Pete's value) runs as a test
+    only (`HEDGE_RAISE_LIVE = False`); `hedge_cap_now()` (used by `auto_sell_now` and `hedge_fresh`) already honours a
+    raise, the ceiling and the brake (your value while any league's brake holds; a live brake clears a raise), so
+    turning it on later is one switch.
+  - **Smart Buy (PR7), watch-only.** `sb_ev_min` (smallest expected profit to recommend, shared with Build's spreads &
+    totals list) is judged on Smart Buy's checked bets with results (`sbev`: a bet the bar drops loses its result); a
+    shared knob may now be stepped in shadow when it has a judge, never live. Nothing Smart Buy buys changes. Its other
+    constants still wait for a judge (re-simulating each bet).
+  - **Also:** `tests/run_checks.sh` now fails an engine test that stops with an error after printing some PASS lines (it
+    used to count as passed); that showed `t_idea_inplay.py` reading the watcher from the wrong folder (5 checks never
+    ran), fixed. Results › What's working › Selling's footer counts the live numbers.
+  - **Never touched (invariants):** Pause, `can_trade`/the Pi, rule 8 (`hedge_unsure`, `rfq_unsure`), caps failing
+    closed, fresh score/price ages, in play, a real fresh quote or book before a sale or hedge, secrets. Switch off =
+    the old code's numbers exactly. Tests: `t_knobpr567.py` (400 random states off and on-with-nothing-learned vs the
+    old functions; #306; stricter-only; sl_auto never borrowed or braked; break_ok never live and its rule; episodes;
+    hedge cap ceiling and brake; the new judges' signs), `t_stoploss.py` (the three choices end to end in
+    `auto_sell_now`), `t_settings.py` (migration), `t_knobs.py`, `t_knobstep.py`, `t_knoblive.py` updated,
+    `test_slmode_ui.py` (the Settings wording, taps saving, no sideways scroll, dark and light).
+  - Settings sync: `sl_sync` applies Selling at a loss from the phone and the web app; a message without a valid
+    `stop_loss_mode` may only make it stricter (an old "off" turns Allow into Let it tune itself, an old "on" is
+    ignored). Hard rule 2's hedge ceiling of $150 is not live yet (`HEDGE_RAISE_LIVE = False`).
+  - **Release 134 review fixes (Never sell at a loss made honest):** under Never, a combo cash-out whose buyer backs out
+    never takes a fresh offer below what was paid (`accept_cash(t, floor=cost x share)` → `_accept_with_retries`; the
+    other choices and Pete's own taps keep the 3% retry rule); a single with an unknown cost is skipped, and its
+    proceeds are counted after the order's rounded fee (`single_fee(bid, n)`). `_brk_news` reads the injury cache only
+    while it is under 25 minutes old, so it can never trigger an ESPN fetch inside auto cash-out. Test: `t_neverloss.py`.
 
 ### Live page
 - **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,

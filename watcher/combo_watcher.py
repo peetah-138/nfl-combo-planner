@@ -21,13 +21,13 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.133"
+WATCHER_VERSION = "2026.11.21.134"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
-          "line_model", "panel_rank_dollars", "idea_bar_strict")
+          "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
 
 
 def log(*a):
@@ -167,8 +167,12 @@ def fetch_settings(conf, E):
         if data.get("at", 0) <= conf.get("settings_at", 0):
             continue
         for k in SYNCED:
-            if k in data.get("cfg", {}):
+            if k in data.get("cfg", {}) and k not in ("stop_loss", "stop_loss_mode"):
                 E.CFG[k] = data["cfg"][k]
+        if hasattr(E, "sl_sync"):                      # 'Selling at a loss' (#228): a stale old switch never loosens it
+            E.sl_sync(E.CFG, data.get("cfg", {}))
+        elif "stop_loss" in data.get("cfg", {}):
+            E.CFG["stop_loss"] = data["cfg"]["stop_loss"]
         if isinstance(data.get("approve"), dict) and data["approve"].get("version"):
             if data["approve"].get("version") != getattr(E, "VERSION", "") and \
                     data["approve"] != conf.get("approve"):
@@ -3219,7 +3223,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3265,6 +3269,13 @@ def webapp_main():
                     if k in ("killer_mode", "maker_mode"):
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
+                        continue
+                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                        A.sl_sync(A.CFG, {k: v})
+                        continue
+                    if k == "stop_loss":                # an older page's on/off may only make it stricter
+                        if "stop_loss_mode" not in vals:
+                            A.sl_sync(A.CFG, {k: bool(v)})
                         continue
                     try:
                         v = bool(v) if isinstance(cur, bool) else int(round(float(v))) if isinstance(cur, int) \
