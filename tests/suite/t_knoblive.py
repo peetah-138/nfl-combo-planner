@@ -252,12 +252,17 @@ set_knobs(S0)
 ok("a test brake (made while self-tuning was off) never changes live selling", E.knob_exit_prm([NBA]) != {})
 S0["brake"]["nba"]["mode"] = "live"
 set_knobs(S0)
-ok("a live brake: the league's own numbers are set aside, back at the starts", E.knob_exit_prm([NBA]) == {}
-   and E.smart_params([NBA]) == dict(E.SMART_DEFAULT, key=None))
-S0["groups"]["all"] = {"lv": {"trail_floor": 1.3, "exit_q_min": 0.4}, "lat": {}}
+ok("a live brake (#284): back at the starts, but never looser than it was: NBA's stricter lock-in fall (35%) and "
+   "least chance (60%) stay, its looser floor (1.3x) goes back to 1.5x",
+   E.knob_exit_prm([NBA]) == {"trail_drop": 0.35, "q_min": 0.6} and E.smart_params([NBA]) == dict(E.SMART_DEFAULT, key=None))
+S0["groups"]["all"] = {"lv": {"trail_floor": 1.3, "exit_q_min": 0.4, "trail_drop": 0.3}, "lat": {}}
 set_knobs(S0)
-ok("...but a brake never makes selling looser: a stricter borrowed number still applies (a looser one doesn't)",
-   E.knob_exit_prm([NBA]) == {"trail_floor": 1.3})
+ok("...and a stricter borrowed number still applies (a looser one doesn't; its own stricter one beats a milder borrowed one)",
+   E.knob_exit_prm([NBA]) == {"trail_drop": 0.35, "q_min": 0.6, "trail_floor": 1.3})
+ok("knob_stricter_of follows each knob's direction (the loss cut: off is strictest)",
+   E.knob_stricter_of("smart_floor", 1.5, 1.3) == 1.5 and E.knob_stricter_of("smart_lam", 1.0, 0.85) == 0.85
+   and E.knob_stricter_of("smart_loss", None, 0.2) is None and E.knob_stricter_of("smart_loss", 0.15, 0.2) == 0.15
+   and E.knob_stricter_of("auto_slip", 0.97, 0.99) == 0.99)
 del S0["groups"]["all"]
 S0["brake"]["nba"]["until"] = now - 1
 set_knobs(S0)
@@ -374,42 +379,58 @@ ok("switch off: the same evidence only proposes ('would step'), nothing live", n
    and any(r["status"] == "would step" for r in S["groups"]["nba"]["last"]) and E.knob_shadow_view(now)["mode"] == "shadow")
 switch(True)
 
-# ---- 7. the brake: a loss = holding would have paid more (#266); back to the start for 14 days; one push
-os.remove(E.KNOBS_FILE)
-E.knob_tune(now, force=True)                              # NBA's floor 1.8 again (live)
+# ---- 7. the brake (Pete, #284): a loss = holding was EXPECTED to pay more at the sale than the sale got (the logged
+# chance x payout, on smart sell's own footing); back to the start for 14 days but never looser than it was; one push
 E._ledger_table()
 E.store_x("delete from sell_log")
 E._combo_league_of = lambda t: "nba" if "NBA" in t else "nhl"
+DISC = E.kalshi_discount(True)
 
 
-def sale(ts, t, offer, cost, held, by="mac"):
-    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by, outcome, held) "
-              "values(?,?,?,?,?,?,?,?,?,?,?)", (ts, t, "sold", "combo", offer, cost, 20.0, 1.0, by,
-                                              None if held is None else ("won" if held else "lost"), held))
+def sale(ts, t, offer, cost, chance=0.5, held=None, by="mac", kind="combo", pays=20.0, live=1):
+    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, by, outcome, held, chance, live) "
+              "values(?,?,?,?,?,?,?,?,?,?,?,?,?)", (ts, t, "sold", kind, offer, cost, pays, 1.0, by,
+                                                  None if held is None else ("won" if held else "lost"), held, chance, live))
 
 
-for i in range(4):                                        # four loss cuts that saved money: sold under cost, holding paid 0
-    sale(now - 5000 + i, "KXMVENBA-CUT%d" % i, 1.0, 5.0, 0.0)
-ok("sales under cost that beat holding (loss cuts doing their job) never brake", E.knob_brake_pass(now, force=True) == []
-   and "nba" not in E.knob_state()["brake"])
-E.store_x("delete from sell_log where ticker like '%CUT%'")
-for i in range(4):                                        # four profit sales that left money on the table
-    sale(now - 4000 + i, "KXMVENBA-EARLY%d" % i, 8.0, 5.0, 20.0 if i < 3 else None)
-ok("a sale still waiting for its result counts neither way (3 losses + 1 open: no brake)",
-   E.knob_brake_pass(now, force=True) == [])
-sale(now - 3000, "KXMVENBA-EARLY9", 8.0, 5.0, 20.0)
+def nba_learned():
+    """NBA's own learned numbers before the brake: a stricter floor (1.8x), a looser lock-in fall (10%, start 20%), a
+    stricter least chance (60%), all self-tuning's."""
+    set_knobs({"groups": {"nba": {"lv": {"smart_floor": 1.8, "trail_drop": 0.1, "exit_q_min": 0.6},
+                                  "lat": {"smart_floor": now - 9, "trail_drop": now - 9, "exit_q_min": now - 9},
+                                  "lstep_at": now - 9}}, "brake": {}, "settings": {}})
+
+
+nba_learned()
+for i in range(4):                                        # loss cuts doing their job: sold under cost, little expected
+    sale(now - 5000 + i, "KXMVENBA-CUT%d" % i, 1.0, 5.0, chance=0.02, held=20.0)
+ok("sales under cost that beat what holding was expected to pay never brake, even when the game came back "
+   "(the realized result doesn't count)", E.knob_brake_pass(now, force=True) == [] and "nba" not in E.knob_state()["brake"])
+E.store_x("delete from sell_log")
+for i in range(4):
+    sale(now - 4500 + i, "KXMVENBA-NOCH%d" % i, 1.0, 5.0, chance=None, held=20.0)
+ok("sales that logged no chance don't count", E.knob_brake_pass(now, force=True) == [])
+for i in range(3):                                        # profit sales well under the expectation; the games then lost
+    sale(now - 4000 + i, "KXMVENBA-EARLY%d" % i, 8.0, 5.0, chance=0.9, held=0.0)
+ok("3 such sales: no brake yet", E.knob_brake_pass(now, force=True) == [])
+sale(now - 3900, "KXMVENBA-PI", 8.0, 5.0, chance=0.9, by="pi")
+ok("a Pi row never counts", E.knob_brake_pass(now, force=True) == [])
+sale(now - 3000, "KXMVENBA-EARLY9", 8.0, 5.0, chance=0.9)        # no result yet: counts at once (it is on expectation)
 msgs = E.knob_brake_pass(now, force=True)
 S = E.knob_state()
 b = S["brake"].get("nba") or {}
-ok("4 sales in a row that got less than holding (even at a profit): brake, one push, plain words, no urgent words",
-   len(msgs) == 1 and "NBA" in msgs[0] and "less than holding" in msgs[0] and "starting numbers" in msgs[0]
+exp4 = round(4 * (DISC * 0.9 * 20 - 8.0), 2)
+ok(f"4 sales in a row that got less than holding was expected to pay (${exp4:.2f} less in all), even though holding "
+   "would really have paid nothing: brake, one push, plain words, no urgent words",
+   len(msgs) == 1 and "NBA" in msgs[0] and "less than holding was expected to pay" in msgs[0] and f"${exp4:.2f}" in msgs[0]
+   and "starting numbers" in msgs[0] and "stricter stays" in msgs[0]
    and not any(w in msgs[0].lower() for w in ("auto", "hedge", "cash out", "paused", "can't", "at risk")))
-ok("live: NBA is back at its starting numbers for 14 days, its own learned floor put back",
-   abs(b.get("until", 0) - (now + 14 * 86400)) < 2 and b.get("mode") == "live" and b.get("reset", {}).get("smart_floor") == 1.8
-   and E.smart_params(["KXNBAGAME-X1-LAL"]) == dict(E.SMART_DEFAULT, key=None)
-   and set(E.knob_exit_prm(["KXNBAGAME-X1-LAL"])) <= set((E.knob_state()["groups"].get("all") or {}).get("lv") and
-                                                       ["trail_drop", "trail_floor", "q_min", "tp_min", "trail_arm",
-                                                        "trail_arm_cost", "cut_accept", "est_smart", "est_tp"] or []))
+ok("live (#284): NBA back at its starts for 14 days but never looser: the looser lock-in fall goes back to 20%, the "
+   "stricter floor (1.8x) and least chance (60%) stay",
+   abs(b.get("until", 0) - (now + 14 * 86400)) < 2 and b.get("mode") == "live" and b.get("reset") == {"trail_drop": 0.1}
+   and E.smart_params(["KXNBAGAME-X1-LAL"])["floor"] == 1.8
+   and E.knob_exit_prm(["KXNBAGAME-X1-LAL"]) == {"q_min": 0.6}
+   and S["groups"]["nba"]["lv"] == {"smart_floor": 1.8, "trail_drop": 0.2, "exit_q_min": 0.6})
 ok("the brake is logged and shown", any(r["status"] == "braked" for r in E.store_rows("select status from knob_shadow"))
    and [x for x in E.knob_shadow_view(now)["leagues"] if x["key"] == "nba"][0]["brake"])
 ok("while braked: no second push, the stepper skips the league", E.knob_brake_pass(now + 60, force=True) == []
@@ -417,11 +438,39 @@ ok("while braked: no second push, the stepper skips the league", E.knob_brake_pa
 S = E.knob_state()
 S["brake"]["nba"]["until"] = now - 1
 set_knobs(S)
-ok("after 14 days the league stays on its starting numbers (its own record was put back), old sales never re-brake",
-   E.smart_params(["KXNBAGAME-X1-LAL"])["floor"] == 1.5 and E.knob_brake_pass(now + 120, force=True) == [])
-ok("the month rule on the new measure: 5% of the stake worse than holding",
+ok("after 14 days the league keeps what the brake left (floor 1.8x, lock-in fall 20%), old sales never re-brake",
+   E.smart_params(["KXNBAGAME-X1-LAL"])["floor"] == 1.8 and E.knob_exit_prm(["KXNBAGAME-X1-LAL"]) == {"q_min": 0.6}
+   and E.knob_brake_pass(now + 120, force=True) == [])
+E.store_x("delete from sell_log")
+set_knobs({"groups": {"nba": {"lv": {"smart_floor": 1.8}, "lat": {"smart_floor": now - 9}, "lstep_at": now - 9}},
+           "brake": {}, "settings": {}})
+for i in range(4):
+    sale(now - 2000 + i, "KXMVENBA-S%d" % i, 8.0, 5.0, chance=0.9)
+m_ = E.knob_brake_pass(now, force=True)
+S = E.knob_state()
+ok("a brake where every learned number is already stricter than its start changes nothing: recorded, no push, the "
+   "evidence window not restarted", m_ == [] and S["brake"]["nba"]["reset"] == {} and S["groups"]["nba"]["lstep_at"] == now - 9
+   and E.smart_params(["KXNBAGAME-X1-LAL"])["floor"] == 1.8)
+ok("the month rule on the new measure: 5% of the stake short of what holding was expected to pay",
    E.knob_brake_check([(1, 1.0, 5), (2, -3.0, 5), (3, 0.5, 5), (4, -0.5, 5)]) is not None
    and E.knob_brake_check([(1, 1.0, 5), (2, -1.0, 5), (3, 0.5, 5), (4, -0.5, 5)]) is None)
+f_ = E.single_fee
+r_ = {"ticker": "KXNBAGAME-26NOV21BOSNYK-BOS", "kind": "win", "offer": 7.5, "pays": 10, "frac": 1.0, "chance": 0.8}
+g_, x_ = E.knob_sale_expect(r_)
+ok("a single: sold at the bid after its fee against the chance after the fee and 1 cent "
+   "(a bid 5 cents under the chance is a loss; at the chance less a cent it isn't)",
+   abs(g_ - (7.5 - f_(0.75) * 10)) < 1e-9 and abs(x_ - 10 * (0.8 - f_(0.8) - 0.01)) < 1e-9 and g_ < x_
+   and (lambda a: a[0] >= a[1] - E.KNOB_EPS)(E.knob_sale_expect(dict(r_, offer=7.9))))
+c_r = {"ticker": "KXMVENBA-Z", "kind": "combo", "offer": 6.0, "pays": 20, "frac": 0.5, "chance": 0.7, "live": 0}
+ok("a combo: its offer against Kalshi's usual offer at that chance for the share sold (between games here)",
+   abs(E.knob_sale_expect(c_r)[1] - E.kalshi_discount(False) * 0.7 * 10) < 1e-9
+   and abs(E.knob_sale_expect(dict(c_r, live=None))[1] - DISC * 0.7 * 10) < 1e-9
+   and E.knob_sale_expect(dict(c_r, chance=None)) is None)
+E.store_x("delete from sell_log")
+E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac, chance, live) values(?,?,?,?,?,?,?,?,?,?)",
+          (now - 50, "KXNHLGAME-26NOV21PHIBOS-PHI", "sold", "win", 6.0, 5.0, 10, 1.0, 0.6, 1))
+by_ = E._knob_brake_sales({"brake": {}}, now)
+ok("each sale is counted as soon as it is made (no waiting for the game)", len(by_.get("nhl") or []) == 1)
 
 # ---- 8. what never moves
 ok("only tunable exit knobs are live; no invariant, evidence knob, setting or guard",
