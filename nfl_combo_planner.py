@@ -2232,9 +2232,10 @@ def money_mark():
 
 
 def money_seen():
-    """When money last moved (the stamp's time), or 0.0 if never. Never raises."""
+    """When money last moved (the stamp's time), or 0.0 if never. Never raises. Never in the future (a clock
+    stepped back must not make every read look stale)."""
     try:
-        return os.path.getmtime(MONEY_FLAG)
+        return min(os.path.getmtime(MONEY_FLAG), time.time())
     except Exception:
         return 0.0
 
