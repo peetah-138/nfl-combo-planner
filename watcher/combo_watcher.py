@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.131"
+WATCHER_VERSION = "2026.11.21.132"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -2557,6 +2557,28 @@ def webapp_main():
         finally:
             LIVE["busy"] = False
 
+    MONEY = {"seen": 0.0}
+
+    def money_check():
+        """Display only (#242): when the watcher stamped that money moved (a sale, hedge, fill or settlement), drop this
+        app's account, singles, scoreboard and profit-line caches so the next build reads them fresh. Returns the
+        stamp's time. One file stat; never raises."""
+        m = getattr(A, "money_seen", float)()
+        if m > MONEY["seen"]:
+            MONEY["seen"] = m
+            try:
+                A.ACCT_CACHE["at"] = 0
+                A.SINGLES["at"] = 0
+                A.BOARD["at"] = 0
+                A.PNL.clear()
+            except Exception:
+                pass
+        return m
+
+    def live_moved():
+        """Money moved after the Live snapshot on hand began building."""
+        return money_check() > (LIVE.get("from") or 0)
+
     def api_live(fresh=False, warm=False):
         """The Live numbers. A snapshot younger than the limit is served as is; an older one is rebuilt first and
         the fresh one is served (waiting a few seconds at most), so the page isn't one refresh behind. If the
@@ -2564,13 +2586,15 @@ def webapp_main():
         if not fresh and not warm:
             LIVE["asked"] = time.time()
         limit = live_limit() - (2 if warm else 0)
-        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < limit:
+        moved = live_moved()
+        if not fresh and LIVE["data"] and time.time() - LIVE["at"] < limit and not moved:
             return live_extras(LIVE["data"])
         patient = not fresh and LIVE["data"] is not None and time.time() - LIVE["at"] < 600
         if not alock.acquire(timeout=6 if patient else -1):
             return live_extras(LIVE["data"])                    # busy elsewhere (e.g. pricing a combo): last good copy
         try:
-            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > limit:
+            if fresh or not LIVE["data"] or time.time() - LIVE["at"] > limit or live_moved():
+                LIVE["from"] = time.time()               # a stamp after this point means this build may miss it
                 try:
                     if not A.MINE.get("all_games"):
                         games, days, sunday = A.week_games(A.fetch_markets())
@@ -2855,6 +2879,7 @@ def webapp_main():
                                            if k in A.SPORTS]})
 
     def api_results():
+        money_check()                                   # money moved (#242): the account and scoreboard read fresh
         with alock:
             bets, balance, note = A.fetch_account(max_age=30, every_league=True)
             bets = bets or []
@@ -3313,7 +3338,9 @@ def webapp_main():
         ids = [i for i in (d.get("ids") or []) if ok_id(i)][:40] if isinstance(d.get("ids"), list) else []
         try:
             if a == "idea_dismiss":
-                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought")
+                seen = d.get("seen") if isinstance(d.get("seen"), dict) else {}
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought",
+                                   seen={k: v for k, v in list(seen.items())[:40] if k in ids})
                 return {"ok": True, "n": r["n"], "ids": r["ids"]}
             if a == "idea_undo":
                 r = A.idea_undismiss(ids, everything=d.get("all") is True)
@@ -3755,7 +3782,7 @@ def webapp_main():
         def live_beat():
             asked = time.time() - LIVE.get("asked", 0) < 90          # a page has asked for Live lately
             pace = live_limit() - 2 if asked else 20
-            if not LIVE.get("busy") and time.time() - LIVE["at"] > pace:
+            if not LIVE.get("busy") and (time.time() - LIVE["at"] > pace or asked and live_moved()):
                 LIVE["busy"] = True
                 live_refresh()
         time.sleep(20)
@@ -4042,7 +4069,9 @@ def start_hub(conf, E, odds=None):
         if op == "ping":
             return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
         if op == "account":
-            return {"value": list(E.fetch_account(max_age=15, every_league=True))}
+            # money moved since the last read (#242): read Kalshi fresh, so the web app never caches the old account
+            moved = getattr(E, "money_seen", float)() > (E.ACCT_CACHE.get("at") or 0)
+            return {"value": list(E.fetch_account(max_age=0 if moved else 15, every_league=True))}
         if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
             return {"pots": E.kalshi_pots()}
         if op == "pot_move":                             # Pete's confirmed tap: move cash between pots (never automatic)
@@ -4467,7 +4496,7 @@ def main():
             try:                                   # history + live events for open screens
                 for ev in E.record_view(E.MINE.get("view")):
                     BUS.publish(ev)
-                BUS.publish({"kind": "tick"})
+                BUS.publish({"kind": "tick", "money": getattr(E, "money_seen", float)()})   # money: open pages refetch (#242)
             except Exception as err:
                 log("record failed:", type(err).__name__, err)
             if t0 - last["sell"] > 60 and not backup_safe(conf, E):
