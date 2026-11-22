@@ -43,7 +43,7 @@ E.get_cash_offer = lambda t, f=1.0: {"offer": 13.0, "frac": 1.0, "rfq": "x", "co
 E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20}], None)
 E.sold_today = lambda: 0
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 E.drop_cash = lambda t: E.MINE["cash"].pop(t, None)
 E.haptic = lambda *a: None
 real_log = E.log_decision
