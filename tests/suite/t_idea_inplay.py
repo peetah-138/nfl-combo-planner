@@ -115,8 +115,8 @@ E.live_side_fair = E_lsf
 # ---- combos: a game under way that the board only has pre-game for
 legs = [dict(pre_side), dict(live_side)]
 ok("combo: a leg under way with the board's pre-game chance is named", E.idea_combo_live_gap(legs) == ["Boston Celtics"])
-ok("combo: a leg under way the board priced live (screen_live) is fine",
-   E.idea_combo_live_gap([dict(pre_side), dict(live_side, live=True)]) == [])
+ok("combo: a leg under way the board priced live (screen_live: Kalshi's mid) is named too (no live_side_fair)",
+   E.idea_combo_live_gap([dict(pre_side), dict(live_side, live=True)]) == ["Boston Celtics"])
 ok("combo: nothing under way = nothing named", E.idea_combo_live_gap([dict(pre_side)]) == [])
 
 # ---- the web app's idea quote uses it (the Build board's side is no longer the fair chance on its own)
@@ -124,8 +124,31 @@ W = open("wahome/combo_watcher.py", encoding="utf-8").read()
 blk = W[W.index('if a == "idea":'):W.index('if a == "singlequote":')]
 ok("the idea quote prices through idea_single_fair (live: live_side_fair only)", "A.idea_single_fair(tk, side" in blk
    and '(side or {}).get("fair") or row.get("pfair")' not in blk)
-ok("the idea quote: no green Buy without a fair price, or on a thin market under way",
-   'clears = fair is not None and edge >= A.SINGLE_MIN_EDGE * 0.6 and not (fi["live"] and fi["thin"])' in blk)
+ok("the idea quote: no green Buy without a fair price, or under way when thin, nearly decided or far from Kalshi",
+   'clears = fair is not None and edge >= A.SINGLE_MIN_EDGE * 0.6 and not (fi["live"] and doubt)' in blk
+   and '("thin", "decided", "disagree")' in blk)
 ok("the idea quote says where its fair chance came from", '"fair_src": fi["src"]' in blk and '"how": fi["how"]' in blk)
 ok("the combo idea quote flags a game under way with only a pre-game chance", "A.idea_combo_live_gap(" in blk
    and "clears=False" in blk)
+ok("the combo idea with no fair price is priced at the smallest usual stake, never sized on the pre-game edge",
+   "combo_offer(k, own if small is None else small)" in blk and '"rec": small, "own": False' in blk)
+ok("a live fair of exactly 0 is a fair price, not a crash (is not None, never truthiness)",
+   "if fair else" not in blk.split('if row["n"] == 1')[1].split("if row[\"kick\"]")[0])
+f = E.idea_single_fair(T, None, 0.71, BOOK)
+ok(f"pregame with no board side: labelled honestly ({f['src']})", f["src"] == "from when it was found")
+
+# ---- Build's live side (screen_live) holds Kalshi's mid with the odds' line_live/line_at still on it: never a "live line"
+mid_side = dict(live_side, fair=0.71, line_live=True, line_at=time.time() - 20, live=True, pre=0.62)
+f = E.idea_single_fair(LT, mid_side, 0.8, BOOK)
+ok(f"a screen_live side's Kalshi mid is never taken as a live line (live model instead: {f['src']}, {f['fair']})",
+   f["src"] == "live model" and f["fair"] != 0.71)
+E.can_trade = lambda: True
+E.book_depth = lambda tk, max_age=60: {"ask": 0.55, "bid": 0.53, "spread": 0.02, "ask_size": 500, "thin": False}
+E.week_spend = lambda: 0.0
+E.cap_combo_spend = lambda code, key, now=None: 0.0
+E.CFG["kalshi_key_id"] = "fake-key-id"; E.CFG["budget"] = 100.0; E.CFG["bankroll"] = 400.0
+bq = E.single_buy_quote(dict(mid_side, exp=mk[LT]["expected_expiration_time"]), 5)
+ok(f"Buy straight: the same Kalshi mid is never a live line ({bq.get('how')})", bq.get("ok") and bq.get("how") == "live model")
+bq = E.single_buy_quote(dict(live_side, fair=0.97, line_live=True, line_at=time.time() - 20), 5)
+ok(f"Buy straight: a 97% live line = 'nearly decided', never green ({[w['k'] for w in bq.get('warn', [])]})",
+   bq.get("ok") and any(w["k"] == "decided" for w in bq["warn"]) and not bq["clears"])

@@ -15254,7 +15254,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             nofair = "spreads and totals have no live fair price"
         else:
             try:
-                f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(t)))
+                f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(t),   # a live side's fair is Kalshi's
+                                                line_live=x.get("line_live") and not x.get("live")))   # mid, not a line (#255)
             except Exception as err:                    # a scores hiccup: no fair price, never a crash
                 f, how, w = None, None, f"the live score couldn't be read ({type(err).__name__})"
             if f is None and w == "the game is over":
@@ -15327,7 +15328,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             need = max(need, line_min_edge(_line_lg(ticker_sport(t) or "", t), kind)["v"])
         except Exception:
             pass
-    clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start
+    doubt = any(w["k"] in ("decided", "disagree") for w in warn)   # the panel leaves these out entirely (#255)
+    clears = fair is not None and edge >= need and not thin and not blocked and not unknown_start and not doubt
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -15620,7 +15622,7 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
     score), never the board's number (which can be the pre-game price, or Kalshi's own mid from when Build was built);
     with neither there is no fair price at all. Returns {"live", "fair", "how", "src" (what the card says: "live
     line" / "live model" / "none" for a game under way; before it "sportsbooks" / "line model" / "Kalshi's price" /
-    "when found" (the idea's own chance, no board side)),
+    "from when it was found" (the idea's own chance, no board side)),
     "nofair" (why none), "warn" (Buy straight's cautions for a game under way: live, nearly decided, far from the live
     chance, thin), "thin", "over" (the game is finished)}. Reads only; never raises (a hiccup = no fair price)."""
     now = now or time.time()
@@ -15640,7 +15642,7 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
         if f:
             out["fair"] = float(f)
             out["how"] = out["src"] = ("line model" if kind in ("spread", "total") else
-                                       "when found" if not side.get("fair") else
+                                       "from when it was found" if not side.get("fair") else
                                        "sportsbooks" if side.get("src") else "Kalshi's price")
         return out
     out["live"] = True
@@ -15653,13 +15655,17 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
     book = book or {}
     ask, bid = book.get("ask"), book.get("bid")
     f = None
-    if kind != "win":
+    if kind in ("spread", "total"):
         out["nofair"] = "spreads and totals have no live fair price"
+    elif kind != "win":
+        out["nofair"] = "this kind of market has no live fair price"
     else:
         try:
-            f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(tk)), now)
+            f, how, w = live_side_fair(dict(x, pre=x.get("pre") or pregame_fair(tk),   # Build's live side holds Kalshi's
+                                            line_live=x.get("line_live") and not x.get("live")), now)   # mid, not a line
         except Exception as err:                       # a scores hiccup: no fair price, never a crash
-            f, how, w = None, None, f"the live score couldn't be read ({type(err).__name__})"
+            console_note(f"idea live fair: {type(err).__name__}: {err}")
+            f, how, w = None, None, "the live score couldn't be read just now"
         if f is None and w == "the game is over":
             out.update(over=True, nofair=w)
             return out
@@ -15686,17 +15692,17 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
 
 
 def idea_combo_live_gap(legs, now=None):
-    """A combo idea's legs whose game is under way while the board still holds a chance that isn't a live one (Build was
-    built before the game started, or its live checks left the game out, so its fair is the pre-game price). Their
-    picks, [] when every leg is fine. A combo with one of these has no fair price to check against (issue #255).
-    Never raises: a leg it can't judge counts as such a leg."""
+    """A combo idea's legs whose game is under way: their picks, [] when none. Build's chance for such a leg is the
+    pre-game price (built before the start, or left out by its live checks) or Kalshi's own mid from when Build was
+    built (circular, and minutes old), never a live_side_fair one, so a combo with one has no fair price to check
+    against (issue #255, Pete's ruling). Never raises: a leg it can't judge counts as such a leg."""
     out = []
     for l in legs or []:
         try:
-            if started(l) and not l.get("live"):
+            if started(l):
                 out.append(l.get("pick") or l.get("ticker") or "a game")
         except Exception:
-            out.append(l.get("pick") or l.get("ticker") or "a game")
+            out.append((l.get("pick") or l.get("ticker") or "a game") + " (start time unclear)")
     return out
 
 

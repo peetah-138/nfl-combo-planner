@@ -100,8 +100,8 @@ def toast_on_top(pg):
                        "+getComputedStyle(t).zIndex>+getComputedStyle(m).zIndex})()")
 
 
-LQ = lambda **k: dict({"ok": True, "single": True, "price": .55, "n": 5, "stake": 2.84, "pays": 5.0, "pct": .66 / .5674,
-                       "edge": round(.66 - .5674, 4), "fair": .66, "clears": True, "rec": 3, "ev": round(5 * .66 - 2.84, 2),
+LQ = lambda **k: dict({"ok": True, "single": True, "price": .60, "n": 4, "stake": 2.47, "pays": 4.0, "pct": .66 / .6168,
+                       "edge": round(.66 - .6168, 4), "fair": .66, "clears": True, "rec": 3, "ev": round(4 * .66 - 2.47, 2),
                        "min": 1, "max": 100, "live": True, "how": "live sportsbook line", "fair_src": "live line",
                        "nofair": None, "warn": [{"k": "live", "t": "This game is under way. Our chance is live (live line), not the pre-game one."}]}, **k)
 def card(pg, pick):
@@ -150,8 +150,15 @@ with sync_playwright() as pw:
     st = sheet(pg); b = buy_btn(pg)
     if "live model" not in st.lower() or "thin market" not in st.lower(): bad(f"detail: 'live model' and the thin caution: {st[-700:]!r}")
     if not b or not b["warn"] or "Buy anyway" not in b["t"]: bad(f"detail: thin live market = yellow Buy anyway: {b}")
+    if "under your bar" in st.lower() or "market is thin" not in st.lower(): bad(f"detail: a thin live market says thin, not 'under your bar': {st[-700:]!r}")
+    # ---- (2b) a live chance below the one when found is not called 'dropped' (live chances move all game)
+    QUOTE["r"] = LQ(fair=.45, edge=-.17, pct=.45 / .6168)
+    pg.evaluate("S.ideaq={};S.ideaSig=null;ideaSheet()"); time.sleep(.3)
+    if not get_price(pg, "Get today's price"): bad("detail: Get today's price (live, lower chance)")
+    st = sheet(pg)
+    if "has dropped" in st.lower(): bad(f"detail: no 'dropped' line for a live chance: {st[-500:]!r}")
     # ---- (3) no live fair: no edge, no green, a working yellow Buy anyway
-    QUOTE["r"] = LQ(fair=None, edge=None, pct=None, ev=None, clears=False, how=None, fair_src="none",
+    QUOTE["r"] = LQ(fair=None, edge=None, pct=None, ev=None, clears=False, rec=2, how=None, fair_src="none",
                     nofair="no fresh live score", warn=[{"k": "live", "t": "This game is under way. There's no live fair price, so you'd be going on Kalshi's price alone."}])
     pg.evaluate("S.ideaq={};S.ideaSig=null;ideaSheet()"); time.sleep(.3)
     if not get_price(pg, "Get today's price"): bad("detail: Get today's price (no live fair)")
@@ -159,7 +166,8 @@ with sync_playwright() as pw:
     if "no fair price to check this against" not in st.lower(): bad(f"detail: 'No fair price to check this against': {st[-700:]!r}")
     if "no longer a good bet" in st.lower() or "under your bar" in st.lower(): bad(f"detail: no edge math without a fair price: {st[-700:]!r}")
     low = st.lower()
-    if "fair chance\n—" not in low.replace("\n\n", "\n") or "\nnone" not in low: bad(f"detail: Fair chance '—' with source 'none': {st[-700:]!r}")
+    if "fair chance\n—\nno fair price" not in low.replace("\n\n", "\n"): bad(f"detail: Fair chance '—' with 'no fair price' under it: {st[-700:]!r}")
+    if "recommended" in low.split("your bet")[-1] or "smallest" not in low: bad(f"detail: no 'recommended' stake without a fair price: {st[-400:]!r}")
     if "NaN" in st or "null" in st: bad("detail: NaN/null on screen")
     if not b or b["yes"] or not b["warn"] or "Buy anyway" not in b["t"] or b["dis"]: bad(f"detail: no live fair = a working yellow Buy anyway, never green: {b}")
     shot(pg, "idea255_no_fair_phone390.png")
@@ -172,7 +180,7 @@ with sync_playwright() as pw:
     if "no fair price to check this against" not in c.lower(): bad(f"card: 'No fair price to check this against': {c[-500:]!r}")
     if not b or b["yes"] or not b["warn"]: bad(f"card: no live fair = yellow, never green: {b}")
     # ---- (4) before the game: unchanged (the sportsbooks' chance, green)
-    QUOTE["r"] = LQ(live=False, how="sportsbooks", fair_src="sportsbooks", warn=[], fair=.62, edge=.05, pct=.62 / .5674)
+    QUOTE["r"] = LQ(live=False, how="sportsbooks", fair_src="sportsbooks", warn=[], fair=.67, edge=.053, pct=.67 / .6168)
     pg.evaluate("closeModal&&closeModal()"); time.sleep(.4)
     pg.evaluate("S.ideaq={}"); open_detail(pg, "Memphis")
     if not get_price(pg, "Get today's price"): bad("detail: Get today's price (pregame)")
