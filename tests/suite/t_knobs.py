@@ -1,4 +1,4 @@
-# CHECK: group=engine secs=5
+# CHECK: group=engine
 # Issue #228, PR1: the knob registry (KNOBS) lists every number smart sell, the loss guards, auto-hedge and Smart Buy
 # decide with, read-only. Checks: every entry is complete and inside its own bounds; for every knob the value the live
 # code reads today (its `src`) equals the registry's start, and the rules without a number still hold (probed), so the
