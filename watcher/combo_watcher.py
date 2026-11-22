@@ -1916,6 +1916,7 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)                          # (#137) paper scoring of every priced market, OUTSIDE odds.lock
         try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
             n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
             if n_out:
@@ -1967,6 +1968,27 @@ def quick_rounds(odds, notifier, until, gap=150):
                     notifier.add(m, "idea")
         except Exception as err:
             log("quick check skipped:", type(err).__name__, err)
+        smart_buy_universe(odds)
+
+
+def smart_buy_universe(odds):
+    """Smart Buy's paper work (#137), all OUTSIDE odds.lock (the lock panel_loop holds to place a real approved buy)
+    and in the shadow engine (H), never the trading one: score every market the panel looks priced (0.15 s of
+    simulation a pass), then, when due, the backfill from history (daily, 3 s a run) and the paper book (every 6 h).
+    Writes exit_shadow rows and the sb_paper table only; each step self-throttles and never raises."""
+    try:
+        H = odds.engine()
+    except Exception as err:
+        log("smart buy paper scoring skipped:", type(err).__name__, err)
+        return
+    for name in ("smart_buy_universe", "smart_buy_backfill", "sb_paper_build"):
+        try:
+            if hasattr(H, name):
+                n = getattr(H, name)()
+                if n and name != "smart_buy_universe":
+                    log(f"smart buy on paper: {name} wrote {n} rows")
+        except Exception as err:
+            log(f"smart buy paper {name} skipped:", type(err).__name__, err)
 
 
 
