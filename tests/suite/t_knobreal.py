@@ -157,6 +157,14 @@ E.store_x("insert into bets(combo, first_seen, cost, pays, legs, status, back, s
 E.store_x("insert into ledger(ticker, kind, cost, back, n_sold, outcome, held) values(?,?,?,?,?,?,?)",
           ("KXMVE-SOLD", "combo", 5.0, 8.0, 20.0, "won", 20.0))
 E.store_x("insert into ledger(ticker, kind, cost, back, n_sold) values(?,?,?,?,?)", ("KXMVE-OPEN", "combo", 5.0, 8.0, 20.0))
+E.store_x("insert into bets(combo, first_seen, cost, pays, legs, status, back, settled) values(?,?,?,?,?,?,?,?)",
+          ("KXMVE-MINE", now - 5 * 86400, 5.0, 20.0, json.dumps([NBA]), "cashed", 8.0, now - 4 * 86400))
+E.store_x("insert into ledger(ticker, kind, cost, back, n_sold, outcome, held) values(?,?,?,?,?,?,?)",
+          ("KXMVE-MINE", "combo", 5.0, 8.0, 20.0, "won", 20.0))
+E._ledger_table()
+for t_ in ("KXMVE-SOLD", "KXMVE-OPEN"):
+    E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, frac) values(?,?,?,?,?,?,?,?)",
+              (now - 4 * 86400, t_, "sold", "combo", 8.0, 5.0, 20.0, 1.0))
 body = {"items": [{"id": "p1", "kind": "combo", "market": "KXMVE-PANEL", "stake": 5.0, "pays": 20.0, "result": "won",
                    "pl": 15.0, "kick": now - 5 * 86400, "legs": [{"ticker": NBA}]}]}
 E.store_x("insert into panel(mode, ts, body) values(?,?,?)", ("real", now - 5 * 86400, json.dumps(body)))
@@ -165,7 +173,8 @@ ids = [c.get("id") for c in items]
 sold = [c for c in items if c.get("id") == "KXMVE-SOLD"]
 ok("a cashed-out real combo is judged too, riding to the end = what holding paid (sale_outcomes: won, +$15)",
    len(sold) == 1 and sold[0]["pl"] == 15.0 and sold[0]["sold"])
-ok("...one whose result isn't known yet is left out", "KXMVE-OPEN" not in ids)
+ok("...one whose result isn't known yet is left out, and so is one you cashed out yourself (not smart sell's)",
+   "KXMVE-OPEN" not in ids and "KXMVE-MINE" not in ids)
 ok("a panel combo counts once (the panel's copy, not the bets table's)", ids.count("p1") == 1 and "KXMVE-PANEL" not in ids)
 ok("smart_tune's own evidence is unchanged (no cashed bets in it)", not any(c.get("id") == "KXMVE-SOLD" for c in E._tune_items(60)))
 E.store_x("insert into offers values(?,?,?,?,?,?,?,?)", (now - 8000, "KXMVE-SOLD", 0.6, 20.0, 9.0, 8.5, 1, "hold"))
@@ -176,8 +185,19 @@ E._price_table()
 E.store_x("insert into price_path(ts, ticker, bid, ask) values(?,?,?,?)", (now - 8000, NBA, 0.40, 0.44))
 mk_y = E._knob_market({"kind": "single", "legs": [{"ticker": NBA, "side": "yes"}]}, [(now - 8100, {}), (now - 7000, {})])
 mk_n = E._knob_market({"kind": "single", "legs": [{"ticker": NBA, "side": "no"}]}, [(now - 8100, {}), (now - 7000, {})])
-ok("a single's record: the bid and ask on the pick's side (a NO pick reads the YES book the other way)",
-   mk_y == {"book": [(now - 8000, 0.40, 0.44)]} and mk_n == {"book": [(now - 8000, 0.56, 0.6)]})
+ok("a single's record: its bid and ask; a NO pick (its recorded chance is the YES price) replays as before",
+   mk_y == {"book": [(now - 8000, 0.40, 0.44)]} and mk_n == {})
+E.store_x("insert into offers values(?,?,?,?,?,?,?,?)", (now - 7880, "KXMVE-SOLD", 0.6, 20.0, 9.0, 8.5, 1, "hold"))
+ok("the same quote written again 2 minutes later is one offer (kept at the time it came in)",
+   E._knob_market(sold[0], [(now - 8100, {}), (now - 7000, {})]) == {"offers": [(now - 8000, 8.5)]})
+real_p = E._paths
+E._paths = lambda c: [(now - 9000 + j * 60, {NBA: x}) for j, x in enumerate((0.5, 0.6, 0.7))]
+cut_off = [c for c, _, _ in E._knob_rows(now)["replay"].get("all", []) if c.get("id") == "KXMVE-SOLD"]
+E._paths = lambda c: [(now - 9000 + j * 60, {NBA: x}) for j, x in enumerate((0.5, 0.6, 0.99))]
+to_end = [c for c, _, _ in E._knob_rows(now)["replay"].get("all", []) if c.get("id") == "KXMVE-SOLD"]
+E._paths = real_p
+ok("a cashed combo whose prices stop at the sale is left out; one recorded on to the end is judged",
+   not cut_off and len(to_end) == 1)
 
 # ---- 6. auto_slip live: off = 97%, on with nothing learned = 97%, a league's own number, the brake keeps a stricter one
 switch(False)
@@ -212,3 +232,36 @@ ok("an out-of-range value: 97%", E.knob_auto_slip([NBA]) == 0.97)
 ok("the estimate allowances and the slip have a judge now; nothing shared is left among the live knobs",
    all(E.KNOB_JUDGED.get(n) == "replay" for n in ("exit_est_smart", "exit_est_tp", "auto_slip"))
    and not any(E.KNOB_BY[n].get("shared_with") for n in E.KNOB_LIVE))
+
+# ---- 7. the sale log's new columns: an old table (before PR4) gains them; a sale is never lost either way
+E.STORE["ledger_ok"] = False
+E.store_x("drop table sell_log")
+E.store_x("create table sell_log(ts real, ticker text, result text, why text, kind text, side text, offer real, cost real, "
+          "pays real, frac real, chance real, by text, combo text, outcome text, held real, done real, "
+          "primary key(ts, ticker, result))")
+E._ledger_table()
+E.sale_store({"at": now - 30, "ticker": "KXNHLGAME-26NOV21PHIBOS-PHI", "result": "sold", "kind": "win", "offer": 7.5,
+              "cost": 5.0, "pays": 10, "chance": 0.8, "live": True, "ask": 0.79})
+r_ = E.store_rows("select live, ask from sell_log")
+ok("an old sale log gains `live` and `ask`; a new sale records them", r_ == [{"live": 1, "ask": 0.79}])
+E.STORE["sell_live"] = False                                # the columns couldn't be added (a busy file)
+E.sale_store({"at": now - 20, "ticker": "KXNHLGAME-26NOV21PHIBOS-PHI", "result": "sold", "kind": "win", "offer": 7.5,
+              "cost": 5.0, "pays": 10, "chance": 0.8, "live": True})
+ok("...and if they couldn't be added, the sale is still saved and the brake still reads it",
+   len(E.store_rows("select ts from sell_log")) == 2 and len(E._knob_brake_sales({"brake": {}}, now).get("nhl") or []) == 1)
+E.STORE["sell_live"] = True
+f_ = E.single_fee
+ok("the brake's footing for a single: sold at the bid of a 4-cent gap at fair (mid = chance) is not a loss; "
+   "5 cents under a 2-cent gap is", (lambda a: a[0] >= a[1] - E.KNOB_EPS)(E.knob_sale_expect(
+       {"ticker": "KXNBAGAME-X", "kind": "win", "offer": 7.8, "pays": 10, "frac": 1.0, "chance": 0.8, "ask": 0.82}))
+   and (lambda a: a[0] < a[1] - E.KNOB_EPS)(E.knob_sale_expect(
+       {"ticker": "KXNBAGAME-X", "kind": "win", "offer": 7.5, "pays": 10, "frac": 1.0, "chance": 0.8, "ask": 0.77})))
+switch(True)
+set_knobs({"groups": {"nba": {"lv": {"trail_floor": 1.1}, "lat": {"trail_floor": now}},
+                      "basketball": {"lv": {"trail_floor": 1.3, "smart_loss": 0.2}, "lat": {}}},
+           "brake": {"nba": {"at": now, "until": now + 86400, "mode": "live"}}, "settings": {}})
+ok("braked with its own value at the start and a stricter borrowed one: the borrowed one, from its sport",
+   E.knob_live_value("trail_floor", "nba", ["nba", "basketball", "all"], E.knob_state_cached(), {}, now) == (1.3, "basketball"))
+ok("the loss cut when both are numbers: the lower cut is stricter (fewer cuts); off beats both",
+   E.knob_stricter_of("smart_loss", 0.2, 0.15) == 0.15 and E.knob_loosens("smart_loss", 0.15, 0.2)
+   and not E.knob_loosens("smart_loss", 0.2, 0.15) and E.knob_stricter_of("smart_loss", 0.2, None) is None)

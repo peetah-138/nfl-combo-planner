@@ -457,10 +457,10 @@ ok("the month rule on the new measure: 5% of the stake short of what holding was
 f_ = E.single_fee
 r_ = {"ticker": "KXNBAGAME-26NOV21BOSNYK-BOS", "kind": "win", "offer": 7.5, "pays": 10, "frac": 1.0, "chance": 0.8}
 g_, x_ = E.knob_sale_expect(r_)
-ok("a single: sold at the bid after its fee against the chance after the fee and 1 cent "
-   "(a bid 5 cents under the chance is a loss; at the chance less a cent it isn't)",
-   abs(g_ - (7.5 - f_(0.75) * 10)) < 1e-9 and abs(x_ - 10 * (0.8 - f_(0.8) - 0.01)) < 1e-9 and g_ < x_
-   and (lambda a: a[0] >= a[1] - E.KNOB_EPS)(E.knob_sale_expect(dict(r_, offer=7.9))))
+ok("a single: sold at the bid after its fee against a sale at the chance less half the widest gap (3 cents, no ask "
+   "logged) after the same fee (a bid 5 cents under the chance is a loss; at 2 cents under it isn't)",
+   abs(g_ - (7.5 - f_(0.75) * 10)) < 1e-9 and abs(x_ - 10 * (0.77 - f_(0.77))) < 1e-9 and g_ < x_
+   and (lambda a: a[0] >= a[1] - E.KNOB_EPS)(E.knob_sale_expect(dict(r_, offer=7.8))))
 c_r = {"ticker": "KXMVENBA-Z", "kind": "combo", "offer": 6.0, "pays": 20, "frac": 0.5, "chance": 0.7, "live": 0}
 ok("a combo: its offer against Kalshi's usual offer at that chance for the share sold (between games here)",
    abs(E.knob_sale_expect(c_r)[1] - E.kalshi_discount(False) * 0.7 * 10) < 1e-9

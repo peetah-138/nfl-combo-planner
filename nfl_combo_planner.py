@@ -5626,7 +5626,7 @@ def smart_sell_singles():
             continue                                  # a sell waiting, or an order whose outcome is unknown
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
-               "live": x.get("state") == "live"}
+               "live": x.get("state") == "live", "ask": ask}
         if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
@@ -18796,8 +18796,12 @@ def _ledger_table():
         store_x("create table if not exists sell_log(ts real, ticker text, result text, why text, kind text, "
                 "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
                 "outcome text, held real, done real, primary key(ts, ticker, result))")
-        if not any(r.get("name") == "live" for r in store_rows("pragma table_info(sell_log)")):
-            store_x("alter table sell_log add column live int")      # #228 PR4: a game was under way at the sale
+        have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
+        for col, typ in (("live", "int"), ("ask", "real")):           # #228 PR4: in play at the sale; a single's ask
+            if have and col not in have:
+                store_x(f"alter table sell_log add column {col} {typ}")
+        have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
+        STORE["sell_live"] = {"live", "ask"} <= have   # else the old columns (a busy file): sales are never lost
         STORE["ledger_ok"] = True
 
 
@@ -18953,13 +18957,17 @@ def sale_store(rec):
         return
     _ledger_table()
     lv = rec.get("live")
-    store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, by, "
-            "combo, live) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rec.get("at") or time.time(), rec.get("ticker") or "", rec.get("result"), rec.get("why"),
-             rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
-             rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
-             rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200],
-             None if lv is None else int(bool(lv))))
+    row = (rec.get("at") or time.time(), rec.get("ticker") or "", rec.get("result"), rec.get("why"),
+           rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
+           rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
+           rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200])
+    if STORE.get("sell_live"):
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo, live, ask) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row + (None if lv is None else int(bool(lv)), rec.get("ask")))
+    else:                                         # the new column couldn't be added (a busy file): the sale still counts
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
 
 def sale_import():
@@ -20404,7 +20412,7 @@ KNOB_JUDGED = {"smart_floor": "replay", "smart_lam": "replay", "smart_loss": "re
 KNOB_HAIRCUT = {"combo": 0.97, "single": 0.03}
 # The brake's measure (Pete, #284): what a sale got against what holding was EXPECTED to pay when it sold, both on the
 # footing smart sell itself uses: a combo's offer against Kalshi's usual offer at that chance (kalshi_discount x chance x
-# payout), a single's sale after its fee against the chance after the fee and the replay's 1 cent at the bid.
+# payout), a single's sale after its fee against the chance after the fee less half the gap it sold into (at least 1c).
 KNOB_BRAKE_BID = 0.01
 KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N"}   # results a group needs (the evidence knobs)
 # #258: knobs that do the same job never drift together. A tied knob is never stepped (it moves through its partner);
@@ -20837,8 +20845,8 @@ def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp
     hair = bool(mk.get("hair"))
     slip = ex.get("cash_slip", AUTO_CASH_SLIP)
     prm_ex = {k_: v_ for k_, v_ in ex.items() if k_ != "cash_slip"}
-    offers = sorted((float(a), float(b)) for a, b in (mk.get("offers") or ()) if b)
-    book = sorted((float(r[0]), r[1], r[2]) for r in (mk.get("book") or ()))
+    offers = sorted(((float(a), float(b)) for a, b in (mk.get("offers") or ()) if b), key=lambda r: r[0])
+    book = sorted(((float(r[0]), r[1], r[2]) for r in (mk.get("book") or ())), key=lambda r: r[0])
     life = offer_life()
     disc = kalshi_discount(True)
     cut_at = cut_at or ()
@@ -20967,6 +20975,9 @@ def _knob_rows(now, deadline=None):
         path = _paths(c)
         if len(path) < 3:
             continue
+        if c.get("sold") and not all(not 0.02 < path[-1][1].get(t, 0.5) < 0.98 for t in tks):
+            continue                                  # a cashed combo's prices stop at the sale: judged only when they
+        #                                               were recorded on to the end (another bet on the same games)
         slp = _sl_paths(c)
         c["_mk"] = _knob_market(c, path)
         k = bet_key(tks)
@@ -21004,10 +21015,11 @@ def _knob_items(days=KNOB_DAYS):
             seen.add(c["id"])
     try:
         _ledger_table()
+        auto = {r["ticker"] for r in store_rows("select distinct ticker from sell_log where result='sold'")}
         res = {r["ticker"]: r["outcome"] for r in store_rows(
-            "select ticker, outcome from ledger where outcome in ('won','lost')")}
+            "select ticker, outcome from ledger where outcome in ('won','lost')") if r["ticker"] in auto}
         for r in store_rows("select ticker, outcome from sell_log where result='sold' and outcome in ('won','lost')"):
-            res.setdefault(r["ticker"], r["outcome"])
+            res.setdefault(r["ticker"], r["outcome"])      # smart sell's own sales only, never your own Cash out taps
         for r in store_rows("select combo, cost, pays, legs, first_seen from bets where status = 'cashed' and settled > ?",
                             (cut,)):
             got = res.get(r["combo"])
@@ -21040,13 +21052,20 @@ def _knob_market(c, path):
                 return {}
             rows = store_rows("select ts, offer from offers where combo=? and real_offer=1 and offer > 0 and ts between ? "
                               "and ? order by ts", (t, t0, t1))
-            return {"offers": [(r["ts"], r["offer"]) for r in rows]}
+            out, last = [], None
+            for r in rows:                            # the same quote is re-written every 2 minutes while it is fresh:
+                if last is None or r["offer"] != last[1] or r["ts"] - last[0] > offer_life():   # keep when it came in
+                    last = (r["ts"], r["offer"])
+                    out.append(last)
+            return {"offers": out}
         leg = (c.get("legs") or [{}])[0]
         t = leg.get("ticker")
         if not t or len(c.get("legs") or []) != 1:
             return {}
+        if (leg.get("side") or "yes") == "no":
+            return {}                                 # the recorded chance is the YES price: a NO pick replays as before
         _price_table()
-        no = (leg.get("side") or "yes") == "no"
+        no = False
         book = []
         for r in store_rows("select ts, bid, ask from price_path where ticker=? and ts between ? and ? order by ts",
                             (t, t0, t1)):
@@ -21333,7 +21352,8 @@ def knob_sale_expect(r, disc=None):
     """(what one logged automatic sale got, what holding was expected to pay then) on the footing smart sell itself
     uses (Pete, #284): a combo's offer against Kalshi's usual offer at the logged chance (kalshi_discount, in play or
     between games, x chance x payout x the share sold); a single's sale after its fee against the logged chance after
-    the fee and the replay's 1 cent at the bid (KNOB_BRAKE_BID), x the contracts sold. None when the sale logged no
+    the fee less half the bid/ask gap it sold into (a single only sells at the bid; the ask is logged from PR4, else
+    half the widest gap smart sell sells into, LIVE_SPREAD; at least KNOB_BRAKE_BID), x the contracts sold. None when the sale logged no
     chance (it doesn't count) or can't be read."""
     try:
         ch = r.get("chance")
@@ -21349,7 +21369,13 @@ def knob_sale_expect(r, disc=None):
             d = kalshi_discount(lv is None or bool(lv)) if d is None else d   # unknown: in play (most automatic sales)
             return offer, d * ch * n
         bid = offer / n
-        return offer - single_fee(bid) * n, n * max(ch - single_fee(ch) - KNOB_BRAKE_BID, 0.0)
+        try:
+            gap = float(r["ask"]) - bid if r.get("ask") is not None else None
+        except (TypeError, ValueError):
+            gap = None
+        half = min(max(gap / 2, 0.0), LIVE_SPREAD / 2) if gap is not None else LIVE_SPREAD / 2
+        pb = max(ch - max(half, KNOB_BRAKE_BID), 0.0)  # the bid a fair market at that chance would show
+        return offer - single_fee(bid) * n, n * max(pb - single_fee(pb), 0.0)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
 
@@ -21360,7 +21386,8 @@ def _knob_brake_sales(st, now):
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
     (no waiting for the game). Only sales after the league's last brake ENDED and within 30 days; never the Pi's rows."""
     _ledger_table()
-    rows = store_rows("select ts, ticker, kind, offer, cost, pays, frac, chance, live from sell_log where result='sold' "
+    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {'live, ask' if STORE.get('sell_live') else 'null as live, null as ask'} "
+                      "from sell_log where result='sold' "
                       "and ts > ? and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
     disc = {True: kalshi_discount(True), False: kalshi_discount(False)}
     per, lg_of = {}, {}
@@ -21450,8 +21477,9 @@ def knob_brake_pass(now=None, force=False):
                 push_ok = bool(off) and now - float(old.get("pushed") or 0) >= days * 86400
                 d["brake"][lg] = {"at": now, "until": now + days * 86400, "why": why, "reset": off,
                                   "pushed": now if push_ok else old.get("pushed"), "mode": "live" if live else KNOB_MODE}
-                e = dict(e, v={n: knob_stricter_of(n, KNOB_BY[n]["start"], x) for n, x in vals.items() if n in KNOB_BY})
-                if vals:
+                new_v = {n: knob_stricter_of(n, KNOB_BY[n]["start"], x) for n, x in vals.items() if n in KNOB_BY}
+                e = dict(e, v=new_v)
+                if new_v != {n: x for n, x in vals.items() if n in KNOB_BY}:
                     e["step_at"] = now                # a brake that changed nothing doesn't restart the evidence window
                 if live and off:                              # its own self-tuned numbers back to the start, newer than
                     lv = dict(e.get("lv") or {}) if isinstance(e.get("lv"), dict) else {}     # anything smart_tune set
