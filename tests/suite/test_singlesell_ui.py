@@ -71,7 +71,7 @@ with sync_playwright() as pw:
         pg.route("**/app/api/act", act)
         pg.goto(B + "/app"); pg.wait_for_function("typeof window.load==='function'&&typeof S==='object'", timeout=30000)
         __import__("upwait").go_and_hold(pg, "live")
-        put = "(s=>{if(!S.live||S.live.error)S.live={at:Date.now()/1000,combos:[],riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{}};S.live.singles=s;S.live.auto_sell=true;S.filter='all';S.sq={};renderLive()})(" + json.dumps(SING) + ")"
+        put = "(s=>{if(!S.live||S.live.error)S.live={at:Date.now()/1000,combos:[],riding:0,staked:0,chance_one:0,best:0,cash_now:0,today:{}};S.live.singles=s;S.live.auto_sell=true;S.filter='all';S.sellq={};renderLive()})(" + json.dumps(SING) + ")"
         pg.evaluate(put); wait(pg, "document.querySelectorAll('.srow1').length===3", 8)
         rows = pg.locator(".srow1")
         n_sell = [rows.nth(i).locator("[data-sss]").count() for i in range(rows.count())]

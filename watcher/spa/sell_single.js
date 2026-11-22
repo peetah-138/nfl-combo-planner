@@ -4,9 +4,9 @@
    the button for 4 s); the Mac re-reads the book, refuses a lower bid, and sends one fill-now-or-cancel, reduce-only
    sale at the quoted price or better. Pause, the unknown-outcome block and rule 8 are checked on the Mac; an unclear
    answer is "Check Kalshi" and is never resent. Nothing here sells by itself. */
-S.sq=S.sq||{};
+S.sellq=S.sellq||{};
 function ssAge(at){const s=Math.max(0,Math.round(Date.now()/1000-at));return s<5?'just now':s<60?s+'s ago':Math.round(s/60)+' min ago';}
-function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';const p=S.sq[x.t],busy=S.ssBusy&&S.ssBusy[x.t];
+function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';const p=S.sellq[x.t],busy=S.ssBusy&&S.ssBusy[x.t];
  const line=p?(p.ok?`Kalshi bid <b>${Math.round(p.bid*100)}¢</b> · sell now for <b>${m2(p.got)}</b> after the fee${p.thin?' · <span class="down">thin market</span>':''} · ${ssAge(p.at)}`:`<span class="down">${esc(p.msg||'No price right now.')}</span>`):'Sell any time: the price comes straight from Kalshi.';
  return `<div class="sacts" onclick="event.stopPropagation()"><span class="s">${line}</span>
   <button class="btn ghost sm" data-ssp="${esc(x.t)}" ${busy?'disabled':''} onclick="event.stopPropagation();ssPrice('${x.t}',this)">${busy?'<span class="spin"></span> Asking…':'Get new price'}</button>
@@ -14,17 +14,17 @@ function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';cons
 function ssFind(t){const d=S.live||{};return (d.singles||[]).find(x=>x.t===t)||null;}
 async function ssPrice(t,b){S.ssBusy=S.ssBusy||{};if(S.ssBusy[t])return;S.ssBusy[t]=1;if(b)btnBusy(b,'Asking…');
  const r=await api('/app/api/act',{a:'sellquote',t}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));delete S.ssBusy[t];
- r.at=Date.now()/1000;S.sq[t]=r;const x=ssFind(t);
+ r.at=Date.now()/1000;S.sellq[t]=r;const x=ssFind(t);
  if(r.ok&&x){x.worth=r.worth;}hap(r.ok?(r.thin?'warning':'success'):'error');if(!r.ok)toast(r.msg||'No price came in.',4500,'bad');
  if(S.view==='live')renderLive();else if(b&&b.isConnected)btnState(b,r.ok,r.ok?'✓ '+money(r.got):'✕ No price');return r;}
-function ssOpen(t){if(!t)return;const p=S.sq[t];S.ss={t,q:null,busy:true,err:null,fail:null};
+function ssOpen(t){if(!t)return;const p=S.sellq[t];S.ss={t,q:null,busy:true,err:null,fail:null};
  modal(`<div class="sb" id="ssx">${ssSkel()}</div>`);
  if(p&&p.ok&&!p.used&&Date.now()/1000-p.at<p.secs-8){S.ss.q=p;S.ss.busy=false;ssPaint();clearInterval(S.ssT);S.ssT=setInterval(ssTick,1000);return;}
  ssQuote();}
 function ssSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi what it pays now…</div>`;}
 async function ssQuote(){const s=S.ss;if(!s||s.sending)return;s.busy=true;s.err=null;s.fail=null;ssPaint();
  const r=await api('/app/api/act',{a:'sellquote',t:s.t}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
- if(S.ss!==s)return;s.busy=false;r.at=Date.now()/1000;S.sq[s.t]=r;
+ if(S.ss!==s)return;s.busy=false;r.at=Date.now()/1000;S.sellq[s.t]=r;
  if(!r||!r.ok){s.q=null;s.err=(r&&r.msg)||'No price came in.';hap('error');ssPaint();return;}
  s.q=r;const x=ssFind(s.t);if(x)x.worth=r.worth;hap(r.blocked||!r.clears?'warning':'success');ssPaint();
  clearInterval(S.ssT);S.ssT=setInterval(ssTick,1000);}
@@ -59,7 +59,7 @@ async function ssSell(b){const s=S.ss,q=s&&s.q;if(!q||s.sending||b.disabled)retu
  s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Selling… confirming with Kalshi';
  let r;try{r=await api('/app/api/act',{a:'singlesell',t:q.t,q:q.q,anyway:!ssOk(q)});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while selling, so this may or may not have gone through. Check Live in a minute before trying again.'};}
- s.sending=false;q.used=1;if(S.sq[q.t]===q)delete S.sq[q.t];clearInterval(S.ssT);
+ s.sending=false;q.used=1;if(S.sellq[q.t]===q)delete S.sellq[q.t];clearInterval(S.ssT);
  if(r.ok||r.check)load('live',true).catch(()=>{});
  const here=S.ss===s&&!!$('#ssx')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
  if(r.ok){if(S.ss===s)S.ss=null;if(free)soldSheet({back:r.got,cost:r.cost,label:q.pick});else{hap('success');toast('Sold: '+q.pick+'. '+(r.msg||'').replace(/^✅\s*/,''),9000,'good');}return;}
