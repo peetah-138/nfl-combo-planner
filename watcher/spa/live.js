@@ -107,7 +107,7 @@ function ideaLeg(li){if(!li||!(li.plain||li.game))return '';const tk=/^[A-Z0-9._
  return `<div class="ileg" ${tk?`onclick="openGame('${tk}')"`:''}><span class="ilg">${esc(li.icon||'')} ${esc(li.league_name||'')}</span><b>${esc(li.plain||'')}</b><small>${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</small></div>`;}
 function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
  return `<div class="dnums ifacts"><div>Kalshi price<b>${Math.round(x.price_c)}¢</b></div><div>Fair price<b>${Math.round(x.fair_c)}¢</b></div><div>Edge<b class="${(x.edge||0)>=0?'up':'down'}">${(x.edge||0)>=0?'+':'−'}${Math.abs(Math.round((x.edge||0)*100))}% expected</b></div>
-  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
+  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake → if it wins<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
 function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
  const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
  return `<span class="sweat" title="${w} of ${c.legs.length} picks won">${seg.map(s=>`<i class="${s}"></i>`).join('')}</span>`;}
