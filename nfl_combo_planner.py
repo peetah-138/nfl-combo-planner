@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.21.133"
+VERSION = "2026.11.21.134"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -4810,7 +4810,7 @@ def _brk_news(ticker, sc):
     try:
         code = ticker_sport(ticker) or ""
         got = INJ.get(code)
-        if not got or time.time() - got[0] > 1800:
+        if not got or time.time() - got[0] > 1500:      # a margin under league_injuries' 1800 s: never fetches here
             return False
         teams = [x for x in (sc.get("name"), sc.get("team"), sc.get("opp_name")) if isinstance(x, str) and x]
         return bool(teams) and bool(injury_note(code, *teams, hours=3)[1])
@@ -5627,7 +5627,7 @@ def auto_sell_now(plan):
                     if unsure:
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
-            msg = accept_cash(t)
+            msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
             log_decision(dict(rec, result="sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed",
                               note=msg[:140]))
             if msg.startswith("⚠️"):                     # may or may not have sold: no "took the profit" words
@@ -5978,7 +5978,8 @@ def smart_sell_singles():
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
                "live": x.get("state") == "live", "ask": ask}
-        if sl_mode() == "never" and x["n"] * (bid - single_fee(bid)) < (x.get("cost") or 0):
+        if sl_mode() == "never" and (not x.get("cost") or not bid
+                                     or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
             continue
         if auto_cap_reached():
@@ -9216,7 +9217,7 @@ AUTO_CASH_SLIP = 0.97     # smart sell's own: a combo's real offer must reach th
 #                           from CASH_SLIP so self-tuning can judge it, `auto_slip`, without touching your own taps)
 
 
-def accept_cash(ticker):
+def accept_cash(ticker, floor=None):
     """Sell: hit their YES bid with the contracts you hold. Only runs after you tap Cash out.
     If the buyer backs out, gets a fresh offer and takes it if it's within 3% of the price you
     confirmed, up to 3 more tries; otherwise shows you the new offer to confirm."""
@@ -9234,12 +9235,12 @@ def accept_cash(ticker):
     agreed = o["offer"]
     MINE.setdefault("selling", set()).add(ticker)   # the auto-sell keeper keeps its hands off
     try:
-        return _accept_with_retries(ticker, o, h, label, frac, agreed)
+        return _accept_with_retries(ticker, o, h, label, frac, agreed, floor)
     finally:
         MINE["selling"].discard(ticker)
 
 
-def _accept_with_retries(ticker, o, h, label, frac, agreed):
+def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     had_tp = bool((MINE.get("tp") or {}).get(ticker)) or bool(resting_sells().get(ticker))
     if had_tp:
         cancel_take_profit(ticker)          # can't sell the same contracts twice
@@ -9251,8 +9252,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed):
             if not o.get("offer"):
                 why = "no fresh offer came in"
                 break
-            if o["offer"] < CASH_SLIP * agreed:
-                MINE["cash"][ticker] = o
+            if o["offer"] < CASH_SLIP * agreed or (floor is not None and o["offer"] < floor):
+                MINE["cash"][ticker] = o              # floor: 'Never sell at a loss' never retries below cost
                 why = "new"
                 break
         status = accept_once(o, ticker)

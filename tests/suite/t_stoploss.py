@@ -76,7 +76,7 @@ E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20
 E.sold_today = lambda: 0
 E.take_profit_reason = lambda t, h: (None, 0.0)
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 logs = []
 E.log_decision = lambda rec: logs.append(rec)
 E.CFG.update(auto_sell=True, stop_loss=True, auto_hedge=False, auto_cap=5)

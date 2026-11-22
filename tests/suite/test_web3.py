@@ -8,7 +8,7 @@ W.log = lambda *a: None; W.CONF = "run/test_watcher_conf.json"; W.HOME = "run"
 M.MINE["hold"] = {"KXMVENFL-1": {"label": "Combo 1", "cost": 5, "pays": 40, "p": 0.31, "left": 2,
                                   "need": [(("yes", "A"), "Buffalo Bills"), (("yes", "B"), "Detroit Lions")]}}
 M.get_cash_offer = lambda t: {"rfq": "r", "quote": "q", "offer": 17.5, "at": time.time(), "price": 0.44, "contracts": 40}
-M.accept_cash = lambda t: "✅ <b>Combo 1</b> cashed out for about $17.50."
+M.accept_cash = lambda t, floor=None: "✅ <b>Combo 1</b> cashed out for about $17.50."
 conf = {"topic": "t", "secret": "s", "hub_port": 8796, "web_pass": "pass1234"}
 srv = W.start_hub(conf, M)
 import requests

@@ -66,8 +66,13 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   that the first changes (Results › Selling, "🎛️ What self-tuning changed") look sensible, and that the reasons read
   clearly. Since 2026.11.21.133 the exit numbers tune live behind `knobs_live` (#228 PR2-PR4); at release every league
   was too thin for a step, so nothing changed on day one.
-- **#228 PR5-PR7 (next):** loss guards / `break_ok` in shadow first (PR5), hedge knobs and the `hedge_cap` raise (PR6),
-  Smart Buy simulator constants (PR7); split any shared knob first. Follow-ups from PR4's reviews: #298-#302.
+- **#228 break_ok live:** turn `BRK_LIVE` on and add `brk_on` to `KNOB_LIVE` once a league has 40+ recorded break
+  episodes that clear the bar (waits on data).
+- **#228 PR7 rest:** judges for Smart Buy's simulator constants (`sb_win_min`, `sb_gain`, `sb_route_exit`, spreads) by
+  re-simulating checked bets; `sb_ev_min` stays watch-only until split from `line_recommend`.
+- **#228 hedge knobs live:** judge `hedge_lock_share` / `hedge_lock_cost` / the cap raise on how the games ended
+  (`sale_outcomes`), with fresh-book costs, then add them to `KNOB_LIVE` and set `HEDGE_RAISE_LIVE` (the confirmation
+  counts need a judge too). Follow-ups from PR4's reviews: #298-#302.
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
