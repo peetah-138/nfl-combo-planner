@@ -1,3 +1,4 @@
+# CHECK: group=page secs=49
 """Makeover phase 2: live game cards on Games (singles and spreads included, score pulse + haptic, chance line, tap
 pushes the game page), scrubbing the game page's chance chart, the Sold moment (tap and smart sell; calm for a loss),
 the big-hit celebration, Results profit bars by day/week (scrub with haptic ticks, tap a bar for its bets), and the
@@ -166,6 +167,7 @@ with sync_playwright() as pw:
         bars = pg.evaluate("document.querySelectorAll('.plc rect.brc').length"); h = pg.evaluate("Math.max(...[...document.querySelectorAll('.plc rect.brc')].map(r=>r.getBoundingClientRect().height))")
         print(tag, "week bars:", bars, "tallest:", h)
         if bars < 2 or h < 40: bad(f"{tag}: the week bars are missing or flat ({bars}, {h}px)")
+        pg.locator("[data-scrub=pl]").scroll_into_view_if_needed(); time.sleep(.3)   # the profit scoreboard sits above it now
         bx = pg.locator("[data-scrub=pl]").bounding_box(); y = bx["y"] + bx["height"] / 2; n0 = pg.evaluate("__haps.length")
         pg.mouse.move(bx["x"] + 4, y); pg.mouse.down()
         for k in range(8): pg.mouse.move(bx["x"] + bx["width"] * (k / 8 + .02), y); time.sleep(.06)

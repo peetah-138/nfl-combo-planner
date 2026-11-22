@@ -1,8 +1,9 @@
+# CHECK: group=page secs=60
 """Live "Buy ideas" ration, dismiss, collapse and detail page (GitHub #141). The ideas come from the real engine
 (live_ideas: ranked by expected dollars, with stable ids) and the dismissals go through the web app's real
 /app/api/act and the engine's real dismissal file. At phone sizes (390 and 360, touch) and desktop it checks: only the top
 three show with the rest under 'N more ideas'; the X, a swipe left, Not now and Clear all dismiss (the card slides out,
-the server remembers, Undo brings it back, a reload keeps it hidden); a swipe that is mostly vertical never dismisses and
+the server remembers, Undo brings it back, a reload keeps it hidden; Get price then Pass closes the idea the same way, #211); a swipe that is mostly vertical never dismisses and
 the page still scrolls; the three Live sections fold with the count badge kept and the state remembered across a
 reload; tapping a card body pushes a detail page (price vs fair, edge, chance, stake and expected profit, why it was
 picked, how the price moved, whether you could sell it, the game page) while its buttons keep doing their own thing;
@@ -30,6 +31,7 @@ threading.Thread(target=W.webapp_main, daemon=True).start(); __import__("upwait"
 B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 SHOTS = os.environ.get("SHOTS") or ""
 from playwright.sync_api import sync_playwright
+import upwait
 problems = []
 def bad(m): problems.append(m); print("PROBLEM:", m)
 def until(fn, secs=4):
@@ -98,9 +100,10 @@ with sync_playwright() as pw:
     for W_, H, tag, touch in ((390, 844, "phone390", True), (360, 740, "phone360", True), (1280, 900, "desk", False)):
         ctx = br.new_context(viewport={"width": W_, "height": H}, device_scale_factor=2, color_scheme="dark", has_touch=touch)
         pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        pg.add_init_script("window.__hswForce=1;")
-        pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('live')"); time.sleep(2)
-        pg.evaluate("window.load=async()=>{}")
+        pg.add_init_script("window.__hswForce=1;"); pg.add_init_script(upwait.COUNT_FETCHES)
+        # wait for the page's own loads (the boot one too) before drawing test data in, then hold it still: a Live load
+        # still on its way used to land after inject() and replace the seeded ideas with the server's older snapshot
+        pg.goto(B + "/app"); upwait.go_and_hold(pg, "live")
         seed(); inject(pg)
         # ---- the ration: the best three, the rest under 'N more ideas'
         txt = pg.locator(".lsec[data-fk=ideas]").inner_text()
@@ -150,11 +153,11 @@ with sync_playwright() as pw:
         # ---- Not now means dismiss, and a reload keeps it hidden (server side)
         pg.locator(".ilist .iw").first.get_by_text("Not now").click(); time.sleep(.9)
         if not until(lambda: "BBB" not in server_picks()): bad(f"{tag}: Not now should dismiss on the Mac")
-        pg.reload(); time.sleep(3)
+        pg.reload(); upwait.go_and_hold(pg, "live")
         got = pg.evaluate("api('/app/api/live').then(r=>({n:(r.ideas||[]).map(i=>i.picks),lim:r.ideas_limit,hid:r.ideas_hidden,id:(r.ideas||[])[0]&&r.ideas[0].idea_id}))")
         if not isinstance(got, dict) or got.get("lim") != 3 or got.get("hid") != 1 or any("BBB" in p for p in got.get("n", [])) or not str(got.get("id", "")).startswith("i"):
             bad(f"{tag}: after a reload the live data should keep it hidden and carry ideas_limit/ideas_hidden/idea_id: {got}")
-        seed(); pg.evaluate("window.load=async()=>{}"); inject(pg)
+        seed(); inject(pg)
         # ---- swipe left to dismiss (touch), and a vertical drag that starts on a card still scrolls
         if touch:
             cdp = ctx.new_cdp_session(pg)
@@ -181,6 +184,64 @@ with sync_playwright() as pw:
             if pg.evaluate("location.hash").startswith("#game") or pg.evaluate("document.querySelector('#modal').classList.contains('on')"): bad(f"{tag}: a swipe must not open the detail page")
             if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): bad(f"{tag}: sideways scroll after a swipe")
             seed(); inject(pg)
+        # ---- Get price, then Pass: closes the idea like the X (GitHub #211). Singles, combos and the detail page.
+        seed(); inject(pg, "S.ideasMore=true;"); pg.evaluate("S.ideasMore=true;renderLive()"); time.sleep(.4)
+        PSENT = []
+        def pact(route):
+            try: a = json.loads(route.request.post_data or "{}").get("a")
+            except ValueError: a = None
+            PSENT.append(a)
+            if a == "idea": route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "i": 7, "pays": 10.0, "stake": 3.0, "pct": 1.3, "clears": True, "price": .3, "n": 10, "edge": .05, "fair": .4, "single": True}))
+            elif a in ("buy", "singlebuy"): route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": False, "msg": "test: no buy"}))
+            else: route.continue_()
+        pg.route("**/app/api/act", pact)
+        gone = lambda p_: until(lambda: (pg.evaluate("0") or True) and p_ not in server_picks())   # evaluate() lets the route handler above run
+        back = lambda p_: until(lambda: (pg.evaluate("0") or True) and p_ in server_picks())
+        def quoted(id_):
+            pg.evaluate("document.querySelector('[data-ib=\"%s\"]').click()" % id_)
+            return wait(pg, "(()=>{const e=document.querySelector('.iw[data-id=\"%s\"] .dbtns');return !!e&&/Pass/.test(e.innerText)&&/Buy/.test(e.innerText)})()" % id_, 5)
+        for pick, what in (("BBB", "a single"), ("DDD", "a combo")):
+            pid = pg.evaluate("S.live.ideas.find(i=>i.picks.startsWith('%s')).id" % pick)
+            if not quoted(pid): bad(f"{tag}: Get price should show Pass and Buy for {what}"); continue
+            if not pg.evaluate("!!S.ideaT&&S.ideaTid==='%s'" % pid): bad(f"{tag}: the quote countdown should be running for {what}")
+            n0 = len(PSENT)
+            pg.evaluate("document.querySelector('.iw[data-id=\"%s\"] .dbtns .btn.ghost').click()" % pid)
+            if not wait(pg, "!document.querySelector('.iw[data-id=\"%s\"]')" % pid, 4): bad(f"{tag}: Pass should fold {what} away")
+            if not gone(pick): bad(f"{tag}: Pass should put {what} in the Mac's dismiss store: {server_picks()}")
+            if "idea_dismiss" not in PSENT[n0:]: bad(f"{tag}: Pass should send idea_dismiss: {PSENT[n0:]}")
+            if not wait(pg, "!!document.querySelector('#undo.on')", 3) or "Undo" not in pg.locator("#undo").inner_text(): bad(f"{tag}: Pass should show the Undo bar")
+            st = pg.evaluate("({q:S.ideaq['%s'],t:S.ideaT,id:S.ideaTid})" % pid)
+            if st["q"] is not None or st["t"] is not None or st["id"] is not None: bad(f"{tag}: Pass should drop the quote and stop its countdown: {st}")
+            if "buy" in PSENT[n0:] or "singlebuy" in PSENT[n0:]: bad(f"{tag}: Pass must never buy: {PSENT[n0:]}")
+            time.sleep(1.2)
+            if pg.evaluate("[...document.querySelectorAll('.ilist .iw')].some(e=>e.innerText.includes('%s'))" % pick): bad(f"{tag}: {what} should stay gone across refreshes")
+            pg.locator("#undo button").click(); time.sleep(.9)
+            if not back(pick): bad(f"{tag}: Undo should bring {what} back after a Pass")
+        # a buy on its way: Pass is off
+        seed(); inject(pg); pid = pg.evaluate("S.live.ideas[0].id")
+        if quoted(pid):
+            pg.evaluate("S.ibuy={'%s':1};renderLive()" % pid); time.sleep(.3)
+            if not pg.evaluate("document.querySelector('.iw[data-id=\"%s\"] .dbtns .btn.ghost').disabled" % pid): bad(f"{tag}: Pass should be off while a buy is on its way")
+            pg.evaluate("ideaPass('%s',false)" % pid); time.sleep(.8)
+            if not pg.evaluate("!!document.querySelector('.iw[data-id=\"%s\"]')&&!!S.ideaq['%s']" % (pid, pid)) or "BBB" not in server_picks(): bad(f"{tag}: Pass must do nothing while a buy is in flight")
+            pg.evaluate("S.ibuy={};S.ideaq={};clearInterval(S.ideaT);S.ideaT=null;renderLive()")
+        # Pass on the detail page closes the page and dismisses
+        seed(); inject(pg); pid = pg.evaluate("S.live.ideas.find(i=>i.picks.startsWith('CCC')).id")
+        pg.evaluate("openIdea('%s')" % pid)
+        wait(pg, "document.querySelector('#modal').classList.contains('on')&&S.ideaReady", 5)
+        for _try in range(3):
+            try: pg.locator("#sheet").get_by_text("Get today's price").click(timeout=4000)
+            except Exception: pass
+            if until(lambda: "idea" in PSENT[-3:], 2): break
+        if wait(pg, "/Pass/.test(document.querySelector('#sheet').innerText)", 5):
+            for _try in range(3):
+                try: pg.locator("#sheet .idact").get_by_text("Pass", exact=True).click(timeout=4000); break
+                except Exception: time.sleep(.3)
+            if not wait(pg, "!document.querySelector('#modal').classList.contains('on')", 4): bad(f"{tag}: Pass on the detail page should close it")
+            if not gone("CCC"): bad(f"{tag}: Pass on the detail page should dismiss the idea: {server_picks()} {PSENT[-6:]}")
+        else: bad(f"{tag}: the detail page should show Pass after Get price")
+        pg.unroute("**/app/api/act")
+        seed(); inject(pg)
         # ---- Clear all
         pg.get_by_text("Clear all").click()
         if not wait(pg, "!document.querySelector('.ilist .iw')", 5): bad(f"{tag}: Clear all should take every card off")
@@ -208,7 +269,7 @@ with sync_playwright() as pw:
             if pg.evaluate(f"document.querySelector('.fold[data-fk={k}]').getBoundingClientRect().height") > 30: bad(f"{tag}: a folded {k} section should take no room")
             if abs(docy() - top0) > 2: bad(f"{tag}: folding {k} moved its own header (layout jump)")
             if SHOTS and k == "ideas" and tag == "phone390": pg.screenshot(path=os.path.join(SHOTS, "folded_phone390.png"), full_page=False)
-        pg.reload(); time.sleep(3); pg.evaluate("go('live')"); time.sleep(1.5); pg.evaluate("window.load=async()=>{}"); inject(pg)
+        pg.reload(); upwait.go_and_hold(pg, "live"); inject(pg)
         for k in ("ideas", "combos", "singles"):
             if not pg.evaluate(f"document.querySelector('.fold[data-fk={k}]').classList.contains('shut')"): bad(f"{tag}: the {k} fold should survive a reload")
         for k in ("ideas", "combos", "singles"):

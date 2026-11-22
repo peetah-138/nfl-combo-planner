@@ -1,3 +1,4 @@
+# CHECK: group=page
 # Settings › The Mac: the sportsbook odds credits row (remaining, pace, run-out, reset, low mode), on a phone, from
 # the Mac's read-only status (/app/mac-info, faked here). No JS errors, no sideways scroll, plain English.
 import sys, os, time, threading, json

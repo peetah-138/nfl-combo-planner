@@ -1,3 +1,4 @@
+# CHECK: group=page secs=20
 # Issue #62: "Add to today's panel" on the New-since-you-approved card sends once, says Adding… then Added, and the
 # card leaves at once, even if a refresh from the Mac still lists the bet. Taps while it's on its way do nothing.
 import sys, os, time, threading, json

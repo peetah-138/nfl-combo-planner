@@ -1,3 +1,4 @@
+# CHECK: group=page secs=8
 """Games tab card (GitHub #95): every card shows BOTH teams and BOTH scores, your side marked YOURS. A college-basketball
 card whose full opponent name is empty falls back to the short code on the score (sc.opp_abbr); with neither it still shows
 the opponent's score under a neutral "Opponent" label; a card with no opponent score (tennis/UFC on Kalshi's live data)

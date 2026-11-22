@@ -1,3 +1,4 @@
+# CHECK: group=page secs=30
 """The league chip row on Build stays exactly as it was while a league loads (GitHub #58: "League chips disappear
 while a league is loading"). Cause that was fixed: the chips came only from the loaded Build data (`S.build.leagues`),
 and tapping a chip cleared `S.build` while the new league loaded, so the row was drawn from a built-in list of five

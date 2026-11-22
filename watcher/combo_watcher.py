@@ -21,7 +21,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.21.130"
+WATCHER_VERSION = "2026.11.21.131"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
@@ -1208,6 +1208,26 @@ class HubOdds:
         return True
 
 
+COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
+
+
+def combo_link(E, msg):
+    """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
+    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
+    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    try:
+        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
+        if len(named) != 1:
+            return None
+        want = "Combo " + named.pop()
+        mine = dict(E.MINE.get("snap") or {})
+        mine.update(E.MINE.get("hold") or {})
+        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
+        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+    except Exception:
+        return None
+
+
 class Notifier:
     """Urgent alerts (cash-outs, hedges, anything done automatically, combos at risk) go out at once.
     Everything else waits and goes out together, at most once every 30 minutes, never 10 PM-7 AM.
@@ -1239,7 +1259,7 @@ class Notifier:
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
                  pause_button=bool(self.E.CFG.get("auto_sell")), web_title="Combo Hub", web_urgent=True, tag="urgent",
-                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."))
+                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."), click=combo_link(self.E, msg))
             BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
@@ -1884,7 +1904,8 @@ def shadow_loop(odds, notifier=None, every=600):
             with odds.lock:
                 H = odds.engine()
                 did = H.panel_pass(log=log) + H.panel_settle() + [f"cut-off {m}" for m in H.adjust_cutoffs()] \
-                    + [f"smart sell {m}" for m in H.smart_tune()]
+                    + [f"smart sell {m}" for m in H.smart_tune()] \
+                    + [f"spread/total bar {m}" for m in H.line_edge_tune()]      # never raises (logs instead)
                 n_lab = H.lab_pass()
             if n_lab:
                 log(f"combo lab: paper-bought {n_lab} at different price levels")
@@ -1895,6 +1916,12 @@ def shadow_loop(odds, notifier=None, every=600):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel skipped:", type(err).__name__, err)
+        try:                                              # the smart-sell scorecard (#115): read-only, OUTSIDE odds.lock
+            n_out = odds.engine().sale_outcomes()         # (public Kalshi reads; itself at most every 10 minutes)
+            if n_out:
+                log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
+        except Exception as err:
+            log("smart-sell scorecard skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
             # Runs OUTSIDE odds.lock on purpose: both bodies do batched Kalshi requests.get (via fetch_results and
             # cover_ticks' own calls, up to 15-20 s each) and the lock is the same one panel_loop holds to place a
@@ -2266,7 +2293,8 @@ class WebBuild:
             H.set_league(b["lg"])
             H.CTX.clear()
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={}, build_id=None)
-            r = H.get_offer(i)
+            with H.manual_tap():                    # Pete's own tap: a region hold doesn't stop it (#134)
+                r = H.get_offer(i)
             if r.get("error"):
                 return r["error"]
             b["offers"][i] = dict(H.CTX["offers"][i], got=time.time(), pct=r.get("pct"), ok=r.get("ok"))
@@ -2286,7 +2314,8 @@ class WebBuild:
             H.CTX.clear()
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
             log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
-            r = H.accept_offer(i)
+            with H.manual_tap():
+                r = H.accept_offer(i)
         b["offers"].pop(i, None)
         if r.get("error"):
             return r["error"]
@@ -2594,10 +2623,10 @@ def webapp_main():
         except Exception:
             orders = []
         try:
-            pulse = A.pulse_series() if A.STORE.get("db") else []
+            pnl = A.pnl_series() if A.STORE.get("db") else None    # #221: the hero chart's profit line (cached)
         except Exception:
-            pulse = []
-        return dict(out, ideas=ideas, orders=orders, pulse=pulse, sales=recent_sales(), **ideas_extra,
+            pnl = None
+        return dict(out, ideas=ideas, orders=orders, pnl=pnl, sales=recent_sales(), **ideas_extra,
                     auto_sell=bool(A.CFG.get("auto_sell")), fresh=freshness()) if isinstance(out, dict) else out
 
     def recent_sales(hours=3):
@@ -2676,6 +2705,42 @@ def webapp_main():
         return out[:8]
 
     SNAP = {}                                           # sport -> its last Build, ready to switch to
+    LINES = {}                                          # sport -> its last spread/total recommendations (issue #117)
+    LINES_BUSY = set()
+
+    def lines_work(lg):
+        """Spreads and totals for one Build sport, worked out OFF the app lock (they read Kalshi's order books and run
+        Smart Buy's simulator), so taps never wait on them. Recommend-only: nothing here buys. Never raises."""
+        try:
+            codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
+            recs, priced, nobook = [], 0, 0
+            for c in codes:
+                got, info = A.line_recommend(c)
+                recs += got
+                priced += info.get("priced") or 0
+                nobook += (info.get("skipped") or {}).get("book") or 0
+            got = {"at": time.time(), "lines": sorted(recs, key=lambda x: -(x.get("exp") or 0))[:12],
+                   "priced": priced, "nobook": nobook}
+            LINES[lg] = got
+            if BUILD.get("lg") == lg:                   # Buy straight reads the board's lines (single_side)
+                BUILD.update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+            if lg in SNAP:
+                SNAP[lg].update(lines=got["lines"], lines_priced=priced, lines_nobook=nobook)
+        except Exception as err:
+            print("lines:", type(err).__name__, err, flush=True)
+        finally:
+            LINES_BUSY.discard(lg)
+
+    def lines_kick(lg, wait=0.0):
+        """Start working out a sport's spreads/totals in the background when its copy is over a minute old (one at a
+        time per sport); wait up to `wait` seconds for it. The page shows the last good copy meanwhile."""
+        got = LINES.get(lg)
+        if lg not in LINES_BUSY and (not got or time.time() - got["at"] > 60):
+            LINES_BUSY.add(lg)
+            th = threading.Thread(target=lines_work, args=(lg,), daemon=True)
+            th.start()
+            if wait:
+                th.join(wait)
 
     def use_snap(lg):
         s = SNAP.get(lg)
@@ -2684,7 +2749,8 @@ def webapp_main():
         A.set_league(lg)
         A.CTX.clear()
         A.CTX.update(s["ctx"])
-        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"])
+        BUILD.update(lg=lg, last=lg, note=s["note"], at=s["at"], days=s["days"], lines=s["lines"],
+                     lines_priced=s.get("lines_priced") or 0, lines_nobook=s.get("lines_nobook") or 0)
         return True
 
     def api_build(lg, rebuild=True, warming=False):
@@ -2692,6 +2758,7 @@ def webapp_main():
         BUILD.setdefault("seen", {})[lg] = time.time()
         if not warming:
             BUILD["touched"] = time.time()
+        lines_kick(lg, wait=0 if warming else 1.5)     # before the lock: never holds it
         with alock:
             gone = not A.CTX.get("all_games")              # Settings for another sport clears the build's games
             if not rebuild and (BUILD["lg"] != lg or gone) and use_snap(lg):
@@ -2724,13 +2791,11 @@ def webapp_main():
                 A.CTX.update(combos=combos, all_games=games, games=dict(games), stake=A.CFG["stake"], offers={},
                              build_id=None)
                 BUILD.update(lg=lg, last=lg, note=note, at=time.time(), days=days)
-                try:                                    # spreads and totals, priced with the score model
-                    codes = [c for c in A.MIX_SPORTS] if lg == "mix" else [lg]
-                    BUILD["lines"] = [x for c in codes for x in A.line_candidates(c, everything=True)][:40]
-                except Exception as err:
-                    print("lines:", err, flush=True)
-                    BUILD["lines"] = []
-                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"]}
+                lc = LINES.get(lg) or {}                # spreads and totals: recommendations only (issue #117),
+                BUILD.update(lines=lc.get("lines") or [], lines_priced=lc.get("priced") or 0,   # worked out off the lock
+                             lines_nobook=lc.get("nobook") or 0)
+                SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"],
+                            "lines_priced": BUILD["lines_priced"], "lines_nobook": BUILD["lines_nobook"]}
             games = A.CTX.get("all_games") or {}
             board = []
             on = {e for e, sides in games.items() if any(A.started(x) for x in sides)}
@@ -2761,11 +2826,25 @@ def webapp_main():
                               "sides": [side_view(x) for x in sides], "tie": any(x.get("tie") for x in sides),
                               "value": max((x.get("edge") or -1) for x in teams) if teams else None})
             board.sort(key=lambda g: (g["started"], str(g["start"])))
+            own_sets = owned_sets()
+            cviews = [combo_view(i, c, own_sets) for i, c in enumerate(A.CTX.get("combos") or [], 1)]
+            lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
+            try:                                        # Best bets today (#63): recommend-only, display only
+                best = A.best_bets_feed(
+                    {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)},
+                    lines_now,
+                    [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
+                     for v, c in zip(cviews, A.CTX.get("combos") or []) if not v.get("bought")])
+            except Exception as err:
+                print("best bets:", err, flush=True)
+                best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
-                             "board": board, "combos": [combo_view(i, c, own) for own in [owned_sets()] for i, c in enumerate(A.CTX.get("combos") or [], 1)],
-                             "singles": singles_view(games), "lines": BUILD.get("lines") or [],
+                             "board": board, "combos": cviews, "best": best,
+                             "singles": singles_view(games), "lines": lines_now,
+                             "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
+                             "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
                                       **{k: A.CFG.get(k) for k in ("next_day", "thursday", "saturday", "monday", "mix_window")},
                                       "wed": sum(1 for x in (BUILD.get("days") or {}).values() if x == "Wednesday"),
@@ -2830,7 +2909,15 @@ def webapp_main():
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
-                             "panel": A.panel_record() if A.STORE.get("db") else None})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+
+    def board():
+        """The profit scoreboard (#138), read-only from the history file; None when it can't be read (the page says so)."""
+        try:
+            return A.profit_board() if A.STORE.get("db") else None
+        except Exception as err:
+            log("profit scoreboard:", type(err).__name__, err)
+            return None
 
     def proof(bets, done):
         """Is it working? Returns with a 95% range, prices vs kickoff, the paper record, and a verdict."""
@@ -3117,6 +3204,8 @@ def webapp_main():
                             else float(v) if isinstance(cur, float) else None
                     except (TypeError, ValueError):
                         continue
+                    if k == "auto_cap" and v is not None and A.auto_cap_limit(v) is None:
+                        v = A.AUTO_CAP_UNLIMITED            # any value over the slider's numbers = Unlimited (#217)
                     if v is not None:
                         A.CFG[k] = v
                 for t in ("upsets", "safer", "middle", "moonshot"):
@@ -3161,6 +3250,37 @@ def webapp_main():
             return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
         except Exception:
             return None
+
+    def combo_offer(i, own=None):
+        """Kalshi's price for combo i: at Pete's own amount when he set one (already checked by own_stake), else at the
+        recommended size (the price sets it, less if he's heavy on a team), as before. Adds what the sheet shows beside
+        it: the recommended size (rec), the expected profit in dollars at the books' chance (ev), the room left under
+        the cap and the most this bet may be. Prices only: the buy is still accept_offer on this exact offer."""
+        r = A.get_offer(i, amount=own)
+        c = A.CTX["combos"][i - 1]
+        rec = None
+        if not r.get("error") and r.get("pct"):
+            rec = A.stake_for(r["pct"], c["legs"]) if A.CFG.get("size_auto") else None
+            if own is None and rec and abs(rec - r["stake"]) > 0.01:
+                r2 = A.get_offer(i, amount=rec)
+                if not r2.get("error"):
+                    r = r2
+        r = dict(r, own=own is not None, min=A.OWN_MIN)
+        if r.get("error"):
+            return r
+        r["rec"] = rec or A.CTX.get("stake")
+        if c.get("fair"):                              # the books' chance of the combo, as built
+            r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / c["fair"] - r["stake"], 2)
+        try:
+            r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)   # display only: the cap itself is
+        except Exception:                              # get_offer's / accept_offer's own fresh check
+            r["room"] = None
+        r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
+        return r
+
+    IDEA_Q = {}            # Live single-game ideas: the size and price the Mac quoted, by idea id (Buy must match)
+    IDEA_Q_SECS = 25       # the card's price lasts 20 s; a little slack for the tap to arrive
+
     class tap_mark:
         """While a tap is placing an order: a mark the watcher's update loop reads (it installs only after), so an
         update never restarts the web app mid-order."""
@@ -3214,7 +3334,13 @@ def webapp_main():
             msg = "The Mac is restarting. Nothing was done; try again in a moment."
             return {"ok": False, "msg": msg, "error": msg, "busy": True}
         try:
-            return _api_act(d)
+            A.refusal_take()                                # this thread's last Kalshi refusal belongs to this tap only
+            with A.manual_tap():                            # Pete's own tap: not held by a region hold, and it renews one (#134)
+                r = _api_act(d)
+            ref = A.refusal_take()
+            if ref and isinstance(r, dict) and (r.get("error") or r.get("ok") is False):
+                r = dict(r, refusal=ref)                    # Kalshi's own words, in full, for the page (#134)
+            return r
         except ActBusy:
             msg = "The app is busy updating. Nothing was done; try again in a moment."
             log("tap waited too long for the app lock:", str(d.get("a", ""))[:20])
@@ -3241,6 +3367,15 @@ def webapp_main():
                     "Smart sell is watching this one now."}
         if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
             return idea_act(a, d, t)
+        if a == "panel_whatif":                     # reads only, no app lock: the card's numbers at Pete's own amounts
+            ids = d.get("ids")
+            try:
+                return jsonable(A.panel_whatif(str(d.get("view") or "all")[:20],
+                                               [str(x) for x in ids][:60] if isinstance(ids, list) else None,
+                                               d.get("stakes")))
+            except Exception as err:
+                log("panel what-if failed:", type(err).__name__, err)
+                return {"ok": False, "msg": "Couldn't work that out just now."}
         with act_lock():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
@@ -3260,19 +3395,16 @@ def webapp_main():
                 cur = (A.CTX.get("combos") or [])[i - 1] if 1 <= i <= len(A.CTX.get("combos") or []) else None
                 if shown is not None and (not cur or sorted(map(str, shown)) != sorted(l["ticker"] for l in cur["legs"])):
                     return {"ok": False, "error": "The board was refreshed with new combos. Pull down to reload Build, then try again."}
+                own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here, never the page's word
+                if bad:
+                    return {"ok": False, "error": bad, "bad_stake": True}
                 try:
-                    r = A.get_offer(i, amount=d.get("stake"))
-                    c = A.CTX["combos"][i - 1]
-                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto") and not d.get("stake"):
-                        want = A.stake_for(r["pct"], c["legs"])  # the price sets the size, less if you're heavy on a team
-                        if want and abs(want - r["stake"]) > 0.01:
-                            r2 = A.get_offer(i, amount=want)
-                            if not r2.get("error"):
-                                r = r2
+                    r = combo_offer(i, own)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check")}})
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                                          "max", "min", "own")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -3287,48 +3419,58 @@ def webapp_main():
                     fair = (side or {}).get("fair") or row.get("pfair") or 0   # spreads/totals: the model's chance
                     if not fair or not dpt or dpt.get("ask") is None:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
+                    own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
+                    if bad:
+                        return {"ok": False, "msg": bad, "bad_stake": True}
                     ask = dpt["ask"]
                     fee = A.single_fee(ask)
                     edge = fair - ask - fee
                     pct = fair / (ask + fee) if ask else 0
-                    stake = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
-                    n = max(1, int(stake / (ask + fee)))
-                    if dpt.get("ask_size"):             # Kalshi's sizes can be fractional now ("0.40")
-                        n = min(n, int(dpt["ask_size"]))
+                    rec = A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair)
+                    stake = own if own is not None else rec
+                    n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
+                    note = None
+                    if dpt.get("ask_size") and n > int(dpt["ask_size"]):   # Kalshi's sizes can be fractional now ("0.40")
+                        n = int(dpt["ask_size"])
+                        note = f"Only {int(dpt['ask_size'])} contracts are for sale at {ask * 100:.0f}¢, so it buys {n}."
                     if n < 1:
-                        return {"ok": False, "msg": "Kalshi has under one contract for sale at that price right now."}
+                        return {"ok": False, "msg": (f"That's under one contract at {ask * 100:.0f}¢. Pick a bigger amount."
+                                                     if own is not None and not note else
+                                                     "Kalshi has under one contract for sale at that price right now.")}
                     if not A.can_trade():
                         return {"ok": False, "msg": A.NO_TRADE_MSG}
-                    no, _, _ = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
+                    no, spent, budget = A.single_cap_block(tk, n * (ask + fee))   # its own league's cap; unreadable = refused
                     if no:
-                        return {"ok": False, "msg": no}
-                    return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": round(n * (ask + fee), 2),
+                        return {"ok": False, "msg": no, "capped": True}
+                    cost = round(n * (ask + fee), 2)
+                    for k in [k for k, v in IDEA_Q.items() if time.time() - v["at"] > IDEA_Q_SECS * 4]:
+                        IDEA_Q.pop(k, None)
+                    IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
+                    return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4), "fair": fair,
-                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6})
+                                     "clears": edge >= A.SINGLE_MIN_EDGE * 0.6, "rec": rec, "own": own is not None,
+                                     "ev": round(n * fair - cost, 2), "note": note, "min": A.OWN_MIN, "max": A.OWN_MAX,
+                                     "room": round(max(0.0, budget - spent), 2) if spent is not None else None})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
                 if row.get("live") and row["ts"] < time.time() - 600:
                     return {"ok": False, "gone": True, "msg": "That idea had a game in progress and is more than 10 minutes old."}
                 if BUILD.get("lg") != row["lg"]:
                     api_build(row["lg"], rebuild=True)
+                own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
+                if bad:
+                    return {"ok": False, "msg": bad, "bad_stake": True}
                 k, why = A.add_own_combo(json.loads(row["legs"]))
                 if not k:
                     return {"ok": False, "gone": True, "msg": why or "Kalshi isn't listing those games any more."}
                 try:
-                    r = A.get_offer(k)
-                    c = A.CTX["combos"][k - 1]
-                    if not r.get("error") and r.get("pct") and A.CFG.get("size_auto"):
-                        want = A.stake_for(r["pct"], c["legs"])
-                        if want and abs(want - r["stake"]) > 0.01:
-                            r2 = A.get_offer(k, amount=want)
-                            if not r2.get("error"):
-                                r = r2
+                    r = combo_offer(k, own)
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
                 return jsonable({"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                                 "clears": r.get("ok")})
+                                 "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}})
             if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
                     return {"ok": False, "msg": "That market isn't recognized."}
@@ -3343,14 +3485,34 @@ def webapp_main():
                 if not r.get("ok") and not r.get("check") and "market's pot has" in str(r.get("msg") or ""):
                     r = dict(r, pot=pot_plan(t, r.get("msg"), d.get("cost")))   # offer a move (a refusal: nothing bought)
                 return jsonable(r)
+            if a == "sellquote":                        # Sell a single (issue #238): what it gets now, from a fresh book
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                    return {"ok": False, "msg": "That bet isn't recognized."}
+                return jsonable(A.single_sell_quote(t, paused=paused_now()))
+            if a == "singlesell":                       # Pete's second tap on the sell sheet: the quote on screen, once
+                if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q") or "")):
+                    return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
+                with tap_mark():                        # an update never restarts the web app mid-order
+                    r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
+                LIVE["at"] = 0
+                return jsonable(r)
             if a == "singlebuy":
                 rows = A.store_rows("select legs from suggestions where id=? and n=1", (str(d.get("id", "")),))
                 if not rows:
                     return {"ok": False, "msg": "That idea has expired."}
-                n, price = int(d.get("n") or 0), float(d.get("price") or 0)
-                if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * price > A.CFG.get("size_max", 10) * 1.6:
+                try:
+                    n, price = int(d.get("n") or 0), float(d.get("price") or 0)
+                except (TypeError, ValueError):
+                    n, price = 0, 0.0
+                iq = IDEA_Q.get(str(d.get("id", ""))) or {}   # the size and price the Mac itself quoted (never the page's)
+                if (not iq or time.time() - iq["at"] > IDEA_Q_SECS or iq["n"] != n or abs(iq["price"] - price) > 1e-9):
+                    return {"ok": False, "expired": True, "msg": "That price isn't the one the Mac gave you any more. "
+                                                                  "Get today's price again."}
+                if not 1 <= n <= 1000 or not 0.01 <= price <= 0.97 or n * (price + A.single_fee(price)) > A.OWN_MAX + 0.01:
                     return {"ok": False, "msg": "That size or price isn't allowed."}
                 tk = str(json.loads(rows[0]["legs"])[0])
+                if tk != iq.get("t"):
+                    return {"ok": False, "msg": "That market isn't recognized."}
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", tk):
                     return {"ok": False, "msg": "That market isn't recognized."}
                 # Pause, trading access, the unknown-outcome block and the market's own league cap, then one order
@@ -3379,7 +3541,7 @@ def webapp_main():
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
                                  "check": bool(r.get("check"))})
             if a == "panel_approve":
-                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"))
+                ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"), stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
             if a == "clear_block":                  # Pete lifts an "unknown outcome" block after checking Kalshi
                 key = str(d.get("key", ""))[:200]
@@ -3404,7 +3566,7 @@ def webapp_main():
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
             if a == "panel_add":
-                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "")
+                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "", stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
             if a == "panel_look":
                 ok, msg = A.panel_look_now()
@@ -3531,7 +3693,9 @@ def webapp_main():
                             h = max(1, min(720, int(q.get("h") or 16)))
                         except ValueError:
                             h = 16
-                        out = {"h": h, "pulse": A.pulse_series(hours=h, points=200) if A.STORE.get("db") else []}
+                        db = A.STORE.get("db")
+                        out = {"h": h, "pulse": A.pulse_series(hours=h, points=200) if db else [],
+                               "pnl": A.pnl_series(hours=h, points=200) if db else None}
                     elif path == "/app/api/settings":
                         out = api_settings(q.get("lg") or "")
                     else:
@@ -3540,6 +3704,11 @@ def webapp_main():
                     import traceback
                     traceback.print_exc()
                     out = {"error": f"{type(err).__name__}: {err}"}
+                if isinstance(out, dict) and path in ("/app/api/live", "/app/api/build", "/app/api/settings", "/app/api/panel"):
+                    try:                                    # Kalshi's refusals (issue #134): the page shows a calm banner
+                        out = dict(out, restrict=A.restriction_info())
+                    except Exception as err:
+                        log("restriction info:", type(err).__name__, err)
                 return self._send(200, json.dumps(out))
             self._send(404, "{}")
 
@@ -3613,7 +3782,9 @@ def webapp_main():
                                 A.CTX.update(saved)
                                 s = SNAP.get(cur)
                                 if s:
-                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"])
+                                    BUILD.update(lg=cur, note=s["note"], days=s["days"], lines=s["lines"],
+                                                 lines_priced=s.get("lines_priced") or 0,
+                                                 lines_nobook=s.get("lines_nobook") or 0)
                                 BUILD["at"] = was_at            # the restored board's own age (Buy straight reads it)
                     break                                       # one sport per round
             except Exception as err:
@@ -3807,7 +3978,7 @@ def webapp_proxy(handler, tok, method, path, body=b""):
 
 PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
 #                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
-ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "pot_move")   # taps that can move money (the rest only read)
+ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "singlesell", "pot_move")   # taps that can move money (the rest only read)
 
 
 def _proxy_send(handler, code, ctype, data, where=""):
@@ -4209,7 +4380,7 @@ def main():
     E.present = lambda *a, **k: None
     E.loading = lambda *a, **k: None
     E.notify = lambda msg: push(conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
-                                pause_button=bool(E.CFG.get("auto_sell")))
+                                pause_button=bool(E.CFG.get("auto_sell")), click=combo_link(E, msg))
     E.console_note = lambda msg: log(msg)
     E.auto_cash_checks = lambda: []        # no quotes on every combo; see estimate_offers
     E.set_league("nfl")                    # Live covers every sport; this only picks the main game list

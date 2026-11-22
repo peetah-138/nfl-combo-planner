@@ -1,6 +1,32 @@
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
 const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json();},e=>{netUp(false);throw e;});
+const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
+/* Kalshi's refusals, shown honestly (issue #134). When Kalshi turns an order down for the account or the region, the page says
+   so in Kalshi's own words, in full (a sheet you can read and copy), and a calm banner stays up while the Mac waits before trying
+   again. It is Kalshi's rule, not a bug in the app: the page only reports it and never offers a way around it. `S.rs` is the
+   Mac's latest note (`restrict` on Live, Build, Settings and the panel); `j.refusal` is the answer to the tap that was refused. */
+function rsTime(t){return t?new Date(t*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
+function rsSee(j){if(!j||typeof j!=='object')return j;
+ if(j.restrict){S.rs=j.restrict;rsBan();}
+ const f=j.refusal;if(f&&(f.msg||f.code)&&!f.held){S.rsAt=Date.now();clearTimeout(S.rsT);S.rsT=setTimeout(()=>refusalSheet(f.msg,f.code,f.restricted),60);}
+ else if(f&&f.held){S.rsAt=Date.now();}
+ return j;}
+function rsBan(){const el=document.getElementById('rsban');if(!el)return;const b=S.rs&&S.rs.buy,s=S.rs&&S.rs.sell,x=b&&b.active?b:s&&s.active?s:null;
+ document.body.classList.toggle('rsb',!!(b&&b.holding));
+ if(!x){el.hidden=true;el.innerHTML='';el._sig='';return;}
+ const what=x===b?'orders':'sales',sig=what+'|'+x.at+'|'+(x.holding?1:0);if(el._sig===sig&&!el.hidden)return;el._sig=sig;
+ el.innerHTML=`<button type="button" class="rsb-in" onclick="refusalSheet(S.rs.${x===b?'buy':'sell'}.msg,S.rs.${x===b?'buy':'sell'}.code,true)"><i aria-hidden="true">⏸</i><span><b>Kalshi isn't allowing ${what} for your account right now</b><small>${x.holding?'The app is waiting until '+esc(rsTime(x.hold_until))+' before it asks again.':'The next one you place will check again.'} Tap to read what Kalshi said.</small></span></button>`;el.hidden=false;}
+function rsRow(){const l=S.rs&&S.rs.last;if(!l||!l.msg)return '';const live=S.rs&&((S.rs.buy&&S.rs.buy.active)||(S.rs.sell&&S.rs.sell.active));
+ return `<div class="srow"><div class="l"><b>Last Kalshi refusal${live?' · still in place':''}</b><small>${esc(String(l.msg).slice(0,140))}${l.msg.length>140?'…':''} (${esc(rsTime(l.at))})</small></div><button class="btn" type="button" onclick="refusalSheet(S.rs.last.msg,S.rs.last.code,true)">Read it</button></div>`;}
+function refusalSheet(msg,code,restricted){msg=String(msg||'').trim();if(!msg&&!code)return;S.rsAt=Date.now();
+ const o=document.querySelector('#modal.on #sheet .rsheet');if(o&&o.dataset.m===msg)return;   // already open on this very message
+ modal(`<div class="rsheet" data-m="${esc(msg)}"><h3>Kalshi said no</h3><p class="rsmsg" style="user-select:text;-webkit-user-select:text;font-size:15px;line-height:1.5;margin:6px 0 10px">${msg?esc(msg):'Kalshi turned this down and gave no reason.'}</p>
+  ${code?`<div class="m" style="font-size:12px;user-select:text;-webkit-user-select:text">Kalshi's code: <b>${esc(code)}</b></div>`:''}
+  <p class="m" style="font-size:13px;line-height:1.5;margin:12px 0">${restricted?'This is Kalshi\'s rule for your account or where you are, not a problem in the app. Nothing was bought or sold. The app only reports it and waits before asking again; it can\'t change it.':'Kalshi turned this one down, and nothing was bought or sold.'}</p>
+  <div style="display:flex;gap:8px"><button class="btn ghost" type="button" style="flex:1;justify-content:center" onclick="rsCopy(this)">Copy message</button><button class="btn" type="button" style="flex:1;justify-content:center" onclick="closeModal()">Close</button></div></div>`);
+ hap('warning');}
+function rsCopy(b){const el=document.querySelector('#sheet .rsmsg');const t=el?el.textContent:'';const done=ok=>{b.textContent=ok?'Copied':'Select the text and copy it';};
+ try{navigator.clipboard.writeText(t).then(()=>done(true),()=>done(false));}catch(e){done(false);}}
 /* Offline/reconnecting: a calm pill under the header ("Reconnecting to your Mac · Updated 40s ago") that appears when
    requests fail or the live link drops for more than a moment, and says "Back online" briefly when it returns. */
 function netUp(ok){if(ok){S.okAt=Date.now();if(S.netDown){S.netDown=false;netBanner();}}else if(!S.netDown){S.netDown=true;S.netSince=Date.now();netBanner();}}
@@ -39,7 +65,7 @@ function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.sty
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
-const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
+const pct=x=>x==null?'—':x>=.995&&x<1?'>99%':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
 const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
 const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
@@ -52,13 +78,16 @@ const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res
 /* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
    every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
    Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
-function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
+function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on','tap');t.onclick=null;clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
 function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
-function toast(m,ms,tone){if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+/* onTap (optional): the toast becomes a button for that (e.g. open the combo it's about, #210); without it, taps go through. */
+function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
+ if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+ t.classList.toggle('tap',!!onTap);t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
-addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
+addEventListener('pointerdown',e=>{const t=$('#toast');if(t&&t.classList.contains('on')&&!(t.classList.contains('tap')&&t.contains(e.target))&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
 /* Sheets. modal() is the bottom sheet (confirmations, small things). pushOpen()/pushFill() is the Kalshi-style push for
    detail pages (a game, a combo): the page slides in from the right in ~270 ms (ease-out) while the page behind slides a
    third of the way left and dims; flat skeleton blocks show until the content swaps in. Back, a tap on the dimmed

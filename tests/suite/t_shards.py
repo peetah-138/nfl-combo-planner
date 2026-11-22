@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The check list's split (checklist.py, run_checks.sh, CI's parallel jobs): every test runs, in exactly one shard
 # and one lane, the same way every time, and CI's jobs together cover every group and every page shard.
 import os, re, glob
@@ -11,9 +12,28 @@ def check(name, cond):
 
 here = os.path.dirname(os.path.abspath(__file__))
 files_t = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "t_*.py")))
-files_p = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "test_*.py")) if not f.endswith("test_webapp_pw.py"))
-check("every engine test file is listed once", sorted(C.ENGINE) == files_t and len(set(C.ENGINE)) == len(C.ENGINE))
-check("every page test file is listed once", sorted(C.PAGE) == files_p and len(set(C.PAGE)) == len(C.PAGE))
+files_p = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "test_*.py")))
+# tests register themselves: a "# CHECK: group=... [secs=N] [retry]" header in each file (see checklist.py); no list to edit
+check("every t_*.py file has a valid CHECK header (%s)" % "; ".join("%s: %s" % kv for kv in sorted(C.PROBLEMS.items())[:3]), not C.PROBLEMS)
+files_s = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(here, "st_*.py")))
+check("every static check file is discovered once", sorted(C.STATIC) == files_s and len(set(C.STATIC)) == len(C.STATIC) and files_s)
+check("every engine test file is discovered once", sorted(C.ENGINE) == files_t and len(set(C.ENGINE)) == len(C.ENGINE))
+helpers = [t for t in files_p if C.TESTS[t]["group"] == "none"]
+check("every page test file is discovered once (only the helper test_webapp_pw is group=none)",
+      sorted(C.PAGE + helpers) == files_p and len(set(C.PAGE)) == len(C.PAGE) and helpers == ["test_webapp_pw"])
+check("every discovered test is in exactly one of static / engine / page / helper", len(C.TESTS) == len(C.STATIC) + len(C.ENGINE) + len(C.PAGE) + len(helpers))
+check("secs only name page tests", set(C.SECS) <= set(C.PAGE))
+import tempfile
+with tempfile.TemporaryDirectory() as d:        # the header parser itself: what it accepts and what it refuses
+    def hdr(text):
+        p = os.path.join(d, "x.py"); open(p, "w").write(text); return C.header(p)
+    check("header: a good page header is read", hdr("# CHECK: group=page secs=30 retry\nimport os\n")[0] == {"group": "page", "secs": 30, "retry": True})
+    check("header: a header below some leading lines is found", hdr("#!/usr/bin/env python3\n# CHECK: group=engine\n")[0] == {"group": "engine", "secs": None, "retry": False})
+    check("header: none is refused", hdr("import os\n")[0] is None)
+    check("header: two are refused", hdr("# CHECK: group=page\n# CHECK: group=engine\n")[0] is None)
+    check("header: no group is refused", hdr("# CHECK: secs=5\n")[0] is None)
+    check("header: a typo is refused, not ignored", hdr("# CHECK: group=page secz=5\n")[0] is None and hdr("# CHECK: group=pages\n")[0] is None)
+    check("header: secs must be a positive number", hdr("# CHECK: group=page secs=0\n")[0] is None and hdr("# CHECK: group=page secs=x\n")[0] is None)
 check("retry list only names page tests", set(C.RETRY) <= set(C.PAGE))
 
 ok_union = ok_disjoint = ok_same = ok_order = True
@@ -47,7 +67,7 @@ check("five shards are balanced within the longest test (%s s)" % w, max(w) - mi
 
 repo = os.environ.get("REPO") or os.path.abspath(os.path.join(here, "..", ".."))
 rc = open(os.path.join(repo, "tests", "run_checks.sh")).read()
-check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc
+check("run_checks.sh reads the lists from checklist.py (no second copy)", "checklist.py engine" in rc and "checklist.py page" in rc and "checklist.py static" in rc
       and not re.search(r"\bt_review t_review2\b|PAGE=\"test_", rc))
 ci = open(os.path.join(repo, ".github", "workflows", "ci.yml")).read()
 m = re.search(r"shard:\s*\[([\d,\s]+)\]", ci); tot = re.search(r"CHECK_SHARD:\s*\$\{\{\s*matrix\.shard\s*\}\}/(\d+)", ci)

@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Smart Buy stage 1 (issue #137): the exit simulator, the shadow price recorder, the exit_shadow log, the
 # calibration replay and the Results preview. Everything here only watches: no buy, sale or panel pick changes,
 # and nothing makes a new Kalshi request (the fake network counts every call).

@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Issue #91: Results "Profit by day" AND "Profit by week" group each bet by when the money actually
 # moved (cash-out / settlement), not the NFL game/slate date. Display-only: no bet, P/L, or buy/sell
 # logic changes — only how a settled bet is DATED in Results.
@@ -128,3 +129,17 @@ ok("(e) a cashed combo carries no settled_at; a won combo carries no cashed_at",
 cday, cweek = E.realized_buckets(cash, None)
 ok("(a)(b) end to end: the cashed combo dates by Nov 18 cash-out, not the Nov 22 game",
    cday == "2026-11-18" and cweek == "2026-11-22")
+
+# ---- issue #207: the date on Live's Settled cards (done_stamp = realized_ts, display only) ----
+cache = {}
+ok("(207) done_stamp prefers the cash-out time", E.done_stamp({"ticker": "A", "cashed_at": 100, "settled_at": 200}, cache) == 100.0)
+ok("(207) done_stamp falls to Kalshi's settlement time", E.done_stamp({"ticker": "A", "settled_at": 200}, cache) == 200.0)
+reads = []
+_real_rows = E.store_rows
+E.store_rows = lambda sql, args=(): (reads.append(sql) or [{"combo": "M1", "settled": 300}])
+ok("(207) done_stamp falls to the Mac's own record (read once for many cards)",
+   E.done_stamp({"ticker": "M1"}, cache) == 300.0 and E.done_stamp({"ticker": "M1"}, cache) == 300.0 and len(reads) == 1)
+ok("(207) nothing timestamped = None, never a made-up date", E.done_stamp({"ticker": "ZZ", "week": "2026-11-22"}, cache) is None)
+E.store_rows = lambda sql, args=(): (_ for _ in ()).throw(RuntimeError("db gone"))
+ok("(207) an unreadable record never raises, it just shows no date", E.done_stamp({"ticker": "Q"}, {}) is None)
+E.store_rows = _real_rows

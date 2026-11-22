@@ -1,0 +1,56 @@
+/* Build: the quote countdown, picks, the slip bar, folding sections, panel cards */
+.qline,.btn.qb{position:relative;overflow:hidden}.qt{position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.45;transform-origin:left;animation:qdrain 20s linear forwards}
+.brow{display:flex;flex-wrap:wrap;gap:8px}.brow .btn{min-width:0;max-width:100%;white-space:normal;line-height:1.25;text-align:center;overflow-wrap:anywhere}
+.brow .btn.pri{flex:3 1 auto}.brow .btn.sec{flex:1 1 auto}
+.qline.good .qt{color:var(--yes)}.qline.bad .qt{color:var(--no)}.qline.new{animation:rise .35s var(--ease)}
+.pickbtn.pop{animation:chipon .34s var(--spring)}
+.slipbar.in{animation:slipin .42s var(--spring)}@keyframes slipin{from{transform:translateY(120%);opacity:0}to{transform:none;opacity:1}}
+/* Buy straight (#113): the slip's Single bet / Combo switch, the buy sheet, the game page's pinned buttons */
+.sbtog{display:inline-flex;background:rgba(0,0,0,.18);border-radius:9px;padding:2px;gap:2px;flex:none}
+.sbtog button{border:0;background:none;color:inherit;opacity:.8;font-weight:800;font-size:12px;padding:5px 9px;border-radius:7px}
+.sbtog button.on{background:#fff;color:var(--acc);opacity:1}
+.slipbar .sbtog button{padding:5px 9px;background:none;color:#fff}.slipbar .sbtog button.on{background:#fff;color:var(--acc)}
+@media (max-width:900px){.slipbar{flex-wrap:wrap;row-gap:8px}.slipbar .sbtog{flex-basis:auto;margin-right:auto}.slipbar .sbrow{display:flex;align-items:center;gap:10px;flex-basis:100%;min-width:0}}
+.slip .sbtog{background:var(--panel2);color:var(--sub)}.slip .sbtog button.on{background:var(--acc);color:#fff}
+.sb h3{margin:2px 0 2px;font-size:20px;letter-spacing:-.01em;overflow-wrap:anywhere}.sb .sbk{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:14px 0 12px}
+.sbn>div{background:var(--panel2);border-radius:12px;padding:10px 10px 9px;min-width:0}.sbn span{display:block;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.sbn b{display:block;font-size:21px;letter-spacing:-.02em;margin-top:2px;white-space:nowrap}.sbn small{display:block;font-size:11px;color:var(--mute);margin-top:2px;line-height:1.3;overflow-wrap:anywhere}
+.sbst{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px}.sbst .chip{min-width:52px;justify-content:center}
+.sbst input{width:92px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-weight:700}
+.sbw{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,#f5b544 14%,transparent);color:var(--ink);margin:6px 0}
+.sbw i{font-style:normal;flex:none}.sbx{background:color-mix(in srgb,var(--no) 14%,transparent)}
+.sbgo{display:flex;gap:8px;margin-top:14px}.sbgo .btn{justify-content:center;padding:12px 14px;font-size:14.5px}.sbgo .pri{flex:1;min-width:0;white-space:normal}
+.sbleft{font-size:12px;color:var(--mute);text-align:right;margin-top:6px}
+.gbuy{position:sticky;bottom:0;z-index:3;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin:16px -16px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+ background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-top:1px solid var(--line)}
+.gbuy button{border:0;border-radius:12px;padding:11px 8px;font-weight:800;font-size:15px;color:#fff;background:var(--acc);display:flex;flex-direction:column;align-items:center;gap:1px;min-width:0}
+.gbuy button:nth-child(2){background:var(--no)}.gbuy button:nth-child(3){background:var(--panel2);color:var(--ink)}
+.gbuy button b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.gbuy button small{font-size:12px;font-weight:700;opacity:.9}
+@media (min-width:901px){.gbuy{margin:16px -22px 0;padding:10px 22px 12px}}
+.pbody:has(>.gbuy){display:flex;flex-direction:column;min-height:calc(100% - 64px - env(safe-area-inset-top))}.pbody>.gbuy{margin-top:auto}
+.sech .chev{transition:transform .28s var(--spring)}.sech:not(.open) .chev{transform:rotate(-90deg)}.sech .chev.from-open{transform:none!important}.sech .chev.from-shut{transform:rotate(-90deg)!important}
+.unfold{animation:rise .38s var(--ease)}
+.pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
+.psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
+.ccard.flash{animation:fl 1.2s ease}
+/* Flipping a leg on a combo idea (issue #104). The tapped row folds away while the new numbers are worked out, the numbers that
+   depend on it shimmer, then the new row turns in, the numbers roll and the note slides in. */
+.ccard .brow .btn.pri{flex:3 1 58%}
+.fnw{min-height:3.7em}.qgap{border-radius:10px}.qgap.out{height:0;animation:qout .28s ease-out}
+@keyframes qout{from{height:var(--h)}to{height:0}}
+.lrow.shake{animation:lshake .3s ease-in-out}
+@keyframes lshake{20%{transform:translateX(-6px)}45%{transform:translateX(5px)}70%{transform:translateX(-3px)}}
+.lrow.flip{min-height:44px;transform-origin:50% 50%}
+.lrow.flip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.lrow.wait{animation:lfold .17s ease-in forwards;pointer-events:none}
+.lrow.turn{animation:lturn .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes lfold{to{transform:perspective(600px) rotateX(80deg);opacity:.35}}
+@keyframes lturn{from{transform:perspective(600px) rotateX(-80deg);opacity:.35}to{transform:perspective(600px) rotateX(0);opacity:1}}
+.ccard[data-ph=flip] .dep,.ccard[data-ph=flip] .dep *{color:transparent!important;-webkit-user-select:none;user-select:none}
+.ccard[data-ph=flip] .dep{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
+.flipnote.in{animation:fnin .32s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fnin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.shake{animation:none!important}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
+ .ccard[data-ph=flip] .dep{animation:none!important}}
+@keyframes lfade{from{opacity:0}to{opacity:1}}

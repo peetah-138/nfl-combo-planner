@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.130). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.131). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -30,7 +30,7 @@ Real money is involved. Pete uses it daily.
     "on the phone"; the real Pythonista app is untouched.
 - `watcher/combo_watcher.py` — the Mac watcher, the hub and the web app's server.
 - `watcher/spa/` — the whole web UI as plain files, one per screen (GitHub #124), so parallel PRs on different
-  screens don't conflict: `index.html` (the shell), `app.css`, the scripts in load order (`common.js` core/net/
+  screens don't conflict: `index.html` (the shell), the css files (`app.css` is the base; `game.css`, `settings.css`, `responsive.css`, `motion.css`, `games.css`, `chrome.css`, `build.css`, `results.css`, `ideas.css`, `stake.css`, `bestbets.css`, `refusals.css`, `scoreboard.css` follow it in this order, each one a contiguous slice of the old single file; put a new rule in the file of the screen it styles, or add a new css file to the end of the `css` list in `MANIFEST.json`), the scripts in load order (`common.js` core/net/
   toasts/sheets/press feedback/tabs/number rolls/freshness/load, `live.js`, `build.js` (panel, slip, quotes, Buy),
   `haptics.js` (incl. the see-through switch, method N), `results.js`, `access.js` (Face ID, web push, secure
   address rows), `build_cards.js` (killer deals, singles), `buy_straight.js`, `build_sections.js` (standing orders,
@@ -163,7 +163,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.130`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.131`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -171,6 +171,16 @@ Real money is involved. Pete uses it daily.
   orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
+- **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
+  parallel PRs conflicted every time). Instead it adds **one new file `docs/changes/<issue-or-slug>.md`**: what
+  shipped or changed in the product, written in the style of the product sections below, plus a `ROADMAP:` line when
+  it adds or removes a roadmap item (template: `docs/changes/README.md`). **The release owner folds those files into
+  `CLAUDE.md` / `ROADMAP.md` at release and deletes them** (in the release PR). Until folded, `CLAUDE.md` plus
+  `docs/changes/` is the whole brief: read both. Only a **rule or decision** change (hard rules, workflow, Pete's
+  standing decisions) edits `CLAUDE.md` directly, and the PR description says so. The same goes for shared lists:
+  a new test is one new file (`tests/suite/` header, see Testing), a new screen's styles go in its own css file
+  (`watcher/spa/`, listed in `MANIFEST.json`). Run `git config rerere.enabled true` once per clone so a repeated
+  conflict is only resolved once.
 - **Decisions Pete made on 2026-11-18:**
   - At most **3 subagents** at once.
   - **Rebuild `Combo-Watcher.zip` in the release PR** whenever `install_mac.sh`, `setup_wizard.py`,
@@ -189,10 +199,13 @@ Real money is involved. Pete uses it daily.
 2. Bump the version in all three places (see above) on a short `chore/release-…` branch, PR into `develop`,
    squash-merge once `checks` is green. If any installer file changed (see the decisions above), rebuild
    `Combo-Watcher.zip` in the same PR.
-3. Run code review and security review on the release diff; fix every finding.
-4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
+3. **Fold `docs/changes/*.md` (every file but `README.md`) into this file and `ROADMAP.md`**: each into its
+   product section in the same style, following its `ROADMAP:` lines (add/remove items), then delete those files in
+   the same release PR.
+4. Run code review and security review on the release diff; fix every finding.
+5. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
-5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
+6. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
    screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The Macs then update within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
@@ -205,7 +218,10 @@ the watcher's venv if it has the modules, else a git-ignored `.venv-tests/` it b
 whose system SQLite crashes on macOS 26.4 (#68). `CHECK_PORT_BASE` moves the test ports when two runs overlap. It runs in a temp folder with fake services and a fake
 key, and its web apps use ports 18766+ (4 lanes in parallel, ~4 minutes), so it can't touch the real app or money.
 CI runs it as parallel jobs (`CHECK_GROUPS` static/engine/sim/pages, page tests in `CHECK_SHARD=i/5` shards; the split
-and the test lists are in `tests/suite/checklist.py`) plus an aggregate job named `checks` (the required one). What it covers:
+and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` header, found by `tests/suite/checklist.py`; adding a test is adding one file, see `tests/README.md`) plus an aggregate job named `checks` (the required one). What it covers:
+- **Writing tests** (`tests/README.md`): hermetic (engine tests run under `suite/netguard/`, which fails any real
+  connection; `st_hermetic` checks it), wait for state not sleeps (`upwait.go_and_hold` before drawing data in), own
+  port/temp files/unique ids.
 - Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
   `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
@@ -259,6 +275,30 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   and women's college basketball totals**; NBA, men's college basketball, NFL/college football totals and women's
   spreads improved too little to pass; soccer and NHL spreads have no old price to compare (not priced today); ESPN
   has no lines for Serie A, Bundesliga and Ligue 1 (they borrow soccer's shape). Rebuild the block after a season.
+- **Spreads and totals (issue #117 part B): recommend-only selection.** Build › Spreads & totals no longer lists every
+  strike: `line_recommend` (the watcher's Build runs it **off the app lock** in `lines_work`/`lines_kick`, a thread per
+  sport, copy ≤ 60 s old, waits ≤ 1.5 s, last good copy otherwise; order books read side by side within
+  `LINE_REC["budget"]` 3 s by `books_now`; `everything=True` is no longer used there) shows a strike only
+  when (1) its edge after the fee clears the league's **learned bar** (`line_min_edge`: own once 30+ settled games,
+  else its sport's (`LINE_SPORT`), else everyone's, else `LINE_MIN_EDGE`; never under `LINE_MIN_EDGE`, max 10¢; file
+  `combo_line_edge.json`), (2) its kind of strike isn't **losing to the close** (`line_clv_block`: table `line_clv`,
+  price at recommendation `rec` or panel buy `buy` vs Kalshi's last price before the start, read within 90 min of it
+  (`line_clv_seen` in `line_candidates`); blocked at ≥ 30 games, mean ≤ −0.5¢ and ≤ −2 SE, per league/kind/band; the
+  sport/everyone level may only block), (3) it **fills inside the edge** (`line_fill` walks every ask level of the book,
+  `book_asks`/`_ask_ladder` filled by `book_depth`'s same call, fee rounded up per order; stake = the buy sheet's
+  `_size` on the 30%-shrunk edge, capped by what fills; unreadable book = not shown), (4) Smart Buy's
+  `simulate_exit` (smart sell's exit policy, `_sb_sim`) passes `smart_buy_ok` (route sell or hold, ≥ `SB_EV_MIN`), and
+  (5) expected dollars at the fillable size (hold EV after fees + the policy's adjustment) ≥ `SB_EV_MIN`. Ranked by
+  expected dollars; cards show route ("Likely to cash out early for a profit: 58%" / "Profit if it holds"), stake,
+  contracts, expected profit, the bar. They are shown as the spread/total rows of **Best bets today** (no separate board
+  since #63; `lines_priced`/`lines_nobook` still ride on the Build answer; Best bets' own empty state explains a quiet day). **Weekly** `line_edge_tune` (watcher, with `smart_tune`):
+  one 0.5¢ step per league/sport/all and kind when the strikes it adds/drops cover 10+ games and move the result ≥ 2%
+  of everything staked at the bar ($1 a strike, 30+ games at the bar; settled `line_fairs` rows); ties stay; never
+  under the start. **Panel: only stricter** (`_line_ok` after the raw `line_edge`: learned bar, CLV block, and
+  `fill_cap` < $2 = out; `_size` never over `fill_cap`; book unread = today's rule, the buy-time recheck still
+  applies). The buy sheet's green Buy for a spread/total uses `max(LINE_MIN_EDGE, learned bar)`. Results › What's
+  working › Bet types: "Spreads & totals: your bar and the close" (`analytics()["line_sel"]`). Nothing here buys or
+  sells; Pause, caps and rule 8 untouched. Tests: `t_linesel`, `test_linesel_ui`.
 - **Odds API credits (issue #175).** Every odds-service answer's `x-requests-remaining/-used/-last` headers are
   recorded (`odds_credits_note`, in `fetch_book_odds_one` and `tennis_keys`; no extra calls) in `combo_odds_credits.json`
   (newest numbers plus a small history, under `file_lock`). `odds_credits()` gives remaining, burn per day (needs 6 h of
@@ -288,6 +328,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 - Live scores from ESPN's free scoreboard (none for EuroLeague, UFC, tennis). The AHL isn't on ESPN: its scores,
   periods and clocks come from the league's own public score feed (the JSON theahl.com's widgets read; HockeyTech,
   no login; `_fetch_feed_scores`, light polling), with the same cache and last-good-copy fallback as ESPN.
+- **College football scores cover all of Division I (issue #224).** `SPORTS["ncaaf"]["score_q"]` = ESPN group 90 (FBS 80 +
+  FCS 81), read only by `fetch_scores`; the free lines (`free_snapshot`) and game picking keep `q`/`espn_q` = group 80, so
+  no new game is priced from ESPN because of it. Kalshi lists FCS games (Jackson St. at Alcorn St.) that group 80 never had.
+  A college football game ESPN still has no record of gets Kalshi's public live data as a **display-only backup**
+  (`KLIVE_BACKUP`, `_kfootball`; `klive_events` asks only when `leg_score` has nothing), same isolation rule as below.
+  An open pick at 99.5%+ reads ">99%", never "100%" (`chance_pct`, SPA `pct`). Test: `t_fcs_score`.
 - **Tennis, EuroLeague and UFC scores come from Kalshi's public live data (GitHub #25), display only.** No key, no
   account endpoints: `GET /milestones?related_event_ticker=<event>` maps a game to its milestone (cached 6 h, a miss
   15 min, at most 8 new lookups a refresh) and one `GET /live_data/batch?milestone_ids=...` per refresh covers every
@@ -340,6 +386,24 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
   Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
   watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
+- **Kalshi's refusals, shown honestly** (issue #134). A definite refusal is Kalshi's own words, in full (`body_words`,
+  600 characters, tags stripped), never a guess: a 401/403 says "Kalshi refused this (403 code): <its message>" and adds
+  "your API key may need write access" only when Kalshi itself says so (`perm_words`, `key_write_denied`). A refusal for
+  the account or region (`is_restriction`: 400/401/403/451 with words like "residents ... not allowed", "jurisdiction",
+  "region") is written to `combo_kalshi_block.json` (git-ignored; `note_refusal`, `restriction_info`) and the Mac **holds
+  back** the same refused request: buys wait 30 min, then 1 h, 2 h, 4 h while it keeps refusing; automatic sales 10-30
+  min (`hold_refusal`, `sell_held`). Held (automatic paths only): the shadow's buy-idea quotes, the panel (`hold: "region"`, back to
+  "scheduled", never "failed" or "check"), killer deals, standing orders, the automatic hedge (`hold_refusal(..., strict=True)`),
+  auto cash-out and smart sell. **Pete's own taps are never held** (`manual_tap`, set around `api_act` and the hub's build
+  form: Get price, Buy, Buy straight, idea buys; his sell taps too): they go through the usual guards (Pause, caps, rule 8)
+  and are the check after a hold; if Kalshi refuses one again the hold is renewed at the same level (`_restrict_note`), not
+  escalated by taps. After a hold the next buy Pete already approved is the check for the panel. Kalshi taking an order clears the
+  note (`restriction_clear`), a note a day old is ignored. No harmless read reveals a cleared restriction, so nothing is
+  placed just to look. The page shows a calm banner under the header (`rsBan`, `#rsban`) and a sheet with the full message
+  (`refusalSheet`, selectable, Copy); `restrict` rides on Live, Build, Settings and panel answers and `refusal` on a refused
+  tap (`api_act`). **Rule 8 is untouched:** timeouts and 5xx are `OrderUnknown` ("check", never retried, never a region
+  hold). This only reports and waits; it never changes a location, routes an order elsewhere or adds money movement.
+  Tests: `t_refusals`, `test_refusals`.
 - Leagues: NFL, NBA, NHL, AHL, college football, men's and women's college basketball, EuroLeague, UFC, soccer
   (EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Liga MX), ATP tennis, and "Mix" (cross-sport).
 - AHL: Kalshi `KXAHLGAME` (event codes include a start time, e.g. `26NOV191900HERCHA`), odds `icehockey_ahl`,
@@ -474,7 +538,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
-  It only acts while Auto cash-out is on; daily cap applies; singles sell into the order book (IOC at the bid,
+  It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5; λ from the sport's swing and time left (×1.3 at a slate
@@ -528,7 +592,21 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     floor, take profit, lock-in, the learned loss cut with `cut_ok`); `take_profit_reason` and `single_sell_reason`
     now only gather their inputs and call it (`EXIT_POLICY_VERSION`). `t_exitpolicy` runs the old functions verbatim
     (`fixtures/exit_policy_old.py.txt`) beside the new ones on 8,000 states: identical answers and peak tracking.
-    (`_replay`, the weekly tuner's replay, still has its own copy of the rule; aligning it is stage 5.)
+    **The weekly tuner's replay now uses exit_policy too (#228 PR0):** `_replay` (used by `smart_tune`, `sim_exit`,
+    the combo lab's and the cover test's replays, and What's working's smart-sell replay) no longer has its own copy of
+    the rule. Each recorded price becomes exit_policy's state (`kind`, `value` = the replay's estimate, `real` 0, `peak`,
+    `pays`, `cost`, `q`, `live` True) and settings (`smart` on, `lam` = the replay's risk weight, `floor`, `loss`,
+    `cut_ok` = a guard time from `_cut_guard_ts`, `trail`, take profit off, no checkpoint); the bet is sold at the
+    estimate when exit_policy says sell **and** the estimate reaches its `threshold`. Live selling is untouched. Every
+    difference from the old copy (now following live): **D1** lock in arms at a fixed 1.5x cost (old: max(60% of payout,
+    floor x stake)); **D2** a single's loss cut accepts any positive value, a combo's at ≥ 2% of cost (old: > 2% of stake);
+    **D3** a combo whose estimate is within 5% under the floor answers "smart" and rides (lock in not looked at on that
+    price). `t_replaypolicy.py` proves the list complete: the old replay verbatim (`fixtures/replay_old.py.txt`) with
+    exactly D1-D3 applied matches the new one on 12,000 fuzzed paths (63 differ: D1 48, D2 1, D3 17). The tuner's output
+    was unchanged on the test fixtures and on a read-only copy of Pete's history (26 settled bets). Still different
+    from live (later #228 PRs, ROADMAP): take profit isn't replayed, no checkpoint x1.3, the estimate stands in for
+    Kalshi's real offer (live accepts down to `CASH_SLIP` 97% of it), and the replay keeps `0.35 x swing` (no
+    `swing_lambda` or Let it ride).
   - `simulate_exit(spec)` (spec from `exit_spec(candidate)`; `predict_exit_chance(c)`): Monte Carlo (120 paths,
     seeded from the candidate id) of each pick's hidden lead (pre-game drift `SB_PRE_VOL`, in play scoring jumps per
     sport `SB_SCORE_UNIT`, fair = Φ(lead/√time left) as the live model), Kalshi's mid closing the gap to fair
@@ -608,22 +686,54 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   `_idea_matchup`, `_idea_plain`); nothing is fetched, and an unknown field is left out. A single's card body opens its game
   page (`ideaOpen`); a combo's leg rows open their games. A game you hold nothing on gets its page from the idea
   (`idea_game_leg`, only games named by a current idea). Tests: `t_ideacards.py`, `test_ideacards.py`.
-- Hero card: worth now if sold (rolling number), change vs what's in, a chart of open-bet worth (`pulse` table),
+- Hero card: worth now if sold (rolling number), change vs what's in, a profit/loss chart,
   riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
-- Hero chart (`heroChart`/`wireChart`): Day (16 h, from `/app/api/live`) or Week (`/app/api/pulse?h=168`, read-only,
-  pulse keeps 30 days) via a plain-text switcher (remembered, `cw_rng`); gradient area, glowing end dot, the staked
-  amount dashed; draws in left to right when the range changes. Press and drag to scrub: a line and dot follow the
-  finger, the big number and change pill show that moment's value, a time readout sits above, each point crossed ticks
-  a haptic; release restores the live numbers. Live refreshes wait while a finger is on it (`S.scrub`).
+- Hero chart (`heroChart`/`wireChart`, issue #221): plots **profit and loss**, not worth. Day (16 h, `pnl` in
+  `/app/api/live`) or Week (`/app/api/pulse?h=168` → `pnl`; read-only, pulse keeps 30 days) via a plain-text switcher
+  (remembered, `cw_rng`). The engine's `pnl_series` (display only, cached 20 s, never raises, writes nothing) builds it:
+  P/L(t) = (worth − cost of open bets) + (back − cost of bets that finished in the window: `ledger`, then `bets` for a
+  combo the ledger lacks) − the open-bet sum at the window's start, so the window starts at $0, a bet bought in it counts
+  from what was paid, a bet **already open at the start counts from its worth then** (the legend says so), and a bet
+  leaving moves the line only by what it brought back beyond its last worth. A finished bet's cash is placed at the
+  first pulse row (≤ 15 min after Kalshi's time) where its stake left the open list. `record_view` also writes
+  `pulse_more(ts, xworth, xcost)` (a separate table so older 3-value inserts keep working): singles whose game is
+  over but Kalshi hasn't paid (`_limbo_worth`: payout if decided, else bid, else cost), and one 0/0 row once nothing
+  is open (the line then runs flat to now). Rows from before `pulse_more` make the chart say "Rough before <time>"
+  (a finished single may dip until its payout lands). Partial cash-outs show only when the bet finishes. Drawn as a
+  flat zero line, green above / red below (one gradient split at zero), the glowing end dot, and what was staked as a
+  faint stepped band on its own scale. Press and drag to scrub: line and dot follow the finger, the readout shows
+  "+$3.20 · $18 staked · 2:40 PM", each point ticks a haptic; the big "worth now if sold" number and its pill never
+  change. Live refreshes wait while a finger is on it (`S.scrub`). Tests: `t_heropnl`, `test_heropnl`, `test_motion`.
 - Combos table, "Single bets & spreads" section (tap opens the game page: score, chance it covers, your bets on
   that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total. Offer and chance
   numbers roll frame by frame to new values and the chance bars slide (`rollNums`, `data-num`/`data-bar`).
+- **Sell a single by hand (GitHub #238; Pete's tap only, no new automatic selling).** Single bets/spreads/totals never
+  had a manual Sell (only smart sell sold them). Each open card on Live › Single bets & spreads (and the game page's
+  "Your bets") now has **Get new price** (`sellquote`: `single_sell_quote` reads the book with `book_depth(max_age=0)`,
+  updates Worth now and shows what selling gets after the fee) and **Sell** (`watcher/spa/sell_single.js`: a sheet with
+  the bid, what comes back, profit, holding's chance, warnings; two taps; `soldSheet` on success). `single_sell` (act
+  `singlesell`, in `ORDER_ACTS`) uses the quote once (20 s, `_SQ`, a sell quote can never buy), refuses on Pause (read
+  fresh at the quote, the sale and again right before the order; unreadable = paused), no trading access, the unknown-outcome block or a lower bid on a fresh re-read, needs Sell anyway when the gap is over
+  6¢, then one IOC reduce-only sale at the quoted bid (`sell_single_now`, `cw-ss-<quote>`); unclear = "check", blocked,
+  never resent. Not logged in the sell log (that counts automatic cash-outs toward the daily cap). Totals' "On track"
+  now follows the pace (`_single_how`: total so far over the share played), not the running total. Tests:
+  `t_singlesell`, `test_singlesell_ui`.
 - Game and combo detail pages **push** in Kalshi-style (`pushOpen`/`pushFill`): the page slides in from the right in
   270 ms (ease-out) while the page behind slides a third left and dims; flat skeleton blocks show until the content
   swaps in (never before the slide ends), then the content fades/staggers in. A sticky Back bar, or swipe right,
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
+  sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
+  (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
+  `timeValid: false` "TBD" dates ignored), then the old estimate (Kalshi's `expected_expiration_time` minus the sport's
+  hours). Kalshi's expected settle time is a placeholder for many college football games (23:00 UTC for most of a
+  Saturday's slate, noon and night kickoffs alike), so the estimate alone put Kentucky at Missouri five hours early.
+  `start_dt`, `leg_start` and `started` all use it; `started` is also True whenever the feed shows the game in play or
+  over. `EVENT_TICK` (filled in `week_games`/`fetch_results`) finds a game's market from its event code. Pre-game panel
+  buys still need the sportsbooks' kickoff (`_kick_ts`) and live-priced ones a fresh in-play score (`live_side_fair`),
+  so a wrong estimate never bought anything. Test: `t_gamestart` (fixture `game_start_223.json`, real shapes).
 - **Honest status for sports with no live score source** (tennis, UFC, EuroLeague, AHL): the engine's `run_status`
   says "Started 42 min ago · no live score" while inside a sport-typical length (`DONE_HOURS`), then "Probably
   finished · started 5h ago, waiting on Kalshi" (legs stop looking like they are winning/losing; the Games tab files
@@ -664,7 +774,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   at most `PBP_MAX_PLAYS` newest plays, short keys) and a generic **game-page tab framework** in the SPA (`GAME_TABS`: a per-sport
   list of `{k, l, has(r), html(r, ov)}`; football = Overview + Play-by-play; a sport with no spec, or a tab whose data is missing,
   shows no tab row and the page is as before; the chosen tab, stepped play and collapsed sections live in `S.gtab`/`S.pbpStep`/
-  `S.pbpOpen` and survive the 2 s redraws). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
+  `S.pbpOpen` and survive the 2 s redraws; a redraw puts the tab row back where the finger left it and only scrolls to the chosen tab when the tab changes, and no redraw happens while a finger is on the row or for 0.5 s after it glides, `gtabHeld`, #218). The Play-by-play tab has a latest-play card with prev/next stepping (the strip shows
   the ball as it stood after that play, from the play's `yardsToEndzone` and the team whose end zone it is), Back to live,
   collapsible quarters and drives, and tinted scoring/turnover plays, newest first. Stepping (and a new live play) plays a small
   illustration (pass arc, run trail, sack, kick, flag, touchdown, turnover) driven only by play type and yardage: **illustrations
@@ -709,14 +819,56 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+  **Pass after Get price dismisses the idea (#211):** on a card (and its detail page), Pass closes the idea like the X:
+  `ideaPass` drops the quote and its countdown (`S.ideaTid`), then goes through the same dismiss path (`ideaX` /
+  `ideaNotNowSheet`: slides out, remembered in `combo_idea_dismiss.json`, Undo toast). Pass is disabled while a buy is
+  on its way (`S.ibuy[id]`, set around `buyIdea` / `buySingle`). Display only. Test: `test_ideas2.py`.
+- **"Time to cash out" only when smart sell would sell (GitHub #210, alerts and navigation only).** The Live toast
+  "Combo N: time to cash out" used to fire on every hold→sell flip of the older Let it ride plan (`plan_cashout`), which
+  takes the watcher's *estimated* offer as a fresh one (`fresh_offer` accepts `rfq="estimate"`) and, for a long shot
+  with a big payout, prefers a sure few dollars to a ~1% shot (log utility on the bankroll); the Monte Carlo chance's
+  noise (8,000 runs) pushes the estimate over its line now and then, so the verdict flickered and the toast repeated.
+  Now `cash_nudge(t, h)` decides every cash-out nudge: smart sell's rule (`take_profit_reason`/`exit_policy`) says
+  sell, a **real** fresh Kalshi offer (never an estimate), at or above cost and ≥ 97% of the rule's line, and a game
+  still to play is under way. `live_view` sets `v["nudge"]`; `nudge_event` (in `record_view`) raises the toast once
+  when it turns on (≤ 1 per `NUDGE_GAP` 10 min), worded "smart sell is cashing out at $X" with Auto cash-out on;
+  the phone's `cash_alerts` push needs it too. On the page, a combo smart sell looks after (not "I'll sell it") shows
+  SELL, the moment bar, the Do now cash-out/"check Kalshi's price" cards and the plan's sentence only with `nudge`
+  (`planOn`/`verdictShown`/`whyShown`); "I'll sell it" combos keep the plan's advice. Nothing that sells reads it:
+  `auto_sell_now`, smart sell, hedges are unchanged (they already refused a sale below cost and re-quote an estimate).
+  **Tapping opens the combo:** the toast is a button (`toast(m, ms, tone, onTap)`, `.toast.tap`) → `openCombo`; an
+  urgent push about exactly one combo carries `/#c=<ticker>` (watcher `combo_link`: the text names one "Combo N" on
+  this refresh's list; ticker `[A-Za-z0-9._-]` only), and `comboFromHash` (boot.js) opens Live, waits for its data and
+  pushes the combo only when it is on Live (unknown, old or malformed = just Live). Tests: `t_cashnudge`,
+  `t_push_target`, `test_cashnudge_ui`.
 - The Winning now / Losing now / Tied / Won / Lost legend sits right above the combos table and lists only the
   states currently on screen.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
   dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
 
 ### Build page
-- Panel on top, sport chips (All = mix board), "Build your own": the games board (live score, period, clock for
-  games under way), spreads & totals, more combo ideas — each section folds separately (remembered).
+- Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
+  period, clock for games under way), more combo ideas — each section folds separately (remembered). The old all-strikes
+  "Spreads & totals" board is gone (Pete, #63: only recommendations).
+- **Best bets today (issue #63, recommend-only, display only).** `best_bets_feed` (engine; called by the web app's
+  `api_build`, answer key `best`) ranks single games (`single_candidates`), spreads/totals (the **already vetted** `line_recommend` rows, issue
+  #117: learned bar, CLV block, fillable stake, exit route; listed with their own fillable stake and expected dollars, never
+  re-priced or loosened; the feed adds only the injury-news guard and the held-combo exposure trim, which can only shrink or
+  drop a row; they show even when the balance can't be read for sizing singles/combos, since their stake comes from what fills)
+  and value combos (predicted share of fair ≥ 100% and the cut-off) in **one list by expected dollars**:
+  each must have an edge at a fair price after fees **and** a likely route to profit, i.e. `smart_buy_ok(simulate_exit)`
+  (same exit policy as Smart Sell: a good chance to cash out at +10%, or a hold with `SB_WIN_MIN` win chance and
+  `SB_EV_MIN` dollars). Expected dollars = the simulator's `ev` on $5 scaled to the suggested stake (`_size`, quarter
+  Kelly, never above it after the exposure cut `exposure_factor`). Rows show type, league, game, pick, Kalshi vs fair,
+  edge, stake, expected dollars, the route in plain words, and a real exposure warning ("Kites is already in 7 of your 9
+  open combos"). **Fails closed:** an unreadable balance (no stake), a bet the simulator can't model, a pre-game sportsbook
+  line too old for how soon the game starts (`line_stale`), or any error = not listed; empty = "Nothing clears your bar right
+  now" plus how many were checked. Games already under way and sell-early favorites are not in it. At most `BEST_MAX` (6)
+  rows, `BEST_LOOK` (30) simulated per build (memoised 5 min). Nothing is bought from the feed: a single/line's button is
+  "Buy straight" (the guarded sheet: fresh quote, cap, Pause, rule 8); a combo's is "Price it" (scrolls to its own card and
+  asks for the price there). It is not behind a switch (it only recommends; the Smart Buy switch does not hide it). Type
+  chips filter it (`cw_bftype`). Code: `watcher/spa/build.js` (`bestFeed`, `bfRow`). Tests: `t_bestbets.py`,
+  `test_bestbets.py`. Still to do (ROADMAP): confidence per league and type, realized return per type, a detail page.
 - Get price → green "Buy" when it clears the cut-off, yellow "Buy anyway" when it doesn't.
 - **Over the cap (issue #71):** the Buy/Get price answer (`cap_msg`) says what the spending would reach, how much room
   is left, and the setting to change ("Settings > Money > Weekly cap/Daily cap/Mix cap for <league>"; Pete renamed
@@ -770,12 +922,41 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   (Pause read fresh from `watcher.json` each time: `paused_now`); `single_side` finds the side on the board on screen
   or a saved board (`SNAP`), read only, never rebuilding or switching it. The sheet's answer always shows (a sheet, else a
   toast), and Cancel from a game page goes back to it. Tests: `t_singlebuy.py`, `test_singlebuy_ui.py`.
+- **Your own bet amount (issue #145; Pete's tap only, no new automatic buying).** Combo cards, the slip, Live Buy ideas
+  (singles and combos) and panel bets before Approve/Add get an amount row (`watcher/spa/stake.js`, `stakeCtl`): the
+  recommended size first ("Recommended $X"), presets $2/$5/$10/$20, a "Last $X" chip (the last amount chosen, kept on
+  this phone only, `cw_stk_last`; the default stays the recommended size), -/+ by $1 and a typed amount, the expected
+  profit in dollars, "N× the recommended size: more risk for the same edge" at 1.5×+, and the cap room. A changed amount
+  drops the old price: singles re-price at once, combos show "Get price · $X". **The Mac checks every amount**
+  (`own_stake`: a real finite number, $1-$100 (`OWN_MIN`/`OWN_MAX`), rounded down to the cent; bad = refused with
+  words, never clamped): the combo quote and Live idea quote (`combo_offer` in the web app: `get_offer` at that amount,
+  plus `rec`, `ev`, `room`, `max`), Buy straight (`single_buy_quote` now refuses a bad amount instead of clamping), and
+  the panel (`own_panel_stakes`: $2 to the panel budget; `panel_approve(..., stakes)` refuses when the bets riding would
+  pass the budget; `panel_add(..., stakes)` counts them in the same room; the item keeps `rec_stake` and `own`; the card's
+  stats are re-simulated; `panel_whatif` (read-only, no app lock) updates the ring while he edits). A Live single
+  idea's Buy (`singlebuy` by id) must match the size and price the Mac quoted in the last 25 s (`IDEA_Q`), else nothing is
+  sent. Combo buys still accept exactly the cached offer (rule 7/8 unchanged); caps, Pause and the unknown-outcome
+  block are unchanged. Tests: `t_ownstake.py`, `test_ownstake_ui.py`.
 - **Combo idea card buttons (issue #65):** the button row (`.brow`, primary `.pri` + secondary `.sec`) wraps, and long
   labels wrap instead of widening the button, so "Not this one" never leaves the card (360–430 pt). A card with a price
   asked for (`S.qpend`), a live quote or a buy under way (`S.bpend`) has a phase (`data-ph`, `ccPhase`): `renderBuild`
   puts the same DOM node back across any redraw (refresh, rebuild, load), so the button is never replaced, flickers or
   loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
   quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
+- **Flipping a leg on a combo idea (issue #104, display only; `flip`/`swap` acts, quotes and buys unchanged).** Tapping a
+  leg row (`flipLeg`) drops any fetched Kalshi quote on that card **at once** (Buy can't be tapped on a price for other
+  legs; `buy()` and `quote()` also return early in the phase) and puts the card in phase `flip` (`S.fpend[i]` is the
+  flip's own token object, kept across redraws like `ask`/`buy`): the row folds, the numbers that depend on the flip
+  (`.dep`: fair payout, chance, estimate line and the previous "Good flip" note) shimmer, Get price is a disabled
+  "Updating…" (`data-stale`), Not this one is off, a second tap does nothing. The quote line's space is kept (`.qgap`,
+  covering the quote line **and** the amount row `stakeCtl`, which hides while a flip is on its way: the distance from
+  the first of `.qline`/`.stk` to the buttons minus the card's 10 px row gap) and the note box and button widths are
+  fixed, so nothing jumps. After at least `FLIP_MIN` (220 ms) the answer is applied **only if** this flip still owns
+  the card (token), the league (`S.lg`) is the same and the card still has the tapped legs (`ccSig`); otherwise it is
+  dropped and the card just redraws. Applied: the new row turns in, numbers roll, the note slides in. Failed: a short
+  shake on the row, an inline "Couldn't flip" note and a toast. One page-level polite announcer (`#flipsay`,
+  `flipSay`) says "Updating…" then the verdict. Reduced motion = a crossfade. No `hap()` in the flip (the global tap
+  tick only; iOS ignores later ones). Leg rows are keyboard buttons (44 px, focus ring). Test: `test_flipleg.py`.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
@@ -784,6 +965,34 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
   bet types and sports (real vs paper, return, smart-sell replay, CLV), selling (ridden vs cashed, automatic sales,
   per-league smart-sell tuning).
+- **Profit scoreboard (issue #138, read-only).** Top of Results (`pbBlock` in `watcher/spa/scoreboard.js`; it replaces
+  the old combo-only KPI row once it has data). Source of truth is the **`ledger` table**: one row per finished market
+  (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and
+  settlements, read as a signed YES position so NO bets and closing by buying the other side are right), written by
+  `ledger_note` at the end of every direct Kalshi account read (only changed rows; never raises into the read).
+  cost = money paid to open + every fee (incl. a settlement `fee_cost`), back = sale proceeds + settlement payout;
+  `sold_back`/`sell_fees`/`n_sold` for sales; `closed` = Kalshi's sell/settle time, else the Mac's `bets.settled`, else
+  when first seen. `profit_board()` (cached 2 min; `api_results` → `board`): week (from Monday) / month / all time with
+  profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
+  (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
+  gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
+  predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
+  `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
+  standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
+- **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
+  and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)
+  other lines but **never trims sales, hedges or "check"s** (`_trim_sell_log`, at 1.5 MB), labels `by` as
+  mac/phone/pi (`device_label`), and copies every sale-type line into the **`sell_log` table** (`sale_store`;
+  `sale_import` copies the file's older ones once). Sale records now carry `frac`, `kind`, `side`.
+  `sale_outcomes()` (the watcher's shadow loop, outside `odds.lock`, at most every 10 min; public `GET /markets`, ≤ 200
+  markets) records what holding would have paid for each sale (`sell_log.outcome/held`) and each sold ledger row, for
+  60 days. `sell_scorecard()` (in the board; What's working › Selling, `scoreCard`): per league and reason, sold for
+  (the ledger's proceeds after the sale fee, else the logged offer net of the single fee) vs holding paid, too early vs
+  right and dollars left on the table; your own sales; ridden combos' best real offer vs payout. Not yet fed to
+  `smart_tune` (that would change selling).
 - **"Cover the early games" paper test (issue #74):** paper only, no money. Its own `cover` **table** holds the test's
   rows (status, slots, result JSON); it never writes the `panel` table or calls `panel_record`, so it can't touch the
   $300 gate or `analytics()`. It is **not** the sole storage, though: `cover_ticks` records `state='sim'` rows into the
@@ -838,7 +1047,7 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
   controls hide theirs; a field appearing inside a control removes its switch (`hswFix`); the switches' change/input
   events never reach the app. Skipped (`HSWNO`/`HSWIN`): links (no tick: a switch would take their navigation and
   long-press menu), labels (their checkboxes carry `switch` themselves, method I), selects, sliders,
-  text fields, scrub charts, sideways strips, the test card's other buttons. A MutationObserver adds them to new content
+  text fields, scrub charts, sideways strips, the test card's other buttons. **Controls inside a sideways-scrolling strip get no switch either** (`HSWX`: the game page's tab row `.gtabs`, the scoreboard's `.pbt`, wide tables `.gtw`, the Settings index `.sidx`; GitHub #218): WebKit's switch grabs a drag that starts on it as a slide of its knob, so a row of tabs that each carried one couldn't be scrolled sideways on Pete's iPhone. They keep press feedback and their tap (no iOS tick); a new sideways strip must be added to `HSWX` (`test_gtabscroll` fails on any overflowing strip with switches inside). A MutationObserver adds them to new content
   (never two per control). Only on iPhones/iPads, not in the Pythonista app, and off with the Haptics switch or reduced
   motion (`hswSync`). `hap()` still tries the scripted switch for a pattern's extra ticks and for gestures with no tap
   (chart scrub, pull-to-refresh, sheet drag, tab swipe, slider steps): iOS 27 ignores those, so they stay silent there.
@@ -880,6 +1089,12 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     `api_results` buckets both the per-day `day` and the per-week grouping with it; the detail sheet shows the buy date
     and the cash-out/settlement date so the grouping explains itself. No bet, P/L or buy/sell/panel logic changed.
     `t_realdate.py` and `test_realdate.py` cover it.
+    **Live > Settled cards carry the date too (issue #207, display only):** `mine_page` adds `done_at` to each settled combo
+    view (`done_stamp` = `realized_ts`: cash-out sell, else Kalshi's settlement time, else the Mac's own `bets.settled`; None
+    = no date shown, never a guess; pending = None). The card shows a small grey line under the picks ("Today",
+    "Yesterday", "Sat Nov 21", year only when it isn't this one) in the phone's own time zone (`doneWord`, `.sdt`), and
+    "Newest" sorts by it. Results' History rows already carry the day; settled singles on Live are open positions with no
+    realized time, so they have none. Tests: `t_realdate.py`, `test_settled.py`.
 - **Makeover phase 3** (UI only; no buy/sell/panel logic or thresholds touched): every remaining screen in the same
   motion system.
   - **Offline / reconnecting**: `api()` reports each answer to `netUp()`; a failed request or a dropped live link
@@ -911,6 +1126,19 @@ and the test lists are in `tests/suite/checklist.py`) plus an aggregate job name
     visible switch track), and a fix for Settings › Accounts showing "Not connected" as a label.
   - `test_makeover3.py` covers all of this at phone (dark and light) and desktop sizes, plus the login page and a
     reduced-motion run.
+- **Settings folds, jump chips, search and the Mac line (GitHub #212, UI only; no setting, switch, save or Mac action changed).**
+  Every Settings section (`scard`, `watcher/spa/settings.js`) folds with a chevron: the header is one real button
+  (`.sfold`, 56 pt, under `hswBig`'s 64 pt so it keeps its iOS tick) and the body is the same `.fold` grid as Live's
+  sections, remembered per phone as `cw_fold_set_<id>` (`sOpen`/`sShow`/`sTog`; Money and The Mac start open, the rest
+  folded). A folded card's badge (`sBadges`: "N of M on" switches, Watching/Off for Killer and Standing orders, the version
+  on The Mac, Kalshi connected) updates on every change. The body stays in the page (hidden), so nothing re-renders to open
+  it; a test that needs a folded control calls `sShow('<id>', true)` first. The chips (`.sidx` buttons, never links, so they
+  get the haptic tick) jump to a section and open it: a sticky row under the header on a phone (`--toph`, kept by
+  `sAfter`), the side index on a desktop. The search box (`sFind`, `S.sq`, the input keeps focus across redraws) filters
+  rows (`.srow`, `.kv>div`, `.mixr`, `.sact`) by name and description across every section **in the DOM, without
+  touching the saved folds** (`.set.sq` forces sections open; clearing restores them; "No settings match" when empty). The
+  "The Mac · version X · up to date / update available" line (`macLine`) sits under the title and opens The Mac. Test:
+  `test_settingsfold`.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
 
 ## Kalshi API watch (GitHub issue #82)

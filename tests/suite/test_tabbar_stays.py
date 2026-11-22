@@ -1,3 +1,4 @@
+# CHECK: group=page secs=29
 """The bottom tab bar never moves (GitHub #59: "Bottom tab bar jumps up on the Games tab"). Pete's iPhone Home Screen app showed
 the bar about 90 px above the bottom on the Games tab (the empty "No games to watch" card), with the header tucked as if the page
 were scrolled, and the empty card's icon square blank. On an iPhone the page's height can stay out of step with what is on screen
