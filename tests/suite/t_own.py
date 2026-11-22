@@ -63,7 +63,7 @@ E.fetch_scores = lambda **k: {}
 def fake_score(l):
     t = l["ticker"]
     if t.startswith("KXNFLGAME-26NOV22BUFKC-KC"):
-        return {"state": "in", "me": 24, "opp": 14, "abbr": "KC", "opp_abbr": "BUF", "detail": "Q3 4:12", "ball": False}
+        return {"state": "in", "me": 24, "opp": 14, "abbr": "KC", "opp_abbr": "BUF", "detail": "Q3 4:12", "ball": False, "frac": 0.32}
     if t.startswith("KXNHLGAME"):
         return {"state": "pre", "me": 0, "opp": 0, "abbr": "SJ", "opp_abbr": "VGK", "detail": "", "ball": False}
     return None
@@ -75,7 +75,7 @@ sp = ss["KXNFLSPREAD-26NOV22BUFKC-KC7"]
 ok("spread: what you need, live, covering", sp["kind"] == "spread" and sp["state"] == "live" and sp["how"].startswith("Covering now · +10") and "6.5" in sp["how"])
 ok("spread: worth now is what it would sell for", sp["worth"] == 7.0 and sp["pays"] == 10 and sp["cost"] == 5.2)
 to = ss["KXNFLTOTAL-26NOV22BUFKC-45"]
-ok("NO on a total reads as the under, on track at 38 vs 45.5", to["side"] == "no" and to["kind"] == "total" and to["how"].startswith("On track · 38") and abs(to["chance"] - .38) < .001)
+ok(f"NO on a total reads as the under: 38 with 68% played is on pace for 56, over 45.5, so not on track (#238: the pace, not the running total) ({to['how']})", to["side"] == "no" and to["kind"] == "total" and to["how"].startswith("Not on track · 38 so far, on pace for 56") and abs(to["chance"] - .38) < .001)
 hk = ss["KXNHLGAME-26NOV18SJSVGK-SJS"]
 ok("moneyline single shows team to win, before the game", hk["label"] == "San Jose to win" and hk["state"] == "pre" and hk["how"] == "")
 ok("singles show the origin tag", hk["t"] and (E.is_own(hk["t"])) and not E.is_own(sp["t"]))

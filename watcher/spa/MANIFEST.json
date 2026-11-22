@@ -15,7 +15,8 @@
     "stake.css",
     "bestbets.css",
     "refusals.css",
-    "scoreboard.css"
+    "scoreboard.css",
+    "sell_single.css"
   ],
   "js": [
     "common.js",
@@ -29,6 +30,7 @@
     "access.js",
     "build_cards.js",
     "buy_straight.js",
+    "sell_single.js",
     "build_sections.js",
     "charts.js",
     "combo.js",
