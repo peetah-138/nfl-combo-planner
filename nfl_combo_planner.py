@@ -5260,7 +5260,7 @@ def auto_sell_now(plan):
                     log_decision(dict(rec, result="hedged" if ok else "hedge check" if unsure else "hedge failed",
                                       hedge_cost=round(hg["cost"], 2), locked=round(hg["locked"], 2), note=msg[:140]))
                     if ok:
-                        vs = ("more than" if hg["locked"] > whole + 0.5 else "about the same as")
+                        vs = ("more than" if hg["locked"] > whole + HEDGE_LOCK_EXTRA else "about the same as")
                         out.append(f"🤖 Auto-hedge (Let it ride: {ride_level()[0]}): locks in {vs} the "
                                    f"{money(whole)} cash-out, without the buyer's cut. " + msg)
                         continue
@@ -19650,13 +19650,17 @@ def smart_summary():
 #             Pete opted in to letting the system raise up to `max`, 2026-11-21), "evidence" (part of the bar a change
 #             must clear: the data never moves its own bar) or "invariant" (safety / data integrity: never tuned; `why`)
 #   stricter  "up" / "down": the direction in which the app does LESS on its own (sells, hedges or buys fewer, or later).
-#             A borrowed value may only move that way from the start (Pete). None: no stricter side (a model's fit).
+#             From PR2 on, a borrowed value may only move that way from the start (Pete); today the profit floor and the
+#             risk weight still borrow either way (`borrow: "chain"`). None: no stricter side (a model's fit).
+#   step_kind "add" (default) or "mult" (the tuner multiplies by 1 -/+ step); on_value: the first value when a knob
+#             that starts off (None) switches on
+#   shared_with  other decisions the same number drives today (moving it moves them too)
 #   borrow    how a league gets the value today: "own" (only its own record), "chain" (league, then its sport, then
 #             everyone, either way), "chain-stricter" (the same, a borrowed value never looser than the start), "none"
 #             (one value for everything today)
 #   learned   the function that already moves it today (None: fixed in the code until its PR)
 #   judge     the replay / simulation that would judge a change, and `metric` what it measures
-KNOB_UNITS = ("share", "x", "pts", "cents", "usd", "secs", "count", "level", "rule", "mult")
+KNOB_UNITS = ("share", "x", "pts", "cents", "usd", "secs", "count", "level", "rule", "mult", "num", "table")
 KNOBS = (
     # ---- taking a profit (exit_policy: live smart sell, the weekly replay and Smart Buy's simulator all run it)
     {"name": "smart_floor", "group": "profit", "cls": "tunable", "label": "Profit floor",
@@ -19667,15 +19671,16 @@ KNOBS = (
     {"name": "smart_lam", "group": "profit", "cls": "tunable", "label": "Risk weight",
      "what": "How much the chance of a late turn counts against holding (higher sells sooner).",
      "owner": "exit_policy (via smart_params, swing_lambda)", "src": "SMART_DEFAULT.lam", "start": 1.0,
-     "min": 0.5, "max": 2.0, "step": 0.15, "unit": "mult", "stricter": "down", "borrow": "chain",
+     "min": 0.5, "max": 2.0, "step": 0.15, "step_kind": "mult", "unit": "mult", "stricter": "down", "borrow": "chain",
      "learned": "smart_tune", "metric": "return on stake of settled bets, sold vs held", "judge": "_replay"},
     {"name": "exit_q_min", "group": "profit", "cls": "tunable", "label": "Least chance to take a profit",
      "what": "Smart sell takes a profit only while the bet is still at least this likely to win.",
      "owner": "exit_policy", "src": "EXIT_Q_MIN", "start": 0.5, "min": 0.35, "max": 0.65, "step": 0.05,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars sold for vs what holding paid (sell_scorecard)", "judge": "_replay"},
-    {"name": "swing_base", "group": "profit", "cls": "tunable", "label": "Risk per unit of swing",
-     "what": "The base of the risk weight, before each sport's swing, the league's weight and Let it ride.",
+    {"name": "swing_base", "group": "profit", "cls": "tunable", "label": "Base risk of a late turn",
+     "what": "The starting risk weight, before each sport's swing, the league's weight and Let it ride multiply it. "
+             "It does the same job as the risk weight, so it should not be stepped on its own.",
      "owner": "swing_lambda, _replay, simulate_exit", "src": "SWING_BASE", "start": 0.35, "min": 0.2, "max": 0.6,
      "step": 0.05, "unit": "mult", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "return on stake of settled bets, sold vs held", "judge": "_replay"},
@@ -19685,12 +19690,13 @@ KNOBS = (
      "step": 0.1, "unit": "mult", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "dollars sold for vs what holding paid at checkpoints", "judge": "_replay"},
     {"name": "exit_est_smart", "group": "profit", "cls": "tunable", "label": "Estimate allowance (smart sell)",
-     "what": "A combo's steady estimate counts as up to 1/this of itself against smart sell's line.",
+     "what": "Smart sell may act when a combo's estimate is within 5% of its line (Kalshi's real offer is checked "
+             "before any sale).",
      "owner": "exit_policy", "src": "EXIT_EST_SMART", "start": 0.95, "min": 0.85, "max": 1.0, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "real offers vs the estimate when the line was reached", "judge": "_replay"},
     {"name": "exit_est_tp", "group": "profit", "cls": "tunable", "label": "Estimate allowance (take profit)",
-     "what": "The same allowance against your take-profit line.",
+     "what": "...and within 10% of your take-profit line.",
      "owner": "exit_policy", "src": "EXIT_EST_TP", "start": 0.9, "min": 0.8, "max": 1.0, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "real offers vs the estimate when the line was reached", "judge": "_replay"},
@@ -19724,7 +19730,8 @@ KNOBS = (
      "what": "Sells a bet that has slid under this chance, late in the game, every guard holding. Off until a "
              "league's own record shows cutting beats holding.",
      "owner": "exit_policy (via smart_params)", "src": "SMART_DEFAULT.loss", "start": None, "min": 0.1,
-     "max": 0.3, "step": 0.05, "unit": "share", "stricter": "down", "borrow": "own", "learned": "smart_tune",
+     "max": 0.3, "step": 0.05, "on_value": 0.15, "unit": "share", "stricter": "down", "borrow": "own",
+     "learned": "smart_tune",
      "metric": "return on stake, cutting vs holding, only where the live guards held", "judge": "_replay + _cut_guard_ts"},
     {"name": "cut_accept", "group": "loss", "cls": "tunable", "label": "A loss cut accepts at least",
      "what": "A combo's loss cut takes an offer of at least this share of what you paid.",
@@ -19748,17 +19755,17 @@ KNOBS = (
      "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
     {"name": "sl_checks", "group": "loss", "cls": "tunable", "label": "Checks in a row",
      "what": "A loss sale or a hedge waits until its reason held on this many checks in a row.",
-     "owner": "_sl_confirm, _sl_held", "src": "SL_CHECKS", "start": 3, "min": 2, "max": 6, "step": 1,
+     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_CHECKS", "start": 3, "min": 2, "max": 6, "step": 1,
      "unit": "count", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
     {"name": "sl_span", "group": "loss", "cls": "tunable", "label": "Held for at least",
      "what": "...over at least this long.",
-     "owner": "_sl_confirm, _sl_held", "src": "SL_SPAN", "start": 180, "min": 60, "max": 600, "step": 30,
+     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_SPAN", "start": 180, "min": 60, "max": 600, "step": 30,
      "unit": "secs", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
     {"name": "sl_gap", "group": "loss", "cls": "tunable", "label": "Checks no further apart than",
      "what": "...with no two checks further apart than this (a longer gap starts the count again).",
-     "owner": "_sl_confirm, _sl_held", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
+     "owner": "_sl_confirm, _sl_held", "shared_with": "auto-hedge's confirmation (hedge_guard)", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
      "unit": "secs", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
     {"name": "break_guard", "group": "loss", "cls": "tunable", "label": "Waits out halftime and breaks",
@@ -19769,18 +19776,19 @@ KNOBS = (
      "metric": "break-time price paths vs what came after", "judge": "_sl_replay (break episodes)"},
     # ---- hedging (auto-hedge, with Auto cash-out on)
     {"name": "hedge_lock_share", "group": "hedge", "cls": "tunable", "label": "Hedge when it locks in",
-     "what": "With \"Hedge instead\" on, hedge when it locks in at least this share of the cash-out.",
+     "what": "With \"Prefer hedging\" on, hedge when it locks in at least this share of the cash-out.",
      "owner": "hedge_beats", "src": "HEDGE_LOCK_SHARE", "start": 0.95, "min": 0.9, "max": 1.05, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "what hedges locked in vs what the cash-out paid", "judge": "sale_outcomes (hedges)"},
-    {"name": "hedge_lock_extra", "group": "hedge", "cls": "tunable", "label": "Hedge instead off: needs",
-     "what": "With \"Hedge instead\" off, hedge only when it locks in this much more than the cash-out.",
+    {"name": "hedge_lock_extra", "group": "hedge", "cls": "tunable", "label": "Without \"Prefer hedging\": needs",
+     "what": "With \"Prefer hedging\" off, hedge only when it locks in this much more than the cash-out.",
      "owner": "hedge_beats", "src": "HEDGE_LOCK_EXTRA", "start": 0.5, "min": 0.0, "max": 2.0, "step": 0.25,
      "unit": "usd", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "what hedges locked in vs what the cash-out paid", "judge": "sale_outcomes (hedges)"},
     {"name": "hedge_lock_cost", "group": "hedge", "cls": "tunable", "label": "A hedge must lock in",
-     "what": "A hedge must lock in at least this many times what the combo cost.",
-     "owner": "hedge_guard, hedge_fresh", "src": "HEDGE_LOCK_COST", "start": 1.0, "min": 0.9, "max": 1.2,
+     "what": "A hedge must lock in at least this many times what the combo cost (never less: a hedge never locks "
+             "in a loss).",
+     "owner": "hedge_guard, hedge_fresh", "src": "HEDGE_LOCK_COST", "start": 1.0, "min": 1.0, "max": 1.2,
      "step": 0.02, "unit": "x", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "what hedges locked in vs what holding paid", "judge": "sale_outcomes (hedges)"},
     {"name": "hedge_gap", "group": "hedge", "cls": "tunable", "label": "Widest hedge-side gap",
@@ -19789,36 +19797,39 @@ KNOBS = (
      "unit": "cents", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "price paid for hedges vs the mid", "judge": "sale_outcomes (hedges)"},
     {"name": "hedge_cap", "group": "hedge", "cls": "setting", "label": "Most on one hedge",
-     "what": "Your Settings › Auto cash-out hedge cap. You opted in to the system raising it up to $150 on evidence.",
+     "what": "Your Settings › \"Most to spend on one hedge\". You opted in to the system raising it up to $150 on "
+             "evidence; it never lowers what you set except by the brake, back to your own value.",
      "owner": "auto_sell_now, hedge_fresh (CFG hedge_cap)", "src": "DEFAULTS.hedge_cap", "start": 100,
-     "min": 0, "max": 150, "step": 10, "unit": "usd", "stricter": "down", "borrow": "none", "learned": None,
+     "min": 25, "max": 150, "step": 10, "unit": "usd", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "hedges skipped over the cap vs what they would have locked in", "judge": "sale_outcomes (hedges)"},
     # ---- selling: limits and checks
     {"name": "auto_cap", "group": "sell", "cls": "setting", "label": "Automatic sales a day",
-     "what": "Your Settings › Auto cash-outs a day. You opted in to the system raising it (no ceiling) on evidence.",
+     "what": "Your Settings › \"Auto cash-outs a day\". You opted in to the system raising it (no ceiling) on evidence.",
      "owner": "auto_cap_reached (CFG auto_cap)", "src": "DEFAULTS.auto_cap", "start": 5, "min": 1,
      "max": None, "step": 1, "unit": "count", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "sales skipped at the cap vs what they would have made", "judge": "sell_scorecard"},
     {"name": "cash_slip", "group": "sell", "cls": "tunable", "label": "Accepts an offer down to",
      "what": "A sale goes through on a fresh offer of at least this share of the line it sells at.",
-     "owner": "auto_sell_now", "src": "CASH_SLIP", "start": 0.97, "min": 0.9, "max": 1.0, "step": 0.01,
+     "owner": "auto_sell_now", "shared_with": "the retries after your own Cash out tap (_accept_with_retries)",
+     "src": "CASH_SLIP", "start": 0.97, "min": 0.9, "max": 1.0, "step": 0.01,
      "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "offers passed up vs what holding paid", "judge": "sale_outcomes"},
     {"name": "live_spread", "group": "sell", "cls": "tunable", "label": "Widest gap to sell a single",
      "what": "Smart sell for singles skips a market whose bid/ask gap is wider than this. Shared today with live "
              "buys and Buy straight's warning: it must be split before it can move.",
-     "owner": "smart_sell_singles (also live panel buys, single_buy_quote)", "src": "LIVE_SPREAD", "start": 0.06,
+     "owner": "smart_sell_singles", "shared_with": "live panel buys, Buy straight's warning, Smart Buy's simulator",
+     "src": "LIVE_SPREAD", "start": 0.06,
      "min": 0.02, "max": 0.1, "step": 0.01, "unit": "cents", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "price sold at vs the mid, and sales skipped", "judge": "sale_outcomes"},
     {"name": "disc_pre", "group": "sell", "cls": "tunable", "label": "Kalshi's offer before your quotes (between games)",
      "what": "Until 5 cash-out quotes are seen, Kalshi's offer is taken as this share of fair between games.",
      "owner": "kalshi_discount", "src": "DISC_PRE", "start": 0.88, "min": 0.5, "max": 1.0, "step": 0.02,
-     "unit": "share", "stricter": None, "borrow": "none", "learned": "kalshi_discount (median of your last 60 quotes)",
+     "unit": "share", "stricter": "down", "borrow": "none", "learned": "kalshi_discount (median of your last 60 quotes)",
      "metric": "real offers vs fair", "judge": "kalshi_discount"},
     {"name": "disc_live", "group": "sell", "cls": "tunable", "label": "Kalshi's offer before your quotes (in play)",
      "what": "...and this share during a game.",
      "owner": "kalshi_discount", "src": "DISC_LIVE", "start": 0.82, "min": 0.5, "max": 1.0, "step": 0.02,
-     "unit": "share", "stricter": None, "borrow": "none", "learned": "kalshi_discount (median of your last 60 quotes)",
+     "unit": "share", "stricter": "down", "borrow": "none", "learned": "kalshi_discount (median of your last 60 quotes)",
      "metric": "real offers vs fair", "judge": "kalshi_discount"},
     {"name": "cushion_per_pick", "group": "sell", "cls": "tunable", "label": "Room for error per pick",
      "what": "Let it ride's wait-one-more-game price adds this much per pick still to play.",
@@ -19838,7 +19849,7 @@ KNOBS = (
      "metric": "dollars on $5 of the bets a step changes, held to the end", "judge": "_sb_step"},
     {"name": "sb_ev_min", "group": "buy", "cls": "tunable", "label": "Smallest expected profit to recommend",
      "what": "A recommendation needs at least this much expected profit on a $5 bet.",
-     "owner": "smart_buy_ok, line_recommend", "src": "SB_EV_MIN", "start": 0.25, "min": 0.1, "max": 1.0,
+     "owner": "smart_buy_ok", "shared_with": "Build's spreads & totals list (line_recommend)", "src": "SB_EV_MIN", "start": 0.25, "min": 0.1, "max": 1.0,
      "step": 0.05, "unit": "usd", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "results of recommended vs skipped bets", "judge": "exit_shadow outcomes"},
     {"name": "sb_win_min", "group": "buy", "cls": "tunable", "label": "Hold route needs a win chance of",
@@ -19849,7 +19860,7 @@ KNOBS = (
     {"name": "sb_gain", "group": "buy", "cls": "tunable", "label": "A cash-out counts at",
      "what": "The simulator counts a cash-out as a profit at this much over what was paid.",
      "owner": "simulate_exit", "src": "SB_GAIN", "start": 0.1, "min": 0.05, "max": 0.25, "step": 0.05,
-     "unit": "share", "stricter": None, "borrow": "none", "learned": None,
+     "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "predicted vs actual cash-out rate", "judge": "exit_calibration"},
     {"name": "sb_pre_vol", "group": "buy", "cls": "tunable", "label": "Pre-game line movement",
      "what": "How much the simulator lets a line drift over a day before the game.",
@@ -19859,23 +19870,42 @@ KNOBS = (
     {"name": "sb_pre_close", "group": "buy", "cls": "tunable", "label": "Gap closed by the start",
      "what": "The share of the gap between our fair price and Kalshi's that the simulator closes before the start.",
      "owner": "simulate_exit", "src": "SB_PRE_CLOSE", "start": 0.5, "min": 0.2, "max": 0.8, "step": 0.05,
-     "unit": "share", "stricter": None, "borrow": "none", "learned": None,
+     "unit": "share", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "CLV: price at buy vs Kalshi's last price before the start", "judge": "exit_calibration"},
     {"name": "sb_spread_pre", "group": "buy", "cls": "tunable", "label": "Assumed gap before the game",
      "what": "The bid/ask gap the simulator assumes when none was seen, before the game.",
      "owner": "simulate_exit", "src": "SB_SPREAD.0", "start": 0.02, "min": 0.01, "max": 0.06, "step": 0.01,
-     "unit": "cents", "stricter": None, "borrow": "none", "learned": None,
+     "unit": "cents", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "recorded gaps (price_path)", "judge": "exit_calibration"},
     {"name": "sb_spread_live", "group": "buy", "cls": "tunable", "label": "Assumed gap in play",
      "what": "...and during the game.",
      "owner": "simulate_exit", "src": "SB_SPREAD.1", "start": 0.04, "min": 0.02, "max": 0.08, "step": 0.01,
-     "unit": "cents", "stricter": None, "borrow": "none", "learned": None,
+     "unit": "cents", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "recorded gaps (price_path)", "judge": "exit_calibration"},
     {"name": "sb_live_widen", "group": "buy", "cls": "tunable", "label": "Gaps widen in play by",
      "what": "How much wider the simulator makes a gap once the game is on.",
      "owner": "simulate_exit", "src": "SB_LIVE_WIDEN", "start": 1.5, "min": 1.0, "max": 2.5, "step": 0.1,
-     "unit": "mult", "stricter": None, "borrow": "none", "learned": None,
+     "unit": "mult", "stricter": "up", "borrow": "none", "learned": None,
      "metric": "recorded gaps (price_path)", "judge": "exit_calibration"},
+    {"name": "sb_route_exit", "group": "buy", "cls": "tunable", "label": "Counts as a cash-out bet when",
+     "what": "A bet counts as likely to cash out when smart sell sells it at a profit on at least this share of the "
+             "simulated games (else it needs the hold route).",
+     "owner": "simulate_exit", "src": "SB_ROUTE_EXIT", "start": 0.5, "min": 0.35, "max": 0.75, "step": 0.05,
+     "unit": "share", "stricter": "up", "borrow": "none", "learned": None,
+     "metric": "predicted vs actual cash-out rate", "judge": "exit_calibration"},
+    {"name": "swing", "group": "profit", "cls": "tunable", "label": "How fast a lead can vanish, by sport",
+     "what": "Each sport's swing (a one-goal hockey lead is shakier than a basketball one); multiplies the risk weight.",
+     "owner": "swing_lambda, _replay, simulate_exit", "src": "SWING", "start": {
+         "nhl": 1.25, "ahl": 1.3, "soccer": 1.25, "mls": 1.25, "epl": 1.25, "nfl": 1.0, "ncaaf": 0.95, "nba": 0.8,
+         "ncaamb": 0.9, "ncaawb": 0.9, "wnba": 0.85, "mlb": 1.05, "tennis": 1.0},
+     "min": 0.5, "max": 2.0, "step": 0.05, "unit": "table", "stricter": "down", "borrow": "none", "learned": None,
+     "metric": "recorded game prices: how far chances really move per sport", "judge": "_replay"},
+    {"name": "below_cost", "group": "loss", "cls": "tunable", "label": "Never sells below what you paid",
+     "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or your stop-loss "
+             "override (every guard held) says otherwise.",
+     "owner": "auto_sell_now", "src": None, "start": True, "min": None, "max": None, "step": None, "unit": "rule",
+     "stricter": "up", "borrow": "none", "learned": None,
+     "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
     # ---- the evidence bar (fixed: the data never moves its own bar)
     {"name": "smart_min_n", "group": "evidence", "cls": "evidence", "label": "Smart sell: results before a league's own",
      "owner": "smart_params, smart_tune", "src": "SMART_MIN_N", "start": 30, "unit": "count",
@@ -19899,11 +19929,20 @@ KNOBS = (
      "owner": "_sb_step", "src": "SB_DIAL_MEAN", "start": 0.25, "unit": "usd",
      "why": "the evidence bar: the band must average this much on $5 the right way"},
     {"name": "sb_dial_t", "group": "evidence", "cls": "evidence", "label": "Smart Buy: standard errors from zero",
-     "owner": "_sb_step", "src": "SB_DIAL_T", "start": 2.0, "unit": "mult",
+     "owner": "_sb_step", "src": "SB_DIAL_T", "start": 2.0, "unit": "num",
      "why": "the evidence bar: a step must be this many standard errors from luck"},
     {"name": "sb_dial_new", "group": "evidence", "cls": "evidence", "label": "Smart Buy: new results since the last step",
      "owner": "_sb_step", "src": "SB_DIAL_NEW", "start": 20, "unit": "count",
      "why": "the evidence bar: this many results from games after the last step"},
+    {"name": "sb_dial_bars", "group": "evidence", "cls": "evidence", "label": "Smart Buy: expected profit each level needs",
+     "owner": "_sb_pass", "src": "SB_DIAL_BARS", "start": (None, -0.20, -0.10, 0.0, 0.10, 0.20, 0.30, 0.45, 0.60),
+     "unit": "table", "why": "the ladder the dial steps along: dollars expected on $5 at each strictness (0 = none)"},
+    {"name": "sb_dial_soft_n", "group": "evidence", "cls": "evidence", "label": "Smart Buy: results before the top levels",
+     "owner": "_sb_step", "src": "SB_DIAL_SOFT_N", "start": 100, "unit": "count",
+     "why": "the evidence bar: under this many results a dial stops at level 3"},
+    {"name": "sb_learn_days", "group": "evidence", "cls": "evidence", "label": "Smart Buy: results count for (days)",
+     "owner": "_sb_results", "src": "SB_LEARN_DAYS", "start": 60, "unit": "count",
+     "why": "the evidence bar: older results no longer count"},
     {"name": "sb_dial_soft", "group": "evidence", "cls": "evidence", "label": "Smart Buy: top level under 100 results",
      "owner": "_sb_step", "src": "SB_DIAL_SOFT", "start": 3, "unit": "level",
      "why": "until a group has 100 results its dial stops at 3 (it only skips bets expected to lose)"},
@@ -19935,10 +19974,25 @@ KNOBS = (
     {"name": "singles_sell_age", "group": "invariant", "cls": "invariant", "label": "Singles never sell on prices older than",
      "owner": "smart_sell_singles", "src": "SINGLES_SELL_AGE", "start": 180, "unit": "secs",
      "why": "smart sell for singles never acts on old prices"},
-    {"name": "fresh_quote", "group": "invariant", "cls": "invariant", "label": "A real fresh offer before any sale",
+    {"name": "fresh_quote", "group": "invariant", "cls": "invariant", "label": "A real Kalshi price before any sale",
      "owner": "auto_sell_now (get_cash_offer, fresh_offer), hedge_fresh (book_depth max_age=0)", "src": None,
      "start": True, "unit": "rule",
-     "why": "every automatic sale or hedge is checked against Kalshi's real price right before it goes"},
+     "why": "an automatic combo sale needs a real Kalshi offer that is still live (below); a hedge re-reads the "
+            "order book right before it buys; never the app's own estimate"},
+    {"name": "offer_life", "group": "invariant", "cls": "invariant", "label": "A cash-out offer counts for at least",
+     "owner": "offer_life (auto_sell_now)", "src": "OFFER_LIFE", "start": 150, "unit": "secs",
+     "why": "an offer older than this (or than your cash-out spacing plus 45 s, if longer) is asked for again"},
+    {"name": "accept_wait", "group": "invariant", "cls": "invariant", "label": "Waits for Kalshi to confirm for",
+     "owner": "accept_offer", "src": "ACCEPT_WAIT", "start": 15, "unit": "secs",
+     "why": "no confirmation in this time = the order is marked check (rule 8), never assumed either way"},
+    {"name": "cash_retries", "group": "invariant", "cls": "invariant", "label": "Fresh offers after a clear refusal",
+     "owner": "accept_cash", "src": "CASH_RETRIES", "start": 3, "unit": "count",
+     "why": "only after Kalshi clearly said no; an unclear answer is never retried"},
+    {"name": "your_switches", "group": "invariant", "cls": "invariant", "label": "Your switches always win",
+     "owner": "auto_sell_now, smart_sell_singles (auto_sell, smart_sell, ride, auto_hedge, stop_loss, I'll sell it)",
+     "src": None, "start": True, "unit": "rule",
+     "why": "Auto cash-out, Smart sell, Let it ride (and Ride it out), auto-hedge, the stop-loss override and a "
+            "bet's \"I'll sell it\" are yours: nothing tunes or flips them"},
     {"name": "secrets", "group": "invariant", "cls": "invariant", "label": "Keys and topics stay off GitHub",
      "owner": "the repo's secret checks", "src": None, "start": True, "unit": "rule",
      "why": "the repo is public; nothing tunes what is committed"},
@@ -19946,6 +20000,10 @@ KNOBS = (
 KNOB_BY = {k["name"]: k for k in KNOBS}
 KNOB_LEARN_SAY = {"smart_tune": "weekly, from settled bets", "smart_buy_learn": "hourly, from checked bets' results",
                   "kalshi_discount (median of your last 60 quotes)": "from your last 60 cash-out quotes"}
+for _k in KNOBS:                                      # defaults, so every entry has the same fields
+    _k.setdefault("step_kind", "add")
+    _k.setdefault("on_value", None)
+    _k.setdefault("shared_with", None)
 # What PR2's stepper and brake will hold every tunable knob to (Pete, 2026-11-21). Not used by any live code yet.
 KNOB_EVIDENCE = {"band_n": 10, "gain": 0.02, "se": 2.0, "new": 20, "holdout": 0.30}
 KNOB_BRAKE = {"losses": 4, "month_share": 0.05, "days": 14}
@@ -19969,7 +20027,7 @@ def knob_live(name):
 def knob_say(unit, v):
     """A knob's value in plain words."""
     if v is None:
-        return "off" if unit == "share" else "no limit" if unit in ("count", "usd") else "none"
+        return "off" if unit == "share" else "no limit" if unit == "count" else "—"
     if unit == "rule":
         return "on" if v else "off"
     if unit == "share":
@@ -19986,8 +20044,13 @@ def knob_say(unit, v):
         return f"{v / 60:g} min" if v >= 60 and v % 60 == 0 else f"{v:g} s"
     if unit == "level":
         return f"level {v:g}"
-    if unit == "count":
+    if unit in ("count", "num"):
         return f"{v:g}"
+    if unit == "table":
+        if not isinstance(v, (dict, list, tuple)):
+            return f"{v:g} each"
+        xs = [x for x in (v.values() if isinstance(v, dict) else v) if x is not None]
+        return f"{min(xs):g} to {max(xs):g}" if xs else "—"
     return f"{v:g}×"
 
 
@@ -20033,6 +20096,23 @@ def _knob_from(g, key, n=None):
     return "borrowed from " + league_label(g)
 
 
+def _knob_league(key, d, now=None):
+    """The six knobs already learned by league, for one league key: {name: (value, whose record)}."""
+    sm, sg = _knob_smart(key, d)
+    sl, lg_ = _knob_sl(key, d)
+    sb = _sb_dial_of(key, _knob_sport(key), now)
+    own_n = (d.get(key) or {}).get("n")
+    return {
+        "smart_floor": (sm["floor"], _knob_from(sg, key, own_n)),
+        "smart_lam": (sm["lam"], _knob_from(sg, key, own_n)),
+        "smart_loss": (sm["loss"], _knob_from(sg, key, own_n) if sg == key else
+                       "off until this league's own record turns it on"),
+        "sl_prog": (sl["prog"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
+        "sl_drop": (sl["drop"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
+        "sb_dial": (sb["level"], _knob_from(sb["key"], key, sb.get("own"))),
+    }
+
+
 def knob_view(now=None):
     """The registry for Results › What's working › Selling, read-only: every knob with its start, bounds and, per
     league, the value the live code uses right now and whose record set it. Reads the same files smart_params,
@@ -20043,32 +20123,40 @@ def knob_view(now=None):
             dial = _sb_load_dial(now)
         except Exception:
             dial = {}
-        keys = {k for k in d if isinstance(k, str) and not k.startswith("_") and k != "mix"}
-        keys |= {k for k in (dial or {}) if isinstance(k, str) and not k.startswith("_") and k != "mix"}
+        keys = {k for k in d if isinstance(k, str) and not k.startswith("_")}
+        keys |= {k for k in (dial or {}) if isinstance(k, str) and not k.startswith("_")}
         keys.discard("all")
         leagues = [{"key": "all", "name": league_label("all")}] + \
             [{"key": k, "name": league_label(k)} for k in sorted(keys, key=lambda k: league_label(k))]
-        per = {}
+        per, ok_lgs = {}, []
         for lg in leagues:
             key = lg["key"]
-            sm, sg = _knob_smart(key, d)
-            sl, lg_ = _knob_sl(key, d)
-            sb = _sb_dial_of(key, _knob_sport(key), now)
-            own_n = (d.get(key) or {}).get("n")
-            per[key] = {
-                "smart_floor": (sm["floor"], _knob_from(sg, key, own_n)),
-                "smart_lam": (sm["lam"], _knob_from(sg, key, own_n)),
-                "smart_loss": (sm["loss"], _knob_from(sg, key, own_n) if sg == key else
-                               "off until this league's own record turns it on"),
-                "sl_prog": (sl["prog"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
-                "sl_drop": (sl["drop"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
-                "sb_dial": (sb["level"], _knob_from(sb["key"], key, sb.get("own"))),
-            }
-        settings = {"auto_cap": auto_cap_limit(), "hedge_cap": float(CFG.get("hedge_cap", 100))}
+            try:
+                per[key] = _knob_league(key, d, now)
+                ok_lgs.append(lg)
+            except Exception as err:                  # one damaged league entry hides that league only
+                print("knob view:", key, type(err).__name__, err)
+        if "all" not in per:
+            return {}
+        leagues = ok_lgs
+        try:
+            hcap = float(CFG.get("hedge_cap", 100))
+        except (TypeError, ValueError):
+            hcap = None
+        settings = {"auto_cap": auto_cap_limit(), "hedge_cap": hcap}
+        disc = load_json(DISCOUNT_FILE, {})
+        learnt = {}
+        for name, live in (("disc_pre", False), ("disc_live", True)):
+            n = len((disc if isinstance(disc, dict) else {}).get("live" if live else "pre") or [])
+            learnt[name] = (kalshi_discount(live), f"learned from your last {min(n, 60)} quotes" if n >= 5 else
+                            "starting point (learns once 5 quotes are seen)")
         out = []
         for k in KNOBS:
             row = {x: k.get(x) for x in ("name", "group", "cls", "label", "what", "owner", "start", "min", "max",
-                                         "step", "unit", "stricter", "borrow", "learned", "metric", "judge", "why")}
+                                         "step", "unit", "stricter", "borrow", "learned", "metric", "judge", "why",
+                                         "shared_with")}
+            row["step_kind"] = k.get("step_kind", "add")
+            row["on_value"] = k.get("on_value")
             u = k["unit"]
             row["learned_say"] = KNOB_LEARN_SAY.get(k.get("learned") or "")
             row["start_say"] = knob_say(u, k["start"])
@@ -20080,6 +20168,10 @@ def knob_view(now=None):
             else:                                         # one value for every league today
                 if k["name"] in settings:
                     v, frm = settings[k["name"]], "your setting"
+                    if v is not None and k.get("max") is not None and v > k["max"]:
+                        frm = "your setting (above the most the system may raise it to; it never lowers yours)"
+                elif k["name"] in learnt:
+                    v, frm = learnt[k["name"]]
                 else:
                     v = k["start"] if k.get("src") is None else knob_live(k["name"])
                     frm = "fixed for now" if k["cls"] == "tunable" else "never moves"
@@ -21306,6 +21398,7 @@ SB_PRE_VOL = 0.12          # pre-game line movement over a day, in probit units 
 SB_PRE_CLOSE = 0.5         # share of the price gap (our fair vs Kalshi) that closes before the start (CLV)
 SB_SPREAD = (0.02, 0.04)   # bid-ask gap assumed when none was seen: pre-game, in play
 SB_LIVE_WIDEN = 1.5        # gaps widen in play
+SB_ROUTE_EXIT = 0.5        # sell route: smart sell cashes out at a profit on at least half the simulated paths
 SB_WIN_MIN = 0.40          # hold route: a win chance at least this (placeholder until it is learned per league)
 SB_EV_MIN = 0.25           # dollars: the smallest expected profit at the reference stake worth a recommendation
 SB_SCORE_UNIT = {"nfl": 7 / 13.5, "ncaaf": 7 / 16.0, "nhl": 1 / 2.4, "ahl": 1 / 2.5, "soccer": 1 / 1.9}  # jump sizes
@@ -21540,7 +21633,7 @@ def simulate_exit(spec, n_paths=SB_PATHS, stake=SB_STAKE, seed=None, prm=None, f
            "exit_profit": round(prof_sum / prof_n, 2) if prof_n else None, "hold_profit": round(hold, 2),
            "ev": round(hold + ev_sum / n_paths, 2), "exit_mins": round(mins_sum / prof_n, 1) if prof_n else None,
            "stake": stake, "ms": round((time.perf_counter() - t0) * 1000, 2)}
-    out["route"] = "sell" if out["p_exit"] >= 0.5 else "hold" if hold > 0 and win >= SB_WIN_MIN else "none"
+    out["route"] = "sell" if out["p_exit"] >= SB_ROUTE_EXIT else "hold" if hold > 0 and win >= SB_WIN_MIN else "none"
     return out
 
 

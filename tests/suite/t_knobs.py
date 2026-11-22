@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = impo
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 E.SB_DIAL_FILE = os.path.join(E.HERE, "sb.json"); E.SB_GATE["dial"] = None
+E.DISCOUNT_FILE = os.path.join(E.HERE, "disc.json")
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 now = time.time()
 
@@ -34,10 +35,15 @@ for k in E.KNOBS:
             bad.append((k["name"], "stricter/borrow"))
         if k["unit"] != "rule":
             lo, hi, st = k["min"], k["max"], k["step"]
+            starts = [] if k["start"] is None else list(k["start"].values()) if isinstance(k["start"], dict) else [k["start"]]
             if lo is None or st is None or st <= 0 or (hi is not None and lo >= hi):
                 bad.append((k["name"], "bounds"))
-            elif k["start"] is not None and not (lo <= k["start"] and (hi is None or k["start"] <= hi)):
+            elif not all(lo <= x and (hi is None or x <= hi) for x in starts):
                 bad.append((k["name"], "start outside its bounds"))
+            if k["start"] is None and not (k.get("on_value") is not None and lo <= k["on_value"] <= hi):
+                bad.append((k["name"], "a knob that starts off says its first value"))
+        if k.get("step_kind") not in ("add", "mult"):
+            bad.append((k["name"], "step_kind"))
         if k["group"] not in {g for g, _ in E.KNOB_GROUPS}:
             bad.append((k["name"], "group"))
     else:
@@ -47,7 +53,10 @@ ok("every knob is complete, its start inside its bounds" + (f" {bad}" if bad els
 inv = {k["name"] for k in E.KNOBS if k["cls"] == "invariant"}
 ok("the invariants Pete named are listed and untunable",
    {"pause", "can_trade", "rule8", "cap_read_age", "sl_feed_age", "in_play", "live_line_age", "fresh_quote",
-    "secrets"} <= inv)
+    "secrets", "your_switches", "offer_life", "accept_wait", "cash_retries"} <= inv)
+ok("a hedge can never be tuned into locking in a loss (min 1x cost); the loss cut's first value is the tuner's",
+   E.KNOB_BY["hedge_lock_cost"]["min"] == 1.0 and E.KNOB_BY["smart_loss"]["on_value"] == 0.15
+   and E.KNOB_BY["smart_lam"]["step_kind"] == "mult")
 ok("the break guard is tunable (Pete: conditional break_ok later), not an invariant",
    E.KNOB_BY["break_guard"]["cls"] == "tunable" and E.KNOB_BY["break_guard"]["start"] is True)
 ok("Pete's caps: hedge_cap may rise to $150, auto_cap has no ceiling",
@@ -66,7 +75,10 @@ drift = [(k["name"], E.knob_live(k["name"]), k["start"]) for k in E.KNOBS
 ok("every knob's live value equals its registry start" + (f" {drift}" if drift else ""), not drift)
 ok("the knobs without a number are the rules and the Smart Buy dial's start",
    {k["name"] for k in E.KNOBS if not k.get("src")} == {"break_guard", "sb_dial", "pause", "can_trade", "rule8",
-                                                         "in_play", "fresh_quote", "secrets"})
+                                                         "in_play", "fresh_quote", "secrets", "below_cost",
+                                                         "your_switches"})
+ok("below-cost guard (start: on): automatic sales still skip an offer under what was paid",
+   'why="below what you paid"' in open("wahome/engine.py", encoding="utf-8").read())
 # the settings' fallbacks in the live code are the shipped defaults too
 ok("auto_cap: an unreadable value falls back to the start (5)", E.auto_cap_limit("junk") == E.KNOB_BY["auto_cap"]["start"])
 eng_src = open("wahome/engine.py", encoding="utf-8").read()
@@ -101,7 +113,7 @@ def has_lit(fn, pats):
 lit = {"exit_policy": has_lit(E.exit_policy, [r"q >= 0\.5", r"/ 0\.95", r"/ 0\.9\b", r"0\.02 \* cost", r"1\.5 \* cost", r"1\.1 \* cost"]),
        "swing_lambda": has_lit(E.swing_lambda, [r"0\.35", r"\* 1\.3"]),
        "_replay": has_lit(E._replay, [r"0\.35"]),
-       "simulate_exit": has_lit(E.simulate_exit, [r"0\.35 \*", r"\*= 1\.3"]),
+       "simulate_exit": has_lit(E.simulate_exit, [r"0\.35 \*", r"\*= 1\.3", r"p_exit\"\] >= 0\.5"]),
        "hedge_beats": has_lit(E.hedge_beats, [r"0\.95", r"\+ 0\.5"]),
        "stop_loss_leg": has_lit(E.stop_loss_leg, [r">= 0\.5"]),
        "_sl_held": has_lit(E._sl_held, [r"< 0\.5"]),
@@ -120,14 +132,17 @@ ok("only analytics reads the registry (via knob_view)" + (f" {uses}" if uses != 
 # ---- 5. knob_view mirrors the live resolvers league by league
 TICK = {"nba": "KXNBAGAME-26NOV19LALBOS-LAL", "nhl": "KXNHLGAME-26NOV19PHIBOS-PHI", "epl": "KXEPLGAME-26NOV22ARSCHE-ARS",
         "laliga": "KXLALIGAGAME-26NOV22RMABAR-RMA", "nfl": "KXNFLGAME-26NOV22KCBUF-KC", "ncaamb": "KXNCAAMBGAME-26NOV21DUKUNC-DUK"}
+MIX = ["KXNBAGAME-26NOV19LALBOS-LAL", "KXNHLGAME-26NOV19PHIBOS-PHI"]
 table = {"_at": now,
          "nba": {"n": 45, "floor": 1.7, "lam": 1.15, "loss": 0.2, "sl_n": 60, "sl_prog": 0.4, "sl_drop": 0.15},   # own, looser loss guards
          "soccer": {"n": 80, "floor": 1.3, "lam": 0.85, "loss": 0.25, "sl_n": 55, "sl_prog": 0.4, "sl_drop": 0.3},  # epl borrows this
          "epl": {"n": 4, "floor": 2.0, "lam": 2.0, "loss": 0.3},                                                    # too few: unused
          "all": {"n": 300, "floor": 1.4, "lam": 1.0, "loss": None, "sl_n": 70, "sl_prog": 0.6, "sl_drop": 0.1},
-         "nhl": {"n": 10, "floor": 1.9}}
+         "nhl": {"n": 10, "floor": 1.9}, "nfl": {"n": 31, "floor": 1.6, "lam": 1.0, "loss": None},
+         "mix": {"n": 33, "floor": 1.8, "lam": 1.3, "loss": None}}
 json.dump(table, open(E.SMART_FILE, "w")); E.SMART_CACHE["at"] = 0
-dial = {"all": {"n": 40, "level": 2}, "nba": {"n": 35, "level": 4}, "soccer": {"n": 31, "level": 3}, "nhl": {"n": 5, "level": 6}}
+dial = {"all": {"n": 40, "level": 2}, "nba": {"n": 35, "level": 4}, "soccer": {"n": 31, "level": 3}, "nhl": {"n": 5, "level": 6},
+        "laliga": {"n": 3, "level": 7}, "ncaamb": {"n": 30, "level": 1}}
 json.dump(dial, open(E.SB_DIAL_FILE, "w")); E.SB_GATE["dial"] = None
 mt = (os.path.getmtime(E.SMART_FILE), os.path.getmtime(E.SB_DIAL_FILE))
 v = E.knob_view(now)
@@ -145,7 +160,17 @@ for lg, t in TICK.items():
             "sl_drop": sl["drop"], "sb_dial": sb["level"]}
     if got != want:
         mism.append((lg, got, want))
-ok("per league, knob_view's values are exactly what the live code uses" + (f" {mism}" if mism else ""), not mism)
+if "mix" in keys:
+    sp, sl, sb = E.smart_params(MIX), E.stoploss_params(MIX), E.sb_dial(MIX, now)
+    got = {n: by[n]["values"]["mix"]["v"] for n in ("smart_floor", "smart_lam", "smart_loss", "sl_prog", "sl_drop", "sb_dial")}
+    if got != {"smart_floor": sp["floor"], "smart_lam": sp["lam"], "smart_loss": sp["loss"], "sl_prog": sl["prog"],
+               "sl_drop": sl["drop"], "sb_dial": sb["level"]}:
+        mism.append(("mix", got))
+ok("per league (and Mix), knob_view's values are exactly what the live code uses" + (f" {mism}" if mism else ""),
+   not mism and {"laliga", "nfl", "ncaamb", "mix"} <= set(keys))
+ok("Smart Buy's dial: laliga and epl borrow soccer's level 3, ncaamb has its own 1",
+   by["sb_dial"]["values"]["laliga"]["v"] == 3 and by["sb_dial"]["values"]["laliga"]["from"] == "borrowed from Soccer"
+   and by["sb_dial"]["values"]["epl"]["v"] == 3 and by["sb_dial"]["values"]["ncaamb"]["v"] == 1)
 ok("epl: borrows soccer's floor, never its loss cut; the loss guards borrowed only stricter",
    by["smart_floor"]["values"]["epl"]["v"] == 1.3 and by["smart_loss"]["values"]["epl"]["v"] is None
    and by["smart_floor"]["values"]["epl"]["from"] == "borrowed from Soccer"
@@ -155,6 +180,13 @@ ok("nba: its own record, in plain words", by["smart_floor"]["values"]["nba"]["fr
 ok("nhl: too few results of its own, borrows everyone's (dial never under its start)",
    by["smart_floor"]["values"]["nhl"]["v"] == 1.4 and by["sb_dial"]["values"]["nhl"]["v"] == 2
    and by["sb_dial"]["values"]["nhl"]["from"] == "borrowed from Everything")
+ok("Kalshi's offer before quotes: the starting point until 5 quotes, then the learned median",
+   by["disc_pre"]["value"]["v"] == 0.88 and by["disc_pre"]["value"]["from"].startswith("starting point"))
+json.dump({"pre": [0.9, 0.91, 0.92, 0.93, 0.94], "live": []}, open(E.DISCOUNT_FILE, "w"))
+_dv = {k["name"]: k for k in E.knob_view(now)["knobs"]}
+ok("...and once 5 are seen, the learned number the live code uses", _dv["disc_pre"]["value"]["v"] == E.kalshi_discount(False) == 0.92
+   and _dv["disc_pre"]["value"]["from"] == "learned from your last 5 quotes")
+os.remove(E.DISCOUNT_FILE)
 ok("a fixed knob shows one value, 'fixed for now'", by["exit_q_min"].get("value") == {"v": 0.5, "say": "50%", "from": "fixed for now"}
    and "values" not in by["exit_q_min"])
 E.CFG["auto_cap"] = E.AUTO_CAP_UNLIMITED
@@ -179,7 +211,8 @@ ok("plain words for each unit", (E.knob_say("share", 0.5), E.knob_say("pts", 0.2
 open(E.SMART_FILE, "w").write('{"nba": "garbage", "nhl": [1, 2]}'); E.SMART_CACHE["at"] = 0
 try:
     r = E.knob_view(now)
-    ok("a damaged settings file never raises (an empty view at worst)", isinstance(r, dict))
+    ok("a damaged league entry hides only that league", isinstance(r, dict) and bool(r.get("knobs"))
+   and "nba" not in [l["key"] for l in r["leagues"]])
 except Exception as err:
     ok("a damaged settings file never raises: " + repr(err), False)
 E.smart_table = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
