@@ -1922,12 +1922,12 @@ def shadow_loop(odds, notifier=None, every=600):
                 log(f"smart-sell scorecard: {n_out} sold bet(s) now know what holding would have paid")
         except Exception as err:
             log("smart-sell scorecard skipped:", type(err).__name__, err)
-        try:                                              # self-tuning (#228 PR2): SHADOW only, OUTSIDE odds.lock.
-            lines, pushes = odds.engine().knob_pass()     # brake every 30 min, stepper weekly, time-bounded; reads
-            for m in lines:                               # history only and writes combo_knobs.json + knob_shadow:
-                log("knobs:", m)                          # nothing live reads them yet
-            for m in pushes if notifier else []:
-                notifier.add(m)                           # information only: one per league per 14 days
+        try:                                              # self-tuning (#228), OUTSIDE odds.lock: brake every 30 min,
+            lines, pushes = odds.engine().knob_pass()     # stepper weekly, time-bounded; reads history only and writes
+            for m in lines:                               # combo_knobs.json + knob_shadow. With 'Let smart sell tune
+                log("knobs:", m)                          # its own numbers' on, smart sell's exit numbers read them
+            for m in pushes if notifier else []:          # (PR3); everything else stays a test
+                notifier.add(m)                           # a brake only: one per league per 14 days
         except Exception as err:
             log("self-tuning test skipped:", type(err).__name__, err)
         try:                                              # "cover the early games" paper test, over the NFL week
@@ -3197,7 +3197,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""

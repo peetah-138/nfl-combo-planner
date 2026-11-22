@@ -115,6 +115,17 @@ with sync_playwright() as pw:
         if v is not False: print("PROBLEMS: turning off 'Smart Buy' didn't save:", v)
         row.locator("input").click()
         if saved("smart_buy_gate", True) is not True: print("PROBLEMS: turning 'Smart Buy' back on didn't save")
+    # self-tuning (#228 PR3): a switch in Settings › Money, on by default (Pete's standing opt-in)
+    row = pg.locator("label.srow", has_text="Let smart sell tune its own numbers")
+    if row.count() != 1 or not row.locator("input").is_checked() or "newest ones agree" not in row.inner_text() \
+            or "14 days" not in row.inner_text() or "shows every change" not in row.inner_text():
+        print("PROBLEMS: Settings › Money has no 'Let smart sell tune its own numbers' switch (on by default, with the bar, "
+              "the brake and where changes show)")
+    else:
+        row.locator("input").click(); v = saved("knobs_live", False)
+        if v is not False: print("PROBLEMS: turning off 'Let smart sell tune its own numbers' didn't save:", v)
+        row.locator("input").click()
+        if saved("knobs_live", True) is not True: print("PROBLEMS: turning 'Let smart sell tune its own numbers' back on didn't save")
     SBP = {"on": False, "days": 7, "stake": 5, "markets": 42, "prices": 900,
            "rows": [{"name": "NBA", "kind": "Single games", "n": 48, "ok": 20, "p_exit": 0.52, "ev": 0.41, "sell": 25, "hold": 10},
                     {"name": "NFL", "kind": "Spreads & totals", "n": 12, "ok": 3, "p_exit": 0.31, "ev": -0.2, "sell": 2, "hold": 4}],

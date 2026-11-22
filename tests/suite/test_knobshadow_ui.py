@@ -1,6 +1,7 @@
 # CHECK: group=page secs=25
-# Issue #228, PR2: Results › What's working › Selling shows "What self-tuning would change" (a test run, not active
-# yet): folded by default (44pt header with a count), opened it says nothing changes yet, the bar in plain words, league
+# Issue #228, PR2/PR3: Results › What's working › Selling shows "What self-tuning would change" (self-tuning off: a test
+# run, nothing changes) or, with Settings › Money › 'Let smart sell tune its own numbers' on (PR3), "What self-tuning
+# changed": each change (what, from, to, when, why), a live brake, the knobs still in test. Off: folded by default (44pt header with a count), opened it says nothing changes yet, the bar in plain words, league
 # chips, per league the step it would take, the others that clear the bar, the ones the newest bets held back, where
 # the test has a number now, and a brake (test) banner; an empty league says nothing would change yet; a first run not
 # yet made says so. No setting control. Real knob_shadow_view output from the engine under test, at phone (dark and
@@ -23,6 +24,7 @@ t0 = time.time()
 while "A" not in ENG and time.time() - t0 < 30:
     time.sleep(.1)
 A = ENG["A"]
+A.CFG["knobs_live"] = False; A.KNOB_SWITCH["on"] = None; A.KNOB_SWITCH["at"] = 1e18   # the test-run card first
 tmp = tempfile.mkdtemp()
 A.KNOBS_FILE = os.path.join(tmp, "knobs.json")
 now = time.time()
@@ -41,6 +43,26 @@ json.dump({"_at": now - 3600, "_next": now + 6 * 86400, "run": {"done": True},
            "settings": {}}, open(A.KNOBS_FILE, "w"))
 KS = A.knob_shadow_view(now)
 assert KS.get("leagues"), KS
+assert KS["mode"] == "shadow", KS["mode"]
+A.CFG["knobs_live"] = True; A.KNOB_SWITCH["on"] = True                                     # PR3: live
+chg_why = ("Profit floor: 1.5× what you paid → 1.6× what you paid. 14 of 84 recent bets would have ended differently, "
+           "+$3.20 in all (+2.4% of what was staked, 2.6 standard errors from luck); the newest 30% agree (+$1.10).")
+json.dump({"_at": now - 3600, "_next": now + 6 * 86400, "run": {"done": True, "mode": "live"},
+           "groups": {"all": {"v": {}, "last": []},
+                      "nba": {"v": {"smart_floor": 1.6}, "lv": {"smart_floor": 1.6}, "lat": {"smart_floor": now - 3600},
+                              "hist": [{"at": int(now - 3600), "knob": "smart_floor", "from": 1.5, "to": 1.6, "live": True,
+                                        "why": chg_why}],
+                              "last": [{"knob": "smart_floor", "status": "stepped", "say": chg_why, "gain": 3.2},
+                                       {"knob": "sl_prog", "status": "would step", "say": "Not before this much of the game: 50% → 55%. A test."}]},
+                      "nhl": {"v": {}, "lv": {}, "last": [],
+                              "hist": [{"at": int(now - 60), "knob": "*", "brake": True, "live": True,
+                                        "why": "the last 4 sales the app made on its own all got less than holding would have paid ($9.10 less)"}]}},
+           "brake": {"nhl": {"at": now - 60, "until": now + 14 * 86400, "mode": "live",
+                             "why": "the last 4 sales the app made on its own all got less than holding would have paid ($9.10 less)"}},
+           "settings": {}}, open(A.KNOBS_FILE, "w"))
+A.SMART_CACHE.update(at=time.time() + 1e6, d={})
+KS_LIVE = A.knob_shadow_view(now)
+assert KS_LIVE["mode"] == "live" and KS_LIVE["leagues"], KS_LIVE
 AN = {"at": time.time() - 60, "levels": [], "types": [], "sports": [], "live": [], "exits": [], "auto": {}, "cut_held": {},
       "hedge_held": {}, "tuning": [], "notes": [], "knobs": A.knob_view(), "knob_shadow": KS}
 from playwright.sync_api import sync_playwright
@@ -103,6 +125,27 @@ with sync_playwright() as pw:
         html0 = pg.evaluate("v=>{const o=S.ksOpen;S.ksOpen=true;const h=knobShadow(v);S.ksOpen=o;return h}", EMPTY)
         if "first test run happens within a week" not in html0: P.append(tag + ": no first-run note: " + html0[:200])
         if pg.evaluate("knobShadow({})+knobShadow(null)") != "": P.append(tag + ": an empty answer should draw nothing")
+        # PR3: self-tuning on: what it changed, a live brake, the knobs still in test
+        pg.evaluate("v=>{S.ksOpen=false;S.ksLg=null;document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
+        hd2 = pg.locator(".an .ksp .ksh")
+        if "What self-tuning changed" not in hd2.inner_text() or "1 change" not in hd2.inner_text() or "brake" not in hd2.inner_text():
+            P.append(tag + ": live header wrong: " + hd2.inner_text())
+        pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
+        txt = pg.locator(".an .ksp").inner_text()
+        for want in ("Self-tuning is on", "Changed", "Profit floor: 1.5× what you paid → 1.6× what you paid",
+                     "the newest 30% agree", "Tested, not live yet", "Where it stands now", "Tuning itself:"):
+            if want not in txt: P.append(tag + ": live NBA missing %r" % want)
+        if "nothing changes yet" in txt: P.append(tag + ": live card still says nothing changes")
+        if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): P.append(tag + ": the live card scrolls sideways")
+        over = pg.evaluate("[...document.querySelectorAll('.an .ksp .ksr')].filter(e=>e.getBoundingClientRect().right>innerWidth+1).length")
+        if over: P.append(tag + ": %d live rows run past the screen" % over)
+        pg.locator(".an .ksp").screenshot(path=os.path.join(os.environ.get("SHOT_DIR", "."), "knoblive_%s.png" % tag))
+        pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nhl';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
+        txt = pg.locator(".an .ksp").inner_text()
+        if "is back on its starting numbers until" not in txt or "Brake: back to the starting numbers" not in txt:
+            P.append(tag + ": NHL's live brake not shown: " + txt[:300])
+        if pg.locator(".an .ksp input, .an .ksp select, .an .ksp textarea").count():
+            P.append(tag + ": the live card has a setting control (it must be read-only)")
         if errs: P.append(tag + ": JS errors %r" % errs[:3])
         pg.close()
     br.close()
