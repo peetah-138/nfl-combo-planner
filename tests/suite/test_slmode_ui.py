@@ -34,7 +34,9 @@ with sync_playwright() as pw:
         ctx = br.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, color_scheme=scheme,
                              has_touch=True, is_mobile=True)
         pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
-        requests.post(B + "/app/api/settings", headers={"X-CW": "x"}, json={"lg": "nba", "values": {"stop_loss": True, "auto_sell": True}})
+        requests.post(B + "/app/api/settings", headers={"X-CW": "x"}, json={"lg": "nba", "values": {"stop_loss_mode": "tune", "auto_sell": True}})
+        requests.post(B + "/app/api/settings", headers={"X-CW": "x"}, json={"lg": "nba", "values": {"stop_loss": True}})
+        if saved()[0] != "tune": bad(f"an old page's 'on' loosened the choice ({saved()})")
         pg.goto(B + "/app"); time.sleep(2)
         if not open_settings(pg):
             bad("no 'Selling at a loss' choice on Settings"); break
@@ -44,8 +46,9 @@ with sync_playwright() as pw:
         if names != ["Never sell at a loss", "Let it tune itself", "Allow (guarded)"]: bad(f"the choices read {names}")
         if pg.evaluate("document.querySelector('#slrow b').textContent") != "Selling at a loss": bad("the row isn't titled 'Selling at a loss'")
         if "Manual override" in pg.evaluate("document.body.innerText"): bad("the old 'Manual override' switch is still shown")
-        if saved()[0] is None and pg.evaluate(ON) != ["Allow (guarded)"]:
-            bad(f"an old saved 'on' shows {pg.evaluate(ON)}, not Allow (guarded)")
+        old = pg.evaluate("(()=>{const k=S.set.values,a=[k.stop_loss,k.stop_loss_mode];k.stop_loss=true;k.stop_loss_mode=null;"
+                          "const r=[slMode()];k.stop_loss=false;r.push(slMode());k.stop_loss=a[0];k.stop_loss_mode=a[1];return r})()")
+        if old != ["allow", "tune"]: bad(f"an old saved on/off reads as {old}, not allow/tune")
         for want, words, old in (("never", "Nothing sells for less than you paid", False),
                                  ("tune", "own results show", False), ("allow", "late in a game", True)):
             pg.evaluate(f"document.querySelector('#slrow button[data-slm={want}]').click()")
