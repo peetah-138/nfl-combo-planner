@@ -115,6 +115,21 @@ ok("Pause: no quote, nothing read", not qp["ok"] and qp.get("paused") and not RE
 q = E.single_sell_quote(T)
 r = sell(q, paused=True)
 ok("Pause after the quote: the sale is refused, nothing sent", not r["ok"] and "Paused" in r["msg"] and not D["sent"])
+q = E.single_sell_quote(T)
+_flip, _bd = {"p": False}, E.book_depth
+def _bd_pause(tk, max_age=60):                      # Pause comes on while the book is re-read
+    _flip["p"] = True
+    return _bd(tk, max_age=max_age)
+E.book_depth = _bd_pause
+r = sell(q, paused=lambda: _flip["p"])
+E.book_depth = _bd
+ok("Pause turned on during the book re-read: refused, nothing sent", not r["ok"] and r.get("paused") and not D["sent"])
+q = E.single_sell_quote(T)
+ok("Pause that can't be read counts as paused", not sell(q, paused=lambda: 1 / 0)["ok"] and not D["sent"])
+q = E.single_sell_quote(T)
+r = sell(q, paused=lambda: False)
+ok("a callable Pause that stays off: sold", r["ok"] and D["sent"])
+reset()
 E.can_trade = lambda: False
 ok("no trading access: no quote", not E.single_sell_quote(T)["ok"])
 E.can_trade = lambda: True
@@ -185,7 +200,7 @@ ok("someone else's quote id: refused", not E.single_sell("0" * 16, T, log=LOG.ap
 # ---- (7) the web app's act: inside the app lock, Pause read fresh, a money tap for the proxy
 WSRC = open("wtest/combo_watcher.py", encoding="utf-8").read()
 i = WSRC.index('if a == "singlesell":')
-ok("the act passes Pause fresh (paused_now) and marks the tap busy", "paused_now()" in WSRC[i:i + 600]
+ok("the act passes Pause as a callable read fresh (paused_now) and marks the tap busy", "paused=paused_now," in WSRC[i:i + 600]
    and "tap_mark()" in WSRC[i:i + 600] and WSRC.rindex("with act_lock():", 0, i) > WSRC.index("def _api_act"))
 ok("Sell anyway only on an explicit true", 'd.get("anyway") is True' in WSRC[i:i + 600])
 ok("singlesell is a money tap for the proxy ('may or may not' on a timeout)",

@@ -15468,6 +15468,14 @@ def single_sell_quote(t, paused=False, now=None):
             "self": bool(x.get("self"))}
 
 
+def _paused_now(paused):
+    """Pause as a flag or a callable read fresh (the web app passes its paused_now). Unreadable = paused."""
+    try:
+        return bool(paused() if callable(paused) else paused)
+    except Exception:
+        return True
+
+
 def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
     """Sell a quoted single (Pete's second tap on the sell sheet). One order per quote, ever: the quote must be the one
     on screen, under 20 seconds old and unused; Pause, trading access and the unknown-outcome block are checked again;
@@ -15484,7 +15492,7 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
             return {"ok": False, "msg": "This price was already used for a sale. Check Live before selling again."}
         if now - q["at"] > SINGLE_QUOTE_SECS:
             return {"ok": False, "expired": True, "msg": "That price is more than 20 seconds old. Get a fresh one."}
-        if paused:
+        if _paused_now(paused):
             return {"ok": False, "paused": True, "msg": SELL_PAUSE_MSG}
         if not trade_ok:
             return {"ok": False, "msg": NO_SELL_MSG}
@@ -15504,6 +15512,8 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
         if order_unsure(t):
             return {"ok": False, "msg": "An earlier order on this market had no clear answer, so nothing was sent. "
                                         "Check Kalshi."}
+        if _paused_now(paused):                       # Pause read again after the book re-read (it can take seconds)
+            return {"ok": False, "paused": True, "msg": SELL_PAUSE_MSG}
         coid = f"cw-ss-{qid}"
         log(f"manual single sale: selling {n} of {t} ({side}) at {px:.2f}+ (IOC, reduce-only, quote {qid})")
         try:
@@ -21541,12 +21551,12 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
         out = out[:limit]
         why = None
         if not out and no_base:
-            return {"items": [], "why": "I can't read your Kalshi balance right now, so I can't size a bet. Try again in a minute.",
+            return {"items": [], "why": "Can't read your Kalshi balance right now, so no bet can be sized yet. Try again in a minute.",
                     "looked": looked}
         if not out:
             n = sum(looked.values())
             why = ("Nothing clears your bar right now." if not n else
-                   f"Nothing clears your bar right now. I checked {n} bet{'s' if n != 1 else ''} with an edge; none also has a "
+                   f"Nothing clears your bar right now. Of the {n} bet{'s' if n != 1 else ''} checked with an edge, none also has a "
                    "likely way to profit by cashing out early or holding.")
         return {"items": out, "why": why, "looked": looked}
     except Exception as err:

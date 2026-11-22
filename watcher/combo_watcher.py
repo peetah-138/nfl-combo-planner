@@ -3493,7 +3493,7 @@ def webapp_main():
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t) or not re.fullmatch(r"[0-9a-f]{16}", str(d.get("q") or "")):
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 with tap_mark():                        # an update never restarts the web app mid-order
-                    r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now(), log=log)
+                    r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
                 return jsonable(r)
             if a == "singlebuy":
