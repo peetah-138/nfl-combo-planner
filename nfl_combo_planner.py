@@ -20499,11 +20499,15 @@ def _knob_braked(st, key, now):
 
 def knob_switch_on():
     """Settings › Money › 'Let smart sell tune its own numbers' (`knobs_live`, on by default: Pete's #228 opt-in). Read
-    from the shared settings file too (like the other switches), at most every 10 seconds; a damaged file falls back to
-    the default (on), and an error reading it counts as off (today's numbers)."""
+    from the shared settings file too (like the other switches), at most every 10 seconds; a missing file = the default
+    (on); a damaged or unreadable file, or any error, counts as off (today's numbers: fail closed)."""
     t = time.monotonic()
     if KNOB_SWITCH["on"] is None or t - KNOB_SWITCH["at"] > 10:
         try:
+            if os.path.exists(MAIN_SAVED):
+                with open(MAIN_SAVED) as f:
+                    if not isinstance(json.load(f), dict):
+                        raise ValueError("settings file is not a dict")
             on = shared_flag("knobs_live")
         except Exception:
             on = False
@@ -21380,7 +21384,13 @@ def knob_sale_expect(r, disc=None):
         return None
 
 
-def _knob_brake_sales(st, now):
+def _knob_brake_on(st, key, now, live):
+    """A brake that blocks a new one in this mode: live = only a live brake (a test brake recorded while the switch was
+    off must not keep the real brake off once it is on); shadow = any brake."""
+    return _knob_braked_live(st, key, now) if live else _knob_braked(st, key, now)
+
+
+def _knob_brake_sales(st, now, live=False):
     """Each league's real automatic sales for the brake, oldest first: [(ts of the last part, sold minus what holding
     was expected to pay, stake)], one row per bet however many parts it was sold in (#266). Both from what the sale log
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
@@ -21402,6 +21412,8 @@ def _knob_brake_sales(st, now):
         except (TypeError, ValueError):
             continue
         b = st["brake"].get(lg) if isinstance(st["brake"].get(lg), dict) else {}
+        if live and b.get("mode") != "live":
+            b = {}                                     # a test brake never hides sales from the real one
         if cost > 0 and r["ts"] > max(float(b.get("at") or 0), float(b.get("until") or 0)):
             x = per.setdefault((lg, t), {"ts": r["ts"], "sold": 0.0, "exp": 0.0, "cost": 0.0})
             x["ts"] = r["ts"]                          # sales during a brake never count after it
@@ -21452,10 +21464,10 @@ def knob_brake_pass(now=None, force=False):
         live = knob_switch_on()
         smart = load_json(SMART_FILE, {}) if live else {}
         smart = smart if isinstance(smart, dict) else {}
-        by = _knob_brake_sales(st, now)
+        by = _knob_brake_sales(st, now, live)
         fire = {}
         for lg, sales in by.items():
-            if _knob_braked(st, lg, now):
+            if _knob_brake_on(st, lg, now, live):
                 continue
             why = knob_brake_check(sales)
             if why:
@@ -21467,7 +21479,7 @@ def knob_brake_pass(now=None, force=False):
         def put(d):
             msgs, done_ = [], []
             for lg, why in fire.items():
-                if _knob_braked(d, lg, now):
+                if _knob_brake_on(d, lg, now, live):
                     continue
                 done_.append(lg)
                 old = d["brake"].get(lg) if isinstance(d["brake"].get(lg), dict) else {}

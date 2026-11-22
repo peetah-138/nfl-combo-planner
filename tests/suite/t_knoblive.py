@@ -471,6 +471,25 @@ E.store_x("insert into sell_log(ts, ticker, result, kind, offer, cost, pays, fra
           (now - 50, "KXNHLGAME-26NOV21PHIBOS-PHI", "sold", "win", 6.0, 5.0, 10, 1.0, 0.6, 1))
 by_ = E._knob_brake_sales({"brake": {}}, now)
 ok("each sale is counted as soon as it is made (no waiting for the game)", len(by_.get("nhl") or []) == 1)
+sb_ = {"brake": {"nhl": {"at": now - 3600, "until": now + 13 * 86400, "mode": "shadow", "reset": {}}}}
+ok("a test brake (switch off) never keeps the real brake off once the switch is on (release-133 code review)",
+   E._knob_brake_on(sb_, "nhl", now, True) is False and E._knob_brake_on(sb_, "nhl", now, False) is True
+   and len(E._knob_brake_sales(sb_, now, True).get("nhl") or []) == 1 and not E._knob_brake_sales(sb_, now, False).get("nhl"))
+lb_ = {"brake": {"nhl": dict(sb_["brake"]["nhl"], mode="live")}}
+ok("a live brake still blocks a new one and hides the sales made during it",
+   E._knob_brake_on(lb_, "nhl", now, True) is True and not E._knob_brake_sales(lb_, now, True).get("nhl"))
+_had = open(E.MAIN_SAVED).read() if os.path.exists(E.MAIN_SAVED) else None
+_cfg = E.CFG.get("knobs_live")
+E.CFG["knobs_live"] = True
+open(E.MAIN_SAVED, "w").write("{not json"); E.KNOB_SWITCH.update(on=None, at=0)
+_dam = E.knob_switch_on()
+os.remove(E.MAIN_SAVED); E.KNOB_SWITCH.update(on=None, at=0)
+_mis = E.knob_switch_on()
+if _had is not None:
+    open(E.MAIN_SAVED, "w").write(_had)
+E.CFG["knobs_live"] = _cfg; E.KNOB_SWITCH.update(on=None, at=0)
+ok("the master switch fails closed: a damaged settings file = off, a missing one = the default (on)",
+   _dam is False and _mis is True)
 
 # ---- 8. what never moves
 ok("only tunable exit knobs are live; no invariant, evidence knob, setting or guard",
