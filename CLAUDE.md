@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.130). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.21.131). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -163,7 +163,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.130`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.21.131`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -199,10 +199,13 @@ Real money is involved. Pete uses it daily.
 2. Bump the version in all three places (see above) on a short `chore/release-…` branch, PR into `develop`,
    squash-merge once `checks` is green. If any installer file changed (see the decisions above), rebuild
    `Combo-Watcher.zip` in the same PR.
-3. Run code review and security review on the release diff; fix every finding.
-4. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
+3. **Fold `docs/changes/*.md` (every file but `README.md`) into this file and `ROADMAP.md`**: each into its
+   product section in the same style, following its `ROADMAP:` lines (add/remove items), then delete those files in
+   the same release PR.
+4. Run code review and security review on the release diff; fix every finding.
+5. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
-5. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
+6. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
    screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The Macs then update within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
@@ -589,7 +592,21 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     floor, take profit, lock-in, the learned loss cut with `cut_ok`); `take_profit_reason` and `single_sell_reason`
     now only gather their inputs and call it (`EXIT_POLICY_VERSION`). `t_exitpolicy` runs the old functions verbatim
     (`fixtures/exit_policy_old.py.txt`) beside the new ones on 8,000 states: identical answers and peak tracking.
-    (`_replay`, the weekly tuner's replay, still has its own copy of the rule; aligning it is stage 5.)
+    **The weekly tuner's replay now uses exit_policy too (#228 PR0):** `_replay` (used by `smart_tune`, `sim_exit`,
+    the combo lab's and the cover test's replays, and What's working's smart-sell replay) no longer has its own copy of
+    the rule. Each recorded price becomes exit_policy's state (`kind`, `value` = the replay's estimate, `real` 0, `peak`,
+    `pays`, `cost`, `q`, `live` True) and settings (`smart` on, `lam` = the replay's risk weight, `floor`, `loss`,
+    `cut_ok` = a guard time from `_cut_guard_ts`, `trail`, take profit off, no checkpoint); the bet is sold at the
+    estimate when exit_policy says sell **and** the estimate reaches its `threshold`. Live selling is untouched. Every
+    difference from the old copy (now following live): **D1** lock in arms at a fixed 1.5x cost (old: max(60% of payout,
+    floor x stake)); **D2** a single's loss cut accepts any positive value, a combo's at ≥ 2% of cost (old: > 2% of stake);
+    **D3** a combo whose estimate is within 5% under the floor answers "smart" and rides (lock in not looked at on that
+    price). `t_replaypolicy.py` proves the list complete: the old replay verbatim (`fixtures/replay_old.py.txt`) with
+    exactly D1-D3 applied matches the new one on 12,000 fuzzed paths (63 differ: D1 48, D2 1, D3 17). The tuner's output
+    was unchanged on the test fixtures and on a read-only copy of Pete's history (26 settled bets). Still different
+    from live (later #228 PRs, ROADMAP): take profit isn't replayed, no checkpoint x1.3, the estimate stands in for
+    Kalshi's real offer (live accepts down to `CASH_SLIP` 97% of it), and the replay keeps `0.35 x swing` (no
+    `swing_lambda` or Let it ride).
   - `simulate_exit(spec)` (spec from `exit_spec(candidate)`; `predict_exit_chance(c)`): Monte Carlo (120 paths,
     seeded from the candidate id) of each pick's hidden lead (pre-game drift `SB_PRE_VOL`, in play scoring jumps per
     sport `SB_SCORE_UNIT`, fair = Φ(lead/√time left) as the live model), Kalshi's mid closing the gap to fair
@@ -669,16 +686,38 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `_idea_matchup`, `_idea_plain`); nothing is fetched, and an unknown field is left out. A single's card body opens its game
   page (`ideaOpen`); a combo's leg rows open their games. A game you hold nothing on gets its page from the idea
   (`idea_game_leg`, only games named by a current idea). Tests: `t_ideacards.py`, `test_ideacards.py`.
-- Hero card: worth now if sold (rolling number), change vs what's in, a chart of open-bet worth (`pulse` table),
+- Hero card: worth now if sold (rolling number), change vs what's in, a profit/loss chart,
   riding / staked / chance one pays / most it can pay — covering combos **and** singles/spreads.
-- Hero chart (`heroChart`/`wireChart`): Day (16 h, from `/app/api/live`) or Week (`/app/api/pulse?h=168`, read-only,
-  pulse keeps 30 days) via a plain-text switcher (remembered, `cw_rng`); gradient area, glowing end dot, the staked
-  amount dashed; draws in left to right when the range changes. Press and drag to scrub: a line and dot follow the
-  finger, the big number and change pill show that moment's value, a time readout sits above, each point crossed ticks
-  a haptic; release restores the live numbers. Live refreshes wait while a finger is on it (`S.scrub`).
+- Hero chart (`heroChart`/`wireChart`, issue #221): plots **profit and loss**, not worth. Day (16 h, `pnl` in
+  `/app/api/live`) or Week (`/app/api/pulse?h=168` → `pnl`; read-only, pulse keeps 30 days) via a plain-text switcher
+  (remembered, `cw_rng`). The engine's `pnl_series` (display only, cached 20 s, never raises, writes nothing) builds it:
+  P/L(t) = (worth − cost of open bets) + (back − cost of bets that finished in the window: `ledger`, then `bets` for a
+  combo the ledger lacks) − the open-bet sum at the window's start, so the window starts at $0, a bet bought in it counts
+  from what was paid, a bet **already open at the start counts from its worth then** (the legend says so), and a bet
+  leaving moves the line only by what it brought back beyond its last worth. A finished bet's cash is placed at the
+  first pulse row (≤ 15 min after Kalshi's time) where its stake left the open list. `record_view` also writes
+  `pulse_more(ts, xworth, xcost)` (a separate table so older 3-value inserts keep working): singles whose game is
+  over but Kalshi hasn't paid (`_limbo_worth`: payout if decided, else bid, else cost), and one 0/0 row once nothing
+  is open (the line then runs flat to now). Rows from before `pulse_more` make the chart say "Rough before <time>"
+  (a finished single may dip until its payout lands). Partial cash-outs show only when the bet finishes. Drawn as a
+  flat zero line, green above / red below (one gradient split at zero), the glowing end dot, and what was staked as a
+  faint stepped band on its own scale. Press and drag to scrub: line and dot follow the finger, the readout shows
+  "+$3.20 · $18 staked · 2:40 PM", each point ticks a haptic; the big "worth now if sold" number and its pill never
+  change. Live refreshes wait while a finger is on it (`S.scrub`). Tests: `t_heropnl`, `test_heropnl`, `test_motion`.
 - Combos table, "Single bets & spreads" section (tap opens the game page: score, chance it covers, your bets on
   that game), Settled view with profit/loss pills, outcome/sport/sort filters and a net total. Offer and chance
   numbers roll frame by frame to new values and the chance bars slide (`rollNums`, `data-num`/`data-bar`).
+- **Sell a single by hand (GitHub #238; Pete's tap only, no new automatic selling).** Single bets/spreads/totals never
+  had a manual Sell (only smart sell sold them). Each open card on Live › Single bets & spreads (and the game page's
+  "Your bets") now has **Get new price** (`sellquote`: `single_sell_quote` reads the book with `book_depth(max_age=0)`,
+  updates Worth now and shows what selling gets after the fee) and **Sell** (`watcher/spa/sell_single.js`: a sheet with
+  the bid, what comes back, profit, holding's chance, warnings; two taps; `soldSheet` on success). `single_sell` (act
+  `singlesell`, in `ORDER_ACTS`) uses the quote once (20 s, `_SQ`, a sell quote can never buy), refuses on Pause, no
+  trading access, the unknown-outcome block or a lower bid on a fresh re-read, needs Sell anyway when the gap is over
+  6¢, then one IOC reduce-only sale at the quoted bid (`sell_single_now`, `cw-ss-<quote>`); unclear = "check", blocked,
+  never resent. Not logged in the sell log (that counts automatic cash-outs toward the daily cap). Totals' "On track"
+  now follows the pace (`_single_how`: total so far over the share played), not the running total. Tests:
+  `t_singlesell`, `test_singlesell_ui`.
 - Game and combo detail pages **push** in Kalshi-style (`pushOpen`/`pushFill`): the page slides in from the right in
   270 ms (ease-out) while the page behind slides a third left and dims; flat skeleton blocks show until the content
   swaps in (never before the slide ends), then the content fades/staggers in. A sticky Back bar, or swipe right,
@@ -780,6 +819,10 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+  **Pass after Get price dismisses the idea (#211):** on a card (and its detail page), Pass closes the idea like the X:
+  `ideaPass` drops the quote and its countdown (`S.ideaTid`), then goes through the same dismiss path (`ideaX` /
+  `ideaNotNowSheet`: slides out, remembered in `combo_idea_dismiss.json`, Undo toast). Pass is disabled while a buy is
+  on its way (`S.ibuy[id]`, set around `buyIdea` / `buySingle`). Display only. Test: `test_ideas2.py`.
 - **"Time to cash out" only when smart sell would sell (GitHub #210, alerts and navigation only).** The Live toast
   "Combo N: time to cash out" used to fire on every hold→sell flip of the older Let it ride plan (`plan_cashout`), which
   takes the watcher's *estimated* offer as a fresh one (`fresh_offer` accepts `rfq="estimate"`) and, for a long shot
@@ -900,6 +943,20 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   puts the same DOM node back across any redraw (refresh, rebuild, load), so the button is never replaced, flickers or
   loses a tap; the countdown ("Ns left", `qTick`) only edits its number in place, and the card is redrawn once when the
   quote runs out. "Not this one" is off while a price or buy is in flight. `test_buildbuttons.py` covers it.
+- **Flipping a leg on a combo idea (issue #104, display only; `flip`/`swap` acts, quotes and buys unchanged).** Tapping a
+  leg row (`flipLeg`) drops any fetched Kalshi quote on that card **at once** (Buy can't be tapped on a price for other
+  legs; `buy()` and `quote()` also return early in the phase) and puts the card in phase `flip` (`S.fpend[i]` is the
+  flip's own token object, kept across redraws like `ask`/`buy`): the row folds, the numbers that depend on the flip
+  (`.dep`: fair payout, chance, estimate line and the previous "Good flip" note) shimmer, Get price is a disabled
+  "Updating…" (`data-stale`), Not this one is off, a second tap does nothing. The quote line's space is kept (`.qgap`,
+  covering the quote line **and** the amount row `stakeCtl`, which hides while a flip is on its way: the distance from
+  the first of `.qline`/`.stk` to the buttons minus the card's 10 px row gap) and the note box and button widths are
+  fixed, so nothing jumps. After at least `FLIP_MIN` (220 ms) the answer is applied **only if** this flip still owns
+  the card (token), the league (`S.lg`) is the same and the card still has the tapped legs (`ccSig`); otherwise it is
+  dropped and the card just redraws. Applied: the new row turns in, numbers roll, the note slides in. Failed: a short
+  shake on the row, an inline "Couldn't flip" note and a toast. One page-level polite announcer (`#flipsay`,
+  `flipSay`) says "Updating…" then the verdict. Reduced motion = a crossfade. No `hap()` in the flip (the global tap
+  tick only; iOS ignores later ones). Leg rows are keyboard buttons (44 px, focus ring). Test: `test_flipleg.py`.
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
