@@ -15020,9 +15020,9 @@ def maker_pass(games, book_snap, alert=None, log=print):
                 store_x("update maker set status=?, updated=? where rowid=?",
                         ("filled" if (filled or 0) > 0 else "cancelled", now, row["rowid"]))
                 continue
-        else:                                          # watch: filled if Kalshi's ask came down to our price
-            ask = x.get("p")
-            if ask is not None and ask <= row["price"] + 1e-9:
+        else:                                          # watch: filled only if Kalshi's ask went a cent under our
+            ask = x.get("p")                           # price (traded through it): touching it says nothing about
+            if ask is not None and ask <= row["price"] - MAKER_THROUGH + 1e-9:   # our place in the queue (#142 leak 10)
                 store_x("update maker set status='filled', filled=n, updated=? where rowid=?", (now, row["rowid"]))
                 did.append(f"would have filled {x['pick']} at {row['price']:.2f}")
                 continue
@@ -15057,7 +15057,8 @@ def maker_pass(games, book_snap, alert=None, log=print):
         kick = _kick_ts(x)
         if not kick or kick - now < (MAKER["cancel_mins"] + 10) * 60 or kick - now > MAKER["horizon_hours"] * 3600:
             continue
-        price = math.floor((x["fair"] - MAKER["discount"] - maker_fee(x["fair"])) * 100) / 100
+        fair = maker_fair(x)                           # never above what your own record says it's worth
+        price = math.floor((fair - MAKER["discount"] - maker_fee(fair)) * 100) / 100
         if price <= 0.02 or price >= x["p"]:
             continue                                   # at or above the ask: that's a buy idea, not a resting order
         ok, _ = sources_agree(book_snap, x["pick"], x["fair"])
@@ -15090,6 +15091,21 @@ def maker_pass(games, book_snap, alert=None, log=print):
     return did
 
 
+MAKER_THROUGH = 0.01      # watch mode: the ask must go this far under a standing order's price to count it filled
+
+
+def maker_fair(x):
+    """The fair chance a standing order is priced from: the books' chance, or your calibrated record of it when that
+    is lower (calib_fair, league -> sport -> everyone). Only ever lower, so an order only ever sits lower (#142 leak
+    10: the books' chance alone was uncalibrated). Any error: the books' chance, as before."""
+    f = x["fair"]
+    try:
+        code = ticker_sport(x.get("ticker") or "") or LEAGUE.get("code") or ""
+        return min(f, calib_fair(code, x.get("fair_book") or f, x.get("ticker")))
+    except Exception:
+        return f
+
+
 def maker_resolve():
     rows = store_rows("select rowid, ticker from maker where status='filled' and outcome is null and updated < ?",
                       (time.time() - 3600,))
@@ -15105,7 +15121,8 @@ def maker_resolve():
 def maker_summary():
     rows = store_rows("select * from maker order by ts desc limit 80")
     done = [r for r in rows if r["status"] == "filled" and r["outcome"]]
-    pl = sum(((1 - r["price"]) if r["outcome"] == "won" else -r["price"]) * (r["filled"] or r["n"]) for r in done)
+    pl = sum(((1 - r["price"]) if r["outcome"] == "won" else -r["price"]) * (r["filled"] or r["n"])
+             - maker_fee(r["price"]) * (r["filled"] or r["n"]) for r in done)      # the resting order's fee too
     return {"mode": CFG.get("maker_mode", "watch"), "open": [r for r in rows if r["status"] in ("posted", "watching")][:8],
             "recent": rows[:10], "settled": len(done), "pl": round(pl, 2),
             "filled": sum(1 for r in rows if r["status"] == "filled"), "rules": MAKER}
@@ -17015,7 +17032,7 @@ def month_profit(month):
         pl += (got or 0) - (r["cost"] or 0)
     _panel_table()
     for r in store_rows("select body from panel where (mode='real' or mode like 'real#%') and day like ?", (month + "%",)):
-        pl += sum(c.get("pl") or 0 for c in json.loads(r["body"]).get("items", [])
+        pl += sum(panel_pl(c) or 0 for c in json.loads(r["body"]).get("items", [])
                   if c.get("result") and c["kind"] != "combo")    # panel combos are already in your Kalshi record
     return round(pl, 2)
 
@@ -18552,6 +18569,15 @@ def _buy_panel_bet(c):
                 except Exception:
                     pass
             return False, f"Kalshi offered {q['pct']:.0%} of fair, under the {cut:.0%} cut-off", {}
+        why = _sb_quote_under_fair(c, q.get("pct"))      # #142 leak 1: quoted under fair needs a likely exit too
+        if why:
+            o = CTX["offers"].pop(1, None)                # nothing was accepted: drop the quote request, a clean skip
+            if o:
+                try:
+                    kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+                except Exception:
+                    pass
+            return False, why, {}
         market = (CTX["offers"].get(1) or {}).get("market")
         r = accept_offer(1, skip_cap=True)               # the panel's own budget was checked when it was built
         if r.get("check"):                               # it may have gone through: "check", never retried
@@ -18563,6 +18589,19 @@ def _buy_panel_bet(c):
         return True, f"bought for {money(c['stake'])}, pays {money(q['pays'])} ({q['pct']:.0%} of fair)", \
             {"pays": round(q["pays"], 2), "pct": round(q["pct"], 4), "market": market, "bought_at": int(time.time())}
     return _with_ctx(go)
+
+
+def _sb_quote_under_fair(c, pct):
+    """The under-fair rule (#142 leak 1) on Kalshi's real quote at buy time: a combo predicted at fair or better that
+    Kalshi quotes under fair is bought only when smart sell is likely to cash it out for a profit at that price. The
+    reason it is skipped, or None. Smart Buy off = None (off means off); any error = skipped (fail closed)."""
+    try:
+        if pct is None or float(pct) >= SB_UNDER_FAIR - 1e-9 or not smart_buy_on():
+            return None
+        c2 = dict(c, pct=float(pct))
+        return _sb_under_fair(c2, _sb_sim(c2, None))
+    except Exception:
+        return _sb_under_words()
 
 
 def _quote_only(c):
@@ -18792,6 +18831,8 @@ def panel_settle():
                         ch["clv"] = round(math.prod(cl[l["ticker"]] for l in c["legs"]) /
                                           math.prod(l["p"] for l in c["legs"]) - 1, 4)
                 if c.get("state") not in ("bought", "paper") or c.get("result"):
+                    if mode == "real" and c.get("result") and c.get("pl_src") != "fills":
+                        ch.update(_panel_fill_pl(c) or {})   # Kalshi's ledger arrived after the result was set
                     if ch:
                         changes[c["id"]] = ch
                     continue
@@ -18815,12 +18856,14 @@ def panel_settle():
                         pays = c.get("pays") or s * c.get("pct", 1) * c.get("fair_mult", 1)
                         pl = pays - s if won else -s
                     elif c["kind"] == "early" and touched:
-                        n = s / (p_ + single_fee(p_))
-                        pl = n * (c["exit"] - p_ - single_fee(p_) - single_fee(c["exit"]))
+                        n, cost = _panel_contracts(c, s, p_)
+                        pl = n * c["exit"] - cost - n * single_fee(c["exit"])
                     else:
-                        n = s / (p_ + single_fee(p_))
-                        pl = n - s if won else -s
+                        n, cost = _panel_contracts(c, s, p_)
+                        pl = n - cost if won else -cost
                     ch.update(result="won" if pl > 0 else "lost", pl=round(pl, 2))
+                    if mode == "real":                     # #142 leak 8: what Kalshi really paid, sales included
+                        ch.update(_panel_fill_pl(dict(c, **ch)) or {})
                     try:                                   # what smart sell would have done, from its game prices
                         sim = sim_exit(c)
                     except Exception:
@@ -18832,6 +18875,63 @@ def panel_settle():
             if changes:
                 _set_items(r["day"], r["mode"], changes)
     return []
+
+
+PANEL_FILL_TOL = (0.10, 0.03)   # a ledger row is this panel bet's own when its cost is within max($0.10, 3%) of it
+
+
+def _panel_contracts(c, stake, price):
+    """(contracts, dollars paid incl. the fee) of a panel single bet: the contracts the order really bought (`filled`,
+    whole contracts, the order's fee rounded up to the cent), else the stake's worth at the price (paper bets)."""
+    try:
+        n = float(c.get("filled") or 0)
+    except (TypeError, ValueError):
+        n = 0.0
+    if n > 0:
+        return n, n * (price + single_fee(price, n))
+    return stake / (price + single_fee(price)), stake
+
+
+def _panel_fill_pl(c):
+    """A real panel bet's profit from Kalshi's own record (the ledger: every fill, sale, fee and settlement), so a bet
+    smart sell cashed out early, or one only part-filled, counts what really happened, not 'held to the end on the
+    whole stake' (#142 leak 8). {'pl_real', 'pl_src': 'fills'} or None: no finished ledger row yet, or the row also
+    holds other buys of the same market (its cost isn't this bet's). 'pl' and 'result' keep meaning 'held to the end'
+    (the game's result), because smart sell's replays, the tuners and the calibration compare against exactly that;
+    the real panel's record and the monthly skim read pl_real (panel_pl). Measurement only: nothing buys or sells on it."""
+    try:
+        if not STORE.get("db") or c.get("state") != "bought":
+            return None
+        if c["kind"] == "combo":
+            t = c.get("market")
+            mine = float(c.get("stake") or 0)
+        else:
+            t = (c.get("legs") or [{}])[0].get("ticker")
+            p_ = c.get("paid") or c.get("price")
+            if not p_ or not c.get("filled"):
+                return None
+            mine = _panel_contracts(c, float(c.get("stake") or 0), float(p_))[1]
+        if not t or mine <= 0:
+            return None
+        _ledger_table()
+        rows = store_rows("select cost, back, sell_fees, status from ledger where ticker=?", (t,))
+        if not rows or rows[0]["status"] not in ("won", "lost", "sold") or rows[0]["cost"] is None:
+            return None
+        r = rows[0]
+        opened = float(r["cost"]) - float(r["sell_fees"] or 0)    # what opening it cost (buy fees in)
+        tol = PANEL_FILL_TOL[1] * (3 if c["kind"] == "combo" else 1)   # a combo's market is its own: fees may differ
+        if abs(opened - mine) > max(PANEL_FILL_TOL[0], tol * mine):
+            return None                                          # other buys of this market share the row
+        return {"pl_real": round(float(r["back"] or 0) - float(r["cost"]), 2), "pl_src": "fills"}
+    except Exception as err:
+        console_note(f"panel P/L from fills: {type(err).__name__}: {err}")
+        return None
+
+
+def panel_pl(c):
+    """A settled panel bet's profit as it really happened: Kalshi's record when matched (pl_real), else held to the end."""
+    v = c.get("pl_real")
+    return c.get("pl") if v is None else v
 
 
 def panel_record():
@@ -18846,11 +18946,11 @@ def panel_record():
         for b in bodies:
             for c in b.get("items", []):
                 if c.get("result"):
-                    days[_panel_day(b["at"])] += c["pl"]
+                    days[_panel_day(b["at"])] += panel_pl(c)
         clv = [c["clv"] for b in bodies for c in b.get("items", []) if c.get("clv") is not None]
         out[mode] = {"clv": round(sum(clv) / len(clv), 4) if clv else None, "clv_n": len(clv),
                      "bets": len(bets), "won": sum(1 for c in bets if c["result"] == "won"),
-                     "pl": round(sum(c["pl"] for c in bets), 2), "staked": round(sum(c["stake"] for c in bets), 2),
+                     "pl": round(sum(panel_pl(c) for c in bets), 2), "staked": round(sum(c["stake"] for c in bets), 2),
                      "days": len(days), "days_up": sum(1 for v in days.values() if v > 0)}
     pp = out["paper"]
     pp["ready"] = (pp["bets"] >= 50 and pp["pl"] > 0 and pp["days_up"] >= 0.55 * max(pp["days"], 1)
@@ -20073,6 +20173,18 @@ def _grid(cur):
     return [(a, b, c) for a in floors for b in lams for c in losses]
 
 
+SMART_HOLD_N = 10          # each half of a league's games needs this many bets before the weekly tuner may move it
+
+
+def _tune_half(c):
+    """Which half (0 = picks the step, 1 = holdout that must confirm it) a settled bet belongs to: a fixed hash of
+    its games (the game part of the ticker, so both sides, its spreads and totals too), and every re-run, land in the
+    same half."""
+    evs = sorted({(str(l.get("ticker") or "").split("-") + [""])[1] for l in c.get("legs") or []} - {""}) \
+        or [str(c.get("id"))]
+    return int(hashlib.sha1("|".join(evs).encode()).hexdigest(), 16) % 2
+
+
 def smart_tune(force=False):
     """Once a week: for each league (then each sport, then everything), replay its settled bets with nearby
     settings and move one small step toward whatever did clearly better. Returns what changed, in words."""
@@ -20104,26 +20216,33 @@ def smart_tune(force=False):
         staked = sum(c["stake"] for c, _ in rows) or 1
 
         guards = {}                                      # the loss cut only where the live guards would have let it
+        half = [_tune_half(c) for c, _ in rows]          # #142: pick a step on one half of the games, judge it on the other
+        st_h = [sum(c["stake"] for (c, _), h in zip(rows, half) if h == k) or 1 for k in (0, 1)]
+        n_h = [sum(1 for h in half if h == k) for k in (0, 1)]
 
         def score(fl, lm, loss):
-            tot = 0.0
+            """(all, fit half, holdout half): return on stake."""
+            tot, part = 0.0, [0.0, 0.0]
             for i, (c, path) in enumerate(rows):
                 if loss and (i, loss) not in guards:
                     guards[(i, loss)] = _cut_guard_ts(c, c.get("_slp"), loss)
                 r = _replay(c, path, fl, lm, loss, cut_at=guards.get((i, loss)))
-                tot += r[0] if r else c["pl"]
-            return tot / staked
-        base = score(cur["floor"], cur["lam"], cur["loss"])
-        best, best_v = (cur["floor"], cur["lam"], cur["loss"]), base
+                v = r[0] if r else c["pl"]
+                tot += v
+                part[half[i]] += v
+            return tot / staked, part[0] / st_h[0], part[1] / st_h[1]
+        base, base_fit, base_out = score(cur["floor"], cur["lam"], cur["loss"])
+        best, best_v, best_fit, best_out = (cur["floor"], cur["lam"], cur["loss"]), base, base_fit, base_out
         here = (cur["floor"], cur["lam"], cur["loss"])
         moves = lambda g: sum(1 for a, b in zip(g, here) if a != b)
-        if n >= SMART_MIN_N and not owned:
-            for g in _grid(cur):
-                v = score(*g)
-                if v > best_v + 1e-9 or (abs(v - best_v) <= 1e-9 and moves(g) < moves(best)):
-                    best, best_v = g, v       # on a tie, the smallest change wins
+        if n >= SMART_MIN_N and not owned and min(n_h) >= SMART_HOLD_N:
+            for g in _grid(cur):              # chosen on the fit half only: the holdout half never picks the step
+                v, vf, vo = score(*g)
+                if vf > best_fit + 1e-9 or (abs(vf - best_fit) <= 1e-9 and moves(g) < moves(best)):
+                    best, best_v, best_fit, best_out = g, v, vf, vo   # on a tie, the smallest change wins
         e = dict(d.get(key) or {}, n=n, ret=round(base, 4))
-        if not owned and n >= SMART_MIN_N and best_v - base >= SMART_MIN_GAIN and best != (cur["floor"], cur["lam"], cur["loss"]):
+        if not owned and n >= SMART_MIN_N and best_v - base >= SMART_MIN_GAIN and best_out - base_out >= SMART_MIN_GAIN \
+                and best != (cur["floor"], cur["lam"], cur["loss"]):   # ...and it must also win on games it never saw
             parts = []
             if best[0] != cur["floor"]:
                 parts.append(f"profit floor {cur['floor']:g}× → {best[0]:g}×")
@@ -20133,7 +20252,8 @@ def smart_tune(force=False):
                 parts.append("may now cut a loss once the chance falls under " + f"{best[2]:.0%}" if best[2] and not cur["loss"]
                              else "stops cutting losses" if not best[2] else f"cuts losses under {best[2]:.0%}")
             why = (f"{', '.join(parts)}: in {n} recent bets that would have returned {best_v:+.0%} on what was staked, "
-                   f"vs {base:+.0%} with the old settings")
+                   f"vs {base:+.0%} with the old settings (and it also did better on the half of the games held "
+                   f"back to check it)")
             e.update(floor=best[0], lam=best[1], loss=best[2], why=why, at=int(time.time()))
             moved.append(f"{league_label(key)}: {why}")
         else:
@@ -23831,13 +23951,62 @@ def _sb_sim(c, now):
     return sim
 
 
+SB_UNDER_FAIR = 1.0        # a combo priced under this share of its fair value loses money held to the end (#142 leak 1)
+SB_UNDER_FAIR_WHY = ("it loses money if held to the end, and smart sell isn't likely to cash it out early for a "
+                     "profit")
+
+
+def _sb_under_words(pct=None, pending=False):
+    """The plain reason an under-fair combo was left out (pending: smart sell's chance of a profit isn't checked yet)."""
+    head = f"Kalshi pays {pct:.0%} of what it's worth" if pct else "Kalshi pays less than it's worth"
+    if pending:
+        return f"{head}, so it loses money if held to the end; still checking whether smart sell could cash it out early"
+    return f"{head}: {SB_UNDER_FAIR_WHY}"
+
+
+def _sb_combo_pct(c):
+    """A combo's price as a share of its fair value (Kalshi's payout vs what the picks are worth), or None."""
+    try:
+        v = float(c.get("pct"))
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def _sb_under_fair(c, sim):
+    """Pete's rule for combos priced 95-100% of fair (#142 leak 1, 2026-11-20: 'Keep 95% but only when smart sell is
+    likely to profit'). Held to the end such a combo is worth pct - 1 per dollar (a loss), so it stays only when the
+    exit simulator says smart sell is likely to cash it out for a profit (smart_buy_ok: a sell route or a good hold,
+    and SB_EV_MIN expected). None = the rule doesn't apply or it passes; else the plain reason. No simulation (the
+    combo can't be modelled) = left out: fail closed. Whatever the league's dial says: this is not a learned bar."""
+    if c.get("kind") != "combo":
+        return None
+    pct = _sb_combo_pct(c)
+    if pct is None or pct >= SB_UNDER_FAIR - 1e-9:
+        return None
+    if smart_buy_ok(sim):
+        return None
+    return _sb_under_words(pct)
+
+
 def smart_buy_gate(c, now=None, sim=None, on=None):
-    """(keep, reason) for one panel bet or Buy idea. Keep = True whenever Smart Buy is off, the league's dial is at 0
-    (learning, or its record says skip nothing), the bet can't be simulated (sell-early favorites), or anything goes
-    wrong (the bet then goes through today's rules, exactly as before). Never raises."""
+    """(keep, reason) for one panel bet or Buy idea. A combo priced under its fair value is skipped unless smart sell is
+    likely to cash it out for a profit (_sb_under_fair, any dial level; can't tell = skipped). Otherwise keep = True
+    whenever Smart Buy is off, the league's dial is at 0 (learning, or its record says skip nothing), the bet can't be
+    simulated (sell-early favorites), or anything goes wrong (the bet then goes through today's rules, exactly as
+    before). Never raises."""
     try:
         if not (smart_buy_on() if on is None else on):
             return True, None
+        if c.get("kind") == "combo":                  # #142 leak 1 (Pete, 2026-11-20): under fair needs a likely exit
+            try:
+                if sim is None and _sb_combo_pct(c) is not None and _sb_combo_pct(c) < SB_UNDER_FAIR - 1e-9:
+                    sim = _sb_sim(c, now)
+                why = _sb_under_fair(c, sim)
+            except Exception:
+                why = _sb_under_words()                # couldn't be checked: left out (fail closed), never bought
+            if why:
+                return False, why
         tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
         dial = sb_dial(tks, now)
         if dial["level"] <= 0:
@@ -24164,28 +24333,51 @@ def smart_buy_gate_summary(now=None):
         return []
 
 
+def _idea_under_fair(r):
+    """A combo Buy idea priced under its fair value (share of fair < 100%): Pete's 95-100% rule applies (#142 leak 1)."""
+    try:
+        return len(r.get("legs") or []) >= 2 and 0 < float(r.get("pct")) < SB_UNDER_FAIR - 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def _sb_idea_cand(r):
+    """The exit_shadow 'cand' key smart_buy_shadow_ideas logs for this suggestion (its own quote)."""
+    return ("idea:idea:" + str(r.get("id")))[:200]
+
+
 def smart_buy_ideas_gate(ideas, now=None):
     """(kept, skipped) for Live's Buy ideas, from what the shadow pass last simulated for each idea's market (its
     expected dollars on $5) and the league's dial now. An idea the shadow hasn't simulated yet, or in a league whose
-    dial is at 0, is kept, as before. Skip-only; never raises."""
+    dial is at 0, is kept, as before; except a combo idea priced under its fair value, which is kept only once the
+    shadow found smart sell likely to cash it out for a profit (#142 leak 1). Skip-only; never raises."""
     now = now or time.time()
     if not ideas or not smart_buy_on() or not STORE.get("db"):
         return list(ideas or []), []
     try:
-        active = [r for r in ideas if sb_dial(r.get("legs") or [], now)["level"] > 0]
+        under = {id(r) for r in ideas if _idea_under_fair(r)}   # #142 leak 1: needs a likely profitable exit
+        active = [r for r in ideas if id(r) in under or sb_dial(r.get("legs") or [], now)["level"] > 0]
         if not active:
             return list(ideas), []
         _exit_shadow_table()
         keys = sorted({json.dumps(list(r.get("legs") or [])) for r in active})
         q = ",".join("?" * len(keys))
-        evs = {}
-        for x in store_rows(f"select tickers, ev from exit_shadow where source='idea' and ts > ? and tickers in ({q}) "
-                            f"order by ts", (now - 2 * 3600, *keys)):
+        evs, oks = {}, {}
+        for x in store_rows(f"select tickers, ev, new, cand from exit_shadow where source='idea' and ts > ? and "
+                            f"tickers in ({q}) order by ts", (now - 2 * 3600, *keys)):
             evs[x["tickers"]] = x["ev"]                    # the newest check of each market
+            oks[x["cand"]] = bool(x["new"])                # ...and of each quote: smart sell likely profits (smart_buy_ok)
         kept, skipped = [], []
         for r in ideas:
+            k = json.dumps(list(r.get("legs") or []))
+            if id(r) in under:                             # judged on the very quote shown (its own price), not an
+                v = oks.get(_sb_idea_cand(r))          # older one of the same picks
+                if not v:                                  # not simulated yet, or no likely profitable exit: left out
+                    skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "",
+                                    "why": _sb_under_words(float(r["pct"]), pending=v is None)})
+                    continue
             dial = sb_dial(r.get("legs") or [], now)
-            ev = evs.get(json.dumps(list(r.get("legs") or [])))
+            ev = evs.get(k)
             if dial["level"] <= 0 or _sb_pass(ev, dial["level"]):
                 kept.append(r)
             else:
@@ -24193,7 +24385,13 @@ def smart_buy_ideas_gate(ideas, now=None):
         return kept, skipped
     except Exception as err:
         console_note(f"smart buy ideas gate: {type(err).__name__}: {err}")
-        return list(ideas), []
+        kept, skipped = [], []                         # the under-fair rule fails closed even here (#142 leak 1)
+        for r in ideas:
+            if _idea_under_fair(r):
+                skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": _sb_under_words(None, True)})
+            else:
+                kept.append(r)
+        return kept, skipped
 
 
 # ================================================================ Build's "Best bets today" (issue #63)
@@ -24573,6 +24771,8 @@ def _sb_row(c, spec, sim, source, key, now, on, grade, price, fair, edge):
     dl = sb_dial(tks, now)
     lvl = dl["level"] if on else 0                    # what the gate says now (logged either way)
     skip = None if _sb_pass(sim["ev"], lvl) else _sb_why(sim["ev"], lvl, dl["key"])
+    if on and not skip:
+        skip = _sb_under_fair(c, sim)                 # the gate's under-fair rule for combos, logged the same way
     return (now, key[:200], source, spec["league"], spec["type"], json.dumps(tks), c.get("kick"), price, fair,
             round(edge, 4) if edge is not None else None, sim["win"], sim["p_exit"], sim["p_sell"],
             sim["exit_profit"], sim["hold_profit"], sim["ev"], sim["exit_mins"], sim["route"],

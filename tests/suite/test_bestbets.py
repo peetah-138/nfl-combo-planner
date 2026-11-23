@@ -125,7 +125,11 @@ with sync_playwright() as pw:
         (pg.locator("#main .bfrow").nth(0).locator("button", has_text="Buy straight").tap() if tag != "desk"
          else pg.locator("#main .bfrow").nth(0).locator("button", has_text="Buy straight").click())
         if not wait(pg, "!!document.querySelector('#sbx')", 8): bad(f"{tag}: Buy straight should open the buy sheet")
-        if not any(s.get("a") == "singlequote" and s.get("t") == ITEMS[0]["ticker"] for s in SENT[n0:]): bad(f"{tag}: the sheet should ask for a fresh quote on that very ticker: {SENT[n0:]}")
+        asked = lambda: any(s.get("a") == "singlequote" and s.get("t") == ITEMS[0]["ticker"] for s in SENT[n0:])
+        t_end = time.time() + 5
+        while not asked() and time.time() < t_end:       # the quote request follows the sheet's opening (no race)
+            pg.wait_for_timeout(100)
+        if not asked(): bad(f"{tag}: the sheet should ask for a fresh quote on that very ticker: {SENT[n0:]}")
         pg.evaluate("closeModal&&closeModal()"); time.sleep(.5)
         # ---- a combo is priced through its own card (never bought from the feed)
         n0 = len(SENT)

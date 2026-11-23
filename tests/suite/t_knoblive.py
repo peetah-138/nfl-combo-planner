@@ -274,8 +274,8 @@ set_knobs({"groups": {"nba": {"lv": {"smart_floor": 1.6}, "lat": {"smart_floor":
 ok("self-tuning's step is newer than smart_tune's: it wins", E.smart_params([NBA])["floor"] == 1.6)
 E.SMART_CACHE["d"]["nba"]["at"] = now
 ok("smart_tune moved it later (while the switch was off): smart_tune's wins", E.smart_params([NBA])["floor"] == 1.7)
-items = [{"id": i, "kind": "single", "stake": 5.0, "kick": now - 86400 * (40 - i), "pl": -5.0,
-          "legs": [{"ticker": NBA}]} for i in range(40)]
+items = [{"id": i, "kind": "single", "stake": 5.0, "kick": now - 86400 * (40 - i), "pl": -5.0,   # 40 different games:
+          "legs": [{"ticker": f"KXNBASPREAD-26NOV21G{i:02d}NYK-BOS5"}]} for i in range(40)]   # the holdout splits them (#142)
 real = (E._tune_items, E._paths, E._sl_paths, E._replay)
 E._tune_items = lambda days=60: [dict(c) for c in items]
 E._paths = lambda c: [(0, {}), (1, {}), (2, {})]
