@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.134). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.22.136). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -191,7 +191,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.22.135`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.22.136`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -553,9 +553,34 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `single_pass` rule; an unreadable report never blocks).
   - **Minor:** `single_fee(p, n)` rounds an order's fee up to the cent (the panel's buy recheck and its simulation use
     it); a swapped-in bet is sized for itself, never above the stake it replaces (`_swap_stake`).
-  - Still open in #142: `_size`'s $2 minimum and combos at 95–100% (#137), live-football single ideas (leak 7),
-    panel P/L from real fills (leak 8), Build lines not recommended (leak 9), standing orders (leak 10), combo fees,
-    `smart_tune` holdout.
+  - **Second batch (`t_profit2.py`; every check failed on the code before):**
+    - **Combos under fair (leak 1, Pete 2026-11-20 "Keep 95% but only when smart sell is likely to profit"):** with
+      Smart Buy on, a combo whose `pct` (share of fair) is under 100% (`SB_UNDER_FAIR`) is skipped unless
+      `smart_buy_ok` on its exit simulation (a likely profitable cash-out or a good hold, ≥ `SB_EV_MIN`), at **any**
+      dial level, learning leagues included (`_sb_under_fair` in `smart_buy_gate`: panel, longer plays, swaps), and
+      again on Kalshi's real quote in `_buy_panel_bet` before any accept (`_sb_quote_under_fair`; a skip drops the RFQ);
+      no simulation or an error = skipped (fail closed). Buy ideas (`smart_buy_ideas_gate`): a combo idea under fair
+      shows only once the shadow's check of that very quote (`cand` "idea:idea:<id>") says `new` (smart_buy_ok);
+      unchecked = "still checking"; the gate erroring still leaves them out. The shadow log records it as a skip. Skip-only:
+      stakes, cut-offs and every cap unchanged; Smart Buy off = off. The panel's 95% cut-off itself is unchanged.
+      `_size`'s $2 for a non-positive edge is then only reached by such combos (singles/lines qualify with an edge after fees).
+    - **Panel P/L from real fills (leak 8, measurement):** `panel_settle` counts a single's contracts really bought
+      (`filled`, the order's fee rounded up; `_panel_contracts`), and for real bets takes the profit from Kalshi's own
+      record (`_panel_fill_pl`: the `ledger` row, sales and fees included) when that row is this bet's alone (opening
+      cost within max($0.10, 3%; combos 9%) of the bet's, `PANEL_FILL_TOL`) as `pl_real` (`pl_src: "fills"`); a row that
+      arrives later is picked up on the next pass. `pl`/`result` keep meaning "held to the end" (the replays, tuners,
+      knob stepper and calibration compare against that). `panel_pl(c)` (= `pl_real`, else `pl`) feeds `panel_record`
+      and `month_profit`'s skim. Paper bets (the $300 gate) are unchanged.
+    - **Standing orders (leak 10):** watch mode counts a fill only when the ask trades a cent through the price
+      (`MAKER_THROUGH`); orders are priced from `maker_fair` = min(books' chance, `calib_fair`) (only ever lower);
+      `maker_summary`'s profit subtracts the resting fee.
+    - **`smart_tune` holdout:** each league's settled bets split in two by a hash of their games (`_tune_half`, the
+      game part of the ticker, so a game's spreads land with it); the
+      step is picked on one half only and must also gain ≥ `SMART_MIN_GAIN` on the other (and on all); each half
+      needs ≥ `SMART_HOLD_N` (10) bets or nothing moves. (`_sl_tune`, the stop-loss switch's tuner, is not changed.)
+  - Still open in #142: live-football single ideas (leak 7), Build's "more combo ideas" (leak 9; spreads/totals done
+    in #117 B), combo fees in the simulation (Kalshi's RFQ fee not
+    verified), `_size`'s $2 minimum rounding up a tiny positive edge (#328, #329).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
   that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it
@@ -568,6 +593,13 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
   It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
+- **Leftovers and repeated failures (#334):** smart sell for singles offers only whole contracts, never under
+  `SELL_MIN_CONTRACTS` (1, Kalshi's minimum): a 0.92 leftover is skipped and logged once ("under one contract"), never
+  sent. After `SELL_FAIL_MAX` (3) failed identical sales in a row (same market, side and size; a definite "failed", not
+  "check") it waits 10 min, then an hour after each further failure (`SELL_FAIL_WAITS`, `SELL_FAILS`,
+  `sell_backoff_left`/`sell_backoff_note`; per process, a restart starts over), logged once per wait. A sale that goes
+  through, a "check" or a different size resets it. It only ever tries less: Pause, the cap, guards, rule 8 unchanged.
+  Test: `t_ledgersales.py` (C).
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; never lowered by self-tuning since #306); λ from the sport's swing and time left (×1.3 at a slate
   checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
@@ -1202,6 +1234,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   goes back. Confirmations stay as bottom sheets (`modal()`); switching modes never animates a half-moved sheet.
 - Loading shows a hero-shaped skeleton; an empty Live says "Nothing riding right now" with a button to today's bets.
 - Pull to refresh, score-change row flashes, celebrations when a bet wins.
+- **Score/swing alert wording (issue #324, text only):** `record_view`'s score, lead-change and swing events name the
+  pick through `alert_pick(lg)` (kind, me, opp): the team from the score's own side (`sc.abbr`), else the ticker's team
+  code, else the words before "wins by"/"to win" (never the last word of a bet description; the old `short_name` is
+  gone); a spread adds its line ("Jets score against your Chargers (-2.5)"), a total says "Score! 13 total so far, your
+  Over 47.5" (good for an Over, bad for an Under; no lead-change alert), swings say "to cover"/"to hit"/"to win".
+  Ticks, plays and every buy/sell/pick_state path are untouched. Test: `t_alertwords`.
 - **When a game starts (issue #223).** `game_start(event, ticker, exp)` → (time, source), in order of trust: the
   sportsbooks' kickoff (`KICKOFF`, a spread/total uses its game's), the score feed's scheduled start for that exact game
   (`feed_game`: ESPN / the AHL feed, cached scores only, memoised per score refresh in `FEED_MEMO`; ESPN's
@@ -1562,6 +1600,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
   `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
   standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  **Sales in V2 fills (#333):** Kalshi reports a sale at the YES price with the side flipped (selling YES shows as
+  "sell no"); `fill_yes_delta(f, pos, n)` treats every `action: sell` as closing what is held (towards zero; any excess
+  opens the other side), and with nothing held or no `action` uses the YES-book direction (`book_side`,
+  `outcome_side`), else the legacy side; buys keep their side. `ledger_note` writes only rows that differ from the saved
+  one (`_ledger_same`, money to the cent), so rows written wrong before are put right on the next account read; the
+  old guards stay (fewer fills, settlement-only rows, rows closed 180+ days ago). Read-only. Test: `t_ledgersales.py` (A, B).
   Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
 - **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
   and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)

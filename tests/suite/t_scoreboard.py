@@ -12,7 +12,19 @@ spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = impo
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SELL_LOG = os.path.join(E.HERE, "sell.jsonl")
 ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not why else f" {why}"))
-now = time.time()
+
+
+def _clear_of_starts(t, gap=4 * 3600):
+    """The test's clock, at least `gap` after the start of the week and of the month (the board's local Monday and 1st):
+    the fixture bets are dated up to 2.5 h before `now`, so right after a boundary they would fall in last week (#331)."""
+    import datetime as _dt
+    loc = _dt.datetime.fromtimestamp(t)
+    s = max((loc - _dt.timedelta(days=loc.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp(),
+            loc.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+    return s + gap if t - s < gap else t
+
+
+now = _clear_of_starts(float(os.environ.get("T_SCOREBOARD_NOW") or time.time()))   # env: to replay a given moment
 iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 near = lambda a, b: a is not None and abs(a - b) < 0.006
 

@@ -97,6 +97,10 @@ pattern in a local `.git/hooks/pre-commit`.
   verbatim), stale sharp lines (fake clocks: a fresh free line wins near a game, the panel drops a stale one, an empty
   odds refresh expires the old snapshot), the green Buy and buy-idea bars, the closing mid in cut-off learning and
   CLV (re-quotes count once, symmetric rule), the news guard, the fee rounded up per order and a swapped-in bet's stake.
+  The second batch (`t_profit2.py`): combos under fair need a likely profitable exit whatever the dial (panel, swaps,
+  Buy ideas, the shadow log; fail closed), a real panel bet's profit from Kalshi's ledger (sold early, part-filled, a
+  shared market, a late ledger row; paper untouched), standing orders (watch fills only on a trade-through, the
+  calibrated price, the fee) and the weekly tuner's holdout (a step that only wins in-sample is refused).
   Money-safety hardening (`t_safety.py`, issue #143; every check failed on the code before it): the Pi (backup role)
   never sends an order and a synced Auto cash-out can't switch it on; a combo accept whose status poll fails (429, 5xx,
   timeout, unreadable) or that is never confirmed, or whose accept itself got a 5xx/timeout, is "check" in the web

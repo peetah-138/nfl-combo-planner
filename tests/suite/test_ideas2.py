@@ -75,7 +75,10 @@ def seed():
     for tag in ("DDD", "FFF"):
         ev = f"KXNBAGAME-{D}{tag}"; A.KICKOFF[ev] = iso(7200)
         legs.append({"ticker": f"{ev}-{tag[:3]}", "event": ev, "pick": tag, "p": .5, "fair": .6})
-    A.store_suggestion({"legs": legs, "fair": 30.0}, {"pays": 40.0, "stake": 5.0}, 0.97)
+    sid = A.store_suggestion({"legs": legs, "fair": 30.0}, {"pays": 40.0, "stake": 5.0}, 0.97)
+    A._exit_shadow_table()                             # at 97% of fair it shows once smart sell likely profits (#142)
+    A.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
+              (time.time(), f"idea:idea:{sid}", "idea", json.dumps([l["ticker"] for l in legs]), 0.5, 1))
     single("EEE", 4.0, 12, 0.98)                       # no edge left: below the bar
 def server_picks():
     return [r["picks"].split(" + ")[0] for r in A.live_ideas()]
