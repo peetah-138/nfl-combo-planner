@@ -553,9 +553,34 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `single_pass` rule; an unreadable report never blocks).
   - **Minor:** `single_fee(p, n)` rounds an order's fee up to the cent (the panel's buy recheck and its simulation use
     it); a swapped-in bet is sized for itself, never above the stake it replaces (`_swap_stake`).
-  - Still open in #142: `_size`'s $2 minimum and combos at 95–100% (#137), live-football single ideas (leak 7),
-    panel P/L from real fills (leak 8), Build lines not recommended (leak 9), standing orders (leak 10), combo fees,
-    `smart_tune` holdout.
+  - **Second batch (`t_profit2.py`; every check failed on the code before):**
+    - **Combos under fair (leak 1, Pete 2026-11-20 "Keep 95% but only when smart sell is likely to profit"):** with
+      Smart Buy on, a combo whose `pct` (share of fair) is under 100% (`SB_UNDER_FAIR`) is skipped unless
+      `smart_buy_ok` on its exit simulation (a likely profitable cash-out or a good hold, ≥ `SB_EV_MIN`), at **any**
+      dial level, learning leagues included (`_sb_under_fair` in `smart_buy_gate`: panel, longer plays, swaps), and
+      again on Kalshi's real quote in `_buy_panel_bet` before any accept (`_sb_quote_under_fair`; a skip drops the RFQ);
+      no simulation or an error = skipped (fail closed). Buy ideas (`smart_buy_ideas_gate`): a combo idea under fair
+      shows only once the shadow's check of that very quote (`cand` "idea:idea:<id>") says `new` (smart_buy_ok);
+      unchecked = "still checking"; the gate erroring still leaves them out. The shadow log records it as a skip. Skip-only:
+      stakes, cut-offs and every cap unchanged; Smart Buy off = off. The panel's 95% cut-off itself is unchanged.
+      `_size`'s $2 for a non-positive edge is then only reached by such combos (singles/lines qualify with an edge after fees).
+    - **Panel P/L from real fills (leak 8, measurement):** `panel_settle` counts a single's contracts really bought
+      (`filled`, the order's fee rounded up; `_panel_contracts`), and for real bets takes the profit from Kalshi's own
+      record (`_panel_fill_pl`: the `ledger` row, sales and fees included) when that row is this bet's alone (opening
+      cost within max($0.10, 3%; combos 9%) of the bet's, `PANEL_FILL_TOL`) as `pl_real` (`pl_src: "fills"`); a row that
+      arrives later is picked up on the next pass. `pl`/`result` keep meaning "held to the end" (the replays, tuners,
+      knob stepper and calibration compare against that). `panel_pl(c)` (= `pl_real`, else `pl`) feeds `panel_record`
+      and `month_profit`'s skim. Paper bets (the $300 gate) are unchanged.
+    - **Standing orders (leak 10):** watch mode counts a fill only when the ask trades a cent through the price
+      (`MAKER_THROUGH`); orders are priced from `maker_fair` = min(books' chance, `calib_fair`) (only ever lower);
+      `maker_summary`'s profit subtracts the resting fee.
+    - **`smart_tune` holdout:** each league's settled bets split in two by a hash of their games (`_tune_half`, the
+      game part of the ticker, so a game's spreads land with it); the
+      step is picked on one half only and must also gain ≥ `SMART_MIN_GAIN` on the other (and on all); each half
+      needs ≥ `SMART_HOLD_N` (10) bets or nothing moves. (`_sl_tune`, the stop-loss switch's tuner, is not changed.)
+  - Still open in #142: live-football single ideas (leak 7), Build's "more combo ideas" (leak 9; spreads/totals done
+    in #117 B), combo fees in the simulation (Kalshi's RFQ fee not
+    verified), `_size`'s $2 minimum rounding up a tiny positive edge (#328, #329).
 - Sizing: quarter Kelly on a shrunk edge, $2 minimum, ≤ 5% of the base per bet; base grows ≤ 10%/week, drops
   immediately; half of each month's profit is set aside (reminder until Pete says he moved it). A Kalshi balance
   that can't be read is never guessed (#143): `sizing_base` returns None, the draft is marked `base_guess`, and it

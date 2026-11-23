@@ -46,6 +46,9 @@ tB, sB = single("BBBXXX", 3.0, 10, 1.30)      # +$0.90  (best: the biggest edge 
 tC, sC = single("CCCXXX", 10.0, 30, 1.08)     # +$0.80
 (c1, c2), sD = combo("DDDXXX", "FFFXXX", 5.0, 40, 0.97)   # -$0.15, a combo at 97% (clears the 95% bar)
 tE, sE = single("EEEXXX", 4.0, 12, 0.98)      # -$0.08, no edge left after the fee: below the bar
+E._exit_shadow_table()                         # the 97% combo: smart sell likely cashes it out (#142 leak 1), so shown
+E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
+          (now, f"idea:idea:{sD}", "idea", json.dumps([c1, c2]), 0.5, 1))
 
 info = {}
 ideas = E.live_ideas(info=info)
@@ -134,6 +137,8 @@ E.idea_undismiss(everything=True)
 # ---- tomorrow: 'Not now' means until tomorrow
 E.idea_dismiss(everything=True)
 ok("Clear all hides everything on the list", E.live_ideas() == [])
+E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",   # tomorrow's check
+          (time.time() + 86400, f"idea:idea:{sD}", "idea", json.dumps([c1, c2]), 0.5, 1))
 ok("a new day starts the dismissals over", len(E.live_ideas(now=time.time() + 86400)) == 5)
 
 # ---- Undo
