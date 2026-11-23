@@ -987,6 +987,7 @@ def merge_books(sharp, free, now=None):
     for t in fresher:                              # ...unless its line is too old for a game this close
         out["fair"][t] = free["fair"][t]
         out["games"][t] = free["games"][t]
+    out["sharp_stale"] = sorted(fresher)           # #344: a too-old odds-service line never backs a killer/standing order
     n_free = len(set(free["fair"]) - set(sharp["fair"]))
     notes = [sharp["note"]] if sharp["note"] else []
     if fresher:
@@ -13669,16 +13670,39 @@ def killer_today():
     return len(rows), sum(r["stake"] for r in rows)
 
 
+def _parts_of(snap, pick):
+    """(team name, {source: chance}) for a pick in a merged book snapshot, or (None, {})."""
+    parts = (snap or {}).get("parts") or {}
+    if parts.get(pick) is not None:
+        return pick, parts[pick]
+    last = (pick or "").split()[-1:]
+    k = next((k for k in parts if last and k.split()[-1:] == last), None)
+    return (k, parts[k] or {}) if k is not None else (None, {})
+
+
 def sources_agree(snap, pick, fair):
     """At least two odds sources within 2 points of each other and of the fair chance we use."""
-    parts = (snap or {}).get("parts") or {}
-    p = parts.get(pick)
-    if p is None:
-        last = (pick or "").split()[-1:]
-        p = next((v for k, v in parts.items() if last and k.split()[-1:] == last), None)
-    vals = [v for v in (p or {}).values() if isinstance(v, (int, float))]
+    _, p = _parts_of(snap, pick)
+    vals = [v for v in p.values() if isinstance(v, (int, float))]
     close = [v for v in vals if abs(v - fair) <= KILLER["agree"]]
     return len(close) >= 2, len(vals)
+
+
+SHARP_PARTS = ("pinnacle", "odds service")     # merge_books' names for the odds service's lines (not free ones)
+NEED_SHARP_WHY = "only free lines (ESPN, Polymarket) back this price; needs an odds-service line"
+
+
+def sharp_backed(snap, pick, fair):
+    """True when an odds-service (sharp) line for this pick is within KILLER["agree"] of the fair chance we use and
+    wasn't too old for this game (merge_books' `sharp_stale`). Free lines (ESPN's posted moneyline, Polymarket) never
+    count. Killer deals and standing orders need it (Pete, #344). Anything unreadable = False (fail closed)."""
+    try:
+        team, p = _parts_of(snap, pick)
+        if team is None or team in set((snap or {}).get("sharp_stale") or ()):
+            return False
+        return any(isinstance(p.get(k), (int, float)) and abs(p[k] - fair) <= KILLER["agree"] for k in SHARP_PARTS)
+    except Exception:
+        return False
 
 
 def steady(ticker, fair, mins=None):
@@ -13701,6 +13725,8 @@ def killer_check(legs, snap, live_ok=()):
         ok, n = sources_agree(snap, l["pick"], l["fair"])
         if not ok:
             why.append(f"{l['pick']}: needs two odds sources agreeing ({n} found)")
+        if not sharp_backed(snap, l["pick"], l["fair"]):
+            why.append(f"{l['pick']}: {NEED_SHARP_WHY}")
         if not steady(l["ticker"], l["fair"]):
             why.append(f"{l['pick']}: line not steady for {KILLER['steady_mins']} minutes yet")
         d = book_depth(l["ticker"])
@@ -15130,6 +15156,8 @@ def maker_pass(games, book_snap, alert=None, log=print):
             maker_cancel(row, "injury news", log)
         elif abs(fair_now - row["fair"]) >= MAKER["reprice"]:
             maker_cancel(row, f"fair moved {row['fair']:.0%} → {fair_now:.0%}", log)   # re-posted below
+        elif not sharp_backed(book_snap, x["pick"], fair_now):
+            maker_cancel(row, "no odds-service line behind the price any more (free lines alone)", log)   # #344
     if mode == "off":
         return did
     # 2) post new ones, within the limits
@@ -15146,7 +15174,7 @@ def maker_pass(games, book_snap, alert=None, log=print):
             log("standing orders: couldn't check your spending cap (Kalshi's account couldn't be read); "
                 "none posted until it can be")
         return did
-    cands = []
+    cands, free_only = [], 0
     for x in sides.values():
         if x.get("tie") or x.get("src") is None or started(x) or not x.get("fair") or not x.get("p"):
             continue
@@ -15162,7 +15190,13 @@ def maker_pass(games, book_snap, alert=None, log=print):
         ok, _ = sources_agree(book_snap, x["pick"], x["fair"])
         if not ok:
             continue                                   # one source isn't enough to leave an order sitting
+        if not sharp_backed(book_snap, x["pick"], x["fair"]):
+            free_only += 1                             # #344: free lines alone never rest an order
+            continue
         cands.append((kick, x, price))
+    if free_only and now - _CAP_LOGGED.get("maker_sharp", 0) > 600:      # said once in a while, not every pass
+        _CAP_LOGGED["maker_sharp"] = now
+        log(f"standing orders: {free_only} left out, {NEED_SHARP_WHY}")
     cands.sort(key=lambda t: t[0])
     for kick, x, price in cands:
         if len(live) >= MAKER["max_orders"] or x["event"] in held_events:
