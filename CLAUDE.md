@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.21.134). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.22.136). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -191,7 +191,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.22.135`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.22.136`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -593,6 +593,13 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
   It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
+- **Leftovers and repeated failures (#334):** smart sell for singles offers only whole contracts, never under
+  `SELL_MIN_CONTRACTS` (1, Kalshi's minimum): a 0.92 leftover is skipped and logged once ("under one contract"), never
+  sent. After `SELL_FAIL_MAX` (3) failed identical sales in a row (same market, side and size; a definite "failed", not
+  "check") it waits 10 min, then an hour after each further failure (`SELL_FAIL_WAITS`, `SELL_FAILS`,
+  `sell_backoff_left`/`sell_backoff_note`; per process, a restart starts over), logged once per wait. A sale that goes
+  through, a "check" or a different size resets it. It only ever tries less: Pause, the cap, guards, rule 8 unchanged.
+  Test: `t_ledgersales.py` (C).
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; never lowered by self-tuning since #306); λ from the sport's swing and time left (×1.3 at a slate
   checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
@@ -1593,6 +1600,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
   `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
   standard error (|z| ≥ 2 = "more/worse than luck explains"). Tests: `t_scoreboard.py`, `test_scoreboard.py`.
+  **Sales in V2 fills (#333):** Kalshi reports a sale at the YES price with the side flipped (selling YES shows as
+  "sell no"); `fill_yes_delta(f, pos, n)` treats every `action: sell` as closing what is held (towards zero; any excess
+  opens the other side), and with nothing held or no `action` uses the YES-book direction (`book_side`,
+  `outcome_side`), else the legacy side; buys keep their side. `ledger_note` writes only rows that differ from the saved
+  one (`_ledger_same`, money to the cent), so rows written wrong before are put right on the next account read; the
+  old guards stay (fewer fills, settlement-only rows, rows closed 180+ days ago). Read-only. Test: `t_ledgersales.py` (A, B).
   Not built yet (in #138): weekly summary push, automatic tightening from losing groups, links into settings.
 - **Smart sell's decision log and scorecard (issue #115, read-only).** `log_decision` writes a "skipped" once per bet
   and reason (again when the offer's 10%-of-cost band changes; `SELL_TOLD`), trims to the newest `SELL_KEEP` (3,000)
