@@ -11,6 +11,7 @@ E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
 E.fetch_account = lambda **k: ([], 300.0, None)
 E.account_events = lambda *a, **k: set()
 E.fetch_scores = lambda *a, **k: None                       # no network: the tests set the score cache themselves
+E._sb_sim = lambda c, now=None: {"route": "sell", "ev": 1.0, "p_exit": 0.6, "win": 0.5}   # (#341) live bets need a likely exit: this test is about other guards
 E.injury_note = lambda code, *teams, hours=48: ([], False)    # no injury news: never ESPN's real report (it changes by the hour)
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 now = time.time()

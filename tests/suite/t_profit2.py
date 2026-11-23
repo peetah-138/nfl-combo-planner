@@ -232,12 +232,13 @@ def part_c():
                                       "src": "pinnacle", "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(kick))}]}
     E.KICKOFF["KXNBAGAME-26NOV24M1"] = games["KXNBAGAME-26NOV24M1"][0]["start"]
     E.sources_agree = lambda snap, pick, fair: (False, "")       # nothing new posted in this check
-    E.maker_pass(games, {})
+    sharp = {"parts": {"M1": {"pinnacle": 0.49}}}                   # #344: an odds-service line backs it
+    E.maker_pass(games, sharp)
     st = E.store_rows("select status from maker where ticker=?", (t,))[0]["status"]
     ok("C1 watch mode: the ask merely touching the order's price isn't a fill (our place in the queue is unknown)",
        st == "watching")
     games["KXNBAGAME-26NOV24M1"][0]["p"] = 0.44
-    E.maker_pass(games, {})
+    E.maker_pass(games, sharp)
     st = E.store_rows("select status from maker where ticker=?", (t,))[0]["status"]
     ok("C2 ...the ask trading a cent through it is", st == "filled")
     real_cal = E.calib_fair

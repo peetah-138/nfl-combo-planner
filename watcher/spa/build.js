@@ -26,6 +26,7 @@ function _renderBuild(){const d=S.build;const m=$('#main');
  m.innerHTML=chipRow+dayRange(d)+`<div class="grid"><div>
   <div id="pblock">${panelBlock(S.panel)}</div>
   ${bestFeed(d)}
+  ${lsSection(d,false)}
   <button class="btn ghost" style="width:100%;margin:18px 0 6px;justify-content:center" onclick="toggleAdv()">${adv?'Hide the full board ▴':`Build your own · all ${d.board.length} games ▾`}</button>
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${SPN[g.sport]?`<div class="wlg">${ICON[g.sport]||''} ${esc(SPN[g.sport])}</div>`:''}${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
@@ -33,8 +34,9 @@ function _renderBuild(){const d=S.build;const m=$('#main');
     return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" onclick="pick('${s.ticker}','${g.event}')"><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
   ${narrow?slip(d):''}
-  ${secHead('combos','More combo ideas',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
-  ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Fairly priced combos built to your mix. They aren't value picks unless marked ★.</div>
+  ${lsSection(d,true)}
+  ${secHead('combos','🎲 Surprise me',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
+  ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Random combos built to your mix, for fun. They aren't recommendations unless marked ★.</div>
   <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
  </div><aside>${adv?(narrow?'':slip(d))+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
@@ -88,14 +90,17 @@ function rbCard(r){return `<div class="card rbcard" style="text-align:center;pad
   <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
   <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
 function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
+/* #341: an empty panel still says how the search was narrowed, from the Mac's last funnel. */
+function fnLink(d){S.funnel=d&&d.funnel&&Array.isArray(d.funnel.why)&&d.funnel.why.length?d.funnel:null;
+ return S.funnel?`<button class="linkb fnwhy" type="button" style="margin:6px auto 0" onclick="funnelOpen()">Why so few?</button>`:'';}
 function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
  if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
   <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
  const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
  if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
-  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
+  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${fnLink(d)}${look}</div>`;
  return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${fnLink(d)}${look}</div>`;}
 function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel;let st=p.stats||{};const approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+(approved?c.stake:pStake(c)),0);
@@ -112,15 +117,21 @@ function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
  return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved,addMode?'add':'approve','')).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>${sbSkipLine(p.sb_skipped,'panel')}
-  ${items.length?`<div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>`:''}${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
+  ${items.length?`<div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>`:''}${poolLine(st.pool,st.funnel,items.length)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){const its=((x||{}).items||[]).filter(c=>!pSentHas(c.id));if(!its.length)return '';x=Object.assign({},x,{items:its});const live=its.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+pStake(c),0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
   <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
   <div class="plist">${x.items.map(c=>panelItem(c,'',false,'add','extra')).join('')}</div>
   ${live.length?`<button class="btn acc" style="width:100%;justify-content:center;margin-top:10px" onclick="panelAdd(this,'extra')">Add ${live.length} to today's panel · ${money(tot)}</button>`:''}</div>`;}
-function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
+function poolLine(pl,fn,shown){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
- return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
+ S.funnel=fn&&Array.isArray(fn.why)&&fn.why.length?fn:null;
+ return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}${S.funnel?` <button class="linkb fnwhy" type="button" onclick="funnelOpen()">${(shown||0)<4?'Why so few?':'How these were picked'}</button>`:''}</div>`;}
+/* #341: the panel's funnel, from the Mac's own counts: what each sport's search saw and every step that left bets out. */
+function funnelOpen(){const f=S.funnel;if(!f)return;
+ modal(`<h3>How today's panel was narrowed</h3><p class="m" style="font-size:13px;line-height:1.45">Every step the Mac's search took, with how many bets each one left out. Only bets priced better than their real chance, with a likely way to make money, get through.</p>
+  ${f.why.map(w=>`<div class="fnrow" style="padding:9px 0;border-top:1px solid var(--line);font-size:13.5px;line-height:1.4">${esc(w)}</div>`).join('')}
+  <button class="btn ghost" type="button" style="width:100%;justify-content:center;margin-top:12px" onclick="closeModal()">Close</button>`);}
 /* Approve / Add: the first tap arms the button, the second sends it once. While it's on its way (S.pSend) every
    other Approve/Add tap does nothing, and a redraw can't bring back a live button (the arm timer stands aside). */
 function pArm(b,txt){b.dataset.sure='1';b.textContent=txt;b.classList.add('arm');hap('warning');
@@ -327,7 +338,8 @@ async function buy(i,custom,btn){if(S.buying)return;
  S.buying=true;
  if(!custom){S.bpend=S.bpend||{};S.bpend[i]={t:Date.now(),sig:ccSig((S.build&&S.build.combos||[]).find(x=>x.i===i))};const cc=btn&&btn.closest('.ccard');if(cc)cc.dataset.ph='buy';const sc=btn&&btn.parentNode&&btn.parentNode.querySelector('.sec');if(sc)sc.disabled=true;}
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
- let r;try{r=await api('/app/api/act',{a:'buy',i});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
+ const lgs=custom?S.slip.slice():(((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs||[]).map(l=>l.ticker);   // rule 7: the Mac checks the offer is for these picks
+ let r;try{r=await api('/app/api/act',{a:'buy',i,legs:lgs.length?lgs:undefined});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
  S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}

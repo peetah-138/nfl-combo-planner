@@ -61,3 +61,7 @@
 .dayrange .seg{display:flex;flex:0 1 auto}.dayrange .seg button{flex:1 1 auto;min-width:0;white-space:nowrap}
 .dayrange .daychips{align-items:center;flex:1 1 100%}.dayrange .daychips .chip{min-height:36px;display:inline-flex;align-items:center}.dayrange .dsun{font-size:12px;color:var(--mute);padding:0 4px}
 .slip.inl{position:static;margin:12px 0}
+/* Long shots (#341): the expected dollars sit top right, like the panel's stake */
+.lscard .lsx{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.lscard .lsx b{font-size:18px}.lscard .lsx small{font-size:11px;color:var(--mute)}
+.lsempty{margin-bottom:8px}
+.lscard .btn{min-height:44px}
