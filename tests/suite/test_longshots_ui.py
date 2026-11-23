@@ -14,7 +14,7 @@ real_load = W.load_engine
 LEGS = [{"ticker": f"KXNBAGAME-26NOV29T{i}U{i}-T{i}", "event": f"KXNBAGAME-26NOV29T{i}U{i}", "pick": n, "p": 0.73, "fair": 0.74}
         for i, n in enumerate(["Celtics", "Knicks", "Bucks", "Nuggets", "Thunder", "Cavaliers", "Magic"])]
 REC = [{"id": "longshot:" + "+".join(sorted(l["ticker"] for l in LEGS)), "legs": LEGS, "n": 7, "chance": 0.1219,
-        "price": 0.11, "pct": 1.06, "pays": 42.1, "stake": 4.6, "exp": 1.35, "p_exit": 0.52, "route": "sell", "win": 0.12}]
+        "price": 0.11, "pct": 1.06, "pays": 42.1, "stake": 4.6, "exp": 1.35, "fee": 0.03, "route": "hold", "win": 0.12}]
 CALLS = []
 
 
@@ -56,7 +56,7 @@ with sync_playwright() as pw:
     else:
         txt = pg.locator(".lscard").first.inner_text()
         for want in ("Long shot", "7 picks", "12%", "to hit", "+$1.35", "expected", "$4.60", "pays $42",
-                     "Likely to cash out early for a profit: 52%", "Celtics", "Magic", "Get price"):
+                     "Held to the end: 12% to hit", "Celtics", "Magic", "Get price"):
             if want.lower() not in txt.lower():
                 print("PROBLEMS: the long-shot card is missing", repr(want), "|", txt.replace("\n", " / ")[:300])
         if pg.locator(".sech[data-k='ls']").count() != 1:

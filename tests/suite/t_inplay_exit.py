@@ -84,7 +84,7 @@ def t_lines_and_combos():
     ok("combos: idea_combo_live_gap names the started pick", E.idea_combo_live_gap([{"pick": "A", "_started": True}, {"pick": "B"}]) == ["A"])
     for fn in ("shadow_pass", "best_bets_feed"):
         ok(f"source: {fn} leaves out combos with a pick under way", "idea_combo_live_gap(" in inspect.getsource(getattr(E, fn)))
-    ok("source: single_pass skips games under way before any idea or alert", "if started(x):" in inspect.getsource(E.single_pass))
+    ok("source: single_pass skips games under way before any idea or alert", "in live_ok or started(x):" in inspect.getsource(E.single_pass))
     ok("source: Buy straight's green Buy for a live game needs live_exit_ok", "live_exit_ok(" in inspect.getsource(E.single_buy_quote))
     w = open("wtest/combo_watcher.py").read() if os.path.exists("wtest/combo_watcher.py") else ""
     if w:
@@ -121,3 +121,37 @@ def t_offer():
 for n, fn in (("live_exit_ok", t_live_exit_ok), ("panel", t_panel_gate), ("ideas", t_ideas_gate),
               ("lines", t_lines_and_combos), ("offer", t_offer)):
     safe(n, fn)
+
+
+def t_single_alert():
+    """Pete's real push (2026-11-23): 'Single: Indiana St. (game in progress) at 26c on Kalshi; the sharp books say 40%.
+    About 12.9c a contract in your favour after the fee.' A game under way never becomes a single idea or a push, whether
+    the start time is known (started) or only the live screen knows it's under way; the same pick before its start still
+    does (the control)."""
+    ev = "KXNCAAMBGAME-26NOV23INSTEVAN"
+    x = {"ticker": ev + "-INST", "event": ev, "pick": "Indiana St.", "p": 0.26, "fair": 0.40, "edge": 0.129,
+         "src": "pinnacle", "opp": "Evansville"}
+    alerts, ideas = [], []
+    for k, v in dict(load_book_state=lambda snap: {}, week_games=lambda m: ({ev: [x]}, {}, {}), fetch_markets=lambda: [],
+                     attach_fair=lambda g, b: (1, {}), maker_pass=lambda *a, **k: [],
+                     single_candidates=lambda games, live_ok: [dict(x)],
+                     book_depth=lambda t, max_age=60: {"thin": False, "ask": 0.26, "ask_size": 500},
+                     injury_note=lambda *a: ([], False), game_context=lambda *a: [], edge_stake=lambda *a: 5.0,
+                     store_suggestion=lambda c, r, pct: ideas.append(c) or 1,
+                     _alert=lambda alert, msg, *a: alerts.append(msg)).items():
+        setattr(E, k, v)
+    E.CFG.update(include_live=True, killer_mode="off")
+    E.started = lambda l: True
+    E.screen_live = lambda games, bf: ([], [ev])
+    E.single_pass(None, alert="topic", log=lambda *a: None)
+    ok("single idea: a game in progress gets no push and no idea card", alerts == [] and ideas == [])
+    E.started = lambda l: False                         # start time unknown, but the live screen says it's under way
+    E.single_pass(None, alert="topic", log=lambda *a: None)
+    ok("single idea: ...nor when only the live screen knows it's under way", alerts == [] and ideas == [])
+    E.screen_live = lambda games, bf: ([], [])
+    E.single_pass(None, alert="topic", log=lambda *a: None)
+    ok("single idea: the same pick before its start is still offered (control), never saying 'in progress'",
+       len(alerts) == 1 and "in progress" not in alerts[0] and len(ideas) == 1)
+
+
+safe("single alert", t_single_alert)

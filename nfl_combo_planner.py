@@ -11855,9 +11855,8 @@ def get_offer(i, amount=None, check_cap=True):
     ok = pays >= minimum
     if ok and c.get("kind") != "panel" and idea_combo_live_gap(c["legs"]):
         ok = False                                 # (#341) a pick on a game under way: its chance is pregame, never green
-    if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: worth at least its fair value
-        net = stake / (yes_price + single_fee(yes_price))   # after the taking fee, on the blended chance
-        ok = ok and bool(c.get("fair")) and net >= c["fair"] * stake / CTX["stake"] * LONGSHOT["min_pct"] - 1e-9
+    if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
+        ok = ok and bool(c.get("fair")) and longshot_hold(CTX["stake"] / c["fair"], yes_price, stake) is not None
     note_quote_time(c["legs"], pct)
     try:
         store_quote(c, stake, pays, pct)
@@ -15292,8 +15291,9 @@ def single_pass(book_snap, alert=None, log=print):
         store_x("insert into fairs values(?,?,?,?)", (now, x["ticker"], x["fair"], x["p"]))
     for x in single_candidates(games, live_ok)[:4]:
         told = False
-        if started(x):
-            continue                                  # (#341) under way: screen_live's mid isn't a live-state chance
+        if x.get("live") or x.get("event") in live_ok or started(x):
+            continue                                  # (#341) under way: its 'sharp books' chance isn't a live-state one,
+            #                                           so no idea, no push (Pete's 'Indiana St. (game in progress)' case)
         d = book_depth(x["ticker"])
         if not d or d["thin"]:
             continue                                  # a thin book (the price isn't real) or an unreadable one (429/5xx)
@@ -15329,7 +15329,7 @@ def single_pass(book_snap, alert=None, log=print):
                 log(f"near-killer {x['pick']} held back: {'; '.join(why_not)}")
         c = {"legs": [x], "fair": stake / x["fair"]}
         sid = store_suggestion(c, {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
-        live = " (game in progress)" if started(x) else ""
+        live = ""                                     # games under way never get here (#341)
         extra = game_context(LEAGUE["code"], x["pick"], x.get("opp") or opp_of(games, x))
         if inj or extra:
             store_x("update suggestions set note=? where id=?", (" · ".join(inj + extra), sid))
@@ -17997,18 +17997,18 @@ def carry_pass(book_snap=None, log=print, now=None, legs=None):
 # ================================================================ Long shots (issue #341): a few 6-8 pick combos a day
 # Recommend-only. The Build page's "Long shots" section: two or three full-slate combos of likely-ish favourites
 # (each pick 65-80% on the best fair we have), quoted by Kalshi's combo makers, kept only when the quote pays at least
-# what the picks are worth after the fee AND Smart Buy's exit simulator (smart_buy_ok) finds a route to profit. Nothing
+# what the picks are worth after the fee AND holding to the end is expected to profit (Pete's hold-to-win test). Nothing
 # here buys: Pete's Get price / Buy go through get_offer / accept_offer (Pause, caps, rule 8). Pregame picks only: a game
 # under way is never a long-shot leg (its chance must come from the live state, which this doesn't model).
 LONGSHOT = {"legs": (6, 8), "leg_lo": 0.65, "leg_hi": 0.80, "min_hit": 0.07, "per_day": 3, "pool": 12, "check": 6,
-            "lead": 20 * 60, "agree": 0.03, "min_pct": 1.0, "pre_pct": 1.5, "stake_max": 5.0, "stake_min": 1.0,
+            "lead": 20 * 60, "agree": 0.03, "min_pct": 1.0, "pre_ratio": 0.9, "fee_rate": None, "stake_max": 5.0, "stake_min": 1.0,
             "quote_stake": 5.0, "budget": 45.0}
 LONGSHOT_WHY = {"paused": "Paused: no prices are asked for while trading is paused.",
                 "trade": "This device can't trade, so it can't ask Kalshi for combo prices.",
                 "held": "Kalshi isn't taking orders from this account right now.",
                 "few": "Not enough games in the 65-80% range before their start to make a 6-8 pick combo.",
-                "none": "No long shot clears every check right now: a 7%+ chance to hit, Kalshi paying at least what "
-                        "the picks are worth after the fee, and a likely route to profit."}
+                "none": "No long shot clears every check right now: a 7%+ chance to hit, and Kalshi paying more than "
+                        "the picks are worth after the fee if you hold it to the end."}
 
 
 def longshot_leg_fair(x, now=None):
@@ -18019,10 +18019,10 @@ def longshot_leg_fair(x, now=None):
     now = now or time.time()
     if x.get("tie") or not x.get("p") or not x.get("ticker"):
         return None, "price"
-    if x.get("live") or x.get("line_live") or started(x):
+    if x.get("live") or x.get("line_live"):
         return None, "live"
-    kick = _kick_ts(x)
-    if kick is None or kick - now < LONGSHOT["lead"]:
+    kick = _kick_ts(x)                                 # the sportsbooks' start time: no score-feed lookup off the lock
+    if kick is None or kick - now < LONGSHOT["lead"]:  # (unknown, under way or under 20 minutes away = out)
         return None, "start"
     mid = _mkt_side_mid(x)
     if mid is None:
@@ -18096,12 +18096,37 @@ def longshot_combos(pool, k=None):
     return out
 
 
-def _ls_sim(legs, pct, now=None):
-    """Smart Buy's exit simulator for a long shot at `pct` of its fair value (dollars at SB_STAKE)."""
-    chance = math.prod(l["fair"] for l in legs)
-    c = {"kind": "combo", "id": "longshot:" + "+".join(sorted(l["ticker"] for l in legs)), "pct": pct,
-         "fair_mult": 1 / chance, "legs": [{k: l.get(k) for k in ("ticker", "event", "fair", "p")} for l in legs]}
-    return _sb_sim(c, now)
+def longshot_fee(price, n):
+    """Kalshi's taking fee on a long-shot order of n contracts at `price`, rounded up to the cent. Kalshi's public help
+    pages don't say whether combo (RFQ) trades carry a different fee, so the standard taker fee (FEE_RATE x n x p x
+    (1-p), per order, rounded up) is charged: never zero, so a long shot is never called fair on a fee it doesn't owe
+    us. Set LONGSHOT['fee_rate'] once the schedule is confirmed."""
+    rate = LONGSHOT.get("fee_rate") or FEE_RATE
+    return math.ceil(round(n * rate * price * (1 - price) * 100, 6)) / 100
+
+
+def longshot_hold(chance, price, stake):
+    """Pete's hold-to-win test (2026-11-23) for a long shot at `stake`: whole contracts at `price`, the order's fee
+    rounded up, held to the end. Passes (returns the card's numbers) only with a 7%+ chance to hit, a payout at least
+    the fair value after the fee (pct >= LONGSHOT['min_pct']) and expected dollars above zero; else None (fail closed:
+    any bad number = None)."""
+    try:
+        if not (chance >= LONGSHOT["min_hit"] and 0 < price < 1 and stake > 0):
+            return None
+        n = int(stake / price + 1e-9)
+        while n > 0 and n * price + longshot_fee(price, n) > stake + 1e-9:
+            n -= 1
+        if n < 1:
+            return None
+        fee = longshot_fee(price, n)
+        cost = round(n * price + fee, 2)
+        pct = chance * n / cost
+        exp = chance * n - cost
+        if pct < LONGSHOT["min_pct"] or exp <= 0:
+            return None
+        return {"n": n, "fee": fee, "cost": cost, "pays": float(n), "pct": round(pct, 4), "exp": round(exp, 2)}
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
 def _ls_table():
@@ -18125,8 +18150,9 @@ def _ls_log(legs, chance, price, pct, sim, shown, why):
 def longshot_build(games, now=None, quote=None, paused=None, skip=(), budget=None):
     """The Build page's long shots: (recs, info). Run OFF the app lock (it asks Kalshi's combo makers, up to 15 s a
     quote, within `budget` seconds). Fails closed: paused, no trading access, Kalshi refusing, an unknown-outcome
-    block on the picks, no quote, a quote under fair after the fee, no route to profit (smart_buy_ok) or a stake under
-    $1 = not shown. Each rec: legs, chance, price, pct (after the fee), stake (quarter Kelly, at most $5), exp (expected
+    block on the picks, no quote, a quote under fair after the fee or no expected profit held to the end (longshot_hold,
+    Pete's hold-to-win test; smart_buy_ok's cash-out/40% rule doesn't apply to long shots) or a stake under $1 = not
+    shown. Each rec: legs, chance, price, pct (after the fee), stake (quarter Kelly, at most $5), exp (expected
     dollars at that stake under smart sell's exit policy), p_exit, route. Recommend-only: never buys."""
     now = now or time.time()
     quote = quote or carry_quote
@@ -18163,8 +18189,8 @@ def longshot_build(games, now=None, quote=None, paused=None, skip=(), budget=Non
             info["skipped"]["check"] += 1
             continue
         chance = math.prod(l["fair"] for l in legs)
-        if not smart_buy_ok(_ls_sim(legs, LONGSHOT["pre_pct"], now)):   # no route even at a generous price: don't ask
-            info["skipped"]["route"] += 1
+        if math.prod(l["p"] for l in legs) * LONGSHOT["pre_ratio"] > chance:   # even a generous maker can't reach fair: don't ask
+            info["skipped"]["price"] += 1
             continue
         if time.time() - t0 > budget:
             info["skipped"]["time"] += 1
@@ -18180,27 +18206,25 @@ def longshot_build(games, now=None, quote=None, paused=None, skip=(), budget=Non
             _ls_log(legs, chance, None, None, None, False, "quote")
             continue
         per = 1 / (price + single_fee(price))           # dollars back per dollar if it hits, after the taking fee
-        pct = chance * per
-        if pct < LONGSHOT["min_pct"]:
-            info["skipped"]["price"] += 1
-            _ls_log(legs, chance, price, pct, None, False, "price")
-            continue
-        sim = _ls_sim(legs, pct, now)
-        if not smart_buy_ok(sim):
-            info["skipped"]["route"] += 1
-            _ls_log(legs, chance, price, pct, sim, False, "route")
-            continue
         f = (chance * per - 1) / (per - 1) if per > 1 else 0.0
-        stake = math.floor(min(LONGSHOT["stake_max"], max(0.0, base * f / 4)) * 100) / 100
+        stake = math.floor(min(LONGSHOT["stake_max"], max(0.0, base * f / 4)) * 100) / 100   # quarter Kelly, <= $5
+        if f <= 0:
+            info["skipped"]["price"] += 1
+            _ls_log(legs, chance, price, chance * per, None, False, "price")
+            continue
         if stake < LONGSHOT["stake_min"]:
             info["skipped"]["size"] += 1
-            _ls_log(legs, chance, price, pct, sim, False, "size")
+            _ls_log(legs, chance, price, chance * per, None, False, "size")
             continue
-        _ls_log(legs, chance, price, pct, sim, True, None)
+        hold = longshot_hold(chance, price, stake)       # Pete (2026-11-23): judged on holding to the end
+        if not hold:
+            info["skipped"]["price"] += 1
+            _ls_log(legs, chance, price, chance * per, None, False, "price")
+            continue
+        _ls_log(legs, chance, price, hold["pct"], {"ev": hold["exp"], "route": "hold"}, True, None)
         recs.append({"id": "longshot:" + "+".join(sorted(ticks)), "legs": [dict(l) for l in legs], "n": len(legs),
-                     "chance": round(chance, 4), "price": round(price, 4), "pct": round(pct, 4),
-                     "pays": round(stake * per, 2), "stake": stake, "exp": round(sim["ev"] * stake / SB_STAKE, 2),
-                     "p_exit": sim["p_exit"], "route": sim["route"], "win": sim["win"]})
+                     "chance": round(chance, 4), "price": round(price, 4), "pct": hold["pct"], "pays": hold["pays"],
+                     "stake": hold["cost"], "exp": hold["exp"], "fee": hold["fee"], "route": "hold", "win": round(chance, 4)})
     recs.sort(key=lambda r: -r["exp"])
     return done(recs[:LONGSHOT["per_day"]])
 

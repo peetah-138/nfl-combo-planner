@@ -2,7 +2,7 @@
 # Long shots on Build (issue #341): 6-8 pick full-slate combos, each pick 65-80% before its game on the market-anchored
 # chance (Kalshi's mid, moved by the books only as far as they've earned; free lines never overrule the mid), never both
 # sides of a game, a 7%+ chance to hit, combos sharing at most half their picks, Kalshi's quote at least the fair value
-# after the fee (no quote = not shown), Smart Buy's smart_buy_ok on each, quarter Kelly capped at $5, pregame only, and
+# after the fee (no quote = not shown), Pete's hold-to-win test (positive expected dollars held to the end, not smart_buy_ok), quarter Kelly capped at $5, pregame only, and
 # fail closed on Pause / no trading / Kalshi refusing / an unknown-outcome block. Plus get_offer's green Buy for a long
 # shot. Recommend-only: nothing here buys. Fakes only: no network, temp files, a temp history.
 import os, time, tempfile, importlib.util, traceback, itertools
@@ -49,6 +49,7 @@ E.TRADING_PAUSED = None
 
 
 def game(i, fav, gap=0.02, started=False, sharp=True, book=None, kick_h=5):
+    kick_h = -0.5 if started else kick_h                 # under way: its start time has passed
     ev = f"KXNFLGAME-26NOV29T{i:02d}U{i:02d}"
     E.KICKOFF[ev] = E.dt.datetime.fromtimestamp(now + kick_h * 3600, E.dt.timezone.utc).isoformat()
     mk = lambda tag, mid, b: {"ticker": f"{ev}-{tag}", "event": ev, "pick": f"Team {tag}", "p": round(mid + gap / 2, 4),  # noqa: E731
@@ -61,8 +62,6 @@ def slate(favs, **kw):
     return dict(game(i, f, **kw) for i, f in enumerate(favs))
 
 
-PASS_SIM = {"route": "sell", "ev": 1.2, "p_exit": 0.55, "win": 0.1}
-FAIL_SIM = {"route": "none", "ev": -0.4, "p_exit": 0.1, "win": 0.1}
 
 
 def quoter(px=0.90):
@@ -121,15 +120,16 @@ def t_combos():
 
 def t_build():
     g = slate([0.72, 0.75, 0.78, 0.70, 0.68, 0.74, 0.76, 0.73, 0.71, 0.77])
-    E._sb_sim = lambda c, now: dict(PASS_SIM)
     q = quoter(0.90)                                    # pays 1/0.90 of fair before the fee: clears after it
     recs, info = E.longshot_build(g, now=now, quote=q, paused=False)
     ok(f"build: 2-3 recommendations ({len(recs)}), ranked by expected dollars", 1 <= len(recs) <= 3
        and [r["exp"] for r in recs] == sorted([r["exp"] for r in recs], reverse=True))
     ok("build: each at least 100% of fair after the fee", all(r["pct"] >= 1.0 for r in recs))
     ok("build: stake is quarter Kelly capped at $5", all(1 <= r["stake"] <= 5.0 for r in recs))
-    ok("build: card numbers (hit %, expected $, route, cash-out chance)", all(
-        {"chance", "exp", "route", "p_exit", "stake", "pays", "legs"} <= set(r) for r in recs))
+    ok("build: card numbers (hit %, expected $ after the fee, stake, payout, fee)", all(
+        {"chance", "exp", "route", "fee", "stake", "pays", "legs"} <= set(r) and r["exp"] > 0 for r in recs))
+    ok("build: expected dollars = chance x contracts - cost (the order's fee rounded up)", all(
+        abs(r["exp"] - round(r["chance"] * r["pays"] - r["stake"], 2)) <= 0.011 for r in recs))
     ok("build: no Kalshi order or request sent (the quote is the fake maker's)", SENT == [])
     recs, info = E.longshot_build(g, now=now, quote=quoter(1.0), paused=False)
     ok("build: a quote exactly at fair before the fee is under fair after it: not shown", recs == [] and info["skipped"].get("price"))
@@ -140,17 +140,16 @@ def t_build():
         raise RuntimeError("Kalshi doesn't offer this exact combo")
     recs, info = E.longshot_build(g, now=now, quote=boom, paused=False)
     ok("build: a quote that errors = not shown", recs == [] and info["skipped"].get("quote"))
-    E._sb_sim = lambda c, now: dict(FAIL_SIM)
+    E._sb_sim = lambda c, now: (_ for _ in ()).throw(AssertionError("long shots don't use the exit simulator"))
     q = quoter(0.80)
     recs, info = E.longshot_build(g, now=now, quote=q, paused=False)
-    ok("build: Smart Buy finding no route = not shown, and Kalshi isn't even asked", recs == [] and q.calls == []
-       and info["skipped"].get("route"))
-    seen = []
-    E._sb_sim = lambda c, now: seen.append(c["pct"]) or (dict(PASS_SIM) if c["pct"] > 1.2 else dict(FAIL_SIM))
-    recs, info = E.longshot_build(g, now=now, quote=quoter(0.90), paused=False)
-    ok("build: smart_buy_ok checked on the real quote too (passes the generous pre-check, fails at the real price)",
-       recs == [] and any(abs(p - 1.5) < 1e-9 for p in seen) and any(p < 1.2 for p in seen))
-    E._sb_sim = lambda c, now: dict(PASS_SIM)
+    ok("build: judged on holding to the end, not smart_buy_ok (the exit simulator is never asked)", len(recs) >= 1
+       and all(r["route"] == "hold" for r in recs))
+    q = quoter(0.80)
+    wide = slate([0.72, 0.75, 0.78, 0.70, 0.68, 0.74, 0.76, 0.73, 0.71, 0.77], gap=0.08)
+    recs, info = E.longshot_build(wide, now=now, quote=q, paused=False)
+    ok("build: picks whose asks are far over the chance aren't even quoted (a maker would have to pay 11%+ over them)",
+       recs == [] and q.calls == [])
     for name, kw, patch in (("paused", {"paused": True}, None), ("no trading", {"paused": False}, ("can_trade", lambda: False)),
                             ("Kalshi refusing", {"paused": False}, ("hold_refusal", lambda *a, **k: ({"x": 1}, "no"))),
                             ("the Pi", {"paused": False}, ("role_backup", lambda: True))):
@@ -187,6 +186,19 @@ def t_build():
     ok("build: every quoted candidate is logged (measured)", len(rows) > 0)
 
 
+def t_hold():
+    h = E.longshot_hold(0.10, 0.08, 5.0)
+    ok(f"hold: 10% to hit at 8c is a long shot worth holding ({h})", h and h["exp"] > 0 and h["cost"] <= 5.0 and h["pct"] >= 1.0)
+    ok("hold: the fee is charged (never zero) and rounded up per order", h and h["fee"] >= 0.01 and abs(h["fee"] * 100 - round(h["fee"] * 100)) < 1e-6)
+    ok("hold: under the 7% floor = no", E.longshot_hold(0.065, 0.05, 5.0) is None)
+    ok("hold: exactly fair before the fee = no (under fair after it)", E.longshot_hold(0.10, 0.10, 5.0) is None)
+    ok("hold: bad numbers fail closed", E.longshot_hold(0.10, None, 5.0) is None and E.longshot_hold(0.10, 0.0, 5.0) is None
+       and E.longshot_hold(0.10, 0.08, 0.0) is None)
+    E.LONGSHOT["fee_rate"] = 0.30
+    ok("hold: a higher fee rate (once confirmed) is respected", E.longshot_hold(0.10, 0.093, 5.0) is None)
+    E.LONGSHOT["fee_rate"] = None
+
+
 def t_offer():
     """get_offer's green Buy for a long shot: the quote after the fee must pay at least its fair value."""
     E.CTX.clear()
@@ -221,5 +233,5 @@ def t_offer():
     ok("offer: no accept was sent by a price request", not any("/accept" in p for _, p in calls))
 
 
-for n, fn in (("legs", t_legs), ("combos", t_combos), ("build", t_build), ("offer", t_offer)):
+for n, fn in (("legs", t_legs), ("combos", t_combos), ("build", t_build), ("hold", t_hold), ("offer", t_offer)):
     safe(n, fn)

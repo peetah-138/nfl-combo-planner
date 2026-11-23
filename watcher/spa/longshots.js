@@ -1,8 +1,8 @@
 /* ---------------- LONG SHOTS (issue #341). Two or three 6-8 pick combos a day, each pick 65-80% before its game, kept only
-   when Kalshi's quote pays at least what the picks are worth after the fee and Smart Buy finds a route to profit (the Mac
+   when Kalshi's quote pays at least what the picks are worth after the fee and holding it to the end is expected to profit (the Mac
    works them out; this only draws them). Get price and Buy go through the same guarded combo quote and accept as every
    other combo (Pause, caps, unknown outcome = check). Display and taps only: nothing here buys by itself. */
-function lsRoute(r){return r.route==='sell'?`Likely to cash out early for a profit: <b>${pct(r.p_exit)}</b>`:`Profit if it holds: <b>${pct(r.chance)}</b> to hit`;}
+function lsRoute(r){return `Held to the end: <b>${pct(r.chance)}</b> to hit, <b>+${money(r.exp)}</b> expected after the fee`;}
 function lsKey(r){return 'ls:'+r.id;}
 function lsCard(r){const k=lsKey(r),o=S.quotes&&S.quotes[k],fresh=o&&Date.now()/1000-o.at<20,busy=S.lsBusy===r.id;
  const legs=`<div class="lrows">${(r.legs||[]).map(l=>legRow(l)).join('')}</div>`;

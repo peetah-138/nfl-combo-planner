@@ -3424,9 +3424,9 @@ def webapp_main():
             if r.get("error"):
                 return r
             r["rec"] = c.get("ls_stake")
-            px = r.get("price")                     # after the taking fee, as the card's expected dollars
-            r["ev"] = round(r["stake"] / (px + A.single_fee(px)) * A.CTX.get("stake", A.CFG["stake"]) / c["fair"] - r["stake"], 2) \
-                if c.get("fair") and px else None
+            h = A.longshot_hold(A.CTX.get("stake", A.CFG["stake"]) / c["fair"], r.get("price"), r["stake"]) \
+                if c.get("fair") and r.get("price") else None
+            r["ev"] = h["exp"] if h else None              # held to the end, after the fee (as the card)
             try:
                 r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)
             except Exception:
