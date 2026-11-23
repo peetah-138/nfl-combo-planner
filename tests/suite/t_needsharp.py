@@ -80,6 +80,14 @@ def sec_b():
     out = E.merge_books(sharp, free, NOW)
     ok("B: a fresh sharp line: nothing stale, and it backs its own price",
        out["sharp_stale"] == [] and E.sharp_backed(out, "Hawks", 0.6))
+    sharp["games"]["Hawks"][0]["at"] = NOW - 7200
+    out = E.merge_books(sharp, {"games": {}, "fair": {}, "opp": {}, "kick": {}, "note": "", "parts": {}}, NOW)
+    ok("B: a stale sharp line with no fresh free line to replace it still doesn't back a price",
+       out["sharp_stale"] == [] and not E.sharp_backed(out, "Hawks", 0.6))
+    sharp["games"]["Hawks"][0]["start"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW + 10 * 3600))
+    out = E.merge_books(sharp, {"games": {}, "fair": {}, "opp": {}, "kick": {}, "note": "", "parts": {}}, NOW)
+    ok("B: ...but an older sharp line for a game hours away (not stale) still backs it",
+       E.sharp_backed(out, "Hawks", 0.6))
 
 
 def leg(pick="Hawks", fair=0.55):
