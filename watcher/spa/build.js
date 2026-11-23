@@ -88,14 +88,17 @@ function rbCard(r){return `<div class="card rbcard" style="text-align:center;pad
   <div class="m rbtxt" style="font-size:13px;line-height:1.5"><span class="spin"></span> ${rbText(r)}</div><div class="rbtrack"><i style="width:${Math.round(rbFrac(r)*100)}%"></i></div>
   <div class="m" style="font-size:12px">It appears here on its own when it's ready. Only bets priced better than their real chance make it.</div></div>`;}
 function rbStrip(r){return rbOn(r)?`<div class="rbstrip rbcard"><span class="spin"></span><span class="rbtxt">${rbText(r)}</span></div>`:'';}
+/* #341: an empty panel still says how the search was narrowed, from the Mac's last funnel. */
+function fnLink(d){S.funnel=d&&d.funnel&&Array.isArray(d.funnel.why)&&d.funnel.why.length?d.funnel:null;
+ return S.funnel?`<button class="linkb fnwhy" type="button" style="margin:6px auto 0" onclick="funnelOpen()">Why so few?</button>`:'';}
 function panelEmpty(d){const r=d&&d.rebuild;if(rbOn(r))return rbCard(r);
  if(d&&d.view&&d.view!=='all')return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">Nothing in ${esc(SPN[d.view]||d.view)} clears the bar right now</b>
   <div class="m" style="font-size:13px;line-height:1.5">No ${esc(SPN[d.view]||d.view)} bet is priced better than its real chance at the moment. The Mac keeps checking through the day. You can still build your own below.</div></div>`;
  const look=`<button class="btn acc" style="width:100%;justify-content:center;margin-top:14px" onclick="panelLook(this)">${r&&r.state==='done'?'Look again now':'Look now'}</button>`;
  if(r&&r.state==='done'&&!r.found)return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🧘</div><b style="display:block;margin:6px 0 4px;font-size:17px">No bets clear the bar right now</b>
-  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${look}</div>`;
+  <div class="m rbwhy" style="font-size:13px;line-height:1.5">${esc(r.why||'Nothing is priced better than its real chance at the moment.')}</div><div class="m" style="font-size:12px;margin-top:6px">Looked ${ago2(r.upd)==='now'?'just now':ago2(r.upd)+' ago'}. The Mac keeps checking through the day and the panel shows up here if bets turn up.</div>${fnLink(d)}${look}</div>`;
  return `<div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:30px">🗓️</div><b style="display:block;margin:6px 0 4px;font-size:17px">No panel yet today</b>
-  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${look}</div>`;}
+  <div class="m" style="font-size:13px;line-height:1.5">The Mac builds one on its own as prices come in, keeping only bets priced better than their real chance. Tap below to have it look at every sport right now.</div>${fnLink(d)}${look}</div>`;}
 function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const p=d.panel;let st=p.stats||{};const approved=d.view==='all'&&p.status!=='draft',items=p.items||[];S.pOff=S.pOff||new Set();
  const live=items.filter(c=>!S.pOff.has(c.id)&&!(p.status==='draft'&&started(c)));const total=live.reduce((a,c)=>a+(approved?c.stake:pStake(c)),0);
@@ -112,15 +115,21 @@ function panelBlock(d){if(!d||!d.panel)return panelEmpty(d);
  const longer=(p.longer||[]).length?`<h2 style="margin-top:20px">Longer plays <span class="n">${p.longer.length}</span></h2><div class="m" style="font-size:12px;margin:-4px 2px 10px">Over the next few days. Each day is a chance to cash out early. Not part of the approval above.</div><div class="plist">${p.longer.map(c=>panelItem(c,'',true)).join('')}</div>`:'';
  const other='';
  return `${d.view==='all'?rbStrip(d.rebuild):''}<div class="card panel">${head}${other}<div class="plist">${items.map(c=>panelItem(c,c.state,approved,addMode?'add':'approve','')).join('')||'<div class="m">Nothing qualifies right now.</div>'}</div>${sbSkipLine(p.sb_skipped,'panel')}
-  ${items.length?`<div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>`:''}${poolLine(st.pool)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
+  ${items.length?`<div class="m" style="font-size:12px;margin:10px 2px">Expected ${smoney(st.ev||0)} · range ${smoney(st.worst||0)} to ${smoney(st.best||0)}</div>`:''}${poolLine(st.pool,st.funnel,items.length)}${btn}</div>${extraBlock(d.extra)}${longer}`;}
 function extraBlock(x){const its=((x||{}).items||[]).filter(c=>!pSentHas(c.id));if(!its.length)return '';x=Object.assign({},x,{items:its});const live=its.filter(c=>!S.pOff.has(c.id));const tot=live.reduce((a,c)=>a+pStake(c),0);
  return `<div class="card panel" style="margin-top:14px;border-color:color-mix(in srgb,var(--yes) 40%,var(--line))"><div class="phead"><div><h2 style="margin:0">🆕 New since you approved</h2>
   <div class="m" style="font-size:12.5px;margin-top:2px">Good bets that turned up after you approved, on games today's panel doesn't have a bet on. Checked every few minutes as games get close.</div></div></div>
   <div class="plist">${x.items.map(c=>panelItem(c,'',false,'add','extra')).join('')}</div>
   ${live.length?`<button class="btn acc" style="width:100%;justify-content:center;margin-top:10px" onclick="panelAdd(this,'extra')">Add ${live.length} to today's panel · ${money(tot)}</button>`:''}</div>`;}
-function poolLine(pl){if(!pl)return '';const n=k=>pl[k]||0;
+function poolLine(pl,fn,shown){if(!pl)return '';const n=k=>pl[k]||0;
  const parts=[[n('combo'),'combo','combos'],[n('single'),'single game','single games'],[n('early'),'sell-early favorite','sell-early favorites'],[n('line'),'spread or total','spreads or totals']].map(([v,a,b])=>`${v} ${v===1?a:b}`);
- return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}</div>`;}
+ S.funnel=fn&&Array.isArray(fn.why)&&fn.why.length?fn:null;
+ return `<div class="m" style="font-size:12px;margin:-4px 2px 10px">Qualifying today: ${parts.join(' · ')}.${n('combo')?'':' No combo is priced at your cut-off or better right now; Kalshi usually pays less than fair on combos.'}${S.funnel?` <button class="linkb fnwhy" type="button" onclick="funnelOpen()">${(shown||0)<4?'Why so few?':'How these were picked'}</button>`:''}</div>`;}
+/* #341: the panel's funnel, from the Mac's own counts: what each sport's search saw and every step that left bets out. */
+function funnelOpen(){const f=S.funnel;if(!f)return;
+ modal(`<h3>How today's panel was narrowed</h3><p class="m" style="font-size:13px;line-height:1.45">Every step the Mac's search took, with how many bets each one left out. Only bets priced better than their real chance, with a likely way to make money, get through.</p>
+  ${f.why.map(w=>`<div class="fnrow" style="padding:9px 0;border-top:1px solid var(--line);font-size:13.5px;line-height:1.4">${esc(w)}</div>`).join('')}
+  <button class="btn ghost" type="button" style="width:100%;justify-content:center;margin-top:12px" onclick="closeModal()">Close</button>`);}
 /* Approve / Add: the first tap arms the button, the second sends it once. While it's on its way (S.pSend) every
    other Approve/Add tap does nothing, and a redraw can't bring back a live button (the arm timer stands aside). */
 function pArm(b,txt){b.dataset.sure='1';b.textContent=txt;b.classList.add('arm');hap('warning');

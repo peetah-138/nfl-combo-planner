@@ -1881,6 +1881,7 @@ def shadow_loop(odds, notifier=None, every=600):
     """Paper full-auto trading on the Mac (see the planner's shadow section). Real quotes, no money."""
     time.sleep(120)
     while True:
+        carried = False                                   # (#341 C) at most one cost-carry paper quote a round
         for code in SHADOW_LEAGUES:
             try:
                 with odds.lock:
@@ -1898,8 +1899,21 @@ def shadow_loop(odds, notifier=None, every=600):
                         odds.engine().panel_collect(snap, code, log=log)
                     except Exception as err:
                         log(f"panel {code} skipped:", type(err).__name__, err)
+                    carry_legs = None
+                    if not carried and hasattr(odds.engine(), "carry_pick"):
+                        try:                              # paper only: pick here, quote below outside the lock
+                            carry_legs = odds.engine().carry_pick(snap)
+                        except Exception as err:
+                            log(f"cost-carry {code} skipped:", type(err).__name__, err)
                     for m in odds.moves(code, held_teams(odds)) if notifier else []:
                         notifier.add(m, "news")
+                if carry_legs:                            # (#341 C) one combo quote, never accepted (withdrawn),
+                    try:                                  # OUTSIDE odds.lock: it waits up to 15 s for makers
+                        got = odds.engine().carry_pass(legs=carry_legs, log=log)
+                        carried = True                    # one attempt a round, priced or not
+                        did = (did or []) + got
+                    except Exception as err:
+                        log(f"cost-carry {code} skipped:", type(err).__name__, err)
                 if did:
                     log(f"shadow {code}:", "; ".join(did))
             except Exception as err:
@@ -2980,7 +2994,16 @@ def webapp_main():
                              "model": model_summary(), "by_tier": by_tier(done), "proof": proof(bets, done),
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
+                             "mkt": paper_part("mkt_fair_summary"), "carry": paper_part("carry_summary"),
                              "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+
+    def paper_part(name):
+        """One of the #341 paper tests' summaries for What's working; None when it can't be read (never breaks Results)."""
+        try:
+            return getattr(A, name)() if A.STORE.get("db") and hasattr(A, name) else None
+        except Exception as err:
+            log(f"{name}:", type(err).__name__, err)
+            return None
 
     def board():
         """The profit scoreboard (#138), read-only from the history file; None when it can't be read (the page says so)."""
@@ -3060,6 +3083,14 @@ def webapp_main():
         order = ["2 picks", "3 picks", "4 picks", "5–6 picks", "7+ picks"]
         return [out[k] for k in order if k in out]
 
+    def funnel_now():
+        """(#341) the Mac's last panel funnel, under an hour old, for the page's "Why so few?" (None otherwise)."""
+        try:
+            f = A.load_json(getattr(A, "FUNNEL_FILE", ""), {}) if getattr(A, "FUNNEL_FILE", "") else {}
+            return f if f.get("why") and time.time() - float(f.get("at") or 0) < 3600 else None
+        except Exception:
+            return None
+
     def api_panel(view="all"):
         """Today's panel (or one sport's), its record and the cut-offs."""
         if not A.STORE.get("db"):
@@ -3068,7 +3099,7 @@ def webapp_main():
         p = real if view in ("all", "") else A.panel_get(f"view:{view}")
         sk = A.load_json(A.SIZING_FILE, {})
         return jsonable({"panel": p, "view": view, "record": A.panel_record(), "cutoffs": A.cutoff_summary(),
-                         "rebuild": A.rebuild_status(),
+                         "rebuild": A.rebuild_status(), "funnel": funnel_now(),
                          "games": (real or {}).get("games") or (p or {}).get("games"),
                          "reserved": sk.get("reserved", 0), "skim_note": sk.get("skim_note"),
                          "approved_other": bool(real and real["status"] != "draft" and view not in ("all", "")),
