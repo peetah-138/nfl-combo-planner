@@ -8,7 +8,7 @@ Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
 import bisect, csv, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from urllib.parse import quote, unquote
 import requests
 
@@ -1111,6 +1111,43 @@ def _team_is(name, team):
                      ("displayName", "shortDisplayName", "name", "abbreviation", "location", "nickname"))
 
 
+ESPN_DAYS = {True: 4, False: 8}     # days of ESPN's scoreboard read for free lines: daily leagues 4 (the panel's day and
+                                    # longer plays up to 3 days out), weekly ones (NFL, college football) the week
+ESPN_FREE = {}                      # code -> {ok, bad, at}: its last free-lines read, day by day (the panel's funnel)
+
+
+def espn_scoreboard(path, q, days, timeout=12, code=None):
+    """Every event on ESPN's scoreboard from today through `days` - 1 days out, one request per day, de-duplicated
+    by event id. ESPN stopped answering a date range (dates=YYYYMMDD-YYYYMMDD gets a 400 'Failed to get events
+    endpoint', Nov 2026, issue #341): the free lines asked for one and silently got nothing, so no game-winner pick
+    had an outside line and the panel never saw a single or a combo. Never raises: a day that can't be read is
+    skipped (counted in ESPN_FREE)."""
+    from concurrent.futures import ThreadPoolExecutor
+    today = dt.date.today()
+
+    def one(k):
+        try:
+            r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard",
+                             params=dict(q, limit=400, dates=f"{today + dt.timedelta(days=k):%Y%m%d}"), timeout=timeout)
+            evs = r.json().get("events", []) if r.ok else None
+            return evs if isinstance(evs, list) else None
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        got = list(pool.map(one, range(max(1, int(days)))))
+    out, seen = [], set()
+    cnt = ESPN_FREE.setdefault(code or path, {"ok": 0, "bad": 0, "at": 0})
+    for evs in got:
+        cnt["ok" if evs is not None else "bad"] += 1
+        for ev in evs or []:
+            k = ev.get("id") or json.dumps(ev.get("competitions") or [], sort_keys=True)[:200]
+            if k not in seen:
+                seen.add(k)
+                out.append(ev)
+    cnt["at"] = time.time()
+    return out
+
+
 def free_snapshot(codes):
     """Free sportsbook-style lines: ESPN's posted moneyline (book cut removed) and Polymarket's
     price, averaged when both have the game. Team names follow ESPN, like the odds service."""
@@ -1122,15 +1159,9 @@ def free_snapshot(codes):
             continue
         poly = poly_games(code)
         fetched = time.time()                         # when these lines were read (merge_books, panel_collect check it)
-        today = dt.date.today()
+        ESPN_FREE[code] = {"ok": 0, "bad": 0, "at": fetched}   # this read's days only
         for path in (sp["espn"] if isinstance(sp["espn"], list) else [sp["espn"]]):
-            q = dict(sp.get("q") or {}, limit=400)
-            q["dates"] = f"{today:%Y%m%d}-{today + dt.timedelta(days=7):%Y%m%d}"
-            try:
-                r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard", params=q, timeout=12)
-                evs = r.json().get("events", []) if r.ok else []
-            except (requests.RequestException, ValueError):
-                evs = []
+            evs = espn_scoreboard(path, dict(sp.get("q") or {}), ESPN_DAYS[bool(sp.get("day"))], code=code)
             for ev in evs:
                 comp = (ev.get("competitions") or [{}])[0]
                 if ((comp.get("status") or {}).get("type") or {}).get("state", "pre") != "pre":
@@ -11825,6 +11856,7 @@ def get_offer(i, amount=None, check_cap=True):
         store_quote(c, stake, pays, pct)
     except Exception:
         pass
+    carry_note(c["legs"], yes_price, CTX.get("source") or "build", same=c.get("same_game"))   # (#341 C) paper log only
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
                         "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None,
                         "legs": [l["ticker"] for l in c["legs"]]}
@@ -13409,10 +13441,12 @@ def maker_ratio(n, hours=None):
     return r or max(0.6, 0.97 - 0.035 * n)          # before anything is learned: a cautious guess
 
 
-def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=()):
+def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), per_n=0):
     """Combos built for price, not for chance: picks where Kalshi's own price is cheapest against the
     sharp books' fair chance, combined so those gaps multiply. Scores every combination of the best
-    picks with the learned maker discount and keeps the ones most likely to be priced over fair."""
+    picks with the learned maker discount and keeps the ones most likely to be priced over fair.
+    per_n (#341 D): after those k (unchanged), up to 3 x per_n more of each length 2..max_legs, best-priced first,
+    each pick in at most 2 of a length's extras, marked extra=True (the caller keeps only what clears its cut-off)."""
     import itertools
     stake = stake or CFG["stake"]
     best = {}
@@ -13453,6 +13487,24 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=()):
         out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
                     "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
                     "value_pct": round(pct, 4)})
+    if per_n:
+        have = {frozenset(l["ticker"] for l in c["legs"]) for c in out}
+        for n in range(2, max_legs + 1):
+            used_n, got = {}, 0
+            for pct, chance, legs in scored:
+                if got >= 3 * per_n:
+                    break
+                ks = frozenset(l["ticker"] for l in legs)
+                if len(legs) != n or ks in have or any(used_n.get(t, 0) >= 2 for t in ks):
+                    continue
+                for t in ks:
+                    used_n[t] = used_n.get(t, 0) + 1
+                have.add(ks)
+                got += 1
+                fair_pay = stake / chance
+                out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+                            "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
+                            "value_pct": round(pct, 4), "extra": True})
     return out
 
 
@@ -14428,7 +14480,8 @@ def line_candidates(code, everything=False):
                         "p": p, "edge": round(edge, 4), "kind": m["kind"], "line": line, "src": "model",
                         "book_line": g["spread_home"] if m["kind"] == "spread" else g["total"],
                         "start": g.get("start"), "game": f"{team_short(code, g['away'])} at {team_short(code, g['home'])}",
-                        "league": lg, "bucket": bucket, "min_edge": need, "kick": kick, "code": code})
+                        "league": lg, "bucket": bucket, "min_edge": need, "kick": kick, "code": code,
+                        "bid": live_bid(m)})         # (#341 B) Kalshi's mid, for the market-anchored fair's log
             if model:                                   # only when the new model priced it (gate on)
                 out[-1]["model"] = model
     LINE_LAST[code] = {"n": priced, "at": time.time()}
@@ -16764,8 +16817,11 @@ PANEL_GAMES = {}           # code -> games coming up (for showing only the sport
 NEXT_KICK = {}             # code -> the next start time (checked every few minutes when it's close)
 LIVE_NOW = {}              # code -> True while it has a game under way priced live for the panel (checked often)
 LIVE_WHY = {}              # code -> {game: why a game under way was left out}
+PANEL_FUNNEL = {}          # code -> what panel_collect saw and left out last pass (issue #341: "why so few?")
+FUNNEL_LOGGED = {}         # the last funnel written to the log (only a change is logged)
 BUY_WAIT = {}              # code -> when an approved bet last waited for fresher prices (looked at again soon)
 REBUILD_FLAG = os.path.join(HERE, "panel_rebuild.flag")
+FUNNEL_FILE = os.path.join(HERE, "combo_funnel.json")   # (#341) the last panel funnel, for the page when no panel is drafted
 BUY_FLAG = os.path.join(HERE, "panel_buy.flag")      # left by Approve / Add: the Mac's buying pass runs within seconds
 
 
@@ -17263,6 +17319,43 @@ def sell_early_candidates(games):
     return sorted(out, key=lambda x: -x["touch"])
 
 
+CORE = {"top": 6,          # the value combos the panel always looked at (the best-priced six)
+        "per_n": 2,        # (#341 D) and at least this many of each length 2-5 when they clear the same cut-off
+        "legs": (2, 3, 4, 5),
+        "nudge": 0.001}    # choose_panel: a combo filling a missing length gets this share of the budget as a tie-break
+
+
+def core_combos(built, code, fun=None):
+    """The panel's value combos (#341 D). Exactly the old six best-priced combos that clear their cut-off, plus, for
+    each length 2-5 still short of CORE["per_n"], the next best-priced ones of that length that clear the very same
+    cut-off (combo_cutoff, never lowered). Each gets `_pct` (the predicted share of fair). Only adds candidates; the
+    panel still picks among them by expected dollars, and Smart Buy still judges every one."""
+    out, have, rest = [], Counter(), []
+    for c in built:
+        n = len(c["legs"])
+        pq = predict_quote(c)
+        pct = pq["pct"] if pq else c.get("value_pct")
+        if not pct or pct < combo_cutoff(code, n, c["legs"]):
+            if fun is not None:
+                fun["combo_cut"] = fun.get("combo_cut", 0) + 1
+            continue
+        c = dict(c, _pct=pct)
+        if not c.get("extra"):                         # the old search's own (top CORE["top"]): kept exactly as before
+            out.append(c)
+            have[n] += 1
+        else:
+            rest.append(c)
+    for c in rest:
+        n = len(c["legs"])
+        if n in CORE["legs"] and have[n] < CORE["per_n"]:
+            out.append(dict(c, core=True))      # a length the old six didn't cover
+            have[n] += 1
+    if fun is not None:
+        fun["core"] = {str(k): v for k, v in sorted(have.items())}
+        fun["combo_ok"] = fun.get("combo_ok", 0) + len(out)
+    return out
+
+
 def slate_combos(games, code, k=3):
     """NFL-style slate combos: games from more than one time slot (so early wins create a sell point), with
     as many underdogs as a slate usually produces (the sum of each game's upset chance), picking the
@@ -17364,6 +17457,11 @@ def resolve_closes(limit=150):
         resolve_line_fairs(limit)
     except Exception:
         pass
+    for fn in (mkt_resolve, carry_resolve):            # (#341) the paper tests: market-anchored fair, cost-carry combos
+        try:
+            fn()
+        except Exception as err:
+            console_note(f"{fn.__name__}: {type(err).__name__}: {err}")
     rows = store_rows("select ticker from closes where outcome is null and kick < ? limit ?", (time.time() - 4 * 3600, limit))
     if not rows:
         return 0
@@ -17388,6 +17486,504 @@ def close_prices(tickers, mid=False):
                       f"where c.ticker in ({q})", tuple(tickers))
     return {r["ticker"]: (r["mid"] if mid and r["mid"] else r["price"]) for r in rows
             if r["kick"] and r["kick"] < time.time() and r["price"]}
+
+
+# ---- (#341 B) Kalshi's own price as the fair, on paper. Kalshi is a prediction market, not a sportsbook, and its
+# price beat the books-based model on log loss in public data, so the default fair here is Kalshi's mid (the middle of
+# its bid and ask). The books may only nudge it, per league, bet type and phase (before the game / during it, never
+# pooled), and only where their log loss on settled markets earns it. Every panel candidate and every priced side is
+# logged beside today's fair (one row per market per 30 minutes); a claimed edge that vanishes against the
+# market-anchored fair is marked as a shadow skip and scored at $5 held to the end. Nothing here changes a pick, a
+# stake, a buy or a sale: mkt_fair_shadow only writes the mkt_fair table.
+MKT = {"grid": (0.0, 0.25, 0.5, 0.75, 1.0), "min_n": 200, "gain": 0.002, "se": 2.0, "every": 1800, "gap": 0.10,
+       "stake": 5.0, "keep": 60 * 86400}
+MKT_SEEN = {}                  # id -> when it was last logged (at most once per market per 30 minutes)
+MKT_W = {"at": 0, "w": {}}     # (league, kind, phase) -> the books' learned weight (0 = Kalshi's mid alone)
+
+
+def _mkt_table():
+    store_x("create table if not exists mkt_fair(id text, ts real, code text, lg text, kind text, phase text, "
+            "tickers text, kick real, p real, mid real, fair_book real, fair_mkt real, w real, edge_book real, "
+            "edge_mkt real, claimed int, vanish int, pays real, outcome text)")
+    store_x("create index if not exists mkt_fair_ts on mkt_fair(ts)")
+    store_x("create index if not exists mkt_fair_id on mkt_fair(id, phase)")
+
+
+def mkt_weight(lg, kind, phase):
+    """How far the books may move Kalshi's mid for this league, bet type and phase: 0 until earned (mkt_learn)."""
+    if time.time() - MKT_W["at"] > 3600:
+        try:
+            mkt_learn()
+        except Exception as err:
+            MKT_W["at"] = time.time()
+            console_note(f"market fair weights: {type(err).__name__}: {err}")
+    return float((MKT_W["w"].get(f"{lg}|{kind}|{phase}") or {}).get("w") or 0.0)
+
+
+def mkt_anchor(mid, fair_book, w):
+    return min(max(mid + w * (fair_book - mid), 0.01), 0.99)
+
+
+def _ll(p, y):
+    p = min(max(p, 1e-4), 1 - 1e-4)
+    return -math.log(p if y else 1 - p)
+
+
+def _mkt_settled(lg=None):
+    """One row per settled market (its last log before the game started, or its last at all once under way)."""
+    if not STORE["db"]:
+        return []
+    _mkt_table()
+    rows = store_rows("select id, ts, lg, kind, phase, kick, mid, fair_book, fair_mkt, claimed, vanish, pays, edge_book, "
+                      "outcome from mkt_fair where outcome in ('yes','no') and ts > ?" + (" and lg=?" if lg else ""),
+                      (time.time() - MKT["keep"],) + ((lg,) if lg else ()))
+    best = {}
+    for r in rows:
+        if r["phase"] == "pre" and r["kick"] and r["ts"] >= r["kick"]:
+            continue
+        k = (r["id"], r["phase"])
+        if k not in best or r["ts"] > best[k]["ts"]:
+            best[k] = r
+    return list(best.values())
+
+
+def mkt_learn():
+    """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
+    markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
+    MKT['min_n']+ markets (the same test line_gate uses). Everything else stays at 0: Kalshi's mid."""
+    out = {}
+    by = defaultdict(list)
+    seen = set()
+    for r in sorted(_mkt_settled(), key=lambda r: r["id"]):
+        if not (r["mid"] and r["fair_book"]) or r["kind"] == "combo":
+            continue
+        ev = (r["id"].split(":", 1)[-1].rsplit("-", 1)[0], r["phase"])
+        if r["kind"] == "win" and ev in seen:          # one side per game: the two sides' results are one result
+            continue
+        seen.add(ev)
+        by[f"{r['lg']}|{r['kind']}|{r['phase']}"].append(r)
+    for k, rs in by.items():
+        ys = [r["outcome"] == "yes" for r in rs]
+        base = [_ll(r["mid"], y) for r, y in zip(rs, ys)]
+        best = (0.0, 0.0, 0.0)
+        for w in MKT["grid"][1:]:
+            d = [b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in zip(rs, ys, base)]
+            g = sum(d) / len(d)
+            se = statistics.pstdev(d) / math.sqrt(len(d)) if len(d) > 1 else 1.0
+            if g > best[1]:
+                best = (w, g, se)
+        w, g, se = best
+        earned = len(rs) >= MKT["min_n"] and g >= MKT["gain"] and g >= MKT["se"] * se
+        out[k] = {"w": w if earned else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
+                  "ll_mid": round(sum(base) / len(base), 4)}
+    MKT_W.update(at=time.time(), w=out)
+    return out
+
+
+def _mkt_side_mid(x):
+    p, b = x.get("p"), x.get("bid")
+    if not p or b is None or not 0 < b <= p or p - b > MKT["gap"]:
+        return None
+    return (p + b) / 2
+
+
+def mkt_fair_shadow(code, games, cands, lines=(), now=None):
+    """Log Kalshi's mid-anchored fair beside today's for every priced side, every spread/total candidate and every
+    combo candidate of this league (#341 B): before the game the latest row per market (rewritten at most every 30
+    minutes), during it one row per half hour. Logs only; returns how many rows were written. Never raises into the
+    panel (its caller catches)."""
+    if not STORE["db"]:
+        return 0
+    now = now or time.time()
+    _mkt_table()
+    claimed = {c["id"]: c for c in cands}
+    rows, mkt_of = [], {}
+
+    def add(rid, kind, phase, tickers, kick, p, mid, fb, fm, w, eb, em, cl, van, pays):
+        if now - MKT_SEEN.get(rid, 0) < MKT["every"]:
+            return
+        MKT_SEEN[rid] = now
+        rows.append((rid, now, code, league_key(tickers[0]), kind, phase, ",".join(tickers), kick, round(p, 4),
+                     round(mid, 4), round(fb, 4), round(fm, 4), w, round(eb, 4), round(em, 4), int(cl), int(van),
+                     round(pays, 4), None))
+    for sd in games.values():
+        for x in sd:
+            if x.get("tie") or not x.get("p") or not x.get("fair") or not (x.get("src") or x.get("live")):
+                continue
+            mid = _mkt_side_mid(x)
+            if mid is None:
+                continue
+            phase = "live" if x.get("live") else "pre"
+            w = mkt_weight(league_key(x["ticker"]), "win", phase)
+            fm = mkt_anchor(mid, x["fair"], w)
+            mkt_of[x["ticker"]] = (mid, fm)
+            fee = single_fee(x["p"])
+            cl = ("single:" + x["ticker"]) in claimed
+            em = fm - x["p"] - fee
+            add("side:" + x["ticker"], "win", phase, [x["ticker"]], _kick_ts(x), x["p"], mid, x["fair"], fm, w,
+                x["fair"] - x["p"] - fee, em, cl, cl and em <= 0, 1 / (x["p"] + fee))
+    for x in lines or []:
+        mid = _mkt_side_mid(x)
+        if mid is None or not x.get("fair"):
+            continue
+        kind = _bet_kind(x["ticker"])
+        w = mkt_weight(league_key(x["ticker"]), kind, "pre")
+        fm = mkt_anchor(mid, x["fair"], w)
+        fee = single_fee(x["p"])
+        cl = ("line:" + x["ticker"]) in claimed
+        em = fm - x["p"] - fee
+        add("line:" + x["ticker"], kind, "pre", [x["ticker"]], x.get("kick"), x["p"], mid, x["fair"], fm, w,
+            x["fair"] - x["p"] - fee, em, cl, cl and em <= 0, 1 / (x["p"] + fee))
+    for c in cands:
+        if c["kind"] != "combo" or not c.get("pct") or not c.get("fair_mult"):
+            continue
+        got = [mkt_of.get(l["ticker"]) for l in c["legs"]]
+        if not all(got):
+            continue
+        mid, fm = math.prod(g[0] for g in got), math.prod(g[1] for g in got)
+        fb = math.prod(l["fair"] for l in c["legs"])
+        pays = c["pct"] * c["fair_mult"]                  # dollars back per dollar if every pick wins
+        pct_mkt = pays * fm                               # its share of the market-anchored fair
+        add(c["id"], "combo", "live" if c.get("live") else "pre", [l["ticker"] for l in c["legs"]], c.get("kick"),
+            1 / pays, mid, fb, fm, 0.0, c["pct"] - 1, pct_mkt - 1, True, pct_mkt < 1, pays)
+    if rows:
+        _mkt_insert(rows)
+    if len(MKT_SEEN) > 5000:
+        for k in [k for k, t in MKT_SEEN.items() if now - t > MKT["every"]]:
+            MKT_SEEN.pop(k, None)
+    return len(rows)
+
+
+def _mkt_insert(rows):
+    """All of a pass's rows in one transaction (one disk sync, the history lock held once); best-effort."""
+    db = STORE.get("db")
+    if not db:
+        return
+    sql = "insert into mkt_fair values(" + ",".join("?" * 19) + ")"
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            # before the game only the latest row of a market is kept (the last one before the start is the one that
+            # counts, and it keeps the table small); during games one row per half hour, like live_fairs
+            db.executemany("delete from mkt_fair where id=? and phase='pre'", [(r[0],) for r in rows if r[5] == "pre"])
+            db.executemany(sql, rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"market fair log: {type(err).__name__}: {err}")
+
+
+def mkt_resolve(limit=200):
+    """Results for logged markets whose games are over (history loop). Combos: yes only when every pick won."""
+    if not STORE["db"]:
+        return 0
+    _mkt_table()
+    store_x("delete from mkt_fair where ts < ?", (time.time() - MKT["keep"],))
+    rows = store_rows("select id, tickers, max(kick) k from mkt_fair where outcome is null and kick is not null and kick < ? "
+                      "and kick > ? group by id, tickers order by k desc limit ?",
+                      (time.time() - 4 * 3600, time.time() - 5 * 86400, limit))    # newest first; 5 days, then given up
+    if not rows:
+        return 0
+    res = fetch_results(sorted({t for r in rows for t in r["tickers"].split(",") if t}))
+    n = 0
+    for r in rows:
+        ts = [t for t in r["tickers"].split(",") if t]
+        got = [res.get(t) for t in ts]
+        if any(g == "no" for g in got):
+            out = "no"
+        elif got and all(g == "yes" for g in got):
+            out = "yes"
+        else:
+            continue
+        store_x("update mkt_fair set outcome=? where id=?", (out, r["id"]))
+        n += 1
+    return n
+
+
+def mkt_fair_summary():
+    """Results › What's working (paper): per league, bet type and phase, how well Kalshi's mid, today's fair and the
+    blend predicted settled markets (log loss, lower is better), the books' earned weight, and the claimed edges that
+    vanish against the market-anchored fair: how many, and what $5 on each made held to the end vs the ones kept."""
+    if not STORE["db"]:
+        return None
+    w = MKT_W["w"] if time.time() - MKT_W["at"] < 3600 else mkt_learn()
+    groups = defaultdict(lambda: {"n": 0, "ll_mid": 0.0, "ll_book": 0.0, "claimed": 0, "vanish": 0,
+                                  "van_pl": 0.0, "kept": 0, "kept_pl": 0.0})
+    for r in _mkt_settled():
+        g = groups[(r["lg"], r["kind"], r["phase"])]
+        y = r["outcome"] == "yes"
+        g["n"] += 1
+        g["ll_mid"] += _ll(r["mid"], y)
+        g["ll_book"] += _ll(r["fair_book"], y)
+        if r["claimed"]:
+            pl = MKT["stake"] * ((r["pays"] or 0) - 1) if y else -MKT["stake"]
+            g["claimed"] += 1
+            if r["vanish"]:
+                g["vanish"] += 1
+                g["van_pl"] += pl
+            else:
+                g["kept"] += 1
+                g["kept_pl"] += pl
+    out = []
+    for (lg, kind, phase), g in sorted(groups.items(), key=lambda kv: -kv[1]["n"]):
+        n = g["n"]
+        ww = (w.get(f"{lg}|{kind}|{phase}") or {}) if kind != "combo" else {}
+        out.append({"lg": lg, "name": league_label(lg), "kind": kind, "phase": phase, "n": n, "few": n < BOARD_FEW,
+                    "ll_mid": round(g["ll_mid"] / n, 4), "ll_book": round(g["ll_book"] / n, 4),
+                    "w": ww.get("w", 0.0), "claimed": g["claimed"], "vanish": g["vanish"],
+                    "van_pl": round(g["van_pl"], 2), "kept": g["kept"], "kept_pl": round(g["kept_pl"], 2)})
+    _mkt_table()
+    logged = store_rows("select count(distinct id) n, count(distinct case when claimed = 1 then id end) c, "
+                        "count(distinct case when vanish = 1 then id end) v from mkt_fair where ts > ?",
+                        (time.time() - 86400,))
+    lg = logged[0] if logged else {}
+    return {"groups": out[:24], "today": {"n": lg.get("n") or 0, "claimed": lg.get("c") or 0, "vanish": lg.get("v") or 0},
+            "min_n": MKT["min_n"]}
+
+
+# ---- (#341 C) the cost-carry paper test. Public data says a 2-3 leg combo's RFQ payout is about 0 to +2% over the
+# product of its legs' asks, so a combo can be the cheapest way to hold picks. The test: near-even picks (Kalshi's mid
+# 35-65%) from separate games, quoted 2-3 at a time; when the quote pays at least as much as the product of the legs'
+# mids (the combo costs no more than the picks are worth on Kalshi's own prices), it's bought on paper, $5, and
+# settled with Kalshi's results, fees counted. Same-game quotes (any source) are logged beside them to see how Kalshi
+# prices correlated picks. Its own `carry` table: never the panel, the $300 gate, the quotes table or any learning;
+# its RFQs are never accepted (always withdrawn), never asked while paused, from the Pi or without trading access.
+CARRY = {"even": (0.35, 0.65), "legs": (2, 3), "stake": 5.0, "per_day": 24, "gap": 0.06}
+
+
+def _carry_table():
+    store_x("create table if not exists carry(ts real, day text, key text, kind text, source text, n int, legs text, "
+            "prod_mid real, prod_ask real, price real, ratio real, paper int, kick real, outcome text, pl real)")
+
+
+def _same_game(legs):
+    evs = [re.sub(r"(SPREAD|TOTAL)-", "GAME-", l.get("event") or "") for l in legs]
+    return len(set(evs)) < len(evs)
+
+
+def carry_note(legs, price, source, same=None, now=None):
+    """One combo quote (a YES price per $1 contract) into the carry table: separate-game near-even 2-3 leg quotes,
+    paper-bought when the price is at or under the product of the legs' mids (one per set of picks a day), and every
+    same-game quote, logged only. Returns 'paper', 'logged' or None (not this test's kind). Never raises."""
+    try:
+        if not STORE["db"] or not price or not 0 < price < 1 or len(legs) not in CARRY["legs"]:
+            return None
+        if any(started(l) for l in legs):              # before the games only: in play is never pooled with it
+            return None
+        now = now or time.time()
+        same = _same_game(legs) if same is None else bool(same)
+        mids = []
+        for l in legs:
+            p, b = l.get("p"), l.get("bid")
+            m = (p + b) / 2 if p and b is not None and 0 < b <= p and p - b <= CARRY["gap"] else None
+            mids.append(m if m is not None or not same else p)    # a same-game pick without a bid: its ask
+        if None in mids:
+            return None
+        lo, hi = CARRY["even"]
+        if not same and not all(lo <= m <= hi for m in mids):
+            return None
+        _carry_table()
+        pm, pa = math.prod(mids), math.prod(l["p"] for l in legs)
+        key = "|".join(sorted(l["ticker"] for l in legs))
+        day = dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+        paper = (not same and price <= pm + 1e-9 and
+                 not store_rows("select 1 from carry where key=? and day=? and paper=1", (key, day)))
+        kicks = [k for k in (_kick_ts(l) for l in legs) if k]
+        store_x("insert into carry values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now, day, key, "same" if same else "sep", source, len(legs),
+                 json.dumps([[l["ticker"], round(l["p"], 4), round(m, 4)] for l, m in zip(legs, mids)]),
+                 round(pm, 5), round(pa, 5), round(price, 4), round(pm / price, 4), int(paper),
+                 max(kicks) if kicks else None, None, None))
+        return "paper" if paper else "logged"
+    except Exception as err:
+        console_note(f"carry note: {type(err).__name__}: {err}")
+        return None
+
+
+def carry_candidates(games, now=None):
+    """Near-even picks from separate games starting within the shadow's window, as 2- and 3-leg combos (closest to
+    even first), each set of picks not yet quoted today."""
+    now = now or time.time()
+    lo, hi = CARRY["even"]
+    side = {}
+    for e, sd in games.items():
+        if any(started(x) for x in sd) or any(x.get("tie") for x in sd):
+            continue
+        for x in sd:
+            p, b, k = x.get("p"), x.get("bid"), _kick_ts(x)
+            if not p or b is None or not 0 < b <= p or p - b > CARRY["gap"] or not k or not now < k < now + SHADOW_WINDOW:
+                continue
+            m = (p + b) / 2
+            if lo <= m <= hi and (e not in side or abs(m - 0.5) < abs(side[e][0] - 0.5)):
+                side[e] = (m, x)
+    picks = [x for _, x in sorted(side.values(), key=lambda t: abs(t[0] - 0.5))][:6]
+    if not STORE["db"]:
+        return []
+    _carry_table()
+    day = dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+    done = {r["key"] for r in store_rows("select key from carry where day=? and source='carry'", (day,))}
+    out = []
+    import itertools
+    for n in CARRY["legs"]:
+        for legs in itertools.combinations(picks, n):
+            key = "|".join(sorted(l["ticker"] for l in legs))
+            if key not in done:
+                out.append(list(legs))
+    out.sort(key=lambda ls: (len(ls), sum(abs((l["p"] + l["bid"]) / 2 - 0.5) for l in ls)))
+    return out
+
+
+def carry_quote(legs, stake=5.0):
+    """Ask Kalshi's combo makers for a price on these picks and withdraw the request straight away: never accepted.
+    Returns the best YES price per $1 contract, or None."""
+    held, _ = hold_refusal("buy")
+    if held:
+        return None
+    coll = find_collection(legs)
+    made = kalshi_send("POST", f"/multivariate_event_collections/{coll}",
+                       {"selected_markets": [{"market_ticker": l["ticker"], "event_ticker": l["event"], "side": "yes"}
+                                             for l in legs], "with_market_payload": False})
+    market = made["market_ticker"]
+    if rfq_unsure(market):
+        return None
+    clear_my_rfqs(market)                              # Kalshi allows one request per combo: a leftover would block it
+    rfq = kalshi_send("POST", "/communications/rfqs",
+                      {"market_ticker": market, "target_cost_dollars": f"{stake:.2f}",
+                       "rest_remainder": False, "replace_existing": False})["id"]
+    best, start = None, time.time()
+    try:
+        while time.time() - start < 15:
+            time.sleep(1.5)
+            for q in kalshi_send("GET", "/communications/quotes",
+                                 params={"rfq_id": rfq, "rfq_user_filter": "self"}).get("quotes", []):
+                if q.get("status") == "open" and q.get("no_bid_dollars"):
+                    y = 1 - float(q["no_bid_dollars"])
+                    if 0 < y < 1 and (best is None or y < best):
+                        best = y
+            if best and time.time() - start > 5:
+                break
+    finally:
+        try:
+            kalshi_send("DELETE", f"/communications/rfqs/{rfq}")
+        except Exception:
+            pass
+    return best
+
+
+def _carry_ok():
+    return STORE["db"] and not trading_paused() and not role_backup() and can_trade()
+
+
+def carry_pick(book_snap, now=None):
+    """The next cost-carry set of picks for the league on screen, or None (the quick part, under the shadow's lock):
+    nothing while paused, on the Pi, without trading access, or once today's quotes are used."""
+    now = now or time.time()
+    if not _carry_ok():
+        return None
+    _carry_table()
+    day = dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+    used = store_rows("select count(*) n from carry where day=? and source='carry'", (day,))
+    if used and used[0]["n"] >= CARRY["per_day"]:
+        return None
+    games, _, _ = week_games(fetch_markets())
+    attach_fair(games, load_book_state(book_snap))
+    got = carry_candidates(games, now)
+    return [dict(l) for l in got[0]] if got else None
+
+
+def carry_pass(book_snap=None, log=print, now=None, legs=None):
+    """One cost-carry quote (paper only). With `legs` (from carry_pick) it only quotes, which the watcher does OUTSIDE
+    odds.lock (a quote waits up to 15 s; the lock is the one an approved panel buy needs). Pause and the Pi are checked
+    again here. Returns what happened, for the log."""
+    now = now or time.time()
+    if legs is None:
+        legs = carry_pick(book_snap, now)
+    if not legs or not _carry_ok():
+        return []
+    for legs in [legs]:
+        try:
+            price = carry_quote(legs)
+        except Exception as err:
+            log("carry quote failed:", type(err).__name__, err)
+            price = None
+        if not price:                                  # asked, no price: counts toward the day and isn't asked again
+            try:
+                store_x("insert into carry(ts, day, key, kind, source, n, legs, paper) values(?,?,?,?,?,?,?,0)",
+                        (now, dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat(),
+                         "|".join(sorted(l["ticker"] for l in legs)), "sep", "carry", len(legs),
+                         json.dumps([[l["ticker"], l.get("p"), None] for l in legs])))
+            except Exception:
+                pass
+            return [f"cost-carry {len(legs)}-pick: no price came in"]
+        got = carry_note(legs, price, "carry", same=False, now=now)
+        pm = math.prod((l["p"] + l["bid"]) / 2 for l in legs)
+        return [f"cost-carry {len(legs)}-pick quote {price * 100:.1f}¢ vs {pm * 100:.1f}¢ on the mids"
+                + (": paper-bought $5" if got == "paper" else "")]
+    return []
+
+
+def carry_resolve(limit=200):
+    """Settle paper and logged carry rows whose games are over: outcome, and for paper rows the profit at $5 with the
+    taking fee (single_fee on the combo's price, the order's fee rounded up)."""
+    if not STORE["db"]:
+        return 0
+    _carry_table()
+    rows = store_rows("select rowid, legs, price, paper from carry where outcome is null and price is not null and kick is not "
+                      "null and kick < ? and kick > ? order by kick desc limit ?",
+                      (time.time() - 4 * 3600, time.time() - 5 * 86400, limit))
+    if not rows:
+        return 0
+    tick = {r["rowid"]: [x[0] for x in json.loads(r["legs"])] for r in rows}
+    res = fetch_results(sorted({t for ts in tick.values() for t in ts}))
+    n = 0
+    for r in rows:
+        got = [res.get(t) for t in tick[r["rowid"]]]
+        if any(g == "no" for g in got):
+            out = "no"
+        elif got and all(g == "yes" for g in got):
+            out = "yes"
+        else:
+            continue
+        pl = None
+        if r["paper"]:
+            k, fee = order_contracts(CARRY["stake"], r["price"])
+            cost = k * (r["price"] + fee)
+            pl = round((k if out == "yes" else 0) - cost, 2)
+        store_x("update carry set outcome=?, pl=? where rowid=?", (out, pl, r["rowid"]))
+        n += 1
+    return n
+
+
+def carry_summary():
+    """Results › What's working (paper): the cost-carry test by legs, and same-game quotes beside it."""
+    if not STORE["db"]:
+        return None
+    _carry_table()
+    rows = store_rows("select kind, n, ratio, paper, outcome, pl from carry where ts > ? and price is not null",
+                      (time.time() - 90 * 86400,))
+    out = {}
+    for kind in ("sep", "same"):
+        for n in CARRY["legs"]:
+            rs = [r for r in rows if r["kind"] == kind and r["n"] == n]
+            if not rs:
+                continue
+            paper = [r for r in rs if r["paper"]]
+            done = [r for r in paper if r["pl"] is not None]
+            out[f"{kind}{n}"] = {"kind": kind, "n": n, "quotes": len(rs),
+                                 "ratio": round(statistics.median(r["ratio"] for r in rs), 4),
+                                 "clear": sum(1 for r in rs if r["ratio"] >= 1),
+                                 "paper": len(paper), "settled": len(done),
+                                 "won": sum(1 for r in done if r["outcome"] == "yes"),
+                                 "pl": round(sum(r["pl"] for r in done), 2),
+                                 "staked": round(CARRY["stake"] * len(done), 2), "few": len(done) < BOARD_FEW}
+    return {"rows": list(out.values()), "stake": CARRY["stake"]}
 
 
 def exit_factor():
@@ -17712,7 +18308,12 @@ def panel_collect(book_snap, code, log=print):
     attach_fair(games, book)
     every = games
     games = {e: sd for e, sd in every.items() if not any(started(x) for x in sd)}
+    fun = {"at": time.time(), "games": len(games), "started": len(every) - len(games)}
     stale = drop_stale_lines(games)
+    fun["stale"] = stale
+    fun["no_line"] = sum(1 for sd in games.values() if not any(x.get("src") for x in sd if not x.get("tie"))
+                         and not any(x.get("stale_line") for x in sd))   # a stale line is counted once, as stale
+    fun["free_bad"] = (ESPN_FREE.get(code) or {}).get("bad", 0)
     if stale:
         log(f"panel {code}: {stale} game(s) left on Kalshi's prices: their sportsbook line was too old for a game "
             f"this close")
@@ -17742,8 +18343,12 @@ def panel_collect(book_snap, code, log=print):
             k = sum(x["fair_book"] for x in two) / max(sum(x["fair"] for x in two), 1e-6)
             for x in two:
                 x["fair"] = round(x["fair"] * k, 4)
+    fun["live"] = len(live)
     cands = []
-    for x in single_candidates(games, live_ok=set(live)):
+    singles = single_candidates(games, live_ok=set(live))
+    fun["sides"] = sum(1 for sd in games.values() for x in sd if not x.get("tie") and (x.get("src") or x.get("live")))
+    fun["singles"] = len(singles)
+    for x in singles:
         cands.append(_cand("single", code, [x], x["fair"], x["edge"] / (x["p"] + single_fee(x["p"])),
                            (f"Game under way: Kalshi charges {x['p'] * 100:.0f}¢ for a {x['fair']:.0%} chance now "
                             f"({x.get('live_how')}, on a fresh score)." if x.get("live") else
@@ -17755,8 +18360,11 @@ def panel_collect(book_snap, code, log=print):
         cands.append(_cand("early", code, [x], x["touch"], x["ev"],
                            f"Bought at fair or better; the Mac sells at {x['exit'] * 100:.0f}¢, which it reaches about "
                            f"{x['touch']:.0%} of the time.", price=x["p"], exit=x["exit"], opp=opp_of(games, x)))
+    lc_all = []
     try:
-        lc = line_candidates(code)
+        lc = lc_all = line_candidates(code)
+        fun["lines"] = max(int((LINE_LAST.get(code) or {}).get("n") or 0), len(lc))     # strikes priced
+        fun["line_edge"] = fun["lines"] - sum(1 for x in lc if x["edge"] >= LINE_MIN_EDGE)   # short of the bar
         try:                                             # part B: the top few strikes' books, side by side, on a budget
             books = books_now([x["ticker"] for x in lc[:LINE_REC["panel_fill"]]])
         except Exception:
@@ -17777,16 +18385,24 @@ def panel_collect(book_snap, code, log=print):
                 note_line_rec(x)                         # its closing-line value is measured from here
     except Exception as err:
         log(f"panel lines {code}:", type(err).__name__, err)
-    for c in value_combos(games, k=6, live_ok=set(live)):
-        n = len(c["legs"])
-        pq = predict_quote(c)
-        pct = pq["pct"] if pq else c.get("value_pct")
-        if pct and pct >= combo_cutoff(code, n, c["legs"]):
-            cands.append(_cand("combo", code, c["legs"], math.prod(l["fair"] for l in c["legs"]), pct - 1,
-                               "Every pick is priced under its real chance, so the combo should pay more than it's worth.",
-                               pct=round(pct, 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3)))
+    built = value_combos(games, k=6, live_ok=set(live))   # the old search, exactly
+    try:                                               # (#341 D) more of each length, only kept if they clear the bar
+        built += [c for c in value_combos(games, k=CORE["top"], live_ok=set(live), per_n=CORE["per_n"]) if c.get("extra")]
+    except Exception as err:
+        log(f"core combos {code}:", type(err).__name__, err)
+    fun["combos_built"], fun["combo_cut"] = len(built), 0
+    for c in core_combos(built, code, fun):
+        cands.append(_cand("combo", code, c["legs"], math.prod(l["fair"] for l in c["legs"]), c["_pct"] - 1,
+                           "Every pick is priced under its real chance, so the combo should pay more than it's worth.",
+                           pct=round(c["_pct"], 4), fair_mult=round(1 / math.prod(l["fair"] for l in c["legs"]), 3),
+                           **({"core": True} if c.get("core") else {})))
     if code == "nfl":
         for pct, chance, legs, ups in slate_combos(pre_games, code):
+            fun["combos_built"] += 1
+            if pct < combo_cutoff(code, len(legs), legs):
+                fun["combo_cut"] += 1
+            else:
+                fun["combo_ok"] = fun.get("combo_ok", 0) + 1
             if pct >= combo_cutoff(code, len(legs), legs):
                 cands.append(_cand("combo", code, legs, chance, pct - 1,
                                    f"Spread across the day's time slots with {ups} upset{'s' if ups != 1 else ''} built in "
@@ -17813,6 +18429,12 @@ def panel_collect(book_snap, code, log=print):
         except Exception as err:
             log("two-week NFL:", type(err).__name__, err)
     PANEL_POOL[code] = (time.time(), cands)
+    fun["cands"] = dict(Counter(c["kind"] for c in cands))
+    PANEL_FUNNEL[code] = fun
+    try:                                               # (#341 B) Kalshi's own mid as fair, beside ours: logs only
+        mkt_fair_shadow(code, games, cands, lc_all)
+    except Exception as err:
+        log(f"market fair {code}:", type(err).__name__, err)
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -17898,7 +18520,11 @@ def choose_panel(cands, budget, base, size=None):
     dollars = rank_dollars()
     picked, spent, per_game = [], 0.0, defaultdict(int)
     solo = set()                                       # games that already carry a single, spread or total
+    fun = {"bar": dict(Counter(c["kind"] for c in cands if not _qualifies(c)))}   # #341: left out by the bar, by kind
     pool = [dict(c, stake=_size(c, base)) for c in cands if _qualifies(c)]
+    fun["pool"] = len(pool)
+    base_ev = 0.0                                      # expected dollars of the bets picked so far
+    lengths = Counter()                                # combos picked by length (#341 D: a core of 2-5 leg combos)
     while len(picked) < size and pool:
         best = None
         for c in pool:
@@ -17914,11 +18540,14 @@ def choose_panel(cands, budget, base, size=None):
             tot = _sim_panel(picked + [c], n=1500)
             pr = sum(1 for t in tot if t > 0) / len(tot)
             ev = sum(tot) / len(tot)
+            n_l = len(c["legs"]) if c["kind"] == "combo" else 0      # a combo of a length the panel has too few of,
+            core = CORE["nudge"] if n_l in CORE["legs"] and lengths[n_l] < CORE["per_n"] and ev > base_ev else 0.0
             if dollars:                                        # over the floor first, then the most dollars expected;
                 over = pr >= PANEL_AHEAD_FLOOR                 # under it: the chance (dollars break ties)
-                score = (1, ev + c.get("prio", 0) * 0.25 * max(budget, 1)) if over else (0, pr + 0.05 * ev / max(budget, 1))
+                score = (1, ev + (c.get("prio", 0) * 0.25 + core) * max(budget, 1)) if over else \
+                    (0, pr + 0.05 * ev / max(budget, 1))
             else:
-                score = pr + 0.05 * ev / max(budget, 1) + c.get("prio", 0)
+                score = pr + 0.05 * ev / max(budget, 1) + c.get("prio", 0) + core
             if best is None or score > best[0]:
                 best = (score, c, pr, ev)
         if not best:
@@ -17926,6 +18555,9 @@ def choose_panel(cands, budget, base, size=None):
         _, c, pr, ev = best
         picked.append(c)
         spent += c["stake"]
+        base_ev = ev
+        if c["kind"] == "combo":
+            lengths[len(c["legs"])] += 1
         pool = [x for x in pool if x["id"] != c["id"]]
         for e in _events_of(c):
             per_game[e] += 1
@@ -17935,6 +18567,21 @@ def choose_panel(cands, budget, base, size=None):
     # keep the prefixes whose chance is over the floor, and of those take the one that expects to make the most.
     # (Old rule: within 5 points of the best chance.) That spends the budget on the bets worth the most dollars
     # while the day still most likely ends up ahead.
+    left = Counter()                                   # #341: why each qualifying bet that wasn't picked stayed out
+    for c in pool:
+        evs = _events_of(c)
+        if any(per_game[e] >= PANEL["per_game"] for e in evs) or (c["kind"] != "combo" and evs[0] in solo):
+            left["overlap"] += 1
+        elif c["kind"] == "line" and sum(1 for x in picked if x["kind"] == "line") >= max(2, int(size * PANEL["line_share"])):
+            left["line_share"] += 1
+        elif spent + c["stake"] > budget + 0.01:
+            left["budget"] += 1
+        elif len(picked) >= size:
+            left["full"] += 1
+        else:
+            left["ranked"] += 1
+    fun["left"] = dict(left)
+    n_greedy = len(picked)
     floor_n = min(len(picked), 3)
     stats = {}
     for k in range(floor_n, len(picked) + 1):
@@ -17947,9 +18594,11 @@ def choose_panel(cands, budget, base, size=None):
         picked = picked[:max(ok_k, key=lambda k: stats[k][1])]
     spent = sum(c["stake"] for c in picked)
     tot = _sim_panel(picked) if picked else [0]
+    fun["trim"] = n_greedy - len(picked)               # picked, then trimmed off to keep the day's chance over the floor
+    fun["core"] = {str(k): v for k, v in sorted(Counter(len(c["legs"]) for c in picked if c["kind"] == "combo").items())}
     return picked, {"p_ahead": round(sum(1 for t in tot if t > 0) / len(tot), 3), "ev": round(sum(tot) / len(tot), 2),
                     "stake": round(spent, 2), "worst": round(min(tot), 2), "best": round(max(tot), 2),
-                    "rank": "dollars" if dollars else "chance"}
+                    "rank": "dollars" if dollars else "chance", "funnel": fun}
 
 
 def sport_pay_index():
@@ -17984,6 +18633,57 @@ def pay_index_of(idx, code, legs=None):
     return idx[lg] if lg and lg in idx else idx.get(code, 1.0)
 
 
+def _n(k, one, many):
+    return f"{k} {one if k == 1 else many}"
+
+
+def funnel_words(fun):
+    """The panel's funnel (#341) in plain English, one short line each, biggest loss first where it matters: what each
+    league's collection saw and left out, then what the choice left out. Display and log only."""
+    out = []
+    for code, f in sorted((fun.get("collect") or {}).items()):
+        name = (LEAGUES.get(code) or SPORTS.get(code) or {}).get("name") or code.upper()
+        g = f.get("games", 0)
+        bits = [f"{_n(g, 'game', 'games')} not started" + (f", {f['live']} under way priced live" if f.get("live") else "")]
+        if f.get("no_line"):
+            bits.append(f"{f['no_line']} with no outside line (Kalshi's price alone, so no single or combo)")
+        if f.get("stale"):
+            bits.append(f"{f['stale']} whose line was too old")
+        bits.append(_n(f.get("singles", 0), "single priced under its chance", "singles priced under their chance"))
+        if f.get("combos_built"):
+            ok = f.get("combo_ok", f["combos_built"] - f.get("combo_cut", 0))
+            bits.append(f"{_n(f['combos_built'], 'combo', 'combos')} predicted, {ok} at the cut-off or better")
+        if f.get("lines"):
+            bits.append(f"{_n(f['lines'], 'spread/total', 'spreads/totals')} priced, "
+                        f"{f['lines'] - f.get('line_edge', 0)} with enough edge")
+        if f.get("free_bad"):
+            bits.append(f"{f['free_bad']} day(s) of ESPN's lines couldn't be read")
+        out.append(f"{name}: " + "; ".join(bits) + ".")
+    d = fun.get("drop") or {}
+    if d.get("kick"):
+        out.append(f"{_n(d['kick'], 'bet starts', 'bets start')} too soon (or already started) to buy.")
+    if d.get("held"):
+        out.append(f"{_n(d['held'], 'bet is on a game', 'bets are on games')} you already have money on.")
+    if d.get("old_pool") or d.get("old_live"):
+        out.append(f"{(d.get('old_pool') or 0) + (d.get('old_live') or 0)} with prices too old to use.")
+    bar = fun.get("bar") or {}
+    if bar:
+        words = {"combo": "combos", "single": "singles", "line": "spreads/totals", "early": "sell-early bets"}
+        out.append("Not good enough value: " + ", ".join(f"{v} {words.get(k, k)}" for k, v in sorted(bar.items())) + ".")
+    left = fun.get("left") or {}
+    why = {"overlap": "on a game already covered", "line_share": "over the spreads/totals share",
+           "budget": "over the day's budget", "full": "the panel was full", "ranked": "worth fewer expected dollars"}
+    if left:
+        out.append("Not picked: " + ", ".join(f"{v} {why.get(k, k)}" for k, v in left.items()) + ".")
+    if fun.get("trim"):
+        out.append(f"{_n(fun['trim'], 'bet was', 'bets were')} trimmed off to keep the day's chance of ending up ahead.")
+    if fun.get("smart_buy"):
+        out.append(f"Smart Buy skipped {fun['smart_buy']}.")
+    if fun.get("credits"):
+        out.append(f"{fun['credits']} left out to save odds credits.")
+    return out
+
+
 def build_panel(codes=None, budget=None, now=None, exclude=()):
     """Today's panel (and a couple of longer plays) from the latest candidates of each league. exclude: games
     to leave out (already bet on). budget given explicitly is used as-is (what's left for extras)."""
@@ -17996,13 +18696,19 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     day_end, nfl_end = _local_day_end(now), _nfl_week_end(now)
     idx = sport_pay_index()
     today, longer = [], []
+    drop = Counter()                                   # #341: what never reached the choice, and why
     for code, (at, cands) in PANEL_POOL.items():
-        if now - at > PANEL["pool_age"] or (codes and code not in codes):
+        if codes and code not in codes:
+            continue
+        if now - at > PANEL["pool_age"]:
+            drop["old_pool"] += len(cands)
             continue
         for c in cands:
             if not c.get("kick") or not _start_ok(c, now, 20 * 60):
+                drop["kick"] += 1
                 continue
             if c.get("live") and now - at > LIVE_POOL_AGE:
+                drop["old_live"] += 1
                 continue                                   # a live price this old is no longer a price
             c = dict(c)
             if c["kind"] == "combo":                       # lean toward the sports that pay closest to fair (tie-break only)
@@ -18012,9 +18718,13 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
                 today.append(c)
             elif c["kind"] == "combo" and (c["last"] <= now + 3 * 86400 or c.get("weeks")) and c["ret"] >= 0.10:
                 longer.append(c)
+            else:
+                drop["later"] += 1
     held = {e for c in day_items(_panel_day(now)) if c.get("state") in ("bought", "buying", "check") for e in _events_of(c)}
     held |= set(exclude) | account_events()
+    n0 = len(today)
     today = [c for c in today if not held & set(_events_of(c))]     # games an earlier panel today already bet on
+    drop["held"] = n0 - len(today)
     games_today = len({e for c in today for e in _events_of(c)})
     size = min(14, max(6, 4 + games_today // 3))       # heavy hockey/NBA nights get a bigger panel
     nfl_day = any(c["code"] == "nfl" and c["kick"] <= day_end for c in today)
@@ -18040,6 +18750,16 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
         if _qualifies(c):
             pool[c["kind"]] += 1
     stats["pool"] = dict(pool)
+    try:                                               # #341: the whole funnel, for the "why so few?" sheet and the log
+        fun = stats.get("funnel") or {}
+        fun.update(drop={k: v for k, v in drop.items() if v}, seen=len(today),
+                   smart_buy=sum(1 for x in sb_skipped if not x.get("credits")),
+                   credits=sum(1 for x in sb_skipped if x.get("credits")),
+                   collect={k: dict(v) for k, v in PANEL_FUNNEL.items() if not codes or k in codes})
+        fun["why"] = funnel_words(fun)
+        stats["funnel"] = fun
+    except Exception as err:                           # display only: never in the way of the panel
+        console_note(f"panel funnel: {type(err).__name__}: {err}")
     used = used0
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
@@ -22458,6 +23178,15 @@ def panel_pass(log=print):
                        f"{' and more' if len(new) > 3 else ''}. Add {'them' if len(new) > 1 else 'it'} in Build.")
         return out
     p = build_panel()
+    try:                                               # #341: the funnel in the log, when it changes
+        why = (p.get("stats") or {}).get("funnel", {}).get("why") or []
+        save_json(FUNNEL_FILE, {"at": time.time(), "why": why, "n": len(p.get("items") or [])})
+        w = " ".join(why)
+        if w and w != FUNNEL_LOGGED.get("w") and time.time() - FUNNEL_LOGGED.get("at", 0) >= 600:
+            FUNNEL_LOGGED.update(w=w, at=time.time())         # a change, at most every 10 minutes
+            log("panel funnel: " + w)
+    except Exception:
+        pass
     if not p["items"]:
         if p.get("sb_skipped"):                        # Smart Buy left everything out: no older draft stays approvable
             panel_save_draft(p, "real")

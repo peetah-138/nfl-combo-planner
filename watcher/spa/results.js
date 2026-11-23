@@ -74,6 +74,22 @@ function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini
  return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
   <p style="margin:0 0 10px;color:var(--ink)">${esc(p.verdict)}</p>${row('Return on stake',p.roi,pc)}${row('Prices vs kickoff',p.clv,pc)}${row('Paper auto-trading',p.paper,pc)}
   <div class="m" style="font-size:12px;margin-top:8px">The $300 full-auto test waits for prices vs kickoff to be positive with confidence and the paper record to be up over 50+ bets.</div></div>`;}
+/* #341 B (paper): Kalshi's own mid as the fair, beside ours. Lower log loss = better at predicting what happened. */
+const KINDW={win:'game winners',spread:'spreads',total:'totals',combo:'combos'};
+function mktCard(m){if(!m)return '';const gs=m.groups||[],t=m.today||{};
+ const pl=v=>`<b class="${v>=0?'up':'down'}" style="color:var(--${v>=0?'yes':'no'})">${smoney(v)}</b>`;
+ const row=g=>`<div class="mini" style="align-items:flex-start;flex-direction:column;gap:2px"><div style="display:flex;width:100%;align-items:baseline"><span>${esc(g.name)} · ${esc(KINDW[g.kind]||g.kind)}${g.phase==='live'?' · during games':''}</span><b class="m" style="margin-left:auto;font-weight:500">${g.n} settled</b></div>
+  <div class="m" style="font-size:11.5px">${g.few?'Too few results to tell which predicts better yet':Math.abs(g.ll_mid-g.ll_book)<0.002?'Kalshi and our price predict about as well':g.ll_mid<g.ll_book?"Kalshi's price predicted better":'Our price predicted better'}${g.kind!=='combo'&&g.w?` · the books move Kalshi's price ${Math.round(g.w*100)}%`:''}</div>
+  ${g.claimed?`<div class="m" style="font-size:11.5px">${g.w||g.kind==='combo'?`Claimed edges gone on Kalshi's price: ${g.vanish} of ${g.claimed}`:`${g.claimed} claimed edge${g.claimed===1?'':'s'} (none survive Kalshi's own price yet)`} · $5 each made ${pl(g.van_pl)}${g.kept?` · the ${g.kept} kept made ${pl(g.kept_pl)}`:''}${g.kind==='combo'?' (estimated price)':''}${g.few?' · too few to trust':''}</div>`:''}</div>`;
+ return `<div class="card mktcard"><h3>Kalshi's price as fair <span>paper test</span></h3>
+  <div class="m" style="font-size:12.5px;margin-bottom:6px">Kalshi is a prediction market, so its own price may be the better fair. Every bet the panel looks at is logged with Kalshi's mid beside our price; the sportsbooks only move it where they've predicted better over ${m.min_n}+ settled markets. Last 24 hours: ${t.n||0} markets logged, ${t.claimed||0} with a claimed edge, ${t.vanish||0} of those gone on Kalshi's price. Picks don't change.</div>
+  ${gs.length?gs.slice(0,6).map(row).join('')+(gs.length>6?`<div class="m" style="font-size:11.5px;margin-top:4px">and ${gs.length-6} more league${gs.length-6===1?'':'s'} and bet type${gs.length-6===1?'':'s'}</div>`:''):'<div class="m">No settled markets yet. Results come in as games finish.</div>'}</div>`;}
+/* #341 C (paper): near-even 2-3 pick combos bought when the quote costs no more than the picks' Kalshi mids. */
+function carryCard(c){if(!c)return '';const rs=c.rows||[];
+ const row=r=>`<div class="mini"><span>${r.kind==='same'?'Same game':'Separate games'} · ${r.n} picks · ${r.quotes} quote${r.quotes===1?'':'s'} · pays ${r.ratio>=1?'+':'−'}${Math.abs((r.ratio-1)*100).toFixed(1)}% vs Kalshi's prices</span>${r.kind==='sep'?`<b class="${r.pl>=0?'up':'down'}" style="color:var(--${r.pl>=0?'yes':'no'})">${r.settled?smoney(r.pl)+` <span class="m" style="font-weight:500">${r.won}/${r.settled} won${r.few?' · too few to trust':''}</span>`:`<span class="m" style="font-weight:500">${r.paper} on paper</span>`}</b>`:`<b class="m" style="font-weight:500">${r.clear} at or over</b>`}</div>`;
+ return `<div class="card carrycard"><h3>Combos as the cheap way in <span>paper test</span></h3>
+  <div class="m" style="font-size:12.5px;margin-bottom:6px">A 2-3 pick combo of close games can cost less than the picks bought one by one. When Kalshi's quote pays at least what the picks are worth on its own mid prices, ${money(c.stake||5)} goes on paper (fees counted). Same-game quotes are logged beside them to see how Kalshi prices picks that move together. No money is spent and no quote is ever accepted.</div>
+  ${rs.length?rs.map(row).join(''):'<div class="m">No quotes yet. The Mac asks for one price a round when close games start within 8 hours.</div>'}</div>`;}
 function coverCard(c){if(!c)return '';const ws=c.weeks||[];
  // #340: a dead survivor shows "out" from the checkpoint that lost it on; smart sell's replay is one sale, shown once
  const chk=w=>{const cs=w.checkpoints||[];const rx=(cs.find(cp=>cp.replay_exit)||{}).replay_exit;
@@ -168,7 +184,7 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
   ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>${sbCard(a.smart_buy)}</div>`;}
 function anTab(k){if(S.anTab===k)return;S.anTab=k;S.anJust=true;renderResults();S.anJust=false;
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.an .antbl .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,12)*30}ms both`;});}
-function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));
+function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));out.push(mktCard(d.mkt));out.push(carryCard(d.carry));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
   <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>
