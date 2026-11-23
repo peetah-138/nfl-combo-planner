@@ -2826,6 +2826,51 @@ def webapp_main():
             if wait:
                 th.join(wait)
 
+    LS = {}                                             # sport -> its last long shots (issue #341), worked out off the lock
+    LS_BUSY = set()
+    LS_EVERY = 900                                      # a sport's long shots are asked for again at most every 15 minutes
+
+    def ls_open():
+        """Combos with a live Kalshi quote on screen right now: never re-quoted underneath Pete (a new request for the
+        same combo would withdraw his)."""
+        try:
+            return {frozenset(o.get("legs") or []) for o in list((A.CTX.get("offers") or {}).values())}
+        except Exception:
+            return set()
+
+    def longshots_work(lg, games):
+        """Long shots for one Build sport, OFF the app lock (each asks Kalshi's combo makers, up to 15 s). Recommend-only:
+        nothing here buys. Never raises."""
+        try:
+            recs, info = A.longshot_build(games, paused=paused_now(), skip=ls_open)
+            LS[lg] = {"at": time.time(), "recs": recs, "info": info}
+        except Exception as err:
+            print("long shots:", type(err).__name__, err, flush=True)
+            LS[lg] = {"at": time.time(), "recs": [], "info": {"why": "Couldn't work out long shots just now."}}
+        finally:
+            LS_BUSY.discard(lg)
+
+    def longshots_kick(lg, games):
+        """Start working out a sport's long shots in the background when its copy is over LS_EVERY old (one at a time
+        per sport). Pause empties them at once. The page shows the last copy meanwhile."""
+        got = LS.get(lg)
+        if paused_now():
+            LS[lg] = {"at": time.time(), "recs": [], "info": {"why": A.LONGSHOT_WHY["paused"]}}
+            return
+        if lg in LS_BUSY or (got and time.time() - got["at"] < LS_EVERY and not (got.get("info") or {}).get("why") == A.LONGSHOT_WHY["paused"]):
+            return
+        LS_BUSY.add(lg)
+        snap = {e: [dict(x) for x in sd] for e, sd in (games or {}).items()}
+        threading.Thread(target=longshots_work, args=(lg, snap), daemon=True).start()
+
+    def ls_view(lg):
+        got = LS.get(lg) or {}
+        info = got.get("info") or {}
+        bought = owned_sets()
+        return {"recs": [dict(r, bought=frozenset(l["ticker"] for l in r["legs"]) in bought) for r in got.get("recs") or []],
+                "why": info.get("why"), "busy": lg in LS_BUSY, "at": got.get("at"), "looked": info.get("looked") or 0,
+                "quoted": info.get("quoted") or 0}
+
     def use_snap(lg):
         s = SNAP.get(lg)
         if not s or time.time() - s["at"] > 600:
@@ -2862,9 +2907,12 @@ def webapp_main():
                     live_ok = set(live) - set(skipped)
                 except Exception:
                     pass
-                combos, _ = A.build_combos(games, A.CFG.get("picks") or {}, random.Random()) if games else ([], None)
+                # (#341) suggested combos: games before their start, or under way only where the live checks passed
+                pre = {e: sd for e, sd in games.items() if e in live_ok or not any(A.started(x) for x in sd)}
+                rnd = {e: sd for e, sd in pre.items() if not any(A.started(x) for x in sd)}   # random ones: pregame only
+                combos, _ = A.build_combos(rnd, A.CFG.get("picks") or {}, random.Random()) if rnd else ([], None)
                 try:                                    # the value search's best few go first
-                    vals = A.value_combos(games, A.CFG["stake"], k=4, live_ok=live_ok) if games else []
+                    vals = A.value_combos(pre, A.CFG["stake"], k=4, live_ok=live_ok) if pre else []
                     have = {frozenset(l["ticker"] for l in c["legs"]) for c in combos}
                     combos = [c for c in vals if frozenset(l["ticker"] for l in c["legs"]) not in have] + combos
                 except Exception as err:
@@ -2881,6 +2929,8 @@ def webapp_main():
                 SNAP[lg] = {"at": time.time(), "ctx": dict(A.CTX), "note": note, "days": days, "lines": BUILD["lines"],
                             "lines_priced": BUILD["lines_priced"], "lines_nobook": BUILD["lines_nobook"]}
             games = A.CTX.get("all_games") or {}
+            if not warming:                             # (#341) off the lock, only for a Build Pete opened: never waits
+                longshots_kick(lg, games)
             board = []
             on = {e for e, sides in games.items() if any(A.started(x) for x in sides)}
             for code in {A.ticker_sport(games[e][0]["ticker"]) for e in on if games[e]}:
@@ -2911,14 +2961,16 @@ def webapp_main():
                               "value": max((x.get("edge") or -1) for x in teams) if teams else None})
             board.sort(key=lambda g: (g["started"], str(g["start"])))
             own_sets = owned_sets()
-            cviews = [combo_view(i, c, own_sets) for i, c in enumerate(A.CTX.get("combos") or [], 1)]
+            pairs = [(combo_view(i, c, own_sets), c) for i, c in enumerate(A.CTX.get("combos") or [], 1)
+                     if c.get("kind") != "longshot"]   # (#341) a long shot priced from its own card stays in Long shots
+            cviews = [v for v, _ in pairs]
             lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
             try:                                        # Best bets today (#63): recommend-only, display only
                 best = A.best_bets_feed(
                     {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)},
                     lines_now,
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
-                     for v, c in zip(cviews, A.CTX.get("combos") or []) if not v.get("bought")])
+                     for v, c in pairs if not v.get("bought")])
             except Exception as err:
                 print("best bets:", err, flush=True)
                 best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
@@ -2926,7 +2978,7 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": singles_view(games), "lines": lines_now,
+                             "singles": singles_view(games), "lines": lines_now, "longshots": ls_view(lg),
                              "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
                              "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
@@ -3365,8 +3417,23 @@ def webapp_main():
         recommended size (the price sets it, less if he's heavy on a team), as before. Adds what the sheet shows beside
         it: the recommended size (rec), the expected profit in dollars at the books' chance (ev), the room left under
         the cap and the most this bet may be. Prices only: the buy is still accept_offer on this exact offer."""
-        r = A.get_offer(i, amount=own)
         c = A.CTX["combos"][i - 1]
+        if c.get("kind") == "longshot":             # (#341) its own size: quarter Kelly, at most $5
+            r = A.get_offer(i, amount=own if own is not None else c.get("ls_stake"))
+            r = dict(r, own=own is not None, min=A.OWN_MIN)
+            if r.get("error"):
+                return r
+            r["rec"] = c.get("ls_stake")
+            h = A.longshot_hold(A.CTX.get("stake", A.CFG["stake"]) / c["fair"], r.get("price"), r["stake"]) \
+                if c.get("fair") and r.get("price") else None
+            r["ev"] = h["exp"] if h else None              # held to the end, after the fee (as the card)
+            try:
+                r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)
+            except Exception:
+                r["room"] = None
+            r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
+            return r
+        r = A.get_offer(i, amount=own)
         rec = None
         if not r.get("error") and r.get("pct"):
             rec = A.stake_for(r["pct"], c["legs"]) if A.CFG.get("size_auto") else None
@@ -3460,7 +3527,7 @@ def webapp_main():
     def _api_act(d):
         a, t = str(d.get("a", "")), str(d.get("t", ""))
         was = BUILD.get("lg") or BUILD.get("last")
-        if a in ("custom", "quote", "buy", "swap", "flip") and not A.CTX.get("all_games") and was:
+        if a in ("custom", "quote", "buy", "swap", "flip", "longshot") and not A.CTX.get("all_games") and was:
             with act_lock():                                # the build's games were cleared (e.g. by Settings for another sport)
                 if not use_snap(was):                       # the exact board you were looking at, if it's recent
                     if a != "custom":                       # never price or buy a different combo than the one shown
@@ -3498,8 +3565,49 @@ def webapp_main():
                 flash = A.MINE.pop("flash", None)
                 msg = A.re.sub("<[^>]+>", "", flash or "") or (o.get("error") or "")
                 return {"ok": not o.get("error"), "msg": msg, "offer": o.get("offer"), "frac": o.get("frac", 1.0)}
+            if a == "longshot" and paused_now():           # (#341) a long shot's price: refused while paused, as quotes
+                return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
             if a in ("quote", "idea", "buy") and paused_now():
                 return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
+            if a == "longshot":                         # (#341) a long shot on screen into the combo list, then its price
+                lg = BUILD.get("lg")
+                rec = next((r for r in (LS.get(lg) or {}).get("recs") or [] if r["id"] == str(d.get("id", ""))), None)
+                shown = d.get("legs")
+                if not rec or not isinstance(shown, list) or sorted(map(str, shown)) != sorted(l["ticker"] for l in rec["legs"]):
+                    return {"ok": False, "error": "That long shot has changed. Pull down to reload Build, then try again."}
+                pool = {x["ticker"]: x for sd in (A.CTX.get("all_games") or {}).values() for x in sd}
+                legs = []
+                for l in rec["legs"]:                   # each pick again on the board's fresh prices, as the Mac chose it
+                    x = pool.get(l["ticker"])
+                    f, _how = A.longshot_leg_fair(x) if x else (None, "gone")
+                    if f is None or not A.LONGSHOT["leg_lo"] <= f <= A.LONGSHOT["leg_hi"]:
+                        return {"ok": False, "error": f"{l.get('pick') or 'A pick'} isn't a long-shot pick any more (its game "
+                                                      "is close to starting or its price moved). Pull down to reload Build."}
+                    legs.append(dict(x, fair=f, fair_book=x.get("fair")))
+                st = A.CTX.get("stake") or A.CFG["stake"]
+                fair_pay = st / A.math.prod(x["fair"] for x in legs)
+                new = {"kind": "longshot", "tier": "Long shot", "legs": legs, "fair": fair_pay,
+                       "min": fair_pay * A.CFG["accept_pct"] / 100, "ls_stake": rec["stake"],
+                       "kalshi": st / A.math.prod(x["p"] for x in legs)}
+                combos = A.CTX.setdefault("combos", [])
+                key = frozenset(l["ticker"] for l in rec["legs"])
+                i = next((k for k, c in enumerate(combos, 1) if c.get("kind") == "longshot" and legset(c) == key), 0)
+                if i:
+                    combos[i - 1] = new                 # today's chance and stake, never an older one
+                    A.CTX.get("offers", {}).pop(i, None)
+                else:
+                    combos.append(new)
+                    i = len(combos)
+                own, bad = A.own_stake(d.get("stake"))
+                if bad:
+                    return {"ok": False, "error": bad, "bad_stake": True}
+                try:
+                    r = combo_offer(i, own)
+                except (RuntimeError, PermissionError) as err:
+                    return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
+                return jsonable({"ok": not r.get("error"), "i": i, "clears": r.get("ok"), "cut": 100,
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                                          "max", "min", "own")}})
             if a == "quote":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")
@@ -3568,6 +3676,8 @@ def webapp_main():
                     IDEA_Q[str(d.get("id", ""))] = {"n": n, "price": ask, "at": time.time(), "t": tk}   # what Buy may send
                     doubt = any(w["k"] in ("thin", "decided", "disagree") for w in fi["warn"])   # under way: as the panel
                     clears = fair is not None and edge >= A.SINGLE_MIN_EDGE * 0.6 and not (fi["live"] and doubt)
+                    if clears and fi["live"]:               # (#341) under way: green only with a likely profitable exit
+                        clears = A.live_exit_ok(tk, (side or {}).get("event") or tk.rsplit("-", 1)[0], fair, ask)
                     return jsonable({"ok": True, "single": True, "price": ask, "n": n, "stake": cost,
                                      "pays": float(n), "pct": pct, "edge": round(edge, 4) if edge is not None else None,
                                      "fair": fair, "clears": bool(clears), "rec": rec, "own": own is not None,
@@ -3661,6 +3771,11 @@ def webapp_main():
                 return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
+                shown = d.get("legs")                   # rule 7: the offer must be for the very picks on screen
+                if shown is not None:
+                    o = (A.CTX.get("offers") or {}).get(i) or {}
+                    if not isinstance(shown, list) or sorted(map(str, shown)) != sorted(o.get("legs") or []):
+                        return {"ok": False, "msg": "That price was for a different combo. Get a fresh price, then buy."}
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
