@@ -5938,6 +5938,40 @@ def sell_single_now(t, side, n, price, coid=None):
 
 
 SINGLES_SELL_AGE = 180      # seconds: smart sell for singles never acts on prices older than this
+SELL_MIN_CONTRACTS = 1      # Kalshi's smallest order: a leftover under one contract is never offered (#334)
+SELL_FAIL_MAX = 3           # failed identical sales (same market, side and size) in a row before smart sell waits
+SELL_FAIL_WAITS = (600, 3600)   # then 10 minutes; any failure after that wait: an hour each time
+SELL_FAILS = {}             # ticker -> {"key", "n", "level", "until"} (this process only; a restart starts over)
+
+
+def sell_backoff_left(t, side, count, now=None):
+    """Seconds smart sell still waits before trying this sale again, or 0. Only ever makes it try less (#334)."""
+    s = SELL_FAILS.get(t)
+    if not s:
+        return 0
+    if s["key"] != (side, count):                  # a different sale (the size changed): counted afresh
+        SELL_FAILS.pop(t, None)
+        return 0
+    return max(0.0, s.get("until", 0) - (now or time.time()))
+
+
+def sell_backoff_note(t, side, count, rec, err, now=None):
+    """One more failed sale of `count` contracts of t. After SELL_FAIL_MAX in a row it waits 10 minutes, then an
+    hour after every further failure; the wait is logged once each time it starts."""
+    now = now or time.time()
+    s = SELL_FAILS.get(t)
+    if not s or s["key"] != (side, count):
+        s = SELL_FAILS[t] = {"key": (side, count), "n": 0, "level": 0, "until": 0}
+    s["n"] += 1
+    if s["n"] < SELL_FAIL_MAX and not s["level"]:
+        return 0
+    wait = SELL_FAIL_WAITS[min(s["level"], len(SELL_FAIL_WAITS) - 1)]
+    s.update(n=0, level=s["level"] + 1, until=now + wait)
+    words = f"failed {SELL_FAIL_MAX} times in a row" if s["level"] == 1 else "failed again"
+    log_decision(dict(rec, result="skipped", why=f"waiting {wait // 60} min: the sale {words}",
+                      note=str(err or "")[:140]))
+    console_note(f"smart sell: {t} {words} ({str(err or '')[:80]}); waiting {wait // 60} min before trying again")
+    return wait
 
 
 def smart_sell_singles():
@@ -5982,12 +6016,23 @@ def smart_sell_singles():
                                      or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
             continue
+        whole = int(math.floor(float(x["n"]) + 1e-6))
+        if whole < SELL_MIN_CONTRACTS:                # Kalshi's minimum: a 0.92 leftover can't be sold (#334)
+            log_decision(dict(rec, result="skipped", why="under one contract (Kalshi's minimum)"))
+            continue
+        wait = sell_backoff_left(x["t"], side, whole)
+        if wait:
+            continue                                  # failed again and again just now: waiting (logged once)
         if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
         sold, err = sell_single_now(x["t"], side, x["n"], bid)
-        log_decision(dict(rec, result="sold" if sold else "check" if (err or "").startswith("check:") else "failed",
-                          note=(err or f"{sold:g} sold")[:140]))
+        result = "sold" if sold else "check" if (err or "").startswith("check:") else "failed"
+        log_decision(dict(rec, result=result, note=(err or f"{sold:g} sold")[:140]))
+        if result == "failed":
+            sell_backoff_note(x["t"], side, whole, rec, err)
+        else:
+            SELL_FAILS.pop(x["t"], None)
         if sold:
             MINE.get("peak", {}).pop(x["t"], None)
             got = sold * (bid - single_fee(bid))
@@ -19266,6 +19311,31 @@ def _ledger_table():
         STORE["ledger_ok"] = True
 
 
+def fill_yes_delta(f, pos, n):
+    """How one fill of n contracts moves a signed YES position `pos` (+ = holding YES, - = holding NO), #333.
+    Kalshi's V2 fills report a sale at the YES price with the side flipped (selling YES shows as "sell no", as the
+    app's combo cash-outs always did), so a sell's `side` can't be trusted: a sell always closes what is held
+    (towards zero; any excess beyond it opens the other side, as Kalshi nets). With nothing held, or with no legacy
+    action, the YES-book direction Kalshi gives (`book_side` bid = towards YES, ask = towards NO, or `outcome_side`)
+    decides, else the legacy side (sell yes / buy no take YES away; buy yes / sell no add it). Buys keep their side:
+    buying NO while holding YES is closing by the opposite side."""
+    act, side = f.get("action"), f.get("side")
+    book = {"bid": 1, "ask": -1}.get(f.get("book_side")) or {"yes": 1, "no": -1}.get(f.get("outcome_side"))
+    if act == "sell":
+        if pos > 0.005:
+            return -n
+        if pos < -0.005:
+            return n
+        if book:
+            return book * n
+        return -n if side != "no" else n
+    if act != "buy" and book:
+        return book * n
+    if act != "buy" and side in ("bid", "ask"):            # a V2-shaped fill with the book side in `side`
+        return n if side == "bid" else -n
+    return -n if side == "no" else n
+
+
 def _single_ledger(fills, settles, now=None):
     """Finished single bets (game winners, spreads, totals) from Kalshi's fills and settlements, in dollars:
     {ticker: row}. Each fill is read as a change in a signed YES position, so buying NO, or selling, works the same
@@ -19280,11 +19350,9 @@ def _single_ledger(fills, settles, now=None):
             n = count_of(f)
             if n <= 0:
                 continue
-            fside = f.get("side", "yes")
             no_px = dollars(f, "no_price")
             yes_px = dollars(f, "yes_price") or (1 - no_px if no_px else 0.0) or dollars(f, "price")
-            buy = f.get("action") != "sell"
-            d = n if (buy == (fside == "yes")) else -n          # buy yes / sell no add YES; buy no / sell yes take it
+            d = fill_yes_delta(f, pos, n)
             fee = dollars(f, "fee_cost")
             fees += fee
             closing = 0.0
@@ -19340,6 +19408,24 @@ def _single_ledger(fills, settles, now=None):
     return out
 
 
+_LEDGER_COLS = ("ticker", "kind", "league", "side", "cost", "back", "fees", "sold_back", "sell_fees", "n_sold",
+                "status", "opened", "closed", "legs", "seen", "nf")
+
+
+def _ledger_same(old, new):
+    """Whether the saved ledger row already holds exactly what would be written (money to the cent)."""
+    for k, v in zip(_LEDGER_COLS, new):
+        o = old.get(k)
+        if k == "opened" and v is None:
+            continue                              # the write keeps the saved opening time then
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and isinstance(o, (int, float)):
+            if abs(float(v) - float(o)) > 0.004:
+                return False
+        elif v != o:
+            return False
+    return True
+
+
 def ledger_note(bets, held, single_fills, settled, now=None):
     """Saves every finished bet (combos from the account read, singles from their fills) to the ledger. Only rows
     that changed are written, so the account read stays as quick as before."""
@@ -19367,7 +19453,8 @@ def ledger_note(bets, held, single_fills, settled, now=None):
     todo = [t for t in rows if LEDGER_SIG.get(t) != sigs[t]]
     if not todo:
         return 0                                  # nothing changed: no reads, no writes
-    had = {r["ticker"]: r for r in store_rows("select ticker, closed, seen, nf, status from ledger")}
+    had = {r["ticker"]: r for r in store_rows("select ticker, kind, league, side, cost, back, fees, sold_back, "
+                                               "sell_fees, n_sold, status, opened, closed, legs, seen, nf from ledger")}
     mac = {r["combo"]: r["settled"] for r in store_rows("select combo, settled from bets where settled is not null")}
     write = []
     for t in todo:
@@ -19378,9 +19465,13 @@ def ledger_note(bets, held, single_fills, settled, now=None):
             continue                              # fewer fills than the saved row (older ones aged out of Kalshi's
                                                   # window), a settlement alone, or long closed: the saved row knows more
         closed = r["closed"] or old.get("closed") or mac.get(t)   # no time anywhere: undated (counted in All time only)
-        write.append((t, r["kind"], r["league"], r["side"], r["cost"], r["back"], r["fees"], r["sold_back"],
-                      r["sell_fees"], r["n_sold"], r["status"], r["opened"], closed, json.dumps(r["legs"]),
-                      old.get("seen") or now, r.get("nf") or 0))
+        new = (t, r["kind"], r["league"], r["side"], r["cost"], r["back"], r["fees"], r["sold_back"],
+               r["sell_fees"], r["n_sold"], r["status"], r["opened"], closed, json.dumps(r["legs"]),
+               old.get("seen") or now, r.get("nf") or 0)
+        if old and _ledger_same(old, new):
+            continue                              # the saved row already says this (e.g. after a restart): no write.
+                                                  # A row written wrong before (#333) differs, so it's put right here
+        write.append(new)
     if not write:
         return 0
     db, own = STORE["db"], False

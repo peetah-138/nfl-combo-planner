@@ -593,6 +593,13 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
   It only acts while Auto cash-out is on; the daily cap applies (Settings › Selling "Auto cash-outs a day, at most", `auto_cap`, default 5, 1-10 or **Unlimited** (Pete's opt-in, #217): the slider's top stop, stored as `AUTO_CAP_UNLIMITED` = 1000 so an older process reads it as a cap it never reaches; `auto_cap_limit()` = None for anything over `AUTO_CAP_MAX` (10), an unreadable value = 5; `auto_cap_reached()` is the one check, "check" sales still count); singles sell into the order book (IOC at the bid,
   reduce-only) and skip thin markets (bid/ask gap > 6¢), bets with a resting sell, and games already over.
+  **Leftovers and repeated failures (issue #334):** a single is only offered in whole contracts and never under
+  `SELL_MIN_CONTRACTS` (1, Kalshi's minimum): a 0.92 leftover is skipped, logged once ("under one contract"), never
+  sent. After `SELL_FAIL_MAX` (3) failed identical sales in a row (same market, side and whole-contract size; a
+  definite "failed", not "check") smart sell waits 10 min, then 1 h after every further failure (`SELL_FAIL_WAITS`,
+  `SELL_FAILS`, `sell_backoff_left`/`sell_backoff_note`, this process only), logged once per wait (decision log +
+  console). A sale that goes through, a "check", or a different size resets it. Only ever tries less: Pause, caps,
+  every guard and rule 8 are unchanged. Test: `t_ledgersales` (C).
 - Rule: sell when the offer beats the risk-adjusted value of holding,
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; never lowered by self-tuning since #306); λ from the sport's swing and time left (×1.3 at a slate
   checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
@@ -1582,6 +1589,14 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   (combos from `_fetch_account`'s bets; single bets/spreads/totals via `_single_ledger` from the same fills and
   settlements, read as a signed YES position so NO bets and closing by buying the other side are right), written by
   `ledger_note` at the end of every direct Kalshi account read (only changed rows; never raises into the read).
+  **Sales in V2 fills (issue #333):** Kalshi reports a sale at the YES price with the side flipped (selling YES shows
+  as "sell no", as combo cash-outs always did), which the old reading booked as a second buy (sale dollars in cost,
+  none in back). `fill_yes_delta` now treats every `action: sell` as closing what is held (towards zero; any excess
+  opens the other side), and with nothing held, or no legacy `action`, uses the YES-book direction (`book_side`
+  bid/ask, `outcome_side`), else the legacy side; buys keep their side. `ledger_note` compares each recomputed row
+  with the saved one (`_ledger_same`, to the cent) and writes only those that differ, so rows written wrong before are
+  put right on the next account read (the update restarts the watcher) and unchanged rows are never rewritten, even
+  after a restart. Read-only, no new Kalshi calls. Test: `t_ledgersales` (A, B).
   cost = money paid to open + every fee (incl. a settlement `fee_cost`), back = sale proceeds + settlement payout;
   `sold_back`/`sell_fees`/`n_sold` for sales; `closed` = Kalshi's sell/settle time, else the Mac's `bets.settled`, else
   when first seen. `profit_board()` (cached 2 min; `api_results` → `board`): week (from Monday) / month / all time with
