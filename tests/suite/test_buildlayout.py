@@ -63,7 +63,7 @@ GEOM = """(()=>{const q=s=>document.querySelector(s),r=e=>e?e.getBoundingClientR
  const rows=document.querySelectorAll('.board .mrow'),last=rows[rows.length-1];
  return {dr:dr?r(dr).top+scrollY:null,board:bd?r(bd).top+scrollY:null,lastEnd:last?r(last).bottom+scrollY:null,slip:sl?r(sl).top+scrollY:null,
   inAside:!!(sl&&sl.closest('aside')),n:document.querySelectorAll('.slip').length,ids:document.querySelectorAll('#sbslip').length,
-  ideas:(()=>{const h=[...document.querySelectorAll('.sech')].find(e=>/More combo ideas/.test(e.innerText));return h?r(h).top+scrollY:null})(),
+  ideas:(()=>{const h=[...document.querySelectorAll('.sech')].find(e=>/Surprise me/.test(e.innerText));return h?r(h).top+scrollY:null})(),
   side:document.documentElement.scrollWidth>innerWidth+1};})()"""
 
 with sync_playwright() as pw:

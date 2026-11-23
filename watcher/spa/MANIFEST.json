@@ -33,6 +33,7 @@
     "buy_straight.js",
     "sell_single.js",
     "build_sections.js",
+    "longshots.js",
     "charts.js",
     "combo.js",
     "games.js",
