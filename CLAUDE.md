@@ -448,8 +448,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
 - **Killer deals and standing orders need an odds-service line (issue #344, Pete 2026-11-23; stricter only).**
   `sources_agree` (unchanged) counts ESPN's moneyline and Polymarket as two sources, so free lines alone could buy.
   Now `sharp_backed(snap, pick, fair)` must also hold: the merged snapshot's `parts` for that team carry a `pinnacle` or
-  `odds service` chance (`SHARP_PARTS`) within `KILLER["agree"]` (2 points) of the fair used, and the team isn't in
-  `sharp_stale` (`merge_books` lists teams whose sharp line was too old). Missing/junk = not backed. `killer_check` adds
+  `odds service` chance (`SHARP_PARTS`) within `KILLER["agree"]` (2 points) of the fair used, the team isn't in
+  `sharp_stale` (`merge_books` lists teams whose sharp line gave way to a fresh free line) and its line isn't `line_stale`. Missing/junk = not backed. `killer_check` adds
   `NEED_SHARP_WHY` per leg (held back and logged as "near-killer"); `maker_pass` skips free-only candidates (no order, no
   row; logged at most every 10 min, `_CAP_LOGGED["maker_sharp"]`) and **cancels** a resting order that lost its backing
   (`maker_cancel`, the only Kalshi write added). In low-credit mode far leagues' standing orders wait. Tests:
