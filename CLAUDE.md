@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.22.136). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.23.137). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 ## Goals and strategy
@@ -191,7 +191,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.22.136`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.23.137`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -438,6 +438,42 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   require_line, hockey shapes, live scores from the league feed (Kalshi's team codes can differ from the feed's,
   e.g. CHA/CLT, so `AHL_ALIAS` maps them; names are matched too).
 
+- **ESPN free lines, one day per request (issue #341 A, #336).** ESPN's scoreboard now refuses a date range
+  (`dates=A-B` = 400), so `free_snapshot` had silently returned no teams: no game-winner side had a `src`, `closes` stayed
+  empty, singles/value/slate combos and the shadow's quotes found nothing and the panel held only spreads/totals.
+  `espn_scoreboard(path, q, days, code=)` reads one day per request (4 at a time, de-duplicated by event id, never
+  raises; `ESPN_DAYS` = 4 days for daily leagues, 8 for weekly; last read per league in `ESPN_FREE`). `fetch_scores`
+  still asks a range and falls back to today's board. With lines back, killer deals and standing orders (existing
+  opt-ins, starved by the bug) could act again; #344 below makes them need an odds-service line.
+- **Killer deals and standing orders need an odds-service line (issue #344, Pete 2026-11-23; stricter only).**
+  `sources_agree` (unchanged) counts ESPN's moneyline and Polymarket as two sources, so free lines alone could buy.
+  Now `sharp_backed(snap, pick, fair)` must also hold: the merged snapshot's `parts` for that team carry a `pinnacle` or
+  `odds service` chance (`SHARP_PARTS`) within `KILLER["agree"]` (2 points) of the fair used, and the team isn't in
+  `sharp_stale` (`merge_books` lists teams whose sharp line was too old). Missing/junk = not backed. `killer_check` adds
+  `NEED_SHARP_WHY` per leg (held back and logged as "near-killer"); `maker_pass` skips free-only candidates (no order, no
+  row; logged at most every 10 min, `_CAP_LOGGED["maker_sharp"]`) and **cancels** a resting order that lost its backing
+  (`maker_cancel`, the only Kalshi write added). In low-credit mode far leagues' standing orders wait. Tests:
+  `t_needsharp.py`, `t_profit2.py` C.
+- **Kalshi's price as fair, on paper (#341 B).** `mkt_fair_shadow` (end of `panel_collect`) logs every priced side,
+  spread/total and combo candidate into `mkt_fair` (pre-game the latest row per market, ≤ every 30 min; in play one row
+  per half hour; phases `pre`/`live` never pooled): Kalshi's mid, today's fair, the anchored fair `mid + w·(fair − mid)`,
+  the claimed edges and `vanish`. `w` is 0 until earned: `mkt_learn` (hourly, per league/type/phase) picks the grid weight
+  (0-1 in quarters) with the lowest log loss on settled markets (one side per game) and keeps it only with 200+ markets,
+  ≥ 0.002 better than the mid and ≥ 2 SE (in-sample: a held-out check must come before any pick uses it). `mkt_resolve`
+  fills results (5-day give-up), 60 days kept. Results › What's working: "Kalshi's price as fair" (`mktCard`,
+  `mkt_fair_summary`). Picks never change; long shots read the earned `mkt_weight` (Build page).
+- **In-play audit (#341; Pete: an in-play bet is judged on a real comeback route, not a pregame-style edge). Stricter
+  only.** `live_exit_ok(ticker, event, fair, ask)` runs Smart Buy's exit simulator from the live state and must pass
+  `smart_buy_ok` (fails closed): Buy straight and Live's single-idea quote show no green Buy for a game under way without
+  it (warning `exit`). The panel's `smart_buy_gate` skips a live-priced bet without a likely profitable exit **whatever
+  the switch or dial** (error = skip), re-run on the fresh price in `_buy_panel_bet` after `live_recheck` (a skip, never
+  "check"). In-play Buy ideas (`_idea_in_play`) show only once the shadow found `smart_buy_ok` (`IN_PLAY_WHY`). Started
+  spreads/totals are never recommended (`_line_rec_one` "started"); Build's random and value combos use only pre-game or
+  live-checked picks; `get_offer` gives no green Buy for a non-panel combo with a pick under way
+  (`idea_combo_live_gap`); Best bets drops them; `shadow_pass` sends no combo idea with a pick under way and
+  `single_pass` skips any game under way before any idea, killer check or push (no alert quotes sharp books for a live
+  game; regression in `t_inplay_exit.py`). Richer in-play statistics: #348 (ROADMAP).
+
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
   `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
@@ -587,6 +623,21 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   can't be approved or added; approved bets wait (`hold: "balance"`) until the balance reads again.
 - Paper panel runs alongside (the $300 gate). The **combo lab** paper-buys up to 3 combos a day in each band
   (80–85, 85–90, 90–95, 95–100, 100+% of fair) from real quotes, $5 each, separate from the gate.
+
+- **The panel's funnel (#341 A).** `panel_collect` keeps `PANEL_FUNNEL[code]` (games not started / under way, no
+  outside line, stale lines, priced sides, singles, combos predicted and at the cut-off, spreads/totals priced and short
+  of the bar, ESPN days unread, candidates by kind); `choose_panel` adds the bar's rejections by kind, the pool, why each
+  qualifying bet wasn't picked (`left`: overlap, line share, budget, full, ranked out) and the floor trim; `build_panel`
+  adds `kick`, `held`, old prices, Smart Buy and odds-credit skips. All in `stats["funnel"]`, with `funnel_words` in
+  `["why"]`; logged "panel funnel: ..." on change (≤ every 10 min); `combo_funnel.json` keeps the last (`api_panel` →
+  `funnel`, under an hour old). Build's pool line and the empty panel card have "Why so few?" (`funnelOpen`). Display
+  and log only.
+- **Core 2-5 leg combos (#341 D).** `value_combos(..., per_n=2)` returns the old search first, unchanged, then up to 6
+  more of each length 2-5 (`extra: True`, each pick in ≤ 2 of a length's extras). `core_combos` keeps the old ones that
+  clear their cut-off and adds, for each length short of `CORE["per_n"]` (2), the next ones clearing **the same**
+  `combo_cutoff` (`core: True`). `choose_panel` gives a length the panel has under 2 of a tie-break nudge
+  (`CORE["nudge"]`, 0.1% of the budget in expected dollars) only while over the day's floor and adding expected dollars.
+  Budget, `_size`, every bar, Smart Buy, caps, Pause, rule 8 untouched. Tests: `t_panelpipe.py`, `test_panelpipe_ui.py`.
 
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
@@ -1578,6 +1629,27 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
 - **Every panel card names its game** (GitHub #61): a league tag in the header, and a line "Flyers at Bruins" (spreads/totals) or "Flyers vs Bruins" (singles, sell-early, each leg of a combo; pick first), from `stamp_games`/`_cand` (`game`, `vs`, `league`; no lookups); notifications and the recap use `bet_text`. The buy chip says "buys when you approve" until approved, then the buy state.
   Combo-idea legs, the slip, the board and the Bought sheet use `legRow` (sport icon, pick, "vs opponent · league · time", chance; tap a combo idea row to flip it).
 
+- **Long shots (#341).** Replace "More combo ideas" at the top of Build's combo area (the random `build_combos` ideas
+  stay under a "🎲 Surprise me" fold). `longshot_build` runs **off the app lock** (`longshots_kick`/`longshots_work`, a
+  thread per sport, ≤ every 15 min `LS_EVERY`) and returns ≤ 3 (`LONGSHOT["per_day"]`) by expected dollars. Legs
+  (`longshot_pool`/`longshot_leg_fair`): one team per game, **pregame only** (20+ min before a known start), 65-80%;
+  the chance is Kalshi's mid (`_mkt_side_mid`; no bid or gap > 10¢ = out) moved toward `calib_fair` only by the earned
+  `mkt_weight` (0 until earned), never by disagreeing free lines (> 3 points) or stale lines. Combos
+  (`longshot_combos`): 6-8 legs from the 12 best picks, joint chance ≥ 7%, any two sharing ≤ half their picks. Fail
+  closed: Pause (`paused_now`), no trading/the Pi, `hold_refusal` strict, `rfq_unsure`, a combo with a live quote on
+  Pete's screen (never re-quoted under him); asks multiplying to over chance/0.9 aren't quoted (`pre_ratio`). Kalshi's
+  makers quote it via `carry_quote` (withdrawn at once, never accepted). **Pete's hold-to-win test** (`longshot_hold`,
+  not `smart_buy_ok`): whole contracts in the stake, fee rounded up, ≥ 7% to hit, payout ≥ fair after the fee
+  (`min_pct` 1.0), expected dollars > 0 held to the end; stake quarter Kelly on `_manual_base`, ≤ $5, under $1 = not
+  shown; `get_offer`'s green Buy for a long shot runs the same test. The fee is unverified for RFQ trades:
+  `longshot_fee` charges the standard taker fee (`FEE_RATE` 0.07, per order, rounded up, never zero;
+  `LONGSHOT["fee_rate"]` once confirmed). Logged in `longshot_log`. Card (`watcher/spa/longshots.js`): hit %, expected
+  dollars after the fee, stake, payout, picks. **Get price** = act `longshot` (server matches id and shown picks,
+  refuses while paused, re-prices each pick fresh, kind `longshot`, `get_offer` at its stake); **Buy** = the usual act
+  `buy` → `accept_offer` (caps, Pause, rule 8), which now refuses an offer for other picks than shown (rule 7, every
+  combo Buy). An unknown outcome leaves "Check Kalshi" on the card. Nothing buys by itself. Tests: `t_longshots.py`,
+  `test_longshots_ui.py`.
+
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
@@ -1640,6 +1712,24 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   the test measures whether smart sell's exit beats the doubled cost. Results > What's working shows it in `edgeBlock`
   (next to the gate), not in `anBlock`. Both bodies are fully defensive (never crash the loop). Tests: `t_cover.py`
   (engine), `test_cover.py` (page).
+
+- **Cover test, v2 (#340).** Every later checkpoint is rebuilt from Kalshi's results each pass in slate order: worth =
+  what a cash-out would get given the picks settled so far (full payout once nothing is left); the first lost/tied pick
+  marks the survivor dead (`lost`, `alive: false`) and it is worth $0 from then on. The replay is one sale and stops where
+  the lost pick was last alive (`sim_exit(c, until=)`, default unchanged); won early legs start at 1.0. Costs include the
+  taking fee on every combo (`_cover_fees`, `fees_both`, `one_sided_cost`). **Lean variant** (`cover_lean_split`): only
+  close early games (favourite under `COVER["lean_fav"]` 75%) are covered both ways, lopsided favourites carried; the
+  result gets `variants: {full, lean}`, `value`, `lost`, `v: 2`; `cover_math` previews lean (`p_alive`); `cover_summary`
+  adds `fees` and a `lean` aggregate; older finished weeks (< 45 days) are redone once, quietly. Card: "Cover all | Lean"
+  table, carried favourites and upsets, "out" checkpoints, green/red profit.
+- **"Combos as the cheap way in", paper (#341 C).** Own `carry` table, apart from the panel, the $300 gate, the quotes
+  table and every learned number. `carry_pick` (shadow loop, under `odds.lock`, quick) picks 2-3 near-even picks (mid
+  35-65%, gap ≤ 6¢) from separate games within 8 h (one set a day); `carry_pass` asks the price **outside** `odds.lock`
+  via `carry_quote` (clears a leftover request, never accepts, always withdraws); ≤ 1 attempt a round, 24 a day; never
+  paused, on the Pi or without trading access. `carry_note` (also after every `get_offer` combo quote) logs separate-game
+  near-even 2-3 leg quotes and paper-buys $5 at or under the legs' mid product (same-game only logged; none with a game
+  under way). `carry_resolve` settles after the taking fee. Results: `carryCard`/`carry_summary` ("too few to trust"
+  under 20).
 
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small

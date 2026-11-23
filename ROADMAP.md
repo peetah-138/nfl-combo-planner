@@ -74,6 +74,18 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   (`sale_outcomes`), with fresh-book costs, then add them to `KNOB_LIVE` and set `HEDGE_RAISE_LIVE` (the confirmation
   counts need a judge too). Follow-ups from PR4's reviews: #298-#302.
 
+### Panel pipeline, long shots and in-play (issue #341, #348)
+- **Long shots:** confirm Kalshi's fee on combo (RFQ) trades and set `LONGSHOT["fee_rate"]`; tune the leg band
+  (65-80%) and the 7% hit floor from `longshot_log`, and learn a long shot's route (hold vs cash out) from its record
+  once enough have settled.
+- **Richer in-play model (#348):** comeback statistics (possession, pace, xG, each league's own price recoveries) for
+  `live_exit_ok` and the in-play gates.
+- **Market-anchored fair (#341 B):** once a league/type has 200+ settled markets in `mkt_fair`, add a held-out check,
+  then decide with Pete whether the panel prices on it (the skip side first, stricter only).
+- **Cost-carry combos (#341 C):** after a few weeks of paper results, decide whether near-even 2-3 leg combos become
+  a panel kind.
+- **Cover test lean threshold (#340):** tune `COVER["lean_fav"]` (75%) once weeks of results exist.
+
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
 
