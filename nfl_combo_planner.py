@@ -13707,6 +13707,9 @@ def sharp_backed(snap, pick, fair):
         team, p = _parts_of(snap, pick)
         if team is None or team in set((snap or {}).get("sharp_stale") or ()):
             return False
+        g = ((snap or {}).get("games") or {}).get(team)
+        if g and line_stale(g[0].get("at"), _start_ts(g[0].get("start"))):
+            return False                               # a sharp line too old for a game this close, no fresh free line
         return any(isinstance(p.get(k), (int, float)) and abs(p[k] - fair) <= KILLER["agree"] for k in SHARP_PARTS)
     except Exception:
         return False
