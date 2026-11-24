@@ -444,6 +444,16 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   draft sell-early bets (`RESTING_SELLS_OK = False`, Pete to decide). Reads (`GET /portfolio/orders`, fills, positions) are unchanged; combos use the live RFQ endpoints. Any
   Kalshi answer with a 410, a "deprecated" code or a Deprecation/Sunset header calls `DEPRECATION_HOOK` → the
   watcher's `deprecation_alert` (one push per code per day; raw code in the log). Test: `t_orders_v2`.
+  **Order adapter hardening (issue #102; no automatic path loosened).** (A) `order_intent` forces `reduce_only` whenever a
+  legacy body says `action: "sell"`, whatever the caller sent: sell YES becomes an ask and sell NO a bid, and without the
+  flag either could open a position. A legacy sell that is not immediate-or-cancel is refused (Kalshi takes reduce-only
+  only with IOC), so a forgotten flag fails closed; the in-repo sellers already set the flag. Test: `t_orders_v2.py`.
+  (B) The hub's `kalshi` op used to forward any POST/PUT/DELETE under the read prefixes (`HUB_PATHS`). `hub_refusal` in
+  `combo_watcher.py` now lets a write through only when it matches `HUB_WRITES`: order create and single-order cancel
+  (old and new paths), RFQ create and cancel, quote accept, and combo-market creation. Anything else (batch or amend
+  orders, other `/portfolio` writes) is refused and logged as `phone request refused: <reason>`. The
+  transfer/allocation/subaccount block stays; reads are unchanged. Test: `t_hubwrites.py`. (C) `game_detail` checks the
+  ESPN event id with `re.fullmatch(r"[0-9]+", ...)` (no trailing newline, no non-ASCII digits). Test: `t_gamedetail.py`.
 - **Kalshi's refusals, shown honestly** (issue #134). A definite refusal is Kalshi's own words, in full (`body_words`,
   600 characters, tags stripped), never a guess: a 401/403 says "Kalshi refused this (403 code): <its message>" and adds
   "your API key may need write access" only when Kalshi itself says so (`perm_words`, `key_write_denied`). A refusal for
@@ -1558,6 +1568,19 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   "money": ...}`); `moneyTick` re-reads Live/Games and Results when it moves (a finger on a chart or an open sheet waits
   for the next tick); a Sold moment for a Mac sale re-reads Live 3 s later (`soldReload`). Nothing here buys, sells or
   decides; `analytics()` (10 min) is unchanged. Tests: `t_moneyflag.py`, `test_moneyrefresh.py`.
+  **No stamp from incomplete reads, and a floor on forced fresh reads (issue #271; display only, nothing that buys, sells
+  or sizes reads the stamp).** `money_note(bets, positions, balance, incomplete=0)`: `_fetch_account` counts combos left
+  out because their legs couldn't be read (`unread`). An incomplete read no longer compares or updates the combo
+  fingerprint (a combo dropping out then coming back used to stamp twice), but it still compares positions + balance
+  (`MONEY_FP["pb"]`), so a real sale or balance change still stamps. The skip is logged once per change ("money stamp
+  skipped: N combo(s) couldn't be read"). `log_decision`: a plain `failed` / `hedge failed` cash-out on the same bet stamps
+  at most once per `MONEY_FAIL_GAP` (60 s), so a loop logging a failure each pass stops forcing a fresh account read each
+  pass; `sold`, `hedged`, `check` and `hedge check` (money may have moved) always stamp, and retry logic is untouched. The
+  hub `account` op's forced fresh read (`max_age=0`) now needs the cached copy to be older than `HUB_FRESH_FLOOR` (3 s);
+  when held back, the reply carries `held_back: true` and the hub logs why. The web app uses that copy but does not keep it
+  as fresh (`ACCT_CACHE["at"]=0`), so the very next call asks again and gets the fresh read: a displayed balance is never
+  cached stale because of the floor. The watcher's own `fetch_account(max_age=0)` calls (pre-trade checks) are unchanged.
+  Test: `t_moneyflag.py`.
 - **Live football game page (GitHub #72, display only).** On a live NFL/college-football game sheet the engine's
   `game_detail` (one ESPN summary fetch, cached 6 s; `_parse_game_detail`, `_situation_info`) feeds `api_game`'s `detail`
   block: the field strip (`fieldStrip`: ball, first-down line, red zone, possession arrow; everything inside `.grass` is
@@ -1611,6 +1634,17 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   fair, edge, chance, stake and expected profit, why it was picked, price line, bid/ask depth for a single, game link).
   The X and fold buttons are compact controls (they get the haptic overlay switch); the whole card does not. The code
   is `watcher/spa/ideas.js`. Tests: `t_ideas_ration.py`, `test_ideas2.py`.
+  **The Mac marks a Buy idea bought itself (#270).** Before, only the phone's follow-up `idea_dismiss why=bought` marked
+  an idea bought, so a lost reply (or a dismiss that never landed) left it live and a second Get price + Buy could buy it
+  twice. Now `idea_mark_bought(legs)` writes `st["bought"][idea_key(legs)]` in `combo_idea_dismiss.json`. It is called
+  inside `idea_single_buy` on an ok buy and on an unclear ("check") answer, only when an idea key came with the tap, and in
+  the web app's combo `buy` handler on an ok buy or a "check", after `accept_offer`, for that combo's tickers. A definite
+  refusal (Pause, cap, block, nobody selling) marks nothing, so the idea stays live. The mark never raises and never
+  changes the order's answer; hiding an idea only ever takes it off the list. Nothing here sends, retries or sizes an order
+  (rule 8: an unclear outcome stays "check" and is never resent). Phone (`ideas.js`): a lost reply (`r.lost`, "may have
+  gone through, check Live") now hides the idea like a check, and `ideaButtons` draws the disabled Pass + "Buying..." row
+  whenever a buy is on its way, not only while the 20-second quote is fresh. Tests: `t_singlebuy.py` (marks on ok and
+  check, not on a refusal, unwritable file harmless, combo handler order), `test_ideas2.py` (Buying row with no fresh quote).
   **Pass after Get price dismisses the idea (#211):** on a card (and its detail page), Pass closes the idea like the X:
   `ideaPass` drops the quote and its countdown (`S.ideaTid`), then goes through the same dismiss path (`ideaX` /
   `ideaNotNowSheet`: slides out, remembered in `combo_idea_dismiss.json`, Undo toast). Pass is disabled while a buy is
@@ -1682,7 +1716,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     nearly decided or far-from-Kalshi game under way is never green.
   Unchanged: every buy guard (Pause, the market's own league cap failing closed, the unknown-outcome block, one order per
   idea and per market per `IDEA_TAP_SECS`, the Mac's own quoted size and price only (`IDEA_Q`), IOC at the ask, rule 8:
-  "check" never resent). This changes only which fair chance a quote shows and when it is green. Tests: `t_idea_inplay.py`
+  "check" never resent). This changes only which fair chance a quote shows and when it is green. `api_act` `idea` also logs
+  the reason (`fi["nofair"]`) whenever a game under way falls back to no fair price (log only). Tests: `t_idea_inplay.py`
   (live line, stale live line rejected, live model = Buy straight's number, neither, stale score, spread under way,
   finished game, cautions, pregame unchanged, hiccups, combo legs, Kalshi's mid never a live line, Buy straight's
   "nearly decided" never green, the watcher wiring), `test_idea_inplay_ui.py` (card
