@@ -148,8 +148,8 @@ with sync_playwright() as pw:
     if "singlebuy" in SENT[n0:]: bad("an expired price must send nothing")
     # ---- the Mac can't be reached
     get_price(pg, "Get today's price"); BUY["abort"] = True
-    pg.locator("#sheet .idact .dbtns .btn.yes").first.click()
     n0 = len(SENT)
+    pg.locator("#sheet .idact .dbtns .btn.yes").first.click()
     if not wait(pg, "/may or may not have gone through/.test(document.querySelector('#toast').innerText)", 5): bad("an unreachable Mac should say it may or may not have gone through")
     if not wait(pg, "!document.querySelector('#modal').classList.contains('on')", 3) or "idea_dismiss" not in SENT[n0:]:
         bad(f"(#270) a lost reply should hide the idea like a check (close the page, send the bought dismiss): {SENT[n0:]}")
