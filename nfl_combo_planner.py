@@ -11846,32 +11846,64 @@ def get_offer(i, amount=None, check_cap=True):
         return {"error": "No offers came in for this combo. Try again in a minute, or Swap it."}
     yes_price, q = best
     pays = stake / yes_price
-    minimum = c["min"] * stake / CTX["stake"]
+    scale = stake / CTX["stake"]
+    fair_pay, legs_now, why, nofair, live = c.get("fair"), c["legs"], None, None, False
+    if c.get("kind") != "panel" and fair_pay and idea_combo_live_gap(c["legs"]):
+        # (#358) a pick on a game under way: the board's chance for it is the pre-game one, so it is priced again on its
+        # live fair chance (combo_live_fair, the panel's live guards); none to be had = no fair price at all (#255)
+        live = True
+        fresh, nofair = combo_live_fair(c["legs"])
+        if fresh is None:
+            fair_pay, why = None, "nofair"
+        else:
+            legs_now, fair_pay = fresh, CTX["stake"] / math.prod(l["fair"] for l in fresh)
+    minimum = (c["min"] if not live else 0) * scale
     bar = None
-    if c.get("kind") != "panel" and c.get("fair"):
-        bar = green_bar(c["legs"])
-        minimum = max(minimum, c["fair"] * stake / CTX["stake"] * bar)
+    if c.get("kind") != "panel" and fair_pay:
+        bar = green_bar(legs_now)
+        minimum = max(minimum, fair_pay * scale * bar)     # (the panel's combos carry their own cut-off in c["min"])
     if c.get("kalshi"):
-        note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
-    pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
-    ok = pays >= minimum
-    if ok and c.get("kind") != "panel" and idea_combo_live_gap(c["legs"]):
-        ok = False                                 # (#341) a pick on a game under way: its chance is pregame, never green
+        note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * scale))
+    pct = pays / (fair_pay * scale) if fair_pay else None
+    ok = fair_pay is not None and pays >= minimum
+    if fair_pay is not None and not ok:
+        why = "under"
+    if ok and pct is not None and pct > COMBO_SUSPECT:
+        ok, why = False, "suspect"                 # (#358) far over fair is almost always a wrong chance: never green
+        print(f"combo quote {pct:.0%} of fair: over {COMBO_SUSPECT:.0%}, held back as suspect "
+              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
+    if ok and live:                                # (#358) under way and over the bar: the panel's in-play test too
+        try:
+            cand = {"id": "quote:" + "+".join(l["ticker"] for l in legs_now), "kind": "combo", "live": True,
+                    "code": _combo_code(legs_now), "legs": legs_now, "stake": stake, "pct": pct,
+                    "fair_mult": fair_pay / CTX["stake"]}
+            exit_ok, _ = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote")
+        except Exception:
+            exit_ok = False
+        if not exit_ok:
+            ok, why = False, "inplay"
     if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
-        ok = ok and bool(c.get("fair")) and longshot_hold(CTX["stake"] / c["fair"], yes_price, stake) is not None
-    note_quote_time(c["legs"], pct)
-    try:
-        store_quote(c, stake, pays, pct)
-    except Exception:
-        pass
+        held = bool(c.get("fair")) and longshot_hold(CTX["stake"] / c["fair"], yes_price, stake) is not None
+        if ok and not held:
+            why = "longshot"
+        ok = ok and held
+    if fair_pay is not None:                       # a price with no fair chance never feeds the predictor or the log
+        note_quote_time(legs_now, pct)
+        try:
+            store_quote(dict(c, legs=legs_now, fair=fair_pay), stake, pays, pct)
+        except Exception:
+            pass
     carry_note(c["legs"], yes_price, CTX.get("source") or "build", same=c.get("same_game"))   # (#341 C) paper log only
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
-                        "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None,
+                        "price": yes_price, "stake": stake, "p": CTX["stake"] / fair_pay if fair_pay else None,
                         "legs": [l["ticker"] for l in c["legs"]]}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": ok, "stake": stake, "pct": pct,
-            "bar": round(bar * 100) if bar else None}
+            "bar": round(bar * 100) if bar else None, "fair": fair_pay, "why": why, "nofair": nofair, "live": live}
 
 
+COMBO_SUSPECT = 1.30      # (#358) a combo quote over this share of fair is held back (never green, never a panel buy):
+                          # far over fair is almost always a wrong chance (a pre-game one, a stale line), not a gift.
+                          # A guess with no quote history on the dev Mac: tune it from the quotes table (ROADMAP).
 COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No retry: the app won't buy this combo "
                     "again or get a fresh price for it until you've checked (Settings › Money lists it).")
 ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted combo quote
@@ -18597,6 +18629,41 @@ def live_recheck(legs, now=None):
     return out, None
 
 
+def combo_live_fair(legs, now=None):
+    """(#358) A combo's legs with every pick whose game is under way priced on its live fair chance (live_side_fair on
+    a fresh score and Kalshi's fresh book), the panel's live guards on each: a two-sided book no wider than LIVE_SPREAD,
+    not nearly decided, Kalshi's mid within LIVE_DISAGREE of the live chance. Picks not started keep their chance.
+    Returns (legs, None) or (None, a plain reason): never the pre-game chance against a live price. Never raises."""
+    now = now or time.time()
+    out = []
+    for l in legs or []:
+        pick = l.get("pick") or l.get("ticker") or "a pick"
+        try:
+            if not started(l):
+                out.append(l)
+                continue
+            if _bet_kind(l.get("ticker")) not in ("win", "other"):
+                return None, f"{pick} is a spread or total under way, and there's no live chance for those"
+            book = book_depth(l["ticker"], max_age=15) or {}
+            ask, bid = book.get("ask"), book.get("bid")
+            if ask is None or bid is None:
+                return None, f"{pick}'s game is under way and Kalshi has no live buyers and sellers on it"
+            if ask - bid > LIVE_SPREAD + 1e-9:
+                return None, f"{pick}'s game is under way and its live price is jumpy ({(ask - bid) * 100:.0f}¢ between buy and sell)"
+            f, how, why = live_side_fair(dict(l, line_live=False), now)
+            if f is None:
+                return None, f"{pick}'s game is under way and there's no live chance for it ({why or 'unknown'})"
+            if f >= LIVE_DECIDED or f < 0.05:
+                return None, f"{pick}'s game is nearly decided"
+            if abs(f - (ask + bid) / 2) >= LIVE_DISAGREE:
+                return None, (f"{pick}'s game is under way and Kalshi's live price and the live chance disagree too much "
+                              "(something the score doesn't show)")
+            out.append(dict(l, fair=round(f, 4), p=ask, bid=bid, live=True, live_how=how))
+        except Exception:
+            return None, f"{pick}'s game is under way and its live chance couldn't be worked out"
+    return out, None
+
+
 def _start_ok(c, now, margin):
     """May this panel bet still be shown, approved or bought? A bet on games not started yet: only while its
     first game is `margin` seconds or more away. A bet priced live on a game under way: while that's switched on
@@ -19669,6 +19736,9 @@ def _buy_panel_bet(c):
                     kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
                 except Exception:
                     pass
+            if q.get("why") == "suspect":
+                return False, (f"Kalshi offered {q['pct']:.0%} of fair, too far over to trust: the chance it was "
+                               "priced on is probably wrong"), {}
             return False, f"Kalshi offered {q['pct']:.0%} of fair, under the {cut:.0%} cut-off", {}
         why = _sb_quote_under_fair(c, q.get("pct"))      # #142 leak 1: quoted under fair needs a likely exit too
         if why:
@@ -19719,6 +19789,113 @@ def _quote_only(c):
                 pass
         return (None, None) if q.get("error") else (q["pays"], q.get("pct"))
     return _with_ctx(go)
+
+
+REPRICE_STATES = ("skipped", "failed")   # the panel cards Pete can tap for a fresh price (#358)
+
+
+def _cap1(s):
+    return (s[:1].upper() + s[1:]) if s else s
+
+
+def _reprice_inplay(c):
+    """The buy-time in-play test (#341/#348) for a repriced bet under way: None when it passes, else why not."""
+    try:
+        ok, why = inplay_exit_ok(c, sim=_sb_sim(c, None), source="quote")
+    except Exception:
+        ok, why = False, IN_PLAY_WHY
+    return None if ok else (why or IN_PLAY_WHY)
+
+
+def panel_reprice(pid, paused=False, now=None):
+    """(#358) Pete taps a Skipped or Didn't buy card on today's panel: where would that exact bet land now? Read only.
+    The bet is the one the panel stored (rule 7: nothing else can be priced here), a pick under way only on its live
+    fair chance (combo_live_fair, never the pre-game one), then on Kalshi's fresh book (one pick) or a fresh combo
+    quote whose request is dropped at once, never accepted. Judged by the same bar the panel buys by. Never buys,
+    never changes the panel, refused while paused, a market with an unknown order outcome is never priced (rule 8)."""
+    if paused:
+        return {"ok": False, "paused": True, "msg": PAUSE_MSG}
+    p = panel_get("real")
+    c = next((x for x in (p or {}).get("items") or [] if x.get("id") == pid), None)
+    if not c:
+        return {"ok": False, "msg": "That bet isn't on today's panel any more. Pull down to reload Build."}
+    if c.get("state") not in REPRICE_STATES:
+        return {"ok": False, "msg": "Only a Skipped or Didn't buy bet can be priced again here."}
+    held, words = hold_refusal("buy")
+    if held:
+        return {"ok": False, "msg": words}
+    legs = [dict(x) for x in c.get("legs") or [] if x.get("ticker")]
+    stake = float(c.get("stake") or 0)
+    if not legs or not math.isfinite(stake) or stake < 1:
+        return {"ok": False, "msg": "That bet wasn't saved with enough to price it again."}
+    if any(order_unsure(l["ticker"]) for l in legs) or rfq_unsure(legs=[l["ticker"] for l in legs]):
+        return {"ok": False, "check": True, "msg": "An earlier order on this bet had no clear answer, so it isn't "
+                                                   "priced again. Check Kalshi (Settings › Money lists it)."}
+    now = now or time.time()
+    live = bool(idea_combo_live_gap(legs))
+    fresh, why = combo_live_fair(legs, now)
+    base = {"ok": True, "id": pid, "kind": c.get("kind"), "live": live, "stake": round(stake, 2), "at": int(now)}
+    if fresh is None:
+        return dict(base, would=False, verdict="No fair price right now", why=_cap1(why) + ".")
+    if c.get("kind") in ("single", "early", "line"):
+        l = fresh[0]
+        if l.get("fair") is None:
+            return dict(base, would=False, verdict="No fair price right now", why="It was saved without a fair chance.")
+        book = book_depth(l["ticker"], max_age=5) or {}
+        ask = book.get("ask")
+        if not ask:
+            return dict(base, would=False, verdict="No price right now", why="Nobody is selling it on Kalshi right now.")
+        fee, fair = single_fee(ask), float(l["fair"])
+        need = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask      # the buy-time rule (_buy_panel_bet)
+        would = ask + fee + need <= fair + 1e-9
+        news = news_gap(dict(c, legs=fresh), ask=ask) if would else None
+        if news:
+            would = False
+        elif would and live:
+            news = _reprice_inplay(dict(c, legs=[dict(l, p=ask)], live=True))
+            would = not news
+        bar = ("at or under its chance after the fee" if c["kind"] == "early" else
+               f"{PANEL['min_edge']:.0%} better than its chance after the fee")
+        gap = (fair - ask - fee) * 100
+        why = (f"{_cap1(news)}." if news else
+               f"{ask * 100:.0f}¢ plus a {fee * 100:.1f}¢ fee against its {fair:.0%} {'live ' if live else ''}chance: "
+               f"{abs(gap):.1f}¢ {'under' if gap >= 0 else 'over'} it. The panel needs {bar}.")
+        return dict(base, would=would, price=ask, fee=round(fee, 4), fair=round(fair, 4),
+                    pct=round(fair / (ask + fee), 4), bar=bar,
+                    verdict="Would buy at this price" if would else "Still wouldn't buy", why=why)
+    cut = combo_cutoff(c.get("code") or _combo_code(fresh), len(fresh), fresh)
+    c2 = dict(c, legs=fresh, fair_mult=1 / math.prod(l["fair"] for l in fresh))
+
+    def go():
+        _panel_combo(c2, cut)
+        try:
+            return get_offer(1, stake, check_cap=False)
+        except (RuntimeError, PermissionError, requests.RequestException):
+            return {"error": "Kalshi wouldn't price it just now. Try again in a minute."}
+        finally:                                     # a look only: the quote request is dropped, never accepted
+            o = CTX["offers"].pop(1, None)
+            if o:
+                try:
+                    kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+                except Exception:
+                    pass
+    q = _with_ctx(go)
+    if q.get("error"):
+        return {"ok": False, "msg": q["error"], "check": bool(q.get("check"))}
+    pct, would = q.get("pct"), bool(q.get("ok"))
+    under = _sb_quote_under_fair(c2, pct) if would else None
+    if would and live and not under:
+        under = _reprice_inplay(dict(c2, live=True, pct=pct))
+    if q.get("why") == "suspect":
+        why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair: too far over to trust. The "
+               "chance it's priced on is probably wrong, so the panel wouldn't buy it.")
+    elif under:
+        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair, but {under}."
+    else:
+        why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}: {pct:.0%} of its fair payout"
+               f"{' on the live chance' if live else ''}. The panel's bar is {cut:.0%}.")
+    return dict(base, would=would, pays=round(q["pays"], 2), pct=round(pct, 4) if pct else None,
+                bar=f"{cut:.0%} of fair", verdict="Would buy at this price" if would else "Still wouldn't buy", why=why)
 
 
 def exit_filled(ticker, price, since, n):

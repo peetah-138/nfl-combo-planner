@@ -3446,8 +3446,11 @@ def webapp_main():
         if r.get("error"):
             return r
         r["rec"] = rec or A.CTX.get("stake")
-        if c.get("fair"):                              # the books' chance of the combo, as built
-            r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / c["fair"] - r["stake"], 2)
+        fair = r.get("fair", c.get("fair"))
+        if fair:                                       # the books' chance of the combo (a pick under way: its live one)
+            r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
+        if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
+            r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:
             r["room"] = round(max(0.0, A.CFG["budget"] - A.week_spend_shown()), 2)   # display only: the cap itself is
         except Exception:                              # get_offer's / accept_offer's own fresh check
@@ -3455,6 +3458,8 @@ def webapp_main():
         r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
         return r
 
+    REPRICE_AT = {}        # (#358) a Skipped / Didn't buy card's last fresh price, by panel id: one per REPRICE_SECS
+    REPRICE_SECS = 8
     IDEA_Q = {}            # Live single-game ideas: the size and price the Mac quoted, by idea id (Buy must match)
     IDEA_Q_SECS = 25       # the card's price lasts 20 s; a little slack for the tap to arrive
 
@@ -3570,6 +3575,8 @@ def webapp_main():
                 return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
             if a in ("quote", "idea", "buy") and paused_now():
                 return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
+            if a == "panel_reprice" and paused_now():       # (#358) a fresh price for a panel card: refused while paused
+                return {"ok": False, "paused": True, "msg": A.PAUSE_MSG, "error": A.PAUSE_MSG}
             if a == "longshot":                         # (#341) a long shot on screen into the combo list, then its price
                 lg = BUILD.get("lg")
                 rec = next((r for r in (LS.get(lg) or {}).get("recs") or [] if r["id"] == str(d.get("id", ""))), None)
@@ -3624,7 +3631,7 @@ def webapp_main():
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
                                  **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
-                                                          "max", "min", "own")}})
+                                                          "max", "min", "own", "why", "nofair", "live", "small")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -3710,12 +3717,15 @@ def webapp_main():
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
                 out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own")}}
-                if gap:                                 # no fair price to check it against: yellow Buy anyway only
-                    out.update(clears=False, pct=None, ev=None, live=True, fair_src="none",
-                               **({"rec": small, "own": False} if small is not None else {}),
-                               nofair=f"the {' and '.join(gap[:2])} game{'s have' if len(gap) > 1 else ' has'} started, "
-                                      "and a combo with a game under way has no live fair price")
+                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small")}}
+                if gap:                                 # (#358) priced on the live chance when every live guard passes
+                    out.update(live=True, fair_src="live" if r.get("fair") else "none",
+                               **({"rec": small, "own": False, "small": True} if small is not None else {}))
+                if gap and not r.get("fair"):           # no live fair price to check it against: yellow Buy anyway only
+                    out.update(clears=False, pct=None, ev=None,
+                               nofair=r.get("nofair") or
+                               f"the {' and '.join(gap[:2])} game{'s have' if len(gap) > 1 else ' has'} started, "
+                               "and a combo with a game under way has no live fair price")
                 return jsonable(out)
             if a == "singlequote":                      # Buy straight: one team (or a spread/total), priced now
                 if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
@@ -3795,6 +3805,19 @@ def webapp_main():
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
                                  "check": bool(r.get("check"))})
+            if a == "panel_reprice":                # (#358) a Skipped / Didn't buy card: where it would land now (reads only)
+                pid = str(d.get("id") or "")[:120]
+                last = REPRICE_AT.get(pid, 0)
+                if time.time() - last < REPRICE_SECS:
+                    return {"ok": False, "msg": "Just priced. Give it a few seconds."}
+                for k in [k for k, v in REPRICE_AT.items() if time.time() - v > 60]:
+                    REPRICE_AT.pop(k, None)
+                REPRICE_AT[pid] = time.time()
+                try:
+                    return jsonable(A.panel_reprice(pid, paused=paused_now()))
+                except Exception as err:
+                    log("panel reprice failed:", type(err).__name__, err)
+                    return {"ok": False, "msg": "Couldn't get a fresh price just now. Try again in a minute."}
             if a == "panel_approve":
                 ok, msg = A.panel_approve(d.get("ids"), d.get("view") or "all", d.get("at"), stakes=d.get("stakes"))
                 return {"ok": ok, "msg": msg}
