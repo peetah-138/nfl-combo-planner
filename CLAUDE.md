@@ -1344,7 +1344,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   the sale was made on (`_CASH_CTX.line`; no line = the old `CASH_SLIP` rule); **the purpose** decides below cost: a
   profit-taking sale never takes a fresh offer below cost (`_CASH_CTX.cost_floor`), a loss-cutting one (`rec["stop_loss"]`,
   first offer already below cost) may, but never under 97% of its first offer (`_CASH_CTX.cutting`); under Never sell at a
-  loss the cost floor always applies. Before each retry it re-checks Pause, Auto cash-out and `can_trade()`; one
+  loss the cost floor always applies. Before each retry it re-checks Pause, Auto cash-out and `can_trade()` and re-reads the account fresh (`fetch_account(max_age=0)`); if the combo is gone, reduced or the account is unreadable the round stops without selling (`ACCOUNT_STOPS`, fail closed; the auto-sell order is not put back, the next pass re-places it), so a manual Cash out tap in the web app mid-round cannot be double-sold; `restart_when_quiet` also waits (`sell_busy()`, bounded 240 s) while a sale round runs; one
   `auto_sell_now` pass starts no new combo sale after the budget. Rich log in `combo_autosell_log.jsonl` (`round`, `rounds`,
   `tries`, `agreed`, `line`, `floor`, `purpose`, `stop`, `asked_again`, `ask_error`, `low_offer`). Singles keep their #334
   back-off (`SELL_FAILS`). Follow-ups: #383 (loss-cut floor, back-off vs hedge, busy hold), #382, #384. Tests: `t_cashretry.py`,

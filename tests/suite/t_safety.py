@@ -541,6 +541,19 @@ i = WSRC.index("def update_loop")
 u = WSRC[i:WSRC.index("\ndef ", i + 10)]
 ok("after installing, the watcher waits for quiet taps before it restarts",
    before(u, "restart_when_quiet()", 'UPDATED["now"] = True'))
+_m = {"busy": False, "selling": set()}
+W.RUNNING["E"] = type("FakeE", (), {"MINE": _m})
+_b = (W.sell_busy(),)
+_m["busy"] = True
+_b += (W.sell_busy(),)
+_m["busy"] = False; _m["selling"] = {"C1"}
+_b += (W.sell_busy(),)
+W.RUNNING.clear()
+_ul = WSRC[WSRC.index("def update_loop"):WSRC.index("\ndef ", WSRC.index("def update_loop") + 10)]
+ok("update_loop hands the engine to RUNNING (else the restart wait for a sale round silently stops working)",
+   'RUNNING["E"] = E' in _ul)
+ok("the restart also waits for an auto cash-out round (busy or selling), and not when idle or unknown",
+   _b == (False, True, True) and not W.sell_busy() and "sell_busy()" in WSRC[WSRC.index("def restart_when_quiet"):WSRC.index("def update_loop")])
 i = WSRC.index("    def api_act(d):")
 ok("the web app takes no new taps once an update is installed", "restarting()" in WSRC[i:i + 300])
 ok("the proxy's 'check' words are only for taps that can move money (pot moves too, never price reads)",

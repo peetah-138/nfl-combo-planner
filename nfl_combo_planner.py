@@ -5703,6 +5703,8 @@ def auto_sell_now(plan):
             if result == "check":                         # may or may not have sold: no "took the profit" words
                 out.append("🤖 Auto cash-out: " + msg)
                 continue
+            if result == "failed" and stop in ACCOUNT_STOPS:
+                continue                                  # logged above; calm: no push (nothing was at risk or sold)
             if result == "failed":
                 wait = stop in COMBO_BACKOFF_STOPS
                 if wait:                                  # re-tried when the game or the price changes, not on a clock
@@ -5738,6 +5740,13 @@ def auto_sell_now(plan):
 
 
 COMBO_BACKOFF_STOPS = ("cancelled", "failed", "no fresh offer", "offer too low", "out of time")   # clear failures only
+# Not restoring the auto-sell order after these stops is deliberate: the contracts may already be gone (sold elsewhere, or
+# the account was unreadable), and a resting sell on them is worse than none; the next pass re-places it if still held.
+ACCOUNT_STOPS = ("account changed", "account unreadable")   # an auto round stopped before a retry: nothing more sold
+ACCOUNT_STOP_WORDS = {"account changed": "this combo was already sold or reduced while auto cash-out was retrying, "
+                                         "so it stopped and sold nothing more.",
+                      "account unreadable": "Kalshi's account couldn't be read before a retry, so auto cash-out stopped "
+                                            "and sold nothing more. It will check again on the next pass."}
 COMBO_FAIL_TELL = 3600    # a combo's "nothing sold" note at most once an hour
 # After a round where buyers backed out, the combo is tried again only when something real changes (Pete, 2026-11-23:
 # "It should retry based on changes in the game, not some arbitrary number of minutes"): a score, a game going live or
@@ -9602,6 +9611,25 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
                 why = "new"
                 info["stop"], info["low_offer"] = "offer too low", round(o["offer"], 2)
                 break
+        if attempt and auto:
+            # The web app is another process: Pete may have tapped Cash out on this combo during the round. Look at the
+            # account afresh before every retry (as auto_sell_now does before the first accept) and sell only what he
+            # still holds. Unreadable = fail closed: nothing is sold (the last accept was a definite refusal, so the
+            # outcome is not unknown).
+            try:
+                bets = fetch_account(max_age=0, every_league=True)[0]
+            except Exception:
+                bets = None
+            if bets is None:
+                why = info["stop"] = "account unreadable"
+            else:
+                a = {x.get("ticker"): x for x in bets}.get(ticker)
+                if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
+                    why = info["stop"] = "account changed"
+            if why in ACCOUNT_STOPS:
+                drop_cash(ticker)                 # already sold (by you, the Pi or the phone): leave it
+                ACCT_CACHE["at"] = 0
+                return f"{label}: {ACCOUNT_STOP_WORDS[why]}"   # no auto-sell order is put back on contracts that may be gone
         ACCEPT_ERR.pop(ticker, None)
         status = accept_once(o, ticker)
         info["rounds"] = attempt + 1

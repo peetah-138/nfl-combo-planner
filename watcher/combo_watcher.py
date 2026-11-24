@@ -515,9 +515,23 @@ def restarting():
     return 0 <= time.time() - at < RESTART_MAX
 
 
+RUNNING = {}    # update_loop leaves the engine here, so the restart can see an auto cash-out round in progress
+
+
+def sell_busy():
+    """An auto cash-out round is running in this process (MINE busy or selling): exiting now could kill it between
+    sending an accept and recording the outcome."""
+    try:
+        m = RUNNING["E"].MINE
+        return bool(m.get("busy") or m.get("selling"))
+    except (KeyError, AttributeError):
+        return False
+
+
 def restart_when_quiet(wait=TAP_BUSY_MAX):
     """Before the watcher exits for an update: tell the web app to take no new taps, then wait (bounded) until no
-    tap is mid-order (two quiet checks in a row), so the hub that relays its order isn't killed under it."""
+    tap is mid-order and no auto cash-out round is running (two quiet checks in a row), so neither the hub that
+    relays an order nor a sale between its accept and its recorded outcome is killed."""
     try:
         with open(RESTARTING, "w", encoding="utf-8") as f:
             json.dump({"at": time.time()}, f)
@@ -526,7 +540,7 @@ def restart_when_quiet(wait=TAP_BUSY_MAX):
     end, quiet = time.time() + wait, 0
     while time.time() < end and quiet < 2:
         time.sleep(1)
-        quiet = 0 if tap_busy() else quiet + 1
+        quiet = 0 if tap_busy() or sell_busy() else quiet + 1
     if quiet < 2:
         log("restarting although a tap still looks busy (it waited the most it may)")
 
@@ -534,6 +548,7 @@ def restart_when_quiet(wait=TAP_BUSY_MAX):
 def update_loop(E, conf):
     """Checks for new versions on its own thread, so nothing else going wrong in the watcher can ever
     stop an update (a fix) from arriving. After installing, the watcher exits and launchd starts the new one."""
+    RUNNING["E"] = E
     time.sleep(30)
     last = 0.0
     while True:
