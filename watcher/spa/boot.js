@@ -10,8 +10,18 @@ async function comboFromHash(open){if(!location.hash.startsWith('#c='))return;le
  if(!comboOk(t)){if(open)load('live',true);return;}
  if(open)await load('live',true);
  for(let i=0;i<40&&!(S.live&&S.liveNet);i++)await new Promise(r=>setTimeout(r,250));   // first start: wait for Live's own load
- if(S.view==='live'&&((S.live&&S.live.combos)||[]).some(c=>c.t===t))openCombo(t);}
-ideaFromHash(false);comboFromHash(false);
+ if(S.view!=='live')return;if(((S.live&&S.live.combos)||[]).some(c=>c.t===t))openCombo(t);}
+/* A notification about one single bet, spread or total opens that bet (its game page, the same view as tapping its
+   row): the link is '/#b=<ticker>'. Like #c=, it opens Live, waits for the data and opens the bet only when it is
+   one of yours; a bet that sold, settled or never existed (or a malformed ticker) just leaves you on Live. */
+async function betFromHash(open){if(!location.hash.startsWith('#b='))return;let t='';try{t=decodeURIComponent(location.hash.slice(3));}catch(e){}
+ S.view='live';history.replaceState(null,'',location.pathname);if(open){chrome();render();}
+ if(!comboOk(t)){if(open)load('live',true);return;}
+ if(open)await load('live',true);
+ for(let i=0;i<40&&!(S.live&&S.liveNet);i++)await new Promise(r=>setTimeout(r,250));
+ if(S.view!=='live')return;if(((S.live&&S.live.singles)||[]).some(x=>x.t===t&&x.state!=='done'))openGame(t);}
+ideaFromHash(false);comboFromHash(false);betFromHash(false);
+addEventListener('hashchange',()=>betFromHash(true));
 addEventListener('hashchange',()=>{ideaFromHash(true);comboFromHash(true);});
 chrome();render();load(S.view);connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;

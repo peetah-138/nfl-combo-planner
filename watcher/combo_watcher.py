@@ -1232,12 +1232,35 @@ def combo_link(E, msg):
         return None
 
 
+def single_link(E, msg):
+    """Where tapping an alert about one single bet, spread or total goes: '/#b=<ticker>' when the text names the
+    label of exactly one bet in Live's singles right now (a label that is part of a longer matching label doesn't
+    count), else None. Only the market ticker goes in the link (URL-safe characters only, COMBO_TICKER)."""
+    try:
+        hits = {}
+        for x in list(getattr(E, "SINGLES", {}).get("items") or []):
+            lab, t = (x or {}).get("label") or "", (x or {}).get("t") or ""
+            if len(lab) >= 3 and lab in (msg or "") and COMBO_TICKER.match(t):
+                hits[t] = lab
+        labs = set(hits.values())
+        hits = {t: lab for t, lab in hits.items() if not any(lab != o and lab in o for o in labs)}
+        return "/#b=" + next(iter(hits)) if len(hits) == 1 else None
+    except Exception:
+        return None
+
+
+def trade_link(E, msg):
+    """The tap target of any trade alert: the combo it names, else the single bet it names, else None (the tap opens
+    the app as before). Only a view route: no keys, tokens or account ids ever go in it."""
+    return combo_link(E, msg) or single_link(E, msg)
+
+
 class Notifier:
     """Urgent alerts (cash-outs, hedges, anything done automatically, combos at risk) go out at once.
     Everything else waits and goes out together, at most once every 30 minutes, never 10 PM-7 AM.
     Each kind can be switched off in the phone's Settings."""
     URGENT = ("cash out", "cashing out", "cashed out", "cash-out", "hedge", "auto", "turning", "at risk", "can't", "couldn't",
-              "refused", "paused")
+              "refused", "paused", "🤖")      # 🤖: everything the app did by itself (a single's sale had no other word)
     SWITCH = {"value": "notify_value", "price": "notify_price", "cash": "notify_cash", "news": "notify_news"}
 
     def __init__(self, conf, E, every=1800):
@@ -1263,7 +1286,7 @@ class Notifier:
         if kind in ("cash", "info") and any(w in low for w in self.URGENT):
             push(self.conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
                  pause_button=bool(self.E.CFG.get("auto_sell")), web_title="Combo Hub", web_urgent=True, tag="urgent",
-                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."), click=combo_link(self.E, msg))
+                 web_msg=msg.replace("Open the planner to confirm.", "Tap to decide."), click=trade_link(self.E, msg))
             BUS.publish({"kind": "alert", "text": msg})
             return True
         with self.lock:
@@ -1802,7 +1825,7 @@ def panel_loop(odds, conf, every=60):
                                    + (f". Best: {r['best']['what']}." if r.get("best") and r["best"]["pl"] > 0 else "."))
             for m in out:
                 log(m)
-                push(conf, m)
+                push(conf, m, click=trade_link(H, m))
         except Exception as err:
             log("panel buying skipped:", type(err).__name__, err)
         try:
@@ -1843,7 +1866,7 @@ def history_loop(E, every=900):
             for m in E.killer_sweep():
                 log(m)
                 if DEP.get("conf"):
-                    push(DEP["conf"], m, priority="high")
+                    push(DEP["conf"], m, priority="high", click=trade_link(E, m))
             E.maker_resolve()
             got = E.resolve_quotes()
             E.resolve_closes()
@@ -4766,7 +4789,7 @@ def main():
     E.present = lambda *a, **k: None
     E.loading = lambda *a, **k: None
     E.notify = lambda msg: push(conf, msg.replace("Open the planner to confirm.", "Open the planner to cash out."),
-                                pause_button=bool(E.CFG.get("auto_sell")), click=combo_link(E, msg))
+                                pause_button=bool(E.CFG.get("auto_sell")), click=trade_link(E, msg))
     E.console_note = lambda msg: log(msg)
     E.auto_cash_checks = lambda: []        # no quotes on every combo; see estimate_offers
     E.set_league("nfl")                    # Live covers every sport; this only picks the main game list
