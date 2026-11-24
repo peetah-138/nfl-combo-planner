@@ -1,5 +1,5 @@
 function killerCard(k){if(!k)return '';const r=k.rules||{};const M={off:'Off',watch:'Watch only',on:'Buy automatically'};
- const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
+ const rows=(k.rows||[]).slice(0,6).map(x=>`<div class="moment"><span class="k">${x.status==='bought'?'🔥':x.status==='watched'?'👀':'⏭'}</span><span><b>${esc(x.picks)}</b> <span class="m">${pct(x.pct)} of fair · ${money(x.stake)} → ${money(x.pays)} · ${esc(x.status)}${x.status==='skipped'&&x.why?': '+esc(x.why):''}${x.outcome?' · '+x.outcome:''}</span></span><time>${ago2(x.ts)}</time></div>`).join('');
  return `<div class="srow"><div class="l"><b>Killer deals</b><small>The Mac buys only deals that pass every check below, at most ${r.per_day||2} a day and ${money(r.day_dollars||20)} a day, inside your cap. Watch only records what it would have bought.</small></div>
   <div class="seg">${['off','watch','on'].map(m=>`<button class="${k.mode===m?'on':''}" onclick="killerMode('${m}')">${M[m]}</button>`).join('')}</div></div>
   <div class="srow" style="display:block"><div class="m" style="font-size:12.5px;line-height:1.6">
@@ -11,8 +11,8 @@ function killerMode(m,sure){if(m==='on'&&!sure){modal(`<h3>Let the Mac buy kille
 function singlesCard(d){const ss=d.singles||[];if(!ss.length)return '';
  if(S.sgView==='odds')return singlesOdds(ss);
  return `<div class="card"><h3>Single games <span>best prices</span></h3><div class="m" style="font-size:12px;margin:-4px 0 8px">Kalshi's price vs the sharp books' chance to win, after Kalshi's fee. No combo maker taking a cut.</div>
-  ${ss.map(x=>`<div class="moment"><span class="k" style="color:${x.edge>=0.025?'var(--yes)':x.edge>0?'var(--sub)':'var(--mute)'}">${x.edge>=0.025?'🎯':'·'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">vs ${esc(short(x.opp))} · ${Math.round(x.p*100)}¢ · fair ${pct(x.fair)}</span></span>
-   ${x.idea?`<button class="btn acc" style="padding:6px 10px" onclick="singleFromBoard('${x.ticker}',this)">${(x.edge*100).toFixed(1)}¢ edge</button>`:`<b class="m" style="font-size:12px">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</b>`}</div>`).join('')}
+  ${ss.slice().sort(ovLast).map(x=>`<div class="moment${x.over?' over':''}"><span class="k" style="color:${x.edge>=0.025?'var(--yes)':x.edge>0?'var(--sub)':'var(--mute)'}">${x.edge>=0.025?'🎯':'·'}</span><span><b>${esc(short(x.pick))}</b> <span class="m">vs ${esc(short(x.opp))} · ${Math.round(x.p*100)}¢ · fair ${pct(x.fair)}</span></span>
+   ${x.over?ovBar(x.over,'build'):x.idea?`<button class="btn acc" style="padding:6px 10px" onclick="singleFromBoard('${x.ticker}',this)">${(x.edge*100).toFixed(1)}¢ edge</button>`:`<b class="m" style="font-size:12px">${x.edge>=0?'+':'−'}${Math.abs(x.edge*100).toFixed(1)}¢</b>`}</div>`).join('')}
   ${ss.some(x=>x.idea)?'':'<div class="m" style="font-size:12px;margin-top:8px">Nothing at least 2.5¢ under fair right now: Kalshi is pricing these games in line with the sharp books. The Mac keeps checking every 10 minutes and alerts you when one opens up.</div>'}
   <button class="btn ghost" style="margin-top:10px;width:100%" onclick="S.sgView='odds';renderBuild()">Win and sell-early chances</button></div>`;}
 function singlesOdds(ss){const rows=ss.slice().sort((a,b)=>b.win-a.win);
