@@ -8,9 +8,9 @@ now = time.time()
 
 # A fake NFL week: a Thursday night game and two Sunday-early games (the covered checkpoint), then two Sunday-late
 # games (the later checkpoint the survivor is carried into). Prices are Kalshi's own, scaled to 100%.
-# Anchor the week on the coming Sunday (Monday keeps the prior Sunday, like week_of).
-today = dt.date.today()
-SUN = today - dt.timedelta(days=1) if today.weekday() == 0 else today + dt.timedelta(days=(6 - today.weekday()) % 7)
+# Pinned week (never the real date, so the check is the same every day and in every time zone): the NFL week
+# anchored on Sunday 2026-11-22. The engine reads the Sunday from the faked clock below, not the wall clock.
+SUN = dt.date(2026, 11, 22)
 THU = SUN - dt.timedelta(days=3)
 # kickoffs: Thursday 20:15, Sunday-early 13:00 and 13:05, Sunday-late 16:25 and 16:30 (local-ish unix times)
 def ts(d, h, m=0):
@@ -38,6 +38,13 @@ E._cover_kicks = lambda day: []                     # kickoffs come straight fro
 E.week_of = lambda t: SUN                            # all legs anchor on this week's Sunday
 E._cover_r_buy = lambda: 0.85
 E.kalshi_discount = lambda live=False: 0.90
+
+# every day of the week (Tuesday through the Monday after) maps to the same anchoring Sunday, in all 7 weekdays
+PT = E.PACIFIC
+for off, name in enumerate(["Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"], start=-5):
+    d = SUN + dt.timedelta(days=off)
+    t = dt.datetime(d.year, d.month, d.day, 12, 0, tzinfo=PT).timestamp()
+    ok(f"_cover_sunday on {name} {d} gives the week's Sunday {SUN}", E._cover_sunday(t) == SUN)
 
 # --- 1. multi-day slot building: Thursday is its own first checkpoint, Sunday-early a second, Sunday-late a third
 slots = E._cover_week_slots(SUN)
