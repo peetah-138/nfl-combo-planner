@@ -4,6 +4,13 @@ You are picking up a long-running project with Pete. This file holds the decisio
 earlier sessions (up to version 2026.11.23.137). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
+**Two machines (Pete, 2026-11-23).** The dev Mac (`~/dev/nfl-combo-planner`) is the development machine: it owns ALL
+building, testing, subagents, merging and releasing, and keeps this file and `ROADMAP.md` current (setup:
+`docs/DEV_MACHINE.md`; how Pete likes to work: `docs/WORKING_WITH_PETE.md`). Pete's MacBook Air is **production
+only**: it trades real money, runs the watcher and the web app, and auto-updates from `main`; nothing is built,
+tested or merged there. The dev Mac never gets Pete's Kalshi key, `~/combowatch`, the history database or any
+`combo_*.json`, never runs the watcher and never places orders.
+
 ## Goals and strategy
 
 Two goals, in order: **profit is #1, fun is #2.** Smart Buy and Smart Sell are **one strategy** (issue #137): every
@@ -72,7 +79,7 @@ Real money is involved. Pete uses it daily.
   GitHub through first start, GitHub down, repair, restart; and the Pi's approved path). Rollback: revert the split
   merge; the reverted watcher has the strings inline again and ignores any spa folder.
   The Raspberry Pi is an **alerts-only backup; it never trades**.
-- `version.txt` — what the Macs update to.
+- `version.txt` — what the MacBook Air (production) updates to.
 - History lives in SQLite `~/combowatch/combo_history.db` (WAL; many processes; use `store_x`/`store_rows`,
   and `panel_tx` for read-modify-write of panel rows). Settings and state are JSON files next to the engine
   (`combo_*.json`, `held_events.json`). **None of these are ever committed.**
@@ -173,7 +180,7 @@ Real money is involved. Pete uses it daily.
 
 ## Git workflow (Git Flow)
 
-- **`main` is what Pete's real Mac and phone run.** A commit on `main` auto-updates them within ~10 minutes (they
+- **`main` is what Pete's MacBook Air (production) and phone run.** A commit on `main` auto-updates them within ~10 minutes (they
   read the newest commit by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back), and the
   app can place real Kalshi orders. Never push to `main` directly.
 - **`develop` is the integration branch.** Work on a short-lived branch from `develop`: `feat/…`, `fix/…`,
@@ -187,7 +194,11 @@ Real money is involved. Pete uses it daily.
   issue labelled `profit` or `fun`. The PR template (`.github/pull_request_template.md`) carries the checklist.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below), and main is back-merged into develop right after. Releases are owned by the session that
-  holds the "release owner" role in issue #83 (it also merges the PRs). **Standing go-ahead (Pete, 2026-11-19,
+  holds the "release owner" role in issue #83 (it also merges the PRs). **As of 2026-11-23 (Pete) the dev Mac
+  (`~/dev/nfl-combo-planner`) holds that role.** It merges PRs; cuts releases `develop` → `main` as a merge commit
+  with the version bump in the 3 places; folds `docs/changes/` into `CLAUDE.md` / `ROADMAP.md`; back-merges `main`
+  into `develop`; comments on #83; and keeps `CLAUDE.md` / `ROADMAP.md` current. The MacBook Air only receives
+  releases (it updates itself from `main`). **Standing go-ahead (Pete, 2026-11-19,
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
@@ -195,8 +206,9 @@ Real money is involved. Pete uses it daily.
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
-- **Housekeeping:** `git pull` `develop` and `main` at the start of every session and after every merge. The
-  orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
+- **Housekeeping:** `git pull` `develop` and `main` at the start of every session and after every merge, on the dev
+  Mac (the MacBook Air never builds, tests or merges, so nothing is pulled there by hand). The
+  orchestrating session on the dev Mac manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
 - **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
@@ -210,13 +222,14 @@ Real money is involved. Pete uses it daily.
   (`watcher/spa/`, listed in `MANIFEST.json`). Run `git config rerere.enabled true` once per clone so a repeated
   conflict is only resolved once.
 - **Decisions Pete made on 2026-11-18:**
-  - At most **3 subagents** at once.
+  - At most **3 subagents** at once was for the MacBook Air (weaker). On the dev Mac (Pete, 2026-11-23) there is no
+    fixed cap: manage by CPU, RAM and ports, and give each parallel check run its own `CHECK_PORT_BASE`.
   - **Rebuild `Combo-Watcher.zip` in the release PR** whenever `install_mac.sh`, `setup_wizard.py`,
     `wizard_window.js` or `install_pi.sh` changed.
   - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
   - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
     (`develop` → `main`) is merged.
-  - **Release PRs** are opened and merged by the release owner (issue #83) under Pete's standing go-ahead (see Releases above), with every other release gate intact.
+  - **Release PRs** are opened and merged by the release owner (issue #83, the dev Mac since 2026-11-23) under Pete's standing go-ahead (see Releases above), with every other release gate intact.
   - **When Pete gives feedback, open a GitHub issue** to track it.
   - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
@@ -234,7 +247,7 @@ Real money is involved. Pete uses it daily.
 5. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
 6. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
-   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The Macs then update within ~10 minutes; Pete can
+   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The MacBook Air then updates within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
@@ -1156,7 +1169,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     judged by the loss guards' replay (`_sl_replay`: on = what selling at a loss would have got, on a sale price cut to
     97% for this loosening step (#285); off = held) on Pete's bar. Turning `sl_auto` on needs 3 standard errors
     (`KNOB_EVIDENCE_STRICT`), not 2. With Never, a single never sells below what it cost either. A tuned stop-loss sale
-    says "Stop-loss (tuned for this league)" and logs `sl_mode`. Pete's Mac today has `stop_loss` on, so it reads as
+    says "Stop-loss (tuned for this league)" and logs `sl_mode`. Pete's MacBook Air today has `stop_loss` on, so it reads as
     Allow (guarded): unchanged.
   - **The loss guards and confirmation counts go live (PR5).** `sl_prog`, `sl_drop`, `sl_auto`, `sl_checks`, `sl_span`,
     `sl_gap` are in `KNOB_LIVE`: with "Let smart sell tune its own numbers" on, `stoploss_params` and the new
