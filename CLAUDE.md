@@ -733,9 +733,9 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   - **Wording batch 2: before fees, a plainer "wouldn't buy" (#290, #304, #307; text and display only, no buy, sell, sizing or
     gate logic).** A combo's "+X% expected" now says "before fees" (the combo entry fee is not counted in it), as do the combo
     screen's "Likely about X% of fair" guess, its "Kalshi will likely pay" line and the stake card's "Expected profit". Once
-    "Tap for a fresh price" has answered on a Didn't-buy card (`S.prep[id].pct`), the card's own numbers are dimmed and say
+    "Tap for a fresh price" has answered on a Didn't-buy card (`S.prep[id].pct`), the card's own numbers are dimmed (opacity .75, `.pitem .pn.stl`) and say
     "earlier guess: pays about N% of fair", so one card no longer shows 106% and 99% side by side; on a combo screen with a
-    fresh Kalshi quote the older "Likely" / "will likely pay" guess is hidden (`pStale` in `build.js`). The **"Still wouldn't
+    fresh Kalshi quote the older "Likely" / "will likely pay" guess is hidden (`pStale` in `build.js`). A fresh-price reply for a skipped in-play bet is capitalised and ends in one period (`_cap1` in `panel_reprice`). The Overlap "Add anyway" slide (`flipSnap`/`flipPlay`) compares positions plus scroll, so a scroll during the refresh does not move the cards (#446). The **"Still wouldn't
     buy"** reason (`_sb_under_words`, `SB_UNDER_FAIR_WHY`) reads "Kalshi's price is about 1% under what we think it's worth, so
     on average you'd lose about 2¢ per $2 if you held it to the end. Selling early could still make a profit, but not often
     enough to make up for that, so it is left out." The doubled "99% of fair, but Kalshi pays 99%" is gone: the gap is rounded
