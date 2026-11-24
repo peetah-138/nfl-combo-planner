@@ -107,16 +107,18 @@ def t_offer():
     E.CFG.update(budget=500.0, accept_pct=95)
     E.kalshi_send = lambda m, p, body=None, params=None: ({"market_ticker": "M"} if p.startswith("/multivariate") else
                                                          {"id": "r"} if p == "/communications/rfqs" else
-                                                         {"quotes": [{"status": "open", "no_bid_dollars": "0.8", "id": "q"}]}
+                                                         {"quotes": [{"status": "open", "no_bid_dollars": "0.7", "id": "q"}]}
                                                          if p == "/communications/quotes" else {})
     E.find_collection = lambda legs: "C"
+    E.book_depth = lambda *a, **k: None        # (#358) no live book: the started pick has no live chance, no fair price
     E.clear_my_rfqs = lambda m: None
     E.rfq_unsure = lambda *a, **k: False
     E.hold_refusal = lambda *a, **k: (None, "")
     E.time.sleep = lambda s: None
     E.store_quote = E.carry_note = E.note_quote_time = E.note_buy_ratio = lambda *a, **k: None
     r = E.get_offer(1, 5.0, check_cap=False)
-    ok(f"offer: a combo priced far over fair with a started pick is NOT green ({r.get('ok')}, pct {r.get('pct')})", r.get("ok") is False)
+    ok(f"offer: a combo over fair on the pre-game chance with a started pick is NOT green ({r.get('ok')}, {r.get('why')})",
+       r.get("ok") is False and r.get("why") == "nofair" and r.get("pct") is None)
     legs[0]["_started"] = False
     r = E.get_offer(1, 5.0, check_cap=False)
     ok("offer: the same combo before the start is green as before", r.get("ok") is True)
