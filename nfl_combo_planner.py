@@ -16699,6 +16699,8 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
                 pass
             _manual_note(t, n * per, log)
             log(f"idea single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
+            if key:
+                idea_mark_bought([t])                  # may have gone through: the idea stays off the list (#270)
             return {"ok": False, "check": True,
                     "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi before "
                            "trying again; the app won't send it again."}
@@ -16708,6 +16710,8 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
             return {"ok": False, "msg": err or f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
         _manual_note(t, filled * per, log)            # before the answer goes back; never lost (see _manual_note)
     log(f"single bought: {filled:g} of {t} at {price:.2f}")
+    if key:
+        idea_mark_bought([t])                          # the Mac's own record, not only the phone's follow-up (#270)
     return {"ok": True, "pays": filled, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
                                                f"pays {money(filled)} if it wins."}
 
@@ -16987,6 +16991,22 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None, seen=None):
                 st["items"][r["key"]] = base
         save_json(IDEA_DISMISS, st)
     return {"n": len(take), "ids": [r["idea_id"] for r in take]}
+
+
+def idea_mark_bought(legs, now=None):
+    """The Mac's own note that a Buy idea was bought, or may have been (#270): so the idea stays gone after a lost reply,
+    a reload or another phone, not only when the phone's follow-up dismiss lands. Hiding is the safe side: it only ever
+    takes an idea off the list. Never raises, never blocks the order's answer. Returns True when it was written."""
+    try:
+        now = now or time.time()
+        with file_lock(IDEA_DISMISS):
+            st = _idea_state(now)
+            st["bought"][idea_key(legs)] = now
+            save_json(IDEA_DISMISS, st)
+        return True
+    except Exception as err:
+        console_note(f"idea bought mark: {type(err).__name__}: {err}")
+        return False
 
 
 def idea_undismiss(ids=None, everything=False, now=None):

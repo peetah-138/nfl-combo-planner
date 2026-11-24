@@ -46,6 +46,7 @@ function ideaButtons(x,q,fresh,left,det){const one=x.n===1,busy=!!(S.ibuy&&S.ibu
  const buy=busy?`<button class="btn ${v.k==='warn'?'warn':'yes'}" disabled><span class="spin"></span> Buying…</button>`
   :v.k==='no'?`<button class="btn acc" data-ib="${x.id}" onclick="priceIdea('${x.id}')">Get a new price</button>`
   :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
+ if(busy&&!fresh)return `<div class="dbtns"><button class="btn ghost" disabled>Pass</button><button class="btn yes" disabled><span class="spin"></span> Buying…</button></div>`;   // #270: a buy still on its way after the countdown ended
  return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}onclick="ideaPass('${x.id}',${det?'true':'false'})">Pass</button>${buy}`:
   `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
 function ideaVd(x,q){const v=ideaVerdict(x,q);return (v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'')+ideaWarn(q);}
@@ -251,7 +252,7 @@ async function ideaBuyGo(id,body,okMsg){const q=S.ideaq&&S.ideaq[id],x0=ideaFind
  const m=r.ok?okMsg(q,r):(r.msg||r.error||(r.check?'Kalshi didn\'t answer clearly, so this may or may not have been bought. Check Kalshi before trying again.':'Kalshi didn\'t take it, so nothing was bought. Get a new price to try again.'));
  const tone=r.ok?'good':r.check||r.lost?null:'bad';ideaAns(id,m,tone);
  if(r.ok||r.check||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
- if(r.ok||r.check)ideaDrop(id,'bought',x0);else ideaRedraw();load('live',true);}
+ if(r.ok||r.check||r.lost)ideaDrop(id,'bought',x0);else ideaRedraw();/* a lost reply hides it like a check (#270): it may have gone through */load('live',true);}
 function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
 function buySingle(id){return ideaBuyGo(id,q=>({a:'singlebuy',id,n:q.n,price:q.price}),(q,r)=>r.msg||'Bought.');}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();

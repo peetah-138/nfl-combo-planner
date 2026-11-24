@@ -4002,6 +4002,10 @@ def webapp_main():
                 LIVE["at"] = 0
                 if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
+                    try:                                # a Buy idea for these picks stays off the list too (#270)
+                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")])
+                    except Exception:
+                        pass
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
                                  "check": bool(r.get("check"))})
             if a == "panel_reprice":                # (#358) a Skipped / Didn't buy card: where it would land now (reads only)
