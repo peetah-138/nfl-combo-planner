@@ -16,7 +16,8 @@
     "bestbets.css",
     "refusals.css",
     "scoreboard.css",
-    "sell_single.css"
+    "sell_single.css",
+    "overlap.css"
   ],
   "js": [
     "common.js",
@@ -40,6 +41,7 @@
     "game.js",
     "game_tabs.js",
     "moments.js",
+    "overlap.js",
     "settings.js",
     "boot.js"
   ],

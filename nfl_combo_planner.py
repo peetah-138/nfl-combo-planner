@@ -58,6 +58,9 @@ CFG = {
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
     "smart_buy_gate": True,   # Smart Buy (issue #137 stage 2): skips panel bets and Buy ideas unlikely to be profitable
+    "overlap_guard": True,    # pick lists leave out (grey) a game you already have overlap_n open bets on, or overlap_pct%
+    "overlap_n": 2,           # of the sizing base at risk on; "Add anyway" on Pete's own tap shows it again (display only)
+    "overlap_pct": 8,
     "knobs_live": True,       # #228 PR3: smart sell tunes its own exit numbers per league (Pete's standing opt-in)
                               # (skip-only). A new key: the old preview switch's stored 'off' was a default, not a choice
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
@@ -257,7 +260,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
 
 
 def next_league():
@@ -15938,6 +15941,9 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         clears = False                                  # (#341) under way: green only with a likely route to profit
         warn.append({"k": "exit", "t": "The game is under way and a profitable sale or win from here doesn't look "
                                        "likely, so this isn't a recommended buy."})
+    ov = overlap_note([{"ticker": t, "event": x.get("event") or ""}])   # display only: never changes clears
+    if ov:
+        warn.append({"k": "overlap", "t": ov})
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -19390,6 +19396,184 @@ def panel_extras(real=None):
         return None
     real = real if real is not None else panel_get("real")
     return dict(x, items=_extras_filter(x.get("items", []), real))
+
+
+# ---- the overlap guard: games you already have enough riding on are left out of pick lists ----
+# A game with overlap_n (Settings › Money, 2 by default) or more open bets on it (combos, singles, spreads, totals and today's panel bets, each counted
+# once), or overlap_pct% (8 by default) or more of the sizing base riding on it, is greyed in every pick list (Build board, Surprise me,
+# Best bets, Buy ideas, panel extras, long shots) with an "Add anyway" that only Pete's own tap sends (a per-request
+# allow list the page keeps in memory: nothing saved, nothing the panel, killer deals, standing orders or the hedge
+# read). Reads only what's already been read (no lookups); any failure means no guard, never a broken list.
+OVERLAP = {"n": 2, "pct": 8}
+OVERLAP_ALLOW_MAX = 20
+
+
+def overlap_key(event="", ticker=""):
+    """One key per game for every kind of bet on it: a game-winner, spread or total market (or its event) and a combo
+    leg all map to the game's GAME event."""
+    ev = event or (ticker.rsplit("-", 1)[0] if ticker and "-" in ticker else "")
+    return game_event(ev) if ev else ""
+
+
+def overlap_settings():
+    """(on, n, pct): the Settings › Money switch and its two numbers (shared settings first, like shared_flag)."""
+    main = load_json(MAIN_SAVED, {}) if os.path.exists(MAIN_SAVED) else {}
+
+    def num(k, lo, hi):
+        v = main.get(k)
+        v = CFG.get(k, OVERLAP[k[8:]]) if v is None else v
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = OVERLAP[k[8:]]
+        return min(hi, max(lo, v))
+    return shared_flag("overlap_guard"), int(num("overlap_n", 1, 10)), num("overlap_pct", 1, 50)
+
+
+def _overlap_singles():
+    """Open singles, spreads and totals from what was last read: the Live list, else the raw account positions. The
+    last items are used even after a buy or sell clears the read stamp (at=0), so a game doesn't drop under the line
+    in the minutes right after a buy, until the next account read."""
+    if SINGLES.get("items"):
+        return [{"t": x.get("t") or x.get("ticker"), "event": x.get("event") or "", "cost": x.get("cost") or 0,
+                 "state": x.get("state")} for x in SINGLES.get("items") or []]
+    out = []
+    if ACCT_POS.get("items"):
+        for p in ACCT_POS.get("items") or []:
+            t = p.get("ticker") or p.get("market_ticker")
+            if t and not is_combo(t) and abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
+                out.append({"t": t, "event": "", "cost": dollars(p, "market_exposure") or dollars(p, "total_traded"),
+                            "state": None})
+    return out
+
+
+def game_exposure():
+    """{game: {"n": open bets on it, "risk": dollars they cost}} from what's already been read (never a lookup). A combo
+    counts once on every game it touches, at its full cost (if that game goes wrong the whole stake goes). Today's
+    panel bets (scheduled, buying, bought, or 'check': an unknown outcome counts as open) count too, unless the account
+    already shows that bet. Settled bets and finished singles don't count."""
+    out = defaultdict(lambda: {"n": 0, "risk": 0.0})
+    sets, tks = set(), set()
+
+    def add(keys, cost):
+        try:
+            cost = max(0.0, float(cost or 0))
+        except (TypeError, ValueError):
+            cost = 0.0
+        for k in {k for k in keys if k}:
+            out[k]["n"] += 1
+            out[k]["risk"] += cost
+    v = ACCT_CACHE.get("value")
+    for a in (v[0] if v and v[0] else []):
+        if a.get("status") != "pending":
+            continue
+        legs = a.get("legs") or []
+        sets.add(frozenset(l.get("ticker") for l in legs if l.get("ticker")))
+        add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in legs], a.get("cost"))
+    for x in _overlap_singles():
+        if not x["t"] or x["t"] in tks or x.get("state") in ("over", "done"):
+            continue
+        tks.add(x["t"])
+        add([overlap_key(x["event"], x["t"])], x["cost"])
+    try:
+        real = panel_get("real") if STORE.get("db") else None
+    except Exception:
+        real = None
+    for c in (real or {}).get("items") or []:
+        if c.get("state") not in PANEL_LIVE:
+            continue
+        ts = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+        if (len(ts) == 1 and ts[0] in tks) or (len(ts) > 1 and frozenset(ts) in sets):
+            continue                                        # already counted from the account
+        add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []], c.get("stake"))
+    return {k: {"n": x["n"], "risk": round(x["risk"], 2)} for k, x in out.items()}
+
+
+def _overlap_base():
+    """The panel's sizing base from the balance already read, without saving anything; None when unknown."""
+    v = ACCT_CACHE.get("value")
+    bal = v[1] if v else None
+    if bal is None:
+        return None
+    try:
+        base, _ = sizing_base(balance=bal, save=False)
+    except Exception:
+        return None
+    return base if base and base > 0 else None
+
+
+def overlap_text(x):
+    n = x.get("n") or 0
+    risk = x.get("risk") or 0
+    bets = f"{n} open bet{'' if n == 1 else 's'}" if n else "money riding"
+    return f"You already have {bets} on this game ({money(risk)} at risk)."
+
+
+def overlap_allow(raw):
+    """The page's per-request "Add anyway" list: game keys only, at most OVERLAP_ALLOW_MAX."""
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    out = set()
+    for k in list(raw or [])[:OVERLAP_ALLOW_MAX]:
+        k = str(k or "").strip().upper()
+        if re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,79}", k):
+            out.add(overlap_key(k))
+    return out
+
+
+def overlap_games(allow=(), base=None, exposure=None):
+    """{game: {"n", "risk", "why": "n"|"risk", "text"}} for every game over the line, without the ones in `allow`.
+    Off (Settings › Money) or anything unreadable: {} (the lists show as before). base None: the count rule only."""
+    try:
+        on, n_max, pct = overlap_settings()
+        if not on:
+            return {}
+        ex = game_exposure() if exposure is None else exposure
+        if not ex:
+            return {}
+        if base is None:
+            base = _overlap_base()
+        allow = {overlap_key(k) for k in allow or ()}
+        out = {}
+        for k, x in ex.items():
+            if k in allow:
+                continue
+            by_n = x["n"] >= n_max
+            by_risk = bool(base) and x["risk"] >= base * pct / 100 - 1e-9
+            if by_n or by_risk:
+                out[k] = {"n": x["n"], "risk": x["risk"], "why": "n" if by_n else "risk", "text": overlap_text(x)}
+        return out
+    except Exception as err:
+        print("overlap guard:", type(err).__name__, err, flush=True)
+        return {}
+
+
+def overlap_of(over, events=(), tickers=()):
+    """The first over-the-line game among these events/tickers (its entry plus "game"), or None."""
+    if not over:
+        return None
+    for k in [overlap_key(e) for e in events or ()] + [overlap_key("", t) for t in tickers or ()]:
+        if k and k in over:
+            return dict(over[k], game=k)
+    return None
+
+
+def overlap_note(legs, allow=()):
+    """The warning line for a quote on these legs (dicts with ticker/event, or tickers): the game already carries open
+    bets. Shown whatever the switch's thresholds say, as long as the switch is on and Pete has a bet there; None when not."""
+    try:
+        if not overlap_settings()[0]:
+            return None
+        ex = game_exposure()
+        for l in legs or []:
+            k = overlap_key(l.get("event") or "", l.get("ticker") or "") if isinstance(l, dict) else overlap_key("", str(l))
+            if k and k in ex and ex[k]["n"]:
+                return overlap_text(ex[k])
+    except Exception:
+        return None
+    return None
 
 
 def panel_add(ids, view, stakes=None):

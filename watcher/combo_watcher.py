@@ -2883,7 +2883,69 @@ def webapp_main():
                      lines_priced=s.get("lines_priced") or 0, lines_nobook=s.get("lines_nobook") or 0)
         return True
 
-    def api_build(lg, rebuild=True, warming=False):
+    def overlap_legs(over, legs):
+        """The over-the-line game a list of legs (dicts or tickers) touches, or None."""
+        legs = legs or []
+        return A.overlap_of(over, [l.get("event") or "" for l in legs if isinstance(l, dict)],
+                            [l.get("ticker") or "" if isinstance(l, dict) else str(l) for l in legs])
+
+    def combo_over(legs, raw_allow):
+        """The over-the-line game a freshly swapped or flipped combo touches (display only), or None."""
+        try:
+            return overlap_legs(A.overlap_games(allow=A.overlap_allow(raw_allow)), legs)
+        except Exception as e:
+            log(f"overlap check (swap/flip) failed: {e}")
+            return None
+
+    def overlap_info():
+        """The guard's settings for the page's wording."""
+        on, n, pct = A.overlap_settings()
+        return {"on": on, "n": n, "pct": pct}
+
+    def overlap_ls(view, over):
+        if over and isinstance(view, dict):
+            view = dict(view, recs=[dict(r, over=overlap_legs(over, r.get("legs"))) for r in view.get("recs") or []])
+        return view
+
+    def overlap_live(out, raw_allow):
+        """Live's Buy ideas: each on a game Pete already has enough on is marked (greyed with Add anyway). Never raises."""
+        try:
+            if isinstance(out, dict) and out.get("ideas"):
+                over = A.overlap_games(allow=A.overlap_allow(raw_allow))
+                out = dict(out, ideas=[dict(x, over=overlap_legs(over, x.get("legs"))) for x in out["ideas"]],
+                           overlap=overlap_info())
+        except Exception as err:
+            log("overlap (live):", type(err).__name__, err)
+        return out
+
+    def overlap_panel(out, raw_allow):
+        """The New-since-you-approved extras: each on a game Pete already has enough on is marked. Never raises."""
+        try:
+            x = out.get("extra") if isinstance(out, dict) else None
+            if x and x.get("items"):
+                over = A.overlap_games(allow=A.overlap_allow(raw_allow))
+                out = dict(out, extra=dict(x, items=[dict(c, over=overlap_legs(over, c.get("legs"))) for c in x["items"]]),
+                           overlap=overlap_info())
+        except Exception as err:
+            log("overlap (panel):", type(err).__name__, err)
+        return out
+
+    def overlap_extra_ids(ids, raw_allow):
+        """(ids to add, ids left out, unreadable): extras on a game over the line stay out unless Pete tapped Add anyway
+        on it. This one buys, so it fails closed: if his open bets can't be read, nothing is added (the lists only grey)."""
+        ids = list(ids) if isinstance(ids, (list, tuple)) else []
+        try:
+            if not A.overlap_settings()[0]:
+                return ids, [], False
+            x = A.panel_extras() or {}
+            over = A.overlap_games(allow=A.overlap_allow(raw_allow), exposure=A.game_exposure())
+            bad = {c["id"] for c in x.get("items") or [] if overlap_legs(over, c.get("legs"))}
+        except Exception as err:
+            log(f"panel extras: couldn't check open bets per game ({type(err).__name__}: {err}); none added")
+            return [], ids, True
+        return [i for i in ids if i not in bad], [i for i in ids if i in bad], False
+
+    def api_build(lg, rebuild=True, warming=False, allow=None):
         import random
         BUILD.setdefault("seen", {})[lg] = time.time()
         if not warming:
@@ -2961,25 +3023,34 @@ def webapp_main():
                               "sides": [side_view(x) for x in sides], "tie": any(x.get("tie") for x in sides),
                               "value": max((x.get("edge") or -1) for x in teams) if teams else None})
             board.sort(key=lambda g: (g["started"], str(g["start"])))
+            over = A.overlap_games(allow=allow or ())   # games Pete already has enough on: greyed (display only)
+            for g in board:
+                g["over"] = A.overlap_of(over, [g["event"]])
             own_sets = owned_sets()
             pairs = [(combo_view(i, c, own_sets), c) for i, c in enumerate(A.CTX.get("combos") or [], 1)
                      if c.get("kind") != "longshot"]   # (#341) a long shot priced from its own card stays in Long shots
+            for v, c in pairs:                          # marked, never removed: every card keeps its own number (rule 7)
+                v["over"] = overlap_legs(over, c.get("legs"))
             cviews = [v for v, _ in pairs]
             lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
+            pregame = {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)}
             try:                                        # Best bets today (#63): recommend-only, display only
-                best = A.best_bets_feed(
-                    {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)},
-                    lines_now,
+                best = A.best_bets_feed(                # without games over the line (they're listed as left out)
+                    {e: sd for e, sd in pregame.items() if not A.overlap_of(over, [e])},
+                    [x for x in lines_now if not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
-                     for v, c in pairs if not v.get("bought")])
+                     for v, c in pairs if not v.get("bought") and not v.get("over")])
             except Exception as err:
                 print("best bets:", err, flush=True)
                 best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
+            best["over"] = [dict(A.overlap_of(over, [e]), event=e) for e in pregame if A.overlap_of(over, [e])]
             return jsonable({"lg": lg, "name": A.LG()["name"], "icon": A.LG().get("icon", ""), "note": BUILD.get("note", ""),
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": singles_view(games), "lines": lines_now, "longshots": ls_view(lg),
+                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(games)],
+                             "lines": lines_now, "longshots": overlap_ls(ls_view(lg), over),
+                             "overlap": overlap_info(),
                              "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
                              "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
                              "days": {"mode": "mix" if A.is_mix() else "day" if A.by_day() else "week",
@@ -3307,7 +3378,8 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
+                "overlap_guard", "overlap_n", "overlap_pct")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3433,6 +3505,10 @@ def webapp_main():
             except Exception:
                 r["room"] = None
             r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
+            ov = overlap_warn(c.get("legs") or [])
+            if ov:
+                r["overlap"] = ov[0]["t"]
+                r["warn"] = list(r.get("warn") or []) + ov
             return r
         r = A.get_offer(i, amount=own)
         rec = None
@@ -3456,7 +3532,19 @@ def webapp_main():
         except Exception:                              # get_offer's / accept_offer's own fresh check
             r["room"] = None
         r["max"] = min(A.OWN_MAX, r["room"]) if r["room"] is not None else A.OWN_MAX
+        ov = overlap_warn(c.get("legs") or [])         # display only: the price, the Buy and its checks are unchanged
+        if ov:
+            r["overlap"] = ov[0]["t"]
+            r["warn"] = list(r.get("warn") or []) + ov
         return r
+
+    def overlap_warn(legs):
+        """The quote's "you already have bets on this game" line, as a warn entry ([] when none). Never raises."""
+        try:
+            t = A.overlap_note(legs)
+        except Exception:
+            t = None
+        return [{"k": "overlap", "t": t}] if t else []
 
     REPRICE_AT = {}        # (#358) a Skipped / Didn't buy card's last fresh price, by panel id: one per REPRICE_SECS
     REPRICE_SECS = 8
@@ -3631,7 +3719,7 @@ def webapp_main():
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
                                  **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
-                                                          "max", "min", "own", "why", "nofair", "live", "small")}})
+                                                          "max", "min", "own", "why", "nofair", "live", "small", "overlap", "warn")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
                 if not rows:
@@ -3691,7 +3779,7 @@ def webapp_main():
                                      "fair": fair, "clears": bool(clears), "rec": rec, "own": own is not None,
                                      "ev": round(n * fair - cost, 2) if fair is not None else None, "note": note, "min": A.OWN_MIN,
                                      "max": A.OWN_MAX, "live": fi["live"], "how": fi["how"], "fair_src": fi["src"],
-                                     "nofair": fi["nofair"], "warn": fi["warn"],
+                                     "nofair": fi["nofair"], "warn": fi["warn"] + overlap_warn([tk]),
                                      "room": round(max(0.0, budget - spent), 2) if spent is not None else None})
                 if row["kick"] and row["kick"] < time.time() + 60:
                     return {"ok": False, "gone": True, "msg": "A game in it is starting, so this one's off the table."}
@@ -3717,7 +3805,7 @@ def webapp_main():
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
                 out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
-                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small")}}
+                       "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small", "overlap", "warn")}}
                 if gap:                                 # (#358) priced on the live chance when every live guard passes
                     out.update(live=True, fair_src="live" if r.get("fair") else "none",
                                **({"rec": small, "own": False, "small": True} if small is not None else {}))
@@ -3844,7 +3932,16 @@ def webapp_main():
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
             if a == "panel_add":
-                ok, msg = A.panel_add(d.get("ids") or [], d.get("view") or "", stakes=d.get("stakes"))
+                ids, left = d.get("ids") or [], []
+                if (d.get("view") or "") == "extra":     # an extra on a greyed game only with Pete's own Add anyway
+                    ids, left, unread = overlap_extra_ids(ids, d.get("allow"))
+                    if unread:
+                        return {"ok": False, "msg": "Couldn't check your open bets on those games. Try again in a minute."}
+                    if left and not ids:
+                        return {"ok": False, "msg": "You already have enough on those games. Tap Add anyway on one first."}
+                ok, msg = A.panel_add(ids, d.get("view") or "", stakes=d.get("stakes"))
+                if left:
+                    msg = f"{msg} Left out {len(left)} on games you already have enough on."
                 return {"ok": ok, "msg": msg}
             if a == "panel_look":
                 ok, msg = A.panel_look_now()
@@ -3867,7 +3964,9 @@ def webapp_main():
                 verdict = "good" if "Good flip" in note else "bad" if "Worse bet" in note else "mid"
                 text = re.sub(r"^(Good flip|Worse bet|Trade-off)\s*", "", text).replace(" Tap Flip again to undo.", " Tap it again to undo.")
                 A.CTX.get("offers", {}).pop(i, None)
-                return jsonable({"ok": True, "verdict": verdict, "text": text, "combo": combo_view(i, A.CTX["combos"][i - 1])})
+                v = combo_view(i, A.CTX["combos"][i - 1])
+                v["over"] = combo_over(A.CTX["combos"][i - 1].get("legs"), d.get("allow"))
+                return jsonable({"ok": True, "verdict": verdict, "text": text, "combo": v})
             if a == "swap":                         # "not that one": a different combo in its place
                 import random
                 i = int(d.get("i", 0))
@@ -3890,7 +3989,9 @@ def webapp_main():
                     return {"ok": False, "msg": "No other combo to offer from these games."}
                 combos[i - 1] = pick
                 A.CTX.get("offers", {}).pop(i, None)
-                return jsonable({"ok": True, "combo": combo_view(i, pick)})
+                v = combo_view(i, pick)
+                v["over"] = combo_over(pick.get("legs"), d.get("allow"))
+                return jsonable({"ok": True, "combo": v})
             if a == "custom":
                 k, why = A.add_own_combo([str(x) for x in d.get("tickers") or []])
                 if not k:
@@ -3935,10 +4036,11 @@ def webapp_main():
                 q = {k: v[0] for k, v in parse_qs(query).items()}
                 try:
                     if path == "/app/api/live":
-                        out = api_live(fresh=q.get("fresh") == "1")
+                        out = overlap_live(api_live(fresh=q.get("fresh") == "1"), q.get("allow"))
                     elif path == "/app/api/build":
                         lg = q.get("lg") or "nba"
-                        out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1")
+                        out = api_build(lg if lg in A.LEAGUES else "nba", rebuild=q.get("fresh") == "1",
+                                        allow=A.overlap_allow(q.get("allow")))
                     elif path == "/app/api/results":
                         out = api_results()
                     elif path == "/app/api/analytics":
@@ -3955,7 +4057,7 @@ def webapp_main():
                     elif path == "/app/api/recap":
                         out = jsonable(A.recap()) if A.STORE.get("db") else {}
                     elif path == "/app/api/panel":
-                        out = api_panel(q.get("v") or "all")
+                        out = overlap_panel(api_panel(q.get("v") or "all"), q.get("allow"))
                     elif path == "/app/api/orders":
                         out = api_orders()
                     elif path == "/app/api/combo":
