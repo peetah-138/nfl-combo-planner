@@ -3144,6 +3144,75 @@ def webapp_main():
                              "mkt": paper_part("mkt_fair_summary"), "carry": paper_part("carry_summary"),
                              "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
 
+    CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
+                  "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
+
+    def api_closed(t):
+        """Read-only detail of a bet that has already closed (sold, settled or expired), from what the app already stores:
+        the account's bets, the history file, the automatic cash-out log. Only this bet's own ticker is looked up; nothing
+        about the account itself goes out. found:False when it is nowhere (the page then says so)."""
+        if not COMBO_TICKER.match(t or ""):
+            return {"found": False}
+        out = {"found": False, "t": t, "attempts": []}
+        with alock:
+            bets, _bal, _note = A.fetch_account(max_age=30, every_league=True)
+        a = next((x for x in (bets or []) if x.get("ticker") == t), None)
+        rows = A.store_rows("select ts, result, why, kind, offer, cost, pays, frac from sell_log where ticker=? order by ts", (t,)) if A.STORE.get("db") else []
+        single = next((x for x in (api_live() or {}).get("singles") or [] if x.get("t") == t and x.get("state") == "done"), None)
+        sale = next((r for r in reversed(rows) if r.get("result") == "sold"), None)
+        if a and a.get("status") in ("won", "lost", "cashed"):
+            names = []
+            for l in a.get("legs") or []:
+                lt = l.get("ticker") or ""
+                nm = A.PICK_NAME.get(lt) or A.sport_teams(A.ticker_sport(lt) or "nfl").get(lt.rsplit("-", 1)[-1]) or lt.rsplit("-", 1)[-1]
+                names.append({"name": ("not " if l.get("side") == "no" else "") + nm, "res": l.get("res"), "t": lt})
+            back = a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0.0
+            snap = (A.MINE.get("snap") or {}).get(t) or {}
+            out.update(found=True, kind="combo", label=snap.get("label") or "Combo", picks=names, status=a["status"], cost=a["cost"],
+                       back=round(back, 2), pays=a["pays"], closed_ts=A.realized_ts(a))
+        elif single:
+            out.update(found=True, kind="single", label=single.get("label"), game=single.get("game"), picks=[{"name": single.get("label"), "res": single.get("res"), "t": t}],
+                       status="won" if single.get("res") == "yes" else "lost", cost=single.get("cost"), pays=single.get("pays"),
+                       back=single.get("pays") if single.get("res") == "yes" else 0.0)
+        elif sale:
+            out.update(found=True, kind=sale.get("kind") or "single", label=None, picks=[], status="cashed", cost=sale.get("cost"),
+                       back=sale.get("offer"), pays=sale.get("pays"), closed_ts=sale.get("ts"))
+        if not out["found"]:
+            return out
+        if out.get("closed_ts") is None and sale:
+            out["closed_ts"] = sale.get("ts")
+        if out.get("closed_ts"):
+            out["closed"] = time.strftime("%a %b %d, %I:%M %p", time.localtime(out["closed_ts"])).replace(" 0", " ")
+        if out.get("cost") is not None and out.get("back") is not None:
+            out["pl"] = round(out["back"] - out["cost"], 2)
+            out["pl_pct"] = round(out["pl"] / out["cost"] * 100, 2) if out["cost"] else None
+        out["stamp"] = {"won": "WON", "lost": "LOST", "cashed": "SOLD EARLY", "expired": "EXPIRED"}.get(out.get("status"), "CLOSED")
+        out["sports"] = sorted({A.ticker_sport(l.get("t") or "") or "" for l in out.get("picks") or []} - {""}) or \
+            ([A.ticker_sport(t)] if A.ticker_sport(t) else [])
+        if sale and sale.get("chance") is not None:
+            out["chance"] = sale.get("chance")
+        sold_by_app = sale and (sale.get("why") or "")
+        out["why"] = ("Cashed out automatically: " + CLOSED_WHY.get(sold_by_app, sold_by_app)) if sold_by_app else \
+            {"won": "Settled: every pick won", "lost": "Settled: a pick lost", "cashed": "Cashed out by you"}.get(out["status"], "Closed")
+        try:
+            with open(A.SELL_LOG, encoding="utf-8") as f:
+                for line in f:
+                    if t not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get("ticker") == t:
+                        out["attempts"].append({"when": d.get("when"), "result": d.get("result"), "why": d.get("why"), "note": d.get("note"),
+                                                "offer": d.get("offer"), "tries": [{"offer": x.get("offer"), "quote": x.get("quote"), "error": x.get("error")}
+                                                                                  for x in (d.get("tries") or [])[:12] if isinstance(x, dict)]})
+            out["attempts"] = out["attempts"][-40:]
+        except OSError:
+            pass
+        out["chart"] = A.combo_history(t) if A.STORE.get("db") and out["kind"] == "combo" else {"offers": [], "ticks": {}}
+        return jsonable(out)
+
     def paper_part(name):
         """One of the #341 paper tests' summaries for What's working; None when it can't be read (never breaks Results)."""
         try:
@@ -4087,6 +4156,8 @@ def webapp_main():
                         out = overlap_panel(api_panel(q.get("v") or "all"), q.get("allow"))
                     elif path == "/app/api/orders":
                         out = api_orders()
+                    elif path == "/app/api/closed":
+                        out = api_closed(q.get("t") or "")
                     elif path == "/app/api/combo":
                         out = api_combo(q.get("t") or "")
                     elif path == "/app/api/game":
