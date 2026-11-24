@@ -37,9 +37,15 @@ function _renderBuild(){const d=S.build;const m=$('#main');
   ${lsSection(d,true)}
   ${secHead('combos','🎲 Surprise me',d.combos.length,'',`<button class="btn" id="rebuildb" onclick="event.stopPropagation();rebuild(this)">Rebuild</button>`)}
   ${secOpen('combos')?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Random combos built to your mix, for fun. They aren't recommendations unless marked ★.</div>
-  <div class="cgrid">${d.combos.slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1)).map(ccard).join('')}</div>`:''}`:''}
+  ${surToggle(d.combos)}
+  <div class="cgrid">${surList(d.combos).map(ccard).join('')||`<div class="empty sur0"><b>No ★ value picks right now</b>Switch to All to see every combo.</div>`}</div>`:''}`:''}
  </div><aside>${adv?(narrow?'':slip(d))+singlesCard(d):budgetCard(d)}</aside></div>${slipBar()}`;}
 setInterval(()=>{if(S.view==='build'&&S.build&&(S.build.board||[]).some(g=>g.started)&&!document.hidden&&!S.buying&&!$('#modal').classList.contains('on'))load('build').catch(()=>{});},30000);
+// Surprise me: "All | ★ Only". Starred = kind 'value' (the server drops the star from a combo with a pick under way).
+try{S.sur=localStorage.getItem('cw_sur')==='star'?'star':'all'}catch(e){S.sur='all'}
+function surList(cs){const l=(cs||[]).slice().sort((a,b)=>(b.kind==='value')-(a.kind==='value')||((b.pred||{}).p_clear??-1)-((a.pred||{}).p_clear??-1));return S.sur==='star'?l.filter(c=>c.kind==='value'):l;}
+function surToggle(cs){const n=(cs||[]).filter(c=>c.kind==='value').length;return `<div class="seg sursw" role="group" aria-label="Show combos">${[['all','All'],['star','★ Only '+n]].map(([k,l])=>`<button type="button" class="${S.sur===k?'on':''}" aria-pressed="${S.sur===k}" onclick="setSur('${k}')">${l}</button>`).join('')}</div>`;}
+function setSur(k){hap();S.sur=k==='star'?'star':'all';try{localStorage.setItem('cw_sur',S.sur)}catch(e){}renderBuild();}
 function setPview(k){hap();S.pview=k;try{localStorage.setItem('cw_pview',k)}catch(e){}S.panel=cget('panel_'+k);const want=k==='all'?'mix':k;if(want!==S.lg){setLg(want);}else load('build');}
 try{S.pview=localStorage.getItem('cw_pview')||'all'}catch(e){S.pview='all'}
 try{const l=JSON.parse(localStorage.getItem('cw_leagues')||'null');if(Array.isArray(l)&&l.length>1&&l.every(x=>Array.isArray(x)&&x.length>=3&&/^[a-z0-9_]+$/.test(x[0])&&typeof x[1]==='string'&&typeof x[2]==='string'))S.lgs=l;

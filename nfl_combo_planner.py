@@ -13483,6 +13483,28 @@ def maker_ratio(n, hours=None):
     return r or max(0.6, 0.97 - 0.035 * n)          # before anything is learned: a cautious guess
 
 
+def value_label(legs):
+    """{'kind', 'tier'} for a value-search combo. The star (kind "value") means Kalshi's price is cheap against a fair
+    chance and the maker's usual discount, both from BEFORE the game; a combo with a pick under way has neither (its chance
+    is live, the discount is from past pre-game prices), so it gets no star (issue: Surprise me star filter). Never raises."""
+    try:
+        if idea_combo_live_gap(legs):
+            return {"kind": "mix", "tier": "Live pick"}
+    except Exception:
+        return {"kind": "mix", "tier": "Live pick"}
+    return {"kind": "value", "tier": "Value"}
+
+
+def combo_star(c):
+    """(kind, tier, live) for a suggested combo as Build shows it NOW. A combo built before a game started keeps its star
+    in Build's saved list; once a pick is under way the star and the "Likely about X% of fair" guess (past pre-game Kalshi
+    prices) don't apply, so it is shown as a plain "Live pick". Never raises."""
+    live = bool(idea_combo_live_gap(c.get("legs")))
+    if live and c.get("kind") == "value":
+        return "mix", "Live pick", True
+    return c.get("kind"), c.get("tier"), live
+
+
 def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), per_n=0):
     """Combos built for price, not for chance: picks where Kalshi's own price is cheapest against the
     sharp books' fair chance, combined so those gaps multiply. Scores every combination of the best
@@ -13526,7 +13548,7 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), 
         for l in legs:
             used[l["ticker"]] = used.get(l["ticker"], 0) + 1
         fair_pay = stake / chance
-        out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+        out.append({**value_label(legs), "legs": legs, "fair": fair_pay,
                     "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
                     "value_pct": round(pct, 4)})
     if per_n:
@@ -13544,7 +13566,7 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), 
                 have.add(ks)
                 got += 1
                 fair_pay = stake / chance
-                out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+                out.append({**value_label(legs), "legs": legs, "fair": fair_pay,
                             "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
                             "value_pct": round(pct, 4), "extra": True})
     return out
@@ -23864,11 +23886,17 @@ def _cover_survivor_combo(early, winners, later_games, r_buy, stake):
             "kick": min((g["kick"] for g in later_games), default=None)}
 
 
+def _cover_sunday(now):
+    """The anchoring Sunday of the NFL week that unix time `now` falls in, by the Pacific date (Monday's game belongs
+    to the week that just ended). Taken from `now`, not the wall clock, so a test can pin it."""
+    today = dt.datetime.fromtimestamp(now, PACIFIC).date()
+    return today - dt.timedelta(days=1) if today.weekday() == 0 \
+        else today + dt.timedelta(days=(6 - today.weekday()) % 7)
+
+
 def _cover_pass(log=print, alert=None):
     now, did = time.time(), []
-    today = dt.datetime.now(PACIFIC).date()           # the anchoring Sunday of the current NFL week (Monday's
-    sunday = today - dt.timedelta(days=1) if today.weekday() == 0 \
-        else today + dt.timedelta(days=(6 - today.weekday()) % 7)   # game belongs to the week that just ended)
+    sunday = _cover_sunday(now)
     week_end = _nfl_week_end(now)
     key = sunday.isoformat()
     # First pass of the week, from the earliest kickoff on: snapshot the slate's checkpoints, cover the first one.
