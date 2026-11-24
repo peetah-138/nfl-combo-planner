@@ -5633,9 +5633,13 @@ def auto_sell_now(plan):
                     out.append(f"🤖 Auto cash-out reached today's cap of {auto_cap_limit()} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
-            below = o["offer"] < h["cost"] * o.get("frac", 1.0)
+            net = combo_sale_net(o)                       # #382/#383: below cost AFTER Kalshi's selling fee, as singles judge it
+            if net is None:                               # no contracts or price to work the fee out on: no sale (fail closed)
+                log_decision(dict(rec, result="skipped", why="offer unreadable (no contracts to price the fee on)"))
+                continue
+            below = net < h["cost"] * o.get("frac", 1.0) - 0.005
             if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
-                log_decision(dict(rec, result="skipped", why="below what you paid"))
+                log_decision(dict(rec, result="skipped", why="below what you paid", net=round(net, 2)))
                 continue
             if below and why != "cut loss":
                 rec["stop_loss"] = True
@@ -9562,6 +9566,18 @@ def accept_cash(ticker, floor=None):
         MINE["selling"].discard(ticker)
 
 
+def combo_sale_net(o):
+    """What a combo cash-out offer pays after Kalshi's selling fee, the way singles net it (`single_fee`, rounded up to
+    the cent per order). None when the offer's contracts or price can't be read (callers fail closed: no sale)."""
+    try:
+        n, offer = float(o.get("contracts") or 0), float(o.get("offer") or 0)
+        if n <= 0 or offer <= 0:
+            return None
+        return offer - n * single_fee(min(max(offer / n, 0.0), 1.0), n)
+    except (TypeError, ValueError):
+        return None
+
+
 def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     """Accepts the offer; if the buyer backs out (a definite 'cancelled'/'failed'), asks for a fresh offer and accepts
     it only if it is at least CASH_SLIP of `agreed` (and `floor`, if given). Your tap: CASH_RETRIES fresh offers.
@@ -9613,7 +9629,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             # 97% of the first price, but it should definitely stay above the smart sell line"): the same smart-sell
             # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
             bar = line if line is not None else CASH_SLIP * agreed
-            if o["offer"] < bar or (floor is not None and o["offer"] < floor):
+            net_ = combo_sale_net(o)                  # #382/#383: the cost floor is measured after Kalshi's selling fee
+            if o["offer"] < bar or (floor is not None and (net_ is None or net_ < floor - 0.005)):
                 MINE["cash"][ticker] = o              # floor: Never sell at a loss / a profit-taking sale: not below cost
                 why = "new"
                 info["stop"], info["low_offer"] = "offer too low", round(o["offer"], 2)
