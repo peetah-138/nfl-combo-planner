@@ -217,6 +217,12 @@ with sync_playwright() as pw:
         anim = pg.evaluate("({a:document.getElementById('fa').getAnimations().length,b:document.getElementById('fb').getAnimations().length})")
         check(f"{scheme} #368: the card that was greyed and moved, and the one it passed, animate ({anim})", anim["a"] >= 1 and anim["b"] >= 1)
         pg.evaluate("document.getElementById('flipbox').remove()")
+        # a scroll while the page waits must not make cards slide: nothing moved on the page, so no animation
+        pg.evaluate("""(()=>{const m=document.querySelector('#main');m.insertAdjacentHTML('afterbegin','<div id="flipbox" style="height:3000px"><div class="ccard" id="fa" style="height:90px"><div class="lrows">Gamma to win</div></div></div>');
+          window.scrollTo(0,0);window.__snap=flipSnap();window.scrollTo(0,200);flipPlay(window.__snap)})()""")
+        check(f"{scheme} #368: a scroll during the wait does not slide the cards",
+              pg.evaluate("document.getElementById('fa').getAnimations().length")==0)
+        pg.evaluate("document.getElementById('flipbox').remove();window.scrollTo(0,0)")
         red = pg.evaluate("(()=>{const m=document.querySelector('#main');m.insertAdjacentHTML('afterbegin','<div id=\"flipbox\"><div class=\"ccard\" id=\"fa\"><div class=\"lrows\">Alpha</div></div></div>');return 1})()")
         check(f"{scheme} #368: Add anyway keeps its width while it shows 'Showing…'",
               pg.evaluate("""(()=>{const d=document.createElement('div');d.innerHTML='<button class="btn ovadd">Add anyway</button><button class="btn ovadd"><span class="spin"></span> Showing…</button>';document.body.appendChild(d);

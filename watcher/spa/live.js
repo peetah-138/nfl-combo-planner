@@ -91,7 +91,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
  if(!items.length)return (nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'')+ib;
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
-  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Sell after next game<b>No offer can beat it</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
+  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Sell after next game<b>No offer can beat waiting</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
   if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
@@ -202,7 +202,8 @@ function singlesLive(d){const all=d.singles||[];
  ${foldE()}`;}
 const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: money() rounds $12.70 up to "$13" (#371) */
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
- const hint=x.self||off?'':x.sell_at?` · sells at ${cents(x.sell_at)}+`:x.sell_over?` · holding to collect ${money(x.pays)}`:'';   /* never a line above what it pays (#371) */
+ const at=x.sell_at!=null?x.sell_at:x.threshold,over=x.sell_at!=null?x.sell_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
+ const hint=x.self||off?'':at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" onclick="event.stopPropagation();selfSell('${x.t}',${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
