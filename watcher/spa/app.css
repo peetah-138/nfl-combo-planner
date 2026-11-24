@@ -265,3 +265,13 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 @media (max-width:900px){.dcard{grid-template-columns:minmax(0,1fr)}.dbtns{grid-row:auto}.dbtns .btn{flex:1}.dkpis{grid-template-columns:repeat(2,minmax(0,1fr))}
  .modal{padding:0;align-items:flex-end}.sheet.wide{max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
  .dlegs .lg{grid-template-columns:minmax(0,1fr) 84px 46px}.dlegs svg{width:84px}.games{grid-template-columns:minmax(0,1fr)}}
+/* closed-bet summary card (openClosed): our own look, follows the app's light and dark colors */
+.ccard{background:var(--panel2);border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:6px}
+.ccard.good{border-color:var(--yes)}.ccard.bad{border-color:var(--no)}
+.cc-lg{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);padding-bottom:10px;border-bottom:1px dashed var(--line)}
+.cc-gm{font-size:17px;margin:12px 0 4px;line-height:1.3}
+.cc-bet{margin:10px 0 14px}.cc-bet b{display:block;font-size:26px;line-height:1.15;overflow-wrap:anywhere}.cc-bet span{color:var(--mute);font-size:14px}
+.cc-nums{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cc-nums span,.cc-pl span{display:block;color:var(--mute);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.cc-nums b{font-size:26px}.cc-pl{display:flex;justify-content:space-between;align-items:baseline;margin:12px 0}.cc-pl b{font-size:19px}
+.ccard .good,.cc-nums .good b{color:var(--yes)}.ccard .bad{color:var(--no)}
+.cc-ft{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;font-family:ui-monospace,Menlo,monospace}.cc-stamp{letter-spacing:.12em;font-weight:700}

@@ -6240,9 +6240,11 @@ def smart_sell_singles():
         if sold:
             MINE.get("peak", {}).pop(x["t"], None)
             got = sold * (bid - single_fee(bid))
+            paid = (x.get("cost") or 0) * (sold / x["n"]) if x.get("n") else 0   # the part sold, like the sell sheet
             lead = {"take profit": "🤖 Take profit", "lock in": "🤖 Locked in a profit",
                     "smart": "🤖 Smart sell", "cut loss": "🤖 Cut a loss"}.get(why, "🤖 Smart sell")
-            out.append(f"{lead}: sold {x['label']} for about {money(got)} (paid {money(x['cost'])}).")
+            res = sale_result_note(got, paid, cutting=(why == "cut loss"))
+            out.append(f"{lead}: sold {x['label']} for about {money(got)}" + (f": {res}." if res[0] != "(" else f" {res}."))
     return out
 
 
@@ -9499,6 +9501,26 @@ AUTO_CASH_SLIP = 0.97     # smart sell's own: a combo's real offer must reach th
 #                           from CASH_SLIP so self-tuning can judge it, `auto_slip`, without touching your own taps)
 
 
+def sale_result_note(got, cost, cutting=False):
+    """How a finished sale went against what was paid, in plain words (Pete, 2026-11-23: "tell me how much profit it
+    was instead of what it sold for"): '+$1.42 profit (paid $2.19)', '-$0.80 loss (paid $4.40)' (', cut to limit the
+    damage' for a loss cut), 'broke even (paid $3)'. `got` is what came back (after Kalshi's fee for a single), `cost`
+    what the position cost net of buy fees (the same `cost` Results and the sell sheet use; profit = back - cost,
+    never a second formula). Cost missing, zero or unreadable (or no proceeds) = '(cost unknown)': never a wrong number."""
+    try:
+        got, cost = round(float(got), 2), round(float(cost), 2)
+        if not (math.isfinite(got) and math.isfinite(cost)) or cost <= 0:
+            return "(cost unknown)"
+    except (TypeError, ValueError):
+        return "(cost unknown)"
+    diff = round(got - cost, 2)
+    if diff > 0:
+        return f"+{money(diff)} profit (paid {money(cost)})"
+    if diff < 0:
+        return f"-{money(-diff)} loss (paid {money(cost)})" + (", cut to limit the damage" if cutting else "")
+    return f"broke even (paid {money(cost)})"
+
+
 def accept_cash(ticker, floor=None):
     """Sell: hit their YES bid with the contracts you hold. Only runs after you tap Cash out.
     If the buyer backs out, gets a fresh offer and takes it if it's within 3% of the price you
@@ -9595,7 +9617,9 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             if not auto:
                 haptic("success")             # a haptic needs a tap behind it (auto cash-out has none)
             extra = f" (after {attempt} retr{'y' if attempt == 1 else 'ies'})" if attempt else ""
-            return f"✅ {label} cashed out for about {money(o['offer'])}{extra}."
+            paid = (h.get("cost") or 0) * frac if h else None     # this share's cost, as the auto-sell path judges it
+            res = sale_result_note(o["offer"], paid, cutting=bool(getattr(_CASH_CTX, "cutting", False)))
+            return f"✅ {label} cashed out for about {money(o['offer'])}{extra}" + (f": {res}." if res[0] != "(" else f" {res}.")
         if status not in ("cancelled", "failed"):
             info["stop"] = str(status)
             ACCT_CACHE["at"] = 0
@@ -16473,8 +16497,10 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
     cost = round(q["cost"] * (sold / n), 2) if n else 0.0
     log(f"manual single sold: {sold:g} of {t} at {px:.2f}+")
     part = f" of {n}" if sold < n else ""
+    res = sale_result_note(got, cost)
     return {"ok": True, "sold": sold, "price": px, "got": got, "cost": cost, "pick": q["pick"],
-            "msg": f"✅ Sold {sold:g}{part} at {px * 100:.0f}¢ or better: about {money(got)} back after Kalshi's fee."}
+            "msg": f"✅ Sold {sold:g}{part} at {px * 100:.0f}¢ or better: about {money(got)} back after Kalshi's fee"
+                   + (f": {res}." if res[0] != "(" else f" {res}.")}
 
 
 IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}

@@ -18,6 +18,8 @@ st = ["skipped", "failed", "bought"]
 notes = ["no longer priced well enough, and nothing similar qualified", "Kalshi wouldn't price it (timeout)", ""]
 for i, c in enumerate(P["panel"]["items"][:3]):
     c["state"], c["note"] = st[i], notes[i]
+if len(P["panel"]["items"]) > 3:
+    P["panel"]["items"][3]["state"], P["panel"]["items"][3]["note"] = "cancelled", "you cancelled it"
     c["kick"] = time.time() + 9 * 3600
 from playwright.sync_api import sync_playwright
 probs = []
@@ -49,6 +51,35 @@ with sync_playwright() as pw:
     if SHOTS:
         pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
         pg.screenshot(path=os.path.join(SHOTS, "reprice_before.png"))
+    # (#393) the closed-bet detail has its own labelled control on those cards; it must not trigger a reprice
+    det = pg.evaluate("[...document.querySelectorAll('.pitem.prp .pdet')].map(e=>({pid:e.dataset.pid,h:e.getBoundingClientRect().height,w:e.getBoundingClientRect().width,t:e.innerText.trim(),own:e.closest('.pitem').dataset.pid}))")
+    if len(det) != 2 or any(d["pid"] != d["own"] for d in det): probs.append(f"each tappable card has one Details control carrying its own id ({det})")
+    if any(d["h"] < 44 or d["w"] < 44 for d in det): probs.append("a Details control is under the 44px tap size")
+    if any(not d["t"].startswith("Details") for d in det): probs.append("the Details control isn't labelled")
+    if SHOTS:
+        pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
+        pg.screenshot(path=os.path.join(SHOTS, "closed_detail_card_dark.png"))
+        pg.emulate_media(color_scheme="light"); time.sleep(.4)
+        pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
+        pg.screenshot(path=os.path.join(SHOTS, "closed_detail_card_light.png"))
+        pg.emulate_media(color_scheme="dark"); time.sleep(.3)
+    pg.locator(".pitem.prp .pdet").first.click(); time.sleep(.8)
+    if not pg.evaluate("!!document.querySelector('#modal.on')&&document.querySelector('#modal').innerText.includes('Done')"): probs.append("tapping Details didn't open the closed-bet detail")
+    if calls: probs.append(f"tapping Details must not ask the Mac for a price ({calls})")
+    if pg.evaluate("Object.keys(S.prepP||{}).length||Object.keys(S.prep||{}).length"): probs.append("tapping Details started or stored a reprice")
+    if SHOTS: pg.screenshot(path=os.path.join(SHOTS, "closed_detail_sheet_dark.png"))
+    pg.evaluate("closeModal()"); time.sleep(.4)
+    # keyboard: Enter on the focused Details control opens the detail, never the reprice
+    pg.evaluate("document.querySelector('.pitem.prp .pdet').focus()"); pg.keyboard.press("Enter"); time.sleep(.6)
+    if calls: probs.append("Enter on Details triggered a reprice")
+    pg.evaluate("closeModal()"); time.sleep(.4)
+    # a cancelled card (and a skipped one in an unapproved panel) opens the detail by tapping the whole card; no reprice, no Details link
+    cl = pg.evaluate("""(()=>{const its=S.panel.panel.items;const h=(c,ap)=>{const d=document.createElement('div');d.innerHTML=panelItem(c,'x',ap,'approve');return d.firstElementChild};
+      const a=h(Object.assign({},its[0],{state:'cancelled'}),true),b=h(Object.assign({},its[0],{state:'skipped'}),false);
+      return [a,b].map(e=>({prp:e.classList.contains('prp'),det:!!e.querySelector('.pdet'),oc:e.getAttribute('onclick')||'',cur:e.style.cursor}))})()""")
+    if any(x["prp"] or x["det"] or "panelClosed(this.dataset.pid)" not in x["oc"] or "pReprice" in x["oc"] or x["cur"] != "pointer" for x in cl): probs.append(f"other closed cards open the detail from the whole card ({cl})")
+    ids = pg.evaluate("[...document.querySelectorAll('.pitem')].map(e=>e.getAttribute('onclick')||'').join('|')")
+    if "panelClosed('" in ids: probs.append("an id is interpolated inside an inline handler")
     wait = pg.evaluate("(()=>{const id=document.querySelector('.pitem.prp').dataset.pid;S.prepP={[id]:1};const h=pRepHtml({id});S.prepP={};return h})()")
     if "Getting a fresh price" not in wait: probs.append("no spinner while the price is on its way")
     pg.locator(".pitem.prp").first.click()
