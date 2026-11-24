@@ -1,4 +1,4 @@
-# Auto cash-out when buyers back out: honest alerts, back-off, 10 tries on the smart-sell line (issue #372)
+# Auto cash-out when buyers back out: honest alerts, retry on game/price changes, 10 tries on the smart-sell line (issue #372)
 
 **Section:** Selling (auto cash-out, `auto_sell_now` / `_accept_with_retries`)
 
@@ -8,13 +8,23 @@ offer at least `CASH_SLIP` 97% of the price you confirmed, no pauses):
 - **The success lead only on a sale.** "🤖 Took the profit…", the stop-loss and cut-loss leads go out only when the
   sale really went through (✅). A round where buyers backed out sends one plain note instead (`combo_fail_note`):
   "🤖 Auto cash-out tried to sell <combo>: the buyer backed out N times [and no fresh offer came in | and the next
-  offer ($X) was below the line], so nothing was sold." plus "Waiting N min before trying again." or "It will try
-  again on the next check." Rate-limited per combo and share: at most one an hour (`COMBO_FAIL_TELL` 3600 s,
-  `MINE["combo_fail_told"]`) unless a wait just began.
-- **Back-off like singles (#334).** The same `SELL_FAILS` machinery (`sell_backoff_left` / `sell_backoff_note`, key
-  `(ticker, "combo", share)`): after `SELL_FAIL_MAX` 3 failed rounds it waits 10 min, then 60 min
-  (`SELL_FAIL_WAITS`); a sale resets it. Only clear failures count (`COMBO_BACKOFF_STOPS`: cancelled, failed, no
-  fresh offer, offer too low, out of time). An unknown outcome is never retried and never backed off: it stays
+  offer ($X) was below the line], so nothing was sold." plus "It will try again when the game or the price
+  changes." (or "It will try again on the next check." for a round stopped by Pause). Rate-limited per combo: at most
+  one an hour (`COMBO_FAIL_TELL` 3600 s, `MINE["combo_fail_told"]`).
+- **Retry when the game or the price changes, not on a clock** (Pete, 2026-11-23: "10 minutes and 60 minutes is
+  crazy. It should retry based on changes in the game, not some arbitrary number of minutes"). After a failed round
+  (`COMBO_BACKOFF_STOPS`: cancelled, failed, no fresh offer, offer too low, out of time) `combo_wait_start` saves a
+  snapshot in `COMBO_WAIT` (per combo and share): each open pick's game from the watcher's score feed (`leg_score`:
+  state pre/in/post, both scores, at a break), the combo's chance, the last offer and the smart-sell line. On each
+  watcher pass `combo_wait_why` lets it try again only when one of these changed: a score, a game going live or
+  final, a break starting or ending, a pick decided (the open picks change; a score dropping out of the feed is not
+  a change); the combo's chance moving 5% (`COMBO_RETRY_MOVE`, relative, and at least 2 points,
+  `COMBO_RETRY_MIN_P`); a real offer newer than the failed round moving 5% (at least 25 cents,
+  `COMBO_RETRY_MIN_USD`); or the smart-sell line moving the same. When the gate opens, that state becomes the new
+  baseline, so a pass that then skips for another reason waits for the next change. The only clock is a 5 s courtesy gap (`COMBO_RETRY_GAP`). While waiting it asks Kalshi
+  nothing and logs one "waiting for the game or the price to change" line; the next round's log says what changed
+  (`retry_on`). A sale resets it. 5% was picked as about one tick on a typical offer and well above quote noise.
+  Singles keep their own #334 back-off (`SELL_FAILS`) unchanged; combos no longer use it. An unknown outcome is never retried and never backed off: it stays
   blocked in the order ledger until checked (rule 8).
 - **Up to 10 tries a round** (Pete, 2026-11-23: "I don't think it's a bad idea to let it retry 7, 8, 9 or even 10
   times"): `AUTO_CASH_RETRIES` 9 fresh offers after the first accept (registry invariant `auto_cash_retries`), a
@@ -46,7 +56,9 @@ Never touched: Pause, the daily cap (a round is one sale), rule 7, rule 8, the P
 Tests: `t_cashretry.py` (constants and registry, pause bounds, success on try 7, gives up after 10, Kalshi's words,
 unknown stops at once, below first price but above the line taken, under the line stops, profit-taking below cost
 stops, under Never below cost stops, no line = 97%, manual tap unchanged, 120 s budget), `t_combobackout.py` (plain
-note and log on a failed round, rate limit, 10 then 60 min waits, no asks while waiting, a sale resets and gets its
+note and log on a failed round, rate limit, no retry while nothing changes even hours later, retry on a score,
+a break, a game going final or a 5%+ chance move, no retry on a smaller move or inside the 5 s gap, no 10/60 min
+clock for combos (singles' unchanged), a sale resets and gets its
 lead, unknown blocked with no back-off, the line, the purpose: profit-taking vs cut loss). `t_neverloss.py`,
 `t_hedge.py`, `t_cutloss.py`, `t_stoploss.py` pass unchanged.
 

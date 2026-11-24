@@ -5575,10 +5575,10 @@ def auto_sell_now(plan):
             if time.time() - began > AUTO_CASH_BUDGET:
                 break                                     # one pass stays short: the rest wait for the next check
             h = MINE["hold"].get(t)
+            if not h:
+                COMBO_WAIT.pop(t, None)                   # sold elsewhere or settled: nothing left to wait on
             if hedge_unsure(t) or rfq_unsure(t, "sell"):
                 continue                                  # a hedge or cash-out with an unknown outcome: hands off until checked
-            if sell_backoff_left(t, "combo", round(f, 3)):
-                continue                                  # buyers kept backing out: waiting (logged once when it began)
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
             if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
@@ -5591,6 +5591,9 @@ def auto_sell_now(plan):
                 if not thr:
                     continue
             slip = knob_auto_slip([tk for (_, tk), _ in h.get("need") or []]) if why != "plan" else AUTO_CASH_SLIP
+            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip))
+            if held_why:
+                continue                                  # buyers backed out: waiting for the game or price to change
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
             if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
@@ -5683,25 +5686,28 @@ def auto_sell_now(plan):
             result = "sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed"
             stop = info.get("stop") or {"sold": "sold", "check": "unknown"}.get(result, "")
             bkey = ("combo", round(f, 3))
-            prev = SELL_FAILS.get(t) or {}
+            prev = COMBO_WAIT.get(t) or {}
             if result == "sold" and info.get("tries"):
                 rec["offer"] = info["tries"][-1]["offer"]  # the price it really sold at (the first is kept as agreed)
             log_decision(dict(rec, result=result, note=msg[:140], stop=stop, slip=round(slip, 3),
                               round=(prev.get("total", 0) if prev.get("key") == bkey else 0) + 1,
+                              retry_on=prev.get("why_now") if prev.get("key") == bkey else None,
                               **{k: info[k] for k in ("rounds", "tries", "agreed", "line", "floor", "asked_again", "ask_error",
                                                       "low_offer") if k in info}))
             if result != "failed":
-                SELL_FAILS.pop(t, None)                   # a sale (or an unclear one, blocked by rule 8) starts over
+                COMBO_WAIT.pop(t, None)                   # a sale (or an unclear one, blocked by rule 8) starts over
                 MINE.setdefault("combo_fail_told", {}).pop(t, None)
             if result == "check":                         # may or may not have sold: no "took the profit" words
                 out.append("🤖 Auto cash-out: " + msg)
                 continue
             if result == "failed":
-                wait = sell_backoff_note(t, *bkey, rec, f"{stop}: {msg[:100]}") if stop in COMBO_BACKOFF_STOPS else 0
+                wait = stop in COMBO_BACKOFF_STOPS
+                if wait:                                  # re-tried when the game or the price changes, not on a clock
+                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip))
                 note = combo_fail_note(h["label"], info, stop, wait, msg)
                 told = MINE.setdefault("combo_fail_told", {})
-                if wait or time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
-                    told[t] = time.time()                 # one note per combo an hour, plus one when a wait starts
+                if time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
+                    told[t] = time.time()                 # one note per combo an hour
                     out.append(note)
                 continue
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
@@ -5729,7 +5735,80 @@ def auto_sell_now(plan):
 
 
 COMBO_BACKOFF_STOPS = ("cancelled", "failed", "no fresh offer", "offer too low", "out of time")   # clear failures only
-COMBO_FAIL_TELL = 3600    # a combo's "nothing sold" note at most once an hour (plus once when a wait starts)
+COMBO_FAIL_TELL = 3600    # a combo's "nothing sold" note at most once an hour
+# After a round where buyers backed out, the combo is tried again only when something real changes (Pete, 2026-11-23:
+# "It should retry based on changes in the game, not some arbitrary number of minutes"): a score, a game going live or
+# final, a break starting or ending, a pick decided, the combo's chance or the cached offer moving COMBO_RETRY_MOVE,
+# or the smart-sell line moving that much. COMBO_RETRY_GAP is only a courtesy gap so one pass never asks Kalshi twice.
+COMBO_RETRY_MOVE = 0.05   # 5% of the combo's value / offer / line, and at least:
+COMBO_RETRY_MIN_P = 0.02  # 2 points of chance (a 5% move on a 10% chance is noise)
+COMBO_RETRY_MIN_USD = 0.25  # 25 cents of offer or line
+COMBO_RETRY_GAP = 5       # seconds
+COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now"}
+
+
+def combo_game_snap(h):
+    """What the combo's games look like now: per pick still open, (state, its score, the other score, at a break),
+    from the watcher's score feed (leg_score). None for a pick with no score."""
+    out = []
+    for (side, tk), _ in h.get("need") or []:
+        try:
+            sc = leg_score({"ticker": tk, "side": side})
+        except Exception:                            # a score-feed hiccup never stops the pass
+            sc = None
+        out.append((tk, None if not sc else (sc.get("state"), sc.get("me"), sc.get("opp"), bool(sc.get("brk")))))
+    return tuple(sorted(out, key=lambda x: x[0] or ""))
+
+
+def _game_changed(a, b):
+    """The open picks changed (one decided), or a game with a score in both looks different. A pick whose score
+    dropped out of the feed (None) is not a change: a flickering feed must not open the gate."""
+    da, db = dict(a or ()), dict(b or ())
+    return set(da) != set(db) or any(da[k] is not None and db[k] is not None and da[k] != db[k] for k in da)
+
+
+def combo_wait_start(t, h, key, offer, info, line):
+    """A round failed: remember the game and the price, so the next try waits for one of them to change."""
+    prev = COMBO_WAIT.get(t) or {}
+    total = (prev.get("total", 0) if prev.get("key") == key else 0) + 1
+    last = ((info or {}).get("tries") or [{}])[-1].get("offer") or offer
+    COMBO_WAIT[t] = {"key": key, "snap": combo_game_snap(h), "p": h.get("p") or 0.0,
+                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total}
+
+
+def _moved(a, b, least):
+    a, b = a or 0.0, b or 0.0
+    return abs(a - b) >= max(COMBO_RETRY_MOVE * max(abs(a), abs(b)), least)
+
+
+def combo_wait_why(t, h, f, line):
+    """'' to go ahead, else why this combo still waits after buyers backed out (logged once a wait). Something must
+    have changed since the failed round: the games (combo_game_snap), the combo's chance, the cached offer, the line."""
+    w = COMBO_WAIT.get(t)
+    if not w:
+        return ""
+    if w["key"] != ("combo", round(f, 3)):           # a different sale (the share changed): counted afresh
+        COMBO_WAIT.pop(t, None)
+        return ""
+    if time.time() - w["at"] < COMBO_RETRY_GAP:
+        return "courtesy gap"
+    o = MINE["cash"].get(t) or {}
+    seen = o.get("offer") if o.get("rfq") not in (None, "estimate") and o.get("at", 0) > w["at"] else None
+    snap = combo_game_snap(h)
+    why = ("the game changed" if _game_changed(snap, w["snap"]) else
+           "the combo's chance moved" if _moved(h.get("p"), w["p"], COMBO_RETRY_MIN_P) else
+           "the offer moved" if seen and _moved(seen, w["offer"], COMBO_RETRY_MIN_USD) else
+           "the smart-sell line moved" if _moved(line, w["line"], COMBO_RETRY_MIN_USD) else "")
+    if why:                                          # go (logged with the next round); the new state is the baseline,
+        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False)
+        if seen:                                     # so a pass that then skips for another reason waits again
+            w["offer"] = seen
+        return ""
+    if not w.get("told"):
+        w["told"] = True
+        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                      "why": "waiting for the game or the price to change", "round": w["total"]})
+    return "waiting for the game or the price to change"
 
 
 def _low_words(info):
@@ -5754,7 +5833,8 @@ def combo_fail_note(label, info, stop, wait, msg):
                              f"({money((info or {}).get('low_offer') or 0)}) was {_low_words(info or {})}"}.get(stop)
     head = f"🤖 Auto cash-out tried to sell {label}: {said}, so nothing was sold." if said else \
         "🤖 Auto cash-out didn't sell: " + re.sub(r"\s*Tap .*$", "", msg)
-    return head + (f" Waiting {wait // 60} min before trying again." if wait else " It will try again on the next check.")
+    return head + (" It will try again when the game or the price changes." if wait
+                   else " It will try again on the next check.")
 
 
 def notify(msg):
@@ -6063,7 +6143,6 @@ def sell_backoff_note(t, side, count, rec, err, now=None):
     if not s or s["key"] != (side, count):
         s = SELL_FAILS[t] = {"key": (side, count), "n": 0, "level": 0, "until": 0}
     s["n"] += 1
-    s["total"] = s.get("total", 0) + 1            # failed rounds since the last sale (the decision log's "round")
     if s["n"] < SELL_FAIL_MAX and not s["level"]:
         return 0
     wait = SELL_FAIL_WAITS[min(s["level"], len(SELL_FAIL_WAITS) - 1)]

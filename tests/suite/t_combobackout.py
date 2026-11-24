@@ -1,8 +1,8 @@
 # CHECK: group=engine
 # Auto cash-out for combos when buyers back out (issue #372, #334-style back-off extended to combos): the success
 # lead only on a real sale; a failed round sends a plain "nothing was sold, will retry" note at most once an hour per
-# combo (plus once when a wait starts); after 3 failed rounds it waits 10 min, then an hour after each further failure,
-# asking Kalshi nothing while it waits; a sale resets it; an unknown outcome stays blocked (rule 8) and never starts a
+# combo; after a failed round it waits for the game or the price to change (Pete, 2026-11-23: "It should retry based
+# on changes in the game, not some arbitrary number of minutes"), asking Kalshi nothing while it waits; a sale resets it; an unknown outcome stays blocked (rule 8) and never starts a
 # back-off; each round is logged with its tries, stop reason, offer, threshold and why. No real orders: every Kalshi
 # call is faked here.
 import os, time, tempfile, importlib.util
@@ -29,6 +29,8 @@ E.haptic = E.loading = lambda *a: None
 E.resting_sells = lambda: {}
 E.drop_cash = lambda t: E.MINE["cash"].pop(t, None)
 E._cash_pause = lambda s: None
+SC = {"sc": {"state": "in", "me": 21, "opp": 17, "brk": False}}
+E.leg_score = lambda l: dict(SC["sc"]) if SC["sc"] else None
 asks, accepts, logs = [], [], []
 SCRIPT = {"s": []}
 E.get_cash_offer = lambda t, f=1.0: (asks.append(t), {"offer": 13.0, "frac": 1.0, "rfq": "x", "quote": "q",
@@ -51,11 +53,11 @@ E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 plan = {"acts": {}}
 
 
-def tick(dt_, script=()):
+def tick(dt_, script=(), cash=None, **hold):
     SCRIPT["s"] = list(script)
     E.time.time = lambda: now + dt_
-    E.MINE["hold"] = {"C1": dict(h)}
-    E.MINE["tp_asked"] = {}; E.MINE["cash"] = {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
+    E.MINE["hold"] = {"C1": dict(h, **hold)}
+    E.MINE["tp_asked"] = {}; E.MINE["cash"] = {"C1": dict(cash, at=now + dt_)} if cash else {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
     asks.clear(); accepts.clear(); logs.clear()
     try:
         return E.auto_sell_now(plan)
@@ -64,7 +66,7 @@ def tick(dt_, script=()):
 
 
 def reset():
-    E.SELL_FAILS.clear(); E.MINE["combo_fail_told"] = {}
+    E.COMBO_WAIT.clear(); E.MINE["combo_fail_told"] = {}; SC["sc"] = {"state": "in", "me": 21, "opp": 17, "brk": False}
     E.save_json(E.ORDER_LEDGER, {}); E._ORDER_SHARED.unsure.clear()   # Pete cleared the order block
 
 
@@ -84,31 +86,60 @@ ok("...written to the decision file, and a failed round is not counted as a sale
    '"stop": "cancelled"' in line and '"tries": [' in line and E.sold_today() == 0)
 ok("...no keys or secrets in the line", "fake-key-id" not in line and "BEGIN" not in line and "secret" not in line.lower())
 
-# ---- (2) rate limit: the second failure a minute later sends nothing
-out = tick(60)
-ok("second failed round: logged (round 2) but no second push within the hour",
-   out == [] and [r["round"] for r in logs if r.get("result") == "failed"] == [2], out)
-
-# ---- (3) the third failed round starts a 10-minute wait, said once
-out = tick(120)
-ok("third failed round: a wait starts and the note says so", len(out) == 1 and "Waiting 10 min" in out[0], out)
-ok("...logged once as a skip", sum(1 for r in logs if r.get("result") == "skipped" and "waiting 10 min" in r.get("why", "")) == 1)
-out = tick(300)
-ok("inside the wait: no offer asked, no accept, no push", asks == [] and accepts == [] and out == [], (asks, accepts, out))
-out = tick(120 + 601)
-ok("after 10 min it tries again; another failure waits an hour", len(accepts) == 10 and len(out) == 1
-   and "Waiting 60 min" in out[0], out)
-out = tick(120 + 601 + 1800)
-ok("...still waiting half an hour in", accepts == [] and out == [])
+# ---- (2) after a failed round: no clock, it waits for the game or the price to change
+out = tick(6)
+ok("nothing changed: no offer asked, no accept, no push (and no minutes-long clock)", asks == [] and accepts == []
+   and out == [], (asks, accepts, out))
+ok("...logged once as 'waiting for the game or the price to change'",
+   sum(1 for r in logs if r.get("result") == "skipped" and "game or the price" in r.get("why", "")) == 1, logs)
+out = tick(1800)
+ok("...still waiting 30 min later when nothing changed, and not logged again", asks == [] and accepts == [] and logs == [])
+SC["sc"] = {"state": "in", "me": 24, "opp": 17, "brk": False}
+out = tick(1800 + 30, script=["cancelled"] * 10)
+f = [r for r in logs if r.get("result") == "failed"]
+ok("a score change: it tries again (round 2), logged with why", len(accepts) == 10 and f and f[0]["round"] == 2
+   and f[0]["retry_on"] == "the game changed", f)
+ok("...rate limit: no second push within the hour", out == [], out)
+out = tick(1800 + 40, p=0.72)
+ok("a small chance move (under 5%): still waiting", accepts == [])
+out = tick(1800 + 50, p=0.76, script=["cancelled"] * 10)
+ok("a real chance move (5%+): tries again", len(accepts) == 10
+   and [r["retry_on"] for r in logs if r.get("result") == "failed"] == ["the combo's chance moved"])
+SC["sc"] = {"state": "in", "me": 24, "opp": 17, "brk": True}
+out = tick(1800 + 52, p=0.76)
+ok("...but never twice inside the courtesy gap (%d s)" % E.COMBO_RETRY_GAP, accepts == [] and asks == [])
+out = tick(1800 + 60, p=0.76, script=["cancelled"] * 10)
+ok("a break starting (a period change) counts as a game change", len(accepts) == 10)
+SC["sc"] = {"state": "post", "me": 24, "opp": 17, "brk": False}
+out = tick(1800 + 70, p=0.76, script=["cancelled"] * 10)
+ok("the game going final counts too", len(accepts) == 10)
+ok("...the note says it waits for a change, not a time", all("minute" not in m and " min " not in m for m in out))
+out = tick(1870 + 3 * 3600, p=0.76)
+ok("...and hours later with nothing changed it still asks Kalshi nothing", asks == [] and accepts == [] and out == [])
+SC["sc"] = None
+out = tick(1870 + 3 * 3600 + 10, p=0.76)
+ok("a score that drops out of the feed is not a change (no retry on a flicker)", asks == [] and accepts == [])
+SC["sc"] = {"state": "post", "me": 24, "opp": 17, "brk": False}
+out = tick(1870 + 3 * 3600 + 20, p=0.76, cash={"offer": 13.1, "frac": 1.0, "rfq": "r"})
+ok("a newer real offer that barely moved (13.0 -> 13.1): still waiting", asks == [] and accepts == [])
+out = tick(1870 + 3 * 3600 + 30, p=0.76, cash={"offer": 14.0, "frac": 1.0, "rfq": "r"}, script=["cancelled"] * 10)
+ok("a newer real offer 5%+ away: tries again", len(accepts) == 10
+   and [r["retry_on"] for r in logs if r.get("result") == "failed"] == ["the offer moved"], logs)
+out = tick(1870 + 3 * 3600 + 40, p=0.775)
+ok("a chance move under the 2-point floor (0.76 -> 0.775): still waiting", accepts == [])
+src = open("wahome/engine.py").read()
+ok("no 10/60-minute clock for combos (singles' #334 back-off untouched)", 'sell_backoff_left(t, "combo"' not in src
+   and 'sell_backoff_note(t, *bkey' not in src and "SELL_FAIL_WAITS = (600, 3600)" in src)
 
 # ---- (4) a sale resets everything, with the real success lead
-out = tick(120 + 601 + 3601, script=["cancelled", "executed"])
-ok("a sale after the hour: the success lead, sold on the 2nd accept", len(out) == 1 and out[0].startswith("🤖 Took the profit")
+SC["sc"] = {"state": "in", "me": 30, "opp": 17, "brk": False}
+out = tick(4 * 3600 + 3601, script=["cancelled", "executed"])
+ok("a sale after a change: the success lead, sold on the 2nd accept", len(out) == 1 and out[0].startswith("🤖 Took the profit")
    and "✅" in out[0], out)
-ok("...and the back-off is reset", "C1" not in E.SELL_FAILS)
-out = tick(120 + 601 + 3700)
+ok("...and the wait is reset", "C1" not in E.COMBO_WAIT)
+out = tick(4 * 3600 + 3700)
 ok("...so the next failure is round 1 again and is told", [r["round"] for r in logs if r.get("result") == "failed"] == [1]
-   and len(out) == 1)
+   and len(out) == 1 and "when the game or the price changes" in out[0], out)
 
 # ---- (5) unknown: blocked, never retried, never a back-off
 reset()
@@ -116,7 +147,7 @@ out = tick(10000, script=["cancelled", "unknown"])
 ok("unknown on the 2nd accept: stops, the cash-out 'check' message", len(accepts) == 2 and len(out) == 1
    and "may or may not" in out[0] and "nothing was sold" not in out[0], out)
 ok("...logged as check with stop 'unknown', no back-off started", any(r.get("result") == "check" and r.get("stop") == "unknown"
-                                                                     for r in logs) and "C1" not in E.SELL_FAILS)
+                                                                     for r in logs) and "C1" not in E.COMBO_WAIT)
 out = tick(10100)
 ok("...the next pass leaves it alone (rule 8): nothing asked or accepted", asks == [] and accepts == [] and out == [])
 

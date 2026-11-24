@@ -1119,6 +1119,11 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     opportunity for it to get profit."); a loss-cutting sale (learned cut, guarded stop-loss, first offer already below
     cost) may go below cost down to the line, but never under 97% of its first offer (a loss cut's line is near 0).
     Your own tap keeps `CASH_SLIP`.
+    After a failed round there is no 10/60-minute wait for combos (Pete, 2026-11-23: "10 minutes and 60 minutes is
+    crazy. It should retry based on changes in the game, not some arbitrary number of minutes"): the combo is tried
+    again only when a score, a game's status (live, a break, final) or a pick changes, or its chance, a newer real
+    offer or the smart-sell line moves 5% (`COMBO_RETRY_MOVE`; at least 2 points of chance / 25 cents), never twice
+    within `COMBO_RETRY_GAP` 5 s. Singles keep their #334 back-off.
   - Card fix: a league braked before any stepper run is now shown on the Results card (it was hidden).
   On Pete's real history (read-only copy of `combo_history.db`, `combo_smart.json`, `combo_discount.json`,
   `combo_smartbuy.json`; 2026-11-22): the judge has 39 settled bets in 60 days (33 as before plus 6 combos smart sell
