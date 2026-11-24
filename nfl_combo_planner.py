@@ -5915,6 +5915,27 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
     return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
 
 
+SELL_TOP = 0.99   # Kalshi's highest price for one contract: no bid or cash-out offer pays more (issue #371)
+
+
+def sell_top(pays, single=False):
+    """The most a held bet can ever sell for, whole (issue #371): a combo's payout at 99¢ a contract; a single's
+    contracts at the 99¢ top bid less Kalshi's fee per contract, as single_sell_reason values it."""
+    pays = float(pays or 0)
+    return pays * (SELL_TOP - single_fee(SELL_TOP)) if single else pays * SELL_TOP
+
+
+def sell_line_shown(line, top):
+    """A sell line for the screen (issue #371): (line, False) when a sale could reach it, (None, True) when it is above
+    `top` (the most the bet can sell for), so no screen ever says "sells at $14+" on a bet that pays $13. Display only:
+    every sell decision still compares the offer with the unclamped line, so nothing sells that didn't before."""
+    if not line:
+        return None, False
+    if line > top + 0.005:
+        return None, True
+    return round(line, 2), False
+
+
 SINGLE_RESTING = {"at": 0, "t": set()}
 
 
@@ -6258,9 +6279,10 @@ def open_singles(max_age=30):
         m = mk.get(x["t"]) or {}
         try:
             why, fl = single_sell_reason(x, dollars(m, f"{x['side']}_bid"), None, track=False)
-            x["sell_at"] = round(fl, 2) if fl and (x.get("chance") or 0) >= 0.5 else None
+            x["sell_at"], x["sell_over"] = sell_line_shown(fl if (x.get("chance") or 0) >= 0.5 else 0,
+                                                           sell_top(x.get("n"), single=True))
         except Exception:
-            x["sell_at"] = None
+            x["sell_at"], x["sell_over"] = None, False
     out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))   # order kept: smart sell walks it
     SINGLES.update(at=time.time(), items=out, mk=mk)
     return out
@@ -6364,9 +6386,10 @@ def live_view(mine, views, plan, chance_one, balance):
         except Exception:
             v["hold_ce"], v["why"] = None, ""
         try:
-            v["threshold"] = round(wait_threshold(t), 2) if h.get("won_some") else None
+            v["threshold"], v["thr_over"] = sell_line_shown(wait_threshold(t) if h.get("won_some") else 0,
+                                                            sell_top(h["pays"]))
         except Exception:
-            v["threshold"] = None
+            v["threshold"], v["thr_over"] = None, False
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
@@ -6480,9 +6503,11 @@ def plan_words(t, f, o, h, W):
     thr = wait_threshold(t)
     if h.get("won_some") and thr > o["offer"] / max(o.get("frac", 1.0), 0.01):
         nxt = (h.get("legs_left") or [(0, False, 0)])[0]
+        shown, over = sell_line_shown(thr, sell_top(pays))      # never "cash out at $14" on a $13 combo (#371)
         return (f"Waiting is worth more: {'the game under way' if nxt[1] else 'the next game'} "
                 f"({chance_pct(nxt[0])} to go your way) makes this combo worth more to sell after. "
-                f"Worth cashing out at about {money(thr)}.")
+                + (f"No offer Kalshi can make beats waiting: it pays {money(pays)} at most." if over else
+                   f"Worth cashing out at about ${shown:,.2f}."))
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
 def confirm_parts(t, h, o):
@@ -6547,10 +6572,13 @@ def cash_block(ticker, plan):
            + ("<div class='muted' style='font-size:12px;margin-top:4px'>Chance from Kalshi's price for the whole "
               "combo: its picks are in the same game and move together.</div>" if h.get("rough") else "")]
     if CFG.get("auto_sell") and can_trade() and not h.get("rough"):
-        thr = wait_threshold(ticker)
+        thr, over = sell_line_shown(wait_threshold(ticker), sell_top(pays))   # never above what it pays (#371)
         who = f"your {wname()}" if in_pythonista() and watcher_alive() else "it"
         out.append(f"<div class='muted' style='font-size:13px;margin-top:6px'>🤖 Auto cash-out is on: {who} "
-                   + (f"sells by itself if Kalshi offers about {money(thr)} or more." if h.get("won_some") and thr
+                   + ("waits until a pick in this combo has won." if not h.get("won_some") else
+                      f"won't cash out just to beat the next game: no offer can beat waiting (it pays {money(pays)} at most). "
+                      f"Your other sell rules still apply." if over else
+                      f"sells by itself if Kalshi offers about ${thr:,.2f} or more." if thr
                       else "waits until a pick in this combo has won.") + "</div>")
     tp = (MINE.get("tp") or {}).get(ticker)
     if tp:

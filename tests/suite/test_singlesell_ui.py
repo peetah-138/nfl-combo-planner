@@ -173,6 +173,42 @@ with sync_playwright() as pw:
             bad(f"{tag}: a blocked sale must not say it still works while paused")
         pg.evaluate("closeModal()"); time.sleep(.4)
         NEXT["quote"] = Q()
+        # issue #371: a sell line above what the bet pays is never shown ("sells at $14+" on a $13 bet); the chip says
+        # it holds to collect the payout instead, and a reachable line still reads "sells at $X+"
+        over = [dict(SING[0], n=13, pays=13, cost=9.1, worth=12.2, chance=.94, sell_at=None, sell_over=True), dict(SING[1], state="live", sell_at=6.5)]
+        pg.evaluate("(s=>{S.live.singles=s;S.sellq={};renderLive()})(" + json.dumps(over + SING[2:]) + ")"); time.sleep(.4)
+        chips = pg.evaluate("[...document.querySelectorAll('.srow1 .ss')].map(b=>b.innerText)")
+        if not chips or "holding to collect $13" not in chips[0] or "$14" in chips[0] or "sells at" in chips[0]:
+            bad(f"{tag}: a sell line above the payout must not show a price ({chips})")
+        if len(chips) < 2 or "sells at $6.50+" not in chips[1]:
+            bad(f"{tag}: a reachable sell line still shows its price ({chips})")
+        shot(pg, f"sellmax_{tag}.png")
+        # sell lines show cents: money() would round a reachable $12.70 up to "$13+" on a $13 bet
+        pg.evaluate("(s=>{S.live.singles=s;renderLive()})(" + json.dumps([dict(over[0], sell_at=12.7, sell_over=False)] + SING[1:]) + ")"); time.sleep(.4)
+        c0 = pg.evaluate("(document.querySelector('.srow1 .ss')||{}).innerText||''")
+        if "sells at $12.70+" not in c0:
+            bad(f"{tag}: a reachable line just under the payout must show its cents ({c0})")
+        # a combo whose Let it ride line is above what it pays: no price on the Do now card or the open row
+        leg = {"ticker": "KXNBAGAME-X-BOS", "name": "Celtics", "opp": "Knicks", "chance": .97, "live": .98, "res": None,
+               "state": "live", "phase": "on", "note": "", "short": "", "score": "", "sc": None, "src": "", "starts": "",
+               "sport": "nba", "side": "yes", "url": ""}
+        cmb = {"t": "KXMVE-9", "i": 9, "label": "Combo 9", "group": "pending", "kind": "playing", "sports": ["nba"],
+               "p": .97, "pays": 13, "cost": 6, "back": 0, "live": True, "hold_value": 12.4, "won_some": True,
+               "offer": 11.4, "offer_real": True, "offer_live": None, "fair_value": 12.4, "overpay": 1.1, "offer_age": 5,
+               "verdict": "hold", "why": "", "threshold": None, "thr_over": True, "moment": None, "hedge": None,
+               "self": False, "own": False, "legs": [leg]}
+        pg.evaluate("(c=>{S.live.singles=[];S.live.combos=[c];S.open={};renderLive();tog(c.t)})(" + json.dumps(cmb) + ")"); time.sleep(.4)
+        dn = pg.evaluate("[...document.querySelectorAll('.dnums')].map(e=>e.innerText).join('|')")
+        row = pg.evaluate("(r=>r?r.innerText+'|'+((r.nextElementSibling||{}).innerText||''):'')(document.querySelector(\"[data-key='c:KXMVE-9']\"))")  # the open panel is the row's next sibling
+        if "No offer can beat it" not in dn or "no offer can beat waiting" not in row or "$13+" in dn + row or "$14+" in dn + row:
+            bad(f"{tag}: a combo line above its payout must show no price ({dn!r}, {row!r})")
+        shot(pg, f"sellmax_combo_{tag}.png")
+        pg.evaluate("(c=>{S.live.combos=[c];renderLive()})(" + json.dumps(dict(cmb, threshold=12.7, thr_over=False)) + ")"); time.sleep(.4)
+        dn = pg.evaluate("[...document.querySelectorAll('.dnums')].map(e=>e.innerText).join('|')")
+        row = pg.evaluate("(r=>r?r.innerText+'|'+((r.nextElementSibling||{}).innerText||''):'')(document.querySelector(\"[data-key='c:KXMVE-9']\"))")  # the open panel is the row's next sibling
+        if "$12.70+" not in dn or "sell at $12.70+" not in row:
+            bad(f"{tag}: a reachable combo line still shows its price, in cents ({dn!r}, {row!r})")
+        pg.evaluate("(s=>{S.live.combos=[];S.live.singles=s;renderLive()})(" + json.dumps(SING) + ")"); time.sleep(.3)
         ow = pg.evaluate("document.documentElement.scrollWidth>innerWidth+1")
         if ow:
             bad(f"{tag}: the page scrolls sideways")
