@@ -65,3 +65,4 @@
 .lscard .lsx{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.lscard .lsx b{font-size:18px}.lscard .lsx small{font-size:11px;color:var(--mute)}
 .lsempty{margin-bottom:8px}
 .lscard .btn{min-height:44px}
+.sursw{margin:0 2px 12px;display:inline-flex}.sursw button{min-height:44px;padding:0 18px}.sur0{grid-column:1/-1}
