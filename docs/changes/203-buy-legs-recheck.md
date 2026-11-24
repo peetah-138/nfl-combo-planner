@@ -10,9 +10,10 @@ exactly as `quote` checks the card. Any mismatch sends nothing, keeps the offer,
 different combo, or this page is out of date. Reload the page..." (`legs_mismatch`), so a combo-changing path that forgets
 to pop its offer can no longer buy legs other than the ones on screen.
 
-**Older pages:** the page is served by the same Mac, so only a tab left open across an update lacks legs. A Buy with no
-legs (or a non-list) is now REFUSED (fail closed; it used to skip the check). The tab shows the reload message. Open product
-question: if stale tabs blocking one buy is not acceptable, the alternative is to allow legs-less buys (the old behaviour).
+**Pages that send no legs:** the idea Buy used to send none, and a stale tab may too. They are NOT refused for missing legs
+(that would have blocked every multi-game idea Buy). They are held to offer = card, so a combo that changed under its offer is
+still refused. The idea price (`a: "idea"`) now returns the combo's `legs`; `ideas.js` keeps them (`S.ideaq[id].legs`) and sends
+them with Buy, so idea Buys are checked against the page's own legs too. No open product question.
 
 The panel, killer and other callers of `accept_offer` pass no `expect_legs` and are unchanged.
-Test: `t_buy_legs_203.py` (match, no legs, other legs, flip without popping the offer both ways, no card).
+Tests: `t_buy_legs_203.py` (engine) and `test_buy_legs_203.py` (real `/app/api/act`: idea Buy with and without legs, other legs, flip without popping the offer, Build card, long shot).

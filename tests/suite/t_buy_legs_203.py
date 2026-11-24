@@ -33,11 +33,15 @@ def buy(shown):
 setup(OLD, OLD)
 r, log = buy(["KXB-2", "KXA-1"])
 ok("matching legs (any order) go on to the accept", not r.get("legs_mismatch") and any("/accept" in str(a) for a in SENT))
-for name, shown in (("no legs sent (an older page)", []), ("legs missing entirely", None) , ("a non-list", "KXA-1")):
+for name, shown in (("no legs sent", []), ("a non-list", "KXA-1")):
     setup(OLD, OLD)
-    r, log = buy([] if shown is None else shown)
-    ok(f"{name}: refused, nothing sent, reason logged, offer kept",
-       r.get("legs_mismatch") and not SENT and "sent no legs" in log and 1 in E.CTX["offers"])
+    r, log = buy(shown)
+    ok(f"{name}, offer = card: not refused for missing legs (never worse than before)",
+       not r.get("legs_mismatch") and any("/accept" in str(a) for a in SENT))
+    setup(OLD, NEW)
+    r, log = buy(shown)
+    ok(f"{name}, card changed under the offer: refused, nothing sent, reason logged, offer kept",
+       r.get("legs_mismatch") and not SENT and "combo now on that card" in log and 1 in E.CTX["offers"])
 setup(OLD, OLD)
 r, log = buy(NEW)
 ok("page shows other legs than the offer: refused, nothing sent", r.get("legs_mismatch") and not SENT and "differ from the offer" in log)
@@ -57,4 +61,4 @@ setup(OLD, OLD)
 r = E.accept_offer(1)
 ok("panel/killer callers (no expect_legs) are unchanged", not r.get("legs_mismatch") and any("/accept" in str(a) for a in SENT))
 i = W.index('if a == "buy":'); act = W[i:i + 1600]
-ok("web app Buy passes the page's legs (none = []) to accept_offer", "expect_legs=shown" in act and "else []" in act)
+ok("web app Buy passes the page's legs (none = []) to accept_offer, which checks offer = card either way", "expect_legs=shown" in act and "else []" in act)

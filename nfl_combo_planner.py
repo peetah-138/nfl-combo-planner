@@ -12225,17 +12225,17 @@ ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted co
 
 def buy_legs_refusal(i, o, shown):
     """(#203, rule 7) The page's Buy names the legs it shows. The accept goes out only if those are exactly the legs the
-    stored offer was priced for AND the combo now on that card. Anything else (no legs sent by an older page, a combo
-    that changed without its offer being dropped) is a refusal with the reason, never a guess. Returns None when it matches."""
+    stored offer was priced for AND the combo now on that card. Anything else (a combo that changed without its offer being
+    dropped) is a refusal with the reason, never a guess. A page that names no legs (an older page, or an idea Buy that
+    carries none) is still held to offer = card; it is refused only on a real mismatch. Returns None when it matches."""
     cur = (CTX.get("combos") or [])
     cur = cur[i - 1] if isinstance(i, int) and 1 <= i <= len(cur) else None
     offered = sorted(map(str, o.get("legs") or []))
     now = sorted(str(l.get("ticker")) for l in (cur or {}).get("legs") or [])
-    if not isinstance(shown, (list, tuple)) or not shown:
-        why = "the page sent no legs"
-    elif not offered or not now:
+    sent = isinstance(shown, (list, tuple)) and bool(shown)   # a page that names no legs is still held to offer = card
+    if not offered or not now:
         why = "no legs on the offer or the card to compare"
-    elif sorted(map(str, shown)) != offered:
+    elif sent and sorted(map(str, shown)) != offered:
         why = "the page's legs differ from the offer's legs"
     elif offered != now:
         why = "the offer's legs differ from the combo now on that card"
@@ -12251,8 +12251,8 @@ def accept_offer(i, skip_cap=False, expect_legs=None):
     (a 4xx, the key, Pause) is a plain error. Once the accept has gone out, anything unclear (a timeout, a 5xx, a
     429 or unreadable status, no confirmation within ACCEPT_WAIT) returns {"error", "check": True}: the combo is
     marked in the order ledger and never re-bought or re-quoted until the block ends or Pete clears it (rule 8).
-    expect_legs (#203): the web app's Buy passes the legs the page shows (a list; [] when an older page sent none).
-    Not None = they must match the offer and the current combo, or nothing is sent. The panel/killer paths pass None."""
+    expect_legs (#203): the web app's Buy passes the legs the page shows (a list; [] when it sent none).
+    Not None = the offer must match the current combo, and the page's legs too when it sent them, or nothing is sent. The panel/killer paths pass None."""
     import time
     o = CTX["offers"].get(i)
     if not o:

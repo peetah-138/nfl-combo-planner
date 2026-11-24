@@ -3915,7 +3915,7 @@ def webapp_main():
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
-                out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                out = {"ok": True, "i": k, "legs": [l["ticker"] for l in c.get("legs") or []], "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                        "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small", "overlap", "warn")}}
                 if gap:                                 # (#358) priced on the live chance when every live guard passes
                     out.update(live=True, fair_src="live" if r.get("fair") else "none",
@@ -3982,7 +3982,7 @@ def webapp_main():
             if a == "buy":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
-                shown = [str(x) for x in shown] if isinstance(shown, list) else []   # no legs (an older page) = refused
+                shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
