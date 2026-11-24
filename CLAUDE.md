@@ -142,7 +142,8 @@ Real money is involved. Pete uses it daily.
   unclear answer, a failed status poll or no confirmation within `ACCEPT_WAIT` (15 s) is **unknown**: marked in the
   order ledger (`mark_rfq_unsure`, keys `<market>|rfq-buy|o` / `<market>|rfq-sell|r`, with the leg tickers), the
   panel/killer get `None` = "check", the web app answers `check` with `COMBO_UNSURE_MSG`, `get_offer` won't re-quote
-  the same legs, a cash-out stops (no second accept; `CASH_RETRIES` only after a definite refusal) and auto cash-out
+  the same legs, a cash-out stops (no second accept; `CASH_RETRIES`, or `AUTO_CASH_RETRIES` for auto cash-out, only
+  after a definite refusal) and auto cash-out
   leaves that combo alone (`rfq_unsure(t, "sell")`, like `hedge_unsure`). Settings › Money lists them as order blocks.
 - *Ledger and hedges across processes:* `combo_orders.json` and `combo_hedges.json` are read-modify-written under an
   `fcntl` lock (`file_lock`), with `save_json(..., strict=True)` (raises and logs "MONEY STATE NOT SAVED"); a mark
@@ -903,7 +904,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `HEDGE_LOCK_SHARE`/`HEDGE_LOCK_EXTRA`, `SINGLES_SELL_AGE`, `DISC_PRE`/`DISC_LIVE`, `CUSHION_PER_PICK`/`CUSHION_MAX`;
   `t_exitpolicy`, `t_replaypolicy`, `t_hedge`, `t_stoploss`, `t_cutloss` pass unchanged. **Invariants listed:** Pause,
   the Pi never trades, Pete's switches (Auto cash-out, Smart sell, Let it ride, auto-hedge, the stop-loss override,
-  "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3, `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
+  "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3 (`AUTO_CASH_RETRIES` 9 for auto cash-out, Pete 2026-11-23), `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
   score (150 s), in play, live price age (180 s), live-buy score age (120 s), singles' price age (180 s), a real fresh
   offer before any sale or hedge, secrets. **`knob_view()`** (`analytics()["knobs"]`, cached with it) gives every knob's
   start/bounds in plain words (`knob_say`) and, for the six already learned per league (floor, risk weight, loss cut,
@@ -1123,7 +1124,19 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `auto_slip`, live through `knob_auto_slip(tickers)`: today's 97% while the switch is off, nothing is learned, the value
     is damaged or on any error; a borrowed value only stricter; kept while braked only when stricter), and
     `_accept_with_retries` keeps `CASH_SLIP` (registry `cash_slip`, now an invariant: self-tuning never changes how your own
-    Cash out tap behaves).
+    Cash out tap behaves). **Pete's decision, 2026-11-23:** auto cash-out's retries no longer use `CASH_SLIP` ("I don't
+    think it needs to be within 97% of the first price, but it should definitely stay above the smart sell line"): up
+    to 10 accepts a round (`AUTO_CASH_RETRIES` 9, "let it retry 7, 8, 9 or even 10 times"), each on a fresh offer that
+    must clear the smart-sell line the sale was made on (threshold x the path's slip x share), and, for a sale taking a
+    profit, cost ("It should only sell at a loss if that's a way to try to minimize losses. Not when there's still an
+    opportunity for it to get profit."); a loss-cutting sale (learned cut, guarded stop-loss, first offer already below
+    cost) may go below cost down to the line, but never under 97% of its first offer (a loss cut's line is near 0).
+    Your own tap keeps `CASH_SLIP`.
+    After a failed round there is no 10/60-minute wait for combos (Pete, 2026-11-23: "10 minutes and 60 minutes is
+    crazy. It should retry based on changes in the game, not some arbitrary number of minutes"): the combo is tried
+    again only when a score, a game's status (live, a break, final) or a pick changes, or its chance, a newer real
+    offer or the smart-sell line moves 5% (`COMBO_RETRY_MOVE`; at least 2 points of chance / 25 cents), never twice
+    within `COMBO_RETRY_GAP` 5 s. Singles keep their #334 back-off.
   - Card fix: a league braked before any stepper run is now shown on the Results card (it was hidden).
   On Pete's real history (read-only copy of `combo_history.db`, `combo_smart.json`, `combo_discount.json`,
   `combo_smartbuy.json`; 2026-11-22): the judge has 39 settled bets in 60 days (33 as before plus 6 combos smart sell
@@ -1223,8 +1236,9 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `stop_loss_mode` may only make it stricter (an old "off" turns Allow into Let it tune itself, an old "on" is
     ignored). Hard rule 2's hedge ceiling of $150 is not live yet (`HEDGE_RAISE_LIVE = False`).
   - **Release 134 review fixes (Never sell at a loss made honest):** under Never, a combo cash-out whose buyer backs out
-    never takes a fresh offer below what was paid (`accept_cash(t, floor=cost x share)` → `_accept_with_retries`; the
-    other choices and Pete's own taps keep the 3% retry rule); a single with an unknown cost is skipped, and its
+    never takes a fresh offer below what was paid (`accept_cash(t, floor=cost x share)` → `_accept_with_retries`;
+    Pete's own taps keep the 3% retry rule; under the other choices auto cash-out's retries follow the smart-sell line
+    and the sale's purpose, Pete 2026-11-23, above); a single with an unknown cost is skipped, and its
     proceeds are counted after the order's rounded fee (`single_fee(bid, n)`). `_brk_news` reads the injury cache only
     while it is under 25 minutes old, so it can never trigger an ESPN fetch inside auto cash-out. Test: `t_neverloss.py`.
 

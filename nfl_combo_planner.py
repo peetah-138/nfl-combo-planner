@@ -5545,6 +5545,7 @@ def auto_sell_now(plan):
     if sell_held(out):                                 # Kalshi is refusing sales: don't ask again every pass (#134)
         return out
     MINE["busy"] = True
+    began = time.time()
     try:
         cands = [(t, f, "plan") for t, f in sorted(plan["acts"].items(), key=lambda x: -x[1]) if f]
         asked = MINE.setdefault("tp_asked", {})
@@ -5574,7 +5575,11 @@ def auto_sell_now(plan):
                 asked[t] = time.time()
                 cands.append((t, 1.0, why))
         for t, f, why in cands:
+            if time.time() - began > AUTO_CASH_BUDGET:
+                break                                     # one pass stays short: the rest wait for the next check
             h = MINE["hold"].get(t)
+            if not h:
+                COMBO_WAIT.pop(t, None)                   # sold elsewhere or settled: nothing left to wait on
             if hedge_unsure(t) or rfq_unsure(t, "sell"):
                 continue                                  # a hedge or cash-out with an unknown outcome: hands off until checked
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
@@ -5589,6 +5594,9 @@ def auto_sell_now(plan):
                 if not thr:
                     continue
             slip = knob_auto_slip([tk for (_, tk), _ in h.get("need") or []]) if why != "plan" else AUTO_CASH_SLIP
+            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip))
+            if held_why:
+                continue                                  # buyers backed out: waiting for the game or price to change
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
             if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
@@ -5662,11 +5670,48 @@ def auto_sell_now(plan):
                     if unsure:
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
-            msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
-            log_decision(dict(rec, result="sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed",
-                              note=msg[:140]))
-            if msg.startswith("⚠️"):                     # may or may not have sold: no "took the profit" words
+            CASH_LAST.pop(t, None)
+            # The sale's purpose (Pete, 2026-11-23: "It should only sell at a loss if that's a way to try to minimize
+            # losses. Not when there's still an opportunity for it to get profit."): a sale whose offer was at or above
+            # cost is taking a profit and never takes a fresh offer below cost; a loss cut (the learned cut or a guarded
+            # stop-loss, already below cost) may go below cost, down to the line, and not under 97% of its first offer.
+            cutting = below and (why == "cut loss" or bool(rec.get("stop_loss")))
+            rec["purpose"] = "cut a loss" if cutting else "take a profit"
+            try:
+                _CASH_CTX.auto = True                     # up to 10 tries, short pauses, one more ask (Pete, 2026-11-23)
+                _CASH_CTX.line = thr * (1.0 if why == "plan" else slip) * o.get("frac", 1.0) or None   # retries' bar
+                _CASH_CTX.cost_floor = None if cutting else h["cost"] * o.get("frac", 1.0)
+                _CASH_CTX.cutting = cutting
+                msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
+            finally:
+                _CASH_CTX.auto, _CASH_CTX.line, _CASH_CTX.cost_floor, _CASH_CTX.cutting = False, None, None, False
+            info = CASH_LAST.pop(t, None) or {}
+            result = "sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed"
+            stop = info.get("stop") or {"sold": "sold", "check": "unknown"}.get(result, "")
+            bkey = ("combo", round(f, 3))
+            prev = COMBO_WAIT.get(t) or {}
+            if result == "sold" and info.get("tries"):
+                rec["offer"] = info["tries"][-1]["offer"]  # the price it really sold at (the first is kept as agreed)
+            log_decision(dict(rec, result=result, note=msg[:140], stop=stop, slip=round(slip, 3),
+                              round=(prev.get("total", 0) if prev.get("key") == bkey else 0) + 1,
+                              retry_on=prev.get("why_now") if prev.get("key") == bkey else None,
+                              **{k: info[k] for k in ("rounds", "tries", "agreed", "line", "floor", "asked_again", "ask_error",
+                                                      "low_offer") if k in info}))
+            if result != "failed":
+                COMBO_WAIT.pop(t, None)                   # a sale (or an unclear one, blocked by rule 8) starts over
+                MINE.setdefault("combo_fail_told", {}).pop(t, None)
+            if result == "check":                         # may or may not have sold: no "took the profit" words
                 out.append("🤖 Auto cash-out: " + msg)
+                continue
+            if result == "failed":
+                wait = stop in COMBO_BACKOFF_STOPS
+                if wait:                                  # re-tried when the game or the price changes, not on a clock
+                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip))
+                note = combo_fail_note(h["label"], info, stop, wait, msg)
+                told = MINE.setdefault("combo_fail_told", {})
+                if time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
+                    told[t] = time.time()                 # one note per combo an hour
+                    out.append(note)
                 continue
             lead = {"take profit": f"🤖 Take profit: the offer reached {CFG.get('take_profit')}% of the payout. ",
                     "lock in": "🤖 Locked in a profit: the offer fell 20% from its high. ",
@@ -5690,6 +5735,109 @@ def auto_sell_now(plan):
     finally:
         MINE["busy"] = False
     return out
+
+
+COMBO_BACKOFF_STOPS = ("cancelled", "failed", "no fresh offer", "offer too low", "out of time")   # clear failures only
+COMBO_FAIL_TELL = 3600    # a combo's "nothing sold" note at most once an hour
+# After a round where buyers backed out, the combo is tried again only when something real changes (Pete, 2026-11-23:
+# "It should retry based on changes in the game, not some arbitrary number of minutes"): a score, a game going live or
+# final, a break starting or ending, a pick decided, the combo's chance or the cached offer moving COMBO_RETRY_MOVE,
+# or the smart-sell line moving that much. COMBO_RETRY_GAP is only a courtesy gap so one pass never asks Kalshi twice.
+COMBO_RETRY_MOVE = 0.05   # 5% of the combo's value / offer / line, and at least:
+COMBO_RETRY_MIN_P = 0.02  # 2 points of chance (a 5% move on a 10% chance is noise)
+COMBO_RETRY_MIN_USD = 0.25  # 25 cents of offer or line
+COMBO_RETRY_GAP = 5       # seconds
+COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now"}
+
+
+def combo_game_snap(h):
+    """What the combo's games look like now: per pick still open, (state, its score, the other score, at a break),
+    from the watcher's score feed (leg_score). None for a pick with no score."""
+    out = []
+    for (side, tk), _ in h.get("need") or []:
+        try:
+            sc = leg_score({"ticker": tk, "side": side})
+        except Exception:                            # a score-feed hiccup never stops the pass
+            sc = None
+        out.append((tk, None if not sc else (sc.get("state"), sc.get("me"), sc.get("opp"), bool(sc.get("brk")))))
+    return tuple(sorted(out, key=lambda x: x[0] or ""))
+
+
+def _game_changed(a, b):
+    """The open picks changed (one decided), or a game with a score in both looks different. A pick whose score
+    dropped out of the feed (None) is not a change: a flickering feed must not open the gate."""
+    da, db = dict(a or ()), dict(b or ())
+    return set(da) != set(db) or any(da[k] is not None and db[k] is not None and da[k] != db[k] for k in da)
+
+
+def combo_wait_start(t, h, key, offer, info, line):
+    """A round failed: remember the game and the price, so the next try waits for one of them to change."""
+    prev = COMBO_WAIT.get(t) or {}
+    total = (prev.get("total", 0) if prev.get("key") == key else 0) + 1
+    last = ((info or {}).get("tries") or [{}])[-1].get("offer") or offer
+    COMBO_WAIT[t] = {"key": key, "snap": combo_game_snap(h), "p": h.get("p") or 0.0,
+                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total}
+
+
+def _moved(a, b, least):
+    a, b = a or 0.0, b or 0.0
+    return abs(a - b) >= max(COMBO_RETRY_MOVE * max(abs(a), abs(b)), least)
+
+
+def combo_wait_why(t, h, f, line):
+    """'' to go ahead, else why this combo still waits after buyers backed out (logged once a wait). Something must
+    have changed since the failed round: the games (combo_game_snap), the combo's chance, the cached offer, the line."""
+    w = COMBO_WAIT.get(t)
+    if not w:
+        return ""
+    if w["key"] != ("combo", round(f, 3)):           # a different sale (the share changed): counted afresh
+        COMBO_WAIT.pop(t, None)
+        return ""
+    if time.time() - w["at"] < COMBO_RETRY_GAP:
+        return "courtesy gap"
+    o = MINE["cash"].get(t) or {}
+    seen = o.get("offer") if o.get("rfq") not in (None, "estimate") and o.get("at", 0) > w["at"] else None
+    snap = combo_game_snap(h)
+    why = ("the game changed" if _game_changed(snap, w["snap"]) else
+           "the combo's chance moved" if _moved(h.get("p"), w["p"], COMBO_RETRY_MIN_P) else
+           "the offer moved" if seen and _moved(seen, w["offer"], COMBO_RETRY_MIN_USD) else
+           "the smart-sell line moved" if _moved(line, w["line"], COMBO_RETRY_MIN_USD) else "")
+    if why:                                          # go (logged with the next round); the new state is the baseline,
+        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False)
+        if seen:                                     # so a pass that then skips for another reason waits again
+            w["offer"] = seen
+        return ""
+    if not w.get("told"):
+        w["told"] = True
+        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                      "why": "waiting for the game or the price to change", "round": w["total"]})
+    return "waiting for the game or the price to change"
+
+
+def _low_words(info):
+    """Why a fresh offer was turned down, in the words Pete knows: what he paid, or the smart-sell price."""
+    low, floor, line = info.get("low_offer") or 0, info.get("floor"), info.get("line")
+    if floor is not None and low < floor:
+        return f"under the {money(floor)} you paid"
+    if line is not None:
+        return f"under the {money(line)} smart sell needs"
+    return "too far under the first offer"
+
+
+def combo_fail_note(label, info, stop, wait, msg):
+    """The plain push for an automatic combo sale that didn't go through: no 'took the profit' words (#334 for combos)."""
+    n = (info or {}).get("rounds") or 0
+    tries = f"{n} time{'s' if n != 1 else ''}"
+    said = {"cancelled": f"the buyer backed out {tries}",
+            "failed": f"the buyer backed out {tries}",
+            "out of time": f"the buyer backed out {tries} and it ran out of time for this check",
+            "no fresh offer": f"the buyer backed out {tries} and no fresh offer came in",
+            "offer too low": f"the buyer backed out {tries} and the next offer "
+                             f"({money((info or {}).get('low_offer') or 0)}) was {_low_words(info or {})}"}.get(stop)
+    head = f"🤖 Auto cash-out tried to sell {label}: {said}, so nothing was sold." if said else \
+        "🤖 Auto cash-out didn't sell: " + re.sub(r"\s*Tap .*$", "", msg)
+    return head + (" It will try again when the game or the price changes." if wait
+                   else " It will try again on the next check.")
 
 
 def notify(msg):
@@ -9299,7 +9447,24 @@ def get_cash_offer(ticker, frac=1.0):
             "frac": frac, "at": time.time()}
 
 
-CASH_RETRIES = 3          # if the buyer backs out, try this many fresh offers
+CASH_RETRIES = 3          # if the buyer backs out, try this many fresh offers (your own Cash out tap)
+AUTO_CASH_RETRIES = 9     # auto cash-out: up to 10 accepts a round, each on a fresh offer (Pete, 2026-11-23: "let it
+#                           retry 7, 8, 9 or even 10 times"); each fresh offer must still clear the smart-sell line
+#                           (and cost under Never sell at a loss); an unknown outcome is never retried (rule 8)
+AUTO_CASH_GAP = (0.3, 1.0)   # auto cash-out: a short random pause (seconds) before each fresh offer
+AUTO_CASH_BUDGET = 120    # auto cash-out: no new try starts this many seconds after the round began
+CASH_LAST = {}            # ticker -> what the last cash-out round did (tries, why it stopped), for the decision log
+ACCEPT_ERR = {}           # ticker -> Kalshi's words for the last refused accept (accept_once), for the decision log
+_CASH_CTX = threading.local()   # .auto True while auto cash-out runs accept_cash (taps never get the pause or extras)
+
+
+def cash_gap(rand=None):
+    """Seconds to pause before auto cash-out asks for a fresh offer: random within AUTO_CASH_GAP."""
+    return (rand or random.uniform)(*AUTO_CASH_GAP)
+
+
+def _cash_pause(secs):
+    time.sleep(secs)                      # its own name so the checks can count the pauses without waiting
 CASH_SLIP = 0.97          # ...accepting one automatically only if it's at least 97% of what you confirmed
 AUTO_CASH_SLIP = 0.97     # smart sell's own: a combo's real offer must reach this share of its line (#228 PR4 split it
 #                           from CASH_SLIP so self-tuning can judge it, `auto_slip`, without touching your own taps)
@@ -9317,8 +9482,10 @@ def accept_cash(ticker, floor=None):
     if frac < 1:
         label = "Half of " + label
     if not o or not o.get("rfq") or time.time() - o["at"] > offer_life():
+        CASH_LAST[ticker] = {"stop": "offer expired", "rounds": 0, "tries": []}
         return f"{label}: that offer expired. Tap Get cash-out offer for a fresh one."
     if rfq_unsure(ticker, "sell"):
+        CASH_LAST[ticker] = {"stop": "unknown", "rounds": 0, "tries": []}
         return f"⚠️ {label}: {CASH_UNSURE_MSG}"
     agreed = o["offer"]
     MINE.setdefault("selling", set()).add(ticker)   # the auto-sell keeper keeps its hands off
@@ -9329,34 +9496,83 @@ def accept_cash(ticker, floor=None):
 
 
 def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
+    """Accepts the offer; if the buyer backs out (a definite 'cancelled'/'failed'), asks for a fresh offer and accepts
+    it only if it is at least CASH_SLIP of `agreed` (and `floor`, if given). Your tap: CASH_RETRIES fresh offers.
+    Auto cash-out (_CASH_CTX.auto): the bar is the smart-sell line (_CASH_CTX.line) instead of CASH_SLIP of
+    `agreed` (Pete, 2026-11-23), plus `floor`, plus cost for a profit-taking sale (_CASH_CTX.cost_floor);
+    AUTO_CASH_RETRIES, a short random pause before each, one more ask when no fresh offer came in, and no new try
+    after AUTO_CASH_BUDGET seconds. An unknown outcome always stops (rule 8).
+    What happened is left in CASH_LAST[ticker] for the decision log."""
+    auto = bool(getattr(_CASH_CTX, "auto", False))
+    retries = AUTO_CASH_RETRIES if auto else CASH_RETRIES
+    line = getattr(_CASH_CTX, "line", None) if auto else None   # auto: the smart-sell line that justified the sale
+    cost_floor = getattr(_CASH_CTX, "cost_floor", None) if auto else None   # auto, profit-taking: never below cost
+    if cost_floor is not None:
+        floor = cost_floor if floor is None else max(floor, cost_floor)
+    if line is not None and auto and getattr(_CASH_CTX, "cutting", False):
+        line = max(line, CASH_SLIP * agreed)  # a loss cut's line can be near 0: never under 97% of its first offer
+    info = CASH_LAST[ticker] = {"stop": "", "rounds": 0, "tries": [], "agreed": round(agreed, 2),
+                                "line": None if line is None else round(line, 2),
+                                "slip": None if line is not None else CASH_SLIP,
+                                "floor": None if floor is None else round(floor, 2)}
+    began = time.time()
     had_tp = bool((MINE.get("tp") or {}).get(ticker)) or bool(resting_sells().get(ticker))
     if had_tp:
         cancel_take_profit(ticker)          # can't sell the same contracts twice
     why = ""
-    for attempt in range(CASH_RETRIES + 1):
+    ask_again = auto                         # auto: one more fresh-offer ask when none came in
+    for attempt in range(retries + 1):
         if attempt:
-            loading(f"The buyer backed out. Getting a fresh offer (try {attempt} of {CASH_RETRIES})…")
+            if auto and time.time() - began > AUTO_CASH_BUDGET:
+                why = info["stop"] = "out of time"
+                break
+            if auto and (trading_paused() or not CFG.get("auto_sell") or not can_trade()):
+                why = info["stop"] = "paused"     # Pause (or Auto cash-out turned off) mid-round: no more tries
+                break
+            if auto:
+                _cash_pause(cash_gap())
+            if not auto:
+                loading(f"The buyer backed out. Getting a fresh offer (try {attempt} of {retries})…")
             o = get_cash_offer(ticker, frac)
+            if not o.get("offer") and ask_again:
+                ask_again, info["asked_again"] = False, True
+                _cash_pause(cash_gap())
+                o = get_cash_offer(ticker, frac)
             if not o.get("offer"):
                 why = "no fresh offer came in"
+                info["stop"], info["ask_error"] = "no fresh offer", str(o.get("error") or "")[:140]
                 break
-            if o["offer"] < CASH_SLIP * agreed or (floor is not None and o["offer"] < floor):
-                MINE["cash"][ticker] = o              # floor: 'Never sell at a loss' never retries below cost
+            # The bar a fresh offer must reach. Auto cash-out (Pete, 2026-11-23: "I don't think it needs to be within
+            # 97% of the first price, but it should definitely stay above the smart sell line"): the same smart-sell
+            # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
+            bar = line if line is not None else CASH_SLIP * agreed
+            if o["offer"] < bar or (floor is not None and o["offer"] < floor):
+                MINE["cash"][ticker] = o              # floor: Never sell at a loss / a profit-taking sale: not below cost
                 why = "new"
+                info["stop"], info["low_offer"] = "offer too low", round(o["offer"], 2)
                 break
+        ACCEPT_ERR.pop(ticker, None)
         status = accept_once(o, ticker)
+        info["rounds"] = attempt + 1
+        info["tries"].append({"try": attempt + 1, "quote": str(status), "offer": round(float(o.get("offer") or 0), 2),
+                              "error": str(ACCEPT_ERR.pop(ticker, "") or "")[:140]})
         if status == "unknown":
+            info["stop"] = "unknown"
             ACCT_CACHE["at"] = 0
             return f"⚠️ {label}: {CASH_UNSURE_MSG}"
         if status == "executed":
+            info["stop"] = "sold"
             ACCT_CACHE["at"] = 0
-            haptic("success")
+            if not auto:
+                haptic("success")             # a haptic needs a tap behind it (auto cash-out has none)
             extra = f" (after {attempt} retr{'y' if attempt == 1 else 'ies'})" if attempt else ""
             return f"✅ {label} cashed out for about {money(o['offer'])}{extra}."
         if status not in ("cancelled", "failed"):
+            info["stop"] = str(status)
             ACCT_CACHE["at"] = 0
             return (f"{label}: still waiting on Kalshi. Check this page again in a minute before trying again, "
                     "so you don't sell twice.")
+        info["stop"] = status                  # cancelled / failed: the buyer backed out
         why = why or "backed out"
     ACCT_CACHE["at"] = 0
     if had_tp and h:                        # nothing sold: put the auto-sell back
@@ -9364,7 +9580,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     if why == "new":
         return (f"{label}: the buyer backed out, and the best fresh offer is {money(MINE['cash'][ticker]['offer'])} "
                 f"(below the {money(agreed)} you agreed to), so nothing was sold. Tap Cash out to take it.")
-    return (f"{label}: buyers backed out {CASH_RETRIES + 1} times, so nothing was sold. "
+    n = info["rounds"]
+    return (f"{label}: buyers backed out {n} time{'s' if n != 1 else ''}, so nothing was sold. "
             "Try again in a minute." + (" Your auto-sell order is back on." if had_tp else ""))
 
 
@@ -9387,6 +9604,7 @@ def accept_once(o, ticker=None):
                     {"accepted_side": "yes"})
     except Exception as err:
         if order_outcome(err) == "refused":
+            ACCEPT_ERR[ticker or o.get("ticker") or ""] = order_words(err)[:140]   # Kalshi's words, for the log
             return "failed"
         return unsure(f"cash-out accept: {type(err).__name__}: {order_words(err)[:60]}")
     status, start = "accepted", time.time()
@@ -22291,6 +22509,11 @@ KNOBS = (
     {"name": "cash_retries", "group": "invariant", "cls": "invariant", "label": "Fresh offers after a clear refusal",
      "owner": "accept_cash", "src": "CASH_RETRIES", "start": 3, "unit": "count",
      "why": "only after Kalshi clearly said no; an unclear answer is never retried"},
+    {"name": "auto_cash_retries", "group": "invariant", "cls": "invariant",
+     "label": "Auto cash-out: fresh offers after a clear refusal",
+     "owner": "_accept_with_retries", "src": "AUTO_CASH_RETRIES", "start": 9, "unit": "count",
+     "why": "Pete, 2026-11-23: up to 10 tries a round for an automatic combo sale, each on a fresh offer that must "
+            "still clear the smart-sell line (and cost under Never sell at a loss); only after Kalshi clearly said no, an unclear answer is never retried"},
     {"name": "your_switches", "group": "invariant", "cls": "invariant", "label": "Your switches always win",
      "owner": "auto_sell_now, smart_sell_singles (auto_sell, smart_sell, ride, auto_hedge, stop_loss, I'll sell it)",
      "src": None, "start": True, "unit": "rule",
