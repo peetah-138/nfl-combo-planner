@@ -21,7 +21,7 @@ function foldTog(k){hap('selection');const o=!foldOpen(k);try{localStorage.setIt
 function ideaReveal(id){const d=S.live;if(!d||!Array.isArray(d.ideas))return;const all=ideaList(d),i=all.findIndex(x=>x.id===id);if(i<0)return;
  try{localStorage.setItem('cw_fold_ideas','1');}catch(e){}if(i>=(+d.ideas_limit>0?+d.ideas_limit:all.length))S.ideasMore=true;renderLive();}
 function ideaList(d){const hid=S.idHide||{},now=Date.now();   // a dismissal shows at once; the Mac's own list takes over a few seconds later
- return (d.ideas||[]).filter(x=>{const t=hid[x.idea_id||x.id];return !(t===true||(t&&now-t<9000));});}   // true = passed, the Mac hasn't confirmed yet (#256): it stays off the screen
+ return (d.ideas||[]).filter(x=>{const t=hid[x.idea_id||x.id];return !(t===true||(t&&now-t<9000));}).sort(ovLast);}   // a game you already have enough on: greyed, last   // true = passed, the Mac hasn't confirmed yet (#256): it stays off the screen
 function ideaBar(x){return (x.below_bar?'<span class="tag" style="background:var(--panel2);color:var(--sub)">BELOW YOUR BAR</span>':'')+(x.stale?'<span class="tag itag-stale">REFRESHING</span>':'');}
 function ideaAgeNote(x){return ideaAge(x.ts)+(x.stale?' · refreshing':'');}
 /* #252: what a fresh price says about the idea. The Buy button follows it, so it is never green (or silently off) when
@@ -60,7 +60,7 @@ function ideaLiveNote(q){return q&&q.live?`<div class="m inow">Kalshi's price no
 function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];return a?`<div class="ians ${a.tone||''}" role="status">${esc(a.m)}</div>`:'';}
 /* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
 function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
- const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
+ const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||q.small||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
  return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null,small})
   +(fresh&&q.note?`<div class="stkm" data-w="depth">${esc(q.note)}</div>`:'');}
 function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,false);const vd=ideaVd(x,q);
@@ -68,7 +68,7 @@ function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,fals
   :`<div class="dnums"><div>Your price now<b class="${q.clears?'up':''}">${money(q.stake)} → ${money(q.pays)}</b></div><div>Share of fair<b>${pct(q.pct)}</b>${ideaSrc(q)}</div></div>`)+vd+ideaAnsHtml(x)+ideaStake(x,q,true);}
 /* once a fresh price is on screen, the numbers from when the idea was found are marked as older (#252) */
 function ideaOld(html,x,fresh){return fresh&&html?`<div class="iold"><div class="m">When this idea was found · ${esc(ideaAge(x.ts).replace(/^Price /,''))} · older than the price below</div>${html}</div>`:html;}
-function ideaCard(x){const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
+function ideaCard(x){if(x.over)return ovIdea(x);const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;const k=x.idea_id||x.id;
  if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
  const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" onclick="event.stopPropagation();ideaX('${x.id}')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
@@ -229,7 +229,7 @@ async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySel
  const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
  if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn};
+ S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn,small:r.small};
  S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
  clearInterval(S.ideaT);S.ideaTid=id;S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 /* Buy (#252): every tap ends with an answer in plain words, on the page itself (the card, or the detail page, where a toast

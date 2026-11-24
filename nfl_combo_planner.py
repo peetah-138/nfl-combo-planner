@@ -58,6 +58,9 @@ CFG = {
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
     "smart_buy_gate": True,   # Smart Buy (issue #137 stage 2): skips panel bets and Buy ideas unlikely to be profitable
+    "overlap_guard": True,    # pick lists leave out (grey) a game you already have overlap_n open bets on, or overlap_pct%
+    "overlap_n": 2,           # of the sizing base at risk on; "Add anyway" on Pete's own tap shows it again (display only)
+    "overlap_pct": 8,
     "knobs_live": True,       # #228 PR3: smart sell tunes its own exit numbers per league (Pete's standing opt-in)
                               # (skip-only). A new key: the old preview switch's stored 'off' was a default, not a choice
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
@@ -257,7 +260,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
 
 
 def next_league():
@@ -12064,32 +12067,64 @@ def get_offer(i, amount=None, check_cap=True):
         return {"error": "No offers came in for this combo. Try again in a minute, or Swap it."}
     yes_price, q = best
     pays = stake / yes_price
-    minimum = c["min"] * stake / CTX["stake"]
+    scale = stake / CTX["stake"]
+    fair_pay, legs_now, why, nofair, live = c.get("fair"), c["legs"], None, None, False
+    if c.get("kind") != "panel" and fair_pay and idea_combo_live_gap(c["legs"]):
+        # (#358) a pick on a game under way: the board's chance for it is the pre-game one, so it is priced again on its
+        # live fair chance (combo_live_fair, the panel's live guards); none to be had = no fair price at all (#255)
+        live = True
+        fresh, nofair = combo_live_fair(c["legs"])
+        if fresh is None:
+            fair_pay, why = None, "nofair"
+        else:
+            legs_now, fair_pay = fresh, CTX["stake"] / math.prod(l["fair"] for l in fresh)
+    minimum = (c["min"] if not live else 0) * scale
     bar = None
-    if c.get("kind") != "panel" and c.get("fair"):
-        bar = green_bar(c["legs"])
-        minimum = max(minimum, c["fair"] * stake / CTX["stake"] * bar)
+    if c.get("kind") != "panel" and fair_pay:
+        bar = green_bar(legs_now)
+        minimum = max(minimum, fair_pay * scale * bar)     # (the panel's combos carry their own cut-off in c["min"])
     if c.get("kalshi"):
-        note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * stake / CTX["stake"]))
-    pct = pays / (c["fair"] * stake / CTX["stake"]) if c.get("fair") else None
-    ok = pays >= minimum
-    if ok and c.get("kind") != "panel" and idea_combo_live_gap(c["legs"]):
-        ok = False                                 # (#341) a pick on a game under way: its chance is pregame, never green
+        note_buy_ratio(len(c["legs"]), pays / (c["kalshi"] * scale))
+    pct = pays / (fair_pay * scale) if fair_pay else None
+    ok = fair_pay is not None and pays >= minimum
+    if fair_pay is not None and not ok:
+        why = "under"
+    if ok and pct is not None and pct > COMBO_SUSPECT:
+        ok, why = False, "suspect"                 # (#358) far over fair is almost always a wrong chance: never green
+        print(f"combo quote {pct:.0%} of fair: over {COMBO_SUSPECT:.0%}, held back as suspect "
+              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
+    if ok and live:                                # (#358) under way and over the bar: the panel's in-play test too
+        try:
+            cand = {"id": "quote:" + "+".join(l["ticker"] for l in legs_now), "kind": "combo", "live": True,
+                    "code": _combo_code(legs_now), "legs": legs_now, "stake": stake, "pct": pct,
+                    "fair_mult": fair_pay / CTX["stake"]}
+            exit_ok, _ = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote")
+        except Exception:
+            exit_ok = False
+        if not exit_ok:
+            ok, why = False, "inplay"
     if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
-        ok = ok and bool(c.get("fair")) and longshot_hold(CTX["stake"] / c["fair"], yes_price, stake) is not None
-    note_quote_time(c["legs"], pct)
-    try:
-        store_quote(c, stake, pays, pct)
-    except Exception:
-        pass
+        held = bool(c.get("fair")) and longshot_hold(CTX["stake"] / c["fair"], yes_price, stake) is not None
+        if ok and not held:
+            why = "longshot"
+        ok = ok and held
+    if fair_pay is not None:                       # a price with no fair chance never feeds the predictor or the log
+        note_quote_time(legs_now, pct)
+        try:
+            store_quote(dict(c, legs=legs_now, fair=fair_pay), stake, pays, pct)
+        except Exception:
+            pass
     carry_note(c["legs"], yes_price, CTX.get("source") or "build", same=c.get("same_game"))   # (#341 C) paper log only
     CTX["offers"][i] = {"rfq": rfq, "quote": q["id"], "pays": pays, "market": market,
-                        "price": yes_price, "stake": stake, "p": CTX["stake"] / c["fair"] if c.get("fair") else None,
+                        "price": yes_price, "stake": stake, "p": CTX["stake"] / fair_pay if fair_pay else None,
                         "legs": [l["ticker"] for l in c["legs"]]}
     return {"pays": pays, "price": yes_price, "min": minimum, "ok": ok, "stake": stake, "pct": pct,
-            "bar": round(bar * 100) if bar else None}
+            "bar": round(bar * 100) if bar else None, "fair": fair_pay, "why": why, "nofair": nofair, "live": live}
 
 
+COMBO_SUSPECT = 1.30      # (#358) a combo quote over this share of fair is held back (never green, never a panel buy):
+                          # far over fair is almost always a wrong chance (a pre-game one, a stale line), not a gift.
+                          # A guess with no quote history on the dev Mac: tune it from the quotes table (ROADMAP).
 COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No retry: the app won't buy this combo "
                     "again or get a fresh price for it until you've checked (Settings › Money lists it).")
 ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted combo quote
@@ -13669,6 +13704,28 @@ def maker_ratio(n, hours=None):
     return r or max(0.6, 0.97 - 0.035 * n)          # before anything is learned: a cautious guess
 
 
+def value_label(legs):
+    """{'kind', 'tier'} for a value-search combo. The star (kind "value") means Kalshi's price is cheap against a fair
+    chance and the maker's usual discount, both from BEFORE the game; a combo with a pick under way has neither (its chance
+    is live, the discount is from past pre-game prices), so it gets no star (issue: Surprise me star filter). Never raises."""
+    try:
+        if idea_combo_live_gap(legs):
+            return {"kind": "mix", "tier": "Live pick"}
+    except Exception:
+        return {"kind": "mix", "tier": "Live pick"}
+    return {"kind": "value", "tier": "Value"}
+
+
+def combo_star(c):
+    """(kind, tier, live) for a suggested combo as Build shows it NOW. A combo built before a game started keeps its star
+    in Build's saved list; once a pick is under way the star and the "Likely about X% of fair" guess (past pre-game Kalshi
+    prices) don't apply, so it is shown as a plain "Live pick". Never raises."""
+    live = bool(idea_combo_live_gap(c.get("legs")))
+    if live and c.get("kind") == "value":
+        return "mix", "Live pick", True
+    return c.get("kind"), c.get("tier"), live
+
+
 def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), per_n=0):
     """Combos built for price, not for chance: picks where Kalshi's own price is cheapest against the
     sharp books' fair chance, combined so those gaps multiply. Scores every combination of the best
@@ -13712,7 +13769,7 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), 
         for l in legs:
             used[l["ticker"]] = used.get(l["ticker"], 0) + 1
         fair_pay = stake / chance
-        out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+        out.append({**value_label(legs), "legs": legs, "fair": fair_pay,
                     "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
                     "value_pct": round(pct, 4)})
     if per_n:
@@ -13730,7 +13787,7 @@ def value_combos(games, stake=None, k=8, min_fair=0.25, max_legs=5, live_ok=(), 
                 have.add(ks)
                 got += 1
                 fair_pay = stake / chance
-                out.append({"kind": "value", "tier": "Value", "legs": legs, "fair": fair_pay,
+                out.append({**value_label(legs), "legs": legs, "fair": fair_pay,
                             "kalshi": stake / math.prod(l["p"] for l in legs), "min": fair_pay * CFG["accept_pct"] / 100,
                             "value_pct": round(pct, 4), "extra": True})
     return out
@@ -13982,8 +14039,10 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
     if mode == "on" and (held or not can_trade()):
         mode = "watch"                                # Pause (read live) or a device that never trades: watch only
     try:                                              # the dedupe and the caps must be read, or nothing is bought
-        if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?)",
-                             (key, time.time() - 6 * 3600, 1 if held else 0)):
+        if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?) and "
+                             "not (status = 'skipped' and why = ? and ts < ?)",   # (#365) a read blip: retried soon
+                             (key, time.time() - 6 * 3600, 1 if held else 0, KILLER_OVERLAP_UNREAD,
+                              time.time() - KILLER_UNREAD_RETRY)):
             return None                               # one per deal (one seen while paused can still buy after)
         n, dollars = killer_today() if mode == "on" else (0, 0.0)
     except Exception as err:
@@ -14001,6 +14060,8 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
             status, why = "skipped", "couldn't check your spending cap (Kalshi's account couldn't be read)"
         elif spent + stake > CFG["budget"] + 0.01:
             status, why = "skipped", "over your spending cap"
+        elif (overlap := killer_overlap(legs)):       # #365: a game already at the line (or unreadable) = skip
+            status, why = "skipped", overlap
         else:
             try:                                      # the record goes in BEFORE the order: a crash can't buy it twice
                 cur = store_x_strict("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) "
@@ -16102,6 +16163,9 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         clears = False                                  # (#341) under way: green only with a likely route to profit
         warn.append({"k": "exit", "t": "The game is under way and a profitable sale or win from here doesn't look "
                                        "likely, so this isn't a recommended buy."})
+    ov = overlap_note([{"ticker": t, "event": x.get("event") or ""}])   # display only: never changes clears
+    if ov:
+        warn.append({"k": "overlap", "t": ov})
     qid = secrets.token_hex(8)
     with _SQ["lock"]:
         _sq_prune(now)
@@ -18793,6 +18857,41 @@ def live_recheck(legs, now=None):
     return out, None
 
 
+def combo_live_fair(legs, now=None):
+    """(#358) A combo's legs with every pick whose game is under way priced on its live fair chance (live_side_fair on
+    a fresh score and Kalshi's fresh book), the panel's live guards on each: a two-sided book no wider than LIVE_SPREAD,
+    not nearly decided, Kalshi's mid within LIVE_DISAGREE of the live chance. Picks not started keep their chance.
+    Returns (legs, None) or (None, a plain reason): never the pre-game chance against a live price. Never raises."""
+    now = now or time.time()
+    out = []
+    for l in legs or []:
+        pick = l.get("pick") or l.get("ticker") or "a pick"
+        try:
+            if not started(l):
+                out.append(l)
+                continue
+            if _bet_kind(l.get("ticker")) not in ("win", "other"):
+                return None, f"{pick} is a spread or total under way, and there's no live chance for those"
+            book = book_depth(l["ticker"], max_age=15) or {}
+            ask, bid = book.get("ask"), book.get("bid")
+            if ask is None or bid is None:
+                return None, f"{pick}'s game is under way and Kalshi has no live buyers and sellers on it"
+            if ask - bid > LIVE_SPREAD + 1e-9:
+                return None, f"{pick}'s game is under way and its live price is jumpy ({(ask - bid) * 100:.0f}¢ between buy and sell)"
+            f, how, why = live_side_fair(dict(l, line_live=False), now)
+            if f is None:
+                return None, f"{pick}'s game is under way and there's no live chance for it ({why or 'unknown'})"
+            if f >= LIVE_DECIDED or f < 0.05:
+                return None, f"{pick}'s game is nearly decided"
+            if abs(f - (ask + bid) / 2) >= LIVE_DISAGREE:
+                return None, (f"{pick}'s game is under way and Kalshi's live price and the live chance disagree too much "
+                              "(something the score doesn't show)")
+            out.append(dict(l, fair=round(f, 4), p=ask, bid=bid, live=True, live_how=how))
+        except Exception:
+            return None, f"{pick}'s game is under way and its live chance couldn't be worked out"
+    return out, None
+
+
 def _start_ok(c, now, margin):
     """May this panel bet still be shown, approved or bought? A bet on games not started yet: only while its
     first game is `margin` seconds or more away. A bet priced live on a game under way: while that's switched on
@@ -19521,6 +19620,284 @@ def panel_extras(real=None):
     return dict(x, items=_extras_filter(x.get("items", []), real))
 
 
+# ---- the overlap guard: games you already have enough riding on are left out of pick lists ----
+# A game with overlap_n (Settings › Money, 2 by default) or more open bets on it (combos, singles, spreads, totals and today's panel bets, each counted
+# once), or overlap_pct% (8 by default) or more of the sizing base riding on it, is greyed in every pick list (Build board, Surprise me,
+# Best bets, Buy ideas, panel extras, long shots) with an "Add anyway" that only Pete's own tap sends (a per-request
+# allow list the page keeps in memory: nothing saved, nothing the panel, killer deals, standing orders or the hedge
+# read). Reads only what's already been read (no lookups); any failure means no guard, never a broken list.
+OVERLAP = {"n": 2, "pct": 8}
+OVERLAP_ALLOW_MAX = 20
+
+
+def overlap_key(event="", ticker=""):
+    """One key per game for every kind of bet on it: a game-winner, spread or total market (or its event) and a combo
+    leg all map to the game's GAME event."""
+    ev = event or (ticker.rsplit("-", 1)[0] if ticker and "-" in ticker else "")
+    return game_event(ev) if ev else ""
+
+
+def overlap_settings():
+    """(on, n, pct): the Settings › Money switch and its two numbers (shared settings first, like shared_flag)."""
+    main = load_json(MAIN_SAVED, {}) if os.path.exists(MAIN_SAVED) else {}
+
+    def num(k, lo, hi):
+        v = main.get(k)
+        v = CFG.get(k, OVERLAP[k[8:]]) if v is None else v
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = OVERLAP[k[8:]]
+        return min(hi, max(lo, v))
+    return shared_flag("overlap_guard"), int(num("overlap_n", 1, 10)), num("overlap_pct", 1, 50)
+
+
+def _overlap_singles():
+    """Open singles, spreads and totals from what was last read: the Live list, else the raw account positions. The
+    last items are used even after a buy or sell clears the read stamp (at=0), so a game doesn't drop under the line
+    in the minutes right after a buy, until the next account read."""
+    if SINGLES.get("items"):
+        return [{"t": x.get("t") or x.get("ticker"), "event": x.get("event") or "", "cost": x.get("cost") or 0,
+                 "state": x.get("state")} for x in SINGLES.get("items") or []]
+    out = []
+    if ACCT_POS.get("items"):
+        for p in ACCT_POS.get("items") or []:
+            t = p.get("ticker") or p.get("market_ticker")
+            if t and not is_combo(t) and abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
+                out.append({"t": t, "event": "", "cost": dollars(p, "market_exposure") or dollars(p, "total_traded"),
+                            "state": None})
+    return out
+
+
+def game_exposure(bets=None, singles=None, panel_items=None, extra=()):
+    """{game: {"n": open bets on it, "risk": dollars they cost}} from what's already been read (never a lookup). A combo
+    counts once on every game it touches, at its full cost (if that game goes wrong the whole stake goes). Today's
+    panel bets (scheduled, buying, bought, or 'check': an unknown outcome counts as open) count too, unless the account
+    already shows that bet. Settled bets and finished singles don't count.
+    The pick lists call it with nothing (what's in memory, any failure = fewer bets). Killer deals (killer_overlap)
+    pass every source read strictly instead, plus `extra`: [(tickers, cost)] for their own buys and standing orders,
+    each skipped when the account already shows that bet (one real bet never counts twice)."""
+    out = defaultdict(lambda: {"n": 0, "risk": 0.0})
+    sets, tks, seen = set(), set(), set()
+
+    def add(keys, cost):
+        try:
+            cost = max(0.0, float(cost or 0))
+        except (TypeError, ValueError):
+            cost = 0.0
+        for k in {k for k in keys if k}:
+            out[k]["n"] += 1
+            out[k]["risk"] += cost
+    if bets is None:
+        v = ACCT_CACHE.get("value")
+        bets = v[0] if v and v[0] else []
+    for a in bets:
+        if a.get("status") != "pending":
+            continue
+        legs = a.get("legs") or []
+        sets.add(frozenset(l.get("ticker") for l in legs if l.get("ticker")))
+        add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in legs], a.get("cost"))
+    for x in (_overlap_singles() if singles is None else singles):
+        if not x["t"] or x["t"] in tks or x.get("state") in ("over", "done"):
+            continue
+        tks.add(x["t"])
+        add([overlap_key(x["event"], x["t"])], x["cost"])
+    if panel_items is None:
+        try:
+            real = panel_get("real") if STORE.get("db") else None
+        except Exception:
+            real = None
+        panel_items = (real or {}).get("items") or []
+    for c in panel_items:
+        if c.get("state") not in PANEL_LIVE:
+            continue
+        ts = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+        if (len(ts) == 1 and ts[0] in tks) or (len(ts) > 1 and frozenset(ts) in sets):
+            continue                                        # already counted from the account
+        add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []], c.get("stake"))
+        seen.add(ts[0] if len(ts) == 1 else frozenset(ts))
+    for ts, cost in extra or ():
+        ts = [t for t in ts or () if t]
+        one = ts[0] if len(ts) == 1 else frozenset(ts)
+        if not ts or one in seen or (len(ts) == 1 and ts[0] in tks) or (len(ts) > 1 and frozenset(ts) in sets):
+            continue                                        # already counted (the account or the panel has it)
+        seen.add(one)
+        add([overlap_key("", t) for t in ts], cost)
+    return {k: {"n": x["n"], "risk": round(x["risk"], 2)} for k, x in out.items()}
+
+
+def _overlap_base():
+    """The panel's sizing base from the balance already read, without saving anything; None when unknown."""
+    v = ACCT_CACHE.get("value")
+    bal = v[1] if v else None
+    if bal is None:
+        return None
+    try:
+        base, _ = sizing_base(balance=bal, save=False)
+    except Exception:
+        return None
+    return base if base and base > 0 else None
+
+
+def overlap_text(x):
+    n = x.get("n") or 0
+    risk = x.get("risk") or 0
+    bets = f"{n} open bet{'' if n == 1 else 's'}" if n else "money riding"
+    return f"You already have {bets} on this game ({money(risk)} at risk)."
+
+
+def overlap_allow(raw):
+    """The page's per-request "Add anyway" list: game keys only, at most OVERLAP_ALLOW_MAX."""
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    out = set()
+    for k in list(raw or [])[:OVERLAP_ALLOW_MAX]:
+        k = str(k or "").strip().upper()
+        if re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,79}", k):
+            out.add(overlap_key(k))
+    return out
+
+
+def overlap_games(allow=(), base=None, exposure=None):
+    """{game: {"n", "risk", "why": "n"|"risk", "text"}} for every game over the line, without the ones in `allow`.
+    Off (Settings › Money) or anything unreadable: {} (the lists show as before). base None: the count rule only."""
+    try:
+        on, n_max, pct = overlap_settings()
+        if not on:
+            return {}
+        ex = game_exposure() if exposure is None else exposure
+        if not ex:
+            return {}
+        if base is None:
+            base = _overlap_base()
+        allow = {overlap_key(k) for k in allow or ()}
+        out = {}
+        for k, x in ex.items():
+            if k in allow:
+                continue
+            by_n = x["n"] >= n_max
+            by_risk = bool(base) and x["risk"] >= base * pct / 100 - 1e-9
+            if by_n or by_risk:
+                out[k] = {"n": x["n"], "risk": x["risk"], "why": "n" if by_n else "risk", "text": overlap_text(x)}
+        return out
+    except Exception as err:
+        print("overlap guard:", type(err).__name__, err, flush=True)
+        return {}
+
+
+def overlap_of(over, events=(), tickers=()):
+    """The first over-the-line game among these events/tickers (its entry plus "game"), or None."""
+    if not over:
+        return None
+    for k in [overlap_key(e) for e in events or ()] + [overlap_key("", t) for t in tickers or ()]:
+        if k and k in over:
+            return dict(over[k], game=k)
+    return None
+
+
+def overlap_note(legs, allow=()):
+    """The warning line for a quote on these legs (dicts with ticker/event, or tickers): the game already carries open
+    bets. Shown whatever the switch's thresholds say, as long as the switch is on and Pete has a bet there; None when not."""
+    try:
+        if not overlap_settings()[0]:
+            return None
+        ex = game_exposure()
+        for l in legs or []:
+            k = overlap_key(l.get("event") or "", l.get("ticker") or "") if isinstance(l, dict) else overlap_key("", str(l))
+            if k and k in ex and ex[k]["n"]:
+                return overlap_text(ex[k])
+    except Exception:
+        return None
+    return None
+
+
+# ---- the overlap guard for killer deals (issue #365, Pete 2026-11-23: "fix the 2 killer paths"). Stricter only: a
+# killer combo or single that touches a game already at the line (the same switch and numbers as the pick lists) is
+# skipped, never bought. Unlike the pick lists it fails closed: every source is read fresh and strictly, and anything
+# that can't be read skips the deal. Standing orders, the panel and the hedge are not changed by it.
+KILLER_OVERLAP_UNREAD = "couldn't check your open bets on this game"
+KILLER_UNREAD_RETRY = 120     # seconds: a deal skipped only because the bets couldn't be read is looked at again after
+#                               this, not held off 6 hours like a real skip (a 429 shouldn't cost the deal)
+
+
+def _positions_strict():
+    """Every Kalshi position, read now; raises when it can't be read (all_positions would answer [] instead). Through
+    the Mac hub when one answers (like every other account read), else signed with the local key."""
+    if hub_up():
+        key, key_id = None, ""                         # account_get sends it through the hub; no local key needed
+    else:
+        key_id = CFG.get("kalshi_key_id", "").strip()
+        if not key_id or not os.path.exists(KEYFILE):
+            raise RuntimeError("no Kalshi key")
+        with open(KEYFILE, encoding="utf-8") as f:
+            key = load_private_key(f.read())
+    try:
+        pos = account_pages(key, key_id, "/portfolio/positions", "market_positions",
+                            {"count_filter": "position,total_traded"})
+    except requests.RequestException:
+        pos = account_pages(key, key_id, "/portfolio/positions", "market_positions")
+    if not isinstance(pos, list):
+        raise ValueError("positions answer isn't a list")
+    return pos
+
+
+def killer_exposure(now=None):
+    """game_exposure for a killer deal, every source read strictly (raises when any can't be read): Kalshi's combos
+    (cap_bets: fresh, or the last good read ≤ CAP_READ_AGE), every single/spread/total position (read now), today's
+    panel, the standing orders out there (mode on, posted), and killer deals bought (or 'check', or still 'buying')
+    in the last day, so a run can't stack on its own buys."""
+    now = now or time.time()
+    bets = cap_bets(now)
+    singles = []
+    for p in _positions_strict():
+        t = p.get("ticker") or p.get("market_ticker")
+        if t and not is_combo(t) and abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
+            singles.append({"t": t, "event": "", "cost": dollars(p, "market_exposure") or dollars(p, "total_traded"),
+                            "state": None})
+    _panel_table()
+    rows = store_rows_strict("select body from panel where day=? and mode='real'", (_panel_day(),))
+    items = ((json.loads(rows[0]["body"]) or {}).get("items") or []) if rows else []
+    extra = [(json.loads(r["legs"]), r["stake"]) for r in
+             store_rows_strict("select legs, stake from killer where mode='on' and status in ('bought', 'check', "
+                               "'buying') and outcome is null and ts >= ?", (now - 86400,))]
+    extra += [([r["ticker"]], (r["price"] or 0) * (r["n"] or 0)) for r in
+              store_rows_strict("select ticker, price, n from maker where mode='on' and status='posted'")]
+    return game_exposure(bets=bets, singles=singles, panel_items=items, extra=extra)
+
+
+def killer_overlap(legs):
+    """None when a killer deal on these legs may go ahead, else the plain-English reason it's skipped. The switch off
+    (Settings › Money "Hold back games I already have bets on") = None with nothing read, as before. On: any game it
+    touches with overlap_n+ open bets, or overlap_pct% of the sizing base at risk, skips it; anything unreadable (the
+    account, positions, the history, the balance for the base) skips it too (fails closed)."""
+    try:
+        on, n_max, pct = overlap_settings()
+    except Exception:
+        return KILLER_OVERLAP_UNREAD + " (the setting couldn't be read)"
+    if not on:
+        return None
+    try:
+        ex = killer_exposure()
+        base = _overlap_base()
+        if base is None:
+            raise ValueError("no balance for the sizing base")
+    except Exception as err:
+        print(f"killer deal overlap check couldn't read open bets ({type(err).__name__}: {err})", flush=True)
+        return KILLER_OVERLAP_UNREAD
+    for l in legs or []:
+        x = ex.get(overlap_key(l.get("event") or "", l.get("ticker") or ""))
+        if not x:
+            continue
+        if x["n"] >= n_max or x["risk"] >= base * pct / 100 - 1e-9:
+            n = x["n"]
+            what = (f"{n} open bet{'' if n == 1 else 's'} ({money(x['risk'])} at risk)" if x["n"] >= n_max else
+                    f"{money(x['risk'])} at risk ({pct:g}% of your panel money or more)")
+            return f"you already have {what} on this game ({l.get('pick') or l.get('ticker')})"
+    return None
+
+
 def panel_add(ids, view, stakes=None):
     """Add bets from one sport's panel (or the new-since-you-approved extras) to today's already-approved panel,
     inside the day's panel budget, skipping any game today's panel already has a bet on. They're bought right away.
@@ -19865,6 +20242,9 @@ def _buy_panel_bet(c):
                     kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
                 except Exception:
                     pass
+            if q.get("why") == "suspect":
+                return False, (f"Kalshi offered {q['pct']:.0%} of fair, too far over to trust: the chance it was "
+                               "priced on is probably wrong"), {}
             return False, f"Kalshi offered {q['pct']:.0%} of fair, under the {cut:.0%} cut-off", {}
         why = _sb_quote_under_fair(c, q.get("pct"))      # #142 leak 1: quoted under fair needs a likely exit too
         if why:
@@ -19915,6 +20295,113 @@ def _quote_only(c):
                 pass
         return (None, None) if q.get("error") else (q["pays"], q.get("pct"))
     return _with_ctx(go)
+
+
+REPRICE_STATES = ("skipped", "failed")   # the panel cards Pete can tap for a fresh price (#358)
+
+
+def _cap1(s):
+    return (s[:1].upper() + s[1:]) if s else s
+
+
+def _reprice_inplay(c):
+    """The buy-time in-play test (#341/#348) for a repriced bet under way: None when it passes, else why not."""
+    try:
+        ok, why = inplay_exit_ok(c, sim=_sb_sim(c, None), source="quote")
+    except Exception:
+        ok, why = False, IN_PLAY_WHY
+    return None if ok else (why or IN_PLAY_WHY)
+
+
+def panel_reprice(pid, paused=False, now=None):
+    """(#358) Pete taps a Skipped or Didn't buy card on today's panel: where would that exact bet land now? Read only.
+    The bet is the one the panel stored (rule 7: nothing else can be priced here), a pick under way only on its live
+    fair chance (combo_live_fair, never the pre-game one), then on Kalshi's fresh book (one pick) or a fresh combo
+    quote whose request is dropped at once, never accepted. Judged by the same bar the panel buys by. Never buys,
+    never changes the panel, refused while paused, a market with an unknown order outcome is never priced (rule 8)."""
+    if paused:
+        return {"ok": False, "paused": True, "msg": PAUSE_MSG}
+    p = panel_get("real")
+    c = next((x for x in (p or {}).get("items") or [] if x.get("id") == pid), None)
+    if not c:
+        return {"ok": False, "msg": "That bet isn't on today's panel any more. Pull down to reload Build."}
+    if c.get("state") not in REPRICE_STATES:
+        return {"ok": False, "msg": "Only a Skipped or Didn't buy bet can be priced again here."}
+    held, words = hold_refusal("buy")
+    if held:
+        return {"ok": False, "msg": words}
+    legs = [dict(x) for x in c.get("legs") or [] if x.get("ticker")]
+    stake = float(c.get("stake") or 0)
+    if not legs or not math.isfinite(stake) or stake < 1:
+        return {"ok": False, "msg": "That bet wasn't saved with enough to price it again."}
+    if any(order_unsure(l["ticker"]) for l in legs) or rfq_unsure(legs=[l["ticker"] for l in legs]):
+        return {"ok": False, "check": True, "msg": "An earlier order on this bet had no clear answer, so it isn't "
+                                                   "priced again. Check Kalshi (Settings › Money lists it)."}
+    now = now or time.time()
+    live = bool(idea_combo_live_gap(legs))
+    fresh, why = combo_live_fair(legs, now)
+    base = {"ok": True, "id": pid, "kind": c.get("kind"), "live": live, "stake": round(stake, 2), "at": int(now)}
+    if fresh is None:
+        return dict(base, would=False, verdict="No fair price right now", why=_cap1(why) + ".")
+    if c.get("kind") in ("single", "early", "line"):
+        l = fresh[0]
+        if l.get("fair") is None:
+            return dict(base, would=False, verdict="No fair price right now", why="It was saved without a fair chance.")
+        book = book_depth(l["ticker"], max_age=5) or {}
+        ask = book.get("ask")
+        if not ask:
+            return dict(base, would=False, verdict="No price right now", why="Nobody is selling it on Kalshi right now.")
+        fee, fair = single_fee(ask), float(l["fair"])
+        need = 0.0 if c["kind"] == "early" else PANEL["min_edge"] * ask      # the buy-time rule (_buy_panel_bet)
+        would = ask + fee + need <= fair + 1e-9
+        news = news_gap(dict(c, legs=fresh), ask=ask) if would else None
+        if news:
+            would = False
+        elif would and live:
+            news = _reprice_inplay(dict(c, legs=[dict(l, p=ask)], live=True))
+            would = not news
+        bar = ("at or under its chance after the fee" if c["kind"] == "early" else
+               f"{PANEL['min_edge']:.0%} better than its chance after the fee")
+        gap = (fair - ask - fee) * 100
+        why = (f"{_cap1(news)}." if news else
+               f"{ask * 100:.0f}¢ plus a {fee * 100:.1f}¢ fee against its {fair:.0%} {'live ' if live else ''}chance: "
+               f"{abs(gap):.1f}¢ {'under' if gap >= 0 else 'over'} it. The panel needs {bar}.")
+        return dict(base, would=would, price=ask, fee=round(fee, 4), fair=round(fair, 4),
+                    pct=round(fair / (ask + fee), 4), bar=bar,
+                    verdict="Would buy at this price" if would else "Still wouldn't buy", why=why)
+    cut = combo_cutoff(c.get("code") or _combo_code(fresh), len(fresh), fresh)
+    c2 = dict(c, legs=fresh, fair_mult=1 / math.prod(l["fair"] for l in fresh))
+
+    def go():
+        _panel_combo(c2, cut)
+        try:
+            return get_offer(1, stake, check_cap=False)
+        except (RuntimeError, PermissionError, requests.RequestException):
+            return {"error": "Kalshi wouldn't price it just now. Try again in a minute."}
+        finally:                                     # a look only: the quote request is dropped, never accepted
+            o = CTX["offers"].pop(1, None)
+            if o:
+                try:
+                    kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+                except Exception:
+                    pass
+    q = _with_ctx(go)
+    if q.get("error"):
+        return {"ok": False, "msg": q["error"], "check": bool(q.get("check"))}
+    pct, would = q.get("pct"), bool(q.get("ok"))
+    under = _sb_quote_under_fair(c2, pct) if would else None
+    if would and live and not under:
+        under = _reprice_inplay(dict(c2, live=True, pct=pct))
+    if q.get("why") == "suspect":
+        why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair: too far over to trust. The "
+               "chance it's priced on is probably wrong, so the panel wouldn't buy it.")
+    elif under:
+        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair, but {under}."
+    else:
+        why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}: {pct:.0%} of its fair payout"
+               f"{' on the live chance' if live else ''}. The panel's bar is {cut:.0%}.")
+    return dict(base, would=would, pays=round(q["pays"], 2), pct=round(pct, 4) if pct else None,
+                bar=f"{cut:.0%} of fair", verdict="Would buy at this price" if would else "Still wouldn't buy", why=why)
 
 
 def exit_filled(ticker, price, since, n):
@@ -23910,11 +24397,17 @@ def _cover_survivor_combo(early, winners, later_games, r_buy, stake):
             "kick": min((g["kick"] for g in later_games), default=None)}
 
 
+def _cover_sunday(now):
+    """The anchoring Sunday of the NFL week that unix time `now` falls in, by the Pacific date (Monday's game belongs
+    to the week that just ended). Taken from `now`, not the wall clock, so a test can pin it."""
+    today = dt.datetime.fromtimestamp(now, PACIFIC).date()
+    return today - dt.timedelta(days=1) if today.weekday() == 0 \
+        else today + dt.timedelta(days=(6 - today.weekday()) % 7)
+
+
 def _cover_pass(log=print, alert=None):
     now, did = time.time(), []
-    today = dt.datetime.now(PACIFIC).date()           # the anchoring Sunday of the current NFL week (Monday's
-    sunday = today - dt.timedelta(days=1) if today.weekday() == 0 \
-        else today + dt.timedelta(days=(6 - today.weekday()) % 7)   # game belongs to the week that just ended)
+    sunday = _cover_sunday(now)
     week_end = _nfl_week_end(now)
     key = sunday.isoformat()
     # First pass of the week, from the earliest kickoff on: snapshot the slate's checkpoints, cover the first one.
