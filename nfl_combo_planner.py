@@ -5844,9 +5844,9 @@ def combo_fail_note(label, info, stop, wait, msg):
             "offer too low": f"the buyer backed out {tries} and the next offer "
                              f"({money((info or {}).get('low_offer') or 0)}) was {_low_words(info or {})}"}.get(stop)
     head = f"🤖 Auto cash-out tried to sell {label}: {said}, so nothing was sold." if said else \
-        "🤖 Auto cash-out didn't sell: " + re.sub(r"\s*Tap .*$", "", msg)
-    return head + (" It will try again when the game or the price changes." if wait
-                   else " It will try again on the next check.")
+        f"🤖 Auto cash-out didn't sell {label} this time (Kalshi didn't take the sale), so nothing was sold."   # no raw error text (#384)
+    return head + (" Still holding, and we'll keep watching: it will try again when the game or the price changes." if wait
+                   else " Still holding, and we'll keep watching: it will try again on the next check.")
 
 
 def notify(msg):
@@ -6669,7 +6669,7 @@ def plan_words(t, f, o, h, W):
         shown, over = sell_line_shown(thr, sell_top(pays))      # never "cash out at $14" on a $13 combo (#371)
         return (f"Waiting is worth more: {'the game under way' if nxt[1] else 'the next game'} "
                 f"({chance_pct(nxt[0])} to go your way) makes this combo worth more to sell after. "
-                + (f"No offer Kalshi can make beats waiting: it pays {money(pays)} at most." if over else
+                + (f"No offer can beat waiting: it pays {money(pays)} at most." if over else
                    f"Worth cashing out at about ${shown:,.2f}."))
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
@@ -15723,6 +15723,36 @@ def _killer_single(ticker, n, price):
     return True, f"Bought {filled:g} at {price * 100:.0f}¢."
 
 
+RECENT_BUYS = {}                # market ticker -> when a single was just bought (or may have been): display only (#414)
+RECENT_BUY_SECS = 600           # how long that keeps the market's card out of the pick lists, until the account shows it
+
+
+def held_markets():
+    """Tickers of the single game / spread / total markets Pete holds, just bought (last 10 minutes) or has an unclear
+    order on, from what is already in memory (never a lookup). The Build pick lists leave these out so the market he just
+    bought is not offered again (#414). Display only: no buy path reads it. Anything unreadable adds nothing."""
+    out = set()
+    try:
+        for x in _overlap_singles():
+            if x.get("t") and x.get("state") not in ("over", "done"):
+                out.add(x["t"])
+    except Exception:
+        pass
+    try:
+        for b in order_blocks():
+            if b.get("ticker") and not is_combo(b["ticker"]):
+                out.add(b["ticker"])
+    except Exception:
+        pass
+    now = time.time()
+    for t, at in list(RECENT_BUYS.items()):
+        if now - at < RECENT_BUY_SECS:
+            out.add(t)
+        else:
+            RECENT_BUYS.pop(t, None)
+    return out
+
+
 def buy_single(ticker, n, price, coid=None, exact=False):
     """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap.
     coid: a client order id of the caller's (a manual buy uses its quote's, so Kalshi itself sees one order).
@@ -15744,11 +15774,14 @@ def buy_single(ticker, n, price, coid=None, exact=False):
     except Exception as err:
         if order_outcome(err) == "unknown":
             ACCT_CACHE["at"] = 0
+            RECENT_BUYS[ticker] = time.time()          # display memory only (#414): the card leaves Best bets meanwhile
             raise                                      # may have gone through: the caller marks it "check"
         return 0, f"Kalshi didn't take the order: {order_words(err)}"
     filled = float(o.get("fill_count_fp") or o.get("fill_count") or
                    (body["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
     ACCT_CACHE["at"] = 0
+    if filled:
+        RECENT_BUYS[ticker] = time.time()              # display memory only (#414)
     return filled, None
 
 
