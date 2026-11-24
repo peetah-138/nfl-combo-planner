@@ -5656,7 +5656,7 @@ def auto_sell_now(plan):
             if below and why != "cut loss":
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
-            hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
+            hg = hedge_for(t) if CFG.get("auto_hedge") and not clock and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             tks_ = [tk for (_, tk), _ in h.get("need") or []]
             better = hedge_beats(hg, whole, tks_) if hg and hg.get("n") else False
@@ -5830,7 +5830,7 @@ def combo_wait_start(t, h, key, offer, info, line, cutting=False, agreed=None):
     last = ((info or {}).get("tries") or [{}])[-1].get("offer") or offer
     COMBO_WAIT[t] = {"key": key, "snap": combo_game_snap(h), "p": h.get("p") or 0.0,
                      "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total,
-                     "cutting": bool(cutting), "first": (prev.get("first") if same and prev.get("first") else agreed),
+                     "cutting": bool(cutting), "first": (prev.get("first") if same and prev.get("cutting") and prev.get("first") else agreed),   # a profit round's offer is not a loss cut's first
                      "clock_n": prev.get("clock_n", 0) if same else 0, "clock_at": time.time()}
 
 

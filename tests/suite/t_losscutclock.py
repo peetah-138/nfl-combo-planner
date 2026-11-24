@@ -225,3 +225,47 @@ tick(S + 5, script=["cancelled"] * 10)
 ok("a clock try whose fresh offer is under the smart-sell line sends nothing and says so", accepts == []
    and any("smart-sell line" in r.get("why", "") and r.get("clock_retry") == 1 for r in logs), (accepts, logs))
 OFFER["o"] = 9.6
+
+# ---- (12) a clock try never places a hedge (a hedge is a BUY: no money movement on a timer), even with auto_hedge on
+stuck(0)
+hedge_asked, hedged = [], []
+real_hf, real_ph = E.hedge_for, E.place_hedge
+E.hedge_for = lambda t: (hedge_asked.append(t), None)[1]
+E.place_hedge = lambda *a, **k: (hedged.append(a), "✅ x")[1]
+E.CFG.update(auto_hedge=True)
+tick(S + 5, script=["cancelled"] * 10)
+ok("a clock try with auto_hedge on does not even look for a hedge, and places none", hedge_asked == [] and hedged == []
+   and len(accepts) == 10, (hedge_asked, hedged, accepts))
+reset(); OFFER["o"] = 9.6
+tick(0, script=["cancelled"] * 10)
+ok("(sanity) a normal first try with auto_hedge on does look for a hedge", hedge_asked == ["C1"], hedge_asked)
+E.CFG.update(auto_hedge=False); E.hedge_for, E.place_hedge = real_hf, real_ph
+
+# ---- (13) a profit-reason round that later flips to a loss cut: the 97% floor is measured from the loss cut's own first offer
+reset(); OFFER["o"] = 12.0                                   # a profit round: offer above cost, first offer $12
+E.take_profit_reason = lambda t, h, cut_ok=False: ("smart", 9.0)
+tick(0, script=["cancelled"] * 10)
+ok("a failed profit round is parked with first = its own offer, not as a loss cut", E.COMBO_WAIT["C1"]["cutting"] is False
+   and E.COMBO_WAIT["C1"]["first"] == 12.0, E.COMBO_WAIT)
+OFFER["o"] = 9.6; E.take_profit_reason = lambda t, h, cut_ok=False: ("cut loss", 9.0)
+SC["sc"] = {"state": "in", "me": 21, "opp": 17, "brk": True}   # a real change reopens it as a loss cut
+tick(100, script=["cancelled"] * 10)
+w = E.COMBO_WAIT.get("C1") or {}
+ok("when it becomes a loss cut, first resets to the loss cut's offer (not the old profit $12)", w.get("cutting") is True
+   and w.get("first") == 9.6, w)
+SC["sc"] = {"state": "in", "me": 21, "opp": 17, "brk": False}
+tick(100 + S + 5, script=["cancelled"] * 10)
+ok("...so its clock try is attainable at $9.60 (>= 97% of 9.60)", len(accepts) == 10, accepts)
+
+# ---- (14) the same ticker flipping reason (plan <-> loss cut) cannot reset the cap
+stuck(0)
+E.COMBO_WAIT["C1"]["clock_n"] = E.LOSSCUT_CLOCK_MAX - 1
+E.take_profit_reason = lambda t, h, cut_ok=False: ("smart", 9.0)
+tick(S + 5, script=["cancelled"] * 10)                       # a profit reason: no clock try
+ok("a profit-reason tick in between does not use the clock", accepts == [], accepts)
+E.take_profit_reason = lambda t, h, cut_ok=False: ("cut loss", 9.0)
+tick(S + 10, script=["cancelled"] * 10)
+tick(3 * S, script=["cancelled"] * 10)
+tick(6 * S, script=["cancelled"] * 10)
+ok("flipping the reason never gives more than the cap in clock tries", (E.COMBO_WAIT.get("C1") or {}).get("clock_n", 0) <= E.LOSSCUT_CLOCK_MAX,
+   E.COMBO_WAIT)
