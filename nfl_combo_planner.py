@@ -28,6 +28,7 @@ CFG = {
     "max_share": 50,      # no pick in more than this % of safer/middle/moonshot combos
     "hedge_close": True,  # split coin-flip games between both sides across combos
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
+    "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
@@ -19351,6 +19352,7 @@ def panel_collect(book_snap, code, log=print):
         mkt_fair_shadow(code, games, cands, lc_all)
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
+    signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -27700,6 +27702,125 @@ def price_prune(now=None):
             n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+
+
+# ---- signal shadow (early-exit test, phase 1): sharp-book prob beside Kalshi's bid/ask, sibling-market bids and game
+# state, recorded for a later look at whether anything leads Kalshi's bid. Write-only: NOTHING in the engine reads these
+# tables (only tools/exit_replay.py's later phases, offline). It uses what the panel pass already holds in memory (the
+# sides' prices and books, the cached score feed): no request of its own. Every call is wrapped and swallows errors;
+# the flag defaults ON for recording ("sig_shadow": false in settings turns it off). Combo RFQ samples are NOT added:
+# held combos are already sampled in `offers`, and candidates would need extra quote calls.
+SIG = {"on": True, "sharp_every": 60, "rel_every": 120, "state_every": 60, "keep_days": 21, "cap": 300000,
+       "prune": 0.0, "seen": {}}
+
+
+def _sig_tables():
+    store_x("create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
+            "live int, line_live int)")
+    store_x("create index if not exists sig_sharp_ts on sig_sharp(ts)")
+    store_x("create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)")
+    store_x("create index if not exists sig_related_ts on sig_related(ts)")
+    store_x("create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
+            "down int, dist int, pts int)")
+    store_x("create index if not exists sig_state_ts on sig_state(ts)")
+
+
+def _sig_insert(batches):
+    """{table: [rows]} in one transaction under the history lock; best-effort, never raises."""
+    db = STORE.get("db")
+    if not db:
+        return
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for tbl, rows in batches.items():
+                if rows:
+                    db.executemany(f"insert into {tbl} values({','.join('?' * len(rows[0]))})", rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"signal shadow: {type(err).__name__}: {err}")
+
+
+def _sig_prune(now):
+    SIG["prune"] = now
+    for tbl in ("sig_sharp", "sig_related", "sig_state"):
+        store_x(f"delete from {tbl} where ts < ?", (now - SIG["keep_days"] * 86400,))
+        n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        if n > SIG["cap"]:
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - SIG["cap"],))
+
+
+def signal_shadow(code, games, lines=(), now=None):
+    """Record, from what the panel pass already has: (a) each side's sharp-book probability next to Kalshi's bid/ask
+    (about every 60 s), (b) the bids of one game's sibling markets side by side (about every 2 min), (c) the score,
+    clock and possession/down/pace fields of games under way, from the cached feed (about every 60 s). Returns the
+    rows written. Never raises, never reads the tables back into a decision, never fetches."""
+    try:
+        if not STORE.get("db") or not (CFG.get("sig_shadow", SIG["on"])):
+            return 0
+        now = now or time.time()
+        seen = SIG["seen"]
+        sharp, rel, state, by_game = [], [], [], {}
+        for e, sides in (games or {}).items():
+            for x in sides:
+                if x.get("tie") or not x.get("ticker"):
+                    continue
+                t = x["ticker"]
+                bid, ask = x.get("bid"), x.get("p")
+                if x.get("src") and x.get("fair") is not None and (bid or ask) and now - seen.get(("a", t), 0) >= SIG["sharp_every"]:
+                    seen[("a", t)] = now
+                    sharp.append((round(now, 1), t, round(x["fair"], 4), bid, ask, str(x.get("src"))[:20],
+                                  int(bool(x.get("live"))), int(bool(x.get("line_live")))))
+                if bid:
+                    by_game.setdefault(e, []).append((t, "win", bid, ask))
+                if x.get("live") and now - seen.get(("c", t), 0) >= SIG["state_every"]:
+                    seen[("c", t)] = now
+                    try:
+                        sc = leg_score({"ticker": t, "side": "yes"})          # cached scores only: never fetched here
+                        if sc and sc.get("state") == "in":
+                            s = sc.get("situation") if isinstance(sc.get("situation"), dict) else {}
+                            me, opp = int(sc.get("me") or 0), int(sc.get("opp") or 0)
+                            frac = round(float(sc["frac"]), 3) if sc.get("frac") is not None else None
+                            state.append((round(now, 1), t, me, opp, frac,
+                                          None if s.get("possession") is None else int(bool(s.get("possession"))),
+                                          s.get("down") if isinstance(s.get("down"), int) else None,
+                                          s.get("distance") if isinstance(s.get("distance"), int) else None, me + opp))
+                    except Exception:
+                        pass
+        for x in lines or ():
+            if x.get("ticker") and x.get("bid"):
+                ev = game_event(x.get("event") or "-".join(x["ticker"].split("-")[:2]))
+                by_game.setdefault(ev, []).append((x["ticker"], _bet_kind(x["ticker"]), x["bid"], x.get("p")))
+        for ev, ms in by_game.items():
+            if len(ms) >= 2 and now - seen.get(("b", ev), 0) >= SIG["rel_every"]:
+                seen[("b", ev)] = now
+                rel += [(round(now, 1), ev, t, k, b, a) for t, k, b, a in ms]
+        if len(seen) > 20000:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        rows = {"sig_sharp": sharp, "sig_related": rel, "sig_state": state}
+        n = sum(len(v) for v in rows.values())
+        if n:
+            _sig_tables()
+            _sig_insert(rows)
+        if now - SIG["prune"] > 6 * 3600:
+            _sig_tables()
+            _sig_prune(now)
+        return n
+    except Exception as err:
+        try:
+            console_note(f"signal shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
 
 
 # ---- exit_shadow: old (today's rules) vs new (Smart Buy) for every candidate, for later calibration
