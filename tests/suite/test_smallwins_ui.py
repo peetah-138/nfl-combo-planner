@@ -95,7 +95,8 @@ with sync_playwright() as pw:
 
         # ---- #404 Comebacks header
         INJ = "d=>{S.an=Object.assign({at:Date.now()/1000},S.an||{},{comeback:d});S.cbOpen=false;renderResults();}"
-        pg.evaluate(INJ, DATA)
+        # Results may still be a skeleton on a slow runner (renderResults draws no card until S.res lands): re-inject until the card is there
+        until(pg, "((%s)(%s),!!document.querySelector('.cbp .cbh'))" % (INJ, json.dumps(DATA)), 15)
         check(f"{scheme} #404: the header is a real button with no inline reset", pg.evaluate("(()=>{const b=document.querySelector('.cbp .cbh');return !!b&&b.tagName==='BUTTON'&&!b.getAttribute('style')})()"))
         pg.keyboard.press("Shift+Tab")          # keyboard modality: :focus-visible only applies after a key
         until(pg, "(document.querySelector('.cbh').focus(),document.activeElement.classList.contains('cbh'))", 5)
