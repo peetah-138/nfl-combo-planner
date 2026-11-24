@@ -20757,7 +20757,7 @@ def panel_reprice(pid, paused=False, now=None):
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair: too far over to trust. The "
                "chance it's priced on is probably wrong, so the panel wouldn't buy it.")
     elif under:
-        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair, but {under}."
+        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}. {under}"
     else:
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}: {pct:.0%} of its fair payout"
                f"{' on the live chance' if live else ''}. The panel's bar is {cut:.0%}.")
@@ -24270,13 +24270,13 @@ def knob_brake_check(sales, ev=None):
     ev = ev or KNOB_BRAKE
     n = ev["losses"]
     if len(sales) >= n and all(p < -KNOB_EPS for _, p, _ in sales[-n:]):
-        return (f"the last {n} sales the app made on its own all got less than holding was expected to pay when they "
-                f"sold (${-sum(p for _, p, _ in sales[-n:]):.2f} less)")
+        return (f"the last {n} sales the app made on its own all got less than holding was worth at the time "
+                f"they sold (${-sum(p for _, p, _ in sales[-n:]):.2f} less)")
     stake = sum(s for _, _, s in sales)
     net = sum(p for _, p, _ in sales)
     if len(sales) >= KNOB_BRAKE_MIN_SALES and stake > 0 and net < -ev["month_share"] * stake:
         return (f"over the last 30 days the sales the app made on its own got ${-net:.2f} less than holding was "
-                f"expected to pay when they sold, {-net / stake:.0%} of the ${stake:.2f} they staked")
+                f"worth at the time they sold, {-net / stake:.0%} of the ${stake:.2f} they staked")
     return None
 
 
@@ -26300,16 +26300,31 @@ def _sb_sim(c, now):
 
 
 SB_UNDER_FAIR = 1.0        # a combo priced under this share of its fair value loses money held to the end (#142 leak 1)
-SB_UNDER_FAIR_WHY = ("it loses money if held to the end, and smart sell isn't likely to cash it out early for a "
-                     "profit")
+SB_UNDER_FAIR_WHY = ("Selling early could still make a profit, but not often enough to make up for that, so it is "
+                     "left out")
+
+
+def _gap_words(pct):
+    """How far under fair a share-of-fair is, in whole percent, rounded the way the pages round it (a share that shows
+    as 99% on screen reads '1% under'; just under 100% reads 'a little under'). Wording only."""
+    gap = max(0.0, 1.0 - float(pct))
+    return "a little" if gap < 0.005 else f"about {math.floor(gap * 100 + 0.5):d}%"
 
 
 def _sb_under_words(pct=None, pending=False):
-    """The plain reason an under-fair combo was left out (pending: smart sell's chance of a profit isn't checked yet)."""
-    head = f"Kalshi pays {pct:.0%} of what it's worth" if pct else "Kalshi pays less than it's worth"
+    """The plain reason an under-fair combo was left out: Kalshi's price is under what the picks are worth, so held to
+    the end it loses on average; selling early is the other way out (pending: not checked yet). Wording only."""
+    if pct:
+        lose = (1.0 - float(pct)) * 200                   # cents lost per $2 on average, held to the end
+        cents = "a fraction of a cent" if lose < 0.5 else f"about {math.floor(lose + 0.5):d}¢"
+        head = (f"Kalshi's price is {_gap_words(pct)} under what we think it's worth, so on average you'd lose "
+                f"{cents} per $2 if you held it to the end")
+    else:
+        head = ("Kalshi's price is under what we think it's worth, so on average you'd lose a little if you held it "
+                "to the end")
     if pending:
-        return f"{head}, so it loses money if held to the end; still checking whether smart sell could cash it out early"
-    return f"{head}: {SB_UNDER_FAIR_WHY}"
+        return f"{head}. Still checking whether selling early could make up for it."
+    return f"{head}. {SB_UNDER_FAIR_WHY}."
 
 
 def _sb_combo_pct(c):

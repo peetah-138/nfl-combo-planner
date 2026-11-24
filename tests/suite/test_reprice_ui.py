@@ -18,6 +18,7 @@ st = ["skipped", "failed", "bought"]
 notes = ["no longer priced well enough, and nothing similar qualified", "Kalshi wouldn't price it (timeout)", ""]
 for i, c in enumerate(P["panel"]["items"][:3]):
     c["state"], c["note"] = st[i], notes[i]
+P["panel"]["items"][0].update(kind="combo", pct=1.06, ret=0.06, chance=0.42)      # a combo card: earlier guess 106%
 if len(P["panel"]["items"]) > 3:
     P["panel"]["items"][3]["state"], P["panel"]["items"][3]["note"] = "cancelled", "you cancelled it"
     c["kick"] = time.time() + 9 * 3600
@@ -36,8 +37,8 @@ with sync_playwright() as pw:
             return route.continue_()
         calls.append(b)
         route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "id": b.get("id"), "would": False,
-                      "verdict": "Still wouldn't buy", "at": time.time(), "pct": .91,
-                      "why": "Kalshi pays $9.80 for $5.00: 91% of its fair payout. The panel's bar is 95%."}))
+                      "verdict": "Still wouldn't buy", "at": time.time(), "pct": .99,
+                      "why": "Kalshi pays $9.80 for $5.00. Kalshi's price is about 1% under what we think it's worth, so on average you'd lose about 1¢ per $2 if you held it to the end. Selling early could still make a profit, but not often enough to make up for that, so it is left out."}))
     pg.route("**/app/api/act", fake)
     pg.evaluate("S.panel=" + json.dumps(P) + ";renderBuild()"); time.sleep(.5)
     tap = pg.evaluate("[...document.querySelectorAll('.pitem.prp')].map(e=>({id:e.dataset.pid,h:e.getBoundingClientRect().height,t:e.innerText}))")
@@ -48,9 +49,14 @@ with sync_playwright() as pw:
     if tap and "price got worse" not in tap[0]["t"]: probs.append("the skipped note isn't in plain words: " + tap[0]["t"][:200])
     if len(tap) > 1 and "didn't answer with a price" not in tap[1]["t"]: probs.append("the failed note isn't in plain words")
     if tap and "Tap for a fresh price" not in tap[0]["t"]: probs.append("no tap hint")
+    if tap and ("+6% expected before fees" not in tap[0]["t"] or "earlier guess" in tap[0]["t"]): probs.append("a combo card says '+X% expected before fees' and, before a fresh price, no 'earlier guess': " + tap[0]["t"][:200])
     if SHOTS:
         pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
-        pg.screenshot(path=os.path.join(SHOTS, "reprice_before.png"))
+        pg.screenshot(path=os.path.join(SHOTS, "reprice_before_dark.png"))
+        pg.emulate_media(color_scheme="light"); time.sleep(.4)
+        pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
+        pg.screenshot(path=os.path.join(SHOTS, "reprice_before_light.png"))
+        pg.emulate_media(color_scheme="dark"); time.sleep(.3)
     # (#393) the closed-bet detail has its own labelled control on those cards; it must not trigger a reprice
     det = pg.evaluate("[...document.querySelectorAll('.pitem.prp .pdet')].map(e=>({pid:e.dataset.pid,h:e.getBoundingClientRect().height,w:e.getBoundingClientRect().width,t:e.innerText.trim(),own:e.closest('.pitem').dataset.pid}))")
     if len(det) != 2 or any(d["pid"] != d["own"] for d in det): probs.append(f"each tappable card has one Details control carrying its own id ({det})")
@@ -88,9 +94,16 @@ with sync_playwright() as pw:
     print("after:", got.replace("\n", " | "), calls)
     if "Still wouldn't buy" not in got or "nothing was bought" not in got: probs.append("the verdict / 'nothing was bought' isn't shown")
     if calls != [{"a": "panel_reprice", "id": tap[0]["id"] if tap else None}]: probs.append(f"the tap must ask only panel_reprice for that card ({calls})")
+    stale = pg.evaluate("(()=>{const n=document.querySelector('.pitem.prp .pn');return {c:n.className,t:n.innerText}})()")
+    if "stl" not in stale["c"] or "earlier guess: pays" not in stale["t"] or "before fees" not in stale["t"]: probs.append(f"after a fresh price the card's own numbers must be dimmed and labelled earlier ({stale})")
+    if "1% under" not in got or "of what it's worth" in got: probs.append("the fresh verdict wording is wrong: " + got[:300])
     if SHOTS:
         pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
-        pg.screenshot(path=os.path.join(SHOTS, "reprice_after.png"))
+        pg.screenshot(path=os.path.join(SHOTS, "reprice_after_dark.png"))
+        pg.emulate_media(color_scheme="light"); time.sleep(.4)
+        pg.evaluate("document.querySelector('.pitem.prp').scrollIntoView({block:'center'})"); time.sleep(.3)
+        pg.screenshot(path=os.path.join(SHOTS, "reprice_after_light.png"))
+        pg.emulate_media(color_scheme="dark"); time.sleep(.3)
     # the quote line and the amount control (#358)
     w = pg.evaluate("""[qWhy({pct:1.31,why:'suspect',cut:95}),qWhy({pct:null,nofair:"Alpha's game is under way"}),qWhy({pct:1.04,cut:100,live:true}),
         qWhy({pct:.9,cut:95,why:'under'}),stakeCtl({key:'cc:9',rec:2,cur:5,ev:-0.4,small:true}),stakeCtl({key:'cc:8',rec:5,cur:5,ev:0.6})]""")
