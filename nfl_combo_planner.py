@@ -6067,7 +6067,13 @@ class manual_sell_mark:
     def __enter__(self):
         try:
             with _MS_LOCK:
-                d = {k: v for k, v in load_json(MANUAL_SELL, {}).items() if time.time() - float(v or 0) < MANUAL_SELL_MAX}
+                d = {}
+                for k, v in load_json(MANUAL_SELL, {}).items():
+                    try:                                  # one bad entry is dropped; it never stops our own marker
+                        if 0 <= time.time() - float(v) < MANUAL_SELL_MAX:
+                            d[k] = v
+                    except Exception:
+                        pass
                 d[self.t] = time.time()
                 save_json(MANUAL_SELL, d)
         except Exception:
@@ -6088,7 +6094,7 @@ class manual_sell_mark:
 def manual_selling(t):
     """True while Pete's own tap is selling bet t (a fresh marker): the automatic sellers leave it alone this round."""
     try:
-        return time.time() - float(load_json(MANUAL_SELL, {}).get(str(t)) or 0) < MANUAL_SELL_MAX
+        return 0 <= time.time() - float(load_json(MANUAL_SELL, {}).get(str(t)) or 0) < MANUAL_SELL_MAX   # future-dated = stale
     except Exception:
         return False
 

@@ -77,6 +77,14 @@ ok("#400 an unreadable marker file never blocks or raises (reads as not selling)
 with E.manual_sell_mark("C1"):
     pass
 ok("#400 the tap's marker never raises even over a broken file", True)
+E.save_json(E.MANUAL_SELL, {"FUT": time.time() + 3600, "HUGE": 1e308})
+ok("#400 a future-dated or absurd marker counts as stale (automatic sellers are never skipped indefinitely)",
+   not E.manual_selling("FUT") and not E.manual_selling("HUGE"))
+E.save_json(E.MANUAL_SELL, {"BAD": "x", "NULL": None, "OK2": time.time(), "FUT": time.time() + 3600})
+with E.manual_sell_mark("C1"):
+    inside = E.load_json(E.MANUAL_SELL, {})
+    ok("#400 a bad entry in a populated marker file is dropped and our own marker is still written",
+       E.manual_selling("C1") and E.manual_selling("OK2") and "BAD" not in inside and "FUT" not in inside, inside)
 E.save_json(E.MANUAL_SELL, {})
 real_save = E.save_json
 E.save_json = lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
