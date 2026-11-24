@@ -65,3 +65,12 @@
 .lscard .lsx{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.lscard .lsx b{font-size:18px}.lscard .lsx small{font-size:11px;color:var(--mute)}
 .lsempty{margin-bottom:8px}
 .lscard .btn{min-height:44px}
+
+/* (#358) a Skipped / Didn't buy panel card is one big tap target for a fresh price */
+.pitem.prp{cursor:pointer;min-height:44px;-webkit-tap-highlight-color:transparent}.pitem.prp:active{transform:scale(.985)}
+.pitem.prp:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.pitem .pw b{display:inline;font-size:inherit;margin:0 2px 0 0;color:var(--sub)}
+.pitem .prt{margin-top:6px;font-size:12.5px;font-weight:600;color:var(--acc)}
+.pitem .prq{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.4;background:var(--panel);border-left:3px solid var(--line)}
+.pitem .prq.good{border-left-color:var(--yes)}.pitem .prq.bad{border-left-color:#f5b544}
+.pitem .prq b{display:inline;font-size:13px;margin:0 6px 0 0}.pitem .prq small{display:block;margin-top:4px;color:var(--mute);font-size:11.5px}
