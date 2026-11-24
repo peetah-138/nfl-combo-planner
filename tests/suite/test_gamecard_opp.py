@@ -88,8 +88,10 @@ with sync_playwright() as pw:
             c = g(i)
             if not (c.get("chance") and c.get("line") and c.get("chips")): bad(f"{tag}: card {i} lost its chance, chance line (end dot) or chips: {c}")
         # the score pulse: their score goes up, the card pulses red, and both rows are still there
-        pg.evaluate("(()=>{S.games.games[0].sc=Object.assign({},S.games.games[0].sc,{opp:70});render();})()"); time.sleep(.15)
-        pl = pg.evaluate("(()=>{const e=document.querySelector('.gc.scored');return e?{cls:e.className,them:(e.querySelector('.gtr.them .nm')||{}).textContent,pts:(e.querySelector('.gtr.them .pts')||{}).textContent}:null})()")
+        # render and read in ONE evaluate: the page clears the pulse after 1.7 s and a background poll can repaint the card, so
+        # a separate sleep-then-read raced them on a loaded Mac (GitHub #240). One script runs start to finish, nothing can interleave.
+        pl = pg.evaluate("(()=>{S.games.games[0].sc=Object.assign({},S.games.games[0].sc,{opp:70});render();"
+                         "const e=document.querySelector('.gc.scored');return e?{cls:e.className,them:(e.querySelector('.gtr.them .nm')||{}).textContent,pts:(e.querySelector('.gtr.them .pts')||{}).textContent}:null})()")
         if not pl or "bad" not in pl["cls"] or pl["pts"] != "70" or pl["them"] != "HOU": bad(f"{tag}: the score pulse broke: {pl}")
         if tag == "phone" and pg.evaluate("document.documentElement.scrollWidth>document.documentElement.clientWidth+1"): bad("phone: the page scrolls sideways")
         print(f"{tag}: cards={len(out)} JS errors: {errs}")
