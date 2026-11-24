@@ -79,4 +79,4 @@
 .pitem .pdet{display:inline-flex;align-items:center;min-height:44px;min-width:44px;margin:2px 0 0 -4px;padding:0 4px;border:0;background:none;color:var(--acc);font:inherit;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .pitem .pdet:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
 
-.pitem .pn.stl{opacity:.55}
+.pitem .pn.stl{opacity:.75}

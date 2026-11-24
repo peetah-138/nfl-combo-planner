@@ -44,6 +44,7 @@
     "game.js",
     "game_tabs.js",
     "moments.js",
+    "logaccess.js",
     "overlap.js",
     "settings.js",
     "smallwins.js",

@@ -3072,10 +3072,13 @@ def webapp_main():
             cviews = [v for v, _ in pairs]
             lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
             pregame = {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)}
+            held = A.held_markets()                     # (#414) a market Pete holds or just bought leaves the pick lists
+            fresh = {e: sd for e, sd in games.items() if not any(x.get("ticker") in held for x in sd)}   # either side of it
             try:                                        # Best bets today (#63): recommend-only, display only
                 best = A.best_bets_feed(                # without games over the line (they're listed as left out)
-                    {e: sd for e, sd in pregame.items() if not A.overlap_of(over, [e])},
-                    [x for x in lines_now if not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
+                    {e: sd for e, sd in pregame.items() if e in fresh and not A.overlap_of(over, [e])},
+                    [x for x in lines_now if x.get("ticker") not in held
+                     and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
                      for v, c in pairs if not v.get("bought") and not v.get("over")])
             except Exception as err:
@@ -3086,8 +3089,8 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(games)],
-                             "lines": lines_now, "longshots": overlap_ls(ls_view(lg), over),
+                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(fresh)],
+                             "lines": [x for x in lines_now if x.get("ticker") not in held], "longshots": overlap_ls(ls_view(lg), over),
                              "overlap": overlap_info(),
                              "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
                              "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
@@ -4360,7 +4363,7 @@ def mac_settings(conf, web, d, tok):
                 "quiet": not (7 <= time.localtime().tm_hour < 22),
                 "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
                                         "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
-                "log": tail, "odds": odds_info(E)}
+                "log": tail, "odds": odds_info(E), "logs": log_status(conf)}
     if a == "code":
         ip = mac_tailscale_ip()
         out = {"topic": conf["topic"], "secret": conf["secret"]}
@@ -4409,6 +4412,8 @@ def mac_settings(conf, web, d, tok):
         log("automatic updates", "on" if conf["auto_update"] else "off (waits for the phone)")
         return {"ok": True, "msg": "Updates install automatically." if conf["auto_update"] else
                 "Updates now wait until your phone approves them."}
+    if a == "logaccess":                                    # dev Mac log reading (issue #377): on = a new code
+        return log_access_set(conf, E, bool(d.get("on")))
     if a == "https":
         threading.Thread(target=tailscale_https, args=(conf, conf.get("hub_port", 8765)), daemon=True).start()
         return {"ok": True, "msg": "Checking Tailscale's https address…"}
@@ -4522,6 +4527,433 @@ def accuracy_loop(odds, every=300):
         time.sleep(every)
 
 
+# ---------------------------------------------------------------- dev Mac log reading (issue #377, docs/LOG_ACCESS.md)
+# A read-only, redacted tail of this Mac's logs for the dev Mac, over Tailscale only. Off until Pete turns on
+# Settings › This Mac › "Let the dev Mac read logs" on this Mac itself, which makes a read-only code (only its SHA-256
+# is kept, in watcher.json). It never takes a lock, never changes anything and never reads anything but the two files
+# below. Every answer is redacted here, before it leaves, and any error in that means nothing is sent (fail closed).
+LOG_PATH = "/api/logs"
+LOG_SOURCES = {"console": "watcher.log", "autosell": "combo_autosell_log.jsonl"}   # the only files it ever reads
+LOG_DEF_LINES, LOG_MAX_LINES, LOG_MAX_BYTES = 200, 500, 200_000                   # per answer, after redaction
+LOG_READ_BYTES = 1_500_000      # the most read from the end of a file per answer (never the whole file)
+LOG_LINE_MAX = 2000             # characters kept of one line
+LOG_RATE = (30, 60)             # answers per client per minute
+LOG_BAD = (5, 600)              # wrong codes per client per 10 minutes before that client is turned away
+LOG_BAD_ALL = (30, 600)         # wrong codes from everyone per 10 minutes before everyone is turned away
+LOG_SECRET_MIN = 6              # live secret values this long or longer are masked wherever they appear
+LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (anything else is dropped)
+    "at", "when", "by", "ride", "result", "why", "note", "guard", "combo", "ticker", "kind", "side", "cost", "offer",
+    "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
+    "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
+    "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
+    "clock", "period", "lead", "need", "won", "left", "est", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
+LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
+                    "polymarket.com", "hockeytech.com", "theahl.com")
+LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)
+_LOG_SALT = os.urandom(16)      # per process: an id is shown as a short tag, the same within one run
+
+
+def _log_finite(x):
+    return x == x and abs(x) != float("inf")
+
+
+class LogLeak(Exception):
+    """A redacted answer still held a live secret: nothing is sent."""
+
+
+_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
+_LOG_SELL = re.compile(r"^(.*?auto cash-out: )(\{.*)$")
+_RX_PEM = re.compile(r"(?i)-----BEGIN[^\n]*?-----.*?(?:-----END[^\n]*?-----|\Z)", re.S)
+_RX_HDR = re.compile(r"(?i)\b(proxy-authorization|authorization|x-cw|set-cookie|cookie|kalshi-access-key|"
+                     r"kalshi-access-signature|x-api-key)([\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\r\n,;}]+)")
+_RX_BEARER = re.compile(r"(?i)\b(bearer(?=\s+\S)|basic(?=\s+\S{6}))(\s+)[A-Za-z0-9._~+/=-]+")
+_RX_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{2,}")
+_RX_CWCOOKIE = re.compile(r"(?i)(?<![A-Za-z0-9_-])(cw)(\s*[:=]\s*)[^\s,;&\"']+")
+_RX_KV = re.compile(r"(?i)(\\?[\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,40}?(?:secret|token|passw(?:or)?d|passcode|web_pass|api[ _-]?key|apikey|"
+                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session|cookie|topic|endpoint|p256dh|auth_?key|"
+                    r"member[ _-]?id|user[ _-]?id|account[ _-]?id|subaccount|e-?mail|watcher_code|pairing|passkey|credential)"
+                    r"[A-Za-z0-9_-]{0,40})\1(\s*[:=]\s*)(\\\"[^\"\\]*\\\"|\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[a-z: -]+\]|[^\s,;&}\])]+)")
+_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id|(?:user|member|account)[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>\\]+")
+_RX_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}")
+_RX_TSNET = re.compile(r"(?i)(?<![a-z0-9.-])[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,6}\.(?:ts|tailscale)\.net\b")
+_RX_IP4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d)(?!\.\d)")
+_RX_IP6 = re.compile(r"(?i)(?<![0-9a-z:])(?:(?:[0-9a-f]{1,4}:){5,7}[0-9a-f]{1,4}|"
+                     r"(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![0-9a-z:])")
+_RX_UUID = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+_RX_HOMEDIR = re.compile(r"/(Users|home)/[^/\s\"':]+")
+_RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
+_RX_MONEYLINE = re.compile(r"(?i)(?<!insufficient_)(?<!insufficient )balance|by pot|\bpots?\b|bankroll|portfolio_value")
+_RX_DOLLARS = re.compile(r"\$\s?-?[\d,]+(?:\.\d+)?")
+_RX_BALNUM = re.compile(r"(?i)(balance[a-z_]*[\"']?\s*[:=]\s*)-?[\d.,]+")
+_RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
+
+
+def log_enabled(conf):
+    """On only when Pete turned it on and a code's hash is stored."""
+    la = conf.get("log_access") if isinstance(conf, dict) else None
+    return isinstance(la, dict) and la.get("on") is True and bool(re.fullmatch(r"[0-9a-f]{64}", str(la.get("hash") or "")))
+
+
+def log_client_ok(ip, headers):
+    """Only the tailnet: a Tailscale address, Tailscale's own https front door with a signed-in person, or this Mac
+    itself. The home network and anything forwarded without a Tailscale identity (e.g. Funnel) are refused."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(str(ip).split("%")[0])
+    except ValueError:
+        return False
+    if getattr(a, "ipv4_mapped", None):
+        a = a.ipv4_mapped
+    if headers.get("Tailscale-Funnel-Request"):
+        return False
+    if a.is_loopback:
+        fwd = headers.get("X-Forwarded-For") or headers.get("Forwarded") or headers.get("X-Forwarded-Host")
+        return not fwd or bool(headers.get("Tailscale-User-Login"))
+    return any(a in ipaddress.ip_network(n) for n in ("100.64.0.0/10", "fd7a:115c:a1e0::/48")
+               if ipaddress.ip_network(n).version == a.version)
+
+
+def log_token_ok(conf, auth):
+    """Constant-time check of `Authorization: Bearer <code>` against the stored hash."""
+    want = str(((conf.get("log_access") or {}).get("hash")) or "")
+    m = re.fullmatch(r"Bearer ([A-Za-z0-9_-]{20,200})", str(auth or "").strip())
+    got = hashlib.sha256((m.group(1) if m else "-").encode()).hexdigest()
+    return hmac.compare_digest(got.encode(), want.encode().ljust(64, b"-")[:64]) and bool(m) and len(want) == 64
+
+
+def log_new_token(conf):
+    """Turn log reading on with a fresh code (the old one stops working). Returns the code; only its hash is kept."""
+    import secrets
+    tok = secrets.token_urlsafe(32)
+    conf["log_access"] = {"on": True, "hash": hashlib.sha256(tok.encode()).hexdigest(), "at": int(time.time())}
+    return tok
+
+
+class LogGate:
+    """Rate limits: LOG_RATE answers per client, and wrong codes (per client and from everyone)."""
+
+    def __init__(self):
+        self.lock, self.hits, self.bad, self.bad_all = threading.Lock(), {}, {}, []
+
+    @staticmethod
+    def _recent(lst, win, now):
+        return [t for t in lst if now - t < win]
+
+    def allow(self, ip, now=None):
+        now = now or time.time()
+        with self.lock:
+            if len(self.hits) > 500:
+                self.hits = {k: v for k, v in self.hits.items() if self._recent(v, LOG_RATE[1], now)}
+                self.bad = {k: v for k, v in self.bad.items() if self._recent(v, LOG_BAD[1], now)}
+            self.bad_all = self._recent(self.bad_all, LOG_BAD_ALL[1], now)
+            b = self.bad[ip] = self._recent(self.bad.get(ip, []), LOG_BAD[1], now)
+            if len(b) >= LOG_BAD[0] or len(self.bad_all) >= LOG_BAD_ALL[0]:
+                return False
+            h = self.hits[ip] = self._recent(self.hits.get(ip, []), LOG_RATE[1], now)
+            if len(h) >= LOG_RATE[0]:
+                return False
+            h.append(now)
+            return True
+
+    def wrong(self, ip, now=None):
+        now = now or time.time()
+        with self.lock:
+            self.bad.setdefault(ip, []).append(now)
+            self.bad_all.append(now)
+            n = len(self.bad_all)
+        if n in (LOG_BAD_ALL[0] // 2, LOG_BAD_ALL[0]):
+            log(f"dev Mac log reading: {n} wrong codes in 10 minutes")
+
+
+LOG_GATE = LogGate()
+
+
+def log_secrets(conf, E=None):
+    """The live secret values on this Mac, to mask wherever they appear (raises if they can't be read)."""
+    from urllib.parse import quote, urlsplit
+    vals = [conf.get(k) for k in ("topic", "secret", "web_pass", "passkey_user", "healthcheck_url")]
+    vals += [p.get("id") for p in conf.get("passkeys") or [] if isinstance(p, dict)]
+    host = urlsplit(str((conf.get("https") or {}).get("url") or "")).hostname or ""
+    vals += [host] + host.split(".")[:2]                       # the machine and tailnet names on their own too
+    cfg = getattr(E, "CFG", None) or {}
+    vals += [cfg.get(k) for k in getattr(E, "KEY_FIELDS", ("kalshi_key_id", "odds_key", "watcher_code"))]
+    out = set()
+    for v in vals:
+        if isinstance(v, str) and len(v.strip()) >= LOG_SECRET_MIN:
+            v = v.strip()
+            out.update((v, quote(v, safe=""), json.dumps(v)[1:-1]))
+    return sorted(out, key=len, reverse=True)
+
+
+def _log_url(m):
+    from urllib.parse import urlsplit, parse_qsl, urlencode
+    u = urlsplit(m.group(0))
+    host = (u.hostname or "").lower()
+    if any(host == h or host.endswith("." + h) for h in LOG_PUBLIC_HOSTS):
+        q = [(k, "[redacted]" if re.search(r"(?i)key|token|secret|sig|auth|pass|session|topic|mail|user|member|account", k)
+              else v) for k, v in parse_qsl(u.query, keep_blank_values=True)]
+        return f"{u.scheme}://{host}{u.path}" + ("?" + urlencode(q, safe="[]") if q else "")
+    if host in ("127.0.0.1", "localhost"):
+        return f"{u.scheme}://{host}" + (f":{u.port}" if u.port else "") + u.path
+    return f"{u.scheme}://[host]"
+
+
+def _log_kv(m):
+    v = m.group(4)
+    return f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}" + ('"[redacted]"' if v.startswith('"') else "[redacted]")
+
+
+def _log_ip4(m):
+    o = [int(x) for x in m.groups()]
+    if max(o) > 255 or o[0] == 127 or o == [0, 0, 0, 0]:
+        return m.group(0)
+    return "[ip]"
+
+
+def _log_secretish(s):
+    """A run of characters that looks like a key or code rather than a word, ticker or path."""
+    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s):    # Kalshi tickers; plain words
+        return False
+    if len(s) >= 32:
+        return True
+    return len(s) >= 16 and bool(re.search(r"\d", s) and re.search(r"[a-z]", s) and re.search(r"[A-Z]", s))
+
+
+def _log_blob(m):
+    s = m.group(0)
+    if "/" in s:                                                # a path: only the parts that look like keys
+        return "/".join("[redacted]" if _log_secretish(x) else x for x in s.split("/"))
+    return "[redacted]" if _log_secretish(s) else s
+
+
+def log_redact(text, secrets_):
+    """Mask secrets in one piece of log text. Order matters: whole secrets first, then shapes."""
+    text = _RX_CTRL.sub("", text)                                # colour codes / zero-width marks can't split a secret
+    if secrets_:
+        text = re.sub("|".join(re.escape(s) for s in secrets_), "[secret]", text, flags=re.I)
+    text = text[:LOG_LINE_MAX + 200]                             # bounded before the shape rules (they cost per character)
+    if "-----begin" in text.lower():
+        text = _RX_PEM.sub("[private key]", text)
+    text = _RX_HDR.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_BEARER.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_JWT.sub("[token]", text)
+    text = _RX_CWCOOKIE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_URL.sub(_log_url, text)
+    text = _RX_KV.sub(_log_kv, text)
+    text = _RX_KVSP.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    if "@" in text:
+        text = _RX_EMAIL.sub("[email]", text)
+    if ".net" in text.lower():
+        text = _RX_TSNET.sub("[tailnet-host]", text)
+    text = _RX_IP4.sub(_log_ip4, text)
+    text = _RX_IP6.sub("[ip]", text)
+    text = _RX_UUID.sub(lambda m: "[id:" + hmac.new(_LOG_SALT, m.group(0).lower().encode(), "sha256").hexdigest()[:6] + "]",
+                        text)
+    text = _RX_HOMEDIR.sub(lambda m: f"/{m.group(1)}/[user]", text)
+    text = _RX_BLOB.sub(_log_blob, text)
+    if _RX_MONEYLINE.search(text):                             # account-level money (balances, pots): masked
+        text = _RX_DOLLARS.sub("$[amount]", _RX_BALNUM.sub(lambda m: m.group(1) + "[amount]", text))
+    return text
+
+
+def log_fields(rec, secrets_):
+    """One auto cash-out record: allowlisted fields only (simple values, or short lists/maps of them), redacted."""
+    simple = (str, int, float, bool, type(None))
+
+    def clean(v):
+        if isinstance(v, float) and not _log_finite(v):
+            return None                                          # not valid JSON
+        return log_redact(v, secrets_)[:LOG_LINE_MAX] if isinstance(v, str) else v
+
+    out = {}
+    for k, v in (rec.items() if isinstance(rec, dict) else ()):
+        if k not in LOG_FIELDS:
+            continue
+        if isinstance(v, simple):
+            out[k] = clean(v)
+        elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, simple) for x in v):
+            out[k] = [clean(x) for x in v]
+        elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, list) and all(isinstance(y, simple) for y in x) for x in v):
+            out[k] = [[clean(y) for y in x] for x in v]
+        elif isinstance(v, dict) and len(v) <= 50 and all(isinstance(x, simple) for x in v.values()):
+            out[k] = {clean(str(a)): clean(x) for a, x in v.items() if str(a) in LOG_FIELDS}
+    return out
+
+
+def log_tail(path, budget=LOG_READ_BYTES):
+    """The last `budget` bytes of a regular file (never a link), as whole lines. Missing = no lines."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return ""
+    try:
+        import stat
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file")
+        start = max(0, st.st_size - budget)
+        os.lseek(fd, start, 0)
+        chunks, left = [], st.st_size - start
+        while left > 0:
+            b = os.read(fd, min(left, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            left -= len(b)
+    finally:
+        os.close(fd)
+    text = b"".join(chunks).decode("utf-8", "replace")
+    if start > 0:
+        text = text.split("\n", 1)[1] if "\n" in text else ""   # the first line was cut part-way
+    return text
+
+
+def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
+    """The redacted answer for one source, as JSON bytes. Raises on anything unexpected (the caller sends nothing)."""
+    name = LOG_SOURCES[source]                                  # KeyError for anything else
+    path = os.path.join(home or HOME, name)
+    secrets_ = log_secrets(conf, E)
+    limit = max(1, min(LOG_MAX_LINES, int(limit)))
+    text = log_tail(path)
+    if source == "console" and "-----begin" in text.lower():
+        text = _RX_PEM.sub("[private key]", text)              # a key block spans lines: masked before splitting
+    rows = []
+    last = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if source == "autosell":
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            t = rec.get("at") if isinstance(rec, dict) and isinstance(rec.get("at"), (int, float)) else None
+            rows.append((t, rec))
+        else:
+            m = _LOG_TS.match(line)
+            if not m and last is None:
+                continue                                        # before the first dated line: maybe the middle of something cut
+            if m:
+                try:
+                    last = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    pass
+            rows.append((last, line))                           # a line with no time (a traceback) takes the one above
+    if since is not None:
+        rows = [r for r in rows if r[0] is not None and r[0] >= since]
+    rows = rows[-limit:]
+    out = []
+    for t, x in rows:
+        if source == "autosell":
+            out.append({"t": t, "rec": log_fields(x, secrets_)})
+            continue
+        m = _LOG_SELL.match(x)
+        if m:                                                   # the console copy of an auto cash-out record
+            try:
+                x = m.group(1) + json.dumps(log_fields(json.loads(m.group(2)), secrets_))
+            except ValueError:
+                x = m.group(1) + "[record not shown]"
+        out.append({"t": t, "text": log_redact(x, secrets_)[:LOG_LINE_MAX]})
+    paused = conf.get("paused")
+    status = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
+              "paused": bool(paused), "paused_at": paused if isinstance(paused, (int, float)) and not isinstance(paused, bool) else None,
+              "role": "backup" if is_backup(conf) else "main",
+              "auto_sell": bool((getattr(E, "CFG", None) or {}).get("auto_sell")), "now": int(time.time())}
+    ans = {"ok": True, "source": source, "status": status, "lines": out, "truncated": False}
+    body = json.dumps(ans)                                       # ASCII only: a stray lone surrogate can't break it
+    while len(body) > LOG_MAX_BYTES and ans["lines"]:
+        drop = max(1, len(ans["lines"]) // 10)                   # the oldest go first
+        ans["lines"] = ans["lines"][drop:]
+        ans["truncated"] = True
+        body = json.dumps(ans)
+    low = body.lower()
+    if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", body):
+        raise LogLeak("a secret survived redaction")
+    return body.encode()
+
+
+def log_status(conf):
+    """For Settings on this Mac: on or off, since when, last read. Never the code or its hash."""
+    la = conf.get("log_access") or {}
+    return {"on": log_enabled(conf), "at": la.get("at") if log_enabled(conf) else None, "read": LOG_STATE["read"] or None}
+
+
+def log_access_set(conf, E, on):
+    """Settings › This Mac › "Let the dev Mac read logs". On makes a new code (shown once, the old one stops working)."""
+    before = conf.get("log_access")
+    tok = log_new_token(conf) if on else None
+    if not on:
+        conf.pop("log_access", None)
+    try:
+        E.save_json(CONF, conf, strict=True)                     # a code that wasn't saved must never be shown
+    except Exception as err:
+        if before is None:
+            conf.pop("log_access", None)
+        else:
+            conf["log_access"] = before
+        log("dev Mac log reading: setting not saved,", type(err).__name__)
+        return {"ok": False, "msg": "Couldn't save that on this Mac. Nothing changed; try again.", "logs": log_status(conf)}
+    log("dev Mac log reading", "turned on (new code)" if on else "turned off")
+    if not on:
+        return {"ok": True, "msg": "The dev Mac can no longer read logs.", "logs": log_status(conf)}
+    ip = mac_tailscale_ip()
+    url = f"http://{ip}:{conf.get('hub_port', 8765)}" if ip else ""
+    return {"ok": True, "token": tok, "url": url, "logs": log_status(conf),
+            "msg": "Copy the code now: it is shown only once."}
+
+
+def log_send(handler, code, body=b""):
+    """Every /api/logs answer: never cached, never sniffed, and an empty body for every refusal."""
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json" if body else "application/octet-stream")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    if code == 405:
+        handler.send_header("Allow", "GET")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    if body:
+        handler.wfile.write(body)
+
+
+def log_route(handler, conf, E):
+    """GET /api/logs?source=console|autosell&since=<unix seconds>&limit=N with `Authorization: Bearer <code>`.
+    404 when off or not from the tailnet, 401 for a wrong code, 429 when too fast, 400 for a bad question, 503 when
+    redaction failed. Every refusal has an empty body."""
+    from urllib.parse import urlparse, parse_qs
+
+    def send(code, body=b""):
+        return log_send(handler, code, body)
+
+    ip = handler.client_address[0]
+    if not log_enabled(conf) or not log_client_ok(ip, handler.headers):
+        return send(404)
+    if not LOG_GATE.allow(ip):
+        return send(429)
+    if not log_token_ok(conf, handler.headers.get("Authorization")):
+        LOG_GATE.wrong(ip)
+        return send(401)
+    q = parse_qs(urlparse(handler.path).query, keep_blank_values=True)
+    if set(q) - {"source", "since", "limit"} or any(len(v) != 1 for v in q.values()):
+        return send(400)
+    source = q.get("source", ["console"])[0]
+    try:
+        since = float(q["since"][0]) if "since" in q else None
+        limit = int(q.get("limit", [LOG_DEF_LINES])[0])
+        if source not in LOG_SOURCES or (since is not None and not _log_finite(since)) or limit < 1:
+            return send(400)
+    except (ValueError, OverflowError):
+        return send(400)
+    try:
+        body = log_answer(conf, E, source, since, limit)
+    except Exception as err:                                     # fail closed: nothing of the log is sent
+        log("dev Mac log read: nothing sent,", type(err).__name__)
+        return send(503)
+    LOG_STATE["read"] = int(time.time())
+    return send(200, body)
+
+
 def start_hub(conf, E, odds=None):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
@@ -4609,6 +5041,8 @@ def start_hub(conf, E, odds=None):
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path.split("?")[0] == LOG_PATH:            # dev Mac log reading is read-only (404 while off)
+                return log_send(self, 405 if log_enabled(conf) else 404)
             n = int(self.headers.get("Content-Length") or 0)
             if web and self.path == "/app/admin":           # Mac settings: only from the Mac itself
                 tok = web.session(self)
@@ -4759,6 +5193,8 @@ def start_hub(conf, E, odds=None):
         def do_GET(self):
             from urllib.parse import urlparse, parse_qs
             u = urlparse(self.path)
+            if u.path == LOG_PATH:                              # dev Mac log reading (read-only, redacted)
+                return log_route(self, conf, E)
             if web and u.path in ("/sw.js", "/manifest.webmanifest", "/icon.png", "/apple-touch-icon.png"):
                 import base64
                 body, ctype = ((SW_JS.encode(), "text/javascript") if u.path == "/sw.js" else
