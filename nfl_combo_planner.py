@@ -23687,11 +23687,17 @@ def _cover_survivor_combo(early, winners, later_games, r_buy, stake):
             "kick": min((g["kick"] for g in later_games), default=None)}
 
 
+def _cover_sunday(now):
+    """The anchoring Sunday of the NFL week that unix time `now` falls in, by the Pacific date (Monday's game belongs
+    to the week that just ended). Taken from `now`, not the wall clock, so a test can pin it."""
+    today = dt.datetime.fromtimestamp(now, PACIFIC).date()
+    return today - dt.timedelta(days=1) if today.weekday() == 0 \
+        else today + dt.timedelta(days=(6 - today.weekday()) % 7)
+
+
 def _cover_pass(log=print, alert=None):
     now, did = time.time(), []
-    today = dt.datetime.now(PACIFIC).date()           # the anchoring Sunday of the current NFL week (Monday's
-    sunday = today - dt.timedelta(days=1) if today.weekday() == 0 \
-        else today + dt.timedelta(days=(6 - today.weekday()) % 7)   # game belongs to the week that just ended)
+    sunday = _cover_sunday(now)
     week_end = _nfl_week_end(now)
     key = sunday.isoformat()
     # First pass of the week, from the earliest kickoff on: snapshot the slate's checkpoints, cover the first one.
