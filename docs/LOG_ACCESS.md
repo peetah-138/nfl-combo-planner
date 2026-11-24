@@ -32,7 +32,7 @@ All of these must hold, or the answer is an empty error:
   with a signed-in person, or the Mac itself. The home network and Tailscale Funnel get 404.
 - **The right code**, in the `Authorization` header only (never the address bar). Wrong = 401. Five wrong codes from
   one client in 10 minutes (or 30 from everyone) turn that client (or everyone) away with 429 for a while.
-- **Only GET.** While on, any other method is 405 (with `Allow: GET`); while off it is 404 like everything else.
+- **Only GET.** POST is 405 while on (with `Allow: GET`) and 404 while off, like everything else.
   Nothing changes anything.
 
 The code is 32 random bytes made on the production Mac when the switch is turned on, shown **once**. Only its SHA-256
