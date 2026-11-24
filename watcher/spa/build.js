@@ -31,7 +31,7 @@ function _renderBuild(){const d=S.build;const m=$('#main');
   ${adv?`${secHead('games',`${esc(d.icon)} ${esc(d.name)} games`,d.board.length,'Kalshi price · fair chance from the sportsbooks')}
   ${secOpen('games')?`<div class="board">${d.board.slice().sort(ovLast).map(g=>{const sc=g.sc;return `<div class="mrow ${g.started?'livegame':''}${g.over?' over':''}" data-key="b:${g.event}" data-sig="${sc?sc.me+'-'+sc.opp:''}"><div class="when">${SPN[g.sport]?`<div class="wlg">${ICON[g.sport]||''} ${esc(SPN[g.sport])}</div>`:''}${g.started?(sc?`<span class="lvsc"><i class="livedot"></i>${esc(sc.detail||'LIVE')}</span>`:'<span class="lvsc"><i class="livedot"></i>LIVE</span>'):esc(g.label||'')}</div>
    ${g.sides.filter(s=>!s.tie).map(s=>{const on=S.slip.includes(s.ticker);const mine=sc?(s.ticker===g.first?sc.me:sc.opp):null,their=sc?(s.ticker===g.first?sc.opp:sc.me):null;
-    return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" ${g.over?'aria-disabled="true" tabindex="-1"':`onclick="pick('${s.ticker}','${g.event}')"`}><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
+    return `<button class="pickbtn ${on?'on':''} ${on&&S.justPicked===s.ticker?'pop':''} ${mine!=null?(mine>their?'lead':mine<their?'trail':''):''}" ${g.over?'aria-disabled="true" tabindex="-1"':`data-t="${esc(s.ticker)}" data-ev="${esc(g.event)}" onclick="pick(this.dataset.t,this.dataset.ev)"`}><span class="nm">${mine!=null?`<em class="scr">${mine}</em>`:''}<span class="full">${esc(s.pick)}</span><span class="short">${esc(short(s.pick))}</span>${s.edge!=null&&s.edge>=.01?'<span class="val">VALUE</span>':''}</span>
     <span class="pr"><b ${s.p!=null?`data-num="bp:${s.ticker}" data-v="${s.p}" data-f="cent"`:''}>${s.p!=null?Math.round(s.p*100)+'¢':'—'}</b><span>${s.fair!=null?'fair '+pct(s.fair):''}</span></span></button>`}).join('')}${ovBar(g.over,'build')}</div>`;}).join('')||'<div class="empty"><b>No games right now</b>Try another sport.</div>'}</div>`:''}
   ${narrow?slip(d):''}
   ${lsSection(d,true)}
@@ -61,7 +61,7 @@ function panelItem(c,st,approved,verb,view){const k=KIND[c.kind]||['•',c.kind]
  const title=c.kind==='combo'?(c.legs.every(l=>l.game)?c.legs.map(l=>esc(l.game)).join('<br>'):c.legs.map(l=>esc(short(l.pick))).join(' + ')):c.kind==='line'?esc(c.legs[0].pick.replace(/ \(.*\)$/,'')):`${esc(short(c.legs[0].pick))}${c.kind==='single'?' to win':''}`;
  const games=pGames(c);
  const nums=c.kind==='early'?`${pct(c.chance)} it reaches ${Math.round(c.exit*100)}¢ · buy ${Math.round(c.price*100)}¢`:c.kind==='combo'?`${pct(c.chance)} to hit · pays ≈${pct(c.pct)} of fair`:`${pct(c.chance)} to win · ${Math.round(c.price*100)}¢`;
- return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}${rp?' prp':''}" data-pid="${esc(c.id)}"${rp?` role="button" tabindex="0" aria-label="Get a fresh price for this bet" onclick="pReprice(this.dataset.pid)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();pReprice(this.dataset.pid)}"`:cl?` style="cursor:pointer" onclick="if(!event.target.closest('button,a'))panelClosed(this.dataset.pid)"`:''}><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''}${c.league?' · '+esc(c.league):''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
+ return `<div class="pitem ${off?'off':''} ${S.pJust===c.id?'tog':''}${rp?' prp':''}" data-pid="${esc(c.id)}"${rp?` onclick="if(!event.target.closest('button'))pReprice(this.dataset.pid)"`:cl?` style="cursor:pointer" onclick="if(!event.target.closest('button,a'))panelClosed(this.dataset.pid)"`:''}><div class="pi">${c.icon||k[0]}</div><div class="pm"><div class="pk">${k[1]}${c.slate?' · slate':''}${c.league?' · '+esc(c.league):''} · ${c.live?'<span class="pliv">Under way · priced live</span>':esc(pTime(c.kick))}</div><b>${title}</b>
   <div class="pg">${games.map(g=>`<div>${esc(g)}</div>`).join('')}</div>
   <div class="pn">${nums} · <span class="up">+${Math.round(c.ret*100)}% expected</span></div>${c.why?`<div class="pw">${esc(c.why)}</div>`:''}${c.note?`<div class="pw">${rp?'<b>Why not:</b> '+esc(pNote(c.note)):esc(c.note)}</div>`:''}${rp?pRepHtml(c)+`<button type="button" class="pdet" data-pid="${esc(c.id)}" aria-label="Open the details for this bet" onclick="event.stopPropagation();panelClosed(this.dataset.pid)" onkeydown="event.stopPropagation()">Details ›</button>`:''}</div>
   <div class="ps">${(()=>{const edit=!approved&&!off&&!state&&!started(c),mine=edit&&stkGet('pn:'+c.id)!=null&&Math.abs(pStake(c)-c.stake)>=.005,v=edit?pStake(c):+c.stake||0;
@@ -81,15 +81,21 @@ function pNote(n){n=String(n||'').trim();let m;
  return n.charAt(0).toUpperCase()+n.slice(1)+(/[.!?)]$/.test(n)?'':'.');}
 function pRepHtml(c){const r=(S.prep||{})[c.id];
  if((S.prepP||{})[c.id])return `<div class="prq wait" aria-live="polite"><span class="spin"></span> Getting a fresh price…</div>`;
- if(!r)return `<div class="prt">Tap for a fresh price</div>`;
+ /* (#405) the tap target is its own real button (the card is not a button any more, so Details can sit beside it) */
+ const btn=t=>`<button type="button" class="prt prbtn" data-pid="${esc(c.id)}" onclick="pReprice(this.dataset.pid)">${t}</button>`;
+ if(!r)return btn('Tap for a fresh price');
  const age=Math.max(0,Math.round(Date.now()/1000-r.at));
- return `<div class="prq ${r.would?'good':'bad'}" aria-live="polite"><b>${esc(r.verdict)}</b><span>${esc(r.why||'')}</span><small>Priced ${age<60?'just now':Math.round(age/60)+' min ago'} · a look only, nothing was bought · tap again to refresh</small></div>`;}
+ return `<div class="prq ${r.would?'good':'bad'}${r.fail?' fail':''}${r.fresh?' pin':''}" aria-live="polite"><b>${esc(r.verdict)}</b><span>${esc(r.why||'')}</span><small>${r.fail?'Nothing was bought.':`Priced ${age<60?'just now':Math.round(age/60)+' min ago'} · a look only, nothing was bought`}</small></div>${r.check?'':btn(r.fail?'Try again':'Refresh the price')}`;}
+/* (#403) a reprice that fails keeps its reason on the card (it used to be a 6 s toast): same slot as a result, with
+   would:false so nothing reads it as a go-ahead. Display only: the Mac's refusals are unchanged. */
+function pRepFail(r){const m=String(r.msg||'No price came in.');
+ return {verdict:r.check?'Check Kalshi':r.paused?'Paused':/^Just priced/.test(m)?'Just priced':'Couldn\'t get a fresh price',why:m,would:false,fail:true,check:!!r.check,at:Date.now()/1000};}
 async function pReprice(id){S.prepP=S.prepP||{};S.prep=S.prep||{};if(S.prepP[id])return;hap();S.prepP[id]=1;renderBuild();
  const r=await api('/app/api/act',{a:'panel_reprice',id}).catch(e=>({ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+').'}));
  delete S.prepP[id];
- if(r.ok){S.prep[id]=r;hap(r.would?'success':'warning');}
- else{hap('error');if(r.check)S.prep[id]={verdict:'Check Kalshi',why:r.msg,would:false,at:Date.now()/1000};toast(r.msg||'No price came in.',6000);}
- renderBuild();}
+ // (#402) no haptic after the await (silent on iOS 27): the tap ticked, and the card now shows the result with a small motion
+ S.prep[id]=r.ok?r:pRepFail(r);S.prep[id].fresh=true;
+ renderBuild();if(S.prep[id])S.prep[id].fresh=false;}
 /* Which game each bet is on, in plain English ("Over 7.5" alone told Pete nothing): one line per game. Spreads and totals
    say "Flyers at Bruins"; a single or one leg of a combo says "Flyers vs Bruins" (the team picked first). Older saved
    drafts have no game text, so fall back to what they do carry. */
@@ -260,7 +266,7 @@ function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=stkGe
  const one=S.slipMode==='single';
  return `<div class="card slip${narrowBuild()?' inl':''}"><h3>${one?'Single bet':'Your combo'} <span>${legs.length} pick${legs.length==1?'':'s'}</span></h3>
   <div style="margin:-2px 0 8px">${slipTog()}</div>
-  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" onclick="pick('${l.ticker}','${l.event}')">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use one of the ideas.'}</div>`}
+  ${legs.length?legs.map(l=>`<div class="pick">${legRow(l)}<button aria-label="Remove" data-t="${esc(l.ticker)}" data-ev="${esc(l.event)}" onclick="pick(this.dataset.t,this.dataset.ev)">×</button></div>`).join(''):`<div class="m" style="padding:6px 0 10px">${one?'Tap a team on the board to buy it on its own.':'Tap teams on the board to build your own combo, or use one of the ideas.'}</div>`}
   ${legs.length===1?`<button class="btn ${one?'acc':'ghost'}" id="sbslip" style="width:100%;margin-top:10px;justify-content:center" onclick="sbOpen('${esc(legs[0].ticker)}',S.lg)">Buy ${esc(short(legs[0].pick))} straight${legs[0].p!=null?' · '+Math.round(legs[0].p*100)+'¢':''}</button>`:''}
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
