@@ -3981,15 +3981,12 @@ def webapp_main():
                 return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
-                shown = d.get("legs")                   # rule 7: the offer must be for the very picks on screen
-                if shown is not None:
-                    o = (A.CTX.get("offers") or {}).get(i) or {}
-                    if not isinstance(shown, list) or sorted(map(str, shown)) != sorted(o.get("legs") or []):
-                        return {"ok": False, "msg": "That price was for a different combo. Get a fresh price, then buy."}
+                shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
+                shown = [str(x) for x in shown] if isinstance(shown, list) else []   # no legs (an older page) = refused
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
-                        r = A.accept_offer(i)
+                        r = A.accept_offer(i, expect_legs=shown)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
