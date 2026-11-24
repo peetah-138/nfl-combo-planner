@@ -1117,6 +1117,7 @@ def _team_is(name, team):
 
 ESPN_DAYS = {True: 4, False: 8}     # days of ESPN's scoreboard read for free lines: daily leagues 4 (the panel's day and
                                     # longer plays up to 3 days out), weekly ones (NFL, college football) the week
+ESPN_DEADLINE = 15                  # seconds: all of one path's days together (#351); a day not back by then counts as unread
 ESPN_FREE = {}                      # code -> {ok, bad, at}: its last free-lines read, day by day (the panel's funnel)
 
 
@@ -1126,7 +1127,7 @@ def espn_scoreboard(path, q, days, timeout=12, code=None):
     endpoint', Nov 2026, issue #341): the free lines asked for one and silently got nothing, so no game-winner pick
     had an outside line and the panel never saw a single or a combo. Never raises: a day that can't be read is
     skipped (counted in ESPN_FREE)."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
     today = dt.date.today()
 
     def one(k):
@@ -1137,8 +1138,11 @@ def espn_scoreboard(path, q, days, timeout=12, code=None):
             return evs if isinstance(evs, list) else None
         except (requests.RequestException, ValueError, AttributeError):
             return None
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        got = list(pool.map(one, range(max(1, int(days)))))
+    pool = ThreadPoolExecutor(max_workers=4)
+    futs = [pool.submit(one, k) for k in range(max(1, int(days)))]
+    wait(futs, timeout=ESPN_DEADLINE)                 # #351: one total deadline (this runs inside odds.lock)
+    got = [f.result() if f.done() and not f.exception() else None for f in futs]   # an unfinished day = unread
+    pool.shutdown(wait=False, cancel_futures=True)    # (the slow request ends on its own timeout, off the lock)
     out, seen = [], set()
     cnt = ESPN_FREE.setdefault(code or path, {"ok": 0, "bad": 0, "at": 0})
     for evs in got:
@@ -5696,7 +5700,7 @@ def auto_sell_now(plan):
                               round=(prev.get("total", 0) if prev.get("key") == bkey else 0) + 1,
                               retry_on=prev.get("why_now") if prev.get("key") == bkey else None,
                               **{k: info[k] for k in ("rounds", "tries", "agreed", "line", "floor", "asked_again", "ask_error",
-                                                      "low_offer") if k in info}))
+                                                      "low_offer", "below_agreed") if k in info}))
             if result != "failed":
                 COMBO_WAIT.pop(t, None)                   # a sale (or an unclear one, blocked by rule 8) starts over
                 MINE.setdefault("combo_fail_told", {}).pop(t, None)
@@ -9644,6 +9648,10 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             ACCT_CACHE["at"] = 0
             if not auto:
                 haptic("success")             # a haptic needs a tap behind it (auto cash-out has none)
+            if auto and attempt and o["offer"] < agreed - 0.005:   # #395: a retry sold under the first agreed offer
+                info["below_agreed"] = round(agreed - o["offer"], 2)   # (it only had to clear the smart-sell line)
+                console_note(f"auto cash-out: {ticker} sold on retry {attempt} for {money(o['offer'])}, "
+                             f"{money(info['below_agreed'])} under the first agreed {money(agreed)}")
             extra = f" (after {attempt} retr{'y' if attempt == 1 else 'ies'})" if attempt else ""
             paid = (h.get("cost") or 0) * frac if h else None     # this share's cost, as the auto-sell path judges it
             res = sale_result_note(o["offer"], paid, cutting=bool(getattr(_CASH_CTX, "cutting", False)))
@@ -14121,9 +14129,10 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
         mode = "watch"                                # Pause (read live) or a device that never trades: watch only
     try:                                              # the dedupe and the caps must be read, or nothing is bought
         if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?) and "
-                             "not (status = 'skipped' and why = ? and ts < ?)",   # (#365) a read blip: retried soon
-                             (key, time.time() - 6 * 3600, 1 if held else 0, KILLER_OVERLAP_UNREAD,
-                              time.time() - KILLER_UNREAD_RETRY)):
+                             "not (status = 'skipped' and substr(why, 1, ?) = ? and ts < ?)",   # (#365, #401) a read
+                             # blip (also its "(the setting couldn't be read)" variant): looked at again soon
+                             (key, time.time() - 6 * 3600, 1 if held else 0, len(KILLER_OVERLAP_UNREAD),
+                              KILLER_OVERLAP_UNREAD, time.time() - KILLER_UNREAD_RETRY)):
             return None                               # one per deal (one seen while paused can still buy after)
         n, dollars = killer_today() if mode == "on" else (0, 0.0)
     except Exception as err:
@@ -14163,6 +14172,8 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
     if mode != "on" or status == "skipped":
         store_x("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) values(?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), kind, key, picks, mode, status, stake, pays, round(pct, 4), why))
+    if mode == "on" and status == "skipped" and (why or "").startswith(KILLER_OVERLAP_UNREAD):
+        killer_unread_watch(alert)                    # #374: reads keep failing = say so once a day (nothing bought)
     if alert:
         if status == "bought":
             _alert(alert, f"🔥 Auto-bought a killer deal: {picks} for {money(stake)} to win {money(pays)} "
@@ -20116,9 +20127,58 @@ KILLER_UNREAD_RETRY = 120     # seconds: a deal skipped only because the bets co
 #                               this, not held off 6 hours like a real skip (a 429 shouldn't cost the deal)
 
 
+POS_COOL = {"until": 0.0}     # #399: after Kalshi says slow down (429) on the positions read, no killer candidate reads it
+POS_COOL_SECS = 60            # again for this long (one shared cooldown); the deals skip as unreadable and retry later
+KILLER_UNREAD_RUN = 3         # #374: this many different deals in a row skipped as unreadable = one alert a day
+KILLER_UNREAD_TOLD = {"day": ""}
+
+
+def _is_slow_down(err):
+    """Did Kalshi say 429 (directly, or through the Mac hub, which only passes its words along)?"""
+    code = getattr(getattr(err, "response", None), "status_code", None)
+    text = str(err).lower()
+    return code == 429 or "429" in text or "slow down" in text or "too many requests" in text
+
+
+def killer_unread_watch(alert=None):
+    """#374: when the last several killer deals were all skipped because the open bets couldn't be read, killer looks
+    like 'no deals today'. Tell Pete once a day. Alert only: never buys, never raises, changes no skip."""
+    try:
+        today = dt.date.today().isoformat()
+        if not alert or KILLER_UNREAD_TOLD["day"] == today:
+            return False
+        seen = set()
+        for r in store_rows_strict("select legs, status, why from killer where mode='on' order by ts desc limit 40"):
+            if r["status"] == "skipped" and (r["why"] or "").startswith(KILLER_OVERLAP_UNREAD):
+                seen.add(r["legs"])
+            else:
+                break                                  # a deal that was bought, watched or really skipped ends the run
+        if len(seen) < KILLER_UNREAD_RUN:
+            return False
+        KILLER_UNREAD_TOLD["day"] = today
+        _alert(alert, f"⚠️ Killer deals are being skipped: the last {len(seen)} couldn't check your open bets on Kalshi, "
+                      "so nothing was bought. Check Settings › Money, or that Kalshi is reachable.", "value", "/")
+        return True
+    except Exception as err:
+        print(f"killer unreadable alert: {type(err).__name__}: {err}", flush=True)
+        return False
+
+
 def _positions_strict():
     """Every Kalshi position, read now; raises when it can't be read (all_positions would answer [] instead). Through
-    the Mac hub when one answers (like every other account read), else signed with the local key."""
+    the Mac hub when one answers (like every other account read), else signed with the local key. After a 429 the read
+    is not repeated for POS_COOL_SECS (#399): it raises instead, so a killer deal skips, never guesses."""
+    if time.time() < POS_COOL["until"]:
+        raise RuntimeError("Kalshi asked us to slow down; positions not re-read yet")
+    try:
+        return _positions_read()
+    except Exception as err:
+        if _is_slow_down(err):
+            POS_COOL["until"] = time.time() + POS_COOL_SECS
+        raise
+
+
+def _positions_read():
     if hub_up():
         key, key_id = None, ""                         # account_get sends it through the hub; no local key needed
     else:
@@ -21744,6 +21804,28 @@ def _bands(x, cuts, names):
     return names[-1]
 
 
+def retry_below_agreed():
+    """#395: how many automatic combo sales went through on a retry under the first agreed offer, and the dollars below
+    it (the `below_agreed` field of the decision log). Read-only counting; {"n": 0, "usd": 0.0} when none or unreadable."""
+    n, usd = 0, 0.0
+    try:
+        with SELL_LOG_LOCK:
+            with open(SELL_LOG, encoding="utf-8") as f:
+                for line in f:
+                    if '"below_agreed"' not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(d, dict) and d.get("result") == "sold" and d.get("below_agreed"):
+                        n += 1
+                        usd += float(d["below_agreed"])
+    except (OSError, TypeError, ValueError):
+        pass
+    return {"n": n, "usd": round(usd, 2)}
+
+
 def sell_scorecard(rows=None, now=None):
     """#115: every automatic sale with what holding would have paid, by league and reason, plus manual sales, and
     for bets ridden to the end the best real offer seen against what they paid."""
@@ -21810,7 +21892,8 @@ def sell_scorecard(rows=None, now=None):
             b = (best[0] or {}).get("b") if best else None
             if b is not None:
                 rode.append((r, b))
-    return {"rows": out_rows, "total": dict({k: round(v, 2) if isinstance(v, float) else v for k, v in tot.items()},
+    return {"retry_below": retry_below_agreed(),
+            "rows": out_rows, "total": dict({k: round(v, 2) if isinstance(v, float) else v for k, v in tot.items()},
                                             gain=round(tot["sold"] - tot["held"], 2), few=tot["done"] < BOARD_FEW),
             "mine": {"n": len(mine), "done": len(md), "sold": round(m_sold, 2), "held": round(m_held, 2),
                      "gain": round(m_sold - m_held, 2), "few": len(md) < BOARD_FEW},

@@ -314,9 +314,113 @@ def t_hedge():
     ok("hedge_for on a game at the line never consults the guard (hedges stay allowed)", seen == [])
 
 
+def t_setting_unread_retry():
+    """#401: the 'setting couldn't be read' variant (a suffix on the same reason) is retried after the short wait too,
+    not held 6 hours; a real skip still waits 6 hours."""
+    BUYS.clear()
+    reset()
+    keep = E.overlap_settings
+
+    def boom():
+        raise RuntimeError("settings file busy")
+    E.overlap_settings = boom
+    try:
+        a, row = act("single", [G3 + "-EEE"])
+        why = row.get("why") or ""
+        b, _ = act("single", [G3 + "-EEE"])
+    finally:
+        E.overlap_settings = keep
+    E.store_x("update killer set ts = ts - ?", (E.KILLER_UNREAD_RETRY + 5,))
+    c, _ = act("single", [G3 + "-EEE"])
+    ok(f"setting unreadable: skipped ({a}, {why!r}), not retried at once ({b}), bought after the retry wait ({c})",
+       a == "skipped" and "the setting couldn't be read" in why and b is None and c == "bought" and len(BUYS) == 1)
+
+
+def t_positions_cooldown():
+    """#399: after a 429 on the positions read, nothing re-reads it for POS_COOL_SECS (every candidate skips as
+    unreadable instead); it reads again once the cooldown passes. Fail closed: the skip never becomes a buy."""
+    calls = []
+    keep = {k: getattr(E, k) for k in ("hub_up", "_positions_read")}
+    E.hub_up = lambda: False
+
+    def read():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("Kalshi said 429 too many requests")
+        return [pos(G1 + "-AAA", 2)]
+    E._positions_read = read
+    try:
+        E.POS_COOL["until"] = 0.0
+        try:
+            REAL_POSITIONS()
+            first = "read"
+        except RuntimeError:
+            first = "raised"
+        try:
+            REAL_POSITIONS()
+            second = "read"
+        except RuntimeError as err:
+            second = "raised" if "slow down" in str(err) else "other"
+        n_before = len(calls)
+        E.POS_COOL["until"] = time.time() - 1
+        got = REAL_POSITIONS()
+        ok(f"429: next candidate does not re-read ({first}, {second}, {n_before} read); reads again after the "
+           f"cooldown", (first, second, n_before) == ("raised", "raised", 1) and len(calls) == 2 and got)
+        calls.clear()
+        E.POS_COOL["until"] = 0.0
+        E._positions_read = lambda: (_ for _ in ()).throw(RuntimeError("timeout"))
+        try:
+            REAL_POSITIONS()
+        except RuntimeError:
+            pass
+        ok("a non-429 failure sets no cooldown", E.POS_COOL["until"] == 0.0)
+    finally:
+        for k, v in keep.items():
+            setattr(E, k, v)
+        E.POS_COOL["until"] = 0.0
+
+
+def t_unread_alert():
+    """#374: three different killer deals in a row skipped as unreadable = one alert a day; fewer, or a deal that was
+    bought in between, = none. The alert changes no skip and buys nothing."""
+    BUYS.clear()
+    sent = []
+    alert = lambda msg, kind, url=None: sent.append(msg)
+
+    def go(tickers):
+        legs = [{"ticker": t, "pick": t.rsplit("-", 1)[1]} for t in tickers]
+        return E.killer_act("single", legs, 5.0, 10.0, 1.3, lambda: (BUYS.append(tickers) or (True, "bought")),
+                            alert, lambda *a: None)
+    reset()
+    E.KILLER_UNREAD_TOLD["day"] = ""
+    ACCT["pos_err"] = RuntimeError("429")
+    r = [go([G1 + "-AAA"]), go([G2 + "-CCC"])]
+    two = len(sent)
+    r.append(go([G3 + "-EEE"]))
+    three = [m for m in sent if "being skipped" in m]
+    r.append(go([G4 + "-GGG"]))
+    ok(f"unreadable run: no alert at 2 deals ({two}), one at 3 ({len(three)}), none repeated the same day "
+       f"({len([m for m in sent if 'being skipped' in m])}); nothing bought ({r}, {BUYS})",
+       r == ["skipped"] * 4 and two == 0 and len(three) == 1
+       and len([m for m in sent if "being skipped" in m]) == 1 and not BUYS)
+    reset()
+    sent.clear()
+    E.KILLER_UNREAD_TOLD["day"] = ""
+    ACCT["pos_err"] = RuntimeError("429")
+    go([G1 + "-AAA"])
+    go([G2 + "-CCC"])
+    ACCT["pos_err"] = None
+    go([G3 + "-EEE"])                                 # bought: breaks the run
+    ACCT["pos_err"] = RuntimeError("429")
+    go([G4 + "-GGG"])
+    ok(f"a buy in between ends the run: no alert ({sent})", not [m for m in sent if "being skipped" in m])
+    ACCT["pos_err"] = None
+
+
 for n, f in (("combo threshold", t_combo_threshold), ("pct threshold", t_pct_threshold),
              ("single_pass", t_single_pass), ("switch off", t_switch_off), ("unreadable", t_unreadable),
              ("unread retry", t_unread_retry), ("hub positions", t_hub_positions),
              ("self stack", t_self_stack), ("panel and orders", t_panel_and_orders), ("untouched", t_untouched),
-             ("hedge", t_hedge)):
+             ("hedge", t_hedge), ("setting unread retry", t_setting_unread_retry),
+             ("positions cooldown", t_positions_cooldown), ("unread alert", t_unread_alert)):
     safe(n, f)
