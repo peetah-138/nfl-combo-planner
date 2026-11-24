@@ -5539,8 +5539,8 @@ def auto_sell_now(plan):
     offer is at least the Let it ride price for waiting another game; both are checked again here.
     Uses Kalshi's cash-out offers (the only way it buys combos back), so it runs while the planner
     is open. Returns the messages to send."""
-    if not (CFG.get("auto_sell") and plan and can_trade()) or MINE.get("busy"):
-        return []
+    if not (CFG.get("auto_sell") and plan and can_trade()) or MINE.get("busy") or trading_paused():
+        return []                                      # Pause (read fresh) stops every automatic sale; only Pete's own tap sells (#245)
     out = []
     if sell_held(out):                                 # Kalshi is refusing sales: don't ask again every pass (#134)
         return out
