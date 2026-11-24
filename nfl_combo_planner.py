@@ -7664,6 +7664,8 @@ def fetch_scores(max_age=None, code=None):
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
                         "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
                         "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
+                if state == "in" and code in CB_STAT_SPORTS:   # (#348) shots etc. ESPN already sent: comeback model only
+                    info["stats"], info["ostats"] = _cb_team_stats(me), _cb_team_stats(opp)
                 if sit_info:                      # football live situation (display only), seen from this team's side
                     info["situation"] = dict(sit_info,
                                              possession=str(sit.get("possession", "")) == str(me.get("id") or tm.get("id")),
@@ -16250,9 +16252,9 @@ def live_exit_ok(ticker, event, fair, ask, now=None):
     try:
         if fair is None or not ask:
             return False
-        c = {"kind": "single", "code": ticker_sport(ticker) or "", "id": "live:" + ticker,
+        c = {"kind": "single", "code": ticker_sport(ticker) or "", "id": "live:" + ticker, "live": True,   # under way
              "legs": [{"ticker": ticker, "event": event or "", "fair": float(fair), "p": float(ask)}]}
-        return bool(smart_buy_ok(_sb_sim(c, now)))
+        return bool(inplay_exit_ok(c, now=now, source="quote")[0])   # (#348) and the comeback model agrees
     except Exception:
         return False
 
@@ -19584,11 +19586,11 @@ def _buy_panel_bet(c):
             c = dict(c, pct=round(float(c["pct"]) * float(c["fair_mult"]) / fm, 4))
         c = dict(c, legs=legs, fair_mult=fm)
         try:                                             # (#341) on the fresh live chance: still a likely profitable exit?
-            exit_ok = smart_buy_ok(_sb_sim(c, None))
+            exit_ok, why = inplay_exit_ok(c, sim=_sb_sim(c, None), source="buy")   # (#348) + the comeback model
         except Exception:
-            exit_ok = False
+            exit_ok, why = False, IN_PLAY_WHY
         if not exit_ok:
-            return False, IN_PLAY_WHY, {}
+            return False, why or IN_PLAY_WHY, {}
     l = c["legs"][0]
     if c["kind"] in ("single", "early", "line"):
         book = book_depth(l["ticker"], max_age=5) or {}
@@ -20236,6 +20238,11 @@ def analytics(max_age=600):
     except Exception as err:
         print("smart buy summary:", type(err).__name__, err)
         out["smart_buy"] = None
+    try:                                               # (#348) in-play comeback model: predicted vs actual (display)
+        out["comeback"] = comeback_summary(now=now)
+    except Exception as err:
+        print("comeback summary:", type(err).__name__, err)
+        out["comeback"] = None
     # 4. exits: your real combos (Kalshi record) ridden vs cashed, and what automatic selling did
     ex = defaultdict(lambda: {"n": 0, "cost": 0.0, "back": 0.0})
     for r in store_rows("select cost, pays, back, status from bets where status in ('won','lost','cashed') and settled > ?",
@@ -25237,11 +25244,12 @@ def smart_buy_gate(c, now=None, sim=None, on=None):
     try:
         if c.get("live"):                             # (#341, Pete) a game under way: only with a likely profitable exit,
             try:                                      # whatever the switch or the dial (its chance is the live one)
-                live_ok = smart_buy_ok(sim if sim is not None else _sb_sim(c, now))
+                live_ok, live_why = inplay_exit_ok(c, sim=sim if sim is not None else _sb_sim(c, now), now=now,
+                                                   source="panel")            # (#348) + the comeback model
             except Exception:
-                live_ok = False
+                live_ok, live_why = False, IN_PLAY_WHY
             if not live_ok:
-                return False, IN_PLAY_WHY
+                return False, live_why or IN_PLAY_WHY
         if not (smart_buy_on() if on is None else on):
             return True, None
         if c.get("kind") == "combo":                  # #142 leak 1 (Pete, 2026-11-20): under fair needs a likely exit
@@ -25447,6 +25455,7 @@ def smart_buy_learn(now=None, force=False):
         if not STORE.get("db"):
             return {}
         sb_resolve(now)
+        comeback_resolve(now)                              # (#348) in-play checks scored on the recorded prices
         if not force and now - SB_GATE["learn_at"] < SB_LEARN_EVERY:
             return _sb_load_dial(now)
         SB_GATE["learn_at"] = now
@@ -25609,13 +25618,20 @@ def smart_buy_ideas_gate(ideas, now=None):
     dial is at 0, is kept, as before; except a combo idea priced under its fair value, which is kept only once the
     shadow found smart sell likely to cash it out for a profit (#142 leak 1). Skip-only; never raises."""
     now = now or time.time()
-    if not ideas or not smart_buy_on() or not STORE.get("db"):
-        return list(ideas or []), []
+    if not ideas:
+        return [], []
+    on = smart_buy_on()
+    if not on and not any(_idea_in_play(r) for r in ideas):
+        return list(ideas), []                         # (#348) in-play ideas are gated whatever the switch (#341)
+    if not STORE.get("db"):                            # nothing to judge an in-play idea on: left out (fail closed)
+        return ([r for r in ideas if not _idea_in_play(r)],
+                [{"id": r.get("idea_id"), "text": r.get("picks") or "", "why": IN_PLAY_WHY, "inplay": True}
+                 for r in ideas if _idea_in_play(r)])
     try:
-        under = {id(r) for r in ideas if _idea_under_fair(r)}   # #142 leak 1: needs a likely profitable exit
+        under = {id(r) for r in ideas if on and _idea_under_fair(r)}   # #142 leak 1: needs a likely profitable exit
         inplay = {id(r) for r in ideas if _idea_in_play(r)}     # (#341) a game under way: needs one too
         under |= inplay
-        active = [r for r in ideas if id(r) in under or sb_dial(r.get("legs") or [], now)["level"] > 0]
+        active = [r for r in ideas if id(r) in under or on and sb_dial(r.get("legs") or [], now)["level"] > 0]
         if not active:
             return list(ideas), []
         _exit_shadow_table()
@@ -25626,16 +25642,22 @@ def smart_buy_ideas_gate(ideas, now=None):
                             f"tickers in ({q}) order by ts", (now - 2 * 3600, *keys)):
             evs[x["tickers"]] = x["ev"]                    # the newest check of each market
             oks[x["cand"]] = bool(x["new"])                # ...and of each quote: smart sell likely profits (smart_buy_ok)
+        cbs = cb_verdicts([_sb_idea_cand(r) for r in ideas if id(r) in inplay], "idea", now) if inplay else {}
         kept, skipped = [], []
         for r in ideas:
             k = json.dumps(list(r.get("legs") or []))
             if id(r) in under:                             # judged on the very quote shown (its own price), not an
                 v = oks.get(_sb_idea_cand(r))          # older one of the same picks
+                if v and id(r) in inplay and not cbs.get(_sb_idea_cand(r)):
+                    v = False                              # (#348) the comeback model hasn't agreed: left out
                 if not v:                                  # not simulated yet, or no likely profitable exit: left out
-                    skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "",
+                    skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "inplay": id(r) in inplay,
                                     "why": IN_PLAY_WHY if id(r) in inplay else
                                     _sb_under_words(float(r["pct"]), pending=v is None)})
                     continue
+            if not on:
+                kept.append(r)
+                continue
             dial = sb_dial(r.get("legs") or [], now)
             ev = evs.get(k)
             if dial["level"] <= 0 or _sb_pass(ev, dial["level"]):
@@ -25648,12 +25670,707 @@ def smart_buy_ideas_gate(ideas, now=None):
         kept, skipped = [], []                         # the under-fair rule fails closed even here (#142 leak 1)
         for r in ideas:
             if _idea_in_play(r):
-                skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": IN_PLAY_WHY})
-            elif _idea_under_fair(r):
+                skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": IN_PLAY_WHY, "inplay": True})
+            elif on and _idea_under_fair(r):
                 skipped.append({"id": r.get("idea_id"), "text": r.get("picks") or "", "why": _sb_under_words(None, True)})
             else:
                 kept.append(r)
         return kept, skipped
+
+
+# ================================================================ In-play comeback model (issue #348)
+# Pete (2026-11-23): an in-play bet is judged on whether a comeback, or at least a partial one big enough to sell at a
+# profit, is realistic: not on a pregame-style edge, and not on the score and time left alone. Three parts:
+#   features   what the score feeds ESPN already sent say beyond the score (no new request of any kind): football's
+#              ball and field position and down/distance, basketball's pace and scoring runs, hockey's shots on goal,
+#              soccer's shots on target (an expected-goals stand-in) and possession; every sport's closing line as the
+#              prior. A feature its sport needs that is missing = fail closed (no green Buy, no idea, no push).
+#   recoveries the league's OWN in-play price history (price_path rows recorded during games; pregame rows are never
+#              read): from this lead and time left, how often did the bid rise far enough to sell at +SB_GAIN after
+#              both fees before the end? Bucketed by lead (in scoring units) and quarter of the game left, per league,
+#              borrowing league -> sport -> all with n/(n+K) shrinkage toward the model; a borrowed level may only
+#              lower the rate (stricter), only a league's own rows may raise it.
+#   verdict    the old gate (smart_buy_ok on the live state) AND the new one (simulate_exit on the feature-adjusted live
+#              chance, its cash-out chance replaced by the empirical one once the bucket has CB['min_n'] rows). So the new
+#              model can only make the gate stricter or leave it; letting it loosen is a later, data-gated step. Both
+#              verdicts are logged in comeback_shadow and scored on what the price really did (Results > What's working).
+# Pete's follow-up: when the trailing side has no comeback, the OTHER side of the same game is scored too, with the same
+# model and gate, and logged as paper only (source 'other'); nothing is ever shown, pushed or bought from it.
+# Recommend and gate only: nothing here buys or sells; Pause, caps and rule 8 are untouched.
+CB = {"gain": SB_GAIN, "k": 20, "min_n": 15, "days": 30, "max_rows": 120000, "ttl": 3600, "log_every": 600,
+      "run_secs": 480, "keep_days": 45, "other": True}
+CB_UNIT = {"nfl": 7.0, "ncaaf": 7.0, "nba": 5.0, "ncaamb": 4.0, "ncaawb": 4.0, "nhl": 1.0, "ahl": 1.0, "soccer": 1.0}
+CB_LEAD_MAX = 3            # lead buckets: -3..+3 scoring units (beyond = the end bucket)
+CB_TIME_EDGES = (0.25, 0.5, 0.75)   # time-left buckets: the quarters of the game still to play
+CB_PACE = {"nba": 228.0, "ncaamb": 142.0, "ncaawb": 128.0}   # typical full-game points (both teams)
+CB_RUN = {"nba": 10, "ncaamb": 9, "ncaawb": 9}               # an opponent's run this big lately = stricter
+CB_STAT_SPORTS = ("nhl", "soccer")                           # sports whose ESPN scoreboard carries team stats
+CB_SHOTS_FULL = {"nhl": 30.0, "soccer": 1.5}                 # shots (NHL) / expected-goals stand-in (soccer) for full weight
+CB_STATE = {"tab": None, "at": 0.0, "seen": {}, "cols": False, "pcols": False, "err": 0.0}
+CB_WHY = {"score": "no fresh live score", "ball": "read of who has the ball and where", "shots": "count of shots so far",
+          "pre": "no closing line to start from", "kind": "spreads and totals have no live model",
+          "sport": "no live score feed we trust for this sport", "model": "it can't be modelled"}
+
+
+def _cb_team_stats(comp):
+    """ESPN scoreboard team stats as {name: number} (hockey: saves, goals; soccer: totalShots, shotsOnTarget,
+    possessionPct). Never raises; an odd value is left out."""
+    out = {}
+    try:
+        for s in comp.get("statistics") or []:
+            try:
+                out[str(s.get("name"))] = float(str(s.get("displayValue")).strip().rstrip("%"))
+            except (TypeError, ValueError):
+                continue
+    except (AttributeError, TypeError):
+        return {}
+    return out
+
+
+def _cb_fee(p):
+    return FEE_RATE * p * (1 - p)
+
+
+def _cb_note(where, err):
+    if time.time() - CB_STATE["err"] > 600:
+        CB_STATE["err"] = time.time()
+        console_note(f"comeback {where}: {type(err).__name__}: {err}")
+
+
+def _cb_bucket(sport, lead, frac):
+    """(lead in scoring units clipped to +-CB_LEAD_MAX, quarter of the game left 0..3)."""
+    u = CB_UNIT.get(sport) or 1.0
+    lu = int(max(-CB_LEAD_MAX, min(CB_LEAD_MAX, round(float(lead) / u))))
+    tb = sum(1 for e in CB_TIME_EDGES if float(frac) > e)
+    return lu, tb
+
+
+def _cb_frac_text(code, det):
+    """Share of the game left from a recorded score's detail ('Q3 5:12', 'P2 10:00', 'H2 67'', 'Half'), or None when
+    it isn't a moment in play (final, pre-game, the end of a period, unreadable)."""
+    det = str(det or "").strip()
+    if not det or det.startswith(("Final", "End")):
+        return None
+    n_per = (SPORTS.get(code) or {}).get("periods") or 4
+    if det == "Half":
+        return 0.5
+    if det.startswith("OT"):
+        return 0.04
+    m = re.match(r"^(Q|P|H)(\d+)\s+(\S+)", det)
+    if not m:
+        return None
+    try:
+        f = _frac_left(code, {"period": int(m.group(2)), "displayClock": m.group(3)}, n_per, "in")
+    except Exception:
+        return None
+    return f if f is not None and 0 < f <= 1 else None
+
+
+def _cb_parse(code, score, frac=None):
+    """(lead, share left, final?) from a price_path score text 'me-opp detail' (and its frac column, when recorded).
+    lead None = unreadable. A pre-game moment never has a score (the recorder writes one only once a game is in play
+    or over), and a final one returns final=True with no share left."""
+    m = re.match(r"^\s*(-?\d+)-(-?\d+)\s*(.*)$", str(score or ""))
+    if not m:
+        return None, None, False
+    lead = int(m.group(1)) - int(m.group(2))
+    det = m.group(3).strip()
+    if det.startswith("Final"):
+        return lead, None, True
+    f = frac if frac is not None else _cb_frac_text(code, det)
+    return lead, (float(f) if f is not None and 0 < float(f) <= 1 else None), False
+
+
+def _cb_groups(t):
+    lg, sp = league_key(t), ticker_sport(t)
+    out = [lg]
+    if sp and sp != lg:
+        out.append(sp)
+    out.append("all")
+    return out
+
+
+def _cb_points(code, rows):
+    """(in-play points [(ts, lead, share left, bid, ask)], reached the end?, won True/False/None) of a recorded path."""
+    pts, final_bid, ended = [], None, False
+    for r in rows:
+        lead, f, fin = _cb_parse(code, r.get("score"), r.get("frac"))
+        if lead is None:
+            continue
+        if fin:
+            ended = True
+            if r.get("bid") is not None:
+                final_bid = r["bid"]
+            continue
+        if f is None or not r.get("bid") or not r.get("ask"):
+            continue
+        pts.append((r.get("ts") or 0.0, lead, f, float(r["bid"]), float(r["ask"])))
+        if f <= 0.05:
+            ended = True
+    won = None if final_bid is None else (True if final_bid >= 0.9 else False if final_bid <= 0.1 else None)
+    return pts, ended, won
+
+
+def _cb_entries(t, rows):
+    """One ticker's recorded in-play path as comeback entries: [(lead units, time bucket, recovered 0/1, net bid at the
+    first profitable sale or None, won True/False/None)]. Only rows in play (a readable score with time left) are
+    entries; a path that stops before the end (no final row and never under 5% left) is censored and gives nothing.
+    Only the first moment a ticker spends in each bucket counts (one game, one vote per bucket)."""
+    code = ticker_sport(t) or ""
+    pts, ended, won = _cb_points(code, rows)
+    if not pts or not ended:
+        return []
+    nets = [p[3] - _cb_fee(p[3]) for p in pts]
+    out, seen = [], set()
+    for i, (_, lead, f, bid, ask) in enumerate(pts):
+        k = _cb_bucket(code, lead, f)
+        if k in seen:
+            continue
+        seen.add(k)
+        target = (ask + _cb_fee(ask)) * (1 + CB["gain"])
+        hit = next((n for n in nets[i + 1:] if n >= target - 1e-9), None)
+        out.append((k[0], k[1], 1 if hit is not None else 0, hit, won))
+    return out
+
+
+def comeback_table(now=None, force=False):
+    """{(group, lead units, time bucket): [entries, recovered]} from the last CB['days'] of recorded in-play prices.
+    In-play rows only (score text present and a moment in play): pregame rows have no score and never enter. The
+    newest CB['max_rows'] rows; one market per game (both sides would mirror each other and count the game twice).
+    Kept per process and rebuilt hourly in a background thread, so no gate ever waits for it: until the first build
+    lands the table is empty and the model alone decides. force: build now, in this thread. Never raises."""
+    now = now or time.time()
+    if force:
+        _cb_build(now)
+        return CB_STATE["tab"]
+    if CB_STATE["tab"] is None or now - CB_STATE["at"] >= CB["ttl"]:
+        if not CB_STATE.get("busy"):
+            CB_STATE["busy"] = True
+            CB_STATE["at"] = now                       # one build an hour, even if it fails
+            threading.Thread(target=_cb_build, args=(now,), daemon=True).start()
+    return CB_STATE["tab"] or {}
+
+
+def _cb_build(now):
+    tab = {}
+    try:
+        if STORE.get("db"):
+            _price_table()
+            cols = "ts, ticker, bid, ask, score" + (", frac" if CB_STATE.get("pcols") else "")
+            rows = store_rows(f"select {cols} from price_path where ts > ? and score is not null "
+                              f"order by ts desc limit ?", (now - CB["days"] * 86400, CB["max_rows"]))
+            by = {}
+            for r in reversed(rows):                   # oldest first within each market
+                by.setdefault(r["ticker"], []).append(r)
+            one = {}
+            for t in sorted(by):                       # one market per game, picked without favouring either side
+                ev = t.rsplit("-", 1)[0]
+                one.setdefault(ev, []).append(t)
+            keep = {ts_[int(hashlib.md5(ev.encode()).hexdigest()[:8], 16) % len(ts_)] for ev, ts_ in one.items()}
+            for t, rs in by.items():
+                if t not in keep or _bet_kind(t) != "win":
+                    continue
+                for lu, tb, rec, _, _ in _cb_entries(t, rs):
+                    for g in _cb_groups(t):
+                        v = tab.setdefault((g, lu, tb), [0, 0])
+                        v[0] += 1
+                        v[1] += rec
+    except Exception as err:
+        _cb_note("table", err)
+        tab = CB_STATE["tab"] or {}
+    CB_STATE.update(tab=tab, at=now, busy=False)
+    return tab
+
+
+def comeback_rate(ticker, lead_u, tb, p_model, now=None):
+    """The empirical chance of a profitable sale from this bucket: everyone's rate shrunk toward the model by
+    n/(n+K), the sport's toward that, the league's toward that. Borrowed levels (everyone, the sport) may only lower
+    it; the league's own rows move it either way. (rate, rows at the widest level, used?) — used only once the
+    widest level has CB['min_n'] rows; otherwise (None, n, False) and the model decides."""
+    tab = comeback_table(now)
+    groups = _cb_groups(ticker)[::-1]                  # all, sport, league
+    p, n_all, K = float(p_model), 0, CB["k"]
+    for i, g in enumerate(groups):
+        n, r = tab.get((g, lead_u, tb), (0, 0))
+        if i == 0:
+            n_all = n
+        if not n:
+            continue
+        est = (r + K * p) / (n + K)
+        p = est if i == len(groups) - 1 else min(est, p)
+    if n_all < CB["min_n"]:
+        return None, n_all, False
+    return round(p, 4), n_all, True
+
+
+def _cb_yards(txt, poss_abbr):
+    """Yards the team with the ball has to go, from ESPN's ball spot text ('PHI 8', '50') and who has the ball."""
+    txt = str(txt or "").strip()
+    if txt == "50":
+        return 50
+    m = re.match(r"^([A-Za-z.&]+)\s+(\d+)$", txt)
+    if not m or not poss_abbr:
+        return None
+    yd = int(m.group(2))
+    if not 0 < yd <= 50:
+        return None
+    return 100 - yd if m.group(1).upper() == str(poss_abbr).upper() else yd
+
+
+def _cb_run(ticker, lead, now):
+    """This side's lead change over the last CB['run_secs'] (negative = the other team is on a run), from the
+    recorded in-play scores; None when there's no recorded score that far back (an optional, stricter-only feature)."""
+    try:
+        rows = store_rows("select ts, score from price_path where ticker=? and ts between ? and ? and score is not "
+                          "null order by ts limit 1", (ticker, now - CB["run_secs"] - 300, now - CB["run_secs"] + 120))
+        if not rows:
+            return None
+        old, f, fin = _cb_parse(ticker_sport(ticker) or "", rows[0]["score"])
+        return None if old is None or fin else int(lead - old)
+    except Exception:
+        return None
+
+
+def comeback_features(ticker, sc, now=None):
+    """(features, missing) for one pick in play, from its score dict (ESPN's scoreboard, already fetched). missing =
+    the name of a feature its sport needs that the feed didn't give (the caller fails closed), else None."""
+    now = now or time.time()
+    sport = ticker_sport(ticker) or ""
+    lead = int(sc.get("me") or 0) - int(sc.get("opp") or 0)
+    frac = float(sc["frac"])
+    f = {"sport": sport, "lead": lead, "frac": round(frac, 3)}
+    if sport in ("nfl", "ncaaf"):
+        s = sc.get("situation") or {}
+        y = _cb_yards(s.get("possessionText"), s.get("possAbbr")) if isinstance(s, dict) else None
+        if y is None:
+            return f, "ball"
+        f.update(poss=bool(s.get("possession")), ytg=y, down=s.get("down"), dist=s.get("distance"))
+    elif sport in CB_PACE:
+        played = 1 - frac
+        pts = int(sc.get("me") or 0) + int(sc.get("opp") or 0)
+        f["pace"] = round(min(max((pts / played) / CB_PACE[sport], 0.75), 1.35), 3) if played >= 0.1 else 1.0
+        f["run"] = _cb_run(ticker, lead, now)
+    elif sport in CB_STAT_SPORTS:
+        st, ot = sc.get("stats") or {}, sc.get("ostats") or {}
+        if sport == "nhl":
+            if "saves" not in st or "saves" not in ot:
+                return f, "shots"
+            mine, theirs = ot["saves"] + max(int(sc.get("me") or 0), 0), st["saves"] + max(int(sc.get("opp") or 0), 0)
+        else:
+            if not all(k in d for d in (st, ot) for k in ("totalShots", "shotsOnTarget")):
+                return f, "shots"
+            xg = lambda d: 0.30 * d["shotsOnTarget"] + 0.05 * max(d["totalShots"] - d["shotsOnTarget"], 0)  # noqa: E731
+            mine, theirs = xg(st), xg(ot)
+            if "possessionPct" in st:
+                f["poss_pct"] = st["possessionPct"]
+        f.update(shots=round(mine, 2), oshots=round(theirs, 2))
+    return f, None
+
+
+def _cb_chance(ticker, pre, sc, feats):
+    """This pick's live chance with the features: the live model (the closing line as the prior, calibrated by the
+    league's live record) on an adjusted lead, time left and prior. Football: the ball's expected points (field
+    position, down and distance) added to the lead of the team that has it. Basketball: time left scaled by the pace
+    (a fast game has more scoring left), and an opponent's run counted as 2 points against. Hockey/soccer: the prior
+    nudged by the shot share (at most +-0.4 probit, full weight from CB_SHOTS_FULL)."""
+    sport = feats["sport"]
+    lead, frac, p0 = feats["lead"], float(feats["frac"]), float(pre)   # whole goals for hockey/soccer (Poisson)
+    if "ytg" in feats:
+        y = feats["ytg"]
+        ep = max(-0.5, 6.0 - 0.07 * y) * {1: 1.0, 2: 0.92, 3: 0.8, 4: 0.6}.get(feats.get("down") or 1, 1.0)
+        if (feats.get("dist") or 0) > 10:
+            ep *= 0.85
+        lead += ep if feats.get("poss") else -ep
+    if "pace" in feats:
+        frac = frac * feats["pace"]
+        if feats.get("run") is not None and feats["run"] <= -CB_RUN.get(sport, 99):
+            lead -= 2.0
+    if "shots" in feats:
+        tot = feats["shots"] + feats["oshots"]
+        if tot > 0:
+            w = min(1.0, tot / CB_SHOTS_FULL[sport])
+            p0 = _phi_cdf(_probit(p0) + 0.8 * (feats["shots"] / tot - 0.5) * w)
+    raw = live_model_chance(sport, calib_fair(sport, p0, ticker), lead, min(max(frac, 0.005), 1.0), sc.get("wp"))
+    return min(max(calib_fair(sport, raw, ticker, table="live_fairs"), 0.01), 0.99)
+
+
+def _cb_fail(why, old=False, **kw):
+    words = IN_PLAY_WHY if not old else IN_PLAY_WHY + (f" (no live {CB_WHY[why]})" if why in ("ball", "shots") else
+                                                        f" ({CB_WHY.get(why, why)})")
+    return dict({"ok": False, "old": bool(old), "new": False, "why": words, "miss": why}, **kw)
+
+
+def comeback_judge(c, now=None, sim=None):
+    """The in-play verdict for one candidate (a single or a combo with picks under way): {'ok' (old AND new), 'old'
+    (smart_buy_ok on the live state, today's gate), 'new' (the comeback model alone), 'why', and what it saw}.
+    A candidate with no pick in play is untouched (ok = old = new = today's verdict). Fails closed: any missing
+    feature its sport needs, a stale score or an error = not ok. Never fetches: cached scores and recorded prices."""
+    now = now or time.time()
+    spec = exit_spec(c, now)
+    if not spec:
+        return _cb_fail("model")
+    if sim is None:
+        sim = _sb_sim(c, now)
+    old = smart_buy_ok(sim)
+    legs = [dict(l) for l in spec["legs"]]
+    src = {l.get("ticker"): l for l in c.get("legs") or []}
+    info, live_n = None, 0
+    for l in legs:
+        t = l["ticker"]
+        cl = src.get(t) or {}
+        flagged = bool(c.get("live") and len(legs) == 1 or cl.get("live"))
+        if l["start"] > 0 and not flagged:
+            continue                                      # this pick's game hasn't started
+        live_n += 1
+        sport = ticker_sport(t) or ""
+        at = {"ticker": t, "league": spec["league"], "kind": spec["kind"], "ask": l["ask"], "bid": l["bid"]}
+        if sport not in LIVE_MODEL or sport in LIVE_EXCLUDED:
+            return _cb_fail("sport", old, **at)
+        if _bet_kind(t) != "win":
+            return _cb_fail("kind", old, **at)
+        if score_age(sport, now) > LIVE_SCORE_AGE:
+            return _cb_fail("score", old, **at)
+        sc = leg_score({"ticker": t, "side": "yes"})
+        if not sc or sc.get("state") != "in" or sc.get("frac") is None:
+            return _cb_fail("score", old, **at)
+        feats, miss = comeback_features(t, sc, now)
+        if miss:
+            return _cb_fail(miss, old, feats=feats, **at)
+        pre = cl.get("pre") or pregame_fair(t)
+        if not pre or not 0 < float(pre) < 1:
+            return _cb_fail("pre", old, feats=feats, **at)
+        q = _cb_chance(t, pre, sc, feats)
+        l.update(q0=q, start=min(l["start"], 0.0), f0=min(max(float(sc["frac"]), 0.02), 1.0))
+        if info is None:
+            info = {"ticker": t, "feats": feats, "q_old": round(float(cl.get("fair") or 0), 4),
+                    "q_feat": round(q, 4), "ask": l["ask"], "bid": l["bid"], "lead": feats["lead"],
+                    "frac": feats["frac"], "bucket": _cb_bucket(sport, feats["lead"], feats["frac"])}
+    if not live_n:
+        return {"ok": old, "old": old, "new": old, "why": None if old else IN_PLAY_WHY, "pregame": True}
+    sim_n = simulate_exit(dict(spec, legs=legs))
+    p_feat = sim_n["p_exit"]
+    p_emp, n_emp, used = (None, 0, False)
+    if spec["kind"] == "single":
+        p_emp, n_emp, used = comeback_rate(info["ticker"], info["bucket"][0], info["bucket"][1], p_feat, now)
+    p_new = p_emp if used else p_feat
+    hold, ev = sim_n["hold_profit"], sim_n["ev"]
+    if used and p_feat > 0:
+        ev = hold + (ev - hold) * min(1.0, p_new / p_feat)    # the sale's share of the value, at the real recovery rate
+    route = "sell" if p_new >= SB_ROUTE_EXIT else "hold" if hold > 0 and sim_n["win"] >= SB_WIN_MIN else "none"
+    new = route != "none" and ev >= SB_EV_MIN
+    why = None
+    if not old:
+        why = IN_PLAY_WHY
+    elif not new:
+        why = IN_PLAY_WHY + (f" (in {n_emp} similar spots this league's price recovered enough to sell at a profit "
+                             f"{p_emp:.0%} of the time)" if used else " (a comeback big enough to sell at a profit "
+                             "looks unlikely from here)")
+    return dict(info, ok=bool(old and new), old=bool(old), new=bool(new), why=why, p_old=sim.get("p_exit") if sim
+                else None, p_feat=p_feat, p_emp=p_emp, n_emp=n_emp, p_new=round(p_new, 4), ev_new=round(ev, 2),
+                ev_old=sim.get("ev") if sim else None, route=route, win=sim_n["win"], kind=spec["kind"],
+                league=spec["league"])
+
+
+def _cb_table():
+    store_x("create table if not exists comeback_shadow(ts real, cand text, source text, league text, kind text, "
+            "ticker text, lead real, frac real, lead_u int, tb int, ask real, bid real, q_old real, q_feat real, "
+            "p_old real, p_feat real, p_emp real, n_emp int, p_new real, ev_old real, ev_new real, old int, new int, "
+            "ok int, paper int, why text, feats text, rec int, pnl real, score real, pick text, pick_t text, "
+            "pick_why text, chk real)")
+    store_x("create index if not exists comeback_shadow_ts on comeback_shadow(ts)")
+    store_x("create index if not exists comeback_shadow_c on comeback_shadow(cand)")
+
+
+def _cb_due(cand, source, j, now, force=False):
+    """Whether this candidate's row is due (one per candidate and source per CB['log_every']; force: the shadow's own
+    pass); marks it logged."""
+    if not STORE.get("db") or j.get("pregame") or not j.get("ticker"):
+        return False
+    seen = CB_STATE["seen"]
+    key = source + "|" + cand
+    if not force and now - seen.get(key, 0) < CB["log_every"]:
+        return False
+    if len(seen) > 5000:
+        for k in [k for k, v in seen.items() if now - v > CB["log_every"]]:
+            seen.pop(k, None)
+    seen[key] = now
+    return True
+
+
+def _cb_log(cand, source, j, now, paper=0, pick=None):
+    """One comeback_shadow row (the caller checked _cb_due). pick = the game's paper side pick, on the main row. Never
+    raises."""
+    try:
+        if not STORE.get("db") or not j.get("ticker"):
+            return False
+        _cb_table()
+        pk = pick or {}
+        b = j.get("bucket") or (None, None)
+        store_x("insert into comeback_shadow(ts, cand, source, league, kind, ticker, lead, frac, lead_u, tb, ask, bid, "
+                "q_old, q_feat, p_old, p_feat, p_emp, n_emp, p_new, ev_old, ev_new, old, new, ok, paper, why, feats, score, "
+                "pick, pick_t, pick_why) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now, cand[:200], source, j.get("league") or (league_key(j.get("ticker")) if j.get("ticker") else None),
+                 j.get("kind"), j.get("ticker"), j.get("lead"), j.get("frac"), b[0], b[1], j.get("ask"), j.get("bid"),
+                 j.get("q_old"), j.get("q_feat"), j.get("p_old"), j.get("p_feat"), j.get("p_emp"), j.get("n_emp"),
+                 j.get("p_new"), j.get("ev_old"), j.get("ev_new"), int(bool(j.get("old"))), int(bool(j.get("new"))),
+                 int(bool(j.get("ok"))), paper, (j.get("why") or "")[:300], json.dumps(j.get("feats") or {})[:600],
+                 j.get("score"), pk.get("pick"), pk.get("ticker"), (pk.get("why") or "")[:300]))
+        return True
+    except Exception as err:
+        _cb_note("log", err)
+        return False
+
+
+def _cb_other_side(c, j, source, now):
+    """(Pete) The other team of the same two-way game, scored with the same model and gate, logged as paper only: is the
+    side Kalshi prices as the leader worth it? Its price comes from what the engine already read (PRICE_SEEN), its live
+    chance from 1 - this side's, its score from its own team's view. Never shown, pushed or bought. Never raises."""
+    try:
+        if not CB["other"] or c.get("kind") not in ("single", None) or len(c.get("legs") or []) != 1 or not j.get("ticker"):
+            return None
+        t = j["ticker"]
+        ev = t.rsplit("-", 1)[0]
+        others = [k for k in list(PRICE_SEEN) if k.startswith(ev + "-") and k != t]
+        if len(others) != 1:                          # not a two-way game we can read (a draw market, nothing seen)
+            return None
+        o = others[0]
+        seen = PRICE_SEEN.get(o)
+        if not seen or now - seen[0] > 300 or not seen[2] or not 0 < seen[2] < 1:
+            return None
+        fair = float(c["legs"][0].get("fair") or 0)
+        if not 0 < fair < 1:
+            return None
+        pre = pregame_fair(o)
+        c2 = {"kind": "single", "code": c.get("code") or ticker_sport(o) or "", "id": "other:" + o, "live": True,
+              "legs": [{"ticker": o, "event": ev, "fair": round(1 - fair, 4), "p": seen[2], "live": True,
+                        **({"pre": pre} if pre else {})}]}
+        j2 = comeback_judge(c2, now)
+        gap = (seen[2] - seen[1]) if seen[1] else None
+        full = bool(j2.get("ok") and (j2.get("ev_new") or 0) > 0 and gap is not None and gap <= LIVE_SPREAD + 1e-9)
+        j2 = dict(j2, why=(j2.get("why") or "") + ("" if full else " [paper: not the full gate]"), ok=full,
+                  gap=gap)
+        return j2
+    except Exception as err:
+        _cb_note("other side", err)
+        return None
+
+
+def inplay_exit_ok(c, sim=None, now=None, source="gate", cand=None, force_log=False):
+    """(ok, why) for a bet with a pick under way: today's gate (smart_buy_ok on the live state) AND the comeback model.
+    Logs both verdicts (comeback_shadow) and the other side of the game as paper. Fails closed: an error = (False, why).
+    A bet with no pick in play gets today's verdict unchanged."""
+    now = now or time.time()
+    try:
+        j = comeback_judge(c, now, sim)
+    except Exception as err:
+        _cb_note("judge", err)
+        return False, IN_PLAY_WHY
+    try:
+        key = cand or (c.get("id") or "+".join(l.get("ticker") or "" for l in c.get("legs") or []))
+        if _cb_due(key, source, j, now, force=force_log):
+            j2 = _cb_other_side(c, j, source, now) if source not in ("buy", "quote") else None   # never on a tap
+            pick = cb_pick_side(j, j2, now)            # (Pete: a judgement call) paper only: never acted on
+            j = dict(j, score=pick.get("s_this"))
+            _cb_log(key, source, j, now, pick=pick)
+            if j2:
+                _cb_log("other:" + j2["ticker"], "other", dict(j2, score=pick.get("s_other")), now, paper=1)
+    except Exception as err:                          # logging never changes the verdict
+        _cb_note("log", err)
+    return bool(j["ok"]), (None if j["ok"] else j.get("why") or IN_PLAY_WHY)
+
+
+CB_W = {"k": 30, "min": 0.0, "max": 1.5}             # the league's realised/expected dollars weight: shrink and bounds
+
+
+def cb_weight(ticker, now=None):
+    """How far this league's in-play expected dollars have held up: realised dollars over predicted ones on its scored
+    comeback_shadow rows (in play only, both sides), shrunk n/(n+30) toward 1 everyone -> sport -> league; borrowed
+    levels may only lower it. (weight, rows). Cached hourly. Never raises (1.0, 0)."""
+    now = now or time.time()
+    try:
+        got = CB_STATE.get("w")
+        if not got or now - got[0] > CB["ttl"]:
+            agg = {}
+            if STORE.get("db"):
+                _cb_table()
+                for r in store_rows("select ticker, ev_new, pnl from comeback_shadow where rec in (0, 1) and pnl is not "
+                                    "null and ev_new is not null and ts > ?", (now - CB["keep_days"] * 86400,)):
+                    for g in _cb_groups(r["ticker"] or ""):
+                        a = agg.setdefault(g, [0, 0.0, 0.0])
+                        a[0] += 1
+                        a[1] += float(r["pnl"])
+                        a[2] += float(r["ev_new"])
+            CB_STATE["w"] = got = (now, agg)
+        agg = got[1]
+        w, n_all = 1.0, 0
+        groups = _cb_groups(ticker)[::-1]
+        for i, g in enumerate(groups):
+            n, pl, ex = agg.get(g, (0, 0.0, 0.0))
+            if i == 0:
+                n_all = n
+            if not n or ex <= 0:
+                continue
+            r = min(max(pl / ex, CB_W["min"]), CB_W["max"])
+            est = (n * r + CB_W["k"] * w) / (n + CB_W["k"])
+            w = est if i == len(groups) - 1 else min(est, w)
+        return round(w, 3), n_all
+    except Exception as err:
+        _cb_note("weight", err)
+        return 1.0, 0
+
+
+def _cb_side_score(j, now):
+    """One side on one scale: expected dollars on $5 after fees from the comeback model (cash-out chance and the hold's
+    win chance are both in it), times the league's learned weight, less the spread's cost (half the gap per contract).
+    None when the side can't be judged (a missing feature, no price)."""
+    if not j or j.get("miss") or not j.get("ticker") or j.get("ev_new") is None or not j.get("ask"):
+        return None
+    w, _ = cb_weight(j["ticker"], now)
+    gap = (j["ask"] - j["bid"]) if j.get("bid") else LIVE_SPREAD
+    return round(float(j["ev_new"]) * w - SB_STAKE / j["ask"] * max(gap, 0) / 2, 3)
+
+
+def cb_pick_side(j, j2, now=None):
+    """(Pete, 2026-11-23: 'a judgement call') The better side of one game under way, or neither, on one scale
+    (_cb_side_score), for the paper log only: a side is pickable only when it clears the full gate (today's gate AND the
+    comeback model, positive expected dollars after fees, a gap of at most 6c) and its score is above zero. Plain reason.
+    Nothing reads this to show, push or buy anything."""
+    now = now or time.time()
+    s1, s2 = _cb_side_score(j, now), _cb_side_score(j2, now)
+    gap1 = (j["ask"] - j["bid"]) if j.get("ask") and j.get("bid") else None
+    ok1 = bool(j.get("ok") and (j.get("ev_new") or 0) > 0 and gap1 is not None and gap1 <= LIVE_SPREAD + 1e-9)
+    ok2 = bool(j2 and j2.get("ok"))
+    c1 = s1 if ok1 and s1 is not None and s1 > 0 else None
+    c2 = s2 if ok2 and s2 is not None and s2 > 0 else None
+    out = {"s_this": s1, "s_other": s2}
+    if c1 is None and c2 is None:
+        why = ("neither side clears the full check" if j2 else "this side doesn't clear the full check, and the other "
+               "side couldn't be read")
+        return dict(out, pick="neither", ticker=None, why=why)
+    if c2 is None or c1 is not None and c1 >= c2:
+        return dict(out, pick="this", ticker=j["ticker"],
+                    why=f"this side: about ${c1:.2f} expected on $5" + (f" vs ${s2:.2f} the other way" if s2 is not None
+                                                                         else ""))
+    return dict(out, pick="other", ticker=j2["ticker"],
+                why=f"the other side: about ${c2:.2f} expected on $5" + (f" vs ${s1:.2f} this way" if s1 is not None
+                                                                         else ""))
+
+
+def cb_verdicts(cands, source, now=None, hours=2):
+    """The newest applied verdict (old AND new) logged for each candidate key, {cand: bool}."""
+    now = now or time.time()
+    out = {}
+    try:
+        keys = [k[:200] for k in cands if k]
+        if not keys or not STORE.get("db"):
+            return out
+        _cb_table()
+        q = ",".join("?" * len(keys))
+        for r in store_rows(f"select cand, ok from comeback_shadow where source=? and ts > ? and cand in ({q}) "
+                            f"order by ts", (source, now - hours * 3600, *keys)):
+            out[r["cand"]] = bool(r["ok"])
+    except Exception as err:
+        _cb_note("verdicts", err)
+    return out
+
+
+def comeback_resolve(now=None, limit=300):
+    """Score logged rows (singles and the other side's paper rows) on what the price really did, from the recorded
+    in-play prices only (no request): rec 1 = the bid later reached a sale at +gain after both fees before the end,
+    0 = it didn't (the path reached the end); pnl = dollars on $5 selling at that first chance, else held to the
+    result (from the final recorded price; unknown = None). A path that stops early, after 2 days, is rec -1."""
+    now = now or time.time()
+    n = 0
+    try:
+        if not STORE.get("db"):
+            return 0
+        _cb_table()
+        _price_table()
+        rows = store_rows("select rowid, ts, ticker, ask from comeback_shadow where rec is null and kind='single' and "
+                          "ts < ? and ticker is not null and (chk is null or chk < ?) order by ts limit ?",
+                          (now - 3 * 3600, now - 3600, limit))
+        cols = "ts, ticker, bid, ask, score" + (", frac" if CB_STATE.get("pcols") else "")
+        for r in rows:
+            path = store_rows(f"select {cols} from price_path where ticker=? and ts >= ? and score is not null "
+                              f"order by ts", (r["ticker"], r["ts"] - 90))
+            rec, pnl = -1, None
+            pts, ended, won = _cb_points(ticker_sport(r["ticker"]) or "", path)
+            if r["ask"] and 0 < r["ask"] < 1 and ended:
+                target = (r["ask"] + _cb_fee(r["ask"])) * (1 + CB["gain"])
+                hit = next((p[3] - _cb_fee(p[3]) for p in pts if p[0] > r["ts"] and
+                            p[3] - _cb_fee(p[3]) >= target - 1e-9), None)   # the verdict's own ask is the entry
+                rec = 1 if hit is not None else 0
+                k = SB_STAKE / (r["ask"] + _cb_fee(r["ask"]))
+                pnl = round(k * hit - SB_STAKE, 2) if rec else (round(k - SB_STAKE, 2) if won else
+                                                                 -SB_STAKE if won is False else None)
+            if rec == -1 and now - r["ts"] < 2 * 86400:
+                store_x("update comeback_shadow set chk=? where rowid=?", (now, r["rowid"]))   # look again in an hour
+                continue
+            store_x("update comeback_shadow set rec=?, pnl=? where rowid=?", (rec, pnl, r["rowid"]))
+            n += 1
+        store_x("delete from comeback_shadow where ts < ?", (now - CB["keep_days"] * 86400,))
+    except Exception as err:
+        _cb_note("resolve", err)
+    return n
+
+
+def comeback_summary(days=14, now=None):
+    """Results > What's working, the in-play card (display only): per league, the logged in-play checks scored on
+    what the price really did. One row per bet (its first check). Predicted = the old model's and the new model's
+    chance of a profitable sale; actual = how often the price really got there. Plus what the old gate passed and the
+    new one held back, and the other side's paper record. Never raises."""
+    now = now or time.time()
+    out = {"leagues": [], "other": None, "table": 0}
+    try:
+        if not STORE.get("db"):
+            return out
+        _cb_table()
+        rows = store_rows("select ts, cand, source, league, ticker, p_old, p_new, old, new, ok, rec, pnl, paper, pick, "
+                          "pick_t from comeback_shadow where ts > ? and rec in (0, 1) order by ts", (now - days * 86400,))
+        first = {}
+        paper_at = {(r["ts"], r["ticker"]): r for r in rows if r["paper"]}
+        for r in rows:
+            first.setdefault((r["paper"], r["cand"]), r)
+        by, oth = {}, []
+        for (paper, _), r in first.items():
+            if paper:
+                oth.append(r)
+            else:
+                by.setdefault(r["league"] or "all", []).append(r)
+
+        def avg(xs):
+            xs = [x for x in xs if x is not None]
+            return round(sum(xs) / len(xs), 3) if xs else None
+        for lg, rs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+            held = [r for r in rs if r["old"] and not r["new"]]
+            pk = {"this": 0, "other": 0, "neither": 0}
+            pk_pnl, pk_n = 0.0, 0
+            for r in rs:                                # the paper side pick per game (Pete: a judgement call)
+                if r.get("pick") in pk:
+                    pk[r["pick"]] += 1
+                side = r if r.get("pick") == "this" else paper_at.get((r["ts"], r.get("pick_t"))) \
+                    if r.get("pick") == "other" else None
+                if side and side.get("pnl") is not None:
+                    pk_pnl += side["pnl"]
+                    pk_n += 1
+            out["leagues"].append({
+                "picks": pk, "pick_pnl": round(pk_pnl, 2), "pick_n": pk_n,
+                "league": lg, "name": league_label(lg), "n": len(rs), "pred_old": avg([r["p_old"] for r in rs]),
+                "pred_new": avg([r["p_new"] for r in rs]), "actual": avg([r["rec"] for r in rs]),
+                "old_pass": sum(1 for r in rs if r["old"]), "new_pass": sum(1 for r in rs if r["ok"]),
+                "held": len(held), "held_rec": sum(1 for r in held if r["rec"] == 1),
+                "held_pnl": round(sum(r["pnl"] for r in held if r["pnl"] is not None), 2),
+                "few": len(rs) < BOARD_FEW})
+        if oth:
+            g = [r for r in oth if r["ok"]]
+            out["other"] = {"n": len(oth), "pass": len(g), "actual": avg([r["rec"] for r in oth]),
+                            "pass_actual": avg([r["rec"] for r in g]),
+                            "pass_pnl": round(sum(r["pnl"] for r in g if r["pnl"] is not None), 2),
+                            "pnl": round(sum(r["pnl"] for r in oth if r["pnl"] is not None), 2)}
+        out["table"] = sum(v[0] for k, v in comeback_table(now).items() if k[0] == "all")
+    except Exception as err:
+        _cb_note("summary", err)
+    return out
 
 
 # ================================================================ Build's "Best bets today" (issue #63)
@@ -25762,6 +26479,8 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                 stake = _size(c, base)
                 if not smart_buy_ok(sim) or news_gap(c):
                     continue                            # no route to profit, or priced under its chance right after injury news
+                if c.get("live") and not inplay_exit_ok(c, sim=sim, now=now, source="best")[0]:
+                    continue                            # (#348) under way: the comeback model must agree too
                 fx, _ = exposure_factor(c["legs"])
                 stake = max(2.0, round(stake * fx, 2)) if fx < 1 else stake       # never above the sized stake
                 ev = round(sim["ev"] * stake / sim["stake"], 2)
@@ -25809,6 +26528,12 @@ def _price_table():
             "score text)")
     store_x("create index if not exists price_path_t on price_path(ticker, ts)")
     store_x("create index if not exists price_path_ts on price_path(ts)")       # pruning by age without a full scan
+    if not CB_STATE.get("pcols"):                     # (#348) the share of the game left, for the comeback table
+        have = {r["name"] for r in store_rows("pragma table_info(price_path)")}
+        if "frac" not in have:
+            store_x("alter table price_path add column frac real")
+            have = {r["name"] for r in store_rows("pragma table_info(price_path)")}
+        CB_STATE["pcols"] = "frac" in have
 
 
 def price_seen_markets(ms):
@@ -25897,15 +26622,17 @@ def price_flush(now=None):
         if last and (bid, ask) == (last[1], last[2]) and now - last[0] < PRICE_BEAT:
             continue
         mid = round((bid + ask) / 2, 4) if bid and ask else None
-        score = None
+        score = frac = None
         if kick and kick <= now and _bet_kind(t) == "win":
             try:
                 sc = leg_score({"ticker": t, "side": "yes"})        # cached scores only: never fetched here
                 if sc and sc.get("state") in ("in", "post"):
                     score = f"{sc.get('me')}-{sc.get('opp')} {sc.get('detail') or ''}".strip()[:40]
+                    if sc.get("state") == "in" and sc.get("frac") is not None:
+                        frac = round(float(sc["frac"]), 3)          # (#348) in play only; a finished game has none
             except Exception:
-                score = None
-        rows.append((round(ts, 1), t, bid, ask, mid, depth, score))
+                score = frac = None
+        rows.append((round(ts, 1), t, bid, ask, mid, depth, score, frac))
         PRICE_LAST[t] = (ts, bid, ask)
     if rows:
         _price_table()
@@ -25922,7 +26649,12 @@ def _price_insert(rows):
     db = STORE.get("db")
     if not db:
         return
-    sql = "insert into price_path(ts, ticker, bid, ask, mid, depth, score) values(?,?,?,?,?,?,?)"
+    if CB_STATE.get("pcols"):
+        sql = "insert into price_path(ts, ticker, bid, ask, mid, depth, score, frac) values(?,?,?,?,?,?,?,?)"
+        rows = [tuple(r) + (None,) * (8 - len(r)) for r in rows]
+    else:                                             # an older file whose column couldn't be added yet
+        sql = "insert into price_path(ts, ticker, bid, ask, mid, depth, score) values(?,?,?,?,?,?,?)"
+        rows = [r[:7] for r in rows]
     with _SLOCK:
         own = not db.in_transaction
         try:
@@ -26013,6 +26745,8 @@ def smart_buy_shadow(cands, source="panel", now=None, budget=SB_BUDGET):
             fair = l0.get("fair") if len(c["legs"]) == 1 else c.get("chance")
             edge = (fair - price - single_fee(price)) if price and fair else c.get("ret")
             store_x(SB_ROW_SQL, _sb_row(c, spec, sim, source, key, now, on, "cand", price, fair, edge))
+            if any(l["start"] <= 0 for l in spec["legs"]):   # (#348) in play: the comeback model's verdict, logged
+                inplay_exit_ok(c, sim=sim, now=now, source=source, cand=key, force_log=True)
             tkc = SB_CACHE.setdefault("tk", {})
             tkc[json.dumps(tks)] = now                   # the universe pass skips a market scored here
             if len(tkc) > 20000:

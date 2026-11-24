@@ -100,7 +100,7 @@ function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.ga
 /* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
    short plain reasons in a sheet. `where` is one of two fixed words, never page data. */
 function sbSkipLine(xs,where){xs=(Array.isArray(xs)?xs:[]).filter(x=>x&&x.text);S.sbSkip=S.sbSkip||{};S.sbSkip[where]=xs;if(!xs.length)return '';
- const cr=xs.filter(x=>x.credits).length,who=cr===xs.length?'Saving odds credits: left out':cr?'Left out':'Smart Buy skipped';
+ const cr=xs.filter(x=>x.credits).length,ip=xs.filter(x=>x.inplay).length,who=cr===xs.length?'Saving odds credits: left out':ip===xs.length?'Games under way: left out':cr||ip?'Left out':'Smart Buy skipped';
  return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">${who} ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} · Why?</button>`;}
 function sbSkipOpen(w){const xs=(S.sbSkip||{})[w]||[];
  const cr=xs.filter(x=>x.credits).length,sb=xs.length-cr;
