@@ -109,6 +109,29 @@ with sync_playwright() as pw:
     check("tapping a Results row opens the closed detail", until(p, f"{SHEET}.includes('Combo 5')&&{SHEET}.includes('$3.61')", 10))
     check("Results tap: no JS errors", not errs)
     p.close()
+    # a hostile ticker (quotes, angle brackets, a script break-out) in a Results row stays inert and still opens that item
+    EVIL = "x');window.__pwn=1;//\"><img src=x onerror=window.__pwn=2>"
+    p, errs = page(br)
+    p.unroute("**/app/api/results*")
+    evil_res = dict(RES, history=[dict(RES["history"][0], t=EVIL)])
+    p.route("**/app/api/results*", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(evil_res)))
+    asked = []
+    p.on("request", lambda rq: asked.append(rq.url) if "/app/api/closed" in rq.url else None)
+    p.goto(B + "/app"); p.evaluate("go('results')")
+    until(p, "!!document.querySelector('.hrow2')", 20)
+    check("hostile id: row carries it as plain data", p.evaluate("document.querySelector('.hrow2').dataset.t") == EVIL)
+    p.click(".hrow2")
+    until(p, "!!document.querySelector('#modal.on')", 10); p.wait_for_timeout(500)
+    from urllib.parse import unquote
+    check("hostile id: opens that very item (asked the server for it)", any(unquote(u.split("t=")[-1]) == EVIL for u in asked))
+    check("hostile id: nothing ran and no stray element was made", p.evaluate("window.__pwn") is None and p.evaluate("document.querySelectorAll('img[src=x]').length") == 0)
+    p.close()
+    # a hostile id in the link is refused before it is used
+    p, errs = page(br)
+    p.goto(B + "/app#c=" + "x%27);window.__pwn=1;//")
+    p.wait_for_timeout(1200)
+    check("hostile link: ignored, nothing ran, stays on Live", p.evaluate("window.__pwn") is None and p.evaluate("!document.querySelector('#modal.on')"))
+    p.close()
     # unknown id: the real server says found:false
     p, errs = page(br)
     p.goto(B + "/app#c=KXMVE-NOWHERE-9")
