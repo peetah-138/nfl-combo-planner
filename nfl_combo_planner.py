@@ -6574,6 +6574,7 @@ def live_view(mine, views, plan, chance_one, balance):
     except Exception as err:
         print("singles on Live:", type(err).__name__, err)
         singles = []
+    label_bets(singles, views)                       # display only: what each bet is, and which game
     try:
         seed_origins([v["t"] for v in views if v["group"] == "pending"] + [x["t"] for x in singles])
         mine_sell = self_sell_set()
@@ -17633,6 +17634,217 @@ def league_tag(code, ticker=""):
         if k in LEAGUE_NAME:
             return LEAGUE_NAME[k]
     return str((LEAGUES.get(code) or SPORTS.get(code) or {}).get("short") or (SPORTS.get(code) or {}).get("name") or "")
+
+
+# ---- bet labels: say what a bet is on, in plain English, with the game it belongs to (display only) -------------------
+_EV_DATE = re.compile(r"^\d{2}[A-Z]{3}\d{2}(?:\d{4})?")
+_TITLE_VS = re.compile(r"^\s*(?:Will\s+)?(.{2,40}?)\s+(?:vs\.?|at|@)\s+(.{2,40}?)\s*(?:[:?].*|\s+(?:Winner|Spread|Total)\b.*)?$", re.I)
+_NOT_PRE = re.compile(r"^\s*(?:not|against)\s*:?\s+", re.I)
+_BAD_TEAM = re.compile(r"\b(over|under|points?|wins? by|total|spread|winner)\b|\d", re.I)
+
+
+def _num_txt(x):
+    return format(float(x), "g")
+
+
+def _bet_pair(ticker, sport, hint=""):
+    """The two team codes in a game ticker's event part ('26NOV23DUKEUNC' -> ('DUKE', 'UNC')), or None. Splits where both
+    halves are teams we know win; with no clue it splits at the middle."""
+    parts = str(ticker or "").upper().split("-")
+    if len(parts) < 2:
+        return None
+    suffix = _EV_DATE.sub("", parts[1])
+    if len(suffix) < 4 or not suffix.isalnum():
+        return None
+    head = re.sub(r"(SPREAD|TOTAL)$", "GAME", parts[0])
+    teams = sport_teams(sport)
+
+    def known(c):
+        return c in teams or f"{head}-{parts[1]}-{c}" in PICK_NAME
+    best, bs = None, -1
+    for i in range(2, len(suffix) - 1):
+        a, b = suffix[:i], suffix[i:]
+        if len(a) > 6 or len(b) > 6:
+            continue
+        s = 2 * (known(a) + known(b)) + (a == hint or b == hint) - abs(len(a) - len(b)) / 10
+        if s > bs:
+            best, bs = (a, b), s
+    return best
+
+
+def bet_describe(ticker, side="yes", label="", title="", sport=None, opp="", flipped=False, known=None):
+    """What one bet is, in plain English, and which game it is on. Pure and display only; it never raises.
+    Returns {plain, matchup, league, found}: 'plain' is e.g. 'Over 144.5 total points', 'Duke -6.5 (wins by 7+)',
+    'UNC +6.5 (loses by 6 or fewer, or wins)', 'Duke to win'; 'matchup' is 'Duke vs UNC'; 'found' says both teams
+    have real names (False: the matchup is the ticker's own letters, the page says the game was not found).
+    `flipped`: the label is already the bettor's side (a combo's 'no' win leg is named for the team it needs).
+    `known`: {team code: name} learned from other bets on the same game."""
+    t = str(ticker or "")
+    kind = _bet_kind(t)
+    side = "no" if side == "no" else "yes"
+    sport = sport or ticker_sport(t) or "other"
+    raw = str(label or "").strip()
+    neg = bool(_NOT_PRE.match(raw))
+    body = _NOT_PRE.sub("", raw).strip()
+    flip = (side == "no" or neg) and not (flipped and kind == "win")
+    tail = (t.upper().split("-") + ["", "", ""])[2]
+    pcode = re.sub(r"\d+$", "", tail) if kind == "spread" else tail if kind == "win" else ""
+    pair = tuple(known["__pair"]) if known and known.get("__pair") else _bet_pair(t, sport, pcode)
+    names = {}
+    if pair:
+        head = re.sub(r"(SPREAD|TOTAL)$", "GAME", t.upper().split("-")[0])
+        for c in pair:
+            nm = sport_teams(sport).get(c) or PICK_NAME.get(f"{head}-{t.upper().split('-')[1]}-{c}")
+            if nm:
+                names[c] = str(nm)
+            elif known and known.get(c):
+                names[c] = str(known[c])
+    other_code = None
+    if pair and pcode in pair:
+        other_code = pair[1] if pcode == pair[0] else pair[0]
+    mt = _TITLE_VS.match(str(title or ""))
+    tnames = None
+    if mt and not _BAD_TEAM.search(mt.group(1)) and not _BAD_TEAM.search(mt.group(2)):
+        tnames = (mt.group(1).strip(), mt.group(2).strip())
+    plain = body or raw or t
+    pick = ""
+    if kind == "total":
+        m = re.search(r"\b(over|under)\s+(\d+(?:\.\d+)?)", body, re.I)
+        if m:
+            over = (m.group(1).lower() == "over") != flip
+            plain = f"{'Over' if over else 'Under'} {_num_txt(m.group(2))} total points"
+    elif kind == "spread":
+        m = re.match(r"^(.*?)\s+wins?\s+by\s+(?:over\s+)?(\d+(?:\.\d+)?)", body, re.I)
+        if m:
+            pick, line = m.group(1).strip(), float(m.group(2))
+            if pcode:
+                names[pcode] = pick
+            n = int(line // 1) + 1
+            oth = names.get(other_code) if other_code else None
+            if not oth and opp:
+                oth = str(opp)
+                if other_code:
+                    names[other_code] = oth
+            if not flip:
+                plain = f"{pick} -{_num_txt(line)} (wins by {n}+)"
+            elif oth:
+                plain = (f"{oth} +{_num_txt(line)} (loses by {int(line // 1)} or fewer, or wins)" if line >= 1
+                         else f"{oth} +{_num_txt(line)} (doesn't lose)")
+            else:
+                plain = f"Not {pick} -{_num_txt(line)} (doesn't win by {n}+)"
+    elif kind == "win":
+        pick = re.sub(r"\s+(to win|wins?|winner)\??$", "", body, flags=re.I).strip()
+        if "doesn't win" in raw.lower() or "does not win" in raw.lower() or (neg and flipped):
+            plain = raw                                  # already the bettor's side ('Against Duke'): never turn it back into 'Duke to win'
+        else:
+            if pick and pcode and not flipped:
+                names[pcode] = pick
+            oth = (names.get(other_code) if other_code else None) or (str(opp) if opp else "")
+            if flip and sport != "soccer" and oth:
+                plain = f"{oth} to win"
+            elif flip:
+                plain = f"{pick} not to win"
+            else:
+                plain = f"{pick} to win"
+    if tnames:
+        a, b = tnames                               # a title's names are already as Kalshi writes them: not shortened
+        short_ok = False
+    elif pair:
+        short_ok = True
+        a, b = names.get(pair[0]) or pair[0], names.get(pair[1]) or pair[1]
+    else:
+        a = b = ""
+        short_ok = True
+    found = bool(tnames) or bool(pair and pair[0] in names and pair[1] in names)
+    if a and b:
+        matchup = f"{team_short(sport, a) if short_ok else a} vs {team_short(sport, b) if short_ok else b}"
+    else:
+        matchup = (t.upper().split("-") + ["", ""])[1] if t else ""
+        found = False
+    return {"plain": plain, "matchup": matchup, "league": league_tag(sport, t), "found": found}
+
+
+def label_bets(singles, combos):
+    """Add 'plain', 'matchup', 'league', 'found' to every single bet and every combo leg (display only; nothing else
+    on them changes). Team names learned from one bet on a game (a spread names its team) help the other bets on that
+    same game. A bad row is skipped rather than breaking the page."""
+    known = {}                                       # (event, team code) -> name, from picks that name their team
+    for x in singles or []:
+        try:
+            p = str(x.get("t") or "").upper().split("-")
+            if _bet_kind(x.get("t")) == "spread" and len(p) > 2 and x.get("side") != "no":
+                m = re.match(r"^(.*?)\s+wins?\s+by\b", str(x.get("label") or ""), re.I)
+                if m:
+                    code = re.sub(r"\d+$", "", p[2])
+                    known[(p[1], code)] = m.group(1).strip()
+                    pr = _bet_pair(x.get("t"), x.get("sport"), code)
+                    if pr and code in pr:
+                        known[(p[1], "__pair")] = pr
+                    if x.get("opp") and pr and code in pr:
+                        known.setdefault((p[1], pr[1] if code == pr[0] else pr[0]), str(x["opp"]))
+            elif _bet_kind(x.get("t")) == "win" and len(p) > 2 and x.get("side") != "no" and x.get("name"):
+                known[(p[1], p[2])] = str(x["name"])
+                pr = _bet_pair(x.get("t"), x.get("sport"), p[2])
+                if pr and p[2] in pr:
+                    known[(p[1], "__pair")] = pr
+        except Exception:
+            pass
+    for v in combos or []:
+        for l in v.get("legs") or []:
+            try:
+                p = str(l.get("ticker") or "").upper().split("-")
+                if _bet_kind(l.get("ticker")) == "win" and len(p) > 2 and l.get("name") and not str(l["name"]).lower().startswith(("not", "against")):
+                    known.setdefault((p[1], p[2]), str(l["name"]))
+                    if l.get("opp") and l.get("side") != "no":
+                        pr = _bet_pair(l["ticker"], l.get("sport"))
+                        if pr and p[2] in pr:
+                            known.setdefault((p[1], pr[1] if p[2] == pr[0] else pr[0]), str(l["opp"]))
+            except Exception:
+                pass
+
+    def kn(t):
+        ev = (str(t or "").upper().split("-") + ["", ""])[1]
+        d = {c: n for (e, c), n in known.items() if e == ev and c != "__pair"}
+        if (ev, "__pair") in known:
+            d["__pair"] = known[(ev, "__pair")]
+        return d
+    for x in singles or []:
+        try:
+            x.update(bet_describe(x.get("t") or x.get("ticker"), x.get("side"), x.get("label") or x.get("name"),
+                                  x.get("game"), x.get("sport"), x.get("opp"), known=kn(x.get("t"))))
+        except Exception as err:
+            print("bet label:", type(err).__name__, err)
+    for v in combos or []:
+        for l in v.get("legs") or []:
+            try:
+                l.update(bet_describe(l.get("ticker"), l.get("side"), l.get("name"), "", l.get("sport"), l.get("opp"),
+                                      flipped=True, known=kn(l.get("ticker"))))
+            except Exception as err:
+                print("bet label:", type(err).__name__, err)
+
+
+def label_game_page(leg):
+    """The game page's own leg: fill in its plain/matchup/league/found, and when the teams still aren't named ask
+    Kalshi for the game's winner markets (cached, display only) to name them. Never raises."""
+    try:
+        if not isinstance(leg, dict):
+            return leg
+        if "plain" not in leg or "matchup" not in leg:
+            label_bets([leg], [])
+        if not leg.get("found"):
+            parts = str(leg.get("t") or leg.get("ticker") or "").upper().split("-")
+            if len(parts) > 1:
+                ev = re.sub(r"(SPREAD|TOTAL)$", "GAME", parts[0]) + "-" + parts[1]
+                sp = leg.get("sport") or ticker_sport(parts[0]) or "other"
+                nm = [re.sub(r"\s+(to win|wins?|winner)\??$", "", str(s.get("name") or ""), flags=re.I).strip()
+                      for s in event_sides(ev) if not _BAD_TEAM.search(str(s.get("name") or ""))]
+                nm = [n for n in nm if n and n.lower() not in ("tie", "draw")]
+                if len(nm) == 2:
+                    leg["matchup"] = f"{team_short(sp, nm[0])} vs {team_short(sp, nm[1])}"
+                    leg["found"] = True
+    except Exception as err:
+        print("game label:", type(err).__name__, err)
+    return leg
 
 
 def leg_text(l, kind="combo"):

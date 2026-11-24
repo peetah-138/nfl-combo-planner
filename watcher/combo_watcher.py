@@ -3251,16 +3251,19 @@ def webapp_main():
                     leg = leg or lg
                     if v["group"] == "pending" and not any(c["t"] == v["t"] for c in combos):
                         combos.append({"t": v["t"], "label": v["label"], "p": v.get("p"), "pays": v["pays"],
-                                       "cost": v["cost"], "legs": len(v["legs"])})
+                                       "cost": v["cost"], "legs": len(v["legs"]),
+                                       "parts": [{"plain": q.get("plain"), "matchup": q.get("matchup")} for q in v["legs"]]})
         for x in d.get("singles") or []:                    # your single bets and spreads on this game
             if game and (x["t"].split("-") + ["", ""])[1] == game and x.get("state") in ("live", "pre"):
                 combos.append({"t": x["t"], "label": x["label"], "p": x.get("chance"), "pays": x["pays"],
-                               "cost": x["cost"], "legs": 1, "single": True, "worth": x.get("worth"), "how": x.get("how")})
+                               "cost": x["cost"], "legs": 1, "single": True, "worth": x.get("worth"), "how": x.get("how"),
+                               "plain": x.get("plain"), "matchup": x.get("matchup")})
         if leg is None and A.STORE.get("db"):               # a game from a buy idea you hold nothing on yet (display only)
             try:
                 leg = A.idea_game_leg(t)
             except Exception as err:
                 A.klive_log_once("ideagame", t, err)
+        leg = A.label_game_page(dict(leg)) if leg else leg    # display only: what the bet is, and which game
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
@@ -3350,7 +3353,7 @@ def webapp_main():
         for x in d.get("singles") or []:
             if x.get("state") not in ("live", "pre", "over"):
                 continue
-            bet = {"t": x["t"], "label": x.get("label"), "kind": x.get("kind"), "cost": x.get("cost"),
+            bet = {"t": x["t"], "label": x.get("label"), "plain": x.get("plain"), "kind": x.get("kind"), "cost": x.get("cost"),
                    "pays": x.get("pays"), "worth": x.get("worth"), "chance": x.get("chance"), "how": x.get("how")}
             g = next((g for g in out if code(x["t"]) and code(g.get("ticker")) == code(x["t"])), None)
             if g:
@@ -3362,7 +3365,8 @@ def webapp_main():
                         "combos": 0, "pays": x.get("pays") or 0, "ticker": x["t"], "kind": x.get("kind"),
                         "state": x["state"], "score": x.get("score"), "sc": x.get("sc"), "starts": x.get("starts"),
                         "phase": x.get("phase", ""), "note": x.get("note", ""), "short": x.get("short", ""),
-                        "chance": ch, "singles": [bet]})
+                        "chance": ch, "singles": [bet], "matchup": x.get("matchup"), "found": x.get("found"),
+                        "league": x.get("league")})
         for g in out:                                    # the chance line: what the Mac recorded for this pick lately
             tk = g.get("ticker")
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
