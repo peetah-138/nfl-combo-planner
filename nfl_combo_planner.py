@@ -4746,7 +4746,10 @@ def turning_against(h):
 
 
 # ---------------------------------------------------------------- the stop-loss switch, guarded (issue #27)
-# The manual "sell at a loss" switch (off by default) only lifts auto cash-out's "never below what you paid" guard
+# Pete's rule (2026-11-23, #382): auto-sell never sells below what you paid EXCEPT to lose less than waiting would (the
+# learned loss cut, or this guarded stop-loss); a sale that was a profit never takes a fresh offer below cost. Under
+# the Never setting even those two stay off. The stop-loss switch (off by default) lifts the "never below what you paid"
+# guard for the stop-loss path only,
 # once ALL of these hold for a pick in the combo: its game is really under way on a fresh score feed (no feed or a
 # stale one: never), late enough in the game, not at halftime or a break, the pick has fallen a long way from its
 # chance before the game (and is now under 50%), and that has held on 3+ checks in a row over at least 3 minutes.
@@ -12790,7 +12793,9 @@ def settings_page(all_games, days, counts):
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
                          "while the planner is open, or all the time if your watcher (Mac or Pi) is running (Kalshi buys "
                          "combos back only through live offers), and tells you each time. It stops after the daily "
-                         "limit and never sells for less than you paid unless a game is turning against you. When a combo is "
+                         "limit and never sells for less than you paid, except to cut a loss (a game turning against you) when selling now "
+                         "loses less than waiting; a profit-taking sale never retries below what you paid, and a loss cut never "
+                         "retries under 97% of its first offer. When a combo is "
                          "down to its last game and buying the other team locks in more than the cash-out offer, it "
                          "hedges instead (a purchase, up to your hedge limit; above it, it cashes out). "
                          "Otherwise nothing sells unless you confirm."
@@ -22708,7 +22713,9 @@ KNOBS = (
      "metric": "recorded game prices: how far chances really move per sport", "judge": "_replay"},
     {"name": "below_cost", "group": "loss", "cls": "tunable", "label": "Never sells below what you paid",
      "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or your stop-loss "
-             "override (every guard held) says otherwise.",
+             "override (every guard held) says selling now loses less than waiting. A sale that was a profit never "
+             "retries below cost; a loss cut never retries under 97% of its first offer. The Never setting turns "
+             "even the loss cut and the stop-loss off.",
      "owner": "auto_sell_now", "src": None, "start": True, "min": None, "max": None, "step": None, "unit": "rule",
      "stricter": "up", "borrow": "none", "learned": None,
      "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
