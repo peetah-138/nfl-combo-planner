@@ -20790,7 +20790,7 @@ def panel_reprice(pid, paused=False, now=None):
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair: too far over to trust. The "
                "chance it's priced on is probably wrong, so the panel wouldn't buy it.")
     elif under:
-        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}. {under}"
+        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}. {_cap1(under.rstrip().rstrip('.'))}."
     else:
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}: {pct:.0%} of its fair payout"
                f"{' on the live chance' if live else ''}. The panel's bar is {cut:.0%}.")
