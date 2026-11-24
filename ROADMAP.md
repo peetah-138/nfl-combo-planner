@@ -226,6 +226,12 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 - **Dev-Mac log access (#377):** read-only, redacted `/api/logs` and `tools/read_prod_logs.py`, off by default.
 - **Early-exit value test, phase 1:** `tools/exit_replay.py` and the recording-only `signal_shadow`; measurement only.
 - **Test hygiene (#240):** the game-card score-pulse test no longer races the page.
+- **Order adapter hardening (#102):** legacy sells can only close (forced reduce-only, IOC required); the phone's hub writes
+  pass only an allow-list (`HUB_WRITES`); stricter ESPN event id.
+- **Mac marks a Buy idea bought (#270):** `idea_mark_bought` on an ok or unclear buy, so a lost reply can't let an idea be bought twice.
+- **Money stamp (#271):** no stamp from incomplete account reads, failed cash-outs stamp at most once a minute, forced fresh reads
+  have a 3 s floor (display only).
+- **No-live-fair Buy idea logged (#255):** the reason is now in the log; no guard changed.
 
 ---
 
