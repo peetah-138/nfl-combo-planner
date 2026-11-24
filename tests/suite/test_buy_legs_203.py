@@ -68,23 +68,11 @@ A = AA["A"]
 if not A.STORE.get("db"):
     A.store_open()
 A.LEAGUE["code"] = "nba"
-TK = f"KXNBAGAME-{tk}BOSNYK-BOS"
-A.KICKOFF[TK.rsplit("-", 1)[0]] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3)).isoformat()
-A.PICK_NAME[TK] = "Boston Celtics"
-A.store_x("delete from suggestions")
-try: os.remove(A.IDEA_DISMISS)
-except OSError: pass
-SID = A.store_suggestion({"legs": [{"ticker": TK, "event": TK.rsplit("-", 1)[0], "pick": "Boston Celtics", "p": .30, "fair": .45}],
-                          "fair": 25.0}, {"pays": 20.0, "stake": 6.0}, 1.4)
-
-
-A = AA["A"]
-if not A.STORE.get("db"):
-    A.store_open()
-A.LEAGUE["code"] = "nba"
 T1, T2, T3 = "KXNBAGAME-26NOVAAABBB-AAA", "KXNBAGAME-26NOVCCCDDD-CCC", "KXNBAGAME-26NOVEEEFFF-EEE"
 L = lambda *ts: [{"ticker": t, "event": t.rsplit("-", 1)[0], "pick": t, "fair": .5} for t in ts]
 A.store_x("delete from suggestions")
+try: os.remove(A.IDEA_DISMISS)
+except OSError: pass
 SID = A.store_suggestion({"legs": L(T1, T2), "fair": 11.0}, {"pays": 20.0, "stake": 6.0}, 1.4)
 A.CTX.update(combos=[], stake=5.0, offers={})
 def own(lst):                                   # the idea act builds its own-combo card; the games board isn't under test
