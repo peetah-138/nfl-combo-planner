@@ -12,9 +12,11 @@ function ovText(o){return o&&o.text?o.text:'You already have bets on this game.'
 function ovBar(o,v){if(!o)return '';
  return `<div class="ovbar" role="note"><span>${esc(ovText(o))}</span><button type="button" class="btn ovadd" aria-label="Add anyway: show this game's picks again" onclick="event.stopPropagation();ovAdd(this,'${esc(o.game||'')}','${v==='live'?'live':'build'}')">Add anyway</button></div>`;}
 async function ovAdd(b,g,v){hap();if(!g||(b&&b.disabled))return;S.ovAllow.add(g);
+ const snap=flipSnap();   // (#368) where every card is now, so the ones that move can slide instead of jump (smallwins.js)
  if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Showing…';}
- try{await load(v);}catch(e){hap('error');toast('Couldn\'t refresh that game. Try again.');}
- if(S.view===v)render();}
+ try{await load(v);}catch(e){toast('Couldn\'t refresh that game. Try again.');}   // (#402) no haptic after the await (silent on iOS 27): the tap ticked and the toast says it
+ if(S.view===v)render();
+ flipPlay(snap);}
 /* a quote's "you already have a bet on this game" line (display only: the price and its cut-off are unchanged) */
 function ovQuote(t){return t?`<div class="ovq" role="note">⚠ ${esc(t)}</div>`:'';}
 /* Best bets: the games left out, each with Add anyway */

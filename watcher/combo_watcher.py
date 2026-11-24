@@ -3072,10 +3072,13 @@ def webapp_main():
             cviews = [v for v, _ in pairs]
             lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
             pregame = {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)}
+            held = A.held_markets()                     # (#414) a market Pete holds or just bought leaves the pick lists
+            fresh = {e: sd for e, sd in games.items() if not any(x.get("ticker") in held for x in sd)}   # either side of it
             try:                                        # Best bets today (#63): recommend-only, display only
                 best = A.best_bets_feed(                # without games over the line (they're listed as left out)
-                    {e: sd for e, sd in pregame.items() if not A.overlap_of(over, [e])},
-                    [x for x in lines_now if not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
+                    {e: sd for e, sd in pregame.items() if e in fresh and not A.overlap_of(over, [e])},
+                    [x for x in lines_now if x.get("ticker") not in held
+                     and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
                      for v, c in pairs if not v.get("bought") and not v.get("over")])
             except Exception as err:
@@ -3086,8 +3089,8 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(games)],
-                             "lines": lines_now, "longshots": overlap_ls(ls_view(lg), over),
+                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(fresh)],
+                             "lines": [x for x in lines_now if x.get("ticker") not in held], "longshots": overlap_ls(ls_view(lg), over),
                              "overlap": overlap_info(),
                              "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
                              "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),

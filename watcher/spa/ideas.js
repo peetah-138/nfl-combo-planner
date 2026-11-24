@@ -57,7 +57,8 @@ function ideaWarn(q){return (q&&q.warn||[]).filter(w=>w.k!=='live').map(w=>`<div
 function ideaLiveNote(q){return q&&q.live?`<div class="m inow">Kalshi's price now · game under way</div>`:`<div class="m inow">Kalshi's price now</div>`;}
 /* the last answer to a Buy tap on this idea, in plain words, on the card and the detail page (a toast alone sat behind
    the detail page, so a refusal there looked like nothing happened) */
-function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];return a?`<div class="ians ${a.tone||''}" role="status">${esc(a.m)}</div>`:'';}
+function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];if(!a)return '';const shk=a.tone==='bad'&&!a.shook;a.shook=true;   // (#275) a refusal shakes once, the visible result moment (its haptic fires after an await: silent on iOS 27)
+ return `<div class="ians ${a.tone||''}${shk?' shk':''}" role="status">${esc(a.m)}</div>`;}
 /* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
 function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
  const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||q.small||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
@@ -216,7 +217,7 @@ function ideaBody(x){const li=(x.legs_info||[])[0]||{},one=x.n===1,q=S.ideaq[x.i
   ${ideaMoved(x)}
   <h2 style="margin:18px 0 6px">Could you sell it?</h2>${ideaSell(x)}
   ${ideaQuote(x,q,fresh)}
-  <div class="idact">${ideaButtons(x,q,fresh,left,true)}${tk?`<button class="btn" type="button" onclick="openGame('${tk}')">Open the game page</button>`:''}</div>`;}
+  <div class="idact">${ideaButtons(x,q,fresh,left,true)}${tk?`<button class="btn" type="button" data-t="${esc(tk)}" onclick="openGame(this.dataset.t)">Open the game page</button>`:''}</div>`;}
 function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').classList.contains('on'))return;
  const x=ideaFind(id),sh=$('#sheet');
  if(!x){const sig='gone';if(S.ideaSig===sig)return;S.ideaSig=sig;pushFill('<h3>Not on the list any more</h3><p>This idea was bought, dismissed or has expired. New ones show up on Live.</p>','Buy idea');return;}

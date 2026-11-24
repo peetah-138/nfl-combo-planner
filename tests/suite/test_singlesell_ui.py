@@ -178,7 +178,7 @@ with sync_playwright() as pw:
         over = [dict(SING[0], n=13, pays=13, cost=9.1, worth=12.2, chance=.94, sell_at=None, sell_over=True), dict(SING[1], state="live", sell_at=6.5)]
         pg.evaluate("(s=>{S.live.singles=s;S.sellq={};renderLive()})(" + json.dumps(over + SING[2:]) + ")"); time.sleep(.4)
         chips = pg.evaluate("[...document.querySelectorAll('.srow1 .ss')].map(b=>b.innerText)")
-        if not chips or "holding to collect $13" not in chips[0] or "$14" in chips[0] or "sells at" in chips[0]:
+        if not chips or "no offer can beat waiting" not in chips[0] or "$14" in chips[0] or "sells at" in chips[0]:
             bad(f"{tag}: a sell line above the payout must not show a price ({chips})")
         if len(chips) < 2 or "sells at $6.50+" not in chips[1]:
             bad(f"{tag}: a reachable sell line still shows its price ({chips})")
@@ -200,7 +200,7 @@ with sync_playwright() as pw:
         pg.evaluate("(c=>{S.live.singles=[];S.live.combos=[c];S.open={};renderLive();tog(c.t)})(" + json.dumps(cmb) + ")"); time.sleep(.4)
         dn = pg.evaluate("[...document.querySelectorAll('.dnums')].map(e=>e.innerText).join('|')")
         row = pg.evaluate("(r=>r?r.innerText+'|'+((r.nextElementSibling||{}).innerText||''):'')(document.querySelector(\"[data-key='c:KXMVE-9']\"))")  # the open panel is the row's next sibling
-        if "No offer can beat it" not in dn or "no offer can beat waiting" not in row or "$13+" in dn + row or "$14+" in dn + row:
+        if "No offer can beat waiting" not in dn or "no offer can beat waiting" not in row or "$13+" in dn + row or "$14+" in dn + row:
             bad(f"{tag}: a combo line above its payout must show no price ({dn!r}, {row!r})")
         shot(pg, f"sellmax_combo_{tag}.png")
         pg.evaluate("(c=>{S.live.combos=[c];renderLive()})(" + json.dumps(dict(cmb, threshold=12.7, thr_over=False)) + ")"); time.sleep(.4)
