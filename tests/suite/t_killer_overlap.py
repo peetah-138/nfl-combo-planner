@@ -316,7 +316,7 @@ def t_hedge():
 
 def t_setting_unread_retry():
     """#401: the 'setting couldn't be read' variant (a suffix on the same reason) is retried after the short wait too,
-    not held 6 hours; a real skip still waits 6 hours."""
+    not held 6 hours; still unreadable at the retry = skipped again, nothing bought."""
     BUYS.clear()
     reset()
     keep = E.overlap_settings
@@ -328,11 +328,15 @@ def t_setting_unread_retry():
         a, row = act("single", [G3 + "-EEE"])
         why = row.get("why") or ""
         b, _ = act("single", [G3 + "-EEE"])
+        E.store_x("update killer set ts = ts - ?", (E.KILLER_UNREAD_RETRY + 5,))
+        d, _ = act("single", [G3 + "-EEE"])           # the wait is over, the setting is still unreadable
     finally:
         E.overlap_settings = keep
+    ok(f"after the retry wait with the setting still unreadable: skipped, nothing bought ({d}, {BUYS})",
+       d == "skipped" and BUYS == [])
     E.store_x("update killer set ts = ts - ?", (E.KILLER_UNREAD_RETRY + 5,))
     c, _ = act("single", [G3 + "-EEE"])
-    ok(f"setting unreadable: skipped ({a}, {why!r}), not retried at once ({b}), bought after the retry wait ({c})",
+    ok(f"setting unreadable: skipped ({a}, {why!r}), not retried at once ({b}), bought once readable ({c})",
        a == "skipped" and "the setting couldn't be read" in why and b is None and c == "bought" and len(BUYS) == 1)
 
 
@@ -374,6 +378,31 @@ def t_positions_cooldown():
         except RuntimeError:
             pass
         ok("a non-429 failure sets no cooldown", E.POS_COOL["until"] == 0.0)
+    finally:
+        for k, v in keep.items():
+            setattr(E, k, v)
+        E.POS_COOL["until"] = 0.0
+
+
+def t_real_positions_429():
+    """#399: killer_act through the REAL _positions_strict with the read answering 429 (direct and in the hub's words):
+    skipped, nothing bought; and a whole-word 429 match only."""
+    keep = {k: getattr(E, k) for k in ("hub_up", "_positions_read", "_positions_strict")}
+    E.hub_up = lambda: False
+    E._positions_strict = REAL_POSITIONS
+    try:
+        for name, msg in (("direct", "HTTP 429 Too Many Requests"), ("hub words", "Kalshi asked to slow down")):
+            BUYS.clear()
+            reset()
+            E.POS_COOL["until"] = 0.0
+
+            def read(msg=msg):
+                raise RuntimeError(msg)
+            E._positions_read = read
+            st, row = act("single", [G3 + "-EEE"])
+            ok(f"real positions read says 429 ({name}): skipped, never bought ({st}, {row.get('why')}, {BUYS})",
+               st == "skipped" and BUYS == [] and E.POS_COOL["until"] > time.time())
+        ok("whole-word 429 only", not E._is_slow_down(RuntimeError("order 14290 failed")) and E._is_slow_down(RuntimeError("429")))
     finally:
         for k, v in keep.items():
             setattr(E, k, v)
@@ -422,5 +451,5 @@ for n, f in (("combo threshold", t_combo_threshold), ("pct threshold", t_pct_thr
              ("unread retry", t_unread_retry), ("hub positions", t_hub_positions),
              ("self stack", t_self_stack), ("panel and orders", t_panel_and_orders), ("untouched", t_untouched),
              ("hedge", t_hedge), ("setting unread retry", t_setting_unread_retry),
-             ("positions cooldown", t_positions_cooldown), ("unread alert", t_unread_alert)):
+             ("positions cooldown", t_positions_cooldown), ("real 429", t_real_positions_429), ("unread alert", t_unread_alert)):
     safe(n, f)

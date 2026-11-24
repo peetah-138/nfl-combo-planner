@@ -20137,7 +20137,7 @@ def _is_slow_down(err):
     """Did Kalshi say 429 (directly, or through the Mac hub, which only passes its words along)?"""
     code = getattr(getattr(err, "response", None), "status_code", None)
     text = str(err).lower()
-    return code == 429 or "429" in text or "slow down" in text or "too many requests" in text
+    return code == 429 or bool(re.search(r"\b429\b", text)) or "slow down" in text or "too many requests" in text
 
 
 def killer_unread_watch(alert=None):
