@@ -105,6 +105,8 @@ ok("the current drive names the offence and the ball spot (yards to end zone) fo
 # ---- football only: other sports get nothing (no field strip)
 ok("non-football sport returns empty (no field strip)", E.game_detail("401873066", "nba", max_age=0) == {})
 ok("no event id returns empty", E.game_detail("", "nfl", max_age=0) == {})
+ok("an event id with a trailing newline or non-ASCII digits is refused (#102 C)",
+   E.game_detail("401873066\n", "nfl", max_age=0) == {} and E.game_detail("\u0664\u0660\u0661", "nfl", max_age=0) == {})
 
 # ---- defensive: a malformed/empty/failed feed must be empty, never raise
 net.mode = "garbage"

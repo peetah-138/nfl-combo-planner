@@ -7014,7 +7014,7 @@ def game_detail(event_id, code, max_age=6, budget=None):
     path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
     # football only (slice 1); the event id must be the plain numeric ESPN id (defence in depth: a bad value is
     # already handled below, but guard it explicitly so a surprising id never reaches the ESPN fetch).
-    if not event_id or "football/" not in str(path) or not re.match(r"^\d+$", str(event_id)):
+    if not event_id or "football/" not in str(path) or not re.fullmatch(r"[0-9]+", str(event_id)):
         return {}
     got = GAME_DETAIL.get(event_id)
     if got and time.time() - got[0] < max_age:
@@ -11018,7 +11018,8 @@ def order_intent(body):
         _refuse("the order had an unknown time limit")
     exp = _dec(body.get("expiration_time") if body.get("expiration_time") is not None else body.get("expiration_ts"))
     exp = None if exp is None or tif == "immediate_or_cancel" else int(exp // 1000 if exp > 10 ** 11 else exp)
-    reduce_only = bool(body.get("reduce_only"))
+    # a legacy sell can only close a position: without this, sell YES becomes an ask that BUYS NO (GitHub #102)
+    reduce_only = bool(body.get("reduce_only")) or (legacy is not None and legacy.get("action") == "sell")
     if reduce_only and tif != "immediate_or_cancel":
         _refuse("Kalshi now only takes sell-only orders that fill at once, so this standing sell order wasn't "
                 "placed", "app_reduce_only_resting")

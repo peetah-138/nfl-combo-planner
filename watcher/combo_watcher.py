@@ -902,6 +902,32 @@ def estimate_offers(E):
 
 # ---------------------------------------------------------------- Mac hub: the phone's data and trades
 HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate_event_collections|series)(/|$)")
+# Non-GET requests the phone may forward are only the ones the app itself sends (GitHub #102): order create/cancel,
+# quote requests (RFQs) and accepting a quote, and making a combo market. Anything else (batch or amend orders, other
+# writes under /portfolio) is refused with a logged reason. Money moves between pots stay on pot_move only.
+_ID = r"[A-Za-z0-9_.:-]{1,120}"
+HUB_WRITES = {
+    "POST": re.compile(r"/portfolio/orders|/portfolio/events/orders|/communications/rfqs|"
+                       r"/multivariate_event_collections/" + _ID),
+    "PUT": re.compile(r"/communications/rfqs/" + _ID + r"/quotes/" + _ID + r"/accept"),
+    "DELETE": re.compile(r"/portfolio/(events/)?orders/" + _ID + r"|/communications/rfqs/" + _ID),
+}
+
+
+def hub_refusal(method, path):
+    """Why the Mac won't forward this request for the phone, or '' when it may. GETs need only HUB_PATHS; anything
+    that writes must match HUB_WRITES exactly (fail closed), with no transfer/allocation/subaccount words."""
+    if method not in ("GET", "POST", "PUT", "DELETE"):
+        return "method not allowed"
+    if not HUB_PATHS.match(path):
+        return "path not allowed"
+    if method == "GET":
+        return ""
+    if ".." in path or re.search(r"transfer|balance_allocation|subaccount", path.lower()):
+        return "path not allowed for a write"
+    if not HUB_WRITES[method].fullmatch(path):
+        return "write not on the allow-list"
+    return ""
 
 
 def hub_address():
@@ -4566,9 +4592,10 @@ def start_hub(conf, E, odds=None):
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
             method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
-            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path) or \
-                    (method != "GET" and (not re.fullmatch(r"[A-Za-z0-9_/.:-]+", path) or ".." in path or
-                                          re.search(r"transfer|balance_allocation|subaccount", path.lower()))):
+            why = hub_refusal(method, path)
+            if why:
+                if method != "GET":
+                    log("phone request refused:", why, method, path[:80])
                 return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}   # moves: pot_move only
             if method != "GET":
                 log("phone order:" if "/accept" in path or path.endswith("/orders") else "phone request:", method, path)
