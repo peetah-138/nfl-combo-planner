@@ -10,19 +10,20 @@ function stkLast(){try{const v=parseFloat(localStorage.getItem('cw_stk_last'));r
 function stkKeep(v){try{localStorage.setItem('cw_stk_last',String(v));}catch(e){}}
 function stkGet(key){const v=(S.stk||{})[key];return v>0?v:null;}
 /* o: {key, rec (recommended), cur (on screen now), min, max, ev (expected profit in $), room (left under the cap)} */
-function stakeCtl(o){const k=esc(o.key),rec=+o.rec||0,cur=+(o.cur!=null?o.cur:rec)||0,mn=+o.min||1,mx=Math.max(mn,+o.max||100);
+function stakeCtl(o){const norec=!!o.small||(o.ev!=null&&o.ev<=0);   // (#358) never "recommended" without a positive expected profit
+ const k=esc(o.key),rec=+o.rec||0,cur=+(o.cur!=null?o.cur:rec)||0,mn=+o.min||1,mx=Math.max(mn,+o.max||100);
  const own=stkGet(o.key)!=null&&Math.abs(cur-rec)>=.005,last=stkLast();
  const ps=STK_PRESETS.filter(v=>v>=mn&&v<=mx&&Math.abs(v-rec)>=.005);
  if(last&&last>=mn&&last<=mx&&Math.abs(last-rec)>=.005&&!ps.some(v=>Math.abs(v-last)<.005))ps.push(last);
  const chip=(v,lbl)=>`<button type="button" class="chip ${Math.abs(cur-v)<.005?'on':''}" onclick="stkSet('${k}',${v})">${lbl||stkMoney(v)}</button>`;
  const x=rec>0?cur/rec:1;
- const note=own&&rec>0&&x>=1.5?`<div class="stkw" data-w="big">${x.toFixed(1).replace(/\.0$/,'')}× the recommended size: more risk for the same edge.</div>`:'';
+ const note=own&&rec>0&&x>=1.5&&!norec?`<div class="stkw" data-w="big">${x.toFixed(1).replace(/\.0$/,'')}× the recommended size: more risk for the same edge.</div>`:'';
  const cap=o.room!=null&&o.room<100&&mx<=o.room+.005?`<div class="stkm" data-w="cap">Your cap has ${money(o.room)} left, so ${stkMoney(mx)} is the most here.</div>`:'';
  const ev=o.ev!=null?`<span class="stkev ${o.ev>0?'up':o.ev<0?'down':''}">Expected profit ${o.ev>=0?'+':'−'}${stkMoney(Math.abs(o.ev))}</span>`:'';
  return `<div class="stk" data-sk="${k}">
-  <div class="stkh" aria-live="polite"><span class="stkl">Your bet</span><b data-num="sk:${k}" data-v="${cur.toFixed(2)}">${stkMoney(cur)}</b>${own?'<span class="tag">your amount</span>':o.small?'<span class="tag">smallest bet</span>':'<span class="tag good">recommended</span>'}${ev}</div>
+  <div class="stkh" aria-live="polite"><span class="stkl">Your bet</span><b data-num="sk:${k}" data-v="${cur.toFixed(2)}">${stkMoney(cur)}</b>${own?'<span class="tag">your amount</span>':o.small&&Math.abs(cur-rec)<.005?'<span class="tag">smallest bet</span>':norec?'<span class="tag">no edge</span>':'<span class="tag good">recommended</span>'}${ev}</div>
   <div class="stkr"><button type="button" class="stkb" aria-label="One dollar less" ${cur-1<mn-.005?'disabled':''} onclick="stkSet('${k}',${Math.max(mn,Math.round((cur-1)*100)/100)})">−</button>
-   ${chip(rec,(o.small?'Smallest ':'Recommended ')+stkMoney(rec))}${ps.map(v=>chip(v,last&&Math.abs(v-last)<.005&&!STK_PRESETS.includes(v)?'Last '+stkMoney(v):'')).join('')}
+   ${chip(rec,(o.small?'Smallest ':norec?'Usual ':'Recommended ')+stkMoney(rec))}${ps.map(v=>chip(v,last&&Math.abs(v-last)<.005&&!STK_PRESETS.includes(v)?'Last '+stkMoney(v):'')).join('')}
    <input class="stkin" type="number" inputmode="decimal" min="${mn}" max="${mx}" step="1" placeholder="$" aria-label="Your own bet amount in dollars" onkeydown="if(event.key==='Enter'){this.blur()}" onchange="stkType('${k}',this,${mn},${mx})">
    <button type="button" class="stkb" aria-label="One dollar more" ${cur+1>mx+.005?'disabled':''} onclick="stkSet('${k}',${Math.min(mx,Math.round((cur+1)*100)/100)})">+</button></div>
   ${note}${cap}</div>`;}
