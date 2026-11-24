@@ -251,7 +251,7 @@ async function ideaBuyGo(id,body,okMsg){const q=S.ideaq&&S.ideaq[id],x0=ideaFind
  r=r||{ok:false};S.ideaq[id]=null;if(r.ok&&S.stk)delete S.stk['id:'+id];
  const m=r.ok?okMsg(q,r):(r.msg||r.error||(r.check?'Kalshi didn\'t answer clearly, so this may or may not have been bought. Check Kalshi before trying again.':'Kalshi didn\'t take it, so nothing was bought. Get a new price to try again.'));
  const tone=r.ok?'good':r.check||r.lost?null:'bad';ideaAns(id,m,tone);
- if(r.ok||r.check||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
+ if(r.ok||r.check||r.lost||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
  if(r.ok||r.check||r.lost)ideaDrop(id,'bought',x0);else ideaRedraw();/* a lost reply hides it like a check (#270): it may have gone through */load('live',true);}
 function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
 function buySingle(id){return ideaBuyGo(id,q=>({a:'singlebuy',id,n:q.n,price:q.price}),(q,r)=>r.msg||'Bought.');}
