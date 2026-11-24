@@ -22,15 +22,19 @@ function dayRange(d){const v=d.days;if(!v)return '';
    +(v.mix_window===0?`<div class="drl2">Same day means</div>${two('next_day',!!v.next_day)}`:'');}
  else{sub='Sunday is always in.';
   const chip=(on,lab,js)=>`<button type="button" class="chip ${on?'on':''}" aria-pressed="${!!on}" onclick="${js}">${lab}</button>`;
-  body=`<div class="chips daychips">${chip(v.thursday,v.wed?'Wed & Thu':'Thursday',`setDays({thursday:${!v.thursday}})`)}<span class="dsun">Sunday is always in</span>${chip(v.saturday,'Saturday',`setDays({saturday:${!v.saturday}})`)}${chip(v.monday,'Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
- return `<div class="dayrange" id="dayrange"><div class="drl"><b>${title}</b><small>${sub}</small></div>${body}</div>`;}
+  body=`<div class="chips daychips">${chip(v.thursday,v.wed?'Wed & Thu':'Thursday',`setDays({thursday:${!v.thursday}})`)}${chip(v.saturday,'Saturday',`setDays({saturday:${!v.saturday}})`)}${chip(v.monday,'Monday',`setDays({monday:${!v.monday}})`)}</div>`;}
+ const err=S.dayErr&&S.dayErr.lg===S.lg?`<div class="drl2 derr" role="alert">${esc(S.dayErr.msg)}</div>`:'';   // #274: a refused save says so right in the card
+ return `<div class="dayrange" id="dayrange"><div class="drl"><b>${title}</b><small>${sub}</small></div>${body}${err}</div>`;}
 /* Same call the Settings screen makes (/app/api/settings with this league); on a failure the old choice comes back. */
 async function setDays(vals){hap('selection');const days=(S.build||{}).days;if(!days)return;const lg=S.lg;
- const was={};Object.keys(vals).forEach(k=>{was[k]=days[k];});Object.assign(days,vals);renderBuild();
+ const was={};Object.keys(vals).forEach(k=>{was[k]=days[k];});Object.assign(days,vals);S.dayErr=null;renderBuild();
  const r=await api('/app/api/settings',{lg,values:vals}).catch(()=>({ok:false}));
- if(!r||!r.ok){if(S.lg===lg&&S.build&&S.build.days)Object.assign(S.build.days,was);toast('Couldn\'t change the dates. Nothing was changed.');renderBuild();return;}
- /* other dates = another board: picks and a price made on the old one are dropped, so a combo is only ever priced from what's on screen */
+ if(!r||!r.ok){if(S.lg===lg&&S.build&&S.build.days)Object.assign(S.build.days,was);S.dayErr={lg,msg:'Couldn\'t change the dates. Nothing was changed.'};renderBuild();return;}
+ /* other dates = another board: picks and a price made on the old one are dropped, so a combo is only ever priced from what's on screen.
+    The date card stays on screen while the new board loads (S.dayHold), and a phone that had picks says they were cleared (#274). */
+ const had=S.slip.length>0||!!S.custom;S.dayHold={lg,name:(S.build&&S.build.name)||'',days:S.build&&S.build.days};
  S.set=null;S.slip=[];S.custom=null;S.build=null;renderBuild();load('build',true);
+ if(had)toast('Picks cleared for the new dates.',3500);
  if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
 try{S.bsec=JSON.parse(localStorage.getItem('cw_bsec')||'null')||{}}catch(e){S.bsec={}}
 function secOpen(k){return S.bsec[k]!==false;}

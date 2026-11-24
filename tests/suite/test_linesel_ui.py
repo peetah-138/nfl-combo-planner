@@ -72,7 +72,7 @@ with sync_playwright() as pw:
     # Results: your bar and the close
     html = pg.evaluate("""lineSel([{lg:'nba',name:'NBA',kind:'spread',bar:.045,src:'sport',why:'strikes just over 4.0¢ lost $12.00 ($1 each) over 12 games',clv_n:52,clv:-.012,blocked:['far above']},
                                   {lg:'nhl',name:'NHL',kind:'total',bar:.04,src:'start',why:null,clv_n:0,clv:null,blocked:[]}])""")
-    for want in ("your bar and the close", "4.5¢", "borrowed from its sport", "−1.2¢", "far above", "the starting bar", "none"):
+    for want in ("your bar and the close", "4.5¢", "borrowed from its sport", "−1.2¢", "well past the line", "the starting bar", "none"):
         if want not in html:
             print("PROBLEMS: Results' bar table is missing", repr(want))
     if pg.evaluate("lineSel([])") != "" or pg.evaluate("lineSel(null)") != "":
