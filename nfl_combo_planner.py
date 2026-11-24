@@ -5740,6 +5740,13 @@ def auto_sell_now(plan):
 
 
 COMBO_BACKOFF_STOPS = ("cancelled", "failed", "no fresh offer", "offer too low", "out of time")   # clear failures only
+# Not restoring the auto-sell order after these stops is deliberate: the contracts may already be gone (sold elsewhere, or
+# the account was unreadable), and a resting sell on them is worse than none; the next pass re-places it if still held.
+ACCOUNT_STOPS = ("account changed", "account unreadable")   # an auto round stopped before a retry: nothing more sold
+ACCOUNT_STOP_WORDS = {"account changed": "this combo was already sold or reduced while auto cash-out was retrying, "
+                                         "so it stopped and sold nothing more.",
+                      "account unreadable": "Kalshi's account couldn't be read before a retry, so auto cash-out stopped "
+                                            "and sold nothing more. It will check again on the next pass."}
 COMBO_FAIL_TELL = 3600    # a combo's "nothing sold" note at most once an hour
 # After a round where buyers backed out, the combo is tried again only when something real changes (Pete, 2026-11-23:
 # "It should retry based on changes in the game, not some arbitrary number of minutes"): a score, a game going live or
@@ -9657,13 +9664,6 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     n = info["rounds"]
     return (f"{label}: buyers backed out {n} time{'s' if n != 1 else ''}, so nothing was sold. "
             "Try again in a minute." + (" Your auto-sell order is back on." if had_tp else ""))
-
-
-ACCOUNT_STOPS = ("account changed", "account unreadable")   # an auto round stopped before a retry: nothing more sold
-ACCOUNT_STOP_WORDS = {"account changed": "this combo was already sold or reduced while auto cash-out was retrying, "
-                                         "so it stopped and sold nothing more.",
-                      "account unreadable": "Kalshi's account couldn't be read before a retry, so auto cash-out stopped "
-                                            "and sold nothing more. It will check again on the next pass."}
 
 
 CASH_UNSURE_MSG = ("Kalshi didn't answer clearly, so this cash-out may or may not have gone through. Check your Kalshi "

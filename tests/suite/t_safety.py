@@ -549,6 +549,9 @@ _b += (W.sell_busy(),)
 _m["busy"] = False; _m["selling"] = {"C1"}
 _b += (W.sell_busy(),)
 W.RUNNING.clear()
+_ul = WSRC[WSRC.index("def update_loop"):WSRC.index("\ndef ", WSRC.index("def update_loop") + 10)]
+ok("update_loop hands the engine to RUNNING (else the restart wait for a sale round silently stops working)",
+   'RUNNING["E"] = E' in _ul)
 ok("the restart also waits for an auto cash-out round (busy or selling), and not when idle or unknown",
    _b == (False, True, True) and not W.sell_busy() and "sell_busy()" in WSRC[WSRC.index("def restart_when_quiet"):WSRC.index("def update_loop")])
 i = WSRC.index("    def api_act(d):")
