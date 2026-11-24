@@ -5706,7 +5706,7 @@ def auto_sell_now(plan):
                     log_decision(dict(rec, result="skipped", stop="clock retry is for loss cuts only",
                                       why="loss-cut clock retry: not a loss cut now"))
                     continue
-                if not first_offer or o["offer"] < CASH_SLIP * first_offer:   # the 97% guard holds across rounds
+                if not first_offer or o["offer"] < first_offer_floor(first_offer):   # the 97% guard holds across rounds
                     log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
                                       why="loss-cut clock retry: offer under 97% of the first offer"))
                     continue
@@ -5837,6 +5837,11 @@ def combo_wait_start(t, h, key, offer, info, line, cutting=False, agreed=None):
 def _moved(a, b, least):
     a, b = a or 0.0, b or 0.0
     return abs(a - b) >= max(COMBO_RETRY_MOVE * max(abs(a), abs(b)), least)
+
+
+def first_offer_floor(first):
+    """#396: the least a loss cut's offer may be, measured from the episode's FIRST offer (97%, the same CASH_SLIP guard)."""
+    return CASH_SLIP * first
 
 
 def _clock_due(w, kind):
@@ -9638,8 +9643,9 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     if cost_floor is not None:
         floor = cost_floor if floor is None else max(floor, cost_floor)
     if line is not None and auto and getattr(_CASH_CTX, "cutting", False):
-        base = getattr(_CASH_CTX, "first_offer", None) or agreed   # #396: a clock retry keeps the episode's FIRST offer
-        line = max(line, CASH_SLIP * base)  # a loss cut's line can be near 0: never under 97% of its first offer
+        line = max(line, CASH_SLIP * agreed)  # a loss cut's line can be near 0: never under 97% of its first offer
+        if getattr(_CASH_CTX, "first_offer", None):   # #396: a clock retry also keeps the episode's FIRST offer
+            line = max(line, first_offer_floor(_CASH_CTX.first_offer))
     info = CASH_LAST[ticker] = {"stop": "", "rounds": 0, "tries": [], "agreed": round(agreed, 2),
                                 "line": None if line is None else round(line, 2),
                                 "slip": None if line is not None else CASH_SLIP,
