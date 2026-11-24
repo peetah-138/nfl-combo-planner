@@ -44,10 +44,23 @@ E.CFG["auto_sell"] = True
 E.can_trade = lambda: True
 PAUSED = {"on": False}
 E.trading_paused = lambda: PAUSED["on"]
+ACCT = {"bets": "held", "reads": 0}                  # what the fresh account read shows before each retry
+
+
+def fake_account(**k):
+    ACCT["reads"] += 1
+    if ACCT["bets"] == "held":
+        return [{"ticker": "C1", "status": "pending", "pays": 20}], 300.0, None
+    if ACCT["bets"] == "raise":
+        raise RuntimeError("hub down")
+    return ACCT["bets"], 300.0, None
+
+
+E.fetch_account = fake_account
 
 
 def run(script, offers=(), auto=True, floor=None, line=8.5, cost_floor=None):
-    pauses.clear(); asks.clear(); accepts.clear()
+    pauses.clear(); asks.clear(); accepts.clear(); ACCT["reads"] = 0
     STATE["script"], STATE["offers"] = list(script), list(offers)
     E.MINE["hold"] = {"C1": {"label": "Combo 1", "pays": 20, "cost": 8}}
     E.MINE["cash"] = {"C1": {"rfq": "r", "quote": "q", "offer": 10.0, "frac": 1.0, "contracts": 20, "at": time.time()}}
@@ -138,3 +151,37 @@ msg, info = run(["cancelled"] * 10)
 E.time.time = real
 E.get_cash_offer = fake_offer
 ok("no new try after the 120 s budget", info["stop"] == "out of time" and len(accepts) == 4, (info["stop"], len(accepts)))
+
+# ---- Pete taps Cash out in the web app mid-round: every auto retry re-reads the account first (fix for the review)
+ACCT["bets"] = "held"
+msg, info = run(["cancelled", "cancelled", "executed"])
+ok("normal path: each retry re-reads the account (2 reads for 3 accepts), still sells", msg.startswith("✅")
+   and ACCT["reads"] == 2 and len(accepts) == 3 and info["stop"] == "sold", (ACCT["reads"], len(accepts)))
+msg, info = run(["executed"])
+ok("...the first accept needs no read here (auto_sell_now already did one)", ACCT["reads"] == 0 and len(accepts) == 1)
+msg, info = run(["cancelled", "executed"], auto=False)
+ok("your own tap: no account read before a retry", ACCT["reads"] == 0 and len(accepts) == 2)
+for name, bets in (("combo gone", []), ("combo already settled", [{"ticker": "C1", "status": "won", "pays": 20}]),
+                   ("combo reduced", [{"ticker": "C1", "status": "pending", "pays": 10}]), ("another combo only", [{"ticker": "C2", "status": "pending", "pays": 20}])):
+    ACCT["bets"] = bets
+    msg, info = run(["cancelled", "executed"])
+    ok(f"retry sees {name}: no second accept, nothing sold", len(accepts) == 1 and not msg.startswith("✅")
+       and info["stop"] == "account changed" and "C1" not in E.MINE["cash"], (accepts, info.get("stop")))
+ok("...calm words, and it is not a back-off failure", "sold nothing more" in msg and not msg.startswith("⚠️")
+   and "account changed" not in E.COMBO_BACKOFF_STOPS)
+for name, bets in (("None", None), ("an exception", "raise")):
+    ACCT["bets"] = bets
+    msg, info = run(["cancelled", "executed"])
+    ok(f"unreadable account ({name}): fail closed, no second accept, not 'unknown'", len(accepts) == 1
+       and info["stop"] == "account unreadable" and not msg.startswith(("✅", "⚠️")) and not E.rfq_unsure("C1", "sell"),
+       (accepts, info.get("stop")))
+ACCT["bets"] = "held"
+E.MINE["tp"] = {"C1": {"id": "x"}}
+placed = []
+E.cancel_take_profit = lambda t: None
+E.place_take_profit = lambda *a: placed.append(a)
+ACCT["bets"] = []
+msg, info = run(["cancelled", "executed"])
+ok("...a stop for a changed account never puts the auto-sell order back on contracts that may be gone", not placed)
+E.MINE["tp"] = {}
+ACCT["bets"] = "held"
