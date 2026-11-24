@@ -46,7 +46,7 @@ E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20
 E.sold_today = lambda: 0
 real_sss = E.smart_sell_singles
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 real_log = E.log_decision
 E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 E.MINE["busy"] = False; E.MINE.setdefault("selling", set()); E.MINE["cash"] = {}

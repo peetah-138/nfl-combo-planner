@@ -123,6 +123,9 @@ ok("Buy idea: caps at the whole contracts on sale, says so when under one",
 _real_book_depth, _real_recheck = E.book_depth, E.live_recheck
 E.buy_single = lambda t, n, px: (n, None)
 E.live_recheck = lambda legs: (legs, "")
+E._sb_sim = lambda c, now=None: {"route": "sell", "ev": 1.0, "p_exit": 0.6, "win": 0.5}   # (#341) live bets need a likely exit: this test is about other guards
+E.comeback_judge = (lambda c, now=None, sim=None: (lambda o: {"ok": o, "old": o, "new": o, "pregame": True,   # (#348)
+                    "why": None if o else E.IN_PLAY_WHY})(E.smart_buy_ok(sim if sim is not None else E._sb_sim(c, now))))
 E.book_depth = lambda t, max_age=60: E.book_info({"orderbook_fp": {"yes_dollars": [["0.49", "500"]], "no_dollars": [["0.45", "500"]]}})
 good, note, _ = E._buy_panel_bet({"kind": "single", "live": True, "code": "nba", "stake": 10.0, "legs": [{"ticker": T, "fair": 0.7}]})
 ok(f"live panel single, exactly 6c gap: allowed ({note})", good)

@@ -124,7 +124,7 @@ with sync_playwright() as pw:
     pg.evaluate("closeModal()")
 
     # a fresh start from a notification tap
-    for name, h, want in (("a known combo", "#c=" + T, True), ("an old or unknown combo", "#c=KXMVE-GONE-1", False),
+    for name, h, want in (("a known combo", "#c=" + T, True), ("an old or unknown combo", "#c=KXMVE-GONE-1", "gone"),
                           ("a malformed link", "#c=%3Cimg%20src%3Dx%3E", False)):
         p2 = br.new_page(viewport={"width": 390, "height": 844})
         e2 = []
@@ -133,7 +133,9 @@ with sync_playwright() as pw:
         p2.route("**/app/api/combo*", lambda r: r.fulfill(status=200, content_type="application/json",
                                                            body=json.dumps({"combo": state["p"]["combos"][0], "history": {"offers": [], "ticks": {}}})))
         p2.goto(B + "/app" + h)
-        if want:
+        if want == "gone":
+            check(f"start from {name}: the 'we can't find that bet' page", until(p2, "document.querySelector('#sheet').innerText.includes(\"We can't find that bet\")", 15))
+        elif want:
             check(f"start from {name}: its page opens", until(p2, "S.comboOpen===%s&&!!document.querySelector('#modal.on')" % json.dumps(T), 15))
         else:
             until(p2, "!!document.querySelector('.trow')", 15)

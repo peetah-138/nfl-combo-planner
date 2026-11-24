@@ -71,6 +71,9 @@ ok("sport drafts drop pre-game-priced bets on started games", E.panel_get("view:
 
 # Pete's call: a game under way may be in the panel, but only priced live on a fresh score (see t_live_panel.py)
 E.save_json(E.MAIN_SAVED, {"panel_live": True})
+E.comeback_judge = (lambda c, now=None, sim=None: (lambda o: {"ok": o, "old": o, "new": o, "pregame": True,   # (#348)
+                    "why": None if o else E.IN_PLAY_WHY})(E.smart_buy_ok(sim if sim is not None else E._sb_sim(c, now))))
+# ^ today's gate only: this checks the draft rules; the comeback model (fresh score, features) is t_comeback's
 E.store_x("delete from panel")
 lv = mk("H8", "KXNHLGAME-8", .62, .52, now - 600)
 lv.update(live=True, kick_pre=None)

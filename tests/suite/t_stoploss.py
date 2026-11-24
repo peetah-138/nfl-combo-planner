@@ -76,7 +76,7 @@ E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20
 E.sold_today = lambda: 0
 E.take_profit_reason = lambda t, h: (None, 0.0)
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 logs = []
 E.log_decision = lambda rec: logs.append(rec)
 E.CFG.update(auto_sell=True, stop_loss=True, auto_hedge=False, auto_cap=5)
@@ -102,6 +102,41 @@ for k in range(6):
     E.SCORES_BY["nba"]["at"] = now + 300 + 70 * k
     E.auto_sell_now(plan)
 ok("switch off (the default): never below cost", not sold)
+# ---- #228 PR5: the 3-way choice (Never sell at a loss / Let it tune itself / Allow (guarded))
+E.KNOBS_FILE = os.path.join(E.HERE, "knobs.json")
+def run6(base):
+    out = []
+    for k in range(6):
+        E.time.time = lambda k=k: now + base + 70 * k
+        E.SCORES_BY["nba"]["at"] = now + base + 70 * k
+        out += E.auto_sell_now(plan)
+    return out
+E.CFG.update(stop_loss=True, stop_loss_mode="never"); E.MINE.pop("sl_streak", None)
+run6(1500)
+ok("Never sell at a loss: never below cost, even with the old switch still on", not sold)
+E.CFG.update(stop_loss=False, stop_loss_mode="tune"); E.MINE.pop("sl_streak", None)
+E.KNOB_SWITCH.update(at=1e18, on=True); E.save_json(E.KNOBS_FILE, {}); E.KNOB_STATE_CACHE["d"] = None
+run6(2100)
+ok("Let it tune itself, nothing learned: off (today's behaviour)", not sold)
+E.save_json(E.KNOBS_FILE, {"groups": {"nba": {"lv": {"sl_auto": 1}, "lat": {"sl_auto": now}}}}); E.KNOB_STATE_CACHE["d"] = None
+E.KNOB_SWITCH.update(at=1e18, on=False); E.MINE.pop("sl_streak", None)
+run6(2700)
+ok("...a league's own record on, but self-tuning off: still off", not sold)
+E.save_json(E.KNOBS_FILE, {"groups": {"all": {"lv": {"sl_auto": 1}, "lat": {"sl_auto": now}}}}); E.KNOB_STATE_CACHE["d"] = None
+E.KNOB_SWITCH.update(at=1e18, on=True); E.MINE.pop("sl_streak", None)
+run6(3300)
+ok("...turned on only for everyone: a league never borrows it", not sold)
+E.save_json(E.KNOBS_FILE, {"groups": {"nba": {"lv": {"sl_auto": 1}, "lat": {"sl_auto": now}}},
+                           "brake": {"nba": {"at": now, "until": now + 86400 * 14, "mode": "live"}}}); E.KNOB_STATE_CACHE["d"] = None
+E.MINE.pop("sl_streak", None)
+run6(3900)
+ok("...the league's own record on, but its brake holds: off", not sold)
+E.save_json(E.KNOBS_FILE, {"groups": {"nba": {"lv": {"sl_auto": 1}, "lat": {"sl_auto": now}}}}); E.KNOB_STATE_CACHE["d"] = None
+E.MINE.pop("sl_streak", None)
+out = run6(4500)
+ok("...the league's own record turned it on: it sells with every guard held, and says it was tuned",
+   set(sold) == {"C1"} and any("tuned for this league" in m for m in out) and logs[-1].get("sl_mode") == "tune")
+sold.clear(); E.CFG.update(stop_loss_mode=None); E.KNOB_SWITCH.update(at=-1e9, on=None)
 E.CFG.update(stop_loss=True, auto_sell=False)
 for k in range(6):
     E.time.time = lambda k=k: now + 900 + 70 * k
@@ -133,6 +168,12 @@ items = [add_combo(i) for i in range(50)]
 E._panel_table()
 E.store_x("insert or replace into panel values(?,?,?,?,?)", ("2026-11-15", "paper", now - 86400 * 3, "paper",
                                                               json.dumps({"at": now - 86400 * 3, "items": items})))
+E.KNOB_SWITCH.update(at=1e18, on=True)          # #228 PR5: with self-tuning on, smart_tune no longer moves them (#267)
+E.smart_tune(force=True)
+d = E.load_json(E.SMART_FILE, {})
+ok("with 'Let smart sell tune its own numbers' on, smart_tune only counts (self-tuning is the one mover)",
+   d["nba"]["sl_prog"] == 0.5 and d["nba"]["sl_n"] == 50)
+E.KNOB_SWITCH.update(at=1e18, on=False)         # the rest: the switch off, exactly the old weekly tuner
 moved = E.smart_tune(force=True)
 d = E.load_json(E.SMART_FILE, {})
 ok("NBA learns from its own record: one small step earlier (50% → 45%), the fall size left alone",

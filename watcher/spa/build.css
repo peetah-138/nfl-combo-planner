@@ -34,3 +34,47 @@
 .pitem{transition:opacity .28s var(--ease),filter .28s,transform .14s var(--ease)}.pitem.off{filter:saturate(.2)}.pitem.tog{animation:pit .34s var(--spring)}@keyframes pit{40%{transform:scale(.96)}}
 .psp{display:block;width:64px;height:22px;margin-top:2px}.psp path{vector-effect:non-scaling-stroke}
 .ccard.flash{animation:fl 1.2s ease}
+/* Flipping a leg on a combo idea (issue #104). The tapped row folds away while the new numbers are worked out, the numbers that
+   depend on it shimmer, then the new row turns in, the numbers roll and the note slides in. */
+.ccard .brow .btn.pri{flex:3 1 58%}
+.fnw{min-height:3.7em}.qgap{border-radius:10px}.qgap.out{height:0;animation:qout .28s ease-out}
+@keyframes qout{from{height:var(--h)}to{height:0}}
+.lrow.shake{animation:lshake .3s ease-in-out}
+@keyframes lshake{20%{transform:translateX(-6px)}45%{transform:translateX(5px)}70%{transform:translateX(-3px)}}
+.lrow.flip{min-height:44px;transform-origin:50% 50%}
+.lrow.flip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.lrow.wait{animation:lfold .17s ease-in forwards;pointer-events:none}
+.lrow.turn{animation:lturn .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes lfold{to{transform:perspective(600px) rotateX(80deg);opacity:.35}}
+@keyframes lturn{from{transform:perspective(600px) rotateX(-80deg);opacity:.35}to{transform:perspective(600px) rotateX(0);opacity:1}}
+.ccard[data-ph=flip] .dep,.ccard[data-ph=flip] .dep *{color:transparent!important;-webkit-user-select:none;user-select:none}
+.ccard[data-ph=flip] .dep{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
+.flipnote.in{animation:fnin .32s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fnin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.shake{animation:none!important}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
+ .ccard[data-ph=flip] .dep{animation:none!important}}
+@keyframes lfade{from{opacity:0}to{opacity:1}}
+/* Build layout (#248, #249): the date range above the games board, and the slip right under the board on one-column screens */
+.dayrange{margin:0 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:var(--panel);display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.dayrange .drl{display:grid;gap:1px;flex:1 1 170px;min-width:0}.dayrange .drl b{font-size:13.5px}.dayrange .drl small{font-size:11.5px;color:var(--mute);line-height:1.3}
+.dayrange .drl2{flex:1 0 100%;font-size:12px;color:var(--mute);font-weight:700;margin-top:2px}
+.dayrange .seg{display:flex;flex:0 1 auto}.dayrange .seg button{flex:1 1 auto;min-width:0;white-space:nowrap}
+.dayrange .daychips{align-items:center;flex:1 1 100%}.dayrange .daychips .chip{min-height:36px;display:inline-flex;align-items:center}.dayrange .dsun{font-size:12px;color:var(--mute);padding:0 4px}
+.slip.inl{position:static;margin:12px 0}
+/* Long shots (#341): the expected dollars sit top right, like the panel's stake */
+.lscard .lsx{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.lscard .lsx b{font-size:18px}.lscard .lsx small{font-size:11px;color:var(--mute)}
+.lsempty{margin-bottom:8px}
+.lscard .btn{min-height:44px}
+
+/* (#358) a Skipped / Didn't buy panel card is one big tap target for a fresh price */
+.pitem.prp{cursor:pointer;min-height:44px;-webkit-tap-highlight-color:transparent}.pitem.prp:active{transform:scale(.985)}
+.pitem.prp:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.pitem .pw b{display:inline;font-size:inherit;margin:0 2px 0 0;color:var(--sub)}
+.pitem .prt{margin-top:6px;font-size:12.5px;font-weight:600;color:var(--acc)}
+.pitem .prq{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.4;background:var(--panel);border-left:3px solid var(--line)}
+.pitem .prq.good{border-left-color:var(--yes)}.pitem .prq.bad{border-left-color:#f5b544}
+.pitem .prq b{display:inline;font-size:13px;margin:0 6px 0 0}.pitem .prq small{display:block;margin-top:4px;color:var(--mute);font-size:11.5px}
+.sursw{margin:0 2px 12px;display:inline-flex}.sursw button{min-height:44px;padding:0 18px}.sur0{grid-column:1/-1}
+/* (#393) Skipped / Didn't buy cards: the card taps to reprice, so the closed-bet detail has its own labelled control. */
+.pitem .pdet{display:inline-flex;align-items:center;min-height:44px;min-width:44px;margin:2px 0 0 -4px;padding:0 4px;border:0;background:none;color:var(--acc);font:inherit;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pitem .pdet:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}

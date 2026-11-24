@@ -84,6 +84,37 @@ BETS = [
      "cost": 2.0, "pays": 9.0, "status": "pending", "back": 0, "week": today, "full_pays": 9.0, "lg": "mix", "lgs": ["tennis", "nba"]},
 ]
 
+def _single(t, kind, side, label, game, sport, cost, pays, chance, state="pre", **kw):
+    """One seeded single bet / spread / total shaped like open_singles() rows (the dev app has no Kalshi account)."""
+    x = {"t": t, "ticker": t, "name": label, "opp": "", "live": chance if state == "live" else None, "sc": None, "on": False, "src": "",
+         "kind": kind, "sport": sport, "side": side, "label": label, "game": game, "event": t.rsplit("-", 1)[0],
+         "n": pays, "cost": cost, "pays": pays, "worth": round(pays * chance * .9, 2), "chance": chance, "state": state, "res": None,
+         "score": "", "starts": "Today 7:00 PM" if state == "pre" else "", "note": "", "phase": "", "short": "", "how": "", "url": "",
+         "self": False, "sell_at": None}
+    x.update(kw)
+    return x
+
+
+def seed_singles():
+    d0 = nba[0].split("-", 1)[1]                  # e.g. 26NOV23BOSNYK, the live NBA game
+    return [
+        _single(f"KXNBATOTAL-{d0}-225", "total", "yes", "Over 225.5 points", "Over 225.5 points", "nba", 6.0, 12.0, .58, "live",
+                sc={"me": 58, "opp": 52, "abbr": "BOS", "opp_abbr": "NYK", "detail": "Q3 4:12"}, score="BOS 58, NYK 52 · Q3 4:12",
+                how="Over the line pace: 110 so far, line 225.5"),
+        _single(f"KXNBASPREAD-{d0}-BOS5", "spread", "yes", "Boston Celtics wins by over 4.5 points", "Boston Celtics Spread", "nba", 5.0, 10.0, .61, "live",
+                name="Boston Celtics", opp="New York Knicks", sc={"me": 58, "opp": 52, "abbr": "BOS", "opp_abbr": "NYK", "detail": "Q3 4:12"},
+                score="BOS 58, NYK 52 · Q3 4:12", how="Covering now · +6, needs more than 4.5"),
+        _single(f"KXNBAGAME-{nba[1].split('-', 1)[1]}-DEN", "win", "yes", "Denver Nuggets to win", "Denver at Los Angeles Winner?", "nba", 4.0, 5.7, .70,
+                name="Denver Nuggets", starts="", state="over", phase="over"),
+        _single("KXNCAAMBTOTAL-26NOV23DUKEUNC-144", "total", "yes", "Over 144.5 points", "Over 144.5 points", "ncaamb", 13.0, 26.5, .49),
+        _single("KXNCAAMBSPREAD-26NOV23DUKEUNC-DUKE7", "spread", "no", "Duke wins by over 6.5 points", "Duke Spread", "ncaamb", 8.0, 15.0, .52,
+                name="Duke", opp="UNC"),
+        _single("KXNCAAMBSPREAD-26NOV23DUKEUNC-UNC1", "spread", "yes", "UNC wins by over 0.5 points", "UNC Spread", "ncaamb", 3.0, 5.0, .46,
+                name="UNC", opp="Duke"),
+        _single("KXNCAAMBTOTAL-26NOV23KANSGONZ-151", "total", "no", "Over 151.5 points", "Over 151.5 points", "ncaamb", 5.0, 9.0, .44),
+    ]
+
+
 real_load = W.load_engine
 ENGINE = []
 
@@ -93,6 +124,7 @@ def load():
     ENGINE.append(A)
     A.fetch_account = lambda max_age=60, every_league=False: (BETS, 211.03, "dev")     # seeded bets, never the account
     A.fetch_results = lambda t: {}
+    A.open_singles = lambda max_age=30: seed_singles()      # seeded single bets, spreads and totals (no Kalshi account here)
     A.resting_sells = lambda: {}
     A.hub_call = lambda *a, **k: None                       # no hub, ever
     def ago(h):
@@ -124,6 +156,7 @@ def seed_pulse(A):
     for i in range(7 * 144, -1, -1):
         w = max(4.0, w + rnd.gauss(0.02, 0.45) + 0.6 * math.sin(i / 23.0) * 0.1)
         A.store_x("insert into pulse values(?,?,?)", (now - i * 600, round(w, 2), 18.0))
+        A.store_x("insert or replace into pulse_more values(?,?,?)", (now - i * 600, 0.0, 0.0))
 
 
 def announce():

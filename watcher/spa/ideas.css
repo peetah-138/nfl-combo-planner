@@ -23,8 +23,16 @@
 .ihd2{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
 .imv svg{display:block;width:100%;height:56px}
 .idact{display:grid;gap:10px;margin:16px 0 8px}.idact .dbtns{grid-row:auto}.idact .btn{flex:1;text-align:center}
-#undo{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));z-index:51;display:flex;align-items:center;gap:6px;max-width:min(560px,92vw);padding:4px 4px 4px 16px;background:var(--ink);color:var(--bg);border-radius:12px;font-weight:600;font-size:14px;transform:translateX(-50%) translateY(20px);opacity:0;transition:transform .38s var(--spring),opacity .2s}
+#undo{position:fixed;left:50%;width:max-content;bottom:calc(84px + env(safe-area-inset-bottom));z-index:51;display:flex;align-items:center;gap:6px;max-width:min(560px,92vw);padding:4px 4px 4px 16px;background:var(--ink);color:var(--bg);border-radius:12px;font-weight:600;font-size:14px;transform:translateX(-50%) translateY(20px);opacity:0;transition:transform .38s var(--spring),opacity .2s}
 #undo.on{opacity:1;transform:translateX(-50%)}#undo[hidden]{display:none!important}
 #undo button{min-height:44px;padding:0 14px;background:none;border:0;border-radius:9px;color:inherit;font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}
 @media (prefers-reduced-motion:reduce){.sfold .chev,.scard{transition:none!important}.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
 h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}
+/* #252: a fresh price's verdict, the answer to a Buy tap, and the older "when found" numbers */
+.ivd,.ians{margin:10px 0 2px;padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.4;background:var(--panel2);color:var(--ink)}
+.ivd.no{background:var(--nobg)}.ivd.warn{background:rgba(245,181,68,.16)}
+.ians.good{background:var(--yesbg)}.ians.bad{background:var(--nobg)}
+.ians{animation:ians .32s var(--spring,ease-out)}@keyframes ians{from{opacity:0;transform:translateY(4px)}}
+.iold{opacity:.6}.iold>.m{font-size:12px;margin:2px 0 4px}.inow{font-size:12px;margin:12px 0 2px;font-weight:700}
+@media (prefers-reduced-motion:reduce){.ians{animation:none}}
+.ifsrc{display:block;font-size:11px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--mute);margin-top:1px}
