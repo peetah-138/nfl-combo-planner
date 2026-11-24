@@ -16,10 +16,12 @@
     "bestbets.css",
     "refusals.css",
     "scoreboard.css",
-    "sell_single.css"
+    "sell_single.css",
+    "betlabel.css"
   ],
   "js": [
     "common.js",
+    "betlabel.js",
     "stake.js",
     "live.js",
     "ideas.js",

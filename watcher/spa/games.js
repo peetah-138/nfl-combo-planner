@@ -31,12 +31,13 @@ function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chanc
  const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
  // both teams and both scores on every card: the full opponent name, else the short code from the score; no score (tennis/UFC) = no number, never a fake 0
  const shown=sc&&(live||fin),myPts=shown&&sc.me!=null?sc.me:null,oppPts=shown&&sc.opp!=null?sc.opp:null,oppNm=g.opp||(sc&&sc.opp_abbr)||'';
- const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.label||'')}</span>`)].join('');
+ const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.plain||x.label||'')}</span>`)].join('');
  const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
  return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" onclick="openGame('${esc(g.ticker||'')}')">
   <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
-  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.name)}</span><span class="mine">YOURS</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
+  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.kind==='total'&&g.matchup?g.matchup:g.name)}</span><span class="mine">YOURS</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
    ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
+  ${g.matchup&&g.kind&&g.kind!=='total'&&!oppNm&&oppPts==null?`<div class="gmu">${esc(g.matchup)}${g.found===false?' <i class="nf">game not found</i>':''}</div>`:''}${g.kind==='total'&&g.found===false?'<div class="gmu"><i class="nf">game not found</i></div>':''}
   <div class="gl"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
    <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
   <div class="bets">${bets}<span class="rd">${money(g.pays)} riding</span></div></div>`;}
