@@ -2752,14 +2752,15 @@ def webapp_main():
         return out
 
     def combo_view(i, c, owned=None):
-        est = A.est_offer(c)
+        kind, tier, live = A.combo_star(c)                  # a pick under way now: no star, no guess from past prices
+        est = (None, None) if live else A.est_offer(c)
         try:
-            pred = A.predict_quote(c)
+            pred = None if live else A.predict_quote(c)
         except Exception:
             pred = None
         fx, heavy = A.exposure_factor(c["legs"])
         size = A.stake_for(pred["pct"], c["legs"]) if pred and A.CFG.get("size_auto") else None
-        return {"i": i, "kind": c.get("kind"), "tier": c.get("tier"), "fair": c.get("fair"), "min": c.get("min"),
+        return {"i": i, "kind": kind, "tier": tier, "live": live, "fair": c.get("fair"), "min": c.get("min"),
                 "bought": legset(c) in (owned if owned is not None else owned_sets()),
                 "kalshi": c.get("kalshi"), "est": est[0], "est_pct": est[1], "pred": pred, "size": size,
                 "value_pct": c.get("value_pct"),
