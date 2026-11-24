@@ -115,6 +115,18 @@ def t_live():
     r = E.panel_reprice("combo:1")
     ok(f"...and with the in-play test passing: a good live price is allowed ({r.get('pct')})",
        r["would"] and abs(r["pct"] - 1.05) < 0.01 and "live chance" in r["why"])
+    # the reason after "Kalshi pays $X for $Y." starts with a capital and ends in exactly one period,
+    # whether the under-fair text is a lowercase fragment or already a full sentence
+    sq, ip = E._sb_quote_under_fair, E._reprice_inplay
+    try:
+        for label, frag, want in (("fragment", "the game is under way and a sale doesn't look likely", "The game is under way and a sale doesn't look likely."),
+                                  ("full sentence", "It is under the fair price.", "It is under the fair price.")):
+            E._sb_quote_under_fair = lambda c, pct, f=frag: f
+            r = E.panel_reprice("combo:1")
+            ok(f"reprice reason, {label}: capital and one period ({r.get('why')})",
+               r["ok"] and not r["would"] and r["why"].endswith(". " + want) and not r["why"].endswith(".."))
+    finally:
+        E._sb_quote_under_fair, E._reprice_inplay = sq, ip
     PANEL["items"][0]["legs"] = [L1, L2]
 
 

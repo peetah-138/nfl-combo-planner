@@ -161,7 +161,7 @@ with sync_playwright() as pw:
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
         if "Scored on paper: 387 bets, 299 settled" not in sb or "191 past bets" not in sb or "63 other markets the Mac priced" not in sb \
-                or "133 panel picks" not in sb or "Only bets good enough for the panel teach Smart Buy how picky to be" not in sb \
+                or "133 panel picks" not in sb or "Only bets that would have made today's panel teach Smart Buy" not in sb \
                 or "Learning (12 of 30) · only bets good enough for the panel count" not in sb or "panel-grade" in sb:
             print("PROBLEMS: the Smart Buy card doesn't say how many bets were scored on paper, by source and per league:", sb[:600])
         h = pg.evaluate("()=>{const o=S.sbOpen;S.sbOpen=true;const h=sbCard({on:true,gate:[],rows:[],calib:[],scored:{n:5,settled:1,by:{backfill:{n:1,settled:1}}}});S.sbOpen=o;return h}")
