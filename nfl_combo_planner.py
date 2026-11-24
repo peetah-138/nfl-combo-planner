@@ -5577,6 +5577,10 @@ def auto_sell_now(plan):
         for t, f, why in cands:
             if time.time() - began > AUTO_CASH_BUDGET:
                 break                                     # one pass stays short: the rest wait for the next check
+            if manual_selling(t):
+                log_decision({"combo": (MINE["hold"].get(t) or {}).get("label", t), "ticker": t, "why": why, "result": "skipped",
+                              "note": "your own Cash out tap is selling this right now (#400); checked again next round"})
+                continue                                  # Pete's tap has it (another process): never two sales at once
             h = MINE["hold"].get(t)
             if not h:
                 COMBO_WAIT.pop(t, None)                   # sold elsewhere or settled: nothing left to wait on
@@ -6044,6 +6048,51 @@ def set_self_sell(t, mine):
     save_json(SELF_SELL, d)
 
 
+# (#400) Pete's own sale tap and an automatic sale round can run in different processes (the web app and the watcher).
+# While a tap is selling a bet, a small marker file says so (written by the web app, read by the automatic paths); the
+# automatic sellers skip that bet and try again next round. One direction only: Pete's tap never reads it, so it can
+# never be held up, delayed or refused by the automatic side (a lock both sides waited on could stall a sale).
+MANUAL_SELL = os.path.join(HERE, "combo_manual_sell.json")
+MANUAL_SELL_MAX = 90     # seconds: a marker older than this is a crashed tap's leftover and counts for nothing
+_MS_LOCK = threading.Lock()
+
+
+class manual_sell_mark:
+    """`with manual_sell_mark(t):` around Pete's own sale tap on bet t. Never raises and never waits: if the marker
+    can't be written the tap goes ahead without it."""
+
+    def __init__(self, t):
+        self.t = str(t or "")
+
+    def __enter__(self):
+        try:
+            with _MS_LOCK:
+                d = {k: v for k, v in load_json(MANUAL_SELL, {}).items() if time.time() - float(v or 0) < MANUAL_SELL_MAX}
+                d[self.t] = time.time()
+                save_json(MANUAL_SELL, d)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            with _MS_LOCK:
+                d = load_json(MANUAL_SELL, {})
+                if d.pop(self.t, None) is not None:
+                    save_json(MANUAL_SELL, d)
+        except Exception:
+            pass
+        return False
+
+
+def manual_selling(t):
+    """True while Pete's own tap is selling bet t (a fresh marker): the automatic sellers leave it alone this round."""
+    try:
+        return time.time() - float(load_json(MANUAL_SELL, {}).get(str(t)) or 0) < MANUAL_SELL_MAX
+    except Exception:
+        return False
+
+
 def hands_off(t):
     """Smart sell (and hedging and take-profit orders) skip a bet you've set to "I'll sell it"."""
     return bool(t) and t in self_sell_set()
@@ -6222,6 +6271,8 @@ def smart_sell_singles():
                 return out
         if x["t"] in resting or order_unsure(x["t"]):
             continue                                  # a sell waiting, or an order whose outcome is unknown
+        if manual_selling(x["t"]):
+            continue                                  # Pete's own Sell tap has it (#400): checked again next round
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
                "live": x.get("state") == "live", "ask": ask}
@@ -8912,8 +8963,8 @@ def autosell_pass():
     done = []
     for a in acct or []:
         t = a["ticker"]
-        if a["status"] != "pending" or MINE.get("busy") or t in MINE.get("selling", set()) or hands_off(t):
-            continue
+        if a["status"] != "pending" or MINE.get("busy") or t in MINE.get("selling", set()) or hands_off(t) or manual_selling(t):
+            continue                       # (#400) manual_selling: Pete's own Cash out tap has this bet right now
         here = t in (MINE.get("hold") or {}) and MINE.get("patterns")
         p = None if here else combo_chance_now(a)
         if not here and not p:
@@ -16378,6 +16429,24 @@ def _sell_side_book(book, side):
             float(book.get("ask_size") or 0))
 
 
+def _sell_under_hold(x, bid, ask, got, n, have):
+    """(#244) A calm note when this sale brings less than holding is worth, or None. Holding's worth is smart sell's own
+    hold value for the bet (single_sell_reason's floor, track=False so it records nothing); with smart sell off, the
+    plain chance x contracts. Nothing smart sell would sell right now is flagged (it clears its own line). Display only:
+    the quote's `clears`, the sale's checks and Pete's tap are untouched, so a warning never blocks a sale."""
+    if not have or not n:
+        return None
+    why, floor = single_sell_reason(x, bid, ask, track=False)
+    if why:
+        return None
+    ch = x.get("chance")
+    hold = floor * (n / have) if floor else (ch * n if ch is not None else 0.0)
+    if hold <= 0 or got >= hold - 0.005:
+        return None
+    return (f"That's {money(hold - got)} under what holding is worth (about {money(hold)}). "
+            f"You can still sell.")
+
+
 def single_sell_quote(t, paused=False, now=None):
     """What selling one held single (or spread/total) would get right now, for the sell sheet and Live's "Get new
     price": Kalshi's bid for your side read now, the gap, how many contracts the bid takes, Kalshi's fee, what comes
@@ -16427,6 +16496,12 @@ def single_sell_quote(t, paused=False, now=None):
     if cost and got < cost:
         warn.append({"k": "loss", "t": f"That's {money(cost - got)} less than you paid for these."})
     ch = x.get("chance")
+    try:                                                # (#244) display only: a calm note, never a block (Pete's tap stands)
+        under = _sell_under_hold(x, bid, ask, got, n, have)
+    except Exception:
+        under = None
+    if under:
+        warn.append({"k": "under", "t": under})
     try:
         rest = resting_single_sells()
     except Exception:
@@ -18486,9 +18561,22 @@ def carry_candidates(games, now=None):
     return out
 
 
+def _my_open_rfqs(ticker):
+    """Our own open price requests on one combo, read from Kalshi (so another process's count too): a list (empty = none),
+    or None when they can't be read (callers treat that as "maybe one")."""
+    try:
+        data = kalshi_send("GET", "/communications/rfqs",
+                           params={"market_ticker": ticker, "status": "open", "user_filter": "self"}) or {}
+    except Exception:
+        return None
+    return [r for r in data.get("rfqs", []) if r.get("market_ticker") == ticker and r.get("id")]
+
+
 def carry_quote(legs, stake=5.0):
     """Ask Kalshi's combo makers for a price on these picks and withdraw the request straight away: never accepted.
-    Returns the best YES price per $1 contract, or None."""
+    Returns the best YES price per $1 contract, or None. (#350) Never withdraws a request that is not its own: Kalshi
+    allows one open request per combo, so if one is already open on these picks (Pete's Get price, or one that can't
+    be read) there is no quote (None, the asked-no-price path); its own request is always deleted before it returns."""
     held, _ = hold_refusal("buy")
     if held:
         return None
@@ -18499,7 +18587,8 @@ def carry_quote(legs, stake=5.0):
     market = made["market_ticker"]
     if rfq_unsure(market):
         return None
-    clear_my_rfqs(market)                              # Kalshi allows one request per combo: a leftover would block it
+    if _my_open_rfqs(market) != []:                    # (#350) a request of ours is already open on this combo: it is
+        return None                                    # Pete's price (or unreadable): never withdrawn underneath him
     rfq = kalshi_send("POST", "/communications/rfqs",
                       {"market_ticker": market, "target_cost_dollars": f"{stake:.2f}",
                        "rest_remainder": False, "replace_existing": False})["id"]
@@ -20040,23 +20129,70 @@ def overlap_text(x):
     return f"You already have {bets} on this game ({money(risk)} at risk)."
 
 
+class _Allow(set):
+    """The games Pete tapped Add anyway on (a set of game keys, as before), plus `at`: game -> (open bets, dollars at
+    risk) as the page saw them at the tap, for the games the page sent that with (#366)."""
+    at = None
+
+
 def overlap_allow(raw):
-    """The page's per-request "Add anyway" list: game keys only, at most OVERLAP_ALLOW_MAX."""
+    """The page's per-request "Add anyway" list, at most OVERLAP_ALLOW_MAX: game keys, each optionally with the exposure
+    at the tap as `KEY~n~risk` (#366: once the game's exposure is higher than that, it is greyed again). A malformed
+    exposure drops the entry (the game stays greyed): never looser than the page asked."""
+    out = _Allow()
+    out.at = {}
     if isinstance(raw, str):
         raw = raw.split(",")
     if not isinstance(raw, (list, tuple, set)):
-        return set()
-    out = set()
-    for k in list(raw or [])[:OVERLAP_ALLOW_MAX]:
-        k = str(k or "").strip().upper()
-        if re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,79}", k):
-            out.add(overlap_key(k))
+        return out
+    for item in list(raw or [])[:OVERLAP_ALLOW_MAX]:
+        k, *rest = str(item or "").strip().upper().split("~")
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,79}", k):
+            continue
+        key = overlap_key(k)
+        if rest:
+            try:
+                n, risk = int(rest[0]), float(rest[1])
+                if len(rest) != 2 or n < 0 or not math.isfinite(risk) or risk < 0:
+                    raise ValueError
+            except (ValueError, IndexError):
+                continue
+            prev = out.at.get(key)
+            out.at[key] = (n, risk) if not prev else (min(prev[0], n), min(prev[1], risk))
+        elif key in out.at:
+            continue
+        out.add(key)
     return out
+
+
+_OV_SEEN = {}            # (kind, game, n, risk) -> when it was last written to overlap_log (this process only)
+
+
+def overlap_log(kind, game, n, risk, why="", now=None):
+    """(#367) One row in overlap_log: kind "grey" (a game the guard greys, once per exposure per 30 minutes) or "add" (Pete
+    tapped Add anyway on it; the tap's exposure is what the page sent). Measurement only: nothing reads it to decide
+    anything, and it never raises. Compare the bets placed after an "add" with the rest (by game and ts)."""
+    try:
+        if not STORE["db"]:
+            return
+        now = now or time.time()
+        key = (kind, game, n, None if risk is None else round(risk, 2))
+        if now - _OV_SEEN.get(key, 0) < (1800 if kind == "grey" else 86400):
+            return
+        if len(_OV_SEEN) > 2000:
+            _OV_SEEN.clear()
+        _OV_SEEN[key] = now
+        store_x("create table if not exists overlap_log(ts real, kind text, game text, n int, risk real, why text)")
+        store_x("insert into overlap_log values(?,?,?,?,?,?)", (now, kind, game, n, risk, why))
+    except Exception:
+        pass
 
 
 def overlap_games(allow=(), base=None, exposure=None):
     """{game: {"n", "risk", "why": "n"|"risk", "text"}} for every game over the line, without the ones in `allow`.
-    Off (Settings › Money) or anything unreadable: {} (the lists show as before). base None: the count rule only."""
+    Off (Settings › Money) or anything unreadable: {} (the lists show as before). base None: the count rule only.
+    (#366) An allowed game whose open bets or dollars at risk are now higher than when Pete tapped Add anyway is
+    greyed again (only ever stricter). (#367) Greyed games and Add anyway taps are written to overlap_log."""
     try:
         on, n_max, pct = overlap_settings()
         if not on:
@@ -20066,15 +20202,22 @@ def overlap_games(allow=(), base=None, exposure=None):
             return {}
         if base is None:
             base = _overlap_base()
+        at = getattr(allow, "at", None) or {}
         allow = {overlap_key(k) for k in allow or ()}
         out = {}
         for k, x in ex.items():
-            if k in allow:
-                continue
             by_n = x["n"] >= n_max
             by_risk = bool(base) and x["risk"] >= base * pct / 100 - 1e-9
+            if k in allow:
+                tap = at.get(k)
+                grew = bool(tap) and (x["n"] > tap[0] or x["risk"] > tap[1] + 0.01)
+                if not (by_n or by_risk) or not grew:
+                    if by_n or by_risk:
+                        overlap_log("add", k, *(tap or (None, None)), why="n" if by_n else "risk")
+                    continue
             if by_n or by_risk:
                 out[k] = {"n": x["n"], "risk": x["risk"], "why": "n" if by_n else "risk", "text": overlap_text(x)}
+                overlap_log("grey", k, x["n"], x["risk"], why="n" if by_n else "risk")
         return out
     except Exception as err:
         print("overlap guard:", type(err).__name__, err, flush=True)
