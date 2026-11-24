@@ -2261,7 +2261,12 @@ ACCT_CACHE = {"at": 0, "value": None}
 # Live snapshot and Results caches and open pages refetch within seconds instead of waiting out their caches. Only
 # its time matters (the file's mtime). Nothing that buys, sells or sizes reads it.
 MONEY_FLAG = os.path.join(HERE, "combo_money.json")     # git-ignored (combo_*.json)
-MONEY_FP = {"v": None}                 # this copy's last account fingerprint (None = not read yet: no stamp at start)
+MONEY_FP = {"v": None, "pb": None}     # this copy's last account fingerprints (None = not read yet: no stamp at start);
+                                       # "v" = combos + positions + balance (complete reads only), "pb" = positions + balance
+MONEY_FAIL_AT = {}                     # (ticker, result) -> when a failed (nothing sold) cash-out last stamped (#271)
+MONEY_FAIL_GAP = 60                    # seconds: a failed cash-out repeated every pass stamps at most this often
+HUB_FRESH_FLOOR = 3                    # seconds: the hub's forced fresh account read needs a cached copy older than this
+ACCT_HUB_STALE = {"v": False}          # the hub just answered with a copy it held back from refreshing (#271)
 
 
 def money_mark():
@@ -2282,10 +2287,24 @@ def money_seen():
         return 0.0
 
 
-def money_note(bets, positions, balance):
+def money_note(bets, positions, balance, incomplete=0):
     """After a direct account read: stamp when anything a screen shows changed (a combo's status or money, any
-    position, the balance). The first read of a process only remembers. Never raises."""
+    position, the balance). The first read of a process only remembers. Never raises.
+    `incomplete` (#271) = how many combos were left out because their legs couldn't be read. Such a read would change
+    the combo part of the fingerprint (a combo drops out, then comes back) and stamp for nothing, so it only compares
+    positions + balance (real money moves) and leaves the combo fingerprint alone; the log says why it didn't stamp."""
     try:
+        pb = hash((tuple(sorted((str(p.get("ticker") or p.get("market_ticker")),
+                                 str(p.get("position_fp") if p.get("position_fp") is not None else p.get("position")))
+                                for p in positions or [] if isinstance(p, dict))), str(balance)))
+        if incomplete:
+            if MONEY_FP["pb"] is not None and pb != MONEY_FP["pb"]:
+                money_mark()
+            elif MONEY_FP["v"] is not None and MONEY_FP.get("inc") != incomplete:
+                MONEY_FP["inc"] = incomplete          # said once per change, not every pass
+                console_note(f"money stamp skipped: {incomplete} combo(s) couldn't be read this pass")
+            MONEY_FP["pb"] = pb
+            return
         fp = hash((tuple(sorted((str(a.get("ticker")), str(a.get("status")), a.get("back"), a.get("cost"), a.get("pays"))
                                 for a in bets or [])),
                    tuple(sorted((str(p.get("ticker") or p.get("market_ticker")),
@@ -2295,6 +2314,8 @@ def money_note(bets, positions, balance):
         if MONEY_FP["v"] is not None and fp != MONEY_FP["v"]:
             money_mark()
         MONEY_FP["v"] = fp
+        MONEY_FP["pb"] = pb
+        MONEY_FP["inc"] = 0
     except Exception:
         pass
 
@@ -2355,9 +2376,12 @@ def fetch_account(max_age=60, every_league=False):
     if ACCT_CACHE["value"] and time.time() - ACCT_CACHE["at"] < max_age:
         value = ACCT_CACHE["value"]
     else:
+        ACCT_HUB_STALE["v"] = False
         value = _fetch_account()
         if value[0] is not None:
-            ACCT_CACHE.update(at=time.time(), value=value)
+            # a copy the hub held back from refreshing (#271) is used but never kept: the next call asks again
+            ACCT_CACHE.update(at=0 if ACCT_HUB_STALE["v"] else time.time(), value=value)
+            ACCT_HUB_STALE["v"] = False
     bets, balance, note = value
     if bets is None or every_league:
         return value
@@ -2368,6 +2392,7 @@ def _fetch_account():
     if hub_up():
         got = hub_call("account", timeout=30)
         if got and isinstance(got.get("value"), list):
+            ACCT_HUB_STALE["v"] = bool(got.get("held_back"))
             return tuple(got["value"])
     key_id = CFG.get("kalshi_key_id", "").strip()
     if not key_id or not os.path.exists(KEYFILE):
@@ -2446,9 +2471,11 @@ def _fetch_account():
     cache = load_json(LEGS_CACHE, {})
     fetch_legs_parallel(list(held), cache)
     bets = []
+    unread = 0                                   # combos left out because their legs couldn't be read (#271)
     for t, h in held.items():
         legs = combo_legs(t, cache)
         if not legs:
+            unread += 1
             continue
         lg = combo_league(legs)
         s = settled.get(t)
@@ -2494,7 +2521,7 @@ def _fetch_account():
     except Exception as err:
         console_note(f"ledger: {type(err).__name__}: {err}")
     balance = dollars(bal, "balance")
-    money_note(bets, positions, balance)         # display only (#242): open screens refresh when money moved
+    money_note(bets, positions, balance, unread)  # display only (#242): open screens refresh when money moved
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
 
 
@@ -4668,6 +4695,21 @@ def _skip_repeat(rec):
     return False
 
 
+def _fail_stamp_due(rec):
+    """False only for a repeat of a plain failed cash-out ("failed"/"hedge failed": nothing was sold) on the same bet
+    within MONEY_FAIL_GAP seconds (#271): a loop logging the same failure every pass must not make every open screen
+    force a fresh Kalshi account read each time. Sold, hedged and every unclear ("check") result always stamp."""
+    if rec.get("result") not in ("failed", "hedge failed"):
+        return True
+    t, now = (str(rec.get("ticker") or rec.get("combo") or ""), rec.get("result")), time.time()
+    if now - MONEY_FAIL_AT.get(t, 0) < MONEY_FAIL_GAP:
+        return False
+    if len(MONEY_FAIL_AT) > 2000:
+        MONEY_FAIL_AT.clear()
+    MONEY_FAIL_AT[t] = now
+    return True
+
+
 def _trim_sell_log():
     """Keeps every sale, hedge and unclear order, and the newest SELL_KEEP other lines."""
     with open(SELL_LOG, encoding="utf-8") as f:
@@ -4704,7 +4746,7 @@ def log_decision(rec):
                 _trim_sell_log()
     except OSError:
         pass
-    if rec.get("result") in SALE_RESULTS:
+    if rec.get("result") in SALE_RESULTS and _fail_stamp_due(rec):
         money_mark()                             # display only (#242): open screens refresh now
     try:
         if rec.get("result") in SALE_RESULTS:
