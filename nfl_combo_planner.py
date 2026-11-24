@@ -51,6 +51,7 @@ CFG = {
     "stop_loss_mode": None,   # #228 PR5: 'never' / 'tune' / 'allow'; None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
+    "exit_cap_shadow": False,   # #375 paper test: log what a capped profit floor WOULD do on favorites; sells nothing, default OFF
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
     "ideas_shown": 3,     # Live Buy ideas: how many show at once (best by expected dollars); the rest fold under "N more"
@@ -6049,9 +6050,11 @@ def hands_off(t):
     return bool(t) and t in self_sell_set()
 
 
-def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
+def single_sell_reason(x, bid, ask, track=True, cut_ok=False, cap=None):
     """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book. A learned
     "cut loss" also needs `cut_ok` (cut_loss_single_check: every loss guard held); without it, never.
+    `cap` (#375, PAPER ONLY, never passed by a live seller): the most smart sell's profit floor may ask for the whole
+    position; None = today's rule, untouched. Only exit_cap_shadow passes it, to record what the capped rule would do.
     Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
     n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
     if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
@@ -6070,6 +6073,8 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
         lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
         lam *= pr["lam"] * rl
         prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"])
+        if cap is not None and cost > 0:
+            prm["floor"] = min(prm["floor"], cap / cost)     # paper rule only: floor x cost never above what it can sell for
     d = exit_policy({"kind": "single", "value": net, "peak": peak.get(t, 0.0), "pays": n, "cost": cost, "q": q,
                      "live": x.get("state") == "live"}, prm)
     return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
@@ -6094,6 +6099,67 @@ def sell_line_shown(line, top):
     if line > top + 0.005:
         return None, True
     return round(line, 2), False
+
+
+# ---- #375 paper test: smart sell's profit line for a favorite bought above ~1/floor is above what the bet can ever sell
+# for, so it can never take a profit (it holds to settlement). This RECORDS what a line capped at the top price less a
+# margin would have done, beside what today's rule does. Write-only: nothing reads the table back into a decision, no
+# order is placed, `single_sell_reason` is called with track=False (no peak is touched) and every failure is swallowed.
+# Default OFF ("exit_cap_shadow"). Turning it on later is a separate decision for Pete, with this record to judge it by.
+EXIT_CAP_MARGIN = 0.03        # per contract, dollars: the paper line sits this far under the top sale price
+EXIT_CAP_EVERY = 300          # seconds: an unchanged answer for a bet is written at most this often
+EXIT_CAP_KEEP = 60 * 86400    # rows older than this are pruned; at most EXIT_CAP_ROWS are kept
+EXIT_CAP_ROWS = 100000
+EXIT_CAP_SEEN = {}            # ticker -> (when written, live answer, paper answer)
+EXIT_CAP_PRUNE = {"at": 0.0}
+
+
+def exit_cap_shadow(x, bid, now=None):
+    """Records, for a held single whose profit line is above what it can sell for, what today's rule and the capped
+    paper rule each say right now: the decision ('hold' or the reason), the sale price after fees, the time. Returns
+    True when a row was written. Never raises, never sells, never changes what smart sell decides."""
+    try:
+        if CFG.get("exit_cap_shadow") is not True or not STORE.get("db") or not x or not bid:
+            return False
+        now = now or time.time()
+        n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
+        if not n or cost <= 0 or q is None or q < EXIT_Q_MIN:
+            return False
+        top = sell_top(n, single=True)
+        live_why, live_line = single_sell_reason(x, bid, None, track=False)
+        if not sell_line_shown(live_line, top)[1]:
+            return False                                      # the line is reachable: nothing to compare
+        cap = top - EXIT_CAP_MARGIN * n
+        alt_why, alt_line = single_sell_reason(x, bid, None, track=False, cap=cap)
+        live_d, alt_d = live_why or "hold", alt_why or "hold"
+        t = x["t"]
+        last = EXIT_CAP_SEEN.get(t)
+        if last and last[1:] == (live_d, alt_d) and now - last[0] < EXIT_CAP_EVERY:
+            return False
+        EXIT_CAP_SEEN[t] = (now, live_d, alt_d)
+        if len(EXIT_CAP_SEEN) > 5000:
+            for k in [k for k, v in EXIT_CAP_SEEN.items() if now - v[0] > 3600]:
+                EXIT_CAP_SEEN.pop(k, None)
+        store_x("create table if not exists exit_cap_shadow(ts real, ticker text, kind text, side text, n real, cost real, "
+                "chance real, state text, bid real, net real, top real, live_line real, live_decision text, cap real, "
+                "alt_line real, alt_decision text)")
+        store_x("create index if not exists exit_cap_shadow_ts on exit_cap_shadow(ts)")
+        store_x("insert into exit_cap_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (round(now, 1), t, x.get("kind"), x.get("side"), n, cost, q, x.get("state"), bid,
+                 round(n * (bid - single_fee(bid, n)), 4), round(top, 4), round(live_line or 0, 4), live_d,
+                 round(cap, 4), round(alt_line or 0, 4), alt_d))
+        if now - EXIT_CAP_PRUNE["at"] > 6 * 3600:
+            EXIT_CAP_PRUNE["at"] = now
+            store_x("delete from exit_cap_shadow where ts < ?", (now - EXIT_CAP_KEEP,))
+            store_x("delete from exit_cap_shadow where rowid in (select rowid from exit_cap_shadow order by ts "
+                    "limit max((select count(*) from exit_cap_shadow) - ?, 0))", (EXIT_CAP_ROWS,))
+        return True
+    except Exception as err:
+        try:
+            console_note(f"exit cap shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return False
 
 
 SINGLE_RESTING = {"at": 0, "t": set()}
@@ -6445,6 +6511,8 @@ def open_singles(max_age=30):
                                                            sell_top(x.get("n"), single=True))
         except Exception:
             x["sell_at"], x["sell_over"] = None, False
+        if x.get("sell_over"):
+            exit_cap_shadow(x, dollars(m, f"{x['side']}_bid"))   # #375 paper record (default off, swallows its own errors)
     out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))   # order kept: smart sell walks it
     SINGLES.update(at=time.time(), items=out, mk=mk)
     return out
