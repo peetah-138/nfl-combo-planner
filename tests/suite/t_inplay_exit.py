@@ -9,6 +9,8 @@ os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.leg_score = lambda l: None
+E.comeback_judge = (lambda c, now=None, sim=None: (lambda o: {"ok": o, "old": o, "new": o, "pregame": True,   # (#348)
+                    "why": None if o else E.IN_PLAY_WHY})(E.smart_buy_ok(sim if sim is not None else E._sb_sim(c, now))))
 now = time.time()
 
 
@@ -56,7 +58,7 @@ def t_panel_gate():
     ok("panel: smart_buy_filter drops only the live one, same dicts", kept == [pre] and len(sk) == 1)
     src = inspect.getsource(E._buy_panel_bet)
     ok("panel: the buy-time live recheck runs the exit gate again before any order",
-       src.index("live_recheck") < src.index("smart_buy_ok(_sb_sim(c, None))") < src.index("book_depth"))
+       src.index("live_recheck") < src.index("inplay_exit_ok(c, sim=_sb_sim(c, None)") < src.index("book_depth"))
 
 
 def t_ideas_gate():
@@ -72,6 +74,8 @@ def t_ideas_gate():
     E._exit_shadow_table()
     E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
               (now, E._sb_idea_cand(live), "idea", E.json.dumps(live["legs"]), 1.0, 1))
+    E._cb_table()                                      # (#348) and the comeback model agreed on the same quote
+    E.store_x("insert into comeback_shadow(ts, cand, source, ok) values(?,?,?,?)", (now, E._sb_idea_cand(live), "idea", 1))
     kept, sk = E.smart_buy_ideas_gate([live, pre], now)
     ok("ideas: once the shadow found smart_buy_ok on its own quote it is shown", live in kept)
 
@@ -103,16 +107,18 @@ def t_offer():
     E.CFG.update(budget=500.0, accept_pct=95)
     E.kalshi_send = lambda m, p, body=None, params=None: ({"market_ticker": "M"} if p.startswith("/multivariate") else
                                                          {"id": "r"} if p == "/communications/rfqs" else
-                                                         {"quotes": [{"status": "open", "no_bid_dollars": "0.8", "id": "q"}]}
+                                                         {"quotes": [{"status": "open", "no_bid_dollars": "0.7", "id": "q"}]}
                                                          if p == "/communications/quotes" else {})
     E.find_collection = lambda legs: "C"
+    E.book_depth = lambda *a, **k: None        # (#358) no live book: the started pick has no live chance, no fair price
     E.clear_my_rfqs = lambda m: None
     E.rfq_unsure = lambda *a, **k: False
     E.hold_refusal = lambda *a, **k: (None, "")
     E.time.sleep = lambda s: None
     E.store_quote = E.carry_note = E.note_quote_time = E.note_buy_ratio = lambda *a, **k: None
     r = E.get_offer(1, 5.0, check_cap=False)
-    ok(f"offer: a combo priced far over fair with a started pick is NOT green ({r.get('ok')}, pct {r.get('pct')})", r.get("ok") is False)
+    ok(f"offer: a combo over fair on the pre-game chance with a started pick is NOT green ({r.get('ok')}, {r.get('why')})",
+       r.get("ok") is False and r.get("why") == "nofair" and r.get("pct") is None)
     legs[0]["_started"] = False
     r = E.get_offer(1, 5.0, check_cap=False)
     ok("offer: the same combo before the start is green as before", r.get("ok") is True)

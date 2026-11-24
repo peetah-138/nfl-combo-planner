@@ -1,8 +1,15 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.23.137). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.23.138). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
+
+**Two machines (Pete, 2026-11-23).** The dev Mac (`~/dev/nfl-combo-planner`) is the development machine: it owns ALL
+building, testing, subagents, merging and releasing, and keeps this file and `ROADMAP.md` current (setup:
+`docs/DEV_MACHINE.md`; how Pete likes to work: `docs/WORKING_WITH_PETE.md`). Pete's MacBook Air is **production
+only**: it trades real money, runs the watcher and the web app, and auto-updates from `main`; nothing is built,
+tested or merged there. The dev Mac never gets Pete's Kalshi key, `~/combowatch`, the history database or any
+`combo_*.json`, never runs the watcher and never places orders.
 
 ## Goals and strategy
 
@@ -72,7 +79,7 @@ Real money is involved. Pete uses it daily.
   GitHub through first start, GitHub down, repair, restart; and the Pi's approved path). Rollback: revert the split
   merge; the reverted watcher has the strings inline again and ignores any spa folder.
   The Raspberry Pi is an **alerts-only backup; it never trades**.
-- `version.txt` — what the Macs update to.
+- `version.txt` — what the MacBook Air (production) updates to.
 - History lives in SQLite `~/combowatch/combo_history.db` (WAL; many processes; use `store_x`/`store_rows`,
   and `panel_tx` for read-modify-write of panel rows). Settings and state are JSON files next to the engine
   (`combo_*.json`, `held_events.json`). **None of these are ever committed.**
@@ -135,7 +142,8 @@ Real money is involved. Pete uses it daily.
   unclear answer, a failed status poll or no confirmation within `ACCEPT_WAIT` (15 s) is **unknown**: marked in the
   order ledger (`mark_rfq_unsure`, keys `<market>|rfq-buy|o` / `<market>|rfq-sell|r`, with the leg tickers), the
   panel/killer get `None` = "check", the web app answers `check` with `COMBO_UNSURE_MSG`, `get_offer` won't re-quote
-  the same legs, a cash-out stops (no second accept; `CASH_RETRIES` only after a definite refusal) and auto cash-out
+  the same legs, a cash-out stops (no second accept; `CASH_RETRIES`, or `AUTO_CASH_RETRIES` for auto cash-out, only
+  after a definite refusal) and auto cash-out
   leaves that combo alone (`rfq_unsure(t, "sell")`, like `hedge_unsure`). Settings › Money lists them as order blocks.
 - *Ledger and hedges across processes:* `combo_orders.json` and `combo_hedges.json` are read-modify-written under an
   `fcntl` lock (`file_lock`), with `save_json(..., strict=True)` (raises and logs "MONEY STATE NOT SAVED"); a mark
@@ -173,7 +181,7 @@ Real money is involved. Pete uses it daily.
 
 ## Git workflow (Git Flow)
 
-- **`main` is what Pete's real Mac and phone run.** A commit on `main` auto-updates them within ~10 minutes (they
+- **`main` is what Pete's MacBook Air (production) and phone run.** A commit on `main` auto-updates them within ~10 minutes (they
   read the newest commit by SHA via the GitHub API, so GitHub's raw-file cache can't hold them back), and the
   app can place real Kalshi orders. Never push to `main` directly.
 - **`develop` is the integration branch.** Work on a short-lived branch from `develop`: `feat/…`, `fix/…`,
@@ -187,16 +195,21 @@ Real money is involved. Pete uses it daily.
   issue labelled `profit` or `fun`. The PR template (`.github/pull_request_template.md`) carries the checklist.
 - **Releases:** a PR from `develop` into `main`, merged as a **merge commit** (not squashed). It must carry the
   version bump (below), and main is back-merged into develop right after. Releases are owned by the session that
-  holds the "release owner" role in issue #83 (it also merges the PRs). **Standing go-ahead (Pete, 2026-11-19,
+  holds the "release owner" role in issue #83 (it also merges the PRs). **As of 2026-11-23 (Pete) the dev Mac
+  (`~/dev/nfl-combo-planner`) holds that role.** It merges PRs; cuts releases `develop` → `main` as a merge commit
+  with the version bump in the 3 places; folds `docs/changes/` into `CLAUDE.md` / `ROADMAP.md`; back-merges `main`
+  into `develop`; comments on #83; and keeps `CLAUDE.md` / `ROADMAP.md` current. The MacBook Air only receives
+  releases (it updates itself from `main`). **Standing go-ahead (Pete, 2026-11-19,
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.23.137`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.23.138`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
-- **Housekeeping:** `git pull` `develop` and `main` at the start of every session and after every merge. The
-  orchestrating session manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
+- **Housekeeping:** `git pull` `develop` and `main` at the start of every session and after every merge, on the dev
+  Mac (the MacBook Air never builds, tests or merges, so nothing is pulled there by hand). The
+  orchestrating session on the dev Mac manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
 - **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
@@ -210,13 +223,14 @@ Real money is involved. Pete uses it daily.
   (`watcher/spa/`, listed in `MANIFEST.json`). Run `git config rerere.enabled true` once per clone so a repeated
   conflict is only resolved once.
 - **Decisions Pete made on 2026-11-18:**
-  - At most **3 subagents** at once.
+  - At most **3 subagents** at once was for the MacBook Air (weaker). On the dev Mac (Pete, 2026-11-23) there is no
+    fixed cap: manage by CPU, RAM and ports, and give each parallel check run its own `CHECK_PORT_BASE`.
   - **Rebuild `Combo-Watcher.zip` in the release PR** whenever `install_mac.sh`, `setup_wizard.py`,
     `wizard_window.js` or `install_pi.sh` changed.
   - **Dev and test default: no live buying.** Killer and maker modes stay on `watch`.
   - **Visual PRs** may merge into `develop`, but Pete sees screenshots or a short clip **before** the release PR
     (`develop` → `main`) is merged.
-  - **Release PRs** are opened and merged by the release owner (issue #83) under Pete's standing go-ahead (see Releases above), with every other release gate intact.
+  - **Release PRs** are opened and merged by the release owner (issue #83, the dev Mac since 2026-11-23) under Pete's standing go-ahead (see Releases above), with every other release gate intact.
   - **When Pete gives feedback, open a GitHub issue** to track it.
   - **Questions for Pete go through the AskUserQuestion tool**, interview style. Keep replies short.
 
@@ -234,7 +248,7 @@ Real money is involved. Pete uses it daily.
 5. Run `bash tests/run_checks.sh` and `ruff check .`. All must pass. Add a test for every change (see
    `tests/README.md`).
 6. Open the `develop` → `main` PR, to be merged as a **merge commit** (not squashed). For visual changes, show Pete
-   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The Macs then update within ~10 minutes; Pete can
+   screenshots or a clip first. Merge it when the gates above are met (Pete's standing go-ahead; visual changes need his screenshots first), then back-merge main into develop. The MacBook Air then updates within ~10 minutes; Pete can
    also tap "Check for an update now". An update restarts the watcher (launchd brings it back).
 
 ## Testing (the check list)
@@ -472,7 +486,55 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   live-checked picks; `get_offer` gives no green Buy for a non-panel combo with a pick under way
   (`idea_combo_live_gap`); Best bets drops them; `shadow_pass` sends no combo idea with a pick under way and
   `single_pass` skips any game under way before any idea, killer check or push (no alert quotes sharp books for a live
-  game; regression in `t_inplay_exit.py`). Richer in-play statistics: #348 (ROADMAP).
+  game; regression in `t_inplay_exit.py`). The richer in-play comeback model (#348) is described right below.
+- **Richer in-play comeback model (#348, follow-up to #341).** An in-play bet needs today's gate (`smart_buy_ok` on the
+  live state) **and** the comeback model: is a comeback, or a partial one big enough to sell early at a profit, realistic?
+  Stricter or equal only: it can hold a bet back, never let one through that today's gate refuses (loosening is a later,
+  data-gated step).
+  - **One entry point:** `inplay_exit_ok(c, sim, now, source)` = `comeback_judge` (old AND new). Used by `live_exit_ok`
+    (Buy straight's and Live single ideas' green Buy), `smart_buy_gate`'s live branch (panel, whatever the switch or dial),
+    `_buy_panel_bet`'s buy-time live recheck, Best bets' live candidates and the shadow pass (`smart_buy_shadow` logs the
+    verdict for every in-play candidate). Live's in-play Buy ideas (`smart_buy_ideas_gate`) need the comeback verdict on the
+    same quote (`cb_verdicts`, table `comeback_shadow`) besides the old one and are now gated **whatever the Smart Buy
+    switch** (#352: before, the switch off let them through; a fix, stricter).
+  - **Features** (`comeback_features`, `_cb_chance`), from score feeds already fetched (no new request): football: who has
+    the ball, yards to go (`_cb_yards`, ESPN's ball spot), down and distance, as the drive's expected points added to the
+    lead of the team with the ball; basketball: pace (points so far vs `CB_PACE`, time left scaled 0.75-1.35x) and an
+    opponent's run of `CB_RUN` points in the last 8 minutes (stricter only); hockey: shots on goal; soccer: an expected-goals
+    stand-in (0.30 per shot on target, 0.05 per other shot) and possession, as a shot-share nudge on the prior (at most +-0.4
+    probit, full weight at `CB_SHOTS_FULL`); every sport: the closing line as the prior, then the live model and the league's
+    live calibration (`calib_fair(..., table="live_fairs")`). The ESPN scoreboard parse keeps hockey/soccer team stats on the
+    score dict (`stats`/`ostats`, `_cb_team_stats`). **Fail closed:** a stale or missing score, no closing line, football with
+    no ball position, NHL/soccer with no shots, a spread/total, an excluded sport, a simulator that can't model it, or any
+    error = not ok (no green Buy, no idea, no push). Not in the feeds, so not used: power plays, real xG, the AHL's shots
+    (AHL needs only score and time).
+  - **The league's own recoveries** (`comeback_table`, `_cb_entries`, `comeback_rate`): from `price_path` rows recorded **in
+    play only**, per ticker: from each lead (in scoring units, `CB_UNIT`, clipped to +-3) and quarter of the game left, did
+    the bid later reach a sale at +10% (`SB_GAIN`) after both fees before the end? One vote per game per bucket; a path that
+    stops before the end is censored; one market per game; the newest 120k rows. Shrinkage n/(n+20) everyone -> sport ->
+    league toward the model's cash-out chance; borrowed levels may only lower it, only the league's own rows raise it. Used
+    once a bucket has 15+ rows (`CB["min_n"]`), else the model decides. Rebuilt hourly per process in a background thread
+    (30 days); no gate waits for it. The recorder stores the share of the game left (`price_path.frac`; old rows are read
+    from the score's clock text).
+  - **Verdict:** `simulate_exit` on the feature-adjusted chance, the cash-out chance replaced by the empirical one when used
+    (the sale's share of expected dollars scaled down with it, never up); sell route at 50%, hold route as today, expected
+    dollars at least `SB_EV_MIN`.
+  - **The other side (Pete, 2026-11-23), paper only:** whenever one side of a two-way game is judged in play, its opponent
+    is scored with the same model and the full gate (old AND new, positive expected dollars after fees, fresh score, gap at
+    most 6c) and logged as source `other`. Nothing is ever shown, pushed or bought from it. **Which side, game by game
+    (Pete: "a judgement call")**: both sides are put on one scale (`_cb_side_score`: expected dollars on $5 after fees times
+    the league's learned weight `cb_weight`, realised over predicted dollars shrunk n/(n+30) toward 1, bounds 0-1.5, less
+    half the spread per contract); `cb_pick_side` picks the better side only if it clears the full gate and scores above zero
+    (logged as `pick`, `pick_t`, `pick_why`, `score`). Scored only off the tap paths (never on a quote or a buy).
+  - **Measured:** `comeback_shadow` (one row per bet and source per 10 min, kept 45 days). `comeback_resolve` (in
+    `smart_buy_learn`) scores each single on the recorded prices (recovered or not; dollars on $5 selling at the first
+    profitable chance else held). Results > What's working > **In-play comebacks** (`comeback_summary`,
+    `analytics()["comeback"]`, `cbCard` in `results.js`): per league, checked, predicted (old -> new) vs actual, what the new
+    model held back and how those did, the paper side picks and the other side's paper record. Live's skip line says "Games
+    under way: left out" when only in-play ideas were left out. Never touches selling, sizing, caps, Pause or rule 8.
+    Tests: `t_comeback.py` (leakage, borrowed-only-stricter shrinkage, fail closed, a 300-state property test that the
+    verdict is never looser than today's, features, logging/throttling, paper side, resolve and summary, the ideas gate with
+    the switch off, every path uses it, no request); `t_inplay_exit.py`, `t_live_panel.py`, `t_orderbook.py` stub the layer.
 
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
@@ -638,6 +700,31 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `combo_cutoff` (`core: True`). `choose_panel` gives a length the panel has under 2 of a tie-break nudge
   (`CORE["nudge"]`, 0.1% of the budget in expected dollars) only while over the day's floor and adding expected dollars.
   Budget, `_size`, every bar, Smart Buy, caps, Pause, rule 8 untouched. Tests: `t_panelpipe.py`, `test_panelpipe_ui.py`.
+- **Fresh price for Skipped / Didn't buy cards (#358).** The whole card (at least 44px) is tappable on the approved panel and
+  calls the read-only act `panel_reprice` (`A.panel_reprice`): refused while paused; prices only that card's stored bet
+  (rule 7); never a market with an unknown order outcome (rule 8; the card says "Check Kalshi"). A combo gets a fresh RFQ
+  via `_with_ctx`/`_panel_combo`/`get_offer`, DELETEd at once and never accepted; a single reads Kalshi's book. It uses the
+  bar the panel buys by (combo: `combo_cutoff`, then the under-fair rule; single: ask + fee + 2%, or at fair or better for an
+  early bet, then the news gap; a bet under way also needs the in-play exit test). The panel is never changed; one price per
+  card per 8 s. The card shows "Would buy at this price" / "Still wouldn't buy" / "No fair price right now", the reason and
+  "a look only, nothing was bought". Each card says why in plain words (`pNote` maps the Mac's notes). The quote names its
+  real bar ("104% of fair on the live chance · at or above your 100% bar"; `green_bar`, sent as `cut`), and says why when the
+  bar isn't the reason (`qWhy`). **Never "recommended" without an edge:** `combo_offer` sets `small` ($2) whenever the quote
+  isn't green or its expected profit isn't positive ("smallest bet" / "no edge").
+  - **Live combos are priced on the live chance (the 131% screenshot).** `get_offer` used the board's pre-game fair while a
+    pick's game was under way, which fed the %, `stake_for`, `store_quote` (the predictor) and the take-profit price. Now each
+    started pick goes through `combo_live_fair` (`live_side_fair` on a fresh score and the panel's live guards: two-sided book
+    within `LIVE_SPREAD`, not nearly decided, Kalshi's mid within `LIVE_DISAGREE`). No live chance = no fair price: no %,
+    nothing stored, never green, $2 sizing. **Loosening (Pete: "I'm okay with accepting recommendations on live games as long
+    as they are good recommendations"):** a Build or idea combo under way may be green when every live guard passes, it
+    clears `green_bar` on the live chance and passes `inplay_exit_ok` (before #358 never green, #255/#341). The panel's own
+    combos are re-priced by `live_recheck` before a buy, as before.
+  - **Big-edge audit.** A quote over `COMBO_SUSPECT` (130% of fair, a guess: the dev Mac has no quote history) is held back
+    everywhere `get_offer` prices (never green, never a panel buy, logged; stricter only). Known, not changed: `ev` uses the
+    uncalibrated fair while `notify_bar` uses `calib_fair` (display only, #361); the Kalshi-mid fallback fair is circular
+    (labelled "Kalshi's price"); stale pre-game lines are already dropped by `drop_stale_lines`.
+  - Tests: `t_combo_live_fair.py`, `t_panel_reprice.py` (read only: pause, rules 7 and 8, RFQ dropped, panel and CTX
+    unchanged), `test_reprice_ui.py` (390px). `t_inplay_exit.py`'s offer case stubs the book and expects "no fair price".
 
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
@@ -890,7 +977,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `HEDGE_LOCK_SHARE`/`HEDGE_LOCK_EXTRA`, `SINGLES_SELL_AGE`, `DISC_PRE`/`DISC_LIVE`, `CUSHION_PER_PICK`/`CUSHION_MAX`;
   `t_exitpolicy`, `t_replaypolicy`, `t_hedge`, `t_stoploss`, `t_cutloss` pass unchanged. **Invariants listed:** Pause,
   the Pi never trades, Pete's switches (Auto cash-out, Smart sell, Let it ride, auto-hedge, the stop-loss override,
-  "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3, `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
+  "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3 (`AUTO_CASH_RETRIES` 9 for auto cash-out, Pete 2026-11-23), `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
   score (150 s), in play, live price age (180 s), live-buy score age (120 s), singles' price age (180 s), a real fresh
   offer before any sale or hedge, secrets. **`knob_view()`** (`analytics()["knobs"]`, cached with it) gives every knob's
   start/bounds in plain words (`knob_say`) and, for the six already learned per league (floor, risk weight, loss cut,
@@ -1110,7 +1197,19 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `auto_slip`, live through `knob_auto_slip(tickers)`: today's 97% while the switch is off, nothing is learned, the value
     is damaged or on any error; a borrowed value only stricter; kept while braked only when stricter), and
     `_accept_with_retries` keeps `CASH_SLIP` (registry `cash_slip`, now an invariant: self-tuning never changes how your own
-    Cash out tap behaves).
+    Cash out tap behaves). **Pete's decision, 2026-11-23:** auto cash-out's retries no longer use `CASH_SLIP` ("I don't
+    think it needs to be within 97% of the first price, but it should definitely stay above the smart sell line"): up
+    to 10 accepts a round (`AUTO_CASH_RETRIES` 9, "let it retry 7, 8, 9 or even 10 times"), each on a fresh offer that
+    must clear the smart-sell line the sale was made on (threshold x the path's slip x share), and, for a sale taking a
+    profit, cost ("It should only sell at a loss if that's a way to try to minimize losses. Not when there's still an
+    opportunity for it to get profit."); a loss-cutting sale (learned cut, guarded stop-loss, first offer already below
+    cost) may go below cost down to the line, but never under 97% of its first offer (a loss cut's line is near 0).
+    Your own tap keeps `CASH_SLIP`.
+    After a failed round there is no 10/60-minute wait for combos (Pete, 2026-11-23: "10 minutes and 60 minutes is
+    crazy. It should retry based on changes in the game, not some arbitrary number of minutes"): the combo is tried
+    again only when a score, a game's status (live, a break, final) or a pick changes, or its chance, a newer real
+    offer or the smart-sell line moves 5% (`COMBO_RETRY_MOVE`; at least 2 points of chance / 25 cents), never twice
+    within `COMBO_RETRY_GAP` 5 s. Singles keep their #334 back-off.
   - Card fix: a league braked before any stepper run is now shown on the Results card (it was hidden).
   On Pete's real history (read-only copy of `combo_history.db`, `combo_smart.json`, `combo_discount.json`,
   `combo_smartbuy.json`; 2026-11-22): the judge has 39 settled bets in 60 days (33 as before plus 6 combos smart sell
@@ -1156,7 +1255,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     judged by the loss guards' replay (`_sl_replay`: on = what selling at a loss would have got, on a sale price cut to
     97% for this loosening step (#285); off = held) on Pete's bar. Turning `sl_auto` on needs 3 standard errors
     (`KNOB_EVIDENCE_STRICT`), not 2. With Never, a single never sells below what it cost either. A tuned stop-loss sale
-    says "Stop-loss (tuned for this league)" and logs `sl_mode`. Pete's Mac today has `stop_loss` on, so it reads as
+    says "Stop-loss (tuned for this league)" and logs `sl_mode`. Pete's MacBook Air today has `stop_loss` on, so it reads as
     Allow (guarded): unchanged.
   - **The loss guards and confirmation counts go live (PR5).** `sl_prog`, `sl_drop`, `sl_auto`, `sl_checks`, `sl_span`,
     `sl_gap` are in `KNOB_LIVE`: with "Let smart sell tune its own numbers" on, `stoploss_params` and the new
@@ -1210,10 +1309,54 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     `stop_loss_mode` may only make it stricter (an old "off" turns Allow into Let it tune itself, an old "on" is
     ignored). Hard rule 2's hedge ceiling of $150 is not live yet (`HEDGE_RAISE_LIVE = False`).
   - **Release 134 review fixes (Never sell at a loss made honest):** under Never, a combo cash-out whose buyer backs out
-    never takes a fresh offer below what was paid (`accept_cash(t, floor=cost x share)` → `_accept_with_retries`; the
-    other choices and Pete's own taps keep the 3% retry rule); a single with an unknown cost is skipped, and its
+    never takes a fresh offer below what was paid (`accept_cash(t, floor=cost x share)` → `_accept_with_retries`;
+    Pete's own taps keep the 3% retry rule; under the other choices auto cash-out's retries follow the smart-sell line
+    and the sale's purpose, Pete 2026-11-23, above); a single with an unknown cost is skipped, and its
     proceeds are counted after the order's rounded fee (`single_fee(bid, n)`). `_brk_news` reads the injury cache only
     while it is under 25 minutes old, so it can never trigger an ESPN fetch inside auto cash-out. Test: `t_neverloss.py`.
+- **No sell line above what a bet can pay (#371; Pete: Live said "Smart sell · sells at $14+" on a $13 bet).** `floor2`'s
+  `floor x cost` (1.2-2.0x) is over the payout for a single bought above about 1/floor (about 67 cents at 1.5x), and a combo's
+  `wait_threshold` adds `model_cushion` on top of `wait_value`, so lines could never be reached. **The ceiling**
+  (`sell_top`): Kalshi's top price is 99 cents (`SELL_TOP`), so a combo sells for at most `pays x 0.99` and a single for at
+  most `n x (0.99 - single_fee(0.99, n))`; `sell_line_shown(line, top)` gives `(line, False)` or `(None, True)`. When out of
+  reach there is no number: the singles chip says "Smart sell · holding to collect $13" (`sell_over`), a combo "Sell after
+  next game · No offer can beat it" (`thr_over`), `plan_words` "No offer can beat that: it pays $13 at most.", and the
+  Pythonista card says it won't cash out just to beat the next game (only Let it ride's line; lock in, take profit and the
+  guarded cut loss still run). Lines show cents (`cents()` in live.js, `$x.xx` in `plan_words`/`cash_block`) because `money()`
+  rounds from $10 up. **Display only, no sell decision changes:** `exit_policy`, `single_sell_reason`, `take_profit_reason`,
+  `wait_threshold`, `auto_sell_now`, `plan_cashout`, `tp_ladder` and `cash_nudge` still compare with the unclamped line
+  (clamping would have let offers near the top clear a bar they can't clear today). Follow-ups: #375 (profit: should the
+  floor be capped at what the bet can reach?), #376 (wording). Tests: `t_sellmax.py`, `test_singlesell_ui.py`.
+- **Auto cash-out when buyers back out (#372/#385; Pete's decisions are in the self-tuning bullet above).** The success lead
+  ("Took the profit...", stop-loss and cut-loss leads) goes out only when the sale really went through; a failed round sends
+  one plain note instead (`combo_fail_note`: "Auto cash-out tried to sell <combo>: the buyer backed out N times [and no fresh
+  offer came in | and the next offer ($X) was below the line], so nothing was sold." plus when it will try again), at most
+  one an hour per combo (`COMBO_FAIL_TELL` 3600 s, `MINE["combo_fail_told"]`). **Retry on changes, not a clock:** after a
+  failed round (`COMBO_BACKOFF_STOPS`: cancelled, failed, no fresh offer, offer too low, out of time) `combo_wait_start` saves
+  a snapshot in `COMBO_WAIT` (each open pick's game from `leg_score`: state, both scores, at a break; the combo's chance; the
+  last offer; the smart-sell line) and `combo_wait_why` lets a watcher pass try again only when a score, a game going live or
+  final, a break, a decided pick, the chance (5%, `COMBO_RETRY_MOVE`, and at least 2 points `COMBO_RETRY_MIN_P`), a newer real
+  offer (5%, at least 25 cents `COMBO_RETRY_MIN_USD`) or the line moved the same; the new state becomes the baseline; the only
+  clock is the 5 s `COMBO_RETRY_GAP`; while waiting it asks Kalshi nothing and logs one line (the next round logs `retry_on`).
+  A sale resets it; an unknown outcome is never retried (rule 8). **Up to 10 tries a round:** `AUTO_CASH_RETRIES` 9 (registry
+  invariant `auto_cash_retries`), a random 0.3-1.0 s pause before each (`AUTO_CASH_GAP`, `cash_gap`), one extra ask when no
+  fresh offer came in, no new try after `AUTO_CASH_BUDGET` 120 s (worst case about 177 s). **The bar** is the smart-sell line
+  the sale was made on (`_CASH_CTX.line`; no line = the old `CASH_SLIP` rule); **the purpose** decides below cost: a
+  profit-taking sale never takes a fresh offer below cost (`_CASH_CTX.cost_floor`), a loss-cutting one (`rec["stop_loss"]`,
+  first offer already below cost) may, but never under 97% of its first offer (`_CASH_CTX.cutting`); under Never sell at a
+  loss the cost floor always applies. Before each retry it re-checks Pause, Auto cash-out and `can_trade()` and re-reads the account fresh (`fetch_account(max_age=0)`); if the combo is gone, reduced or the account is unreadable the round stops without selling (`ACCOUNT_STOPS`, fail closed; the auto-sell order is not put back, the next pass re-places it), so a manual Cash out tap in the web app mid-round cannot be double-sold; `restart_when_quiet` also waits (`sell_busy()`, bounded 240 s) while a sale round runs; one
+  `auto_sell_now` pass starts no new combo sale after the budget. Rich log in `combo_autosell_log.jsonl` (`round`, `rounds`,
+  `tries`, `agreed`, `line`, `floor`, `purpose`, `stop`, `asked_again`, `ask_error`, `low_offer`). Singles keep their #334
+  back-off (`SELL_FAILS`). Follow-ups: #383 (loss-cut floor, back-off vs hedge, busy hold), #382, #384. Tests: `t_cashretry.py`,
+  `t_combobackout.py`; `t_neverloss.py`, `t_hedge.py`, `t_cutloss.py`, `t_stoploss.py` unchanged.
+- **Sale alerts say the profit or loss (#390).** `sale_result_note(got, cost, cutting=False)` builds the phrase for every success
+  message from the cost the app tracks (a combo's `cost` = paid plus buy fees, a single's scaled to the share sold):
+  `+$1.42 profit (paid $2.19)`, `-$0.80 loss (paid $4.40)` (plus `, cut to limit the damage` for an automatic loss cut or
+  stop-loss, `_CASH_CTX.cutting`), `broke even (paid $4.40)` (compared after rounding to cents). Cost missing, zero, negative
+  or not a number: `(cost unknown)` and the old wording; no number is invented. Used by the combo cash-out
+  (`_accept_with_retries`, yours or automatic), automatic single sales (`smart_sell_singles`) and your single Sell
+  (`single_sell`); hedges and standing orders are buys and unchanged. Wording only. Tests: `t_sellprofit_helper.py`,
+  `t_sellprofit_paths.py`.
 
 ### Live page
 - **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
@@ -1502,6 +1645,62 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   chance (≥ 60% green, ≤ 40% red). `pick_state` and every money path never read it. Test: `test_tiedleg.py`.
 - Toasts always fade: each has a deadline swept every second (and on touch/scroll/focus), is hidden after the fade and
   dismisses on tap. A Buy idea whose game Kalshi no longer lists shows a calm "not available" card and drops off.
+- **Every bet says what it is on, which game and which league (#381/#389).** Spreads and totals showed only Kalshi's bare label
+  ("Over 144.5 points"). `bet_describe` / `label_bets` / `label_game_page` (engine) and `betlabel.js` (app) now give every
+  single bet and combo leg a plain line: "Over 144.5 total points", "Duke -6.5 (wins by 7+)", "UNC +6.5 (loses by 6 or fewer,
+  or wins)", "Duke to win", plus "LEAGUE · Duke vs UNC"; the game page header reads "Game: Duke vs UNC" with "Your bet: ..."
+  under it; a game whose teams can't be found shows the ticker's best guess and "game not found". Display only. Tests:
+  `t_betlabels.py`, `test_betlabels_ui.py` (390px, dark and light).
+- **Tapping a trade alert opens that combo or bet (#391).** `trade_link(E, msg)` = `combo_link` (`/#c=<ticker>`) or the new
+  `single_link` (`/#b=<ticker>`, the bet whose label the text names; two different bets = no link), used by `Notifier.add`,
+  `E.notify`, the panel and killer-deal pushes and passed to `push`, which adds the ntfy `Click` header (and the Web Push url)
+  only when an address is configured (`hub_base(conf)`, never hard-coded). The link holds only the market ticker; opening it
+  signs nobody in. `betFromHash` (`boot.js`, beside `comboFromHash`) opens the same bet page as tapping its row; a bet that is
+  gone or malformed leaves you on Live. `Notifier.URGENT` gains the robot emoji so the automatic single-sale line goes out at
+  once instead of in the 30-minute digest. Tests: `t_tradelink.py`, `test_betlink_ui.py`.
+- **Closed bets have a detail page (#392/#393).** The read-only `/app/api/closed?t=<ticker>` (`api_closed`) validates the
+  ticker with the combo-link pattern and reads only what the app stores (the account's won/lost/cashed bets, `sell_log`, the
+  combo's `combo_autosell_log.jsonl` rows, price history; no account-level data; unknown ids answer `found: false`). The app
+  (`openClosed` / `closedFill` in `combo.js`) shows a summary card (league, matchup, bet label, chance, Cost, Paid out or Sold
+  for, Profit in dollars and percent, when it closed, a WON / LOST / SOLD EARLY / EXPIRED stamp), why it closed, the chart, the
+  picks and what the auto-sell did including retries and back-out notes. Opens from notification links, Results history rows
+  and skipped / failed / cancelled / swapped / left-out panel rows (`panelClosed`); an unknown id shows "We can't find that
+  bet". Test: `test_closed_ui.py`.
+- **Overlap guard: games you already have enough on are held back (#359).** Every pick list holds back a game with **2 or more
+  open bets** (`overlap_n`) **or 8% or more of the panel's sizing base at risk** (`overlap_pct`): greyed, sorted last, "You
+  already have N open bets on this game ($X at risk)." with an **Add anyway** button that works only on Pete's own tap.
+  **Engine** (block before `panel_add`): `overlap_key` maps a game-winner, spread or total market (or event) and any combo leg
+  to one game key; `game_exposure()` counts open bets per game from what's already read (account combos, `SINGLES`, today's
+  panel items not yet on the account; a combo counts its full cost once on each game it touches; a `check` bet counts, settled/
+  failed/skipped never); `overlap_games(allow, base, exposure)` applies the thresholds (base = `_overlap_base`; no balance
+  read = count rule only); `overlap_allow` cleans the page's allow list (at most `OVERLAP_ALLOW_MAX` 20); `overlap_note(legs)`
+  is the quote line. On display lists any failure = no guard. **Settings › Money:** "Hold back games I already have bets on"
+  (`overlap_guard`, on), "Held back from" (1-5 bets, default 2), "Or once this much is riding on it" (2-25%, default 8); all in
+  `SHARED_KEYS` and the watcher's `SET_KEYS`. **Where it shows:** Build board, Surprise me, Best bets (inputs on held games
+  aren't fed to `best_bets_feed`; a "Left out" card lists them), single games, long shots, Buy ideas and the panel's extras
+  (not counted in "Add N"). `/app/api/build`, `/live` and `/panel` take `?allow=`; `panel_add` for `view=extra` drops extras on
+  a held game unless the request's `allow` names it (`overlap_extra_ids`) and **fails closed** (refuses if open bets can't be
+  read); "Another" and Flip send the allow list too. Quotes carry `overlap` / a `warn` `{"k":"overlap"}` line (display only:
+  price, `clears` and Buy unchanged). Rule 7 holds (nothing removed from `CTX`; only a per-request `over` flag); the allow list
+  lives only in the page (`S.ovAllow`), never saved. Tests: `t_overlap.py`, `test_overlap_ui.py` (390x844).
+  - **Killer deals skip them too (#365/#386).** Both automatic killer paths (killer combo in `shadow_pass`, killer single in
+    `single_pass`) skip, never buy, a deal touching a game already at the line, with the same switch and numbers. One check in
+    `killer_act`'s `on` branch after the day caps and spending cap and before the `buying` record (`killer_overlap(legs)`
+    returns None or the reason; logged "killer deal skipped: ... you already have 2 open bets ($7 at risk) on this game").
+    `killer_exposure` counts Kalshi's combos (`cap_bets`, fresh or last good read within `CAP_READ_AGE`), every single/spread/
+    total position, today's panel bets, standing orders (`maker`, mode on, `posted`) and killer deals bought, `check` or still
+    `buying` in the last day with no outcome yet, each bet once. **Fails closed:** if anything can't be read the deal is skipped
+    ("couldn't check your open bets on this game"; retried after 2 minutes, `KILLER_UNREAD_RETRY`); a deal skipped for the
+    line isn't looked at again for 6 hours. Switch off = exactly as before. Positions are read through the Mac hub when one
+    answers. Known limit: one position per market, so a second killer buy on the same market counts once. Not touched: the
+    hedge, standing orders, the panel's auto-buy (#374), watch mode. The killer deals list in Settings shows a skipped deal's
+    reason. Test: `t_killer_overlap.py` (`t_safety` section 5 and `t_orders_v2` stub the guard).
+- **Surprise me: All | ★ Only, and no star on live combos (#362/#363).** Build › Surprise me has an **All | ★ Only N** switch
+  (`surToggle`/`surList`/`setSur` in `build.js`, remembered in `cw_sur`) showing just the "★ Value pick" combos
+  (`kind == 'value'`); display only. A combo with a pick under way never carries the star or the "Likely about X% of fair" guess
+  (learned from pre-game prices): `value_label(legs)` (used by `value_combos`) labels it `mix` / "Live pick", and `combo_star(c)`
+  (used by `combo_view`) re-checks at view time; a live combo also gets no `pred`, `est` or auto-size. Uses
+  `idea_combo_live_gap` (a leg it can't judge counts as live; fail closed). Tests: `t_surprise_star.py`, `test_surprise_star.py`.
 
 ### Build page
 - Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
@@ -1711,7 +1910,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   column (no schema migration). Covering both sides adds no EV (the vig is paid twice) — it shifts variance and timing;
   the test measures whether smart sell's exit beats the doubled cost. Results > What's working shows it in `edgeBlock`
   (next to the gate), not in `anBlock`. Both bodies are fully defensive (never crash the loop). Tests: `t_cover.py`
-  (engine), `test_cover.py` (page).
+  (engine), `test_cover.py` (page). The cover pass picks its Sunday with `_cover_sunday(now)` (Pacific date of the pass's own clock); `t_cover.py` pins its week (Sunday 2026-11-22) so it no longer depends on the real date or time zone (#370).
 
 - **Cover test, v2 (#340).** Every later checkpoint is rebuilt from Kalshi's results each pass in slate order: worth =
   what a cash-out would get given the picks settled so far (full payout once nothing is left); the first lost/tied pick
