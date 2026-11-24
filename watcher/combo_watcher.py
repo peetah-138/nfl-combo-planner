@@ -4972,8 +4972,18 @@ def start_hub(conf, E, odds=None):
             return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
         if op == "account":
             # money moved since the last read (#242): read Kalshi fresh, so the web app never caches the old account
-            moved = getattr(E, "money_seen", float)() > (E.ACCT_CACHE.get("at") or 0)
-            return {"value": list(E.fetch_account(max_age=0 if moved else 15, every_league=True))}
+            # Floor (#271): only when the cached copy is over HUB_FRESH_FLOOR seconds old, so a stamp that keeps changing
+            # can't force a Kalshi read per request. A held-back copy is flagged: the app uses it but doesn't keep it.
+            at = E.ACCT_CACHE.get("at") or 0
+            moved = getattr(E, "money_seen", float)() > at
+            floor = getattr(E, "HUB_FRESH_FLOOR", 3)
+            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor
+            if held:
+                print(f"hub account: fresh read held back ({time.time() - at:.1f}s-old copy, floor {floor}s)", flush=True)
+            out = {"value": list(E.fetch_account(max_age=15 if held or not moved else 0, every_league=True))}
+            if held:
+                out["held_back"] = True
+            return out
         if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
             return {"pots": E.kalshi_pots()}
         if op == "pot_move":                             # Pete's confirmed tap: move cash between pots (never automatic)
