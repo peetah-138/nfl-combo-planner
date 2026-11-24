@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Per-league learning (issue #13): combo cut-offs, fair-price calibration and the panel's pay index learn per
 # league (each soccer league apart), borrowing league -> sport -> everyone. With no league-level data the
 # outputs must be exactly what they were before (checked against the old code, kept verbatim below).

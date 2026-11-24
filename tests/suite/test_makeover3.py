@@ -1,3 +1,4 @@
+# CHECK: group=page secs=159
 """Makeover phase 3: every remaining screen in the same motion system. Checked on a phone (390x844, touch) in dark and
 light, and on a desktop: no JS errors and no sideways scroll anywhere; press feedback + a haptic on everything you can
 tap (the phase 1 audit, now also on Build's full board, the panel, an open sheet and the login page); the calm
@@ -238,11 +239,11 @@ with sync_playwright() as pw:
             cdp = ctx.new_cdp_session(pg)
             for view in ("results", "build", "settings"):
                 pg.evaluate(f"go('{view}')"); time.sleep(3.5); pg.evaluate("scrollTo(0,0)"); time.sleep(.3)
-                y0 = 480                     # the left gutter of the page, so the touch starts on no control
+                y0 = 480                     # the left gutter of the page (2px in: Chromium's touch slop would otherwise snap to a nearby chip row), so the touch starts on no control
                 pg.evaluate("window.__lv=[];window.load=(v,f)=>{__lv.push(v+':'+!!f);return window.__ld(v,f);}")
                 n0 = pg.evaluate("__haps.length")
-                cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 6, "y": y0}]})
-                for dy in range(0, 300, 25): cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": 6, "y": y0 + dy}]}); time.sleep(.02)
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": 2, "y": y0}]})
+                for dy in range(0, 300, 25): cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": 2, "y": y0 + dy}]}); time.sleep(.02)
                 mid = pg.evaluate("""(()=>{window.__done=0;const p=document.querySelector('#ptr');if(p)new MutationObserver(()=>{if(p.classList.contains('done'))window.__done=1;}).observe(p,{attributes:true});
                   return {ring:+(document.querySelector('#ptr circle')||{style:{}}).style.strokeDashoffset,main:getComputedStyle(document.querySelector('main')).transform,op:+getComputedStyle(p).opacity};})()""")
                 cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})

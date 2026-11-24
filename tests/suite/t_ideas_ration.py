@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Live "Buy ideas": ranked by expected dollars, rationed, dismissable (GitHub #141). Display and filtering only.
 # Covers: the order (expected profit in dollars at the suggested stake, best first; ideas under the quality bar last),
 # a stable idea_id/key that survives a re-offer, 'below the bar' marks, the 'Buy ideas shown' setting (default 3,
@@ -8,6 +9,8 @@
 import os, time, tempfile, importlib.util, json, fnmatch
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
+E.game_context = lambda code, *teams: []   # no back-to-back/weather notes from ESPN's real scoreboard (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.IDEA_DISMISS = os.path.join(E.HERE, "combo_idea_dismiss.json")
 E.MAIN_SAVED = os.path.join(E.HERE, "no_such_main_settings.json")
@@ -43,6 +46,9 @@ tB, sB = single("BBBXXX", 3.0, 10, 1.30)      # +$0.90  (best: the biggest edge 
 tC, sC = single("CCCXXX", 10.0, 30, 1.08)     # +$0.80
 (c1, c2), sD = combo("DDDXXX", "FFFXXX", 5.0, 40, 0.97)   # -$0.15, a combo at 97% (clears the 95% bar)
 tE, sE = single("EEEXXX", 4.0, 12, 0.98)      # -$0.08, no edge left after the fee: below the bar
+E._exit_shadow_table()                         # the 97% combo: smart sell likely cashes it out (#142 leak 1), so shown
+E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
+          (now, f"idea:idea:{sD}", "idea", json.dumps([c1, c2]), 0.5, 1))
 
 info = {}
 ideas = E.live_ideas(info=info)
@@ -131,6 +137,8 @@ E.idea_undismiss(everything=True)
 # ---- tomorrow: 'Not now' means until tomorrow
 E.idea_dismiss(everything=True)
 ok("Clear all hides everything on the list", E.live_ideas() == [])
+E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",   # tomorrow's check
+          (time.time() + 86400, f"idea:idea:{sD}", "idea", json.dumps([c1, c2]), 0.5, 1))
 ok("a new day starts the dismissals over", len(E.live_ideas(now=time.time() + 86400)) == 5)
 
 # ---- Undo

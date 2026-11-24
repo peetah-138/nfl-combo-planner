@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The learned loss cut (smart sell, per league) gets the stop-loss switch's guards (issue #27): it can only sell at a
 # loss late in a game, on a fresh score, not at a break, after a big fall from the pregame chance that held 3+ checks
 # over 3+ minutes. Off until a league's own record turns it on (never borrowed). No real orders: every trading call
@@ -45,7 +46,7 @@ E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20
 E.sold_today = lambda: 0
 real_sss = E.smart_sell_singles
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 real_log = E.log_decision
 E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 E.MINE["busy"] = False; E.MINE.setdefault("selling", set()); E.MINE["cash"] = {}

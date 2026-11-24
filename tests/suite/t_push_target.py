@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Tapping a notification must open the Combo Hub page, never an empty file (#79). Covers the service worker text
 (default target '/', legacy '/app' mapped), the engine's alert links, and the hub: a page navigation to /app or /app/
 redirects to '/', any navigation that finds nothing (or no session) gets a small HTML page and never an empty
@@ -19,8 +20,31 @@ ok("sw: the mapped target keeps the query and #hash and stays on this origin",
    "new URL('/' + u.search + u.hash, self.location.origin)" in sw)
 ok("sw: still takes over at once (skipWaiting + clients.claim)", "self.skipWaiting()" in sw and "self.clients.claim()" in sw)
 ok("sw: still opens or navigates a window on tap", "openWindow(url)" in sw and "c.navigate(url)" in sw and "showNotification" in sw)
-ok("page: an open app follows a #s= link tapped from a notification (hashchange)",
-   "addEventListener('hashchange',()=>ideaFromHash(true))" in W.SPA)
+ok("page: an open app follows a #s= or #c= link tapped from a notification (hashchange)",
+   "addEventListener('hashchange',()=>{ideaFromHash(true);comboFromHash(true);})" in W.SPA)
+
+# ---- #210: an alert about one combo opens that combo ('/#c=<ticker>'); anything else opens Live as before
+class _E:
+    MINE = {"hold": {"KXMVE-24": {"label": "Combo 24"}, "KXMVE-2": {"label": "Combo 2"}},
+            "snap": {"KXMVE-24": {"label": "Combo 24"}, "KXMVE-2": {"label": "Combo 2"}, "KXMVE-9": {"label": "Combo 9"},
+                     "bad<x>": {"label": "Combo 7"}}}
+ok("combo_link: an alert naming Combo 24 opens Combo 24", W.combo_link(_E, "🤖 Took the profit: Combo 24 sold for $9.00") == "/#c=KXMVE-24")
+ok("combo_link: 'Combo 2' is a whole word (not Combo 24)", W.combo_link(_E, "🎉 Combo 2 hit! Pays $40.") == "/#c=KXMVE-2")
+ok("combo_link: a settled combo still in this refresh's list links too", W.combo_link(_E, "❌ Combo 9 is out.") == "/#c=KXMVE-9")
+ok("combo_link: two combos named = no link (Live)", W.combo_link(_E, "Cash out Combo 2 ($5), Combo 24 ($9)?") is None)
+ok("combo_link: no combo named, or one not on Live = no link", W.combo_link(_E, "⏸ Paused") is None and W.combo_link(_E, "Combo 77 sold") is None)
+ok("combo_link: a ticker with unsafe characters is never put in a link", W.combo_link(_E, "Combo 7 sold") is None)
+ok("combo_link: never raises", W.combo_link(None, "Combo 24") is None)
+_sent = []
+_push, _pub = W.push, W.BUS.publish
+W.push = lambda conf, msg, **kw: _sent.append(kw)
+W.BUS.publish = lambda ev: None
+_n = W.Notifier({"topic": "t"}, type("E2", (), {"MINE": _E.MINE, "CFG": {}})())
+_n.add("🤖 Auto cash-out: Combo 24 sold for $9.00")
+ok("Notifier: an urgent alert about one combo is pushed with its link", _sent and _sent[-1].get("click") == "/#c=KXMVE-24")
+_n.add("🤖 Auto cash-out paused for today")
+ok("Notifier: an urgent alert about no combo keeps the plain tap (Live)", _sent[-1].get("click") is None)
+W.push, W.BUS.publish = _push, _pub
 ok("sw: carries a version note so the browser sees a changed worker", "service worker (v2" in sw)
 
 # ---- defaults in code

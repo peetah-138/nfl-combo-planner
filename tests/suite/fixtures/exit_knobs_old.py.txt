@@ -1,0 +1,167 @@
+# Verbatim from develop before #228 PR3 (84b714b): smart sell's exit decision and its inputs, so t_knoblive.py
+# can run the old code beside the new on thousands of states. Exec'd into a copy of the engine's namespace, where
+# these definitions replace the new ones (so the old functions call each other, never the new code). Never edit.
+
+def exit_policy(s, prm):
+    """Smart sell's decision, in one place (issue #137: Smart Sell runs it, Smart Buy simulates it). Pure: it reads
+    nothing but its two arguments (and the fixed constants above), so the live sellers and the simulator get the
+    same answer for the same state.
+    s: kind 'combo' or 'single'; value = what selling now brings (a combo: the steady estimate, live chance x payout
+       x Kalshi's discount; a single: contracts x (bid - fee)); real = a combo's real Kalshi offer for the whole
+       combo (0 = none); peak = the highest value seen so far (including now); pays = payout if it wins; cost = what
+       was paid; q = the live chance; live = a game under way.
+    prm: tp = take-profit share of the payout (0 = off); smart = smart sell is on (Let it ride isn't Ride it out),
+       with lam = the risk weight (swing x league x Let it ride), floor = the league's profit floor (x cost),
+       loss = the league's own learned loss cut (None = never), checkpoint = between a slate's games; cut_ok = every
+       loss guard held; trail = lock in after a run-up.
+    Returns {'sell', 'reason', 'threshold' (the least to accept), 'floor' (smart sell's hold value, shown on Live)}."""
+    combo = s.get("kind") == "combo"
+    val, real, peak = s["value"], s.get("real") or 0.0, s["peak"]
+    P, cost, q, live = s["pays"], s["cost"], s["q"], s["live"]
+    hits = []
+    tp = prm.get("tp") or 0
+    if tp:
+        f = max(tp * P, TP_MIN_GAIN * cost)
+        if (max(val / EXIT_EST_TP, real) if combo else val) >= f:
+            hits.append(("take profit", f))
+    floor2 = 0.0
+    if prm.get("smart"):
+        lam = prm["lam"]
+        floor2 = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), prm["floor"] * cost)
+        if q >= EXIT_Q_MIN and (max(val / EXIT_EST_SMART, real) if combo else val) >= floor2:
+            hits.append(("checkpoint" if prm.get("checkpoint") else "smart", floor2))
+        loss = prm.get("loss")
+        if loss and live and q <= loss and prm.get("cut_ok") and (combo or val > 0):
+            hits.append(("cut loss", CUT_ACCEPT * cost if combo else 0.0))   # learned for this league, every guard held
+    if hits:
+        why, thr = min(hits, key=lambda x: x[1])
+        return {"sell": True, "reason": why, "threshold": thr, "floor": floor2}
+    if prm.get("trail") and peak >= max(TRAIL_ARM * P, TRAIL_ARM_COST * cost) and val <= (1 - TRAIL_DROP) * peak \
+            and (max(val, real) if combo else val) >= TRAIL_FLOOR * cost:
+        return {"sell": True, "reason": "lock in", "threshold": TRAIL_FLOOR * cost, "floor": floor2}
+    return {"sell": False, "reason": None, "threshold": 0.0, "floor": floor2}
+
+
+def take_profit_reason(t, h, cut_ok=False):
+    """Whether Pete's profit rules say sell this combo now: "take profit" when the offer reaches his
+    take-profit % of the payout, or "lock in" when, after a big run-up, it has fallen 20% from its
+    high but is still a clear profit. A learned "cut loss" also needs `cut_ok`: the loss guards held
+    (stop_loss_check under "cut:<ticker>", run once per check by auto_sell_now); without it, never. Tracked on a steady estimate (live chance x payout x Kalshi's
+    usual discount) so a one-off quote can't fake a high or a drop; the real offer is checked before
+    any sale. Returns (reason, the least whole-combo offer to accept) or (None, 0)."""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return None, 0.0
+    live = any(lv for _, lv, _ in h.get("legs_left") or [])
+    est = kalshi_discount(live) * h["p"] * h["pays"]
+    o = MINE["cash"].get(t) or {}
+    real = o["offer"] / max(o.get("frac", 1.0), 0.01) if o.get("offer") and o.get("rfq") not in (None, "estimate") \
+        and time.time() - o.get("at", 0) <= offer_life() else 0.0
+    peak = MINE.setdefault("peak", {})
+    peak[t] = max(peak.get(t, 0.0), est)
+    prm = {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "cut_ok": cut_ok}
+    pr = smart_params([tk for (_, tk), _ in h.get("need") or []])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:  # nimble: lock in when that beats the risk of holding
+        lam, why_note = swing_lambda(h)
+        lam *= pr["lam"] * rl
+        prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"], checkpoint=bool(why_note))
+    d = exit_policy({"kind": "combo", "value": est, "real": real, "peak": peak[t], "pays": h["pays"],
+                     "cost": h["cost"], "q": h["p"], "live": live}, prm)
+    return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
+
+
+def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
+    """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book. A learned
+    "cut loss" also needs `cut_ok` (cut_loss_single_check: every loss guard held); without it, never.
+    Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
+    n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
+    if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
+        return None, 0.0
+    net = n * (bid - single_fee(bid))
+    t = x["t"]
+    peak = MINE.setdefault("peak", {})
+    if track:
+        peak[t] = max(peak.get(t, 0.0), net)
+    prm = {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "cut_ok": cut_ok}
+    pr = smart_params([t])
+    rl = ride_lam()
+    if CFG.get("smart_sell", True) and rl is not None:
+        leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
+        lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
+        lam *= pr["lam"] * rl
+        prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"])
+    d = exit_policy({"kind": "single", "value": net, "peak": peak.get(t, 0.0), "pays": n, "cost": cost, "q": q,
+                     "live": x.get("state") == "live"}, prm)
+    return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
+
+
+def smart_params(tickers):
+    """The smart-sell settings for a bet: its league's own once it has enough results, else its sport's,
+    else everyone's, else the starting point (1.5x floor, standard risk, no selling at a loss). The learned loss
+    cut is never borrowed (borrowing may only make selling at a loss stricter): only a league's own record turns
+    it on."""
+    d = smart_table()
+    k = bet_key(tickers)
+    sport = ticker_sport(next(iter(tickers), "") or "") if k not in ("mix",) else None
+    for key in (k, sport, "all"):
+        e = d.get(key) if key else None
+        if e and e.get("n", 0) >= SMART_MIN_N:
+            out = {**SMART_DEFAULT, **{x: e.get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}, "key": key}
+            if key != k:
+                out["loss"] = None
+            return out
+    return dict(SMART_DEFAULT, key=None)
+
+
+def _replay(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None):
+    """Replays smart sell on a bet's path with the given settings. Returns (profit, why) when it would have
+    sold, else None (it rides to the end). A loss cut happens only at the times in `cut_at` (when the live loss
+    guards would have held: _cut_guard_ts); with none given, never.
+    The decision is exit_policy's, the one live smart sell uses (issue #228); this only gathers its inputs from the
+    recorded prices. The replay's estimate stands in for Kalshi's offer, and a sale goes through only when it reaches
+    the least exit_policy says to accept (`threshold`), as live only sells at or above it; otherwise the bet rides on
+    to the next recorded price. Take profit stays off and Kalshi's real offer is not known here (see
+    docs/changes/228-pr0-replay.md for what still differs from live)."""
+    stake = c["stake"]
+    if c["kind"] == "combo":
+        P = c.get("pays") or 0
+    else:
+        p0 = c.get("paid") or c.get("price") or c["legs"][0].get("p") or 0.5
+        P = stake / (p0 + single_fee(p0))
+    if not P or len(path) < 3:
+        return None
+    tks = [l["ticker"] for l in c["legs"]]
+    kind = "combo" if c["kind"] == "combo" else "single"
+    cut_at = cut_at or ()
+    peak = 0.0
+    for ts, cur in path:
+        q = math.prod(cur[t] for t in tks)
+        open_ = [t for t in tks if 0.02 < cur[t] < 0.98]
+        if not open_:
+            return None
+        if kind == "combo":
+            est = kalshi_discount(True) * q * P
+        else:
+            x = cur[tks[0]]
+            est = P * max(x - single_fee(x) - 0.01, 0)
+        lam = SWING_BASE * lm * sum(SWING.get(ticker_sport(t) or "", 1.0) for t in open_) / len(open_)
+        peak = max(peak, est)
+        d = exit_policy({"kind": kind, "value": est, "real": 0.0, "peak": peak, "pays": P, "cost": stake, "q": q,
+                         "live": True},
+                        {"tp": 0, "trail": trail, "smart": True, "lam": lam, "floor": fl, "loss": loss,
+                         "checkpoint": False, "cut_ok": round(ts) in cut_at})
+        if d["sell"] and est >= d["threshold"]:
+            return round(est - stake, 2), d["reason"]
+    return None
+
+
+def exit_settings(tickers):
+    """Smart sell's settings for a bet, as exit_policy takes them (the same reads take_profit_reason makes), plus
+    the parts the simulator needs to rebuild the risk weight step by step."""
+    pr = smart_params(list(tickers))
+    rl = ride_lam()
+    smart = bool(CFG.get("smart_sell", True) and rl is not None)
+    sl = stoploss_params(list(tickers))
+    return {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "smart": smart,
+            "floor": pr["floor"], "loss": pr["loss"], "lam_mult": pr["lam"] * (rl or 0), "prog": sl["prog"],
+            "drop": sl["drop"], "key": pr.get("key")}

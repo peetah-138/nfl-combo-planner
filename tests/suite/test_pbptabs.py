@@ -1,3 +1,4 @@
+# CHECK: group=page secs=39
 """Slice 2 of the live game page (issue #72): the game-page TAB framework and the PLAY-BY-PLAY tab on the pushed game page.
 Display only. The game answer (with its ESPN-derived `detail.pbp` block, in the exact shape the engine's _parse_pbp makes) is
 scripted; nothing real is touched. Covers: the tab row and sliding underline, tab switching, the selection (and a stepped

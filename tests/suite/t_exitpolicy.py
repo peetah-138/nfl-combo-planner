@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Smart Buy stage 1 (issue #137): smart sell's decision moved into one pure function, exit_policy, which the live
 # sellers (take_profit_reason for combos, single_sell_reason for singles/spreads/totals) and the simulator share.
 # The refactor must not change a single live decision: the old functions (verbatim, fixtures/exit_policy_old.py.txt)

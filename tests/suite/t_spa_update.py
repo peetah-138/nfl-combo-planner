@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The update path with the web app in its own files (GitHub #124), end to end through the real update_if_newer and
 # spa_repair against a fake GitHub (commit API, file list with git's own hashes, raw files). A copy of the watcher
 # runs from a throwaway home; nothing here touches ~/combowatch or the repo. Cases: a normal update (new engine,

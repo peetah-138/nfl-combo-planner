@@ -47,7 +47,7 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## What's in it
 
-- **compile, JavaScript syntax, undefined names, secret grep.** JavaScript: `node --check` on every
+- **compile, JavaScript syntax, undefined names, secret grep, hermetic tests** (`suite/st_hermetic.py`, see Writing tests). JavaScript: `node --check` on every
   `watcher/spa/*.js` file and on the assembled page and login page (the watcher's own `spa_assemble`).
 - **The web app's files** (`t_spa_files.py`): every file in `watcher/spa/` is listed once in `MANIFEST.json`,
   non-empty, each script parses, the assembly is deterministic and complete, and a missing or broken folder never
@@ -97,6 +97,10 @@ pattern in a local `.git/hooks/pre-commit`.
   verbatim), stale sharp lines (fake clocks: a fresh free line wins near a game, the panel drops a stale one, an empty
   odds refresh expires the old snapshot), the green Buy and buy-idea bars, the closing mid in cut-off learning and
   CLV (re-quotes count once, symmetric rule), the news guard, the fee rounded up per order and a swapped-in bet's stake.
+  The second batch (`t_profit2.py`): combos under fair need a likely profitable exit whatever the dial (panel, swaps,
+  Buy ideas, the shadow log; fail closed), a real panel bet's profit from Kalshi's ledger (sold early, part-filled, a
+  shared market, a late ledger row; paper untouched), standing orders (watch fills only on a trade-through, the
+  calibrated price, the fee) and the weekly tuner's holdout (a step that only wins in-sample is refused).
   Money-safety hardening (`t_safety.py`, issue #143; every check failed on the code before it): the Pi (backup role)
   never sends an order and a synced Auto cash-out can't switch it on; a combo accept whose status poll fails (429, 5xx,
   timeout, unreadable) or that is never confirmed, or whose accept itself got a 5xx/timeout, is "check" in the web
@@ -154,6 +158,25 @@ pattern in a local `.git/hooks/pre-commit`.
 
 ## Writing tests
 
+Three rules (GitHub #189: every CI flake so far broke one of them):
+
+1. **Hermetic.** A test never reads the real internet: stub what it calls (`E.injury_note`, `E.book_depth`,
+   `E.game_context`, `E.requests.get` ...) or use `fakenet`. Every engine test runs under `suite/netguard/`
+   (`PYTHONPATH`, a `sitecustomize.py`): any connection to anything but this machine is refused and prints
+   `FAIL hermetic: ... <host> from <engine function>`, so a leak fails at once instead of depending on what ESPN
+   says that hour. `NETGUARD_OFF=1` turns it off while debugging. `st_hermetic.py` (static group) checks the guard
+   works, the harness keeps its flags, and no test calls a real address directly.
+2. **Wait for state, never a fixed time.** Poll for the thing you expect (`page.evaluate(...)` in a loop,
+   `wait_for_function`), hold the page still before drawing your own data in (`upwait.go_and_hold`, below), and do
+   timing-bound checks inside one `page.evaluate` (an `await` on the event) rather than across round trips: a busy
+   runner stretches every sleep.
+3. **Nothing shared.** Use your lane's port (`CW_WEBAPP_PORT`, from `CHECK_PORT_BASE`), `tempfile.mkdtemp()` for files
+   and databases, ids that can't collide (two rows stored in the same second must still differ), and dates from the
+   fake clock or `fakenet.us_day` (CI runs on UTC).
+
+- One-time, per clone: `git config rerere.enabled true`. Git then remembers how you resolved a conflict and replays it
+  on the next rebase of a parallel PR, so a repeated conflict is only ever resolved once.
+
 - Engine tests print `PASS ...`/`FAIL ...` lines. Page tests print `PROBLEMS: ...` on any failure and their JS
   errors as `errs: [...]`; the runner fails on either, or on any traceback other than a dropped connection.
 - Page tests share `test_settings.py`'s setup (everything before `with sync_playwright() as pw:`), which starts the
@@ -161,8 +184,16 @@ pattern in a local `.git/hooks/pre-commit`.
 - Numbers on Live animate (~0.65 s), page changes render on the next frame, and pages refresh themselves: wait
   for the state you expect (poll `page.evaluate(...)`) rather than a fixed sleep, or stop refreshes with
   `window.load=async()=>{}` after the page has loaded.
-- Add every new test to the lists in `suite/checklist.py` (`ENGINE` or `PAGE`; `t_shards.py` fails if a test file
-  is missing from them). Optionally add its seconds to `SECS` there so the shards stay balanced.
+- **Adding a test means adding one file, and nothing else** (so parallel PRs never conflict on a shared list):
+  1. Name it `suite/t_<name>.py` (engine test, run one after another), `suite/test_<name>.py` (page test, run in
+     parallel lanes and CI shards) or `suite/st_<name>.py` (a static check written as a script).
+  2. Put a header comment in its first lines: `# CHECK: group=engine` (`group=static` for st_), or `# CHECK: group=page secs=45` (roughly how
+     many seconds it takes on a CI runner; it only balances the shards, `retry` after it allows one automatic rerun in
+     CI for a test that is timing-bound by nature). Details are at the top of `suite/checklist.py`.
+  3. Describe what it covers in a comment right under the header. Do not add a bullet to "What's in it" above unless
+     the test opens a whole new area: that list is shared, and shared lists are where parallel PRs conflict.
+  `checklist.py` finds the file by globbing; `t_shards.py` fails if a test file has no valid header, and the listed
+  order is simply name order (tests don't depend on each other).
 - Start the web app with `__import__("upwait").wait_up()` after the thread (it waits for the port), not a fixed sleep.
 - Before drawing your own data into a screen, wait for the page's own loads to finish, or one still in flight can
   overwrite it: `pg.add_init_script(upwait.COUNT_FETCHES)` before `goto`, then `upwait.go_and_hold(pg, "live")`
@@ -178,7 +209,7 @@ pattern in a local `.git/hooks/pre-commit`.
 own runner, 3 lanes, its own ports). `suite/checklist.py` does the split: deterministic, longest tests first, every
 test in exactly one shard (checked by `t_shards.py`, which also checks CI runs every shard and every group). A final
 job named `checks` (the one branch protection requires) passes only when all of them passed. pip and the Playwright
-browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test listed in `checklist.RETRY` once and the log says
+browsers are cached. `CHECK_RETRY=1` (CI only) reruns a page test whose header says `retry` once and the log says
 `RETRIED`; it holds only `test_rebuild_ui` (see why there): fix a flaky test instead of adding it. Locally, `bash tests/run_checks.sh` still runs everything, and
 you can run one part the same way, e.g. `CHECK_GROUPS=pages CHECK_SHARD=2/5 bash tests/run_checks.sh`. Each page
 test's PASS line shows its seconds.

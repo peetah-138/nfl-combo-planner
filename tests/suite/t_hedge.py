@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Auto-hedge gets guards (issue #27): it only buys the other side of a combo's last game while that game is in play on
 # a fresh score, not at a break, when it locks in at least what the combo cost, after the same reading held on 3+
 # checks over 3+ minutes, and on a price re-read from the order book right before buying. A hedge with an unknown
@@ -42,7 +43,7 @@ E.get_cash_offer = lambda t, f=1.0: {"offer": 13.0, "frac": 1.0, "rfq": "x", "co
 E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20}], None)
 E.sold_today = lambda: 0
 E.smart_sell_singles = lambda: []
-E.accept_cash = lambda t: (sold.append(t), "✅ sold")[1]
+E.accept_cash = lambda t, floor=None: (sold.append(t), "✅ sold")[1]
 E.drop_cash = lambda t: E.MINE["cash"].pop(t, None)
 E.haptic = lambda *a: None
 real_log = E.log_decision

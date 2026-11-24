@@ -65,7 +65,7 @@ function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.sty
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
-const pct=x=>x==null?'—':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
+const pct=x=>x==null?'—':x>=.995&&x<1?'>99%':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
 const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
 const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
 const SVG={live:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".45"/></svg>',
@@ -78,14 +78,16 @@ const S={view:(localStorage.getItem('cw_view')||'live'),live:null,build:null,res
 /* A toast always goes away. It has a deadline (not just a timer), and the page also checks that deadline on its own
    every second and whenever you touch, scroll or come back to it, because phones pause timers in the background.
    Tap anywhere to dismiss it early. After the fade it is taken out of the layout so it can never linger. */
-function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on');clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
+function toastHide(){const t=$('#toast');if(!t)return;t._until=0;clearTimeout(t._h);t.classList.remove('on','tap');t.onclick=null;clearTimeout(t._x);t._x=setTimeout(()=>{if(!t.classList.contains('on'))t.hidden=true;},450);}
 function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()>=(t._until||0))toastHide();}
-function toast(m,ms,tone){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
+/* onTap (optional): the toast becomes a button for that (e.g. open the combo it's about, #210); without it, taps go through. */
+function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
  if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
+ t.classList.toggle('tap',!!onTap);t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
-addEventListener('pointerdown',()=>{const t=$('#toast');if(t&&t.classList.contains('on')&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
+addEventListener('pointerdown',e=>{const t=$('#toast');if(t&&t.classList.contains('on')&&!(t.classList.contains('tap')&&t.contains(e.target))&&Date.now()-(t._at||0)>700)toastHide();},{capture:true,passive:true});
 /* Sheets. modal() is the bottom sheet (confirmations, small things). pushOpen()/pushFill() is the Kalshi-style push for
    detail pages (a game, a combo): the page slides in from the right in ~270 ms (ease-out) while the page behind slides a
    third of the way left and dims; flat skeleton blocks show until the content swaps in. Back, a tap on the dimmed
@@ -98,7 +100,7 @@ function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.ga
 /* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
    short plain reasons in a sheet. `where` is one of two fixed words, never page data. */
 function sbSkipLine(xs,where){xs=(Array.isArray(xs)?xs:[]).filter(x=>x&&x.text);S.sbSkip=S.sbSkip||{};S.sbSkip[where]=xs;if(!xs.length)return '';
- const cr=xs.filter(x=>x.credits).length,who=cr===xs.length?'Saving odds credits: left out':cr?'Left out':'Smart Buy skipped';
+ const cr=xs.filter(x=>x.credits).length,ip=xs.filter(x=>x.inplay).length,who=cr===xs.length?'Saving odds credits: left out':ip===xs.length?'Games under way: left out':cr||ip?'Left out':'Smart Buy skipped';
  return `<button class="linkb sbskip" type="button" onclick="sbSkipOpen('${where==='ideas'?'ideas':'panel'}')">${who} ${xs.length} ${where==='ideas'?'idea':'bet'}${xs.length===1?'':'s'} · Why?</button>`;}
 function sbSkipOpen(w){const xs=(S.sbSkip||{})[w]||[];
  const cr=xs.filter(x=>x.credits).length,sb=xs.length-cr;
@@ -234,8 +236,8 @@ function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.d
 setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
 setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
 async function load(v,fresh){try{warm(v);
- if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1':''));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
- if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')),api('/app/api/panel?v='+pv).catch(()=>null)]);
+ if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1'+ovQ('&'):ovQ('?')));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
+ if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')+ovQ('&')),api('/app/api/panel?v='+pv+ovQ('&')).catch(()=>null)]);
   if(lg!==S.lg||pv!==(S.pview||'all'))return;S.build=b;S.panel=p;cput('build_'+lg,b);cput('panel_'+pv,p);}
  if(v==='results'){S.res=await api('/app/api/results');head(S.res);cput('results',S.res);
   api('/app/api/analytics').then(a=>{S.an=a;cput('analytics',a);if(S.view==='results')renderResults();}).catch(()=>{});}

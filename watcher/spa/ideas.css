@@ -1,0 +1,55 @@
+/* Live: foldable sections, Buy ideas that dismiss, the detail page (#141) */
+.lsec .fbtn{display:flex;align-items:center;gap:8px;min-height:44px;margin:-12px 0;padding:8px 10px 8px 0;background:none;border:0;border-radius:8px;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;text-align:left;cursor:pointer}
+.lsec .fbtn .chev{display:inline-block;width:16px;color:var(--mute);transition:transform .28s var(--spring)}.lsec .fbtn[aria-expanded=false] .chev{transform:rotate(-90deg)}
+.fold{display:grid;grid-template-rows:1fr;transition:grid-template-rows .3s var(--ease)}
+.fold>.fin{min-height:0;overflow:hidden;margin:-4px;padding:4px}
+.fold.shut{grid-template-rows:0fr}.fold.shut>.fin{visibility:hidden;transition:visibility 0s .3s}
+.iw{transition:height .26s var(--ease),margin-bottom .26s var(--ease),opacity .22s}
+.iw.out .dcard{transform:translateX(-112%);opacity:0;transition:transform .26s var(--ease) var(--d,0ms),opacity .2s var(--d,0ms)}
+.dcard.idea{position:relative;touch-action:pan-y}
+.dcard.idea.swp{transform:translateX(var(--sx,0px))!important;transition:none}
+.dcard.idea.swpast{box-shadow:inset -4px 0 0 var(--no)}
+.dcard.idea .ihd,.dcard.idea h4{padding-right:30px}
+.dcard.idea.rise{animation:rise .38s var(--ease)}
+.itag-stale{background:var(--livebg);color:var(--live)}
+.ix{position:absolute;top:2px;right:2px;width:44px;height:44px;display:grid;place-items:center;background:none;border:0;padding:0;color:var(--mute);cursor:pointer;z-index:2}
+.ix svg{width:26px;height:26px;padding:5px;box-sizing:border-box;border-radius:50%;background:var(--panel2);fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round}
+.icap{font-size:12px;margin:-2px 2px 8px}
+.imore{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:44px;margin:-6px 0 12px;background:var(--panel);border:1px dashed var(--line);border-radius:var(--r);color:var(--sub);font-weight:700;font-size:13px;cursor:pointer}
+.imore .chev{display:inline-block;transition:transform .28s var(--spring)}.imore.open .chev{transform:rotate(180deg)}
+.linkb{display:block;min-height:44px;padding:10px 4px;background:none;border:0;color:var(--acc);font-weight:600;font-size:13px;cursor:pointer}
+.iempty{display:grid;justify-items:center;gap:4px;margin:4px 0 18px;padding:22px 16px;text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);color:var(--sub)}
+.iempty svg{width:44px;height:44px;margin-bottom:6px;color:var(--yes)}.iempty b{color:var(--ink);font-size:15px}.iempty span{font-size:13px}
+.ihd2{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.imv svg{display:block;width:100%;height:56px}
+.idact{display:grid;gap:10px;margin:16px 0 8px}.idact .dbtns{grid-row:auto}.idact .btn{flex:1;text-align:center}
+#undo{position:fixed;left:50%;width:max-content;bottom:calc(84px + env(safe-area-inset-bottom));z-index:51;display:flex;align-items:center;gap:6px;max-width:min(560px,92vw);padding:4px 4px 4px 16px;background:var(--ink);color:var(--bg);border-radius:12px;font-weight:600;font-size:14px;transform:translateX(-50%) translateY(20px);opacity:0;transition:transform .38s var(--spring),opacity .2s}
+#undo.on{opacity:1;transform:translateX(-50%)}#undo[hidden]{display:none!important}
+#undo button{min-height:44px;padding:0 14px;background:none;border:0;border-radius:9px;color:inherit;font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}
+@media (prefers-reduced-motion:reduce){.sfold .chev,.scard{transition:none!important}.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
+h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}
+/* change vs paid (#100): tabular, sign always printed, two fixed lines (% over $) so a sign flip never moves the row.
+   <html data-chg> picks what shows; the colour follows what is shown (data-b both, data-p %, data-u $). */
+.chg{display:flex;flex-direction:column;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1.35;min-width:5.6ch}
+html[data-chg=pct] .chg .cd,html[data-chg=usd] .chg .cp,html[data-chg=pct] .dch:not(.nop) .cd,html[data-chg=usd] .dch .cp{display:none}
+html[data-chg=both] .chg[data-b=up],html[data-chg=pct] .chg[data-p=up],html[data-chg=usd] .chg[data-u=up]{color:var(--yes)}
+html[data-chg=both] .chg[data-b=down],html[data-chg=pct] .chg[data-p=down],html[data-chg=usd] .chg[data-u=down]{color:var(--no)}
+html[data-chg=both] .chg[data-b=flat],html[data-chg=pct] .chg[data-p=flat],html[data-chg=usd] .chg[data-u=flat]{color:var(--sub)}
+html[data-chg=both] .dch:not(.nop) .cp::before{content:' ('}html[data-chg=both] .dch:not(.nop) .cp::after{content:')'}
+html[data-chg=both] .dch.est .cd::before,html[data-chg=usd] .dch.est .cd::before,html[data-chg=pct] .dch.est .cp::before,.dch.est.nop .cd::before{content:'≈ '}
+.dkpis .chg{margin-top:2px}
+.chgbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 6px;font-size:11.5px;color:var(--mute)}
+.chgsw{display:inline-flex}.chgsw button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;border-radius:7px;
+ min-width:44px;min-height:44px;margin:-14px 0;padding:0 8px;display:inline-flex;align-items:center;justify-content:center}
+.chgsw button.on{color:var(--ink);background:var(--panel2)}
+.chgsw button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.num .chg,.offer .chg{align-items:flex-end}
+@media (max-width:1360px){.trow .numwrap .chg{align-items:flex-start}}
+/* #252: a fresh price's verdict, the answer to a Buy tap, and the older "when found" numbers */
+.ivd,.ians{margin:10px 0 2px;padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.4;background:var(--panel2);color:var(--ink)}
+.ivd.no{background:var(--nobg)}.ivd.warn{background:rgba(245,181,68,.16)}
+.ians.good{background:var(--yesbg)}.ians.bad{background:var(--nobg)}
+.ians{animation:ians .32s var(--spring,ease-out)}@keyframes ians{from{opacity:0;transform:translateY(4px)}}
+.iold{opacity:.6}.iold>.m{font-size:12px;margin:2px 0 4px}.inow{font-size:12px;margin:12px 0 2px;font-weight:700}
+@media (prefers-reduced-motion:reduce){.ians{animation:none}}
+.ifsrc{display:block;font-size:11px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--mute);margin-top:1px}

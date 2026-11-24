@@ -1,6 +1,8 @@
+# CHECK: group=engine
 import os, time, tempfile, importlib.util, json
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 import datetime as _dt; _u = _dt.datetime.now(_dt.timezone.utc); E.PACIFIC = _dt.timezone(_dt.timedelta(hours=round(12 - _u.hour - _u.minute / 60)))  # midday "Pacific" whenever it runs, so the fake games (2.5 h out) are in today's panel day
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp(); E.SIZING_FILE = os.path.join(E.HERE, "s.json"); E.CUTOFF_FILE = os.path.join(E.HERE, "c.json")
 E.REBUILD_FLAG = os.path.join(E.HERE, "flag"); E.HELD_FILE = os.path.join(E.HERE, "held.json"); E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
@@ -69,6 +71,9 @@ ok("sport drafts drop pre-game-priced bets on started games", E.panel_get("view:
 
 # Pete's call: a game under way may be in the panel, but only priced live on a fresh score (see t_live_panel.py)
 E.save_json(E.MAIN_SAVED, {"panel_live": True})
+E.comeback_judge = (lambda c, now=None, sim=None: (lambda o: {"ok": o, "old": o, "new": o, "pregame": True,   # (#348)
+                    "why": None if o else E.IN_PLAY_WHY})(E.smart_buy_ok(sim if sim is not None else E._sb_sim(c, now))))
+# ^ today's gate only: this checks the draft rules; the comeback model (fresh score, features) is t_comeback's
 E.store_x("delete from panel")
 lv = mk("H8", "KXNHLGAME-8", .62, .52, now - 600)
 lv.update(live=True, kick_pre=None)

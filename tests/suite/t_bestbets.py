@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Build's "Best bets today" (issue #63): ONE ranked, recommend-only feed. A bet is listed only with BOTH an edge at a fair
 # price after fees AND a likely route to profit under smart sell's exit policy; ranked by expected dollars at the
 # suggested stake; fails closed (unreadable balance, an unmodellable bet, any error = not listed); display only (nothing

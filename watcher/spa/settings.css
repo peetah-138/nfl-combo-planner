@@ -1,0 +1,83 @@
+/* settings */
+.set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
+.sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
+.sidx .sj{display:flex;align-items:center;gap:10px;padding:8px 12px;border:0;background:none;border-radius:9px;color:var(--sub);font:inherit;font-weight:600;font-size:13.5px;text-align:left;cursor:pointer}
+.sidx .sj:hover{background:var(--panel2);color:var(--ink)}.sidx .sj .js{display:none}.sidx .sv{margin-top:14px;padding:0 12px;color:var(--mute);font-size:12px}
+.shead{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:2px 0 18px}.shead h1{margin:0;font-size:24px;letter-spacing:-.02em}
+.shead p{margin:4px 0 0;color:var(--mute)}.saved{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--mute);display:flex;align-items:center;gap:7px}
+.saved.ok{color:var(--yes)}
+.scard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:18px;scroll-margin-top:84px}
+.scard>header{padding:0;display:block}.scard>header .ic{font-size:18px;line-height:1.2}
+.scard h3{margin:0;font-size:15.5px;letter-spacing:-.01em}.scard header p{margin:-4px 0 0;padding:0 22px 14px 52px;color:var(--mute);font-size:12.5px;max-width:612px}
+/* Settings folds, jump chips, search and the Mac line (GitHub #212): a section's header is a 56pt toggle. It is full width, so it carries no see-through switch (data-hsw=0, #281: a stack of them stopped iOS scrolling) */
+.sfold{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:14px 22px;background:none;border:0;border-radius:var(--r);color:inherit;font:inherit;text-align:left;cursor:pointer}
+.sfold .ic{flex:none;width:22px;text-align:center}.sfold .st{flex:1;min-width:0}
+.sfold .sbadge{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mute);font-size:12.5px;font-weight:600;letter-spacing:0}.sfold .sbadge:empty{display:none}
+.sfold .chev{flex:none;display:inline-block;width:16px;color:var(--mute);font-weight:400;transition:transform .28s var(--spring)}.sfold[aria-expanded=false] .chev{transform:rotate(-90deg)}
+.scard.shut>header p{display:none}.scard{transition:margin-bottom .3s var(--ease)}.scard.shut{margin-bottom:12px}
+.sj .ji{flex:none}
+.stop{min-width:0}
+.smac{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:0 0 12px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--ink);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
+.smac .dot{flex:none;width:8px;height:8px}.smac .dot.upd{background:var(--live);box-shadow:0 0 0 4px rgba(255,159,10,.18)}.smac .t{flex:1;min-width:0}.smac .t i{font-style:normal;font-weight:600}.smac .t i.ok{color:var(--yes)}.smac .t i.upd{color:var(--live)}
+.smac .go{flex:none;color:var(--mute);font-size:18px;line-height:1}
+.ssearch{position:relative;margin:0 0 12px}.ssearch svg{position:absolute;left:12px;top:50%;width:18px;height:18px;margin-top:-9px;color:var(--mute);pointer-events:none}
+.set .ssearch input#sq{-webkit-appearance:none;appearance:none;padding:11px 40px 11px 38px;font-size:16px;min-height:44px;border-radius:12px}.ssearch input::-webkit-search-cancel-button{-webkit-appearance:none;display:none}
+.ssearch .sclr{display:none;position:absolute;right:2px;top:50%;width:40px;height:40px;margin-top:-20px;border:0;background:none;color:var(--mute);font-size:15px;border-radius:50%;cursor:pointer}.set.sq .ssearch .sclr{display:block}
+.sempty{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;padding:28px 16px;margin-bottom:14px;color:var(--mute);background:var(--panel);border:1px dashed var(--line);border-radius:var(--r)}.sempty[hidden]{display:none}.sempty b{color:var(--ink);font-size:15px}.sempty span{margin-top:-8px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.sq-no,.sq-off{display:none!important}
+.set.sq .fold.shut{grid-template-rows:1fr}.set.sq .fold.shut>.fin{visibility:visible;transition:none}.set.sq .scard .sfold .chev{transform:none}
+.srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
+.srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
+.srow.dim{opacity:.45;pointer-events:none}
+.hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
+.hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
+.hxbtn .hsw{border-radius:inherit}
+/* Method N (#60): the see-through switch over each control, so the finger's own tap lands on a real switch (the tick).
+   appearance:none with nothing painted; opacity .01 like G's confirmed switch, never hidden, never pointer-events:none. */
+.hsw{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:inherit;background:transparent!important;box-shadow:none!important;-webkit-appearance:none!important;appearance:none!important;opacity:.01!important;transform:none!important;transition:none!important;animation:none!important;outline:none!important;cursor:inherit;flex:none;font-size:0;color:transparent;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+.hsw::before,.hsw::after{display:none!important}
+.hsw~svg,.hsw~* svg,.hsw~.mline,.hsw~* .mline{pointer-events:none}   /* icons and chance lines inside a control (they paint above the switch): the tap goes through to it */
+html:not(.hswon) .hsw,:disabled>.hsw,[aria-disabled="true"]>.hsw{display:none!important}
+.hsw,:where(html.hswon) :where(button,[onclick],.chip,.trow){touch-action:manipulation}   /* #151: a drag that starts on a switch still scrolls the page (pan both ways, pinch; no double-tap zoom) */
+html.hswscr .hsw{pointer-events:none!important}   /* #151: mid-scroll a touch goes past the switches, so it keeps scrolling */
+:where(html.hswon) :where(button,[onclick],.chip,.trow){position:relative}
+.hxs{min-width:92px;text-align:right;color:var(--sub);font-weight:700;font-size:13px;opacity:0}.hxs.on{opacity:1;animation:obump .32s var(--spring)}
+.hxrow .l small{margin-top:6px}
+.rng{display:flex;align-items:center;gap:14px;width:min(340px,48%)}.rng output{min-width:70px;text-align:right;font-weight:700;font-size:14.5px}
+input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:6px;border-radius:9px;outline:none;
+ background:linear-gradient(90deg,var(--acc) var(--p,50%),var(--panel2) var(--p,50%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45),0 0 0 1px rgba(0,0,0,.06)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 1px 4px rgba(0,0,0,.45)}
+.tg{-webkit-appearance:none;appearance:none;width:44px;height:26px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);position:relative;flex:none;cursor:pointer;transition:background .18s}
+.tg::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:transform .18s}
+.tg:checked{background:var(--yes);border-color:var(--yes)}.tg:checked::after{transform:translateX(18px)}
+.seg{display:flex;background:var(--panel2);border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{border:0;background:none;padding:7px 11px;border-radius:8px;color:var(--sub);font-weight:600;font-size:12.5px}
+.seg button.on{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.mixl>.mixr{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 22px;border-top:1px solid var(--line)}
+.mixr b{display:block;font-weight:600}.mixr small{color:var(--mute);font-size:12px}
+.mixs{display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--mute)}.mixs>div{display:flex;align-items:center;gap:8px}.mixs>div>span:first-child{min-width:84px}
+.mixt{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,minmax(96px,126px));align-items:center;border-top:1px solid var(--line)}
+.mixt>div{padding:11px 22px 11px 0;border-top:1px solid var(--line)}.mixt>div:nth-child(4n+1){padding-left:22px}
+.mixt .h{border-top:0;color:var(--mute);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding-top:12px;padding-bottom:6px}
+.mixt b{display:block;font-weight:600}.mixt small{color:var(--mute);font-size:12px}
+.stp{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:9px;background:var(--panel2);overflow:hidden}
+.stp button{border:0;background:none;width:30px;height:30px;color:var(--sub);font-size:16px;font-weight:600}.stp button:hover{color:var(--ink);background:var(--hover)}
+.stp span{min-width:28px;text-align:center;font-weight:700}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));border-top:1px solid var(--line);overflow:hidden}
+.kv>div{padding:13px 22px;box-shadow:1px 1px 0 var(--line)}.kv>div>span{display:block;color:var(--mute);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.kv b{font-size:14.5px;display:flex;align-items:center;gap:7px;margin-top:2px;word-break:break-all}
+.sact{display:flex;gap:8px;flex-wrap:wrap;padding:14px 22px;border-top:1px solid var(--line)}
+.code{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
+.logbox{font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--sub);background:var(--bg);border-top:1px solid var(--line);padding:12px 22px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;border-radius:0 0 var(--r) var(--r)}
+input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font:inherit}
+@media (max-width:1100px){.set{display:flex;flex-direction:column;--g:24px}.set>div{display:contents}.stop{order:0}.srest{order:2}
+ .sidx{order:1;align-self:stretch;position:sticky;top:var(--toph,60px);z-index:15;display:flex;overflow-x:auto;scrollbar-width:none;gap:6px;margin:0 calc(-1*var(--g)) 12px;padding:8px var(--g);background:var(--bg);box-shadow:0 1px 0 var(--line)}
+ .sidx::-webkit-scrollbar{display:none}.sidx .sj{flex:none;white-space:nowrap;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:9px 13px;font-size:12.5px}.sidx .sj .jf{display:none}.sidx .sj .js{display:inline}.sidx .sv{display:none}
+ .scard{scroll-margin-top:calc(var(--toph,60px) + 62px)}}
+@media (max-width:640px){.set{--g:14px}}
+@media (max-width:640px){.srow{flex-wrap:wrap;gap:10px;padding:13px 16px}.srow .rng{width:100%}.sfold{padding:14px 16px}.scard header p{padding:0 16px 12px 46px}.kv>div{padding:12px 16px}.sact{padding:12px 16px}
+ .mixt{grid-template-columns:minmax(0,1fr) repeat(3,auto)}.mixt small{display:none}.mixt>div{padding:10px 6px 10px 0}.mixt>div:nth-child(4n){padding-right:16px}.mixt>div:nth-child(4n+1){padding-left:16px}.stp button{width:24px;height:28px}.stp span{min-width:18px}.seg button{padding:7px 8px}}
+/* Settings › Selling at a loss (#228 PR5): the three choices sit under the words, full width, labels may wrap */
+#slrow{flex-wrap:wrap}#slrow .l{flex:1 1 100%}.seg.slseg{flex:1 1 100%;width:100%;margin-top:8px}.seg.slseg button{white-space:normal;line-height:1.25;min-height:44px;flex:1 1 0}

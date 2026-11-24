@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Manual single-game buy (issue #113): Pete taps a team (or a spread/total) and buys it straight. The quote reads
 # Kalshi's order book now and is good for 20 s; the buy re-reads the book, refuses a higher price, and sends one
 # fill-now-or-cancel order at the quoted price (never more), once per quote. Pause, the weekly cap and the
@@ -97,8 +98,9 @@ ok(f"suggested stake = the panel's sizing (quarter Kelly on a 30%-shrunk edge, $
 q0 = E.single_buy_quote(dict(X, fair=0.70), 5)
 ok("negative edge: allowed, but yellow (not clears) with a 'price above fair' warning, suggested $2",
    q0["ok"] and not q0["clears"] and q0["edge"] < 0 and any(w["k"] == "above" for w in q0["warn"]) and q0["sug"] == 2.0)
-ok("a stake over $100 is held to $100; a silly one falls back to the suggestion",
-   E.single_buy_quote(X, 500)["stake"] == 100.0 and E.single_buy_quote(X, "abc")["stake"] == qs["sug"])
+ok("a stake over $100 or a silly one is refused, never clamped or guessed (issue #145: the server checks the amount)",
+   E.single_buy_quote(X, 500).get("bad_stake") and E.single_buy_quote(X, "abc").get("bad_stake")
+   and not E.single_buy_quote(X, 500)["ok"])
 qn = E.single_buy_quote(dict(X, src=None))
 ok("no sportsbook line: no fair price, Kalshi's price only (yellow), says so", qn["ok"] and qn["fair"] is None
    and not qn["clears"] and any(w["k"] == "nofair" for w in qn["warn"]))

@@ -6,6 +6,7 @@ async function openGame(t){if(!t)return;S.comboOpen=null;S.ideaOpen=null;S.gameO
 function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
 async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
  if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
+ if(typeof gtabHeld==='function'&&gtabHeld()){clearTimeout(S.gtabRT);S.gtabRT=setTimeout(drawGame,700);return;}   // #218: a finger on the tab row too
  const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
   if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
@@ -31,17 +32,17 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
   <div class="chartbox">${winChart(pts,st.plays)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
-   <div><h2 style="margin:0 0 6px">Your bets on this game</h2>${r.combos.map(c=>`<div class="moment" ${c.single?'':`style="cursor:pointer" onclick="openCombo('${c.t}')"`}><span class="k">${c.single?'📏':'🎯'}</span><span><b>${esc(c.label)}</b> <span class="m">${c.single?(c.how?esc(c.how)+' · ':'')+pct(c.p)+' chance':c.legs+' picks · '+pct(c.p)+' to hit'}</span></span><b>${money(c.pays)}</b></div>`).join('')||'<div class="m">None pending.</div>'}
+   <div><h2 style="margin:0 0 6px">Your bets on this game</h2>${r.combos.map(c=>`<div class="moment" ${c.single?'':`style="cursor:pointer" onclick="openCombo('${c.t}')"`}><span class="k">${c.single?'📏':'🎯'}</span><span><b>${esc(c.single?betPlain(c):c.label)}</b>${(c.parts||[]).length>1&&(c.parts||[]).some(q=>q.plain)?`<span class="bparts">${c.parts.map(q=>esc(q.plain||'')+(q.matchup?' ('+esc(q.matchup)+')':'')).join(' + ')}</span>`:''} <span class="m">${c.single?(c.how?esc(c.how)+' · ':'')+pct(c.p)+' chance':c.legs+' picks · '+pct(c.p)+' to hit'}</span></span><b>${money(c.pays)}</b>${c.single&&typeof ssOpen==='function'?`<button class="btn yes sm" data-sss="${esc(c.t)}" onclick="event.stopPropagation();ssOpen('${c.t}')">Sell</button>`:''}</div>`).join('')||'<div class="m">None pending.</div>'}
    ${r.whatif?`<h2 style="margin:16px 0 6px">What if…</h2><div class="whatif"><div class="wi up"><span>${esc(short(l.name))} get the next ${esc(r.whatif.unit)}</span><b>${pct(r.whatif.up)}</b><small>to win${r.combos[0]&&r.combos[0].if_up!=null?` · ${esc(r.combos[0].label)} worth ≈${money(r.combos[0].if_up)}`:''}</small></div>
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
   ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;
  pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
-   <h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3></div></div>
+   ${l.matchup&&l.found!==false?`<h3 style="font-size:20px">${ICON[l.sport]||''} ${l.kind==='total'||l.kind==='spread'?'Game: ':''}${esc(l.matchup)}</h3><div class="bwhat">Your bet: ${esc(betPlain(l))}</div>`:l.matchup?`<h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(betPlain(l))}</h3><div class="bwhat">${betWhere(l)}</div>`:`<h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3>`}</div></div>
   <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
   ${fieldStrip(gameStepDetail(r),l)}
-  ${gameTabsHtml(r,ov)}${gameBuyBar(r)}`,l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
+  ${gameTabsHtml(r,ov)}${gameBuyBar(r)}`,l.matchup&&l.found!==false?l.matchup:l.opp?short(l.name)+' vs '+short(l.opp):l.name);gameAfterPaint(r);}
 /* The live field strip (football only, display only): our own art from ESPN's team colours. A 100-yard field with the
    two end zones tinted, a yard ruler (G 10 20 30 40 50 40 30 20 10 G), a ball at the line of scrimmage, a possession
    arrow pointing the way the offence is driving, a yellow first-down line and red-zone shading inside the 20. The ball
@@ -60,8 +61,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  // Where is the ball? Prefer the drive's yards-to-end-zone; fall back to the situation's yardLine (0 own goal → 100 foe).
  let ytz=dr.ballYardsToEndzone;if(ytz==null&&sit.yardLine!=null)ytz=100-sit.yardLine;
  // Who has it, and which way do they drive? Away attacks right (home's zone), home attacks left (away's zone).
- const offAbbr=dr.teamAbbr||(sit.possessionText||'').split(' ')[0]||'';
- const homeHas=offAbbr&&home.abbr&&offAbbr.toUpperCase()===home.abbr.toUpperCase();
+ const offAbbr=possTeam(d);                        // '' when nobody is known to have it (never guessed from the ball spot)
+ const homeHas=!!offAbbr&&!!home.abbr&&offAbbr===home.abbr.toUpperCase();
  const haveBall=ytz!=null;
  // Field goes 0..100 left→right in the 100-yard playing area. Everything inside .grass (ball, arrow, ticks, first-down line,
  // red zone) is positioned in % of the GRASS box, which already sits between the two end zones, so a spot at N yards from the
@@ -80,8 +81,8 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  const ticks=Array.from({length:11},(_,i)=>`<i style="left:${i*10}%"></i>`).join('');
  // The ball marker + possession arrow point the direction of the drive.
  const dir=homeHas?-1:1;                           // home drives left (−), away drives right (+)
- const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>
-   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:'';
+ const ball=haveBall?`<i class="fball" style="left:${losPct.toFixed(2)}%"><svg viewBox="0 0 24 14" aria-hidden="true"><ellipse cx="12" cy="7" rx="11" ry="6"/><line x1="7" y1="7" x2="17" y2="7"/></svg></i>${offAbbr?`
+   <i class="fdir" style="left:${losPct.toFixed(2)}%;transform:translate(${dir>0?'6px':'-110%'},-50%) scaleX(${dir})">▶</i>`:''}`:'';
  // Only draw the first-down line when a ball marker is shown, so a partial feed can't leave a floating line with no ball.
  const fdLine=(haveBall&&fdPct!=null)?`<i class="fdline" style="left:${fdPct.toFixed(2)}%"></i>`:'';
  // The red zone is 20 yards deep in front of the defending end zone: left end zone (home attacking) covers 0..20,
@@ -90,7 +91,7 @@ function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{}
  // The situation line: down & distance, ball spot, who has it; and the last play + its type.
  const dd=sit.downDistanceText||dr.downDistanceText||'';
  const spot=sit.possessionText||'';                 // ESPN's "IND 27"; no synthetic number if the feed lacks it
- const offName=homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
+ const offName=!offAbbr?'':homeHas?short(home.name||home.abbr):short(away.name||away.abbr);
  const lastPlay=(sit.lastPlayText||'').trim();const lastType=(sit.lastPlayType||'').trim();
  return `<div class="fstrip${reduce?' noanim':''}">
   <div class="fld" role="img" aria-label="Field position">
@@ -110,6 +111,11 @@ function _teamSide(d,abbr){if(!d||!d.board||!abbr)return null;const a=(abbr||'')
 function scbTimeouts(d,abbr){const side=_teamSide(d,abbr);const sit=(d||{}).situation||{};if(!side)return '';
  const to=side==='home'?sit.homeTimeouts:sit.awayTimeouts;if(to==null)return '';
  return `<div class="tdots">${[0,1,2].map(i=>`<i class="${i<to?'on':''}"></i>`).join('')}</div>`;}
-function scbPoss(d,abbr){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};if(!abbr||!_teamSide(d,abbr))return '';
- const a=(abbr||'').toUpperCase();const has=((dr.teamAbbr||'').toUpperCase()===a)||((sit.possessionText||'').toUpperCase().startsWith(a+' '));
- return has?'<span class="poss" title="has the ball">🏈</span>':'';}
+/* Who has the ball (#318): the board team's code in capitals, or '' when it isn't known. One answer for the whole page, so
+   the scoreboard can never put a ball on both teams. The current drive's team first (the strip's direction uses it too), then
+   the scoreboard's possession team (possAbbr, from ESPN's situation.possession id). Never ESPN's possessionText: that is the
+   ball SPOT ("PHI 8" = on Philadelphia's 8 while Pittsburgh has it), not the team with the ball. */
+function possTeam(d){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};
+ for(const c of [dr.teamAbbr,sit.possAbbr]){const a=String(c||'').toUpperCase();if(a&&_teamSide(d,a))return a;}return '';}
+function scbPoss(d,abbr){if(!abbr||!_teamSide(d,abbr))return '';
+ return possTeam(d)===abbr.toUpperCase()?'<span class="poss" title="has the ball">🏈</span>':'';}

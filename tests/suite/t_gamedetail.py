@@ -1,3 +1,4 @@
+# CHECK: group=engine
 """Slices 1 and 2 of the live game page (issue #72): the situation fields fetch_scores now surfaces, and the
 game_detail() helper that parses the ESPN summary for the field strip. Display only, football only, defensive:
 a malformed feed yields empty and never raises. The network is faked from fixtures/espn_game_detail.json."""
@@ -56,6 +57,38 @@ ok("timeouts are split per team (home 3 / away 2), and the pick's own side is pi
 ok("possession is a boolean from this team's side (IND has the ball)", sit.get("possession") is True, sit)
 housit = (hou or {}).get("situation") or {}
 ok("the home side sees it does not have the ball", housit.get("possession") is False and housit.get("myTimeouts") == 3, housit)
+
+# ---- #318: the team with the ball by code (possAbbr), from ESPN's possession id, never from possessionText (the ball spot)
+ok("both sides carry the same team with the ball (IND)", sit.get("possAbbr") == "IND" and housit.get("possAbbr") == "IND", (sit, housit))
+_real = Net.get
+
+
+def _spot_on_foe(self, url, params=None, headers=None, **kw):
+    """Pete's case: the ball is on the other team's side (possessionText names HOU) while IND has it."""
+    r = _real(self, url, params, headers, **kw)
+    if "/scoreboard" in url:
+        s = r.body["events"][0]["competitions"][0]["situation"]
+        s["possessionText"], s["downDistanceText"] = "HOU 8", "1st & 10 at HOU 8"
+        if self.mode == "noposs":
+            s.pop("possession", None)
+    return r
+
+
+Net.get = _spot_on_foe
+by = E.fetch_scores(max_age=0, code="nfl")
+s1 = ((by.get("Indianapolis Colts") or [{}])[0]).get("situation") or {}
+s2 = ((by.get("Houston Texans") or [{}])[0]).get("situation") or {}
+ok("ball spot on the other team's side: still only IND has the ball", s1.get("possAbbr") == "IND" and s2.get("possAbbr") == "IND"
+   and s1.get("possession") is True and s2.get("possession") is False, (s1, s2))
+net.mode = "noposs"
+by = E.fetch_scores(max_age=0, code="nfl")
+s1 = ((by.get("Indianapolis Colts") or [{}])[0]).get("situation") or {}
+s2 = ((by.get("Houston Texans") or [{}])[0]).get("situation") or {}
+ok("no possession in the feed: nobody has the ball", s1.get("possAbbr") == "" and s2.get("possAbbr") == ""
+   and s1.get("possession") is False and s2.get("possession") is False, (s1, s2))
+net.mode = "ok"
+Net.get = _real
+E.fetch_scores(max_age=0, code="nfl")
 
 # ---- game_detail(): the parsed ESPN summary the field strip reads
 d = E.game_detail("401873066", "nfl", max_age=0)

@@ -1,6 +1,7 @@
+# CHECK: group=page secs=93
 """Makeover phase 1: press feedback and a haptic on every interactive thing (audited on every screen), distinct
 haptic patterns, the push transition into a game/combo page (slide, dimmed page behind, skeleton, Back, swipe back),
-the Live hero chart (Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.
+the Live hero chart (profit/loss, Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.
 Phone (390x844, touch) and desktop. Prints PROBLEMS on any failure."""
 import sqlite3
 import requests
@@ -84,7 +85,8 @@ with sync_playwright() as pw:
         pg.mouse.up(); time.sleep(.4)
         after = pg.evaluate("({on:document.querySelector('.sparkw').classList.contains('on'),big:document.querySelector('.hv .big').textContent,scrub:S.scrub})")
         print(tag, "scrub:", st, "ticks:", ticks, "| held during refresh:", still, "| after:", after, "| before:", before)
-        if not st["on"] or not st["read"] or not st["big"].startswith("$"): bad(f"{tag}: scrubbing didn't show the line, readout and value")
+        if not st["on"] or "staked" not in st["read"] or "$" not in st["read"]: bad(f"{tag}: scrubbing didn't show the line and the profit/staked readout")
+        if st["big"] != before: bad(f"{tag}: scrubbing changed the big 'worth now' number (#221: it stays the live value)")
         if ticks < 3: bad(f"{tag}: scrubbing gave only {ticks} haptic ticks")
         if not still: bad(f"{tag}: a refresh mid-scrub tore the chart down")
         if after["on"] or after["scrub"] or after["big"].replace("≈ ", "") != before.replace("≈ ", ""): bad(f"{tag}: releasing didn't put the live value back")
@@ -164,6 +166,8 @@ with sync_playwright() as pw:
       if(h.closest('[data-hapt]:not([data-hsw])'))return;
       if(h.matches('select,input[type=range]')){native.push(h.tagName);return;}
       if(h.matches('a[href]')){links++;return;}   // links carry no switch on purpose (navigation, long-press menu)
+      if(h.closest(HSWX)){links++;return;}   // #218: controls inside sideways-scrolling strips carry none on purpose (the switch grabs a sideways drag)
+      if(h.closest('[data-hsw="0"]')){bigs++;return;}   // #281: full-width Settings headers and the Mac line: scroll surface first, no switch on purpose
       if(h.matches('input[type=checkbox]')){if(!h.hasAttribute('switch'))miss.push('checkbox without switch: '+h.className);return;}
       if(h.matches('label')){if(!h.querySelector('input[switch]')&&!h.querySelector('select,input[type=range],input[type=text],textarea'))miss.push('label: '+(h.innerText||'').slice(0,20));return;}
       let x=h,big=false;while(x&&!x.querySelector(':scope>.hsw')){if(x.matches(HSWQ)&&hswBig(x))big=true;x=x.parentElement&&x.parentElement.closest(HSWQ);}

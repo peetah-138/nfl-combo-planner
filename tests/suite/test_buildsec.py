@@ -1,3 +1,4 @@
+# CHECK: group=page secs=19
 import sys, os, time, threading, re, json
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
 sys.argv = ["combo_watcher.py", "--webapp"]
@@ -39,9 +40,9 @@ with sync_playwright() as pw:
     if b or not c: print("PROBLEMS: folding the games didn't leave the combos showing")
     pg.evaluate("renderBuild()"); time.sleep(.2)
     if pg.locator(".board").count(): print("PROBLEMS: fold not remembered")
-    pg.locator(".sech", has_text="More combo ideas").click(); time.sleep(.3)
+    pg.locator(".sech", has_text="Surprise me").click(); time.sleep(.3)
     if pg.locator(".cgrid").count(): print("PROBLEMS: combos don't fold")
-    pg.locator(".sech", has_text="More combo ideas").click(); time.sleep(.3)
+    pg.locator(".sech", has_text="Surprise me").click(); time.sleep(.3)
     i = pg.evaluate("S.build.combos[0].i")
     pg.evaluate(f"S.quotes={{{i}:{{pays:9,stake:5,pct:.82,clears:false,cut:90,at:Date.now()/1000}}}};renderBuild()"); time.sleep(.3)
     w = pg.locator(f"#b{i}"); print("below cut-off button:", w.get_attribute("class"), "|", w.inner_text())

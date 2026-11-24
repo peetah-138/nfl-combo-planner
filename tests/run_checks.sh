@@ -98,14 +98,25 @@ K
 fi
 v1=$(grep -m1 '^VERSION = ' "$R/nfl_combo_planner.py" | cut -d'"' -f2); v2=$(grep -m1 '^WATCHER_VERSION = ' "$R/watcher/combo_watcher.py" | cut -d'"' -f2); v3=$(cat "$R/version.txt")
 [ "$v1" = "$v2" ] && [ "$v2" = "$v3" ] && ok "versions agree ($v1)" || bad "versions disagree" "engine $v1 / watcher $v2 / version.txt $v3"
+for t in $("$PY" checklist.py static); do   # static checks written as scripts (suite/st_*.py)
+  o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "static $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "static $t ($(echo "$o" | grep -c PASS) checks)" || bad "static $t" "$o")
+done
 fi   # static
 
-# the test lists and their split live in suite/checklist.py (t_shards.py checks every test is in exactly one shard)
+# the test lists and their split come from suite/checklist.py, which finds every test by its "# CHECK:" header (t_shards.py checks each is in exactly one shard)
 if on engine; then
   ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
   [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")
+  # netguard/sitecustomize.py refuses every real (non-local) connection in an engine test and prints a FAIL line
+  # naming the host, so a test that slips past its stubs fails at once instead of depending on ESPN (GitHub #189)
+  NG="$WORK/netguard${PYTHONPATH:+:$PYTHONPATH}"
   for t in $ENG; do
-    o=$("$PY" $t.py 2>&1); echo "$o" | grep -q FAIL && bad "engine $t" "$(echo "$o" | grep FAIL)" || (echo "$o" | grep -q PASS && ok "engine $t ($(echo "$o" | grep -c PASS) checks)" || bad "engine $t" "$o")
+    # a test that crashes after some PASS lines used to count as passed: its exit status counts too
+    o=$(PYTHONPATH="$NG" "$PY" $t.py 2>&1); rc=$?
+    if echo "$o" | grep -q FAIL; then bad "engine $t" "$(echo "$o" | grep FAIL)"
+    elif [ "$rc" -ne 0 ]; then bad "engine $t" "stopped with exit status $rc: $(echo "$o" | tail -4)"
+    elif echo "$o" | grep -q PASS; then ok "engine $t ($(echo "$o" | grep -c PASS) checks)"
+    else bad "engine $t" "$o"; fi
   done
 fi
 # ---- the slow part runs side by side: the simulated Mac in one lane, the page tests spread over workers,
@@ -121,6 +132,13 @@ page_bad(){   # $1 = a page test's output; succeeds (= the test failed) on no ou
   o=$(grep -v Deprecation "$1" 2>/dev/null)
   tb=$(echo "$o" | grep -c Traceback); benign=$(echo "$o" | grep -cE "BrokenPipeError|ConnectionResetError|ConnectionAbortedError")
   [ -z "$o" ] || [ "$tb" -gt "$benign" ] || echo "$o" | grep -qE "JS errors: \[.+\]|errs: \[.+\]|PROBLEMS"
+}
+page_why(){   # $1 = a failed page test's output -> what went wrong, the PROBLEM lines first, then the end of a traceback
+  # (the old "first 16 lines around any match" showed only passing lines when the failure came late, e.g. test_hsw's WebKit pass)
+  local o; o=$(grep -v Deprecation "$1" 2>/dev/null)
+  [ -z "$o" ] && { echo "(no output)"; return; }
+  echo "$o" | grep -E 'PROBLEM|JS errors: \[.+\]|errs: \[.+\]' | head -5
+  echo "$o" | grep -q Traceback && echo "$o" | awk '/Traceback/{n=NR} {l[NR]=$0} END{for(i=n;i<=NR;i++)print l[i]}' | grep -vE '^\s+(self\._sync|return (task|await|func)|\^+$)' | tail -7
 }
 if [ -n "$PAGE" ] || on sim; then
   for w in $(seq 0 $((N-1))); do
@@ -155,7 +173,7 @@ fi
 for t in $PAGE; do
   sec="$(cat "secs_$t.txt" 2>/dev/null)s"; [ -f "retried_$t.txt" ] && sec="$sec, RETRIED: the first try failed"
   if page_bad "out_$t.txt"; then
-    bad "page test $t ($sec)" "$(grep -v Deprecation "out_$t.txt" 2>/dev/null | grep -E -B2 -A6 'Traceback|errs|PROBLEMS|JS errors|Error' | head -16)"
+    bad "page test $t ($sec)" "$(page_why "out_$t.txt")"
   else
     ok "page test $t ($sec)"
     [ -f "retried_$t.txt" ] && grep -v Deprecation "first_$t.txt" | grep -E 'Traceback|errs: \[.+|PROBLEMS|JS errors' | head -6 | sed 's/^/     first try: /'

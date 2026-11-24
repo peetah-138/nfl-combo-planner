@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # The profit scoreboard (#138) and the smart-sell scorecard (#115): read-only analytics and logging, in real dollars.
 #  A  single bets from Kalshi's fills and settlements: fees counted, NO bets and sales before settlement right
 #  B  the ledger: combos and singles, one row each, rewritten only when something changed
@@ -11,7 +12,19 @@ spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = impo
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SELL_LOG = os.path.join(E.HERE, "sell.jsonl")
 ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not why else f" {why}"))
-now = time.time()
+
+
+def _clear_of_starts(t, gap=4 * 3600):
+    """The test's clock, at least `gap` after the start of the week and of the month (the board's local Monday and 1st):
+    the fixture bets are dated up to 2.5 h before `now`, so right after a boundary they would fall in last week (#331)."""
+    import datetime as _dt
+    loc = _dt.datetime.fromtimestamp(t)
+    s = max((loc - _dt.timedelta(days=loc.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp(),
+            loc.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+    return s + gap if t - s < gap else t
+
+
+now = _clear_of_starts(float(os.environ.get("T_SCOREBOARD_NOW") or time.time()))   # env: to replay a given moment
 iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 near = lambda a, b: a is not None and abs(a - b) < 0.006
 
@@ -156,6 +169,8 @@ def e():
     E.store_x("update sell_log set ts=?", (now - 3600,))
     try:
         n = E.sale_outcomes(now, every=0)
+        n_asked = len(asked)
+        again = E.sale_outcomes(now + 1, every=0)        # E7 below: answered from what's stored, never Kalshi's real API
     finally:
         E.requests.get = real
     sl = {r["ticker"]: r for r in E.store_rows("select * from sell_log where result='sold'")}
@@ -173,7 +188,8 @@ def e():
     bd = E.profit_board(now)
     en = {r["k"]: r for r in bd["periods"]["all"]["by"]["end"]}
     ok("E6 the board now files those two as sold by smart sell, with what holding would have paid", en["smart"]["n"] == 2 and en["smart"]["vs_n"] == 2)
-    ok("E7 nothing asked again once every sale has its answer", E.sale_outcomes(now + 1, every=0) == 0)
+    re_asked = {t for q in asked[n_asked:] for t in q.split(",")}
+    ok("E7 nothing asked again once every sale has its answer (only the one still unsettled)", again == 0 and not re_asked & {"KXMVE-C2", N}, (again, asked))
 section("E", e)
 
 

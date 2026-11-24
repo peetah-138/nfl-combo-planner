@@ -1,3 +1,4 @@
+# CHECK: group=engine
 # Kalshi removed its legacy order writes (issue #81): POST/DELETE /portfolio/orders now answer 410
 # deprecated_v1_order_endpoint. Every order write goes through one adapter in kalshi_send that sends Kalshi's V2
 # request (POST /portfolio/events/orders: side bid/ask on the YES book, price a 4-decimal dollar string of the YES price,
@@ -294,6 +295,7 @@ E.store_x("create table if not exists killer(ts, kind, legs, picks, mode, status
 ALERTS = []
 E.CFG.update(killer_mode="on", budget=1000)
 E.week_spend = lambda: 0
+E.killer_overlap = lambda legs: None   # the same-game guard (#365) has its own test, t_killer_overlap
 st = E.killer_act("single", [{"ticker": T, "pick": "Knicks"}], 5.0, 10.0, 1.2, lambda: (None, "check Kalshi: slow"),
                   alert=lambda m, k, u=None: ALERTS.append(m), log=lambda *a: None)
 ok("killer deal with an unknown outcome: 'check', Pete is told, and it counts toward the day's caps",

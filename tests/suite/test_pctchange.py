@@ -1,3 +1,4 @@
+# CHECK: group=page secs=39
 """Percent (and dollar) change vs what was paid (GitHub #100, display only): Live combo rows, single/spread/total
 rows, the hero and the combo detail. Values, colours, the sign flip, the %/$/both switch (remembered), rolling numbers,
 no sideways scroll at 360 and 390 pt, no JS errors. The numbers are drawn into the page; nothing real is touched."""
