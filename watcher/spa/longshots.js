@@ -4,7 +4,7 @@
    other combo (Pause, caps, unknown outcome = check). Display and taps only: nothing here buys by itself. */
 function lsRoute(r){return `Held to the end: <b>${pct(r.chance)}</b> to hit, <b>+${money(r.exp)}</b> expected after the fee`;}
 function lsKey(r){return 'ls:'+r.id;}
-function lsCard(r){const k=lsKey(r),o=S.quotes&&S.quotes[k],fresh=o&&Date.now()/1000-o.at<20,busy=S.lsBusy===r.id;
+function lsCard(r){if(r.over&&!r.bought&&!r.check)return ovLs(r);const k=lsKey(r),o=S.quotes&&S.quotes[k],fresh=o&&Date.now()/1000-o.at<20,busy=S.lsBusy===r.id;
  const legs=`<div class="lrows">${(r.legs||[]).map(l=>legRow(l)).join('')}</div>`;
  if(r.check)return `<div class="ccard lscard"><div class="hd"><div><div class="tier" style="color:var(--no)">Check Kalshi</div><b>${pct(r.chance)}</b> <span class="m">to hit</span></div></div>${legs}
   <div class="m" style="font-size:12.5px">Kalshi may have taken this one. Check your Kalshi account; the app won't price or buy it again until you have.</div></div>`;
@@ -22,7 +22,7 @@ function lsSection(d,inBoard){const L=d.longshots||{},rs=L.recs||[];
  if(!inBoard&&!rs.length)return '';   // nothing to recommend: the empty state sits with the board, not on top of the page
  if(inBoard&&rs.length)return '';     // already drawn above the board
  const sub='65–80% picks · priced at or over fair';
- return `${secHead('ls','🎯 Long shots',rs.length,sub)}${secOpen('ls')?(rs.length?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">A small bet on a full slate: each pick likely on its own, a 7%+ chance they all hit, and Kalshi paying at least what it's worth.</div><div class="cgrid">${rs.map(lsCard).join('')}</div>`:
+ return `${secHead('ls','🎯 Long shots',rs.length,sub)}${secOpen('ls')?(rs.length?`<div class="m" style="font-size:12px;margin:-4px 2px 10px">A small bet on a full slate: each pick likely on its own, a 7%+ chance they all hit, and Kalshi paying at least what it's worth.</div><div class="cgrid">${rs.slice().sort(ovLast).map(lsCard).join('')}</div>`:
   `<div class="empty lsempty"><b>No long shot today</b>${esc(L.busy&&!L.at?'Checking today\'s games…':(L.why||'Checking today\'s games…'))}</div>`):''}`;}
 function lsFind(id){return ((S.build&&S.build.longshots||{}).recs||[]).find(r=>r.id===id);}
 async function lsQuote(id,b){if(S.lsBusy||S.buying)return;hap();const r=lsFind(id);if(!r)return;S.lsBusy=id;S.lsBuying=false;
