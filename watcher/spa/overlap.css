@@ -1,0 +1,13 @@
+/* Overlap guard: a game you already have enough on is greyed with "Add anyway" (overlap.js) */
+.ovdim{opacity:.5;filter:grayscale(1);pointer-events:none;user-select:none}
+.ovbar{display:flex;align-items:center;gap:10px;margin-top:10px;padding:8px 10px;border-radius:10px;background:var(--panel2);color:var(--sub);font-size:12.5px;line-height:1.4}
+.ovbar>span{flex:1 1 auto;min-width:0}
+.ovbar .btn.ovadd{flex:0 0 auto;min-height:44px;min-width:44px;padding:0 14px;white-space:nowrap}
+.mrow.over .pickbtn{opacity:.5;filter:grayscale(1);pointer-events:none}
+.mrow .ovbar{grid-column:1/-1;margin-top:0}
+.ovleft .ovrow{padding:8px 0;border-bottom:1px solid var(--line)}.ovleft .ovrow:last-child{border-bottom:0}
+.ovleft .ovrow>b{display:block;color:var(--sub)}
+.ovleft .ovrow .ovbar{margin-top:6px}
+.ovwrap{margin-bottom:8px}.ovwrap .ovbar{margin-top:4px}
+.moment.over>span:not(.k){opacity:.5}
+.ovq{margin:6px 0 8px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.4;color:var(--ink);background:color-mix(in srgb,#f5b544 16%,transparent);border:1px solid color-mix(in srgb,#f5b544 45%,transparent)}
