@@ -13767,8 +13767,10 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
     if mode == "on" and (held or not can_trade()):
         mode = "watch"                                # Pause (read live) or a device that never trades: watch only
     try:                                              # the dedupe and the caps must be read, or nothing is bought
-        if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?)",
-                             (key, time.time() - 6 * 3600, 1 if held else 0)):
+        if store_rows_strict("select 1 from killer where legs=? and ts > ? and (status != 'paused' or ?) and "
+                             "not (status = 'skipped' and why = ? and ts < ?)",   # (#365) a read blip: retried soon
+                             (key, time.time() - 6 * 3600, 1 if held else 0, KILLER_OVERLAP_UNREAD,
+                              time.time() - KILLER_UNREAD_RETRY)):
             return None                               # one per deal (one seen while paused can still buy after)
         n, dollars = killer_today() if mode == "on" else (0, 0.0)
     except Exception as err:
@@ -13786,6 +13788,8 @@ def killer_act(kind, legs, stake, pays, pct, buy, alert=None, log=print):
             status, why = "skipped", "couldn't check your spending cap (Kalshi's account couldn't be read)"
         elif spent + stake > CFG["budget"] + 0.01:
             status, why = "skipped", "over your spending cap"
+        elif (overlap := killer_overlap(legs)):       # #365: a game already at the line (or unreadable) = skip
+            status, why = "skipped", overlap
         else:
             try:                                      # the record goes in BEFORE the order: a crash can't buy it twice
                 cur = store_x_strict("insert into killer(ts, kind, legs, picks, mode, status, stake, pays, pct, why) "
@@ -19358,13 +19362,16 @@ def _overlap_singles():
     return out
 
 
-def game_exposure():
+def game_exposure(bets=None, singles=None, panel_items=None, extra=()):
     """{game: {"n": open bets on it, "risk": dollars they cost}} from what's already been read (never a lookup). A combo
     counts once on every game it touches, at its full cost (if that game goes wrong the whole stake goes). Today's
     panel bets (scheduled, buying, bought, or 'check': an unknown outcome counts as open) count too, unless the account
-    already shows that bet. Settled bets and finished singles don't count."""
+    already shows that bet. Settled bets and finished singles don't count.
+    The pick lists call it with nothing (what's in memory, any failure = fewer bets). Killer deals (killer_overlap)
+    pass every source read strictly instead, plus `extra`: [(tickers, cost)] for their own buys and standing orders,
+    each skipped when the account already shows that bet (one real bet never counts twice)."""
     out = defaultdict(lambda: {"n": 0, "risk": 0.0})
-    sets, tks = set(), set()
+    sets, tks, seen = set(), set(), set()
 
     def add(keys, cost):
         try:
@@ -19374,29 +19381,41 @@ def game_exposure():
         for k in {k for k in keys if k}:
             out[k]["n"] += 1
             out[k]["risk"] += cost
-    v = ACCT_CACHE.get("value")
-    for a in (v[0] if v and v[0] else []):
+    if bets is None:
+        v = ACCT_CACHE.get("value")
+        bets = v[0] if v and v[0] else []
+    for a in bets:
         if a.get("status") != "pending":
             continue
         legs = a.get("legs") or []
         sets.add(frozenset(l.get("ticker") for l in legs if l.get("ticker")))
         add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in legs], a.get("cost"))
-    for x in _overlap_singles():
+    for x in (_overlap_singles() if singles is None else singles):
         if not x["t"] or x["t"] in tks or x.get("state") in ("over", "done"):
             continue
         tks.add(x["t"])
         add([overlap_key(x["event"], x["t"])], x["cost"])
-    try:
-        real = panel_get("real") if STORE.get("db") else None
-    except Exception:
-        real = None
-    for c in (real or {}).get("items") or []:
+    if panel_items is None:
+        try:
+            real = panel_get("real") if STORE.get("db") else None
+        except Exception:
+            real = None
+        panel_items = (real or {}).get("items") or []
+    for c in panel_items:
         if c.get("state") not in PANEL_LIVE:
             continue
         ts = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
         if (len(ts) == 1 and ts[0] in tks) or (len(ts) > 1 and frozenset(ts) in sets):
             continue                                        # already counted from the account
         add([overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []], c.get("stake"))
+        seen.add(ts[0] if len(ts) == 1 else frozenset(ts))
+    for ts, cost in extra or ():
+        ts = [t for t in ts or () if t]
+        one = ts[0] if len(ts) == 1 else frozenset(ts)
+        if not ts or one in seen or (len(ts) == 1 and ts[0] in tks) or (len(ts) > 1 and frozenset(ts) in sets):
+            continue                                        # already counted (the account or the panel has it)
+        seen.add(one)
+        add([overlap_key("", t) for t in ts], cost)
     return {k: {"n": x["n"], "risk": round(x["risk"], 2)} for k, x in out.items()}
 
 
@@ -19484,6 +19503,91 @@ def overlap_note(legs, allow=()):
                 return overlap_text(ex[k])
     except Exception:
         return None
+    return None
+
+
+# ---- the overlap guard for killer deals (issue #365, Pete 2026-11-23: "fix the 2 killer paths"). Stricter only: a
+# killer combo or single that touches a game already at the line (the same switch and numbers as the pick lists) is
+# skipped, never bought. Unlike the pick lists it fails closed: every source is read fresh and strictly, and anything
+# that can't be read skips the deal. Standing orders, the panel and the hedge are not changed by it.
+KILLER_OVERLAP_UNREAD = "couldn't check your open bets on this game"
+KILLER_UNREAD_RETRY = 120     # seconds: a deal skipped only because the bets couldn't be read is looked at again after
+#                               this, not held off 6 hours like a real skip (a 429 shouldn't cost the deal)
+
+
+def _positions_strict():
+    """Every Kalshi position, read now; raises when it can't be read (all_positions would answer [] instead). Through
+    the Mac hub when one answers (like every other account read), else signed with the local key."""
+    if hub_up():
+        key, key_id = None, ""                         # account_get sends it through the hub; no local key needed
+    else:
+        key_id = CFG.get("kalshi_key_id", "").strip()
+        if not key_id or not os.path.exists(KEYFILE):
+            raise RuntimeError("no Kalshi key")
+        with open(KEYFILE, encoding="utf-8") as f:
+            key = load_private_key(f.read())
+    try:
+        pos = account_pages(key, key_id, "/portfolio/positions", "market_positions",
+                            {"count_filter": "position,total_traded"})
+    except requests.RequestException:
+        pos = account_pages(key, key_id, "/portfolio/positions", "market_positions")
+    if not isinstance(pos, list):
+        raise ValueError("positions answer isn't a list")
+    return pos
+
+
+def killer_exposure(now=None):
+    """game_exposure for a killer deal, every source read strictly (raises when any can't be read): Kalshi's combos
+    (cap_bets: fresh, or the last good read ≤ CAP_READ_AGE), every single/spread/total position (read now), today's
+    panel, the standing orders out there (mode on, posted), and killer deals bought (or 'check', or still 'buying')
+    in the last day, so a run can't stack on its own buys."""
+    now = now or time.time()
+    bets = cap_bets(now)
+    singles = []
+    for p in _positions_strict():
+        t = p.get("ticker") or p.get("market_ticker")
+        if t and not is_combo(t) and abs(float(p.get("position_fp") or p.get("position") or 0)) > 0.005:
+            singles.append({"t": t, "event": "", "cost": dollars(p, "market_exposure") or dollars(p, "total_traded"),
+                            "state": None})
+    _panel_table()
+    rows = store_rows_strict("select body from panel where day=? and mode='real'", (_panel_day(),))
+    items = ((json.loads(rows[0]["body"]) or {}).get("items") or []) if rows else []
+    extra = [(json.loads(r["legs"]), r["stake"]) for r in
+             store_rows_strict("select legs, stake from killer where mode='on' and status in ('bought', 'check', "
+                               "'buying') and outcome is null and ts >= ?", (now - 86400,))]
+    extra += [([r["ticker"]], (r["price"] or 0) * (r["n"] or 0)) for r in
+              store_rows_strict("select ticker, price, n from maker where mode='on' and status='posted'")]
+    return game_exposure(bets=bets, singles=singles, panel_items=items, extra=extra)
+
+
+def killer_overlap(legs):
+    """None when a killer deal on these legs may go ahead, else the plain-English reason it's skipped. The switch off
+    (Settings › Money "Hold back games I already have bets on") = None with nothing read, as before. On: any game it
+    touches with overlap_n+ open bets, or overlap_pct% of the sizing base at risk, skips it; anything unreadable (the
+    account, positions, the history, the balance for the base) skips it too (fails closed)."""
+    try:
+        on, n_max, pct = overlap_settings()
+    except Exception:
+        return KILLER_OVERLAP_UNREAD + " (the setting couldn't be read)"
+    if not on:
+        return None
+    try:
+        ex = killer_exposure()
+        base = _overlap_base()
+        if base is None:
+            raise ValueError("no balance for the sizing base")
+    except Exception as err:
+        print(f"killer deal overlap check couldn't read open bets ({type(err).__name__}: {err})", flush=True)
+        return KILLER_OVERLAP_UNREAD
+    for l in legs or []:
+        x = ex.get(overlap_key(l.get("event") or "", l.get("ticker") or ""))
+        if not x:
+            continue
+        if x["n"] >= n_max or x["risk"] >= base * pct / 100 - 1e-9:
+            n = x["n"]
+            what = (f"{n} open bet{'' if n == 1 else 's'} ({money(x['risk'])} at risk)" if x["n"] >= n_max else
+                    f"{money(x['risk'])} at risk ({pct:g}% of your panel money or more)")
+            return f"you already have {what} on this game ({l.get('pick') or l.get('ticker')})"
     return None
 
 

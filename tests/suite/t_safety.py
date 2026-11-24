@@ -315,6 +315,7 @@ E.kalshi_send = real_send
 import sqlite3
 E.CFG["killer_mode"] = "on"
 E.week_spend = lambda: 0
+E.killer_overlap = lambda legs: None   # the same-game guard (#365) has its own test, t_killer_overlap
 BUYS = []
 LEGK = [{"ticker": "KXNBAGAME-26NOV19AAABBB-AAA", "pick": "AAA", "fair": 0.6}]
 
