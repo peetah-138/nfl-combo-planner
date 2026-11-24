@@ -57,6 +57,16 @@ with sync_playwright() as pw:
         state("Get price", "S.quotes={};S.qpend={};S.bpend={};renderBuild()")
         state("price asked", f"S.qpend={{{ci}:{{t:Date.now(),sig:ccSig(S.build.combos.find(c=>c.i=={ci}))}}}};renderBuild()")
         state("Buy", f"S.qpend={{}};S.quotes={{{ci}:{{pays:30.5,stake:5,pct:1.02,clears:true,cut:95,at:{now}}}}};renderBuild()")
+        if tag.startswith("390") or "390" in str(tag):
+            pg.evaluate(f"S.quotes={{{ci}:{{pays:5.1,stake:5,pct:1.02,clears:true,cut:95,ev:0.1,at:{now}}}}};renderBuild()"); time.sleep(.3)
+            cc = pg.evaluate(f"document.querySelector('.ccard[data-i=\"{ci}\"]').innerText")
+            if "before fees" not in cc or "Likely" in cc: bad(f"{tag}: a fresh quote's card must say 'before fees' and hide the older guess: {cc[:300]}")
+            if os.environ.get("SHOTS"):
+                for scheme in ("dark", "light"):
+                    pg.emulate_media(color_scheme=scheme); time.sleep(.4)
+                    pg.evaluate(f"document.querySelector('.ccard[data-i=\"{ci}\"]').scrollIntoView({{block:'center'}})"); time.sleep(.3)
+                    pg.screenshot(path=os.path.join(os.environ["SHOTS"], f"combo_screen_fresh_quote_{scheme}.png"))
+                pg.emulate_media(color_scheme="dark")
         state("Buy anyway $5 -> $7.29", f"S.quotes={{{ci}:{{pays:7.29,stake:5,pct:.82,clears:false,cut:95,at:{now}}}}};renderBuild()")
         txt = pg.evaluate(f"document.querySelector('#b{ci}').textContent.trim()")
         if "Buy anyway" not in txt or "7.29" not in txt: bad(f"{tag}: the Buy anyway button reads '{txt}'")

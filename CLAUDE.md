@@ -131,6 +131,12 @@ Real money is involved. Pete uses it daily.
    50+ settled bets, ahead overall, most days up (≥ 55%), CLV ≥ 0. Pete chose 50.
 7. Never price or buy a combo other than the one on Pete's screen (the quote API checks the leg tickers the page sends).
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
+9. **The dev Mac never gets the Kalshi key, `~/combowatch`, the history database or any `combo_*.json`.** It **may**
+   read the production Mac's logs through the read-only, redacted `/api/logs` endpoint (Pete decision, 2026-11-23,
+   issue #377; `docs/LOG_ACCESS.md`): off by default, turned on only on the production Mac itself (Settings › This
+   Mac › "Let the dev Mac read logs"), Tailscale only, its own read-only code (only a hash is stored), two allowlisted
+   log files, redacted server-side and failing closed. It can never buy, sell, pause or change anything; nothing
+   about it is a money path.
 
 **How these are enforced in code (money-safety hardening, issue #143; tested by `t_safety.py`):**
 - *The Pi:* the watcher's `backup_safe(conf, E)` forces `auto_sell`/`auto_hedge` off and killer/maker `off` at
@@ -212,6 +218,10 @@ Real money is involved. Pete uses it daily.
   orchestrating session on the dev Mac manages branches and worktrees (Claude worktrees live in `.claude/`, git-ignored) and
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
+- **Reading production logs from the dev Mac** (Pete decision, 2026-11-23, #377): use
+  `python3 tools/read_prod_logs.py` (address and code from the dev Mac's keychain, never a tracked file). That is the
+  only production data the dev Mac gets: never the Kalshi key, `~/combowatch`, the history DB or `combo_*.json`
+  (hard rule 9).
 - **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
   parallel PRs conflicted every time). Instead it adds **one new file `docs/changes/<issue-or-slug>.md`**: what
   shipped or changed in the product, written in the style of the product sections below, plus a `ROADMAP:` line when

@@ -1,0 +1,26 @@
+/* Small polish (issues #404 #405 #406 #368 #353 #275 #402 #403). Display only. */
+/* (#404) The Comebacks header is a plain button with a real focus ring (the inline "all:unset" had stripped :focus-visible), and
+   opening it slides the body in and turns the chevron. */
+.cbh{appearance:none;-webkit-appearance:none;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;text-align:left;position:relative;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.cbh:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
+.cbh.cbjust .chev{animation:cbchev .28s var(--spring)}@keyframes cbchev{from{transform:rotate(-90deg)}}
+.cbbody.cbin{animation:cbin .26s var(--spring)}@keyframes cbin{from{opacity:0;transform:translateY(-6px)}}
+/* (#405) the Results rows are role=button rows: a pointer, a focus ring, and the press tint they already had */
+.hrow2[role=button]{cursor:pointer}.hrow2[role=button]:focus-visible{outline:2px solid var(--acc);outline-offset:-2px;border-radius:10px}
+/* (#405) the "fresh price" tap is its own button on a Skipped / Didn't buy card (the card is no longer a button around Details) */
+.pitem .prbtn{margin-right:14px!important;appearance:none;-webkit-appearance:none;display:inline-flex;align-items:center;min-height:44px;margin:0;padding:0;border:0;background:none;text-align:left;-webkit-tap-highlight-color:transparent}
+.pitem .prbtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
+/* (#406) no jump between "Tap for a fresh price", "Getting a fresh price…" and the answer: same height while waiting, and the
+   answer fades in (a failed one also shakes a little) */
+.pitem .prq.wait{min-height:44px;margin-top:0;padding-top:0;padding-bottom:0;display:flex;align-items:center;gap:8px;background:none;border-left-color:transparent}
+.pitem .prq.pin{animation:prin .28s var(--spring)}@keyframes prin{from{opacity:0;transform:translateY(-4px)}}
+.pitem .prq.fail.pin{animation:prin .28s var(--spring),prshake .34s .08s ease-in-out}
+@keyframes prshake{20%{transform:translateX(-6px)}45%{transform:translateX(5px)}70%{transform:translateX(-3px)}}
+/* (#353) a long shot's price that did not come: the reason stays on the card, with a small shake */
+.lsfail{margin:8px 0;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.4;background:var(--nobg);color:var(--ink);border-left:3px solid var(--no)}
+.lsfail.pin{animation:prin .28s var(--spring),prshake .34s .08s ease-in-out}
+/* (#275) the Buy ideas refusal: the same small shake as the result moment (the haptic after the await is silent on iOS 27) */
+.ians.bad.shk{animation:ians .32s var(--spring,ease-out),prshake .34s .08s ease-in-out}
+/* (#406) "Add anyway" keeps its width while it says "Showing…" */
+.btn.ovadd{min-width:118px;justify-content:center}
+@media (prefers-reduced-motion:reduce){.cbh.cbjust .chev,.cbbody.cbin,.pitem .prq.pin,.pitem .prq.fail.pin,.lsfail.pin,.ians.bad.shk{animation:none!important}}

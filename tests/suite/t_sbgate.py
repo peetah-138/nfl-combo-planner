@@ -288,7 +288,7 @@ g = E.smart_buy_gate_summary(now=now)
 nhl = next((x for x in g if x["league"] == "nhl"), None)
 ok("the NHL line: active, strictness 1, how many it really skipped and what those skips saved",
    nhl and nhl["state"] == "active" and nhl["level"] == 1 and nhl["skipped"] == 30 and nhl["saved"] == 150.0 and nhl["why"])
-ok("...with the opt-in bar's progress (50 settled, ahead, 55% of days up, CLV, beats plain) shown, not met",
+ok("...with the opt-in bar's progress (50 settled, ahead, 55% of days up, CLV, skips helping) shown, not met",
    all(k_ in nhl["optin"] for k_ in ("n", "n_need", "ahead", "days_up", "clv", "beats", "met")) and nhl["optin"]["n_need"] == 50
    and nhl["optin"]["met"] is False and nhl["optin"]["beats"] is True)
 nba = next((x for x in g if x["league"] == "nba"), None)
