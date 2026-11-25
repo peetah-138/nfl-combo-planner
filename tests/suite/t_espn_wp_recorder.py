@@ -74,6 +74,28 @@ def a_rows():
     ok("A an out-of-range wp is stored as empty, never as junk", E.store_rows("select wp from wp_shadow where ts=4000.0")[0]["wp"] is None)
 
 
+def a2_screened():
+    reset(); E.leg_score = score
+    scr = {"G2": ([{"ticker": "KXNBAGAME-26NOV23MIAPHI-MIA", "p": 0.60, "bid": 0.50, "pre": 0.5, "fair": 0.9},
+                   {"ticker": "KXNBAGAME-26NOV23MIAPHI-PHI", "p": 0.55, "bid": 0.45, "pre": 0.5}], "the live price is jumpy (10 cents)")}
+    n = E.wp_shadow("nba", games(), now=1500.0, screened=scr)
+    rows = E.store_rows("select ticker, screened, fair, wp from wp_shadow where ts=1500.0")
+    kept = [r for r in rows if r["screened"] is None]; sc = [r for r in rows if r["screened"]]
+    ok("A2 kept and screened games both recorded, screened marked with a short reason", n == 4 and len(kept) == 2 and len(sc) == 2
+       and {r["screened"] for r in sc} == {"spread"}, rows)
+    ok("A2 a screened side never carries the engine's fair", all(r["fair"] is None for r in sc) and all(r["wp"] == 0.61 for r in sc))
+    ok("A2 reasons map to words", [E._wp_why(t) for t in ("no live buyers or sellers on Kalshi", "nearly decided", "no fresh live score",
+       "Kalshi's live price and the live chance disagree too much", "zzz")] == ["no_buyers", "decided", "stale", "disagree", "other"])
+    real, E.requests = E.requests, NoNet()
+    try:
+        E.espn_wp_record("nba", games(), scr)
+    finally:
+        E.requests = real
+    ok("A2 the hook takes screened games and makes no request itself", True)
+    st = E.store_rows("pragma table_info(wp_shadow)")
+    ok("A2 screened is the last column", st[-1]["name"] == "screened")
+
+
 def b_swallow():
     reset(); E.leg_score = score
     db = E.STORE["db"]; E.STORE["db"] = None
@@ -260,5 +282,5 @@ def g_resolve():
     ok("G outcomes are yes and no", {r["outcome"] for r in E.store_rows("select outcome from wp_outcome")} == {"yes", "no"})
 
 
-for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flags), ("d", d_bounded), ("d2", d2_prune_independent), ("e", e_unread), ("f", f_hist), ("g", g_resolve)):
+for n, f in (("a", a_rows), ("a2", a2_screened), ("b", b_swallow), ("c", c_flags), ("d", d_bounded), ("d2", d2_prune_independent), ("e", e_unread), ("f", f_hist), ("g", g_resolve)):
     section(n, f)

@@ -55,13 +55,16 @@ def load(db):
     if why:
         return None, why
     out = []
-    for r in db.execute("select s.ts, s.ticker, s.league, s.wp, s.model, s.blend, s.mid, s.ask, s.play_age, o.outcome "
+    has = not X.need(db, "wp_shadow", ["screened"])           # older files have no screened column: every row was kept
+    for r in db.execute("select s.ts, s.ticker, s.league, s.wp, s.model, s.blend, s.mid, s.ask, s.play_age, o.outcome, "
+                        + ("s.screened" if has else "null as screened") + " "
                         "from wp_shadow s join wp_outcome o on o.ticker = s.ticker order by s.ts"):
         if r["outcome"] not in ("yes", "no"):
             continue
         out.append({"game": game_of(r["ticker"]), "ticker": r["ticker"], "ts": r["ts"], "league": r["league"],
                     "p": {"wp": r["wp"], "mid": r["mid"], "model": r["model"], "blend": r["blend"]},
-                    "ask": r["ask"], "y": 1.0 if r["outcome"] == "yes" else 0.0, "age": r["play_age"]})
+                    "ask": r["ask"], "y": 1.0 if r["outcome"] == "yes" else 0.0, "age": r["play_age"],
+                    "screened": r["screened"]})
     return out, None
 
 
@@ -204,6 +207,27 @@ def trade_section(rows, boot):
     return out
 
 
+def groups_section(rs, boot):
+    """The same scores and rule on the two groups apart: games the panel kept, and games it screened out (wide spread,
+    stale score, nearly decided, far from Kalshi). Each group under 20 games is hidden. Headline numbers use both."""
+    out = {}
+    for name, part in (("kept", [r for r in rs if not r.get("screened")]), ("screened", [r for r in rs if r.get("screened")])):
+        n = len({r["game"] for r in part})
+        if n < HIDE_N:
+            out[name] = {"detail": "n<20, hidden"}
+            continue
+        sec = {"games": n, "scores": scores_section(part, boot), "trade": trade_section(part, boot)}
+        if sec["trade"]["test_games"] < HIDE_N:
+            sec["trade"] = {"detail": "held-out games n<20, hidden"}
+        if name == "screened":
+            why = {}
+            for r in part:
+                why.setdefault(r["screened"], set()).add(r["game"])
+            sec["why"] = {k: len(v) if len(v) >= HIDE_N else "n<20" for k, v in sorted(why.items())}
+        out[name] = sec
+    return out
+
+
 # ---------------------------------------------------------------- coverage
 def coverage(db):
     """Per league: does it carry wp at all, and how old is the last play (median / 90th percentile of the seconds we had
@@ -269,6 +293,7 @@ def run(path, out_path=None, boot=400):
                 for s, v in sec["trade"]["sources"].items():
                     if v.get("passes"):
                         passing[s].append(lg)
+            sec["groups"] = groups_section(rs, boot)
             res["leagues"][lg] = sec
         res["verdict"] = {s: {"passes_in": v, "passes": len(v) >= PASS_LEAGUES} for s, v in passing.items()}
         names = {"wp": "ESPN win chance", "mid": "Kalshi mid", "model": "our model"}

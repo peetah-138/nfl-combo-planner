@@ -19484,7 +19484,11 @@ def panel_collect(book_snap, code, log=print):
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
-    espn_wp_record(code, games)                        # (#483) ESPN win chance recorder: write-only, never raises
+    try:                                               # (#483) the live games the panel screened out, with the reason
+        scr = {e: (every[e], w) for e, w in (LIVE_WHY.get(code) or {}).items() if e in every}
+    except Exception:
+        scr = None
+    espn_wp_record(code, games, scr)                   # (#483) ESPN win chance recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -28066,7 +28070,13 @@ WPH = {"leagues": ("nfl", "ncaaf", "nba", "ncaamb"), "live_every": 300, "pre_eve
 def _wp_tables():
     store_x("create table if not exists wp_shadow(ts real, ticker text, league text, wp real, play_id text, "
             "play_age real, feed_age real, model real, blend real, fair real, bid real, ask real, mid real, lead int, "
-            "frac real)")
+            "frac real, screened text)")                    # screened: null = the panel kept the game, else why it was left out
+    if not WPR.get("cols"):
+        have = {r["name"] for r in store_rows("pragma table_info(wp_shadow)")}
+        if "screened" not in have:
+            store_x("alter table wp_shadow add column screened text")
+        have = {r["name"] for r in store_rows("pragma table_info(wp_shadow)")}
+        WPR["cols"] = "screened" in have
     store_x("create index if not exists wp_shadow_ts on wp_shadow(ts)")
     store_x("create index if not exists wp_shadow_t on wp_shadow(ticker)")
     store_x("create table if not exists wp_outcome(ticker text primary key, outcome text, ts real)")
@@ -28127,7 +28137,18 @@ def _wp_num(v, lo=None, hi=None):
     return v
 
 
-def wp_shadow(code, games, now=None):
+def _wp_why(text):
+    """The panel's plain-English reason a live game was left out, as one short word (for the screened column)."""
+    t = str(text or "").lower()
+    for key, word in (("no live buyers", "no_buyers"), ("jumpy", "spread"), ("nearly decided", "decided"), ("disagree", "disagree"),
+                      ("no live score feed", "no_feed"), ("no fresh live score", "stale"), ("no live score", "stale"),
+                      ("game is over", "over"), ("no pre-game line", "no_line"), ("doesn't show it in play", "not_in_play")):
+        if key in t:
+            return word
+    return "other"
+
+
+def wp_shadow(code, games, now=None, screened=None):
     """Record ESPN's raw win chance (wp) for each side of a game under way (about every 60 s a ticker), with its play id,
     how long we have watched that play, the feed's age, our pure model and the 50/50 blend (before calibration), the
     engine's own live fair, and Kalshi's bid/ask/mid. From cached scores and prices already held: never fetches.
@@ -28137,9 +28158,11 @@ def wp_shadow(code, games, now=None):
             return 0
         now = now or time.time()
         seen, plays, rows = WPR["seen"], WPR["play"], []
-        for e, sides in (games or {}).items():
+        items = [(e, sides, None) for e, sides in (games or {}).items()]
+        items += [(e, sides, _wp_why(why)) for e, (sides, why) in (screened or {}).items()]   # (#483) games the panel screened out
+        for e, sides, scr in items:
             for x in sides:
-                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker") or not x.get("live"):
+                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker") or (scr is None and not x.get("live")):
                     continue
                 t = x["ticker"]
                 if now - seen.get(t, 0) < WPR["every"]:
@@ -28175,8 +28198,8 @@ def wp_shadow(code, games, now=None):
                     fa = None
                 rows.append((round(now, 1), t, sport, wp, pid, age, fa,
                              None if model is None else round(model, 4), None if blend is None else round(blend, 4),
-                             _wp_num(x.get("fair"), 0, 1), bid, ask, mid, lead,
-                             None if frac is None else round(frac, 3)))
+                             _wp_num(x.get("fair"), 0, 1) if scr is None else None, bid, ask, mid, lead,
+                             None if frac is None else round(frac, 3), scr))
         if len(seen) > 20000:
             for k in [k for k, v in seen.items() if now - v > 3600]:
                 seen.pop(k, None)
@@ -28392,11 +28415,17 @@ def wp_hist_tick(code, games, now=None):
         return 0
 
 
-def espn_wp_record(code, games):
-    """The one hook in the panel pass: both recorders, each wrapped. Never raises."""
-    for fn in (wp_shadow, wp_hist_tick):
+def espn_wp_record(code, games, screened=None):
+    """The one hook in the panel pass: both recorders, each wrapped. Never raises. `screened` = {game: (sides, why)} for the
+    games under way that the panel left out (wide spread, stale score, nearly decided, far from Kalshi): recorded too, marked."""
+    try:
+        extra = {e: sd for e, (sd, _w) in (screened or {}).items()}
+        calls = ((wp_shadow, (code, games), {"screened": screened}), (wp_hist_tick, (code, dict(extra, **(games or {}))), {}))
+    except Exception:
+        calls = ((wp_shadow, (code, games), {}), (wp_hist_tick, (code, games), {}))
+    for fn, a, kw in calls:
         try:
-            fn(code, games)
+            fn(*a, **kw)
         except Exception:
             pass
     try:                                              # the prune runs whichever flag is on, so no table grows unbounded

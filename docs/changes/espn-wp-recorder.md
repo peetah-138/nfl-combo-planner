@@ -42,7 +42,7 @@ keys, ON by default for recording (a saved false is kept).
     between requests, 10 s timeout. No key, no login; any error just records nothing.
   - A typical NBA game (about 2.5 h) is about 2 + 30 + 1 = **~33 requests**; a football game about 3.3 h, ~43; the average is ~39. A
     heavy night with 12 followed games in play at once is 144 an hour, under the 240 cap. Pete approves this volume in the PR.
-- Known limit: the recorder sees the panel's games, which already drop games with a wide spread, a stale score, a fair of 95%+ or a fair 8+ points from Kalshi. Those games are not recorded, so the scorecard under-states any wp edge on large disagreements and cannot measure staleness there. Widening that is a separate, deliberate change.
+- **Screened-out games are recorded too** (Pete's follow-up): live games the panel leaves out (wide spread, stale or missing score, fair 95%+, fair 8+ points from Kalshi, no buyers, no pre-game line) are passed to the recorder with the panel's reason (`LIVE_WHY`). `wp_shadow.screened` is empty for a game the panel kept, else a short word (`spread`, `stale`, `decided`, `disagree`, `no_buyers`, `no_line`, `no_feed`, `not_in_play`, `over`, `other`); their `fair` is left empty (the engine never priced them). They are followed by the same poller, so they share the same 240/h ceiling, 12 per pass and per-game cadence: more games share the same budget (a very busy night is held at 240/h, least recently fetched first, so the exact per-game numbers above are the ceiling, not a promise for every game). Storage caps are unchanged. Nothing outside the recorder reads them.
 - Switch: `wp_hist` (default ON). Off stops the background GETs and the ingest.
 
 ## Scorecard (Proposal 3): `tools/espn_wp_scorecard.py`
@@ -52,7 +52,7 @@ the same rows and settled games: Brier and log score (lower is better) with a ga
 $1 staked after the entry fee (the engine's `FEE_RATE`) and the spread (a buy fills at the ask) for one rule, "buy once when a
 source is at least X above the ask, hold to settlement", X chosen on the first 70% of games by time and scored on the last 30%.
 **Pass bar** (as in `docs/EXIT_REPLAY.md`): a source passes in a league when, held out, it beats the blend by at least 1 cent per
-$1, its net is above 0 and its bootstrap range is above 0; it counts only if it passes in 2+ leagues. Coverage per league shows
+$1, its net is above 0 and its bootstrap range is above 0; it counts only if it passes in 2+ leagues. The scorecard also reports the kept and screened groups apart (each hidden under 20 games, with a count of screened games per reason); the headline numbers and the pass bar use both together. Coverage per league shows
 whether it carries wp at all and how old the last play was (median and 90th percentile of the observed play age) and whether the
 summary history is recorded. Nothing consumes the result; deciding to use wp in pricing is a later, separate, Pete-approved PR.
 
