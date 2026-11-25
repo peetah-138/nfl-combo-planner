@@ -50,7 +50,7 @@ with sync_playwright() as pw:
                           "const r=[slMode()];k.stop_loss=false;r.push(slMode());k.stop_loss=a[0];k.stop_loss_mode=a[1];return r})()")
         if old != ["allow", "tune"]: bad(f"an old saved on/off reads as {old}, not allow/tune")
         for want, words, old in (("never", "Nothing sells for less than you paid", False),
-                                 ("tune", "own results show", False), ("allow", "late in a game", True)):
+                                 ("tune", "own results show", False), ("allow", "loses less than waiting", True)):
             pg.evaluate(f"document.querySelector('#slrow button[data-slm={want}]').click()")
             time.sleep(.3)
             if pg.evaluate(ON) != [{"never": "Never sell at a loss", "tune": "Let it tune itself", "allow": "Allow (guarded)"}[want]]:

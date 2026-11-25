@@ -12845,9 +12845,9 @@ def settings_page(all_games, days, counts):
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
                          "while the planner is open, or all the time if your watcher (Mac or Pi) is running (Kalshi buys "
                          "combos back only through live offers), and tells you each time. It stops after the daily "
-                         "limit and never sells for less than you paid, except to cut a loss (a game turning against you) when selling now "
-                         "loses less than waiting; a profit-taking sale never retries below what you paid, and a loss cut never "
-                         "retries under 97% of its first offer. When a combo is "
+                         "limit and never sells for less than you paid, except that a guarded stop-loss may sell below cost when the app "
+                         "judges that selling now loses less than waiting (never under 97% of its first offer or "
+                         "the smart-sell floor); a profit-taking sale never retries below what you paid. When a combo is "
                          "down to its last game and buying the other team locks in more than the cash-out offer, it "
                          "hedges instead (a purchase, up to your hedge limit; above it, it cashes out). "
                          "Otherwise nothing sells unless you confirm."
@@ -22893,10 +22893,10 @@ KNOBS = (
      "min": 0.5, "max": 2.0, "step": 0.05, "unit": "table", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "recorded game prices: how far chances really move per sport", "judge": "_replay"},
     {"name": "below_cost", "group": "loss", "cls": "tunable", "label": "Never sells below what you paid",
-     "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or your stop-loss "
-             "override (every guard held) says selling now loses less than waiting. A sale that was a profit never "
-             "retries below cost; a loss cut never retries under 97% of its first offer. The Never setting turns "
-             "even the loss cut and the stop-loss off.",
+     "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or the guarded stop-loss "
+             "(every guard held) judges that selling now loses less than waiting. Then the sale stays at or above 97% "
+             "of its first offer and the smart-sell floor. A sale that was a profit never retries below cost. The "
+             "Never setting turns even the loss cut and the stop-loss off.",
      "owner": "auto_sell_now", "src": None, "start": True, "min": None, "max": None, "step": None, "unit": "rule",
      "stricter": "up", "borrow": "none", "learned": None,
      "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
