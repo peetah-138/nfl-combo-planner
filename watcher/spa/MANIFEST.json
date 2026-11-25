@@ -19,6 +19,7 @@
     "sell_single.css",
     "overlap.css",
     "betlabel.css",
+    "smallwins.css",
     "update.css"
   ],
   "js": [
@@ -44,8 +45,10 @@
     "game.js",
     "game_tabs.js",
     "moments.js",
+    "logaccess.js",
     "overlap.js",
     "settings.js",
+    "smallwins.js",
     "update.js",
     "boot.js"
   ],

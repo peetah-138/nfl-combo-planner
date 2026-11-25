@@ -4,7 +4,7 @@
 # never raises), get_offer on the live chance (green allowed only when every live guard, the bar and the in-play exit
 # test pass; no fair price = never green, nothing stored), the 130% suspect cap (Build and the panel, stricter only), and
 # the quote's new keys (bar, fair, why). Fakes only: no network, temp files, a temp history; nothing is bought.
-import os, math, tempfile, importlib.util, traceback
+import os, io, contextlib, math, tempfile, importlib.util, traceback
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
@@ -84,7 +84,7 @@ def setup(kind="own", legs=None):
 
 def t_offer():
     EXIT = [True]
-    E.inplay_exit_ok = lambda c, sim=None, now=None, source=None: (EXIT[0], None if EXIT[0] else "no way out")
+    E.inplay_exit_ok = lambda c, sim=None, now=None, source=None, force_log=False: (EXIT[0], None if EXIT[0] else "no way out")
     E._sb_sim = lambda c, now: {}
     BOOK.clear(); LIVE.clear(); STORED.clear()
     setup()
@@ -102,8 +102,12 @@ def t_offer():
     ok("the quote log and the take-profit get the live fair, not the pre-game one",
        abs(STORED[-1][0] - 5 / 0.258) < 0.01 and abs(E.CTX["offers"][1]["p"] - 0.258) < 0.001)
     EXIT[0] = False
-    r = E.get_offer(1, 5.0, check_cap=False)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        r = E.get_offer(1, 5.0, check_cap=False)
     ok(f"...but not when the in-play exit test says no ({r.get('why')})", r["ok"] is False and r["why"] == "inplay")
+    ok("(#397) the exit-route check is logged, with its verdict and reason",
+       "exit-route check" in buf.getvalue() and "held back (no way out)" in buf.getvalue())
     EXIT[0] = True
     PRICE[0] = 0.258 / 0.97
     r = E.get_offer(1, 5.0, check_cap=False)

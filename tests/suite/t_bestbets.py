@@ -187,3 +187,24 @@ ok("F: at most BEST_MAX rows, biggest expected dollars first", len(f["items"]) =
    and [x["ev"] for x in f["items"]] == sorted((x["ev"] for x in f["items"]), reverse=True))
 ok("F: the inputs are not changed", many == before)
 ok("F: never sent anything", not SENT)
+
+# ---- (#414) a market Pete holds, just bought or has an unclear order on is left out of the pick lists (display only)
+E.RECENT_BUYS.clear()
+E.SINGLES["items"] = []
+g414 = game("HELDAA", "Heldteam", "Otherteam", 0.50, 0.58)
+held_t = g414[f"KXNBAGAME-{TAG}HELDAA"][0]["ticker"]
+ok("414: nothing held -> held_markets is empty", E.held_markets() == set())
+E.SINGLES["items"] = [{"t": held_t, "event": f"KXNBAGAME-{TAG}HELDAA", "cost": 1.68, "state": "pre"}]
+ok("414: an open single on the account is held", held_t in E.held_markets())
+E.SINGLES["items"] = [{"t": held_t, "event": "x", "cost": 1.68, "state": "done"}]
+ok("414: a finished single is not held", held_t not in E.held_markets())
+E.SINGLES["items"] = []
+E.RECENT_BUYS[held_t] = time.time()
+ok("414: a buy in the last few minutes is held", held_t in E.held_markets())
+E.RECENT_BUYS[held_t] = time.time() - E.RECENT_BUY_SECS - 5
+ok("414: an old buy is forgotten", held_t not in E.held_markets() and held_t not in E.RECENT_BUYS)
+E.save_json(E.ORDER_LEDGER, {f"{held_t}|bid|b": {"ts": time.time(), "why": "unclear"}})
+ok("414: an unclear order (check) is held", held_t in E.held_markets())
+E.save_json(E.ORDER_LEDGER, {})
+E._ORDER_SHARED.unsure.clear()
+ok("414: held_markets never sends anything", not SENT)
