@@ -18310,9 +18310,12 @@ def mkt_learn():
     """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
     markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
     MKT['min_n']+ markets (the same test line_gate uses) AND the same weight also beats the mid on the newest
-    MKT['hold_share'] of those markets by game date (the held-out check, #345: at least MKT['hold_min'] of them, a
-    gain above zero). The held-out check can only ever take a weight away: it never adds or raises one. Everything
-    else stays at 0: Kalshi's mid."""
+    MKT['hold_share'] of those markets by game date (a recency-stability veto, #345). That slice is NOT held out: the
+    weight is still picked on all the rows, newest included, so this is not an out-of-sample test. It can only make
+    the learner stricter (a weight is either 0 or what the old rule gave; never added or raised). A vetoed weight
+    moves longshot_leg_fair from the blend to the mid, which can change which legs fall in the 65-80% band (see
+    'vetoed' and 'hold_gain'). MKT['hold_min'] (30) is inert at min_n 200 (30% of 200 = 60) and only matters if
+    min_n is lowered. Everything else stays at 0: Kalshi's mid."""
     out = {}
     by = defaultdict(list)
     seen = set()
@@ -18337,7 +18340,7 @@ def mkt_learn():
                 best = (w, g, se)
         w, g, se = best
         earned = len(rs) >= MKT["min_n"] and g >= MKT["gain"] and g >= MKT["se"] * se
-        h_n = max(int(len(rs) * MKT["hold_share"]), 1)                   # the newest games, by date, kept back (#345)
+        h_n = max(int(len(rs) * MKT["hold_share"]), 1)                   # the newest games by date: recency veto, not held out (#345)
         h_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in
                       zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if w else 0.0
         held = h_n >= MKT["hold_min"] and h_gain > 0
