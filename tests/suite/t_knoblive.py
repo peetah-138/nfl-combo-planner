@@ -421,7 +421,7 @@ b = S["brake"].get("nba") or {}
 exp4 = round(4 * (DISC * 0.9 * 20 - 8.0), 2)
 ok(f"4 sales in a row that got less than holding was expected to pay (${exp4:.2f} less in all), even though holding "
    "would really have paid nothing: brake, one push, plain words, no urgent words",
-   len(msgs) == 1 and "NBA" in msgs[0] and "less than holding was expected to pay" in msgs[0] and f"${exp4:.2f}" in msgs[0]
+   len(msgs) == 1 and "NBA" in msgs[0] and "less than holding was worth at the time" in msgs[0] and f"${exp4:.2f}" in msgs[0]
    and "starting numbers" in msgs[0] and "stricter stays" in msgs[0]
    and not any(w in msgs[0].lower() for w in ("auto", "hedge", "cash out", "paused", "can't", "at risk")))
 ok("live (#284): NBA back at its starts for 14 days but never looser: the looser lock-in fall goes back to 20%, the "
