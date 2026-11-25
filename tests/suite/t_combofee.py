@@ -14,7 +14,7 @@ ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not 
 _real_time = time.time
 now = _real_time()
 T = "KXNBAGAME-26NOV19LALBOS-LAL"
-E.CFG.update(auto_sell=True, auto_hedge=False, stop_loss=False, smart_sell=True, ride=2, take_profit=0,
+E.CFG.update(flex_sell=False, auto_sell=True, auto_hedge=False, stop_loss=False, smart_sell=True, ride=2, take_profit=0,
              lock_trail=False, auto_cap=5)
 h = {"label": "Combo 1", "need": [(("yes", T), "Lakers")], "pre_of": {T: 0.6}, "ch_of": {T: 0.7},
      "legs_left": [(0.7, True, 0)], "cost": 10, "p": 0.7, "pays": 20, "won_some": True, "left": 1}
@@ -147,7 +147,7 @@ ok("a profit reason at $10.20 (net under cost, no stop-loss ready) does not sell
 # ---- (4) the source: the other two noted gaps were not touched
 src = open("wahome/engine.py", encoding="utf-8").read()
 ok("the stop-loss classification of a below-cost first offer is as before",
-   'if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):' in src
+   'if below and why != "cut loss" and not sl_ready.get(t):' in src   # ('Never sell at a loss' is retired: #479)
    and 'if below and why != "cut loss" and gross_below:' in src
    and "below = net < h[" in src)
 ok("a manual Cash out tap has no floor (its 97% rule is unchanged)", "accept_cash(ticker)\n" in src
