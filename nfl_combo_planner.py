@@ -5710,12 +5710,18 @@ def auto_sell_now(plan):
                     log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
                                       why="loss-cut clock retry: offer under 97% of the first offer"))
                     continue
+            if cutting and first_offer and not clock and o["offer"] < first_offer_floor(first_offer):
+                # review fix: the same 97%-of-the-first-offer floor holds for EVERY loss-cut round, also one started by a
+                # game or price change, not only the timed retries
+                log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
+                                  why="loss-cut retry: offer under 97% of the first offer"))
+                continue
             try:
                 _CASH_CTX.auto = True                     # up to 10 tries, short pauses, one more ask (Pete, 2026-11-23)
                 _CASH_CTX.line = thr * (1.0 if why == "plan" else slip) * o.get("frac", 1.0) or None   # retries' bar
                 _CASH_CTX.cost_floor = None if cutting else h["cost"] * o.get("frac", 1.0)
                 _CASH_CTX.cutting = cutting
-                _CASH_CTX.first_offer = first_offer if (cutting and clock) else None   # #396: a clock try keeps 97% of the FIRST offer
+                _CASH_CTX.first_offer = first_offer if cutting else None   # #396: EVERY loss-cut round keeps 97% of the episode's FIRST offer
                 msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
             finally:
                 _CASH_CTX.auto, _CASH_CTX.line, _CASH_CTX.cost_floor, _CASH_CTX.cutting = False, None, None, False

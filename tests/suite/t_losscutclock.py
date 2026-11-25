@@ -194,13 +194,18 @@ ok("inside a clock try the retries stay at or above 97% of the first offer (9.31
 E.get_cash_offer = lambda t, f=1.0: (asks.append(t), {"offer": OFFER["o"], "frac": 1.0, "rfq": "x", "quote": "q",
                                                        "contracts": 20, "at": E.time.time()})[1]
 
-# ---- (9) a change-driven retry (a real score change) is exactly as before: the first-offer guard is for clock tries only
+# ---- (9) a change-driven retry (a real score change) is held to 97% of the FIRST offer too (review fix: EVERY loss-cut round)
 stuck(0)
 OFFER["o"] = 9.2
 SC["sc"] = {"state": "in", "me": 30, "opp": 17, "brk": False}
 tick(60, script=["cancelled", "executed"])
-ok("a change-driven try is not held to 97% of the first offer (as before #396)", accepts == [9.2, 9.2]
-   and not any(r.get("stop") == "below 97% of the first offer" for r in logs), (accepts, logs))
+ok("a change-driven try whose offer is under 97% of the first offer (9.6 -> 9.312) sends nothing", accepts == []
+   and any(r.get("stop") == "below 97% of the first offer" for r in logs), (accepts, logs))
+stuck(0)
+OFFER["o"] = 9.4
+SC["sc"] = {"state": "in", "me": 30, "opp": 17, "brk": False}
+tick(60, script=["cancelled", "executed"])
+ok("...and one above that floor is tried", accepts and accepts[0] == 9.4, (accepts, logs))
 
 # ---- (10) a profit REASON never uses the clock, even when its below-cost first offer sold as a guarded stop-loss (#382)
 reset(); OFFER["o"] = 9.6
