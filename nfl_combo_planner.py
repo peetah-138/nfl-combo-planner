@@ -28083,7 +28083,10 @@ def slate_shadow(code, cands=(), now=None):
             seen[("pool", code)] = now
             w, per, slot, cls, fav, same = defaultdict(float), defaultdict(int), defaultdict(float), defaultdict(float), 0, 0
             for c in cands:
-                evs = {e for e in _events_of(c) if e}
+                try:
+                    evs = {e for e in _events_of(c) if e}
+                except Exception:   # one malformed candidate must not lose the whole pass
+                    continue
                 for e in evs:                                # a combo counts once on each game it touches
                     w[e] += 1.0 / len(evs)
                     per[e] += 1
