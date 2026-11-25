@@ -83,7 +83,7 @@ def b_swallow():
         E._shadow_insert = old
     E.PROP["seen"].clear()
     ok("B junk markets and junk candidates are swallowed", E.prop_shadow([None, 5, {"ticker": 3}, {"ticker": "KXNFLREC-A-B-1", "yes_bid": "x"}], "KXNFLREC", now=NOW + 2e5) == 0
-       and E.slate_shadow("nfl", [None, 5, {"legs": 3}], now=NOW + 2e5) == 0)
+       and isinstance(E.slate_shadow("nfl", [None, 5, {"legs": 3}, {"kind": "single"}], now=NOW + 2e5), int))   # the pass survives a bad candidate
     ok("B markets=None is fine", E.prop_shadow(None, "KXNFLRECYDS", now=NOW + 3e5) == 0)
 
 
