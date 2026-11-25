@@ -21541,7 +21541,7 @@ def fill_yes_delta(f, pos, n):
 
 
 def _unit_cost(total, n):
-    """All-in cost (fees included) per contract, rounded to a tenth of a cent; None when the count is unknown or zero."""
+    """All-in cost per contract (the buy fees included, sale fees not), rounded to 4 places; None when the count is unknown or zero."""
     try:
         total, n = float(total), float(n)
     except (TypeError, ValueError):
@@ -21623,7 +21623,7 @@ def _single_ledger(fills, settles, now=None):
                   "cost": round(cost + fees, 2), "back": round(back, 2), "fees": round(fees, 2),
                   "sold_back": round(sold_back, 2), "sell_fees": round(sell_fees, 2), "n_sold": round(n_sold, 2),
                   "status": status, "opened": first, "closed": closed, "legs": [t], "nf": len(fs),
-                  "n_bought": round(n_bought, 2) or None, "unit_cost": _unit_cost(cost + fees, n_bought)}
+                  "n_bought": round(n_bought, 2) or None, "unit_cost": _unit_cost(cost + fees - sell_fees, n_bought)}
     for t, s in settles.items():                 # settled with no fills in Kalshi's window: its settlement says it all
         if t in out or t in fills or is_combo(t):
             continue
@@ -21680,7 +21680,7 @@ def ledger_note(bets, held, single_fills, settled, now=None):
                    "n_sold": round(h.get("sold_n", 0.0), 2), "status": "sold" if b["status"] == "cashed" else b["status"],
                    "opened": h.get("first_ts"), "closed": b.get("cashed_at") or b.get("settled_at"), "legs": tks,
                    "nf": h.get("nf", 0), "n_bought": round(h.get("bought_n") or 0, 2) or None,
-                   "unit_cost": _unit_cost(b["cost"] + dollars(s, "fee_cost"), h.get("bought_n") or 0)}
+                   "unit_cost": _unit_cost(b["cost"] + dollars(s, "fee_cost") - h.get("sell_fees", 0.0), h.get("bought_n") or 0)}
     rows.update(_single_ledger(single_fills or {}, settled or {}, now))
     sigs = {t: tuple(r.get(k) for k in ("cost", "back", "status", "n_sold", "closed", "nf")) for t, r in rows.items()}
     todo = [t for t in rows if LEDGER_SIG.get(t) != sigs[t]]

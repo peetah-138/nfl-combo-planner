@@ -47,7 +47,7 @@ settles = {N: {"ticker": N, "revenue_dollars": "0.00", "settled_time": iso(now -
 def a():
     L = E._single_ledger(fills, settles, now)
     y, n, s = L.get(Y), L.get(N), L.get(S)
-    ok("A1 bought and sold: 10 contracts, (4.00 + 0.13 fees) / 10 each", y and near(y["n_bought"], 10) and near(y["unit_cost"], 0.413), y)
+    ok("A1 bought and sold: 10 contracts, (4.00 + 0.07 buy fee) / 10 each; the sale fee is not part of it", y and near(y["n_bought"], 10) and near(y["unit_cost"], 0.407), y)
     ok("A2 two buys add up: 10 contracts, all-in cost per contract", n and near(n["n_bought"], 10)
        and near(n["unit_cost"], (5 * 0.70 + 5 * 0.60 + 0.08) / 10), n)
     ok("A3 settlement-only row: count unknown, never a made-up number", s and s["n_bought"] is None and s["unit_cost"] is None, s)
@@ -82,7 +82,7 @@ def b():
     E.ledger_note([], {}, fills, settles, now)
     rows = {r["ticker"]: r for r in E._ledger_rows()}
     ok("B4 the next account read fills a row whose fills are still there", near(rows[Y]["n_bought"], 10)
-       and near(rows[Y]["unit_cost"], 0.413) and E.ledger_price_paid(rows[Y]) == (10.0, 0.413), rows[Y])
+       and near(rows[Y]["unit_cost"], 0.407) and E.ledger_price_paid(rows[Y]) == (10.0, 0.407), rows[Y])
     ok("B5 a row with no fills left stays unknown, and money fields are untouched", rows[O]["n_bought"] is None
        and near(rows[O]["cost"], 2.0), rows[O])
     ok("B6 the new rows are saved too", near(rows[N]["n_bought"], 10) and rows[S]["n_bought"] is None)
@@ -95,7 +95,7 @@ def b():
     n3 = E.ledger_note([bet], {Y: {"nf": 5, "bought_n": 0.0}}, {}, {}, now)      # a read whose fills carry no count
     rows = {r["ticker"]: r for r in E._ledger_rows()}
     ok("B8 a count already saved is kept when a later read has none", n3 == 1 and near(rows[Y]["n_bought"], 10)
-       and near(rows[Y]["unit_cost"], 0.413), (n3, rows[Y]))
+       and near(rows[Y]["unit_cost"], 0.407), (n3, rows[Y]))
     E.STORE["db"].close(); E.STORE.update(db=None, path=None, ledger_ok=False)
 section("B", b)
 

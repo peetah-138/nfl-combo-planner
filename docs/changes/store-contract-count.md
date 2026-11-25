@@ -6,7 +6,7 @@ Single bets did not keep how many contracts were bought, so the Results page cou
 been sold higher" line only covers combos, whose payout is in `bets.pays`). The `ledger` table now keeps, per bet:
 - `n_bought` (real): contracts opened (bought). A fill that closes a position is not counted; a fill that flips
   the side counts only the part that opens.
-- `unit_cost` (real): all-in cost per contract, fees included (`ledger.cost / n_bought`, rounded to 0.1 cent).
+- `unit_cost` (real): all-in cost per contract: money paid to open plus the buy fees, not the sale fees (`(ledger.cost - sell_fees) / n_bought`, rounded to 4 places).
 
 **Bookkeeping only. No buy, sell, sizing or gate decision reads these fields; nothing moves money; rule 8 is untouched.**
 No new Kalshi call: both come from the fills `_single_ledger` / `ledger_note` already read (`bought_n` for combos).
@@ -14,7 +14,7 @@ The buy path itself is not touched.
 
 Schema: additive and backward compatible. `_ledger_table` adds the columns to an older file with `alter table` (checked
 against `pragma table_info`, so it is safe to run twice), alongside the existing `nf` column. Old rows stay NULL = unknown.
-The next account read fills a row whose fills are still inside Kalshi's window (`_ledger_same` sees the difference);
+The first account read after a restart fills a row whose fills are still inside Kalshi's window (`LEDGER_SIG` starts empty; `_ledger_same` sees the difference);
 a row whose fills have aged out stays NULL, and a saved count is never overwritten by an unknown one
 (`coalesce(excluded.n_bought, ledger.n_bought)`). A settlement-only row (no fills) stays unknown rather than guessed.
 
