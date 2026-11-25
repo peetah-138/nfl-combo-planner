@@ -72,10 +72,10 @@ function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,fals
 function ideaOld(html,x,fresh){return fresh&&html?`<div class="iold"><div class="m">When this idea was found · ${esc(ideaAge(x.ts).replace(/^Price /,''))} · older than the price below</div>${html}</div>`:html;}
 function ideaCard(x){if(x.over)return ovIdea(x);const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;const k=x.idea_id||x.id;
- if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
+ if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${esc(x.id)}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
  const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" data-iid="${esc(x.id)}" onclick="event.stopPropagation();ideaX(this.dataset.iid)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
  const cls=`dcard idea itap${x.stale?' stale':''}${x.below_bar?' below':''}${S.hl===x.id?' flash':''}${(S.ideaBack||[]).includes(k)?' rise':''}`;
- const open=`id="idea-${x.id}" data-ik="${k}" data-iid="${esc(x.id)}" onclick="ideaOpen(event,this.dataset.iid)"`;
+ const open=`id="idea-${esc(x.id)}" data-ik="${k}" data-iid="${esc(x.id)}" onclick="ideaOpen(event,this.dataset.iid)"`;
  if(x.n===1){const li=(x.legs_info||[])[0];
   return `<div class="iw" data-id="${x.id}"><div class="${cls}" ${open}><div>${ideaHead(x,li)}
    <p>${esc(ideaAgeNote(x))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
