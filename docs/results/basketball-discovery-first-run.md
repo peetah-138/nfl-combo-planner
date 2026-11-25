@@ -17,8 +17,8 @@ the plain normal-curve model (paired difference -0.005 to +0.002, within about 2
 demonstrated gain from machine learning on state alone. The richer model (rest, neutral site, pace, crew tendencies,
 foul trouble) is not better either: it is worse in four of five seasons (+0.001 to +0.008) and better only in 2024
 (-0.002). Calibration error is 0.010-0.018. Permutation importance is dominated by the score-and-time feature
-(about 4,500-6,300 x1e-4 log loss), then the pre-game margin (60-200); every other feature is below 30 and many are
-negative in some seasons.
+(about 4,500-6,300 x1e-4 log loss), then the pre-game margin (60-200); every other feature is noise (the crew foul tendency
+swings from -34 to +28 by season, mean near zero).
 
 College (about 6,000 held-out games per season): log loss is 0.38-0.40. Here the boosted baseline beats the normal
 curve in every season (paired difference -0.008 to -0.012, many standard errors), and the richer model adds essentially
@@ -78,11 +78,13 @@ crew-tendency cells vanish (effects fall from 2-4 points to about 0). Pace mean 
 that vanish may do so partly because the boosted model sees those same features, which does not prove they are noise.
 
 Pre-registered totals anecdote T5, close game late goes over: +3.1 points (NBA, 1,891 games) and +5.7 points (college,
-9,072 games), q below 0.001, same sign in all five seasons. Overtime explains much of it. With overtime games removed (post-hoc check, same residual, which was fit with overtime
-included so every no-overtime cell sits about 1 point lower, e.g. NBA T1/T2/T4 at about -1.4), T5 falls to +0.7 in the NBA
-(1,685 games) and +2.9 in college (7,820 games). What is left is probably end-of-game fouling; the college total is a
-proxy, so its size is not trustworthy. T3 (physical first half) was pre-registered but dropped: too few games at the
-required foul level (the report now lists any dropped pre-registered test; the totals family is therefore 5, not 6). College T1 (+0.8) and T2 (-0.8) are BH-significant (q 0.001 or below) but under 1 point and do not replicate; T4 and T6 are within
+9,072 games), q below 0.001, same sign in all five seasons. Overtime explains most of it. Diagnostic only (overtime is an outcome, so removing those games conditions on the future):
+the residual was fit with overtime games in, so every no-overtime cell sits lower by construction. Measured against the
+mean residual of all no-overtime games at the same snapshot, T5 falls to +0.5 in the NBA
+(1,685 games, SE 0.15; raw +0.7 against a +0.2 baseline) and +0.5 in college (7,820 games, SE 0.07; raw +2.9 against a
++2.3 baseline). That is under the 1-point size floor. The college total is a proxy, so even that is soft. T3 (physical
+first half) was pre-registered but dropped: too few games at the required foul level (the report now lists any dropped
+pre-registered test; the totals anecdote family is therefore 5, not 6). College T1 (+0.8) and T2 (-0.8) are BH-significant (q 0.001 or below) but under 1 point and do not replicate; T4 and T6 are within
 +/-0.6.
 
 ## 5. Decay

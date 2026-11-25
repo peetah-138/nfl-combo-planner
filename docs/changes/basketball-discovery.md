@@ -15,8 +15,8 @@ anecdotes and 5 totals anecdotes, and a decay tracker. A "survivor" needs BH q<0
 (1 total point), 100+ games, same sign in 4 of 5 held-out seasons, and same sign in the other league.
 
 Result in one line: nothing here is a demonstrated edge. There are no live market prices in the data, so a residual
-against our own model is a lead to price, never a mispricing. Most survivors are the baseline's own late-game calibration
-and derived-possession artifacts. One pre-registered anecdote (rested team vs back-to-back team at half) is a weak
+against our own model is a lead to price, never a mispricing. Nearly all survivors are the baseline's own late-game
+calibration; the one other survivor is college `own_gain8_last5|ph2` (-1.2 pts). One pre-registered anecdote (rested team vs back-to-back team at half) is a weak
 college-led lead worth a look once live prices exist.
 
 Never touches: the engine, the watcher, Pause, caps, rule 8, sizing, any buy or sell path, `~/combowatch`, keys, the
@@ -29,4 +29,4 @@ missing import is a FAIL.
 
 ROADMAP: none
 
-Review follow-up: overtime explains much of the close-game-late-over total residual (NBA +3.1 to +0.7, college +5.7 to +2.9 without overtime); T3 was dropped for too few games.
+Review follow-up: overtime explains most of the close-game-late-over total residual (about +0.5 pts in both leagues once overtime is removed and the shift is centred); T3 was dropped for too few games.

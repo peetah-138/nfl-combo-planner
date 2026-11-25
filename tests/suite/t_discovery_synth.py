@@ -99,3 +99,46 @@ ok("log loss of a perfect-ish forecast is small and of a coin flip is ln2",
    dc.logloss(y, np.where(y == 1, 0.99, 0.01)) < 0.02 and abs(dc.logloss(y, np.full(8, 0.5)) - np.log(2)) < 1e-9)
 t, ece = dc.calibration_table(y, np.full(8, 0.5), bins=10)
 ok("calibration table of a 0.5 forecast on a 50% base rate has ECE 0", abs(ece) < 1e-9 and int(t.n.sum()) == 8)
+
+# ---- the pipeline's own scan, survivor rule and replication (tools/research/basketball_discovery.py) on two synthetic leagues
+spec2 = importlib.util.spec_from_file_location("bd", os.path.join(repo, "tools", "research", "basketball_discovery.py"))
+bd = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(bd)
+
+
+def league(seed, planted_segs, nulls=10):
+    r = np.random.default_rng(seed)
+    parts = []
+    for s in SEASONS:
+        for g in range(600):
+            gid_ = s * 10000 + g
+            ge = r.normal(0, 8)
+            for nm in planted_segs + ["n%d" % i for i in range(nulls)]:
+                if r.random() < 0.4:
+                    parts.append((gid_, s, nm, ge + r.normal(0, 4) + (4.0 if nm in planted_segs else 0.0)))
+    return pd.DataFrame(parts, columns=["game_id", "season", "seg", "v"])
+
+
+def scanned(gl):
+    res, n, per = bd.scan(gl, 1.0, "synthetic")
+    return res
+
+
+a = scanned(league(1, ["both", "only_a"]))
+b = scanned(league(2, ["both", "only_b"]))
+ra, rb = bd.add_replication(a, b), bd.add_replication(b, a)
+sa = ra.set_index("seg")
+ok("planted segment in BOTH leagues is a survivor", bool(sa.loc["both", "survivor"]))
+ok("planted segment in ONE league fails replication", bool(sa.loc["only_a", "pre_repl"]) and not bool(sa.loc["only_a", "survivor"]))
+ok("no null segment is a survivor", int(ra[ra.seg.str.startswith("n")].survivor.sum()) == 0 and int(rb[rb.seg.str.startswith("n")].survivor.sum()) == 0)
+
+# perspective(): a home-only effect has the opposite sign in the away view, and own_margin flips
+cols = ["game_id", "season", "t", "phase", "margin", "run", "mchg5", "poss", "bonus_h", "bonus_a", "ft_h", "ft_a", "rest_h", "rest_a",
+        "pre_margin", "neutral", "pace_pts", "pace_prior_h", "pace_prior_a", "home_pts", "away_pts", "tl", "y", "p_base"]
+te = pd.DataFrame({c: np.ones(4) for c in cols})
+te["margin"] = [5.0, 5.0, -5.0, -5.0]; te["y"] = [1.0, 1.0, 0.0, 0.0]; te["p_base"] = [0.6] * 4; te["poss"] = [1.0, -1.0, 1.0, -1.0]
+pv = bd.perspective(te, "nba")
+hv, av = pv[pv.sign == 1], pv[pv.sign == -1]
+ok("perspective flips the residual and margin sign for the away view",
+   np.allclose(hv.val.values, -av.val.values) and np.allclose(hv.own_margin.values, -av.own_margin.values))
+ok("perspective own_poss is true for the side holding the ball",
+   list(hv.own_poss) == [True, False, True, False] and list(av.own_poss) == [False, True, False, True])

@@ -567,7 +567,15 @@ def main():
         if len(gl0):
             r0 = dc.segment_scan(gl0, ["seg"], min_games=MIN_GAMES)
             w("Post-hoc check, totals anecdotes with overtime games excluded:")
-            w(dc.md_table(ints(r0[["seg", "n_games", "effect", "se", "p"]], INTCOLS), "%.3f"))
+            # centre on the mean residual of ALL no-overtime games at the same snapshot time(s): the model was fit with OT games in,
+            # so every no-OT cell sits lower by construction.  went_ot is an outcome, so this is a diagnostic, not a decomposition.
+            ctr = {}
+            for k, m in totals_anecdotes(st["R"], T_, lg).items():
+                ts = st["R"].loc[m, "t"].unique()
+                ctr[k + "_noOT"] = float(R0[R0.t.isin(ts)].res.mean()) if len(ts) else np.nan
+            r0["baseline_noOT"] = r0.seg.map(ctr)
+            r0["effect_centred"] = r0.effect - r0.baseline_noOT
+            w(dc.md_table(ints(r0[["seg", "n_games", "effect", "baseline_noOT", "effect_centred", "se", "p"]], INTCOLS), "%.3f"))
         w("### 7. Decay tracker (effect by held-out season, slope per season; 5 seasons is low power, a non-significant slope is NOT evidence of no decay)")
         rW = st["resW"].sort_values("p").head(10).seg.tolist()
         glW = game_level(perspective(st["te"], lg), {k: v for k, v in win_segments(perspective(st["te"], lg), lg).items() if k in rW})

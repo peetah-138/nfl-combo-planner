@@ -144,3 +144,9 @@ leaves null segments alone.
 * Lead-bucket cells (`lead_*`) in the win-probability scan are baseline calibration diagnostics, not trend claims, and
   are counted separately in the report.
 * Results: `docs/results/basketball-discovery-first-run.md`.
+* Review fixes: crew tendencies now use only STRICTLY EARLIER dates (same-date games no longer feed each other); the
+  college bonus threshold of 7 fouls is per half, which matches the data (college periods are halves); the scan reports
+  any pre-registered test dropped for too few games (T3); an overtime-excluded, re-centred check of the totals
+  anecdotes is printed as a diagnostic (overtime is an outcome, so it is not a decomposition). Lead-bucket edges are
+  slightly asymmetric at the boundaries (a lead of exactly 3 is "within3"); kept as run, documented here. Deferred: excluding the
+  lead-bucket cells from the BH family (they are reported separately instead).

@@ -177,10 +177,15 @@ def crew_effects(off, games):
     o["lm_fouls"] = o.lm_fouls.fillna(games.fouls.mean())  # first days only; irrelevant after a few weeks
     grp = o.groupby("official_full_name")
     for src, nm in (("dev", "d"), ("fouls", "f")):
-        v = o[src]
-        ok = v.notna().astype(int)
-        o["_c" + nm] = ok.groupby(o.official_full_name).cumsum().groupby(o.official_full_name).shift(1).fillna(0)
-        o["_s" + nm] = v.fillna(0).groupby(o.official_full_name).cumsum().groupby(o.official_full_name).shift(1).fillna(0)
+        # totals of STRICTLY EARLIER dates per official (same-date games never feed each other)
+        tmp = pd.DataFrame({"o": o.official_full_name.values, "date": o.date.values, "ok": o[src].notna().astype(int).values,
+                            "v": o[src].fillna(0).values})
+        dd = tmp.groupby(["o", "date"], sort=True)[["ok", "v"]].sum().reset_index()
+        dd[["ok", "v"]] = dd.groupby("o")[["ok", "v"]].cumsum()
+        dd[["ok", "v"]] = dd.groupby("o")[["ok", "v"]].shift(1).fillna(0)
+        mm = tmp.merge(dd, on=["o", "date"], how="left", suffixes=("_x", ""))
+        o["_c" + nm] = mm["ok"].values
+        o["_s" + nm] = mm["v"].values
     del grp
     o["crew_dev_o"] = o._sd / (o._cd + SHRINK_K)  # shrunk toward 0 (no effect)
     o["crew_fouls_o"] = (o._sf + SHRINK_K * o.lm_fouls) / (o._cf + SHRINK_K) - o.lm_fouls
