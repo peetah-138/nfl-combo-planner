@@ -22752,6 +22752,7 @@ def analytics(max_age=600):
         out["tuning"] = []
     out["knobs"] = knob_view()                          # the knob registry, read-only (issue #228); never raises
     out["knob_shadow"] = knob_shadow_view()            # what self-tuning would change, not active yet (#228 PR2)
+    out["league_shadow"] = league_shadow_view()        # per-league numbers beside today's, read-only (#13)
     ANALYTICS.update(at=now, v=out)
     return out
 
@@ -26064,10 +26065,15 @@ def knob_pass(now=None):
         pushes = knob_brake_pass(now)
         feed_resolve(now)                             # close score-age episodes that have waited long enough
         steps = knob_tune(now)
-        return [f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes
+        result = ([f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes)
     except Exception as err:
         print("knob pass:", type(err).__name__, err)
         return [], []
+    try:                                               # after the result is built: it can never lose or delay a brake alert
+        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table, nothing reads it
+    except Exception as err:
+        print("league shadow:", type(err).__name__, err)
+    return result
 
 
 def knob_shadow_view(now=None):
@@ -26131,6 +26137,196 @@ def knob_shadow_view(now=None):
                 "evidence": dict(KNOB_EVIDENCE), "brake": dict(KNOB_BRAKE)}
     except Exception as err:
         print("knob shadow view:", type(err).__name__, err)
+        return {}
+
+
+# ---------------------------------------------------------------- per-league learning, in SHADOW (issue #13)
+# Pete's rule: everything learns per league, not just per sport. This is the shadow-first step: once a day it works out
+# what each league's OWN numbers would be if a league learned for itself and borrowed from its sport, then from all
+# leagues, only for what it lacks (`lgsh_blend`: each level moves the value above it toward its own by n/(n+k), the same
+# sample-size weighting calib_fair has always used), and writes them beside the numbers the app uses today in the
+# `league_shadow` table. NOTHING reads that table to decide anything: no cut-off, fair price, size, sell or sport order
+# is changed, and the run never writes a settings or learning file (`test_leagueshadow` checks every one of these, and
+# that no decision function mentions `league_shadow`/`LGSH`). It is only shown, read-only, by `league_shadow_view`.
+#   cutoff  each league's combo cut-off by size: today's `_cut_level` against the blended one (all -> sport -> league).
+#   calib   each sub-league's fair-price nudge by chance band: `calib_fair` named by sport only (what a caller that
+#           passes no ticker gets) against `calib_fair` with the league named (its own record, sport's behind it).
+#   record  each league's settled-bet return (profit per dollar staked, the last 60 days: your real combos and the
+#           paper/real panel bets) shrunk toward 0 by n/(n+k) through all -> sport -> league: the evidence sizing and
+#           the panel's sport order would read. Today neither reads any league's record (current is empty).
+LGSH = {"every": 86400, "keep": 180 * 86400, "k_cut": CUT_MIN_N, "k_calib": 300, "k_roi": 30, "days": 60}
+_LGSH_SIZES = (2, 3, 5, 8)                              # a representative combo size for each of _cut_key's four buckets
+_LGSH_BANDS = ((0.0, 0.3), (0.3, 0.45), (0.45, 0.55), (0.55, 0.7), (0.7, 0.85), (0.85, 1.01))
+_LGSH_PRE = {v: k for k, v in SOCCER_LEAGUE.items()}          # league -> its ticker prefix (derived: one source of truth)
+_LGSH_TRIED = {"at": 0}                                  # last attempt, in memory: an empty run is not retried every round
+
+
+def lgsh_blend(start, levels, k):
+    """(value, shares): `levels` = [(name, value, n)] from the widest group to the narrowest. Each moves the value so far
+    toward its own by n/(n+k) of the gap (a level with no data, or no value, changes nothing). shares = how much of the
+    final value each level (and the start) accounts for, adding up to 1, so the number can be explained in a line."""
+    v, ws = float(start), []
+    for name, val, n in levels:
+        w = (n / (n + k)) if (val is not None and n and n > 0) else 0.0
+        v += w * (float(val) - v) if w else 0.0
+        ws.append((name, w, int(n or 0)))
+    shares, rest = {}, 1.0
+    for name, w, _n in reversed(ws):
+        shares[name] = round(rest * w, 4)
+        rest *= 1 - w
+    shares["start"] = round(rest, 4)
+    return v, shares
+
+
+def _lgsh_say(shares):
+    return ", ".join(f"{n} {x:.0%}" for n, x in sorted(shares.items(), key=lambda kv: -kv[1]) if x >= 0.005)
+
+
+def _lgsh_league_sport(lg):
+    """The sport a league key belongs to (a soccer league's is soccer; a league that is its own sport is itself)."""
+    return "soccer" if lg in _LGSH_PRE else lg
+
+
+def lgsh_rows(now=None):
+    """The shadow rows for every league with any record: [{league, sport, metric, key, current, shadow, n_own, n_sport,
+    n_all, shares, says}]. Reads the cut-off file, the history file and the calibration only; writes nothing."""
+    now = now or time.time()
+    out = []
+    # ---- cut-offs
+    d = load_json(CUTOFF_FILE, {})
+    leagues = {k.rsplit(":", 1)[0] for k in d if not k.startswith("_") and ":" in k} - {"all"}
+    if any(k.startswith("soccer:") for k in d):          # a soccer league with no file entry of its own still borrows
+        leagues |= set(_LGSH_PRE)
+    for lg in sorted(leagues):
+        sp = _lgsh_league_sport(lg)
+        for n in _LGSH_SIZES:
+            ea, es = d.get(_cut_key("all", n)) or {}, d.get(_cut_key(sp, n)) or {}
+            el = (d.get(_cut_key(lg, n)) or {}) if lg != sp else {}
+            if not (es or el):
+                continue
+            legs = [_LGSH_PRE[lg] + "GAME-X"] if lg in _LGSH_PRE else None
+            cur = _cut_level(d, sp, n, legs)[0]
+            v, sh = lgsh_blend(CUT_START, [("all", max(float(ea.get("level", CUT_START)), CUT_START) if ea else None,
+                                            ea.get("n", 0)),
+                                           ("sport", es.get("level") if es else None, es.get("n", 0)),
+                                           ("league", el.get("level") if el else None, el.get("n", 0))], LGSH["k_cut"])
+            v = min(max(v, 85.0), 110.0)
+            out.append({"league": lg, "sport": sp, "metric": "cutoff", "key": _cut_key("", n).lstrip(":"), "current": cur,
+                        "shadow": round(v, 2), "n_own": int(el.get("n", 0) or 0), "n_sport": int(es.get("n", 0) or 0),
+                        "n_all": int(ea.get("n", 0) or 0), "shares": sh, "says": _lgsh_say(sh)})
+    # ---- fair-price calibration of the sub-leagues
+    m = calibration()
+    for lg in sorted(_LGSH_PRE):
+        sp, tk = "soccer", _LGSH_PRE[lg] + "GAME-X"
+        for lo, hi in _LGSH_BANDS:
+            bl = next((b for b in m.get(lg, []) if b[0] == lo), None)
+            bs = next((b for b in m.get(sp, []) if b[0] == lo), None)
+            ba = next((b for b in m.get("all", []) if b[0] == lo), None)
+            if not bl:
+                continue
+            f = bl[2]
+            cur, new = calib_fair(sp, f), calib_fair(sp, f, tk)
+            sh = {"league": round(bl[4] / (bl[4] + LGSH["k_calib"]), 4)}
+            out.append({"league": lg, "sport": sp, "metric": "calib", "key": f"{lo:.2f}-{min(hi, 1.0):.2f}",
+                        "current": round(cur, 4), "shadow": round(new, 4), "n_own": bl[4], "n_sport": bs[4] if bs else 0,
+                        "n_all": ba[4] if ba else 0, "shares": sh,
+                        "says": f"its own record {sh['league']:.0%}, the rest from {sp} and all"})
+    # ---- each league's settled-bet return
+    by = defaultdict(lambda: [0, 0.0, 0.0])             # key -> [bets, staked, profit]
+    for c in _tune_items(LGSH["days"]):
+        tks = _tickers_of(c.get("legs"))
+        lg = bet_key(tks) if tks else None
+        stake, pl = c.get("stake"), c.get("pl")
+        if not lg or lg in ("mix", "other") or not stake or pl is None or stake <= 0:
+            continue
+        for key in {("all", None), ("sport", _lgsh_league_sport(lg)), ("league", lg)}:
+            x = by[key]
+            x[0] += 1
+            x[1] += float(stake)
+            x[2] += float(pl)
+    roi = lambda key: (by[key][2] / by[key][1]) if key in by and by[key][1] > 0 else None
+    for lg in sorted({k[1] for k in by if k[0] == "league"}):
+        sp = _lgsh_league_sport(lg)
+        v, sh = lgsh_blend(0.0, [("all", roi(("all", None)), by.get(("all", None), [0])[0]),
+                                 ("sport", roi(("sport", sp)), by.get(("sport", sp), [0])[0]),
+                                 ("league", roi(("league", lg)), by.get(("league", lg), [0])[0])], LGSH["k_roi"])
+        out.append({"league": lg, "sport": sp, "metric": "record", "key": f"{LGSH['days']}d", "current": None,
+                    "shadow": round(v, 4), "n_own": by[("league", lg)][0], "n_sport": by.get(("sport", sp), [0])[0],
+                    "n_all": by.get(("all", None), [0])[0], "shares": sh, "says": _lgsh_say(sh)})
+    return out
+
+
+def _league_shadow_table():
+    store_x("create table if not exists league_shadow(ts real, league text, sport text, metric text, key text, "
+            "current real, shadow real, n_own int, n_sport int, n_all int, shares text, says text)")
+    store_x("create index if not exists league_shadow_t on league_shadow(ts)")
+
+
+def league_shadow_run(now=None, force=False):
+    """The daily shadow run (the watcher's knob_pass calls it): appends today's rows to `league_shadow`, keeps 180 days.
+    Returns the rows written (0 when not due or no history). Writes only that table. Never raises."""
+    try:
+        now = now or time.time()
+        if not STORE["db"]:
+            return 0
+        _league_shadow_table()
+        last = max((store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t") or 0, _LGSH_TRIED["at"])
+        if not force and now - last < LGSH["every"]:
+            return 0
+        _LGSH_TRIED["at"] = now                        # remembered even when there is nothing to write (no 60-day re-read each round)
+        rows = lgsh_rows(now)
+        args = [(now, r["league"], r["sport"], r["metric"], r["key"], r["current"], r["shadow"], r["n_own"],
+                 r["n_sport"], r["n_all"], json.dumps(r["shares"], sort_keys=True), r["says"]) for r in rows]
+        with _SLOCK:                                   # all rows of a run in one transaction: a partial run cannot exist
+            db, own = STORE["db"], False
+            try:
+                own = not db.in_transaction
+                if own:
+                    db.execute("begin")
+                db.executemany("insert into league_shadow values(?,?,?,?,?,?,?,?,?,?,?,?)", args)
+                if own:
+                    db.execute("commit")
+            except Exception:
+                if own:
+                    try:
+                        db.execute("rollback")
+                    except Exception:
+                        pass
+                raise
+        store_x("delete from league_shadow where ts < ?", (now - LGSH["keep"],))
+        return len(rows)
+    except Exception as err:
+        print("league shadow:", type(err).__name__, err)
+        return 0
+
+
+def league_shadow_view():
+    """Results › What's working: the latest shadow run, read-only: per league, what its own numbers would be next to
+    today's. Nothing here is used by any decision. Never raises ({} on an error or before the first run)."""
+    try:
+        if not STORE["db"]:
+            return {}
+        _league_shadow_table()
+        last = (store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t")
+        if not last:
+            return {}
+        by = {}
+        for r in store_rows("select * from league_shadow where ts=? order by league, metric, key", (last,)):
+            e = by.setdefault(r["league"], {"key": r["league"], "name": league_label(r["league"]), "sport": r["sport"],
+                                            "cutoff": [], "calib": [], "record": None, "differs": 0})
+            row = {"key": r["key"], "current": r["current"], "shadow": r["shadow"], "n_own": r["n_own"],
+                   "n_sport": r["n_sport"], "n_all": r["n_all"], "says": r["says"]}
+            if r["metric"] == "record":
+                e["record"] = row
+            else:
+                e[r["metric"]].append(row)
+                e["differs"] += int(r["current"] is not None and abs(r["shadow"] - r["current"]) > 1e-9)
+        return {"mode": "shadow", "at": last, "every": LGSH["every"],
+                "note": "What each league's own numbers would be, borrowing its sport then everyone for what it lacks. "
+                        "Nothing uses these yet.",
+                "leagues": sorted(by.values(), key=lambda e: (-e["differs"], e["name"]))}
+    except Exception as err:
+        print("league shadow view:", type(err).__name__, err)
         return {}
 
 

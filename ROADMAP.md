@@ -258,6 +258,12 @@ Short lines so nothing is lost; the issue has the detail.
 
 ---
 
+### Per-league learning, shadow first (#13, PR #471)
+- Shadow only: `league_shadow` holds each league's own cut-off / fair-price / return next to today's, shown read-only in
+  Results › What's working; no decision reads it. Before any go-live: log per-quote pass/skip under current vs blended
+  and settle both to dollars (the gate is not measurable from stored numbers alone), and fix the blend's evidence
+  double-counting (all includes sport includes league). See the follow-up issues on #471.
+
 ## Keeping this file honest
 
 - Pull before editing; two Claude sessions may work on this repo.
