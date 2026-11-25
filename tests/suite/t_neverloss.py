@@ -39,12 +39,12 @@ ok("sl_allowed with a saved 'never': follows 'tune' (off here), not Allow", E.sl
 # ---- combo: the buyer backs out, the fresh offer is within 3% of the agreed price but under cost
 acc = []
 E.accept_once = lambda o, t=None: (acc.append(o["offer"]), "executed" if len(acc) > 1 else "cancelled")[1]
-E.get_cash_offer = lambda t, f: {"offer": 9.9, "frac": 1.0, "rfq": "r2", "quote": "q2", "at": time.time()}
+E.get_cash_offer = lambda t, f: {"offer": 9.9, "frac": 1.0, "rfq": "r2", "quote": "q2", "contracts": 20, "at": time.time()}
 E.resting_sells = lambda: {}
 E.loading = lambda *a, **k: None
 E.haptic = lambda *a, **k: None
 def offer():
-    E.MINE["cash"]["C1"] = {"offer": 10.1, "frac": 1.0, "rfq": "r1", "quote": "q1", "at": time.time()}
+    E.MINE["cash"]["C1"] = {"offer": 10.1, "frac": 1.0, "rfq": "r1", "quote": "q1", "contracts": 20, "at": time.time()}
 E.MINE["hold"]["C1"] = {"label": "Combo 1", "cost": 10.0, "pays": 20}
 E.CFG["flex_sell"] = False                     # today's rule: only the old retry bar
 offer(); msg = E.accept_cash("C1")
