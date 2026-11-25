@@ -6552,7 +6552,7 @@ def more_eval(x, m, now=None):
     else:
         why, fl = single_sell_reason(x2, bid, ask, track=False, more="A")
         a.update(would=bool(why), why=why or "under the lower floor", floor=fl)
-    if sl_mode() == "never" or not CFG.get("smart_sell", True) or ride_lam() is None:
+    if not CFG.get("smart_sell", True) or ride_lam() is None:
         b["why"] = "loss cuts are off"
     elif pr["loss"] is not None:
         b["why"] = "league has its own cut-off"
