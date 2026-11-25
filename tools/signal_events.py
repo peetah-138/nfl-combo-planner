@@ -118,7 +118,8 @@ def event_section(db, boot):
         "select n.league l, n.material m, coalesce(n.game_event, n.ticker) game, f.horizon h, "
         "f.bid - n.bid dk, f.fair_book - n.fair_book ds "
         "from sig_news n join sig_news_fu f on f.news_id = n.id "
-        "where n.bid is not null and f.bid is not null and n.fair_book is not null and f.fair_book is not null").fetchall()
+        "where n.bid is not null and f.bid is not null and n.fair_book is not null and f.fair_book is not null "
+        "and (n.news_ts is null or n.ts - n.news_ts < 21600)").fetchall()    # a re-listed old item is not fresh news
     rows = [dict(r) for r in rows]
     if not rows:
         out["note"] = "no news event has both a starting price and a follow-up sample yet"
@@ -132,14 +133,20 @@ def event_section(db, boot):
                     continue
                 name = f"{league} {'material' if mat else 'other'} +{h}min"
                 if len(grp) < HIDE_N:
-                    cells[name] = {"n": len(grp), "note": "n<20, hidden"}
+                    cells[name] = {"note": "n<20, hidden"}
                     continue
-                for r in grp:
-                    r["gap"] = r["ds"] - r["dk"]
+                grp = [r for r in grp if abs(r["ds"]) >= 0.005]      # news that moved the books at all
+                if len(grp) < HIDE_N:
+                    cells[name] = {"note": "n<20, hidden"}
+                    continue
+                for r in grp:                                        # oriented: good and bad news must not cancel out
+                    sgn = 1.0 if r["ds"] > 0 else -1.0
+                    r["gap"] = (r["ds"] - r["dk"]) * sgn
+                    r["dk"], r["ds"] = r["dk"] * sgn, r["ds"] * sgn
                 cells[name] = {
                     "n": len(grp), "games": len({r["game"] for r in grp}),
-                    "kalshi_bid_change": r4(mean([r["dk"] for r in grp])),
-                    "sharp_prob_change": r4(mean([r["ds"] for r in grp])),
+                    "kalshi_move_toward_news": r4(mean([r["dk"] for r in grp])),
+                    "sharp_move_toward_news": r4(mean([r["ds"] for r in grp])),
                     "gap_sharp_minus_kalshi": r4(mean([r["gap"] for r in grp])),
                     "gap_95": boot_mean(by_game(grp, lambda r: r["gap"]), boot, seed=h + mat)}
     out["cells"] = cells
@@ -198,7 +205,7 @@ def residual_section(db, boot, train_frac=0.7):
     for league in sorted({r["l"] for r in rows if r["l"]}):
         grp = [r for r in rows if r["l"] == league]
         if len(grp) < HIDE_N:
-            leagues[league] = {"n": len(grp), "note": "n<20, hidden"}
+            leagues[league] = {"note": "n<20, hidden"}
             continue
         first = {}
         for r in grp:
@@ -211,7 +218,7 @@ def residual_section(db, boot, train_frac=0.7):
         for f in FACTORS:
             have = [r for r in grp if r["x"][f] is not None]
             if len(have) < HIDE_N:
-                fac[f] = {"n": len(have), "note": "n<20, hidden" if have else "no values recorded yet"}
+                fac[f] = {"note": "n<20, hidden" if have else "no values recorded yet"}
                 continue
             tr = [r for r in have if r["game"] in train_g]
             te = [r for r in have if r["game"] in test_g]

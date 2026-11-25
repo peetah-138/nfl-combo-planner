@@ -69,7 +69,7 @@ def a_main():
     ev = s["event_study"]; cells = ev["cells"]
     ok("A event study: 50-event league shown, 10-event league hidden at n<20", "nba material +5min" in cells and cells["nba material +5min"].get("n") == 50 and cells["nhl material +5min"]["note"] == "n<20, hidden", list(cells)[:3])
     c = cells["nba material +15min"]
-    ok("A event study: kalshi +2 pts, books +5 pts, gap +3 pts", abs(c["kalshi_bid_change"] - 0.02) < 1e-6 and abs(c["sharp_prob_change"] - 0.05) < 1e-6 and abs(c["gap_sharp_minus_kalshi"] - 0.03) < 1e-6, c)
+    ok("A event study: kalshi +2 pts, books +5 pts, gap +3 pts", abs(c["kalshi_move_toward_news"] - 0.02) < 1e-6 and abs(c["sharp_move_toward_news"] - 0.05) < 1e-6 and abs(c["gap_sharp_minus_kalshi"] - 0.03) < 1e-6, c)
     ok("A event study: a game-level range is given", isinstance(c["gap_95"], list) and len(c["gap_95"]) == 2, c)
     nba = s["residual_test"]["leagues"]["nba"]
     f = nba["factors"]

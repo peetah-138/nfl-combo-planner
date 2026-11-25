@@ -27924,7 +27924,7 @@ def price_prune(now=None):
 SEV = {"keep_days": 365, "tick": 20.0, "last": 0.0, "prune": 0.0, "tbl": False, "load": False,
        "cap": {"sig_news": 60000, "sig_news_fu": 200000, "sig_ctx": 80000}, "full": set(),
        "inj": {}, "inj_at": {}, "team": {}, "games": {}, "fair": {}, "pend": {}, "espn": {}, "sched": {}, "cov": {},
-       "done": set(), "max_events": 80, "px_age": 180.0, "pre_min": (20, 125), "start_late": 20,
+       "done": set(), "max_events": 80, "px_age": 180, "fair_age": 600.0, "pre_min": (20, 125), "start_late": 20,
        "lock": threading.Lock()}
 SEV_HORIZONS = (5, 15, 60)                         # minutes after the news
 SEV_PRO = ("nfl", "nba", "nhl")                    # leagues with a travel table (college and soccer stay NULL)
@@ -28228,7 +28228,7 @@ def _sev_news(code, now):
             if px:
                 bid, ask, age = px
             f = SEV["fair"].get(t)
-            if f:
+            if f and now - f[2] <= SEV["fair_age"]:         # a stale sharp value would fake "the books did not move"
                 fair, src = f[0], f[1]
         nts = _iso_dt(when)
         nts = nts.timestamp() if nts else None
@@ -28252,7 +28252,7 @@ def _sev_news(code, now):
 def _sev_followups(now):
     """Samples of each queued news market at +5/+15/+60 min, from the prices the engine last read (no request). A
     sample more than one horizon late (the app was busy or off) is dropped, never faked."""
-    rows = []
+    rows, taken = [], []
     for nid, p in list(SEV["pend"].items()):
         for h in sorted(p["todo"]):
             due = p["ts"] + h * 60
@@ -28265,12 +28265,21 @@ def _sev_followups(now):
             if not px:
                 continue
             f = SEV["fair"].get(p["ticker"])
-            rows.append((nid, h, round(now, 1), round(now - due, 1), px[0], px[1], f[0] if f else None,
+            fresh = f and now - f[2] <= SEV["fair_age"]
+            rows.append((nid, h, round(now, 1), round(now - due, 1), px[0], px[1], f[0] if fresh else None,
                          round(now - f[2], 0) if f else None))
-            p["todo"].discard(h)
-        if not p["todo"]:
-            SEV["pend"].pop(nid, None)
-    return _sev_write("sig_news_fu", SEV_FU_COLS, rows) if rows else []
+            taken.append((nid, h))
+    for nid in [k for k, p in SEV["pend"].items() if not p["todo"]]:
+        SEV["pend"].pop(nid, None)
+    ids = _sev_write("sig_news_fu", SEV_FU_COLS, rows) if rows else []
+    if ids:                                                # a failed or refused write keeps the sample due (the late rule expires it)
+        for nid, h in taken:
+            p = SEV["pend"].get(nid)
+            if p:
+                p["todo"].discard(h)
+                if not p["todo"]:
+                    SEV["pend"].pop(nid, None)
+    return ids
 
 
 def _sev_rest(code, team, start):
@@ -28294,7 +28303,7 @@ def _sev_ctx_row(e, g, phase, now):
     """One sig_ctx row for a game from the memory the panel pass and the ESPN read left. Unknown = None."""
     code, start = g["code"], g["start"]
     sides = g["sides"]
-    espn = [v for v in SEV["espn"].values() if v["code"] == code and v["home"] and v["away"]
+    espn = [v for v in list(SEV["espn"].values()) if v["code"] == code and v["home"] and v["away"]
             and abs(v["start"] - start) < 36 * 3600 and len(sides) >= 2
             and all(any(_sev_same(code, s["pick"], n) for n in (v["home"], v["away"])) for s in sides[:2])]
     v = min(espn, key=lambda v: abs(v["start"] - start)) if espn else None
@@ -28339,8 +28348,8 @@ def _sev_ctx(now):
             console_note(f"signal events ctx: {type(err).__name__}: {err}")
             SEV["done"].add((e, phase))
     if rows:
-        _sev_write("sig_ctx", SEV_CTX_COLS, rows)
-        SEV["done"].update(keys)
+        if _sev_write("sig_ctx", SEV_CTX_COLS, rows):      # not marked done when the write failed or the table is full
+            SEV["done"].update(keys)
     return len(rows)
 
 
