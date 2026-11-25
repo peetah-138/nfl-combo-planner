@@ -130,7 +130,7 @@ def collect(db, doc, tickers_like="KXNFL%"):
         pre, outcome = closes[t]
         poss = 0 if r["poss"] is None else (1 if r["poss"] else -1)
         p = model_chance(doc, r["me"] or 0, r["opp"] or 0, r["frac"], poss, pre)
-        out.append({"game": t, "p": p, "mid": (bid + ask) / 2, "bid": bid, "ask": ask, "y": 1.0 if outcome == "yes" else 0.0})
+        out.append({"game": t.rsplit("-", 1)[0], "p": p, "mid": (bid + ask) / 2, "bid": bid, "ask": ask, "y": 1.0 if outcome == "yes" else 0.0})
     return out, None
 
 

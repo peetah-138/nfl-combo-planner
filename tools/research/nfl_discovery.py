@@ -671,7 +671,6 @@ def build_observations(snaps, p_home, ref_rank):
     run_f = fs * o["run_10m"].to_numpy()
     o["run"] = np.where(np.isnan(run_f), None, np.where(run_f >= 10, "hot", np.where(run_f <= -10, "cold", "none")))
     to_f = fs * o["to_margin"].to_numpy()                       # focal's turnover margin (opponent giveaways - own)
-    to_f = -fs * o["to_margin"].to_numpy() * -1 if False else to_f
     o["to"] = np.where(to_f >= 2, "plus", np.where(to_f <= -2, "minus", "even"))
     o.loc[o["snap"] == 0, "to"] = None
     pen_f = fs * o["pen_yds_diff"].to_numpy()                   # home minus away penalty yards, focal-signed: positive = focal MORE
@@ -1121,13 +1120,13 @@ def render_markdown(res):
         w(f"- Placebo check (random sign flips per game, {len(pc)} reps): BH rejections per rep {pc} (should be about 0).")
     w("\n### Independent survivors (in the order they were found; each one is subtracted before looking for the next)\n")
     if sc["survivors"]:
-        w("| # | Situation | Games | Effect (WP pts) | 95% range | q | Same sign | Size is tradable? | Trend |\n|---|---|---|---|---|---|---|---|---|")
+        w("| # | Situation | Games | Effect (WP pts) | 95% range | q | Same sign | Size is not tiny? (heuristic only) | Trend |\n|---|---|---|---|---|---|---|---|---|")
         for i, s in enumerate(sc["survivors"][:25], 1):
             w(f"| {i} | {s['label']} | {s['n']} | {s['effect_wp_pts']:+.1f} | {s['ci95']} | {s['q']:.3g} | {s['same_sign_share']:.0%} of {s['seasons']} | "
-              f"{'maybe' if s['tradable_size'] else 'no, too small'} | {s['decay']['status']} |")
+              f"{'yes' if s['tradable_size'] else 'no, too small'} | {s['decay']['status']} |")
     else:
         w("None. Nothing both passed the multiple-testing correction and was big and stable enough.")
-    w("\n### Closest misses (small p-value but not surviving)\n")
+    w("\n### Strongest first-round cells (before the explain-away rounds; some of these are the survivors above)\n")
     for s in sc["smallest_p_overall"][:6]:
         w(f"- {s['label']}: {s['effect_wp_pts']:+.1f} pts (n={s['n']}), q={s['q']:.3g}, same sign {s['same_sign_share']:.0%} of {s['seasons']} seasons")
     w("\n## 4. Pre-registered sportscaster claims\n")

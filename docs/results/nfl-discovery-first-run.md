@@ -86,14 +86,14 @@ Refit ablation on seasons [2025, 2026] (log loss increase when the group is left
 
 ### Independent survivors (in the order they were found; each one is subtracted before looking for the next)
 
-| # | Situation | Games | Effect (WP pts) | 95% range | q | Same sign | Size is tradable? | Trend |
+| # | Situation | Games | Effect (WP pts) | 95% range | q | Same sign | Size is not tiny? (heuristic only) | Trend |
 |---|---|---|---|---|---|---|---|---|
-| 1 | With 2:00 left: the leading team (the favorite if tied), when it leads by 15+ and it has passed on 45% or fewer of its plays | 364 | +4.1 | [3.27, 4.91] | 5.95e-19 | 100% of 15 | maybe | holding |
-| 2 | With 2:00 left: the leading team (the favorite if tied), when it has the ball and no 10-point scoring run in the last 10 minutes | 1916 | +4.4 | [3.42, 5.35] | 3.83e-15 | 100% of 17 | maybe | holding |
+| 1 | With 2:00 left: the leading team (the favorite if tied), when it leads by 15+ and it has passed on 45% or fewer of its plays | 364 | +4.1 | [3.27, 4.91] | 5.95e-19 | 100% of 15 | yes | holding |
+| 2 | With 2:00 left: the leading team (the favorite if tied), when it has the ball and no 10-point scoring run in the last 10 minutes | 1916 | +4.4 | [3.42, 5.35] | 3.83e-15 | 100% of 17 | yes | holding |
 | 3 | With 5:00 left: the leading team (the favorite if tied), when it leads by 15+ and penalty yards are within 30 | 888 | +3.0 | [2.29, 3.71] | 7.96e-13 | 94% of 17 | no, too small | holding |
 | 4 | With 2:00 left: the leading team (the favorite if tied), when it leads by 15+ and it has the ball | 744 | -3.5 | [-4.39, -2.5] | 4.86e-09 | 94% of 17 | no, too small | holding |
 | 5 | With 10:00 left: the leading team (the favorite if tied), when it leads by 15+ and its pass rate is 46-64% | 901 | +2.5 | [1.67, 3.38] | 1.28e-05 | 88% of 17 | no, too small | retire |
-| 6 | With 5:00 left: the leading team (the favorite if tied), when it has the ball and outdoor temperature is 36-60F | 644 | +5.2 | [3.34, 7.13] | 0.000106 | 88% of 16 | maybe | holding |
+| 6 | With 5:00 left: the leading team (the favorite if tied), when it has the ball and outdoor temperature is 36-60F | 644 | +5.2 | [3.34, 7.13] | 0.000106 | 88% of 16 | yes | holding |
 | 7 | With 10:00 left: the leading team (the favorite if tied), when it has the ball and no 10-point scoring run in the last 10 minutes | 2011 | +3.1 | [1.75, 4.41] | 0.007 | 82% of 17 | no, too small | holding |
 | 8 | Entering the 4th quarter: the leading team (the favorite if tied), when it is a division game and its QB has 10+ prior starts | 1434 | +3.9 | [2.19, 5.68] | 0.00987 | 94% of 17 | no, too small | retire |
 | 9 | With 2:00 left: the leading team (the favorite if tied), when it has the ball and it leads the turnover battle by 2+ | 681 | +2.5 | [1.35, 3.7] | 0.0237 | 88% of 17 | no, too small | holding |
@@ -101,7 +101,7 @@ Refit ablation on seasons [2025, 2026] (log loss increase when the group is left
 | 11 | With 2:00 left: the leading team (the favorite if tied), when it leads by 15+ and penalty yards are within 30 | 917 | +2.5 | [1.94, 3.09] | 4.17e-14 | 94% of 17 | no, too small | holding |
 | 12 | With 2:00 left: the leading team (the favorite if tied), when it has the ball and turnovers are within 1 | 1304 | +2.9 | [1.76, 4.12] | 0.00158 | 88% of 17 | no, too small | retire |
 
-### Closest misses (small p-value but not surviving)
+### Strongest first-round cells (before the explain-away rounds; some of these are the survivors above)
 
 - With 2:00 left: the leading team (the favorite if tied), when it leads by 15+ and it has passed on 45% or fewer of its plays: +4.1 pts (n=364), q=5.95e-19, same sign 100% of 15 seasons
 - With 2:00 left: the leading team (the favorite if tied), when it has the ball and no 10-point scoring run in the last 10 minutes: +4.8 pts (n=1916), q=5.95e-19, same sign 100% of 17 seasons
@@ -169,8 +169,10 @@ Effect-by-season tables for each tracked item are in the JSON output.
 
 - Most candidates fail. Of 4,937 situations scanned, 248 overlapping ones cleared every bar, and those collapse to 12 independent findings. Of the 15 pre-registered sportscaster claims, none of the 12 win-probability claims shows any evidence once tested properly, and one of the 3 totals claims holds (dome games go over the total by about 1.4 points, stable in 82% of seasons).
 - The "halftime leaders win more than priced" and "never count out a team down 8-14" claims, which looked nominally significant before the baseline was recalibrated, are indistinguishable from zero in the final run. This shows how easily a slightly miscalibrated baseline manufactures trends.
-- Every independent survivor is a late-game situation (2:00 to 10:00 left, or entering Q4). They are deviations from a state-only model, not from the market. The most likely explanation is that the baseline is still a little off in the end-game, where possession and clock management matter and trees are coarse. Treat them as leads to check against recorded Kalshi prices, not as trades. Rows 1, 2 and 6 are the largest (+4 to +5 points) and the only ones rated "maybe" tradable.
+- Every independent survivor is a late-game situation (2:00 to 10:00 left, or entering Q4). They are deviations from a state-only model, not from the market. The most likely explanation is that the baseline is still a little off in the end-game, where possession and clock management matter and trees are coarse. Treat them as leads to check against recorded Kalshi prices, not as trades. Caution on size: a +4 point edge on a team that leads by 15+ with 2:00 left means the baseline priced that lead at 96% or less, when the true figure is near 99%. That is the baseline being too timid at the extremes, not a market opportunity, and Kalshi will already be near 99% there. Two near-identical cells also have opposite signs (rows 2 and 4). Do not treat the "yes" in the size column as tradable.
+- The scan, the survivor bars and the decay tracker all use the same held-out seasons, so effect sizes carry winner's-curse bias and "holding" is partly circular. A true confirmation set (last 2-3 seasons held back from the scan) is the next step. The placebo scan only runs the plain scan, not the explain-away rounds.
+- A06 (short rest against a rested opponent) has only 9 games because short rest is almost always a Thursday game where both teams are on short rest; the claim is effectively untestable, not refuted.
 - Three survivors are flagged "retire" by the decay tracker (effect fading in recent seasons), so even the survivors are not stable.
-- The richer model (rest, venue, weather, referee, QB, pace and so on) does not beat the state-only baseline out of sample (gain +0.0003 log loss, range spans zero). Only game-pace features carry signal in permutation importance, and that mostly restates the score and the clock.
+- The richer model (rest, venue, weather, referee, QB, pace and so on) does not beat the state-only baseline out of sample (log-loss gain about +0.001, range spans zero, and Brier is slightly worse). Only game-pace features carry signal in permutation importance, and that mostly restates the score and the clock.
 - The placebo scan (random sign flips) gave 0 false rejections in 19 of 20 reps and 5 in one, so the correction is working but not perfect.
 - Not covered: injuries, real Kalshi prices (none in the repo fixtures; see the Air-side script), and the partial 2026 season.
