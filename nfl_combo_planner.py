@@ -8355,7 +8355,7 @@ def kalshi_live_kick(events, budget=None):
                 try:
                     espn_mma_refresh(evs)
                 except Exception as err:
-                    print("espn ufc data:", type(err).__name__, err)
+                    klive_log_once("espn_ufc_refresh", "", err)
             th = threading.Thread(target=run, daemon=True, name="klive")
             KLIVE_JOB["t"] = th
             th.start()
@@ -8475,7 +8475,7 @@ def kalshi_score(l, max_age=900):
     if isinstance(l, dict) and (l.get("ticker") or "").upper().startswith("KXUFC"):
         try:                                   # a fight: ESPN's round and clock while it's on, or when Kalshi has nothing
             es = espn_mma_score(l)
-            if es and (not sc or (es["state"] == "in" and sc["state"] != "post")):
+            if es and (not sc or (es["state"] in ("in", "post") and sc["state"] != "post")):
                 sc = es
         except Exception as err:
             klive_log_once("espn_ufc", l.get("ticker"), err)
@@ -8607,7 +8607,7 @@ def espn_mma_parse(events):
                     continue
                 out.append({"id": str(comp.get("id") or ""), "start": comp.get("date") or ev.get("date") or "",
                             "day": espn_day(comp.get("date") or ev.get("date")),
-                            "state": typ.get("state") or "pre", "name": str(typ.get("name") or ""),
+                            "state": typ.get("state") or "pre", "name": str(typ.get("name") or ""), "done": bool(typ.get("completed")),
                             "period": int(st.get("period") or 0), "clock": str(st.get("displayClock") or "").strip(),
                             "rounds": ((comp.get("format") or {}).get("regulation") or {}).get("periods"),
                             "names": names, "codes": [_mma_codes(n) for n in names],
@@ -8687,6 +8687,8 @@ def espn_mma_score(l, max_age=900):
     if l.get("side", "yes") == "no":
         mine = 1 - mine
     state, rounds = g["state"], g["rounds"]
+    if state == "post" and not (g.get("done") or "FINAL" in g["name"].upper()):
+        return None                                   # cancelled / postponed: not a finished fight
     if state == "post":
         won = g["won"][mine] if any(g["won"]) else None
         detail = ("Fight over" + (f" · R{g['period']} {g['clock']}" if g["period"] and g["clock"] not in ("", "-") else ""))
@@ -8706,7 +8708,7 @@ def espn_mma_score(l, max_age=900):
     return {"me": None, "opp": None, "abbr": codes[0], "opp_abbr": codes[1], "opp_name": "", "state": state,
             "detail": detail, "start": g["start"], "ball": False, "redzone": False, "sport": "ufc", "game": g["id"],
             "day": day, "wp": None, "frac": None, "src": "kalshi", "via": "espn", "won": won, "delayed": False,
-            "age": round(time.time() - max(bd["at"] for bd in ESPN_MMA["boards"].values()))}
+            "age": round(time.time() - max(bd["at"] for bd in list(ESPN_MMA["boards"].values())))}
 
 
 def display_score(l, points=True, pre=False):
