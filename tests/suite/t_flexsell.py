@@ -83,9 +83,14 @@ E.CFG["flex_sell"] = True
 # ---- a profit is never refused when waiting is worse (and not just below the first offer)
 LIVE["f"] = 0.3
 msg, info = run(["cancelled", "executed"], offers=[5.5], auto=True, cost=3, cost_floor=3, line=8.5)
-ok("auto profit sale below its stale line but above cost, chance dropped: not refused", accepts == [10.0, 5.5] and msg.startswith("✅"), (accepts, info))
+ok("auto profit sale: its smart-sell line (8.50) stays a hard floor, flexible never goes under it", accepts == [10.0]
+   and info["flex"]["why"] == "under the smart-sell line", (accepts, info))
+msg, info = run(["cancelled", "executed"], offers=[8.6], auto=True, cost=3, cost_floor=3, line=8.5)
+ok("...above its line it is taken", accepts == [10.0, 8.6])
+msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=3)
+ok("a tap that began at a profit never ends below cost on a retry", accepts == [10.0] and info["flex"]["why"] == "would turn a profit into a loss", (accepts, info))
 # ...but never below cost for a profit-taking sale
-msg, info = run(["cancelled", "executed"], offers=[2.9], auto=True, cost=3, cost_floor=3, line=8.5)
+msg, info = run(["cancelled", "executed"], offers=[2.9], auto=True, cost=3, cost_floor=3, line=0.5)
 ok("...never under cost (the cost floor still binds)", accepts == [10.0] and info["stop"] == "offer too low", (accepts, info))
 
 # ---- the backstop refuses a spiky offer, even a profit, even with the chance down
@@ -157,7 +162,7 @@ ok("unknown outcome (rule 8): stops at once, never another accept", len(accepts)
 # ---- manual tap parity with auto: same verdict from the same live moment
 LIVE["f"] = 0.3
 _, a1 = run(["cancelled", "executed"], offers=[5.0], auto=False, cost=3); t1 = list(accepts)
-_, a2 = run(["cancelled", "executed"], offers=[5.0], auto=True, cost=3, cost_floor=3, line=8.5); t2 = list(accepts)
+_, a2 = run(["cancelled", "executed"], offers=[5.0], auto=True, cost=3, cost_floor=3, line=4.0); t2 = list(accepts)
 ok("your tap and the auto path decide the same on the same offer", t1 == t2 == [10.0, 5.0])
 
 # ---- shadow recording: one bounded row per decision, errors swallowed

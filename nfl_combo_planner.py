@@ -9573,7 +9573,7 @@ AUTO_CASH_SLIP = 0.97     # smart sell's own: a combo's real offer must reach th
 # fresh (a stale or missing book or score, a spread or total, same-game picks, no pick in play) FAILS CLOSED to the old
 # bar: it can then only do what the old rule did. Every decision is recorded in `flex_shadow` for comparing both.
 FLEX_BACKSTOP = 0.85      # an offer must reach this share of the combo's usual sale value at the current chance
-FLEX_DROP = 0.03          # the chance counts as "dropped" once it is this much (relative) under where the round began
+FLEX_DROP = 0.08          # the chance counts as "dropped" once it is this much (relative) under the holdings' last reading
 FLEX_KEEP, FLEX_CAP = 20000, 20000   # flex_shadow: rows kept (oldest go first)
 _FLEX_N = {"n": 0}
 
@@ -9644,7 +9644,7 @@ def flex_wait_line(hn):
     return wait_value(hn["pays"], chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
 
 
-def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None):
+def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, hard=None, agreed=None):
     """Judge one fresh retry offer (this share's dollars, `frac` of the combo). Returns {'ok', 'mode', 'old', ...}:
     mode 'old' = today's rule, exactly (switch off, or anything not readable fresh); 'flex' = judged at this moment.
     old = what today's bar would have said (offer >= bar_old and >= floor). In 'flex': the floor and the backstop must
@@ -9670,13 +9670,20 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None)
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
         profit = offer >= (h.get("cost") or 0) * frac - 1e-9
         floor_ok = floor is None or offer >= floor
+        cost_fr = (h.get("cost") or 0) * fr
+        if hard is not None and offer < hard - 1e-9:                 # auto profit sale: its smart-sell line stays a floor
+            floor_ok, why0 = False, "under the smart-sell line"
+        elif not cutting and agreed is not None and agreed >= cost_fr - 1e-9 and offer < cost_fr - 1e-9:
+            floor_ok, why0 = False, "would turn a profit into a loss"      # a sale that began at a profit never ends at a loss
+        else:
+            why0 = "under the floor"
         cut_still = False
         if cutting:
             loss = smart_params([tk for (_, tk), _ in h.get("need") or []]).get("loss")
             cut_still = bool(loss) and hn["p"] <= loss
         why = ""
         if not floor_ok:
-            ok, why = False, "under the floor"
+            ok, why = False, why0
         elif whole < backstop:
             ok, why = False, "under the safety backstop"
         elif old_ok:
@@ -9815,11 +9822,15 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             # 97% of the first price, but it should definitely stay above the smart sell line"): the same smart-sell
             # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
             bar = line if line is not None else CASH_SLIP * agreed
-            fx = flex_decide(ticker, h, o["offer"], frac, bar, floor, bool(getattr(_CASH_CTX, "cutting", False))) \
+            cutting = bool(getattr(_CASH_CTX, "cutting", False))
+            fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, floor, cutting, hard=line if auto and not cutting else None, agreed=agreed) \
                 if flex_on() else None      # Flexible sell price: this moment, not the first offer (fails closed to `bar`)
             if fx is not None:
                 info["flex"] = {k: fx[k] for k in ("mode", "why", "ok", "old", "fair", "wait", "backstop") if k in fx}
                 flex_shadow_log(ticker, fx, attempt, agreed, auto, getattr(_CASH_CTX, "cutting", False))
+            if auto and trading_paused():                 # the live reads above take a moment: Pause is looked at again
+                why = info["stop"] = "paused"
+                break
             low = (o["offer"] < bar or (floor is not None and o["offer"] < floor)) if fx is None else not fx["ok"]
             if low:
                 MINE["cash"][ticker] = o              # floor: Never sell at a loss / a profit-taking sale: not below cost

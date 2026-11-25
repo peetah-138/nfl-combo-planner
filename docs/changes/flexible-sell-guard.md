@@ -16,8 +16,9 @@ With `flex_sell` on, each retry is judged against the game right now (`flex_deci
 - An offer is taken when it passes the **safety backstop** (at least `flex_backstop`, default 85%, of the combo's usual
   sale value now: live fair x pays x Kalshi's learned discount; a combo cash-out carries no separate fee) and the floors
   the sale already had, AND one of: the old bar would have taken it; selling beats waiting now (offer at or above the
-  wait line); it is a profit (at or above cost) and the chance has dropped 3% or more since the round began; or it is a
+  wait line); it is a profit (at or above cost) and the chance has dropped 8% or more under the holdings' last reading; or it is a
   loss cut whose learned cut-off still holds on the fresh chance.
+- An automatic profit sale keeps its smart-sell line as a hard floor (flexible never goes under it); a sale that began at a profit (offer at or above cost) never ends below cost.
 - It only ever loosens the old bar and never refuses something the old bar takes (beyond the backstop and the floors).
 - **Fails closed:** anything missing or stale (no fresh score or book, a jumpy spread, a spread/total, same-game picks,
   no pick in play, any error) uses exactly the old bar. Switch off = decisions identical to develop.
