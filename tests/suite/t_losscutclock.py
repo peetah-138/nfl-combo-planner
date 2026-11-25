@@ -14,7 +14,7 @@ ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not 
 _real_time = time.time
 now = _real_time()
 T = "KXNBAGAME-26NOV19LALBOS-LAL"
-E.CFG.update(auto_sell=True, auto_hedge=False, stop_loss=False, smart_sell=True, ride=2, take_profit=0,
+E.CFG.update(flex_sell=False, auto_sell=True, auto_hedge=False, stop_loss=False, smart_sell=True, ride=2, take_profit=0,
              lock_trail=False, auto_cap=5)
 h = {"label": "Combo 1", "need": [(("yes", T), "Lakers")], "pre_of": {T: 0.6}, "ch_of": {T: 0.7},
      "legs_left": [(0.7, True, 0)], "cost": 10, "p": 0.7, "pays": 20, "won_some": True, "left": 1}
