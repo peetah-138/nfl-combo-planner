@@ -9644,7 +9644,7 @@ def flex_wait_line(hn):
     return wait_value(hn["pays"], chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
 
 
-def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, hard=None, agreed=None):
+def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, agreed=None):
     """Judge one fresh retry offer (this share's dollars, `frac` of the combo). Returns {'ok', 'mode', 'old', ...}:
     mode 'old' = today's rule, exactly (switch off, or anything not readable fresh); 'flex' = judged at this moment.
     old = what today's bar would have said (offer >= bar_old and >= floor). In 'flex': the floor and the backstop must
@@ -9671,9 +9671,7 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
         profit = offer >= (h.get("cost") or 0) * frac - 1e-9
         floor_ok = floor is None or offer >= floor
         cost_fr = (h.get("cost") or 0) * fr
-        if hard is not None and offer < hard - 1e-9:                 # auto profit sale: its smart-sell line stays a floor
-            floor_ok, why0 = False, "under the smart-sell line"
-        elif not cutting and agreed is not None and agreed >= cost_fr - 1e-9 and offer < cost_fr - 1e-9:
+        if not cutting and agreed is not None and agreed >= cost_fr - 1e-9 and offer < cost_fr - 1e-9:
             floor_ok, why0 = False, "would turn a profit into a loss"      # a sale that began at a profit never ends at a loss
         else:
             why0 = "under the floor"
@@ -9823,7 +9821,7 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
             bar = line if line is not None else CASH_SLIP * agreed
             cutting = bool(getattr(_CASH_CTX, "cutting", False))
-            fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, floor, cutting, hard=line if auto and not cutting else None, agreed=agreed) \
+            fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, floor, cutting, agreed=agreed) \
                 if flex_on() else None      # Flexible sell price: this moment, not the first offer (fails closed to `bar`)
             if fx is not None:
                 info["flex"] = {k: fx[k] for k in ("mode", "why", "ok", "old", "fair", "wait", "backstop") if k in fx}

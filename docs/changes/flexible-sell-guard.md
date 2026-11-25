@@ -18,11 +18,11 @@ With `flex_sell` on, each retry is judged against the game right now (`flex_deci
   the sale already had, AND one of: the old bar would have taken it; selling beats waiting now (offer at or above the
   wait line); it is a profit (at or above cost) and the chance has dropped 8% or more under the holdings' last reading; or it is a
   loss cut whose learned cut-off still holds on the fresh chance.
-- An automatic profit sale keeps its smart-sell line as a hard floor (flexible never goes under it); a sale that began at a profit (offer at or above cost) never ends below cost.
+- Automatic profit sales follow the same flexible rule as your tap and loss cuts (Pete, 2026-11-24): when the game moves fast they may go below the smart-sell line the sale started on. Still never below the backstop, never below cost for a sale that began at a profit, and the cost floor / Selling at a loss: Never still bind.
 - It only ever loosens the old bar and never refuses something the old bar takes (beyond the backstop and the floors).
 - **Fails closed:** anything missing or stale (no fresh score or book, a jumpy spread, a spread/total, same-game picks,
   no pick in play, any error) uses exactly the old bar. Switch off = decisions identical to develop.
-- Kept as they were: the daily cap (`auto_cap`), the per-position attempt cap, the smart-sell floor, Pause, rule 8
+- Kept as they were: the daily cap (`auto_cap`), the per-position attempt cap, the 1.5x smart-sell floor setting, Pause, rule 8
   (an unknown outcome stops everything), Selling at a loss: Never, the cost floor for profit-taking sales, known-order
   outcome checks. No new fixed daily dollar cap was added (Pete: not needed).
 - When a sale is taken under the first offer, its message says why; `CASH_LAST[...]["flex"]` and each try's `flex`

@@ -83,10 +83,14 @@ E.CFG["flex_sell"] = True
 # ---- a profit is never refused when waiting is worse (and not just below the first offer)
 LIVE["f"] = 0.3
 msg, info = run(["cancelled", "executed"], offers=[5.5], auto=True, cost=3, cost_floor=3, line=8.5)
-ok("auto profit sale: its smart-sell line (8.50) stays a hard floor, flexible never goes under it", accepts == [10.0]
-   and info["flex"]["why"] == "under the smart-sell line", (accepts, info))
-msg, info = run(["cancelled", "executed"], offers=[8.6], auto=True, cost=3, cost_floor=3, line=8.5)
-ok("...above its line it is taken", accepts == [10.0, 8.6])
+ok("auto profit sale below its (stale) smart-sell line 8.50, above cost, chance fell: taken under the flexible rule", accepts == [10.0, 5.5]
+   and info["flex"]["mode"] == "flex", (accepts, info))
+E.CFG["flex_sell"] = False
+msg, info = run(["cancelled", "executed"], offers=[5.5], auto=True, cost=3, cost_floor=3, line=8.5)
+ok("...switch OFF: the old line refuses it (identical to develop)", accepts == [10.0] and info["stop"] == "offer too low")
+E.CFG["flex_sell"] = True
+msg, info = run(["cancelled", "executed"], offers=[3.5], auto=True, cost=3, cost_floor=3, line=8.5)
+ok("...but never under the backstop (3.50 < ~4.18 at this chance)", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop")
 msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=3)
 ok("a tap that began at a profit never ends below cost on a retry", accepts == [10.0] and info["flex"]["why"] == "would turn a profit into a loss", (accepts, info))
 # ...but never below cost for a profit-taking sale
