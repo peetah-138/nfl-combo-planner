@@ -5605,7 +5605,7 @@ def auto_sell_now(plan):
             if held_why:
                 continue                                  # buyers backed out: waiting for the game or price to change
             clock = bool((COMBO_WAIT.get(t) or {}).get("clock_now"))   # #396: this try is the loss-cut clock retry
-            first_offer = (COMBO_WAIT.get(t) or {}).get("first")
+            first_offer = (COMBO_WAIT.get(t) or {}).get("first") if (COMBO_WAIT.get(t) or {}).get("cutting") else None   # only a loss cut's own first offer (not a profit round's)
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
             if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
