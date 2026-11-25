@@ -305,6 +305,35 @@ for junk in (float("nan"), "x", 7, True, -1):
         break
 ok("a corrupt recorded break value never opens a break", junk != "FAIL")
 
+# a RISING price never opens a loss sale; a "no" pick's reads are side-adjusted (a yes mid up = a no mid down)
+put_knobs({"nba": {"lv": {"brk_on": 1, "brk_move": 0.08}, "lat": {}}})
+T2 = "KXNBAGAME-26NOV21MIAATL-MIA"
+E.BRK_EP.clear()
+for j, (bid, ask) in enumerate(((0.30, 0.34), (0.40, 0.44), (0.41, 0.45))):
+    E.PRICE_SEEN[T2] = (t0 + 30 * j, bid, ask, 5)
+    E.break_watch(T2, "yes", sc_half, t0 + 30 * j)
+E.book_depth = lambda t, max_age=None: {"bid": 0.40, "ask": 0.44, "spread": 0.04}
+ok("a price that ROSE 8+ points at the break does not open a loss sale", E.break_ok(T2, "yes", sc_half, t0 + 100, "loss") is False)
+rr = {"reads": [(0, 0.30, 0.32), (30, 0.40, 0.42), (95, 0.41, 0.43)], "after": 0.45, "news": False}
+ok("...and the judge scores it 0 with the guards on", E._knob_res_brk(rr, {"brk_on": 1, "brk_move": 0.08}) == 0.0)
+E.BRK_EP.clear()
+for j, (yb, ya) in enumerate(((0.66, 0.70), (0.76, 0.80), (0.77, 0.81))):   # yes mids RISE = the "no" pick's price FALLS
+    E.PRICE_SEEN[T2] = (t0 + 30 * j, yb, ya, 5)
+    E.break_watch(T2, "no", sc_half, t0 + 30 * j)
+E.book_depth = lambda t, max_age=None: {"bid": 0.76, "ask": 0.80, "spread": 0.04}
+ok("a 'no' pick whose own price fell 8+ points can open a loss sale (reads and the book both side-adjusted)",
+   E.break_ok(T2, "no", sc_half, t0 + 100, "loss") is True)
+E.book_depth = lambda t, max_age=None: {"bid": 0.20, "ask": 0.24, "spread": 0.04}
+E.BRK_EP.clear()
+
+# junk break rows never abort the stepper
+E.store_x("delete from break_ep")
+for r in ((None, "[[1,0.3,0.32]]"), (0.2, "[[1,null,0.32]]"), (0.2, "[[1,0.3]]"), (0.2, "[]"), (float("nan"), "[[1,0.3,0.32]]")):
+    E.store_x("insert into break_ep(ts, ticker, side, league, detail, news, reads, after_bid, after_ts, would) "
+              "values(?,?,?,?,?,?,?,?,?,?)", (now - 86400, T1, "yes", "nba", "Half", 0, r[1], r[0], now, None))
+ok("NaN, NULL and short break rows are skipped and the stepper still runs",
+   not E._knob_rows_brk_hedge(now)[0].get("nba") and isinstance(E.knob_tune(now, force=True), list))
+
 # ---- 9. the break table: bounded, and the judge counts fees only with the guards on
 E.store_x("delete from break_ep")
 for i in range(5200):
