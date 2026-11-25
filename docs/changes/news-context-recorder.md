@@ -14,6 +14,8 @@ lock, swallows every error, and nothing in a decision path reads the tables (`t_
   start only sets the baseline; an empty read is never treated as news.
 - `sig_news_fu(news_id, horizon, ts, delay_s, bid, ask, fair_book, fair_age)`, unique on (news_id, horizon): the same market
   at +5/+15/+60 min from the latest price already read; a sample more than one horizon late is dropped.
+  `fair_book` (here and in `sig_news`) is stored only when the sharp-book price is fresh (within the recorder's fair-age
+  limit); a stale one is NULL while `fair_age` is still recorded. A failed write is retried at the next tick, not lost.
 - `sig_ctx(ts, phase pre2h|start, mins_to_start, league, game_event, start_ts, ..., neutral, indoor, venue, home/away rest,
   b2b, g7, travel_mi, tz, wx_temp, wx_wind, wx_precip, wx_text, bids/asks/fair)`, unique on (game_event, phase): written about
   2 h before the start (window 20 to 125 min) and at the start (up to 20 min late). Unknown stays NULL. Travel and time

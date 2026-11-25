@@ -89,6 +89,6 @@ those columns will usually be empty. Retention is 365 days, and each table has a
 
 Report: `python3 tools/signal_events.py --out ~/signal_events_summary.json` (read-only, no network, aggregates only, groups under
 20 hidden). Part 1, the event study: after a news event, how far Kalshi's bid moved at +5/+15/+60 minutes next to how far the
-sharp probability moved, by league and material or not, with a game-level bootstrap range. Part 2, the residual test: whether
+sharp probability moved, by league and material or not, with a game-level bootstrap range. Moves are oriented by the sign of the sharp move, so `gap_sharp_minus_kalshi` positive means Kalshi lagged the news. A stored `fair_book` is NULL when it was stale. Part 2, the residual test: whether
 a context factor explains what the sharp probability missed, fitted on the first 70% of games and scored (Brier) on the last
 30%, with a game-level bootstrap range. A lone factor "working" out of many tried is more likely luck than signal.
