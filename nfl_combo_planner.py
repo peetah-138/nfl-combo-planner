@@ -15979,6 +15979,15 @@ def margin_prob(lg, kind, strike, team_is_home=True, g=None):
     return min(max(sum(v for x, v in p.items() if x > strike + 1e-9), 0.0), 1.0)
 
 
+LINE_BUCKET_WORDS = {"far below": "well short of the line", "below": "a bit short of the line", "at the line": "right at the line",
+                     "above": "a bit past the line", "far above": "well past the line"}
+
+
+def line_bucket_words(bucket):
+    """A strike band in plain words for Pete ('far above' -> 'well past the line'); an unknown key is returned as is."""
+    return LINE_BUCKET_WORDS.get(bucket, bucket)
+
+
 def line_bucket(code, kind, strike, center):
     """How far the strike is from the sportsbook's line, in five bands (points for football and basketball, in
     units of a typical miss; goals for hockey and soccer)."""
@@ -16561,7 +16570,7 @@ def line_clv_block(lg, kind, bucket, now=None):
             if not s or s["games"] < LINE_CLV["games"]:
                 continue
             if s["mean"] <= LINE_CLV["mean"] and s["se"] and s["mean"] / s["se"] <= -LINE_CLV["t"]:
-                return (f"{'spreads' if kind == 'spread' else 'totals'} {bucket} closed {abs(s['mean']) * 100:.1f}¢ "
+                return (f"{'spreads' if kind == 'spread' else 'totals'} {line_bucket_words(bucket)} closed {abs(s['mean']) * 100:.1f}¢ "
                         f"under the price we saw, on average over {s['games']} games"
                         + (f" ({who})" if who else ""))
             if who is None:
@@ -16594,7 +16603,8 @@ def line_fill(ticker, fair, need, stake, asks=None):
     """The biggest buy of a strike, up to `stake` dollars, that keeps every contract at least `need` under `fair` after
     Kalshi's fee, walking up the order book. {'n' contracts, 'cost' dollars with the fee, 'per' (cost a contract),
     'exp' (expected profit of that buy at fair, after fees), 'depth' (contracts for sale inside the edge, any stake),
-    'best' (best ask), 'capped' ('depth' = the book ran out inside the edge first, else 'stake')}. None = the book
+    'best' (best ask), 'avg' (average ask paid, before the fee), 'capped' ('depth' = the book ran out inside the edge
+    first, else 'stake')}. None = the book
     couldn't be read (so nothing is recommended)."""
     asks = book_asks(ticker) if asks is None else asks
     if asks is None:
@@ -16620,6 +16630,7 @@ def line_fill(ticker, fair, need, stake, asks=None):
     cost = _fill_total(take) if n else 0.0
     return {"n": n, "cost": round(cost, 2), "per": round(cost / n, 4) if n else None,
             "exp": round(n * fair - cost, 2) if n else 0.0, "depth": depth,
+            "avg": round(sum(p * k for p, k in take) / n, 4) if n else None,
             "best": take[0][0] if take else inside[0][0] if inside else asks[0][0] if asks else None,
             "capped": "depth" if n and n >= depth else "stake"}
 
@@ -16668,7 +16679,7 @@ def _line_rec_one(code, x, base, now, asks):
     if exp < SB_EV_MIN:
         return None, "small"
     return dict(x, rec=True, p=ask, edge=round(fair - ask - single_fee(ask), 4), stake=fill["cost"], n=fill["n"],
-                per=fill["per"], exp=exp, hold_exp=fill["exp"], depth=fill["depth"], capped=fill["capped"],
+                per=fill["per"], avg=fill["avg"], exp=exp, hold_exp=fill["exp"], depth=fill["depth"], capped=fill["capped"],
                 p_exit=sim["p_exit"], win=sim["win"], route=sim["route"], exit_mins=sim.get("exit_mins")), None
 
 
@@ -29903,7 +29914,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                             "chance": x["fair"], "edge": x["edge"], "stake": round(x["stake"] * k, 2), "ev": round(x["exp"] * k, 2),
                             "route": x.get("route"), "p_exit": x.get("p_exit"), "win": x.get("win"), "exit_mins": x.get("exit_mins"),
                             "n": x.get("n"), "capped": x.get("capped"), "min_edge": x.get("min_edge"),
-                            "exposure": _best_exposure(lg_)})
+                            "avg": x.get("avg"), "exposure": _best_exposure(lg_)})
             except Exception as err:
                 console_note(f"best bets line: {type(err).__name__}: {err}")
         for c in cands[:BEST_LOOK]:

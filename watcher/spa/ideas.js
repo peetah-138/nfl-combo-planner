@@ -117,7 +117,8 @@ function ideaSeen(x){const q=S.ideaq&&S.ideaq[x.id];if(!q||!q.stake||!q.pays||q.
  const p=q.stake/q.pays*100,e=q.pct-1;return isFinite(p)&&isFinite(e)?{price_c:Math.round(p*10)/10,edge:Math.round(e*10000)/10000}:null;}
 async function ideaSave(keys,why,seen,job){let r=null,said=false;
  for(let i=0;i<IDEA_SAVE_WAIT.length;i++){
-  if(IDEA_SAVE_WAIT[i])await new Promise(f=>setTimeout(f,IDEA_SAVE_WAIT[i]));
+  if(IDEA_SAVE_WAIT[i])await new Promise(f=>{const h=setTimeout(f,IDEA_SAVE_WAIT[i]);job.wake=()=>{clearTimeout(h);f();};});   // Undo wakes the sleep at once (#273)
+  job.wake=null;
   if(job.undone)return 'undone';
   r=await api('/app/api/act',{a:'idea_dismiss',ids:keys,why,seen}).catch(()=>null);
   if(r&&r.ok)return 'ok';
@@ -134,10 +135,12 @@ async function ideaSend(list,why){S.idHide=S.idHide||{};S.idJob=S.idJob||{};
  if(res==='ok')keys.forEach(k=>{if(S.idHide[k]===true)S.idHide[k]=Date.now();});   // the Mac's own list takes over a few seconds later
  else if(res==='failed')toast('Hidden on this phone, but your Mac never got it. It may come back after a refresh.',6000);}
 async function ideaUndo(keys){const jobs=keys.map(k=>S.idJob&&S.idJob[k]).filter(Boolean);
- jobs.forEach(j=>{j.undone=true;});await Promise.all(jobs.map(j=>j.p));   // a save still on its way finishes (or stops) first, so Undo is always the last word
+ if(jobs.length)toast('Bringing it back...',2500);   // Undo answers at once, even with the link down (#273)
+ jobs.forEach(j=>{j.undone=true;if(j.wake)j.wake();});const ends=await Promise.all(jobs.map(j=>j.p));   // a save still on its way finishes (or stops) first, so Undo is always the last word
  const r=await api('/app/api/act',{a:'idea_undo',ids:keys}).catch(()=>null);
+ if((!r||!r.ok)&&ends.length&&ends.every(e=>e==='undone')){keys.forEach(k=>{delete S.idHide[k];});toastHide();S.ideaBack=keys;renderLive();return;}   // the dismiss never reached the Mac, so there is nothing to undo there: the idea is simply back
  if(!r||!r.ok){keys.forEach(k=>{if(S.idHide[k]===true)S.idHide[k]=Date.now();});toast('Couldn\'t bring it back just now.',3000);return;}
- keys.forEach(k=>{delete S.idHide[k];});S.ideaBack=keys;renderLive();await load('live',true);setTimeout(()=>{S.ideaBack=null;},900);}
+ keys.forEach(k=>{delete S.idHide[k];});if(jobs.length)toastHide();S.ideaBack=keys;renderLive();await load('live',true);setTimeout(()=>{S.ideaBack=null;},900);}
 async function ideasRestore(){hap('light');const r=await api('/app/api/act',{a:'idea_undo',all:true}).catch(()=>null);
  if(!r||!r.ok){toast('Couldn\'t bring them back just now.',3000);return;}
  S.idHide={};renderLive();await load('live',true);toast('Hidden ideas are back on the list.',2800);}
