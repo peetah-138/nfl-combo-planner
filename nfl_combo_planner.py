@@ -5646,13 +5646,19 @@ def auto_sell_now(plan):
                 if not thr:
                     continue
             slip = knob_auto_slip([tk for (_, tk), _ in h.get("need") or []]) if why != "plan" else AUTO_CASH_SLIP
-            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip))
+            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip), kind=why)
             if held_why:
                 continue                                  # buyers backed out: waiting for the game or price to change
+            clock = bool((COMBO_WAIT.get(t) or {}).get("clock_now"))   # #396: this try is the loss-cut clock retry
+            first_offer = (COMBO_WAIT.get(t) or {}).get("first") if (COMBO_WAIT.get(t) or {}).get("cutting") else None   # only a loss cut's own first offer (not a profit round's)
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
             if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
                     and o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
+                if clock:
+                    log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                  "why": "loss-cut clock retry: the offer is under the smart-sell line",
+                                  "clock_retry": COMBO_WAIT[t].get("clock_n"), "offer": round(o["offer"], 2)})
                 continue                                  # a real offer just came in below the line
             if why != "plan" and (o.get("rfq") in (None, "estimate") or time.time() - o.get("at", 0) > offer_life()):
                 o = dict(o, rfq="estimate")
@@ -5660,10 +5666,20 @@ def auto_sell_now(plan):
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
                 if not o.get("offer") or o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
+                    if clock:
+                        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                      "why": "loss-cut clock retry: " + ("no fresh offer came in" if not o.get("offer")
+                                                                         else "the offer is under the smart-sell line"),
+                                      "clock_retry": COMBO_WAIT[t].get("clock_n"), "offer": round(o.get("offer") or 0, 2)})
                     continue
-            held = {a["ticker"]: a for a in (fetch_account(max_age=0, every_league=True)[0] or [])}
+            acct = fetch_account(max_age=0, every_league=True)[0]
+            held = {a["ticker"]: a for a in (acct or [])}
             a = held.get(t)
             if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
+                if clock:                       # fail closed, and say so (#396)
+                    log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                  "why": "loss-cut clock retry: account unreadable" if acct is None else
+                                         "loss-cut clock retry: combo gone or reduced", "clock_retry": COMBO_WAIT[t].get("clock_n")})
                 drop_cash(t)                    # already sold (by you, the Pi or the phone): leave it
                 continue
             rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2), "why": why,
@@ -5690,7 +5706,7 @@ def auto_sell_now(plan):
             if below and why != "cut loss":
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
-            hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
+            hg = hedge_for(t) if CFG.get("auto_hedge") and not clock and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             tks_ = [tk for (_, tk), _ in h.get("need") or []]
             better = hedge_beats(hg, whole, tks_) if hg and hg.get("n") else False
@@ -5734,14 +5750,32 @@ def auto_sell_now(plan):
             # stop-loss, already below cost) may go below cost, down to the line, and not under 97% of its first offer.
             cutting = below and (why == "cut loss" or bool(rec.get("stop_loss")))
             rec["purpose"] = "cut a loss" if cutting else "take a profit"
+            if clock:
+                rec["clock_retry"] = COMBO_WAIT[t].get("clock_n")
+                if not cutting or why != "cut loss":         # #396: the clock is for loss cuts only (a profit reason, even a stop-loss on one, waits for a change)
+                    log_decision(dict(rec, result="skipped", stop="clock retry is for loss cuts only",
+                                      why="loss-cut clock retry: not a loss cut now"))
+                    continue
+                if not first_offer or o["offer"] < first_offer_floor(first_offer):   # the 97% guard holds across rounds
+                    log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
+                                      why="loss-cut clock retry: offer under 97% of the first offer"))
+                    continue
+            if cutting and first_offer and not clock and o["offer"] < first_offer_floor(first_offer):
+                # review fix: the same 97%-of-the-first-offer floor holds for EVERY loss-cut round, also one started by a
+                # game or price change, not only the timed retries
+                log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
+                                  why="loss-cut retry: offer under 97% of the first offer"))
+                continue
             try:
                 _CASH_CTX.auto = True                     # up to 10 tries, short pauses, one more ask (Pete, 2026-11-23)
                 _CASH_CTX.line = thr * (1.0 if why == "plan" else slip) * o.get("frac", 1.0) or None   # retries' bar
                 _CASH_CTX.cost_floor = None if cutting else h["cost"] * o.get("frac", 1.0)
                 _CASH_CTX.cutting = cutting
+                _CASH_CTX.first_offer = first_offer if cutting else None   # #396: EVERY loss-cut round keeps 97% of the episode's FIRST offer
                 msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
             finally:
                 _CASH_CTX.auto, _CASH_CTX.line, _CASH_CTX.cost_floor, _CASH_CTX.cutting = False, None, None, False
+                _CASH_CTX.first_offer = None
             info = CASH_LAST.pop(t, None) or {}
             result = "sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed"
             stop = info.get("stop") or {"sold": "sold", "check": "unknown"}.get(result, "")
@@ -5765,7 +5799,8 @@ def auto_sell_now(plan):
             if result == "failed":
                 wait = stop in COMBO_BACKOFF_STOPS
                 if wait:                                  # re-tried when the game or the price changes, not on a clock
-                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip))
+                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip),
+                                     cutting=cutting and why == "cut loss", agreed=info.get("agreed"))
                 note = combo_fail_note(h["label"], info, stop, wait, msg)
                 told = MINE.setdefault("combo_fail_told", {})
                 if time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
@@ -5813,7 +5848,13 @@ COMBO_RETRY_MOVE = 0.05   # 5% of the combo's value / offer / line, and at least
 COMBO_RETRY_MIN_P = 0.02  # 2 points of chance (a 5% move on a 10% chance is noise)
 COMBO_RETRY_MIN_USD = 0.25  # 25 cents of offer or line
 COMBO_RETRY_GAP = 5       # seconds
-COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now"}
+COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now", + the #396 clock keys}
+# #396 (Pete's decision): a stuck LOSS CUT (never a profit sale) is also retried on a clock, a safety valve for when
+# nothing moves. Every bound still applies: Pause (auto_sell_now returns first), rule 8 (an unknown outcome is never
+# retried), the 97%-of-the-FIRST-offer guard across rounds, the smart-sell line, and at most LOSSCUT_CLOCK_MAX of
+# these clock tries per position (kept in memory; a restart or a sale starts it over).
+LOSSCUT_CLOCK_SECS = 300  # 5 minutes after the last failed round or clock try
+LOSSCUT_CLOCK_MAX = 6     # at most 6 clock tries per position (about 30 minutes), then it waits for a real change only
 
 
 def combo_game_snap(h):
@@ -5836,13 +5877,17 @@ def _game_changed(a, b):
     return set(da) != set(db) or any(da[k] is not None and db[k] is not None and da[k] != db[k] for k in da)
 
 
-def combo_wait_start(t, h, key, offer, info, line):
-    """A round failed: remember the game and the price, so the next try waits for one of them to change."""
+def combo_wait_start(t, h, key, offer, info, line, cutting=False, agreed=None):
+    """A round failed: remember the game and the price, so the next try waits for one of them to change.
+    #396: also whether it was a loss cut, the episode's FIRST offer (kept across rounds) and the clock tries used."""
     prev = COMBO_WAIT.get(t) or {}
-    total = (prev.get("total", 0) if prev.get("key") == key else 0) + 1
+    same = prev.get("key") == key
+    total = (prev.get("total", 0) if same else 0) + 1
     last = ((info or {}).get("tries") or [{}])[-1].get("offer") or offer
     COMBO_WAIT[t] = {"key": key, "snap": combo_game_snap(h), "p": h.get("p") or 0.0,
-                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total}
+                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total,
+                     "cutting": bool(cutting), "first": (prev.get("first") if same and prev.get("cutting") and prev.get("first") else agreed),   # a profit round's offer is not a loss cut's first
+                     "clock_n": prev.get("clock_n", 0) if same else 0, "clock_at": time.time()}
 
 
 def _moved(a, b, least):
@@ -5850,7 +5895,25 @@ def _moved(a, b, least):
     return abs(a - b) >= max(COMBO_RETRY_MOVE * max(abs(a), abs(b)), least)
 
 
-def combo_wait_why(t, h, f, line):
+def first_offer_floor(first):
+    """#396: the least a loss cut's offer may be, measured from the episode's FIRST offer (97%, the same CASH_SLIP guard)."""
+    return CASH_SLIP * first
+
+
+def _clock_due(w, kind):
+    """#396: '' unless this wait is a stuck loss cut whose 5 minutes are up and whose clock tries are not used up.
+    Anything odd or missing in the wait record means no clock retry (fail closed)."""
+    try:
+        if not (w.get("cutting") and kind == "cut loss" and w.get("first")):
+            return ""
+        if w.get("clock_n", 0) >= LOSSCUT_CLOCK_MAX:
+            return "cap"
+        return "due" if time.time() - float(w["clock_at"]) >= LOSSCUT_CLOCK_SECS else ""
+    except Exception:
+        return ""
+
+
+def combo_wait_why(t, h, f, line, kind=""):
     """'' to go ahead, else why this combo still waits after buyers backed out (logged once a wait). Something must
     have changed since the failed round: the games (combo_game_snap), the combo's chance, the cached offer, the line."""
     w = COMBO_WAIT.get(t)
@@ -5868,8 +5931,17 @@ def combo_wait_why(t, h, f, line):
            "the combo's chance moved" if _moved(h.get("p"), w["p"], COMBO_RETRY_MIN_P) else
            "the offer moved" if seen and _moved(seen, w["offer"], COMBO_RETRY_MIN_USD) else
            "the smart-sell line moved" if _moved(line, w["line"], COMBO_RETRY_MIN_USD) else "")
+    clock = _clock_due(w, kind) if not why else ""
+    if clock == "due":                               # #396: nothing moved, but a stuck loss cut gets its 5-minute try
+        w["clock_n"] = w.get("clock_n", 0) + 1
+        why = f"loss-cut clock retry {w['clock_n']} of {LOSSCUT_CLOCK_MAX} (every {LOSSCUT_CLOCK_SECS // 60} min)"
+    if clock == "cap" and not w.get("cap_told"):
+        w["cap_told"] = True
+        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped", "round": w["total"],
+                      "why": f"loss-cut clock retries used up ({LOSSCUT_CLOCK_MAX}); waiting for the game or price to change"})
     if why:                                          # go (logged with the next round); the new state is the baseline,
-        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False)
+        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False,
+                 clock_now=bool(clock == "due"), clock_at=time.time())
         if seen:                                     # so a pass that then skips for another reason waits again
             w["offer"] = seen
         return ""
@@ -9628,6 +9700,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
         floor = cost_floor if floor is None else max(floor, cost_floor)
     if line is not None and auto and getattr(_CASH_CTX, "cutting", False):
         line = max(line, CASH_SLIP * agreed)  # a loss cut's line can be near 0: never under 97% of its first offer
+        if getattr(_CASH_CTX, "first_offer", None):   # #396: a clock retry also keeps the episode's FIRST offer
+            line = max(line, first_offer_floor(_CASH_CTX.first_offer))
     info = CASH_LAST[ticker] = {"stop": "", "rounds": 0, "tries": [], "agreed": round(agreed, 2),
                                 "line": None if line is None else round(line, 2),
                                 "slip": None if line is not None else CASH_SLIP,
