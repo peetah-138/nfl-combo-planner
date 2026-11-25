@@ -68,3 +68,50 @@ Combo RFQ offer samples: nothing new added, because the data already exists. Hel
 least every two minutes while pending, real Kalshi offers flagged `real_offer=1`) and every quote Kalshi gives for a
 candidate is already logged by `store_quote` into `quotes`. A separate sampler would mean extra quote calls, which phase 1
 does not do.
+
+## Watching every game (the watch-all recorder, and `--broad`)
+
+The goal: keep learning from MANY games, not only the bets the app makes. `broad_shadow` (engine, next to
+`signal_shadow`) records a price path and the signals for every market the app already fetched in its normal polling.
+It adds no request of any kind (it only reads `PRICE_SEEN`, the panel's fair prices and the cached score feed), places no
+order, is wrapped so an error is swallowed, and nothing decides from its tables (a test scans the engine and the watcher
+and fails if they mention them outside the recorder). A market the app does not fetch is not covered: covering it would
+need new Kalshi calls, so it is deliberately left out.
+
+| Table | What |
+|---|---|
+| `bp_mkt` | one row per market: normalized game, sport, kind (win / spread / total), kickoff, and the FINAL result (`result` 1 yes / 0 no, `rs` = where the label came from) |
+| `bp_path` | bid, ask (thousandths of a dollar, `BP_SCALE`), depth, the fair (sharp book before the game, live model in play, line model for spreads and totals) and its kind, lead, total points, share of game left, in play / final, possession, down, distance |
+| `bp_day` | per day: markets, games and rows recorded (counts only) |
+
+It is a separate table from `price_path` on purpose: live decisions read `price_path`, so broad rows never go there.
+
+**Cadence** (per market, only when something changed): from 3 h before kickoff to 6 h after, a row at most once a minute
+(a score change allows one on the next pass), a heartbeat every 10 minutes if nothing moved; otherwise a row at most every
+5 minutes, with a 3 h heartbeat. Markets whose game ended more than 8 h ago are skipped. One flush runs at most every 45 s
+and stops after 3,000 rows or 0.15 s, resuming where it stopped next time. Pruning, labelling and the size check run from
+the history loop (`bp_maintain`, every ~15 min), never in the panel pass.
+
+**Storage**: measured about 57 bytes a row (table plus index; `t_broad_shadow.py` checks it), 60 assumed. Rows older than
+21 days go; oldest rows go first above 80% of the ceiling; recording STOPS (and the log says so) at the 250 MB ceiling or
+when under 3 GB of disk is free, and resumes after pruning. Expected size: about 150-200k rows a day (10 MB) assuming
+about 800 markets near a game on a busy day and about 2,000 further-out markets that change a few dozen times a day. That is
+an assumption, not a measurement: the day the real file has a week of rows, read `bp_status` (the watcher log shows one
+counts-only line an hour: markets, games, rows today, the table's MB, how many finished markets are labelled). Worst case
+(every market changing every minute) is about 50 MB a day, held down by the row cap.
+
+**Labels**: copied from tables the existing loops already resolve (`closes`, `live_fairs`, `line_fairs`, `mkt_fair`), no
+new request. A market none of them resolves (most spreads and totals depend on `line_fairs`) falls back to a price-implied
+label once the game is long over and the last price is settled-looking (bid at 97c or more, or ask at 3c or less); those
+carry `rs` 9 and `--broad` leaves them out unless you pass `--include-implied`. The report shows how many are unlabelled.
+
+```
+python3 tools/exit_replay.py --broad --out ~/broad_summary.json
+```
+
+Read-only, same fixed rules and fees as above, per sport x price bucket: each labelled market is bought at the first
+recorded ask from 10c to 90c (with a bid on the book), exits at the bid; the `fair` rule sells at the sharp fair when it was
+above the ask (else it is hold); `T-1h` / `T-15m` need a known kickoff. Ranges are a game-level bootstrap (clustered on the
+normalized game), the best rule is chosen on the first 70% of games and scored on the last 30%, and a group from fewer than
+20 games prints "n<20, hidden". It treats every market as if bought at first sight, so it measures what a rule does to an
+average market, not to the app's picks: use it to learn timing and prediction, then confirm on the singles replay above.
