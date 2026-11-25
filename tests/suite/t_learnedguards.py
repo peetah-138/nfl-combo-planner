@@ -98,6 +98,7 @@ E.SCORES_BY["nba"] = {"at": now - 200, "by": {}}
 ok("ON with nothing learned: still 150 s (a 200 s score is stale)",
    E.guards_on() and E.feed_age_limit(T, True) == 150 and E.fresh_live_score(T, "yes", now, loose=True)[1] == "score feed stale")
 put_knobs({"nba": {"lv": {"sl_feed_age": 210}, "lat": {}}})
+E.book_depth = lambda t, max_age=None: {"bid": 0.30, "ask": 0.34, "spread": 0.04}
 ok("a league's own learned 210 s lets a LOSS sale use a 200 s score",
    E.feed_age_limit(T, True) == 210 and E.fresh_live_score(T, "yes", now, loose=True)[0] is not None)
 ok("...but a hedge or the sell-more check never goes above 150 s", E.feed_age_limit(T, False) == 150
@@ -120,6 +121,13 @@ ok("a corrupt knobs file falls back to the start", E.feed_age_limit(T, True) == 
 ok("no score at all is never allowed, whatever is learned",
    (put_knobs({"nba": {"lv": {"sl_feed_age": 300}, "lat": {}}}), setattr(E, "leg_score", lambda l: None),
     E.fresh_live_score(T, "yes", now, loose=True))[2] == (None, "no score feed"))
+put_knobs({"nba": {"lv": {"sl_feed_age": 210}, "lat": {}}})
+E.leg_score = lambda l: {"state": "in", "frac": 0.3, "detail": "Q3 4:00", "brk": False}
+E.SCORES_BY["nba"] = {"at": now - 200, "by": {}}
+E.book_depth = lambda t, max_age=None: {"bid": 0.30, "ask": 0.0, "spread": None}
+ok("a widened score age needs a fresh two-sided book (else stale: a break may hide inside it)",
+   E.fresh_live_score(T, "yes", now, loose=True)[1] == "score feed stale")
+E.book_depth = lambda t, max_age=None: {"bid": 0.30, "ask": 0.34, "spread": 0.04}
 E.leg_score = lambda l: {"state": "post", "frac": 0.0, "detail": "Final", "brk": False}
 ok("a game not under way is never allowed", E.fresh_live_score(T, "yes", now, loose=True)[1] == "game not under way")
 E.leg_score = lambda l: {"state": "in", "frac": 0.3, "detail": "Q3 4:00", "brk": False}

@@ -28,6 +28,12 @@ left as they are, each tied to data validity or already judged elsewhere: `swing
 `hedge_gap`, `live_spread`, `BRK_READS`, `BRK_SPACE`, `sl_under` (judged by `_sl_replay`, not live), #479's 8% drop,
 #480's `MORE_PROG_MIN` and `MORE_*` (follow-ups).
 
+Review fixes: a below-cost sale never goes ahead while a better hedge is blocked by a stale score or a break (the wider
+learned age and the break rule open the loss sale only); a score older than 150 s (learned wider age) also needs a fresh
+two-sided book, since a break may hide inside the window; the break rule needs a falling price for a loss sale (live check and
+judge); junk `break_ep` rows are skipped. Known follow-ups: break evidence still includes picks the live rule would not act on
+(winners, above 50%), and episode counts are per pick, not per game.
+
 Behaviour notes: the global group can only tighten (chain-stricter borrowing); the feed evidence is a 10-minute-later proxy;
 the knob views list `sl_feed_age` as tunable even with the switch off (display only).
 

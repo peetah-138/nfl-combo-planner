@@ -5158,7 +5158,7 @@ def break_ok(ticker, side, sc, now=None, what="loss", watch=None):
             return False
         mid = (bk["bid"] + bk["ask"]) / 2
         mid = 1 - mid if (side or "yes") == "no" else mid
-        return abs(mid - ep["reads"][0][2]) >= (mv / 2 if ep["news"] else mv) - 1e-9
+        return ep["reads"][0][2] - mid >= (mv / 2 if ep["news"] else mv) - 1e-9   # a loss sale needs the price DOWN (review P2)
     except Exception:
         return False
 
@@ -5178,10 +5178,15 @@ def fresh_live_score(ticker, side, now=None, loose=False):
     sc = leg_score({"ticker": ticker, "side": side})   # never Kalshi's live data (display only)
     if not sc:
         return None, "no score feed"
-    if score_age(ticker_sport(ticker) or "", now) > feed_age_limit(ticker, loose):
+    age = score_age(ticker_sport(ticker) or "", now)
+    if age > feed_age_limit(ticker, loose):
         return None, "score feed stale"
     if sc.get("state") != "in":
         return None, "game not under way"
+    if age > SL_FEED_AGE:                             # a learned wider age: a break may hide inside it, so ask the book
+        bk = book_depth(ticker, max_age=0)            # (fresh and two-sided, as break_ok does), else stale (review P3)
+        if not bk or not bk.get("bid") or not bk.get("ask") or bk.get("spread") is None or bk["spread"] > LIVE_SPREAD:
+            return None, "score feed stale"
     return sc, ""
 
 
@@ -5870,6 +5875,11 @@ def auto_sell_now(plan):
                         continue                # the sale waits while the hedge is confirmed (3+ checks, 3+ minutes)
                     note_cut_held(t, h["label"], why, gw, hedge=True)
                     rec["hedge_skipped"] = "held back by the guards: " + gw
+                    if below and guards_on() and gw in ("score feed stale", "halftime or a break"):
+                        # a learned wider score age / break rule opens the LOSS sale only; never sell below cost while a
+                        # better hedge is blocked by that same staleness or break (review P1): wait for a fresh read
+                        log_decision(dict(rec, result="skipped", why="a better hedge waits for a fresh score"))
+                        continue
                 else:
                     if t in MINE["cash"]:
                         drop_cash(t)            # not selling: release the cash-out request
@@ -24060,6 +24070,8 @@ def _knob_res_brk(r, vals):
     if i is None:
         return 0.0
     if guards_on():                                   # net dollars after fees (the learned guards; off = develop's gross)
+        if reads[i][2] >= reads[0][2]:
+            return 0.0                                # a loss sale acts only on a falling price (review P2)
         return (reads[i][1] - single_fee(reads[i][1])) - (r["after"] - single_fee(r["after"]))
     return reads[i][1] - r["after"]
 
@@ -24174,7 +24186,12 @@ def _knob_rows_brk_hedge(now):
             except ValueError:
                 continue
             lg = r["league"] or ""
-            e = {"kick": r["ts"], "reads": reads, "after": r["after_bid"], "news": bool(r["news"])}
+            af = r["after_bid"]
+            if (not isinstance(af, (int, float)) or isinstance(af, bool) or not 0 < af < 1
+                    or not reads or any(len(x) < 3 or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                                              and math.isfinite(v) for v in x[:3]) for x in reads)):
+                continue                              # a junk row is skipped, never aborts the stepper (review P5)
+            e = {"kick": r["ts"], "reads": reads, "after": af, "news": bool(r["news"])}
             for key in {lg or None, _knob_sport(lg) if lg and lg != "mix" else None, "all"}:
                 if key:
                     brk[key].append(e)
