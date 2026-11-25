@@ -7883,6 +7883,7 @@ def fetch_scores(max_age=None, code=None):
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
+            sev_note_event(code, ev, comp, teams)      # memory-only note for the context recorder (never raises)
             # The team with the ball, by code (#318): ESPN's possession id matched to a competitor; '' when unknown.
             # (possessionText is the ball spot, "PHI 8", not who has it.) Display only.
             pid = str(sit.get("possession") or "") if sit_info and isinstance(sit, dict) else ""
@@ -19465,6 +19466,7 @@ def panel_collect(book_snap, code, log=print):
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
+    signal_events(code, games)                         # news + game-context recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -27771,6 +27773,7 @@ def price_seen_markets(ms):
             price_flush(now)
     except Exception as err:
         print("price recorder:", type(err).__name__, err)
+    sev_tick()                                     # news follow-up samples from these prices (throttled, never raises)
 
 
 def price_seen_book(ticker, info):
@@ -27904,6 +27907,516 @@ def price_prune(now=None):
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
 
+
+# ---- signal events (news + game context recorder, write-only): PETE chose to RECORD two signal families and test them
+# later against the market. (1) Injury/lineup news: when ESPN's injury report (the cache league_injuries already keeps,
+# about half an hour) shows a new item or a changed status, one row in `sig_news` with Kalshi's bid/ask and the book
+# probability of that team's game-winner market at that moment, then `sig_news_fu` rows with the same market's bid/ask
+# and book probability about 5, 15 and 60 minutes later. (2) `sig_ctx`: one row a game, about 2 hours before the start and at
+# the start: venue (home, neutral, dome), rest days, back-to-back, games in the last 7 days, travel miles and time
+# zones crossed (a small static table below), and the weather ESPN already sends, next to the market's bid/ask/book
+# probability. ZERO trading effect: it only PEEKS at caches the app already fills (INJ, SCORES_BY's ESPN events, the
+# markets Kalshi lists already (PRICE_SEEN)): no fetch of its own, no Kalshi call, no Odds API call. Append-only new
+# tables (a follow-up is its own row, never an UPDATE), every call wrapped (errors swallowed), nothing in the engine
+# or the watcher reads these tables to decide anything (the loaders below, `_sev_load`, only rebuild this recorder's own
+# in-memory state after a restart). The flag is the shadow recorders' `sig_shadow` (ON by default, false = off).
+# Retention: about a year, plus a row ceiling per table that STOPS WRITES when reached (it never deletes to make room).
+SEV = {"keep_days": 365, "tick": 20.0, "last": 0.0, "prune": 0.0, "tbl": False, "load": False,
+       "cap": {"sig_news": 60000, "sig_news_fu": 200000, "sig_ctx": 80000}, "full": set(),
+       "inj": {}, "inj_at": {}, "team": {}, "games": {}, "fair": {}, "pend": {}, "espn": {}, "sched": {}, "cov": {},
+       "done": set(), "max_events": 80, "px_age": 180.0, "pre_min": (20, 125), "start_late": 20,
+       "lock": threading.Lock()}
+SEV_HORIZONS = (5, 15, 60)                         # minutes after the news
+SEV_PRO = ("nfl", "nba", "nhl")                    # leagues with a travel table (college and soccer stay NULL)
+SEV_GEO_RAW = {                                    # team -> (latitude, longitude, standard-time UTC offset of its city)
+    # NFL
+    "Arizona Cardinals": (33.53, -112.26, -7), "Atlanta Falcons": (33.76, -84.40, -5), "Baltimore Ravens": (39.28, -76.62, -5),
+    "Buffalo Bills": (42.77, -78.79, -5), "Carolina Panthers": (35.23, -80.85, -5), "Chicago Bears": (41.86, -87.62, -6),
+    "Cincinnati Bengals": (39.10, -84.52, -5), "Cleveland Browns": (41.51, -81.70, -5), "Dallas Cowboys": (32.75, -97.09, -6),
+    "Denver Broncos": (39.74, -105.02, -7), "Detroit Lions": (42.34, -83.05, -5), "Green Bay Packers": (44.50, -88.06, -6),
+    "Houston Texans": (29.68, -95.41, -6), "Indianapolis Colts": (39.76, -86.16, -5), "Jacksonville Jaguars": (30.32, -81.64, -5),
+    "Kansas City Chiefs": (39.05, -94.48, -6), "Las Vegas Raiders": (36.09, -115.18, -8),
+    "Los Angeles Chargers": (33.95, -118.34, -8), "Los Angeles Rams": (33.95, -118.34, -8), "Miami Dolphins": (25.96, -80.24, -5),
+    "Minnesota Vikings": (44.97, -93.26, -6), "New England Patriots": (42.09, -71.26, -5),
+    "New Orleans Saints": (29.95, -90.08, -6), "New York Giants": (40.81, -74.07, -5), "New York Jets": (40.81, -74.07, -5),
+    "Philadelphia Eagles": (39.90, -75.17, -5), "Pittsburgh Steelers": (40.45, -80.02, -5),
+    "San Francisco 49ers": (37.40, -121.97, -8), "Seattle Seahawks": (47.60, -122.33, -8),
+    "Tampa Bay Buccaneers": (27.98, -82.50, -5), "Tennessee Titans": (36.17, -86.77, -6),
+    "Washington Commanders": (38.91, -76.86, -5),
+    # NBA
+    "Atlanta Hawks": (33.76, -84.39, -5), "Boston Celtics": (42.37, -71.06, -5), "Brooklyn Nets": (40.68, -73.97, -5),
+    "Charlotte Hornets": (35.23, -80.84, -5), "Chicago Bulls": (41.88, -87.67, -6), "Cleveland Cavaliers": (41.50, -81.69, -5),
+    "Dallas Mavericks": (32.79, -96.81, -6), "Denver Nuggets": (39.75, -105.00, -7), "Detroit Pistons": (42.34, -83.06, -5),
+    "Golden State Warriors": (37.77, -122.39, -8), "Houston Rockets": (29.75, -95.36, -6), "Indiana Pacers": (39.76, -86.16, -5),
+    "Los Angeles Clippers": (34.04, -118.27, -8), "LA Clippers": (34.04, -118.27, -8), "Los Angeles Lakers": (34.04, -118.27, -8),
+    "Memphis Grizzlies": (35.14, -90.05, -6), "Miami Heat": (25.78, -80.19, -5), "Milwaukee Bucks": (43.04, -87.92, -6),
+    "Minnesota Timberwolves": (44.98, -93.28, -6), "New Orleans Pelicans": (29.95, -90.08, -6),
+    "New York Knicks": (40.75, -73.99, -5), "Oklahoma City Thunder": (35.46, -97.52, -6), "Orlando Magic": (28.54, -81.38, -5),
+    "Philadelphia 76ers": (39.90, -75.17, -5), "Phoenix Suns": (33.45, -112.07, -7),
+    "Portland Trail Blazers": (45.53, -122.67, -8), "Sacramento Kings": (38.58, -121.50, -8),
+    "San Antonio Spurs": (29.43, -98.44, -6), "Toronto Raptors": (43.64, -79.38, -5), "Utah Jazz": (40.77, -111.90, -7),
+    "Washington Wizards": (38.90, -77.02, -5),
+    # NHL
+    "Anaheim Ducks": (33.81, -117.88, -8), "Boston Bruins": (42.37, -71.06, -5), "Buffalo Sabres": (42.88, -78.88, -5),
+    "Calgary Flames": (51.04, -114.05, -7), "Carolina Hurricanes": (35.80, -78.72, -5), "Chicago Blackhawks": (41.88, -87.67, -6),
+    "Colorado Avalanche": (39.75, -105.01, -7), "Columbus Blue Jackets": (39.97, -83.01, -5), "Dallas Stars": (32.79, -96.81, -6),
+    "Detroit Red Wings": (42.34, -83.06, -5), "Edmonton Oilers": (53.55, -113.50, -7), "Florida Panthers": (26.16, -80.33, -5),
+    "Los Angeles Kings": (34.04, -118.27, -8), "Minnesota Wild": (44.94, -93.10, -6), "Montreal Canadiens": (45.50, -73.57, -5),
+    "Nashville Predators": (36.16, -86.78, -6), "New Jersey Devils": (40.73, -74.17, -5),
+    "New York Islanders": (40.72, -73.59, -5), "New York Rangers": (40.75, -73.99, -5), "Ottawa Senators": (45.30, -75.93, -5),
+    "Philadelphia Flyers": (39.90, -75.17, -5), "Pittsburgh Penguins": (40.44, -79.99, -5), "San Jose Sharks": (37.33, -121.90, -8),
+    "Seattle Kraken": (47.62, -122.35, -8), "St Louis Blues": (38.63, -90.20, -6), "St. Louis Blues": (38.63, -90.20, -6),
+    "Tampa Bay Lightning": (27.94, -82.45, -5), "Toronto Maple Leafs": (43.64, -79.38, -5), "Utah Mammoth": (40.77, -111.90, -7),
+    "Vancouver Canucks": (49.28, -123.11, -8), "Vegas Golden Knights": (36.10, -115.18, -8),
+    "Washington Capitals": (38.90, -77.02, -5), "Winnipeg Jets": (49.89, -97.14, -6)}
+SEV_GEO = {norm_team(k): v for k, v in SEV_GEO_RAW.items()}
+SEV_NEWS_COLS = ("ekey", "ts", "news_ts", "league", "team", "player", "pos", "kind", "old_status", "new_status",
+                 "material", "game_event", "ticker", "bid", "ask", "fair_book", "fair_src", "px_age")
+SEV_FU_COLS = ("news_id", "horizon", "ts", "delay_s", "bid", "ask", "fair_book", "fair_age")
+SEV_CTX_COLS = ("ts", "phase", "mins_to_start", "league", "game_event", "start_ts", "start_src", "home_team", "away_team",
+                "home_ticker", "away_ticker", "neutral", "indoor", "venue_city", "venue_state", "home_rest", "away_rest",
+                "home_b2b", "away_b2b", "home_g7", "away_g7", "home_travel_mi", "away_travel_mi", "home_tz", "away_tz",
+                "wx_temp", "wx_wind", "wx_precip", "wx_text", "home_bid", "home_ask", "home_fair", "away_bid", "away_ask",
+                "away_fair", "fair_src")
+
+
+def _sev_tables():
+    """Create the three append-only tables (and their indexes) once a run. `create ... if not exists` only: an existing
+    history file is never altered, so this is safe on a file that already has them, or has none."""
+    if SEV["tbl"]:
+        return True
+    store_x("create table if not exists sig_news(id integer primary key, ekey text, ts real, news_ts real, league text, "
+            "team text, player text, pos text, kind text, old_status text, new_status text, material int, game_event text, "
+            "ticker text, bid real, ask real, fair_book real, fair_src text, px_age real)")
+    store_x("create unique index if not exists sig_news_k on sig_news(ekey)")
+    store_x("create index if not exists sig_news_ts on sig_news(ts)")
+    store_x("create table if not exists sig_news_fu(news_id integer, horizon int, ts real, delay_s real, bid real, "
+            "ask real, fair_book real, fair_age real)")
+    store_x("create unique index if not exists sig_news_fu_k on sig_news_fu(news_id, horizon)")
+    store_x("create index if not exists sig_news_fu_ts on sig_news_fu(ts)")
+    store_x("create table if not exists sig_ctx(" + ", ".join(
+        c + (" text" if c in ("phase", "league", "game_event", "start_src", "home_team", "away_team", "home_ticker",
+                               "away_ticker", "venue_city", "venue_state", "wx_text", "fair_src") else
+             " int" if c in ("neutral", "indoor", "home_b2b", "away_b2b", "home_g7", "away_g7", "home_tz", "away_tz")
+             else " real") for c in SEV_CTX_COLS) + ")")
+    store_x("create unique index if not exists sig_ctx_k on sig_ctx(game_event, phase)")
+    store_x("create index if not exists sig_ctx_ts on sig_ctx(ts)")
+    have = {r["name"] for r in store_rows("select name from sqlite_master where type='table'")}
+    SEV["tbl"] = {"sig_news", "sig_news_fu", "sig_ctx"} <= have
+    return SEV["tbl"]
+
+
+def _sev_write(table, cols, rows):
+    """Insert-or-ignore rows into one of the three tables in one transaction under the history lock; returns each row's
+    new rowid (None when it was a duplicate). [] when nothing was written. Stops (writes nothing) when the table's row
+    ceiling was reached. Never raises."""
+    db = STORE.get("db")
+    if not db or not rows or table in SEV["full"]:
+        return []
+    ids = []
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            sql = f"insert or ignore into {table}({','.join(cols)}) values({','.join('?' * len(cols))})"
+            for r in rows:
+                cur = db.execute(sql, r)
+                ids.append(cur.lastrowid if cur.rowcount == 1 else None)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"signal events: {type(err).__name__}: {err}")
+            return []
+    return ids
+
+
+def _sev_prune(now):
+    """Drop rows past a year, then count each table and set (or clear) its "full" flag: at the ceiling, writes stop."""
+    SEV["prune"] = now
+    for tbl in SEV["cap"]:
+        store_x(f"delete from {tbl} where ts < ?", (now - SEV["keep_days"] * 86400,))
+        got = store_rows(f"select count(*) n from {tbl}")
+        if got:
+            if got[0]["n"] >= SEV["cap"][tbl]:
+                SEV["full"].add(tbl)
+            else:
+                SEV["full"].discard(tbl)
+
+
+def _sev_load(now):
+    """After a restart, rebuild this recorder's own memory from its own tables: news still waiting for follow-ups, the
+    games already given their rows, each team's known game starts (for rest days) and since when each league has been
+    watched. True when it all read; a failure is retried at the next tick. (The only place that reads the tables.)"""
+    if SEV["load"]:
+        return True
+    try:
+        if not _sev_tables():
+            return False
+        have = {}
+        for r in store_rows_strict("select news_id, horizon from sig_news_fu where ts > ?", (now - 2 * 3600,)):
+            have.setdefault(r["news_id"], set()).add(r["horizon"])
+        for r in store_rows_strict("select id, ts, ticker from sig_news where ts > ? and ticker is not null",
+                                   (now - (max(SEV_HORIZONS) + 5) * 60,)):
+            todo = [h for h in SEV_HORIZONS if h not in have.get(r["id"], ()) and now - r["ts"] <= 2 * h * 60]
+            if todo:
+                SEV["pend"][r["id"]] = {"ts": r["ts"], "ticker": r["ticker"], "todo": set(todo)}
+        for r in store_rows_strict("select league, game_event, phase, home_team, away_team, start_ts from sig_ctx "
+                                   "where ts > ?", (now - 45 * 86400,)):
+            SEV["done"].add((r["game_event"], r["phase"]))
+            for t in (r["home_team"], r["away_team"]):
+                if t and r["start_ts"]:
+                    _sev_sched_add(r["league"], t, r["start_ts"])
+        for r in store_rows_strict("select league, min(ts) m from sig_ctx group by league"):
+            if r["m"]:
+                SEV["cov"][r["league"]] = min(SEV["cov"].get(r["league"], r["m"]), r["m"])
+        _sev_prune(now)
+        SEV["load"] = True
+    except Exception as err:
+        console_note(f"signal events load: {type(err).__name__}: {err}")
+    return SEV["load"]
+
+
+def _sev_same(code, a, b):
+    """Do two team names mean the same team (Kalshi's short pick name vs ESPN's full name)?"""
+    na, nb = norm_team(a), norm_team(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if code in SEV_PRO and na.split()[-1] == nb.split()[-1]:
+        return True
+    if f" {na} " in f" {nb} " or f" {nb} " in f" {na} ":
+        return True
+    ta, tb = na.split(), nb.split()                # Kalshi's short picks ("Los Angeles L"): word-prefixes of the full name
+    ta, tb = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return len(ta) >= 2 and all(y.startswith(x) for x, y in zip(ta, tb))
+
+
+def _sev_num(v):
+    """A number out of an ESPN field (12, "12", "12 mph"), else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        m = re.search(r"-?\d+(?:\.\d+)?", v)
+        return float(m.group()) if m else None
+    return None
+
+
+def _sev_sched_add(code, team, ts):
+    lst = SEV["sched"].setdefault((code, norm_team(team)), [])
+    if not any(abs(ts - t) < 3600 for t in lst):
+        lst.append(ts)
+        lst.sort()
+        del lst[:-40]
+
+
+def sev_note_event(code, ev, comp, teams):
+    """From the ESPN scoreboard read the app already makes (fetch_scores): keep, in memory only, this game's home/away,
+    neutral-site flag, dome flag, venue city and weather, and both teams' start (for rest days). No DB write, no
+    fetch; never raises."""
+    try:
+        start = _iso_dt(ev.get("date"))
+        gid = str(ev.get("id") or "")
+        if not start or not gid:
+            return
+        ts = start.timestamp()
+        by = {c.get("homeAway"): ((c.get("team") or {}).get("displayName") or "") for c in teams}
+        ven = comp.get("venue") or {}
+        adr = ven.get("address") or {}
+        w = ev.get("weather") or comp.get("weather") or {}
+        w = w if isinstance(w, dict) else {}
+        flag = lambda v: int(v) if isinstance(v, bool) else None         # a missing field stays unknown (NULL)
+        SEV["espn"][(code, gid)] = {
+            "code": code, "start": ts, "home": by.get("home") or None, "away": by.get("away") or None,
+            "neutral": flag(comp.get("neutralSite")), "indoor": flag(ven.get("indoor")),
+            "city": (adr.get("city") or "")[:40] or None, "state": (adr.get("state") or "")[:20] or None,
+            "temp": _sev_num(w.get("temperature")),
+            "wind": next((x for x in (_sev_num(w.get(k)) for k in ("windSpeed", "wind", "gust")) if x is not None), None),
+            "precip": next((x for x in (_sev_num(w.get(k)) for k in ("precipitation", "precipChance")) if x is not None), None),
+            "text": (str(w.get("displayValue") or "")[:40] or None)}
+        for c in teams:
+            nm = (c.get("team") or {}).get("displayName")
+            if nm:
+                _sev_sched_add(code, nm, ts)
+        got = SEV["cov"].get(code)                     # this read covers every game from its earliest one on
+        first = min((v["start"] for k, v in SEV["espn"].items() if k[0] == code and v["start"] >= ts - 86400 * 2),
+                    default=ts)
+        SEV["cov"][code] = min(got, first) if got is not None else first
+        if len(SEV["espn"]) > 4000:
+            for k in sorted(SEV["espn"], key=lambda k: SEV["espn"][k]["start"])[:1000]:
+                SEV["espn"].pop(k, None)
+    except Exception:
+        pass
+
+
+def _sev_miles(a, b):
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return round(2 * 3958.8 * math.asin(math.sqrt(h)), 0)
+
+
+def _sev_px(ticker, now):
+    """(bid, ask, age seconds) of a market from what the engine last read, or None when older than px_age."""
+    got = PRICE_SEEN.get(ticker)
+    if not got or now - got[0] > SEV["px_age"]:
+        return None
+    return got[1], got[2], round(now - got[0], 1)
+
+
+def _sev_diff(code, now):
+    """New items and status changes in this league's injury report since the last one we looked at: only when the
+    cache holds a NEW read (INJ is filled by league_injuries; we never call it), never from an empty read (a failed
+    read is cached as {}), and the first read after a start only sets the baseline. Teams missing from a read keep
+    their old baseline. Returns the events found (material ones first, at most max_events)."""
+    got = INJ.get(code)
+    if not got or SEV["inj_at"].get(code) == got[0]:
+        return []
+    SEV["inj_at"][code] = got[0]
+    snap = got[1]
+    if not isinstance(snap, dict) or not snap:
+        return []
+    cur = {}
+    for team, rows in snap.items():
+        for r in rows or ():
+            try:
+                player, pos, status, when = r[0], r[1], r[2], r[3]
+            except (TypeError, IndexError):
+                continue
+            if player:
+                cur[(team, player)] = (status or "", pos or "", when or "")
+    prev = SEV["inj"].get(code)
+    SEV["inj"][code] = {**{k: v for k, v in (prev or {}).items() if k[0] not in snap}, **cur}
+    if prev is None:
+        return []
+    out = []
+    for k, (st, pos, when) in cur.items():
+        old = prev.get(k)
+        if old is None:
+            out.append((k, "new", None, st, pos, when))
+        elif old[0] != st:
+            out.append((k, "change", old[0], st, pos, when))
+    for k, old in prev.items():
+        if k[0] in snap and k not in cur:
+            out.append((k, "removed", old[0], None, old[1], ""))
+    mat = lambda e: int(any(s and s.lower() not in ("active", "") for s in (e[2], e[3])))
+    out.sort(key=lambda e: -mat(e))
+    return [e + (mat(e),) for e in out[:SEV["max_events"]]]
+
+
+def _sev_news(code, now):
+    """Write this league's new injury events (with the team's game-winner prices now) and queue their follow-ups."""
+    evs = _sev_diff(code, now)
+    if not evs:
+        return 0
+    teams = SEV["team"].get(code) or {}
+    rows, meta = [], []
+    for (team, player), kind, old, new, pos, when, mat in evs:
+        hit = next((v for k, v in teams.items() if _sev_same(code, k, team)), None)
+        e = t = None
+        bid = ask = fair = src = age = None
+        if hit:
+            e, t = hit
+            px = _sev_px(t, now)
+            if px:
+                bid, ask, age = px
+            f = SEV["fair"].get(t)
+            if f:
+                fair, src = f[0], f[1]
+        nts = _iso_dt(when)
+        nts = nts.timestamp() if nts else None
+        rows.append((f"{code}|{team}|{player}|{old or ''}|{new or ''}|{when or int(now // 3600)}", round(now, 1),
+                     nts, code, team, player, pos or None, kind, old or None, new or None, mat, e, t, bid, ask, fair,
+                     src, age))
+        meta.append(t)
+    ids = _sev_write("sig_news", SEV_NEWS_COLS, rows)
+    n = 0
+    for nid, t in zip(ids, meta):
+        if nid is not None:
+            n += 1
+            if t:
+                SEV["pend"][nid] = {"ts": now, "ticker": t, "todo": set(SEV_HORIZONS)}
+    if len(SEV["pend"]) > 3000:                            # a flood never grows the list without bound
+        for k in sorted(SEV["pend"], key=lambda k: SEV["pend"][k]["ts"])[:1000]:
+            SEV["pend"].pop(k, None)
+    return n
+
+
+def _sev_followups(now):
+    """Samples of each queued news market at +5/+15/+60 min, from the prices the engine last read (no request). A
+    sample more than one horizon late (the app was busy or off) is dropped, never faked."""
+    rows = []
+    for nid, p in list(SEV["pend"].items()):
+        for h in sorted(p["todo"]):
+            due = p["ts"] + h * 60
+            if now < due:
+                continue
+            if now - due > h * 60:
+                p["todo"].discard(h)
+                continue
+            px = _sev_px(p["ticker"], now)
+            if not px:
+                continue
+            f = SEV["fair"].get(p["ticker"])
+            rows.append((nid, h, round(now, 1), round(now - due, 1), px[0], px[1], f[0] if f else None,
+                         round(now - f[2], 0) if f else None))
+            p["todo"].discard(h)
+        if not p["todo"]:
+            SEV["pend"].pop(nid, None)
+    return _sev_write("sig_news_fu", SEV_FU_COLS, rows) if rows else []
+
+
+def _sev_rest(code, team, start):
+    """(rest days, back-to-back, games in the last 7 days) for a team before `start`, from the games we know of;
+    each None when the record doesn't reach back far enough to say (never a guess)."""
+    ls = SEV["sched"].get((code, norm_team(team))) or []
+    cov = SEV["cov"].get(code)
+    prev = [t for t in ls if t < start - 3600]
+    rest = b2b = g7 = None
+    if cov is not None:
+        if prev and cov <= max(prev):
+            rest = round((start - max(prev)) / 86400.0, 2)
+        if cov <= start - 30 * 3600:
+            b2b = int(any(start - 30 * 3600 < t < start - 3600 for t in prev))
+        if cov <= start - 7 * 86400:
+            g7 = sum(1 for t in prev if t > start - 7 * 86400)
+    return rest, b2b, g7
+
+
+def _sev_ctx_row(e, g, phase, now):
+    """One sig_ctx row for a game from the memory the panel pass and the ESPN read left. Unknown = None."""
+    code, start = g["code"], g["start"]
+    sides = g["sides"]
+    espn = [v for v in SEV["espn"].values() if v["code"] == code and v["home"] and v["away"]
+            and abs(v["start"] - start) < 36 * 3600 and len(sides) >= 2
+            and all(any(_sev_same(code, s["pick"], n) for n in (v["home"], v["away"])) for s in sides[:2])]
+    v = min(espn, key=lambda v: abs(v["start"] - start)) if espn else None
+    row = dict.fromkeys(SEV_CTX_COLS)
+    row.update(ts=round(now, 1), phase=phase, mins_to_start=round((start - now) / 60.0, 1), league=code, game_event=e,
+               start_ts=round(start, 0), start_src=g.get("src"))
+    if v:
+        home_s = next((s for s in sides if _sev_same(code, s["pick"], v["home"])), None)
+        away_s = next((s for s in sides if s is not home_s and _sev_same(code, s["pick"], v["away"])), None)
+        row.update(home_team=v["home"], away_team=v["away"], neutral=v["neutral"], indoor=v["indoor"],
+                   venue_city=v["city"], venue_state=v["state"], wx_temp=v["temp"], wx_wind=v["wind"],
+                   wx_precip=v["precip"], wx_text=v["text"])
+        for side, s, nm in (("home", home_s, v["home"]), ("away", away_s, v["away"])):
+            row[side + "_rest"], row[side + "_b2b"], row[side + "_g7"] = _sev_rest(code, nm, start)
+            if s:
+                px = _sev_px(s["ticker"], now)
+                row.update({side + "_ticker": s["ticker"], side + "_bid": px[0] if px else None,
+                            side + "_ask": px[1] if px else None, side + "_fair": s.get("fair")})
+        row["fair_src"] = next((s.get("src") for s in sides if s.get("src")), None)
+        gh, ga = SEV_GEO.get(norm_team(v["home"])), SEV_GEO.get(norm_team(v["away"]))
+        if code in SEV_PRO and gh and ga and v["neutral"] == 0:       # the venue is the home team's city only when known
+            row.update(home_travel_mi=0.0, home_tz=0, away_travel_mi=_sev_miles(ga, gh), away_tz=abs(ga[2] - gh[2]))
+    return tuple(row[c] for c in SEV_CTX_COLS)
+
+
+def _sev_ctx(now):
+    """Give each game its rows: 'pre2h' (first look inside two hours, not closer than 20 minutes to the start) and
+    'start' (the first look at or after the start, up to 20 minutes late). One row each, kept for a year."""
+    rows, keys = [], []
+    for e, g in list(SEV["games"].items()):
+        if not g.get("start") or g.get("src") not in ("book", "feed") or len(g.get("sides") or ()) < 2:
+            continue
+        mins = (g["start"] - now) / 60.0
+        phase = ("pre2h" if SEV["pre_min"][0] <= mins <= SEV["pre_min"][1] else
+                 "start" if -SEV["start_late"] <= mins <= 0 else None)
+        if not phase or (e, phase) in SEV["done"]:
+            continue
+        try:
+            rows.append(_sev_ctx_row(e, g, phase, now))
+            keys.append((e, phase))
+        except Exception as err:
+            console_note(f"signal events ctx: {type(err).__name__}: {err}")
+            SEV["done"].add((e, phase))
+    if rows:
+        _sev_write("sig_ctx", SEV_CTX_COLS, rows)
+        SEV["done"].update(keys)
+    return len(rows)
+
+
+def sev_tick(now=None, force=False):
+    """Everything the recorder does, from caches already in memory: injury diffs, due follow-ups, due context rows,
+    pruning. Throttled to one run per `tick` seconds; never raises, never blocks (a busy lock skips the call)."""
+    try:
+        if not STORE.get("db") or not CFG.get("sig_shadow", SIG["on"]):
+            return 0
+        now = now or time.time()
+        if not force and now - SEV["last"] < SEV["tick"]:
+            return 0
+        if not SEV["lock"].acquire(False):
+            return 0
+        try:
+            SEV["last"] = now
+            if not _sev_load(now):
+                return 0
+            n = sum(_sev_news(code, now) for code in list(INJ))
+            _sev_followups(now)
+            n += _sev_ctx(now)
+            if now - SEV["prune"] > 6 * 3600:
+                _sev_prune(now)
+            return n
+        finally:
+            SEV["lock"].release()
+    except Exception as err:
+        try:
+            console_note(f"signal events: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def signal_events(code, games, now=None):
+    """The panel pass's one call: remember this league's games (teams, tickers, start, the book probability next to each
+    side) so the tick can match news and write context rows, then run the tick. No request, never raises."""
+    try:
+        if not STORE.get("db") or not CFG.get("sig_shadow", SIG["on"]):
+            return 0
+        now = now or time.time()
+        team = {}
+        for e, sides in (games or {}).items():
+            two = [x for x in sides if isinstance(x, dict) and not x.get("tie") and x.get("ticker") and x.get("pick")]
+            if len(two) < 2:
+                continue
+            st, src = game_start(e, two[0]["ticker"], two[0].get("exp"))
+            info = []
+            for x in two[:2]:
+                f = x.get("fair_book")
+                if f is None and x.get("src") and not x.get("live"):
+                    f = x.get("fair")
+                f = round(f, 4) if isinstance(f, (int, float)) and not x.get("live") else None
+                info.append({"ticker": x["ticker"], "pick": x["pick"], "fair": f,
+                             "src": str(x["src"])[:20] if x.get("src") and f is not None else None})
+                if f is not None:
+                    SEV["fair"][x["ticker"]] = (f, info[-1]["src"], now)
+                team[norm_team(x["pick"])] = (e, x["ticker"])
+            SEV["games"][e] = {"code": code, "start": st.timestamp() if st else None, "src": src, "seen": now,
+                               "sides": info}
+        SEV["team"][code] = team
+        for e in [e for e, g in SEV["games"].items() if (g.get("start") or g["seen"]) < now - 4 * 3600]:
+            SEV["games"].pop(e, None)
+        if len(SEV["fair"]) > 6000:
+            for k in sorted(SEV["fair"], key=lambda k: SEV["fair"][k][2])[:3000]:
+                SEV["fair"].pop(k, None)
+        return sev_tick(now, force=True)
+    except Exception as err:
+        try:
+            console_note(f"signal events: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+# ---- end signal events
 
 # ---- signal shadow (early-exit test, phase 1): sharp-book prob beside Kalshi's bid/ask, sibling-market bids and game
 # state, recorded for a later look at whether anything leads Kalshi's bid. Write-only: NOTHING in the engine reads these
