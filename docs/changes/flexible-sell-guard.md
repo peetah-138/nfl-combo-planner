@@ -13,8 +13,8 @@ With `flex_sell` on, each retry is judged against the game right now (`flex_deci
   pick in play, one pick per game, and no spread or total in play.
 - `flex_wait_line` is what waiting is worth now (`wait_value`, risk-adjusted with the Let it ride multiple, plus the
   per-pick cushion, same as `wait_threshold`).
-- An offer is taken when it passes the **safety backstop** (at least `flex_backstop`, default 85%, of the combo's usual
-  sale value now: live fair x pays x Kalshi's learned discount; a combo cash-out carries no separate fee) and the floors
+- An offer is taken when it passes the **safety backstop** (at least `flex_backstop`, default 85%, of the combo's current
+  FAIR value now: live chance x pays, NOT discounted by Kalshi's usual offer share (Pete, 2026-11-25); a combo cash-out carries no separate fee) and the floors
   the sale already had, AND one of: the old bar would have taken it; selling beats waiting now (offer at or above the
   wait line); it is a profit (at or above cost) and the chance has dropped 8% or more under the holdings' last reading; or it is a
   loss cut whose learned cut-off still holds on the fresh chance.
@@ -40,7 +40,7 @@ With `flex_sell` on, each retry is judged against the game right now (`flex_deci
   the offers' value, raises when it gained more, is hard-bounded to 85%-99% (`_fb_ok`, so NaN, text or out-of-band values
   read as 97%), per league (ledger league) once a league has 20 retries else global, shrinks back at twice the step when
   lowering proved too cheap and snaps to 97% after 3 such rounds in a row. A learned share under 97% is never below the
-  85% backstop of what the combo last read as worth. State lives in the `flex_learn` table. Any error or switch off = plain 97%
+  85% backstop of what the combo last read as worth (fair value, no Kalshi discount). State lives in the `flex_learn` table. Any error or switch off = plain 97%
   (exactly develop's bar). Applies to the tap and loss-cut bar; an automatic profit sale's own bar is its smart-sell line
   (already tuned by `auto_slip`). The Settings row shows the learned value read-only (`flex_fb_view`).
 - Settings: `flex_sell` and `flex_learn` (default True) and `flex_backstop` (default 85), plumbed through DEFAULTS, SHARED_KEYS,
