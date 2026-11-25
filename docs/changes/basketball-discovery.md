@@ -28,3 +28,5 @@ It needs numpy and pandas, now in `tests/requirements-ci.txt`; locally it prints
 missing import is a FAIL.
 
 ROADMAP: none
+
+Review follow-up: overtime explains much of the close-game-late-over total residual (NBA +3.1 to +0.7, college +5.7 to +2.9 without overtime); T3 was dropped for too few games.

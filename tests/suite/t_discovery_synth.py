@@ -56,7 +56,7 @@ ok("hypothesis count is returned (%d tests)" % n, n == 41)
 pl = res[res.seg == "planted"].iloc[0]
 ok("planted effect is found (effect %.2f, q %.2g)" % (pl.effect, pl.q), bool(pl.rej) and abs(pl.effect - PLANTED) < 0.8)
 nulls = res[res.seg != "planted"]
-ok("null segments stay out (%d of 40 rejected)" % int(nulls.rej.sum()), int(nulls.rej.sum()) <= 2)
+ok("null segments stay out (%d of 40 rejected)" % int(nulls.rej.sum()), int(nulls.rej.sum()) <= 1)
 
 stab, per = dc.season_stability(gl, ["seg"], min_games_season=40)
 sp = stab[stab.seg == "planted"].iloc[0]

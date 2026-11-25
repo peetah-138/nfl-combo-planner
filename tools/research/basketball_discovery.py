@@ -552,6 +552,22 @@ def main():
         w(dc.md_table(ints(rt.sort_values("p").head(12)[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "replicates", "gbm_effect", "survives_gbm"] if "replicates" in rt else ["seg", "n_games", "effect", "se", "q"]], INTCOLS), "%.3f"))
         w("Totals anecdotes:")
         w(dc.md_table(ints(st["resTA"].sort_values("p")[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "bh_reject", "survivor"]], INTCOLS), "%.3f"))
+        T_ = GEOM[lg]["T"]
+        reg = list(totals_anecdotes(st["R"], T_, lg))
+        miss = [x for x in reg if x not in set(st["resTA"].seg)]
+        w("Pre-registered totals anecdotes: %d defined, %d tested; dropped (empty or under %d games): %s" % (len(reg), len(reg) - len(miss), MIN_GAMES, ", ".join(miss) or "none"))
+        regw = list(anecdote_masks(perspective(st["te"], lg), lg))
+        missw = [x for x in regw if x not in set(st["resA"].seg)]
+        w("Pre-registered win-probability anecdotes: %d defined, %d tested; dropped: %s" % (len(regw), len(regw) - len(missw), ", ".join(missw) or "none"))
+        # SECONDARY (post-hoc, labelled): the same totals anecdotes with overtime games removed (OT adds about 20 points by itself).
+        R0 = st["R"][st["R"].went_ot == 0].assign(val=lambda d: d.res)
+        an0 = {k + "_noOT": v.loc[R0.index.intersection(v.index)] for k, v in totals_anecdotes(st["R"], T_, lg).items()}
+        an0 = {k: v.reindex(R0.index, fill_value=False) for k, v in an0.items()}
+        gl0 = game_level(R0, an0)
+        if len(gl0):
+            r0 = dc.segment_scan(gl0, ["seg"], min_games=MIN_GAMES)
+            w("Post-hoc check, totals anecdotes with overtime games excluded:")
+            w(dc.md_table(ints(r0[["seg", "n_games", "effect", "se", "p"]], INTCOLS), "%.3f"))
         w("### 7. Decay tracker (effect by held-out season, slope per season; 5 seasons is low power, a non-significant slope is NOT evidence of no decay)")
         rW = st["resW"].sort_values("p").head(10).seg.tolist()
         glW = game_level(perspective(st["te"], lg), {k: v for k, v in win_segments(perspective(st["te"], lg), lg).items() if k in rW})

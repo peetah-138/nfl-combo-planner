@@ -33,22 +33,26 @@ level for the rest.
 | NBA | 72 | 14 | 11 | 6 |
 | College | 73 | 36 | 19 | 7 |
 
-Survivors are almost entirely the baseline's own late-game calibration, not trends: both the normal-curve and the
-boosted model are overconfident in late leads (leaders win less than the model says by 1-5 points; trailers win more),
-in both leagues and all five seasons. A bigger boosted model did not fix it. The remaining survivor family is
-`own_has_ball` (the team with the derived possession wins 0.3-0.5 points more than the model says); possession is
-derived and approximate, so this is a measurement artifact until proven otherwise. Treat these as notes on our
-baseline, not as edges.
+Survivors are almost entirely the baseline's own late-game calibration, not trends. The scanned model is the boosted
+baseline: its late leaders win 1-4 points less often than it says and its trailers win 2-5 points more, in both leagues
+(four or five of five seasons). This is a property of our model (rows from the same game are correlated, which a boosted
+model can fit too confidently), not a finding about basketball; the normal-curve and richer models were not scanned, so
+nothing is claimed about them. The only non-calibration survivor is college `own_gain8_last5|ph2` (a team that just
+gained 8+ points in 5 minutes then does 1.2 points worse than the model says; same sign in 4 of 5 seasons; the NBA echo
+is z -1.9). `own_has_ball` (the team with the derived possession does 0.3-0.5 points better) is significant in both
+leagues but below the 1-point size floor, so it is not a survivor; possession is derived and approximate, so treat it as
+a measurement artifact until proven otherwise. About 28 of the 73 cells per family are lead-bucket diagnostics and they
+inflate the family; the report counts them separately.
 
 ## 3. Pre-registered anecdotes (13, own BH family)
 
 | anecdote | league | n games | effect (win-prob pts) | q | verdict |
 |---|---|---|---|---|---|
-| A5 rested (3+ days) vs back-to-back team, at half | College | 605 | +4.5 | 0.010 | survives the rule (only the sign replicates in the NBA: +3.6 on 390 games, q 0.81) |
-| A7 foul trouble only, at half | College | 7,034 | -1.5 | 0.002 | rejected by BH, does not replicate |
-| A4 back-to-back team starts 2nd half | College | 750 | -4.0 | 0.011 | rejected by BH, does not replicate |
-| A12 ball trailing by 1-3 in last 2 min | College | 2,491 | +2.6 | 0.013 | rejected by BH, does not replicate |
-| A10 10-point run in final period | College | 4,581 | -1.0 | 0.013 | rejected by BH, does not replicate |
+| A5 rested (3+ days) vs back-to-back team, at half | College | 605 | +4.5 | 0.010 | passes the rule, but fragile: the NBA copy is +3.6 on 390 games (one-sided p about 0.03, q 0.81), same sign in only 4 of 5 college seasons, and tournament and neutral-site structure may confound the college sample |
+| A7 foul trouble only, at half | College | 7,034 | -1.5 | 0.002 | significant after BH; NBA copy has only 250 games, so not testable there |
+| A4 back-to-back team starts 2nd half | College | 750 | -4.0 | 0.011 | significant after BH, failed replication (NBA copy has far fewer games) |
+| A12 ball trailing by 1-3 in last 2 min | College | 2,491 | +2.6 | 0.013 | significant after BH, failed replication (NBA copy has far fewer games) |
+| A10 10-point run in final period | College | 4,581 | -1.0 | 0.013 | significant after BH, failed replication (NBA copy has far fewer games) |
 | the other 8 | both | | within +/-1.5 | 0.07-0.92 | nothing |
 
 In the NBA no anecdote has q below 0.8. The most hyped sportscaster lines (first to 20, halftime leader, big
@@ -70,17 +74,20 @@ deviation of about 17.6-18.2 in the NBA and 17.1-17.8 in college, mild right ske
 Most "survivors" are the crude linear baseline being wrong, not a market-relevant finding. A post-hoc, clearly labelled
 cross-check scores each cell against the boosted model's residual instead: pace mean reversion (`slow_vs_prior` about
 +5 to +6.7 points; `fast_vs_prior` about -5 to -6) survives in both leagues, while the foul, close-game and
-crew-tendency cells vanish (effects fall from 2-4 points to about 0). Pace mean reversion is the standard known effect
-that any live total already prices.
+crew-tendency cells vanish (effects fall from 2-4 points to about 0). Pace mean reversion is a well-known effect; with no live prices here we cannot say whether a market already prices it. The cells
+that vanish may do so partly because the boosted model sees those same features, which does not prove they are noise.
 
 Pre-registered totals anecdote T5, close game late goes over: +3.1 points (NBA, 1,891 games) and +5.7 points (college,
-9,072 games), q below 0.001, same sign in all five seasons. This is almost certainly end-of-game fouling, which a live
-market sees and prices; the college total is a proxy, so its size is not trustworthy. T1, T2, T4 and T6 are within
-+/-0.8 points.
+9,072 games), q below 0.001, same sign in all five seasons. Overtime explains much of it. With overtime games removed (post-hoc check, same residual, which was fit with overtime
+included so every no-overtime cell sits about 1 point lower, e.g. NBA T1/T2/T4 at about -1.4), T5 falls to +0.7 in the NBA
+(1,685 games) and +2.9 in college (7,820 games). What is left is probably end-of-game fouling; the college total is a
+proxy, so its size is not trustworthy. T3 (physical first half) was pre-registered but dropped: too few games at the
+required foul level (the report now lists any dropped pre-registered test; the totals family is therefore 5, not 6). College T1 (+0.8) and T2 (-0.8) are BH-significant (q 0.001 or below) but under 1 point and do not replicate; T4 and T6 are within
++/-0.6.
 
 ## 5. Decay
 
-Over five seasons, the late-lead calibration effects drift by about -0.4 to +0.9 points per season with slope z-scores
+Over five seasons, the late-lead calibration effects drift by about -0.6 to +0.9 points per season with slope z-scores
 mostly inside +/-2 (college `lead_lead3-8|ph3` -2.0 and `lead_trail3-8|ph0` -2.2 is the only pair near the line).
 Five seasons has little power, so a flat slope is not evidence the effects are stable.
 
