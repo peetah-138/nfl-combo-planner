@@ -274,12 +274,12 @@ function slip(d){const legs=S.slip.map(sideBy).filter(Boolean);const stake=stkGe
   ${legs.length>=2?`<div style="margin-top:10px"><div class="sum">Chance it hits<b>${pct(fairChance)}</b></div><div class="sum">Fair payout for ${money(stake)}<b>${money(stake/fairChance)}</b></div>
    <div class="sum">Kalshi's single prices imply<b>${money(stake/kal)}</b></div>
    ${c&&c.offer?`<div class="sum">Kalshi offers<b class="${c.offer.clears===false?'':'up'}" ${c.offer.clears===false?'style="color:#f5b544"':''}>${money(c.offer.pays)}</b></div><div class="sum">That's<b>${qWhy(Object.assign({},c.offer,{clears:c.offer.clears!==false}))}</b></div>${Date.now()/1000-c.offer.at<20?ovQuote(c.offer.ov):''}`:''}
-   ${(c&&c.offer&&Date.now()/1000-c.offer.at<20)||stkGet('slip:c')!=null?stakeCtl({key:'slip:c',rec:(S.slipRec||{}).rec||d.stake||5,cur:c&&c.offer&&Date.now()/1000-c.offer.at<20?c.offer.stake:stkGet('slip:c'),min:(S.slipRec||{}).min||1,max:(S.slipRec||{}).max||100,room:(S.slipRec||{}).room,ev:c&&c.offer?c.offer.ev:null,small:(S.slipRec||{}).small}):''}
+   ${(c&&c.offer&&Date.now()/1000-c.offer.at<20)||stkGet('slip:c')!=null?stakeCtl({key:'slip:c',rec:(S.slipRec||{}).rec||d.stake||5,cur:c&&c.offer&&Date.now()/1000-c.offer.at<20?c.offer.stake:stkGet('slip:c'),min:(S.slipRec||{}).min||1,max:(S.slipRec||{}).max||100,room:(S.slipRec||{}).room,ev:c&&c.offer?c.offer.ev:null,evShow:c&&c.offer&&c.offer.ev_cal!=null?c.offer.ev_cal:null,evNote:c&&c.offer&&c.offer.ev_cal!=null?'on your record':'',small:(S.slipRec||{}).small}):''}
    <div style="display:flex;gap:8px;margin-top:12px">${c&&c.offer&&Date.now()/1000-c.offer.at<20?`<button class="btn qb ${c.offer.clears===false?'warn':'yes'}" style="flex:1" onclick="buy(${c.i},true)">${qBar(c.offer)}${c.offer.clears===false?'Buy anyway':'Buy'} ${money(c.offer.stake)} to win ${money(c.offer.pays)}</button>`:`<button class="btn acc" style="flex:1" id="slipq" onclick="quoteSlip()">Get Kalshi's price${stkLbl('slip:c')}</button>`}</div></div>`:''}
   <div class="m" style="font-size:12px;margin-top:12px">${d.spent!=null?`Spent ${money(d.spent)} of your ${money(d.budget)} cap · cut-off ${d.cut}% of fair`:''}</div></div>`;}
 async function quoteSlip(){$('#slipq').innerHTML='<span class="spin"></span> Asking Kalshi…';const r=await api('/app/api/act',{a:'custom',tickers:S.slip});
  if(!r.ok){toast(r.msg);renderBuild();return;}const q=await api('/app/api/act',{a:'quote',i:r.i,legs:S.slip.slice(),stake:stkGet('slip:c')});
- if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct,clears:q.clears,ev:q.ev,cut:q.cut,why:q.why,nofair:q.nofair,live:q.live,ov:q.overlap||''}};S.slipRec={rec:q.rec,min:q.min,max:q.max,room:q.room,small:q.small};hap(q.clears?'success':'warning');renderBuild();clearInterval(S.qT);S.qT=setInterval(qTick,1000);
+ if(!q.ok){toast(q.error||q.msg||'No price came in.');renderBuild();return;}S.custom={i:r.i,offer:{pays:q.pays,stake:q.stake,at:Date.now()/1000,pct:q.pct,clears:q.clears,ev:q.ev,ev_cal:q.ev_cal,cut:q.cut,why:q.why,nofair:q.nofair,live:q.live,ov:q.overlap||''}};S.slipRec={rec:q.rec,min:q.min,max:q.max,room:q.room,small:q.small};hap(q.clears?'success':'warning');renderBuild();clearInterval(S.qT);S.qT=setInterval(qTick,1000);
  toast(`Kalshi pays ${money(q.pays)} for ${money(q.stake)}${q.pct!=null?` (${pct(q.pct)} of fair)`:''}. Buy within 20 seconds.`,6000);}
 async function rebuild(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Rebuilding…';}
  const before=JSON.stringify(((S.build||{}).combos||[]).map(c=>c.legs.map(l=>l.ticker)));S.quotes={};
@@ -350,7 +350,7 @@ function ccard(c){if(c.over&&!c.bought&&!(S.quotes&&S.quotes[c.i]&&Date.now()/10
 /* the amount row on a combo card: once a price came in (or Pete already chose an amount); hidden while asking or buying */
 function ccStake(c,o,fresh,busy){const key='cc:'+c.i,mine=stkGet(key);if(busy||(!fresh&&mine==null))return '';S.ccRec=S.ccRec||{};
  const m=(fresh&&o)||S.ccRec[c.i]||{};const rec=m.rec||c.size||(S.build&&S.build.stake)||5;
- return stakeCtl({key,rec,cur:fresh?o.stake:mine,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?o.ev:null,evNote:'before fees',small:m.small});}
+ return stakeCtl({key,rec,cur:fresh?o.stake:mine,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?o.ev:null,evShow:fresh&&o.ev_cal!=null?o.ev_cal:null,evNote:fresh&&o.ev_cal!=null?'on your record, before fees':'before fees',small:m.small});}
 /* (#358) what a combo quote means, in words: the real bar it was judged by (green_bar, sent as cut), and when the bar
    wasn't the reason (no live fair chance, too far over fair to trust, the in-play test, a long shot's hold test), that */
 function qWhy(o){const bar=o.cut?`your ${o.cut}% bar`:'your bar',lv=o.live?' on the live chance':'';
@@ -369,7 +369,7 @@ async function quote(i){hap();S.qpend=S.qpend||{};const cur0=(S.build&&S.build.c
  if(S.qpend[i]&&S.qpend[i].sig===sig)delete S.qpend[i];
  if(ccSig((S.build&&S.build.combos||[]).find(c=>c.i===i))!==sig){renderBuild();return;}   // the card was swapped, flipped or rebuilt while we waited: that price isn't for what's on screen
  if(!r.ok){hap('error');toast(r.error||r.msg||'No price came in.',6000);renderBuild();return;}
- S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,cut:r.cut,at:Date.now()/1000,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,why:r.why,nofair:r.nofair,live:r.live,small:r.small,ov:r.overlap||''};
+ S.quotes=S.quotes||{};S.quotes[i]={pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,cut:r.cut,at:Date.now()/1000,rec:r.rec,ev:r.ev,ev_cal:r.ev_cal,room:r.room,max:r.max,min:r.min,why:r.why,nofair:r.nofair,live:r.live,small:r.small,ov:r.overlap||''};
  S.ccRec=S.ccRec||{};S.ccRec[i]={rec:r.rec,room:r.room,max:r.max,min:r.min,small:r.small};hap(r.clears?'success':'warning');renderBuild();
  clearInterval(S.qT);S.qT=setInterval(qTick,1000);}
 /* The quote countdown: once a second only the "Ns left" numbers change, in place. A card is redrawn once, when its quote
