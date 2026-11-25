@@ -28238,7 +28238,7 @@ def _bp_flush(now, force=False):
                 continue
         last[t] = (ots, now, b, a, fb, pt)
         own = sc if kind == "win" else None
-        rows.append((t, int(now), b, a, int(dep) if dep else None, fb, fk, own[0] if own else None, pt,
+        rows.append((t, int(ots), b, a, int(dep) if dep else None, fb, fk, own[0] if own else None, pt,
                      sc[2] if sc else None, sc[3] if sc else 0, own[4] if own else None, sc[5] if sc else None,
                      sc[6] if sc else None))
         metas[t] = m
@@ -28259,9 +28259,10 @@ def _bp_write(rows, metas, now):
     new_ids, out = [], []
     with _SLOCK:
         own = not db.in_transaction
+        if not own:
+            return 0                                   # never write inside another transaction: skip this flush
         try:
-            if own:
-                db.execute("begin")
+            db.execute("begin")
             for r in rows:
                 t = r[0]
                 mid = BP["ids"].get(t)
@@ -28272,23 +28273,24 @@ def _bp_write(rows, metas, now):
                     mid = db.execute("select id from bp_mkt where ticker=?", (t,)).fetchone()[0]
                     BP["ids"][t] = mid
                     new_ids.append(t)
+                    if metas[t][1]:                                           # a row made earlier may still lack its kickoff
+                        db.execute("update bp_mkt set kick=? where id=? and kick is null", (metas[t][1], mid))
                     BP["kdb"][t] = metas[t][1]
                 elif metas[t][1] and BP["kdb"].get(t) != metas[t][1]:     # its kickoff became known (or moved)
                     db.execute("update bp_mkt set kick=? where id=?", (metas[t][1], mid))
                     BP["kdb"][t] = metas[t][1]
                 out.append((r[1], mid) + tuple(r[2:]))
             db.executemany("insert into bp_path values(" + ",".join("?" * 14) + ")", out)
-            if own:
-                db.execute("commit")
+            db.execute("commit")
         except Exception as err:
-            if own and db.in_transaction:
-                try:
-                    db.execute("rollback")
-                except Exception:
-                    pass
+            try:
+                db.execute("rollback")                 # we began it, so we always end it
+            except Exception:
+                pass
             for t in new_ids:
                 BP["ids"].pop(t, None)
-            console_note(f"broad recorder: {type(err).__name__}: {err}")
+                BP["kdb"].pop(t, None)
+            console_note(f"broad recorder: {type(err).__name__}")      # the type only: a message could carry a ticker
             return 0
     if len(BP["ids"]) > 40000:
         for k in list(BP["ids"])[:20000]:
@@ -28331,8 +28333,8 @@ def _bp_cut(cutoff):
         mid = (lo + top) // 2
         r = store_rows("select rowid r, ts from bp_path where rowid >= ? order by rowid limit 1", (mid,))
         if not r:
-            top = mid - 1
-        elif r[0]["ts"] >= cutoff:
+            return None                                # rowids only grow: no row at or after mid means a failed read; never guess
+        if r[0]["ts"] >= cutoff:
             ans, top = r[0]["r"], mid - 1
         else:
             lo = r[0]["r"] + 1
@@ -28345,32 +28347,39 @@ def _bp_prune(now):
     lo, hi = _bp_rowspan()
     if lo is None:
         return 0
-    cut = _bp_cut(now - BP["keep_days"] * 86400) or lo
-    cut = max(cut, hi - _bp_cap_rows() + 1)
+    c = _bp_cut(now - BP["keep_days"] * 86400)
+    cut = max(lo if c is None else c, hi - _bp_cap_rows() + 1)   # a failed lookup skips the age cut; the row cap still holds
     done = 0
     while lo < cut and done < BP["chunks"] * BP["chunk"]:
         store_x("delete from bp_path where rowid >= ? and rowid < ?", (lo, min(lo + BP["chunk"], cut)))
         lo += BP["chunk"]
         done += BP["chunk"]
         time.sleep(0.01)
+    n0 = (store_rows("select count(*) n from bp_mkt") or [{"n": 0}])[0]["n"]
     store_x("delete from bp_mkt where id in (select id from bp_mkt where first < ? and not exists "
             "(select 1 from bp_path where m = bp_mkt.id) limit ?)", (int(now - (BP["keep_days"] + 2) * 86400), BP["chunk"]))
-    BP["ids"].clear()                                  # a cached id must never outlive its market row
+    if (store_rows("select count(*) n from bp_mkt") or [{"n": n0}])[0]["n"] != n0:
+        BP["ids"].clear()                              # a cached id must never outlive its market row
     return done
 
 
 def _bp_labels(now):
     """Results for recorded markets, copied from tables the existing loops already resolve: no request. Returns the labels set."""
     since = now - BP["label_days"] * 86400
+    todo = {r["t"] for r in store_rows("select ticker t from bp_mkt where (result is null or rs = 9) and first > ? limit 100000",
+                                       (int(now - (BP["keep_days"] + 2) * 86400),))}
+    if not todo:
+        return 0
     got = 0
-    for rs, sql in ((1, "select ticker t, outcome o from closes where outcome in ('yes','no') and ts > ? limit 30000"),
+    for rs, sql in ((1, "select ticker t, outcome o from closes where outcome in ('yes','no') and ts > ? order by ts desc limit 30000"),
                     (2, "select distinct ticker t, outcome o from live_fairs where outcome in ('yes','no') and ts > ? limit 30000"),
                     (4, "select distinct ticker t, outcome o from line_fairs where outcome in ('yes','no') and ts > ? limit 30000"),
                     (3, "select tickers t, outcome o from mkt_fair where outcome in ('yes','no') and ts > ? "
                         "and tickers not like '%,%' limit 30000")):
-        rows = store_rows(sql, (since,))
+        rows = [r for r in store_rows(sql, (since,)) if r["t"] in todo]      # only markets still unlabelled: few updates
         if rows:
             got += _bp_set_results([(1 if r["o"] == "yes" else 0, rs, r["t"]) for r in rows])
+            todo -= {r["t"] for r in rows}
     return got
 
 
@@ -28379,23 +28388,22 @@ def _bp_set_results(vals):
     if not db or not vals:
         return 0
     n = 0
-    with _SLOCK:
-        own = not db.in_transaction
-        try:
-            if own:
+    for k in range(0, len(vals), 1000):                # short transactions: the history lock is never held long
+        with _SLOCK:
+            if db.in_transaction:
+                return n
+            try:
                 db.execute("begin")
-            for v in vals:
-                n += db.execute("update bp_mkt set result=?, rs=? where ticker=? and result is null", v).rowcount
-            if own:
+                for v in vals[k:k + 1000]:
+                    n += db.execute("update bp_mkt set result=?, rs=? where ticker=? and (result is null or rs = 9)", v).rowcount
                 db.execute("commit")
-        except Exception as err:
-            if own and db.in_transaction:
+            except Exception as err:
                 try:
                     db.execute("rollback")
                 except Exception:
                     pass
-            console_note(f"broad recorder labels: {type(err).__name__}: {err}")
-            return 0
+                console_note(f"broad recorder labels: {type(err).__name__}")
+                return n
     return n
 
 

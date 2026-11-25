@@ -27,3 +27,13 @@ ceiling, migration of an older file, 30,000-market flush time bound, no reader, 
 on a database the engine's recorder wrote).
 
 ROADMAP: none
+
+## Review follow-ups (second commit)
+
+- A failed lookup while pruning by age no longer risks emptying the table: the age cut is skipped, the row cap still holds.
+- A kickoff learned after a market row exists is now written to it; the id cache is cleared only when market rows were actually deleted.
+- A resolver label (closes, live_fairs, line_fairs, mkt_fair) now replaces a price-implied one; label work only touches still-unlabelled markets and runs in short 1,000-update transactions, so the history lock is held briefly.
+- Rows are stamped with the time the price was seen, not the time it was written.
+- The recorder never writes inside another transaction (it skips that flush) and always rolls back a transaction it began. Errors log the type only.
+- Replay: unlabelled share is correct when implied labels are excluded, the data-quality block counts markets without a kickoff, and the caveats now say entry is not stratified by phase and exits assume a fill at the recorded bid whatever its size.
+- Known and accepted: the 45 s flush throttle means the 20 s event cadence is effectively 45 s, and the byte ceiling is a row estimate (rows x 60 bytes), not the file size; the row cap (80% of the ceiling, about 17 days at the busy-week estimate) can shorten retention.

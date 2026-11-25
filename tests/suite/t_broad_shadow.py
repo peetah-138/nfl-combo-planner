@@ -343,6 +343,36 @@ def i_labels_and_coverage():
     ok("I the watcher log gets one counts-only line", line and not re.search(r"KX|26NOV|[A-Z]{3}-", line), line)
 
 
+def j_review_fixes():
+    reset(); seen(); E.KICKOFF[EV] = iso(NOW + 3600)
+    E.broad_shadow("nba", games(), lines(), now=NOW)
+    ts = E.store_rows("select ts from bp_path limit 1")[0]["ts"]
+    ok("J a row is stamped with the time the price was seen, not the write time", ts == int(NOW - 5), ts)
+    # a failed read must not wipe the table: the age cut is skipped
+    n0 = count("bp_path")
+    real = E.store_rows
+    E.store_rows = lambda *a, **k: []
+    try:
+        cut = E._bp_cut(NOW)
+    finally:
+        E.store_rows = real
+    ok("J a failed lookup gives no cut (nothing deleted)", cut is None and count("bp_path") == n0, cut)
+    # a kickoff learned later is written to a market row that already exists
+    reset(); seen()
+    E.broad_shadow("nba", games(), lines(), now=NOW)
+    ok("J a market first seen without a kickoff has none stored", E.store_rows("select count(*) n from bp_mkt where kick is null")[0]["n"] == 3)
+    E.BP["ids"].clear(); E.BP["kdb"].clear(); E.BP["mk"].clear(); E.BP["flush"] = 0.0; E.KICKOFF[EV] = iso(NOW + 3600); seen(NOW + 100, 0.05)
+    E.broad_shadow("nba", games(), lines(), now=NOW + 100)
+    ok("J the kickoff is stored once it is known", E.store_rows("select count(*) n from bp_mkt where kick is not null")[0]["n"] >= 2)
+    # a resolver label replaces a price-implied one
+    E.store_x("update bp_mkt set result=1, rs=9 where ticker=?", (EV + "-LAL",))
+    E.store_x("create table if not exists closes(ts real, ticker text, outcome text)")
+    E.store_x("insert into closes(ts, ticker, outcome) values(?,?,?)", (NOW, EV + "-LAL", "no"))
+    E._bp_labels(NOW + 200)
+    r = E.store_rows("select result, rs from bp_mkt where ticker=?", (EV + "-LAL",))[0]
+    ok("J a resolver label replaces a price-implied one", r["rs"] == 1 and r["result"] == 0, r)
+
+
 for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flag_and_inputs), ("d", d_prune), ("e", e_ceiling), ("f", f_migration),
-             ("g", g_scale), ("h", h_unread), ("i", i_labels_and_coverage)):
+             ("g", g_scale), ("h", h_unread), ("i", i_labels_and_coverage), ("j", j_review_fixes)):
     section(n, f)

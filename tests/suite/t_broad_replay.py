@@ -70,7 +70,7 @@ def a_replay():
     ok("A runs to the end and says it is safe to send", code == 0 and "safe to send" in text)
     q = b["data_quality"]
     ok("A coverage is counts: 105 markets recorded, all labelled by the resolver copy (closes), 3 relabelled price-implied and left out by default",
-       q["markets_recorded"] == 105 and q["labelled_markets"] == 105 and q["markets_replayed"] == 102, q)
+       q["markets_recorded"] == 105 and q["labelled_markets"] == 102 and q["markets_replayed"] == 102, q)
     allg = b["all"]
     ok("A every replayable labelled market is one row (100 nba + 5 nhl, minus the 3 implied)", allg["n"] == 102, allg["n"])
     r = allg["rules"]

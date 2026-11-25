@@ -427,6 +427,8 @@ def broad_section(db, boot, gates, include_implied=False):
         src[RS_NAMES.get(r["rs"], "other")] = r["n"]
     total = db.execute("select count(*) from bp_mkt").fetchone()[0]
     labelled = sum(src.values())
+    if not include_implied:
+        labelled -= src.get("price_implied", 0)
     q = ("select id, ev, sp, kick, result from bp_mkt where result is not null"
          + ("" if include_implied else " and (rs is null or rs != 9)"))
     rows, used = [], 0
@@ -448,7 +450,8 @@ def broad_section(db, boot, gates, include_implied=False):
     span = db.execute("select min(ts), max(ts), count(*) from bp_path").fetchone()
     gates = {"markets_recorded": total, "labelled_markets": labelled, "labelled_by_source": src,
              "unlabelled_share": round(1 - labelled / total, 3) if total else None,
-             "price_implied_labels_used": bool(include_implied), "markets_replayed": used,
+             "price_implied_labels_used": bool(include_implied),
+             "markets_without_kickoff": db.execute("select count(*) from bp_mkt where kick is null").fetchone()[0], "markets_replayed": used,
              "path_rows": span[2], "span_days": round((span[1] - span[0]) / 86400.0, 1) if span[0] else 0}
     out = {"data_quality": gates,
            "entry_rule": "first recorded ask from 10c to 90c with a bid on the book is bought; each rule exits at the bid "
@@ -456,7 +459,9 @@ def broad_section(db, boot, gates, include_implied=False):
            "fee_note": f"fee = ceil({FEE_RATE} x n x p x (1-p)) per order, n={EXIT_FEE_N}, paid on entry and on exit; "
                        "entry at the ask, exit at the bid, so the spread is paid",
            "caveat": "every market is treated as if bought at the first sighting: this measures what an exit rule does to "
-                     "an average market, not to the bets the app picks; prices are sampled, not every tick"}
+                     "an average market, not to the bets the app picks; prices are sampled, not every tick; entry may be days out or in "
+                     "play (not stratified); an exit is assumed to fill at the recorded bid whatever its size (depth is "
+                     "recorded, not used); many cells are shown, so treat one good cell as a lead, not a result"}
     if not rows:
         out["skipped"] = "no labelled market has a replayable path yet"
         return out
