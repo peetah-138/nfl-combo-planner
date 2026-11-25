@@ -564,7 +564,7 @@ ok("the web app's idea single buy goes through idea_single_buy (cap, Pause, bloc
 ib2 = WSRC.index('if a == "buy":')
 seg_c = WSRC[ib2:WSRC.index('if a == "panel_reprice":', ib2)]
 ok("the web app's combo Buy marks the idea bought on ok or check, after the order and never before it (#270)",
-   seg_c.index("A.accept_offer(i)") < seg_c.index("A.idea_mark_bought(") and "or r.get(\"check\")" in seg_c)
+   seg_c.index("A.accept_offer(i, expect_legs=shown)") < seg_c.index("A.idea_mark_bought(") and "or r.get(\"check\")" in seg_c)
 ok("Build's 'spent' line uses the display-only copy", "A.week_spend_shown()" in WSRC)
 
 # manual singles use their own league's cap even with the Mix loaded (Mix combos keep the Mix cap)
