@@ -3625,6 +3625,23 @@ def webapp_main():
         except Exception:
             return None
 
+    def combo_ev_cal(c, r):
+        """(#361) The quote's expected profit on the chance corrected by your own record (calib_fair, as notify_bar does),
+        for the sheet to show beside the books' one. Display only: nothing reads it to size or buy. A pick under way
+        (priced on its live chance) or a chance that can't be corrected: None. Never raises."""
+        try:
+            if r.get("live") or not r.get("pct") or not r.get("stake"):
+                return None
+            legs = c.get("legs") or []
+            shown = A.math.prod(l["fair"] for l in legs)
+            cal = A.math.prod(A.calib_fair(A.ticker_sport(l["ticker"]) or A.LEAGUE["code"], l.get("fair_book") or l["fair"],
+                                         l.get("ticker")) for l in legs)
+            if not (shown > 0 and cal > 0):
+                return None
+            return round(r["stake"] * (r["pct"] * cal / shown - 1), 2)
+        except Exception:
+            return None
+
     def combo_offer(i, own=None):
         """Kalshi's price for combo i: at Pete's own amount when he set one (already checked by own_stake), else at the
         recommended size (the price sets it, less if he's heavy on a team), as before. Adds what the sheet shows beside
@@ -3665,6 +3682,7 @@ def webapp_main():
         fair = r.get("fair", c.get("fair"))
         if fair:                                       # the books' chance of the combo (a pick under way: its live one)
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
+            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) display only: `ev` above still drives rec / small
         if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
             r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:
@@ -3842,7 +3860,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "i": i, "clears": r.get("ok"), "cut": 100,
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own")}})
             if a == "quote":
                 i = int(d.get("i", 0))
@@ -3858,7 +3876,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own", "why", "nofair", "live", "small", "overlap", "warn")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
@@ -4576,7 +4594,7 @@ LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (
     "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
     "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
     "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
-    "clock", "period", "lead", "need", "won", "left", "est", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
+    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
 LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
                     "polymarket.com", "hockeytech.com", "theahl.com")
 LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)

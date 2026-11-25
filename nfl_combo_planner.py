@@ -4949,8 +4949,8 @@ def break_watch(ticker, side, sc, now=None):
             return
         if at_break(sc):
             if ep is None:
-                if len(BRK_EP) > 400:
-                    BRK_EP.clear()
+                while len(BRK_EP) > 400:             # (#316) drop the oldest episode, not every open one
+                    BRK_EP.pop(next(iter(BRK_EP)), None)
                 ep = BRK_EP[key] = {"start": now, "detail": str(sc.get("detail") or "")[:40], "reads": [],
                                     "news": _brk_news(ticker, sc), "would": None}
                 price_watch([ticker], hours=3)        # its price path (with score lines) is recorded too
@@ -4983,19 +4983,20 @@ def break_watch(ticker, side, sc, now=None):
 BRK_ERR = {"at": 0.0, "hedge": 0.0}
 
 
-def break_ok(ticker, side, sc, now=None, what="loss"):
+def break_ok(ticker, side, sc, now=None, what="loss", watch=None):
     """At a break: may a loss sale or hedge act anyway? Records the episode (break_watch) and answers False in this
     build: BRK_LIVE is off and `brk_on` is not a live knob, so the old rule (wait out the break) always stands. When a
     later build turns it on, a league's own record must have switched `brk_on` on, the rule must hold on its reads
     (brk_fires at its brk_move) and a fresh order book read now (max_age=0) must still show the move."""
-    break_watch(ticker, side, sc, now)
+    wt, ws = watch or (ticker, side)                  # (#316) a single's episode is filed under the held market
+    break_watch(wt, ws, sc, now)
     if not BRK_LIVE or "brk_on" not in KNOB_LIVE or not knob_switch_on():
         return False
     try:                                              # never reached in this build (the gates above)
         k = _knob_bet_chain([ticker])[0]
         if knob("brk_on", k) != 1:
             return False
-        ep = BRK_EP.get((ticker, side or "yes"))
+        ep = BRK_EP.get((wt, ws or "yes"))
         if not ep or not ep["reads"]:
             return False
         mv = knob("brk_move", k)
@@ -5031,14 +5032,14 @@ def fresh_live_score(ticker, side, now=None):
     return sc, ""
 
 
-def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
+def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None, watch=None):
     """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
     sc, why = fresh_live_score(ticker, side, now)
     if not sc:
         return False, why
     if pre is None or now_ch is None:
         return False, "no pregame chance"
-    if at_break(sc) and not break_ok(ticker, side, sc, now, "loss"):
+    if at_break(sc) and not break_ok(ticker, side, sc, now, "loss", watch):
         return False, "halftime or a break"
     played = game_played(sc)
     if played is None or played < pr["prog"]:
@@ -5214,7 +5215,8 @@ def cut_loss_single_check(x, loss, now=None):
     now = now or time.time()
     leg = _score_leg(x["t"], x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
     q = x.get("chance")
-    ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now)
+    ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now,
+                            watch=(x["t"], x.get("side") or "yes"))    # (#316) the break evidence is the held market's
     if ok and not (loss and q is not None and q <= loss):
         ok, why = False, "not under the cut-off"
     return _sl_confirm("cut:" + x["t"], ok, why, now, sl_confirm_params([x["t"]]))
@@ -5679,6 +5681,11 @@ def auto_sell_now(plan):
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
                    "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes",
                    "live": any(lv for _, lv, _ in h.get("legs_left") or [])}
+            try:                                      # (#300) log only: the estimate smart sell held this sale against
+                rec["disc"] = round(kalshi_discount(rec["live"]), 4)
+                rec["est"] = round(rec["disc"] * h["p"] * h["pays"] * o.get("frac", 1.0), 2)
+            except Exception:
+                pass
             if auto_cap_reached():
                 log_decision(dict(rec, result="skipped", why="daily cap reached"))
                 if MINE.get("cap_told") != dt.date.today().isoformat():
@@ -12600,9 +12607,12 @@ def get_offer(i, amount=None, check_cap=True):
             cand = {"id": "quote:" + "+".join(l["ticker"] for l in legs_now), "kind": "combo", "live": True,
                     "code": _combo_code(legs_now), "legs": legs_now, "stake": stake, "pct": pct,
                     "fair_mult": fair_pay / CTX["stake"]}
-            exit_ok, _ = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote")
-        except Exception:
-            exit_ok = False
+            exit_ok, exit_why = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote", force_log=True)
+        except Exception as err:
+            exit_ok, exit_why = False, f"error {type(err).__name__}"
+        print(f"combo quote exit-route check (live green Buy): {'passed' if exit_ok else 'held back'}"   # (#397) log only
+              f"{'' if exit_ok else ' (' + str(exit_why)[:80] + ')'} at {pct:.0%} of fair "
+              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
         if not exit_ok:
             ok, why = False, "inplay"
     if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
