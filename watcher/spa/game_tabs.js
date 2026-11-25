@@ -207,7 +207,7 @@ function winRange(r,st){const l=(r&&r.leg)||{},ticks=((st&&st.ticks)||[]).filter
  const pts=pre?[]:ticks.filter(x=>(t0==null||x.ts>=t0)&&x.state!=='pre').map(x=>[x.ts,x.chance]);   // nothing to anchor on: every in-game sample, as before
  return {t0,pre,pts,starts:l.starts||''};}
 function winChart(pts,plays,o){o=o||{};const tl0=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
- if(o.pre)return `<div class="m" style="padding:18px 4px">${o.t0!=null?'Kicks off at '+tl0(o.t0)+'. ':o.starts?'Starts '+esc(o.starts)+'. ':''}The win-chance line starts at kickoff and fills in as the Mac watches the game.</div>`;
+ if(o.pre)return `<div class="m" style="padding:18px 4px">${o.t0!=null?'Starts at '+tl0(o.t0)+'. ':o.starts?'Starts '+esc(o.starts)+'. ':''}The win-chance line fills in once play begins.</div>`;
  if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
  const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=o.t0!=null?Math.min(o.t0,pts[0][0]):pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');

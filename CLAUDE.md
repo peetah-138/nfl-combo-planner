@@ -95,6 +95,11 @@ Real money is involved. Pete uses it daily.
    smart sell, take profit, lock-in, learned loss-cutting), auto-hedge (≤ `hedge_cap` a hedge, default $100), killer
    deals, standing orders, approving the daily panel, and "Add to today's panel". Everything else buys or sells only on
    his tap. The Pause switch must always be respected. The Pi never trades.
+   **Pete-approved exceptions to "loss guards never tune" (release 507 review):** two loss guards may loosen on a league's
+   own record, each behind a data gate and `learned_guards`: `sl_feed_age` (how old a score may be: 150 s to at most 300 s,
+   needs 20+ episodes) and learned `break_ok` (a loss sale at a break, needs 40+ episodes). Nothing else about the guards
+   loosens by itself. A saved 'Never sell at a loss' becomes 'Let it tune itself' on upgrade (Pete, #479). Smart sell
+   more's daily limit can reach about $800 a day at the top setting (cap slider max 200 x the 4x multiplier).
    **Self-tuning limits (Pete's standing opt-in, issue #228, 2026-11-21; not live yet):** the guessed numbers smart
    sell, the loss guards and auto-hedge decide with may tune themselves **per league, on evidence**. This supersedes the
    fixed $100 hedge cap: the system may raise `hedge_cap` up to a ceiling of **$150**, and may adjust auto cash-out's
@@ -102,7 +107,7 @@ Real money is involved. Pete uses it daily.
    and ≥ 2 standard errors, 20 new results since the last step, and must hold on the newest 30% kept back (holdout);
    borrowed values (sport, everyone) may only move the stricter way. **Brake:** 4 automatic-sale losses in a row, or
    losses over 5% of the month's automatic-sale stake, send that league back to the start numbers for 14 days. The
-   manual stop-loss switch becomes **Never / Let it tune itself (default) / Allow (guarded)**. **Never tuned
+   manual stop-loss switch became **Let it tune itself (default) / Allow (guarded)** (the old 'Never' choice was removed, #479). **Never tuned
    (invariants):** Pause, `can_trade`/the Pi never trades, rule 8, caps failing closed, fresh score and price ages,
    in play, a real fresh quote before any sale or hedge, secrets. **Live since 2026.11.21.133 for smart sell's exit
    numbers only** (#228 PR2-PR4, Selling): self-tuning of smart sell's exit numbers (`knobs_live`, Settings › Money
@@ -112,7 +117,7 @@ Real money is involved. Pete uses it daily.
    ended), and when the brake trips a league goes back to its start numbers but **never looser than what it had
    learned** (per number, the stricter of the two). Nothing raises `hedge_cap` or `auto_cap` yet (a later #228 PR wires
    their judge); a value Pete sets himself is never lowered or clamped. **Since 2026.11.21.134** (#228 PR5-PR7) the
-   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok` (a loss sale only, behind `learned_guards`, see Selling),
+   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 2-way choice; `break_ok` (a loss sale only, behind `learned_guards`, see Selling),
    the hedge lock-in numbers, the `hedge_cap` raise (ceiling $150, `HEDGE_RAISE_LIVE = False`) and Smart Buy's
    `sb_ev_min` are still watch-only (Selling).
    **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
@@ -1040,9 +1045,10 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   settings and why they last changed. With `knobs_live` on (#228 PR3, below), `smart_tune` no longer moves the floor,
   risk weight or loss cut (`knob_tune` does, on the stricter evidence bar), and borrowed values are only stricter (#259).
 - Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. The old
-  `stop_loss` on/off override is now **Settings › Cash out & hedging › Selling at a loss**, three choices (Pete, #228):
-  **Never sell at a loss**, **Let it tune itself** (default) and **Allow (guarded)** (`stop_loss_mode`; details in
-  "Self-tuning PR5-PR7" below).
+  `stop_loss` on/off override is now **Settings › Cash out & hedging › Selling at a loss**, now two choices:
+  **Let it tune itself** (default) and **Allow (guarded)** (`stop_loss_mode`; details in "Self-tuning PR5-PR7" below).
+  The third choice, **Never sell at a loss**, was removed (Pete, #479): a saved 'never' reads as 'Let it tune itself'
+  on upgrade. Older passages below that mention it are superseded.
 - **Stop-loss guards (issue #27):** with Selling at a loss on Allow (or tuned on for the league), auto cash-out may sell a combo below cost only when
   `stop_loss_check` passes: a pick on a **fresh** score feed (`leg_score`, never Kalshi's display-only data; scores
   older than the league's learned tolerance (start 150 s, band 90-300 s, `learned_guards`) or missing = never, and any other pick whose game has started must have a fresh score too), game
@@ -1647,8 +1653,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   fresh offer came in, no new try after `AUTO_CASH_BUDGET` 120 s (worst case about 177 s). **The bar** is the smart-sell line
   the sale was made on (`_CASH_CTX.line`; no line = the old `CASH_SLIP` rule); **the purpose** decides below cost: a
   profit-taking sale never takes a fresh offer below cost (`_CASH_CTX.cost_floor`), a loss-cutting one (`rec["stop_loss"]`,
-  first offer already below cost) may, but never under 97% of its first offer (`_CASH_CTX.cutting`); under Never sell at a
-  loss the cost floor always applies. Before each retry it re-checks Pause, Auto cash-out and `can_trade()` and re-reads the account fresh (`fetch_account(max_age=0)`); if the combo is gone, reduced or the account is unreadable the round stops without selling (`ACCOUNT_STOPS`, fail closed; the auto-sell order is not put back, the next pass re-places it), so a manual Cash out tap in the web app mid-round cannot be double-sold; `restart_when_quiet` also waits (`sell_busy()`, bounded 240 s) while a sale round runs; one
+  first offer already below cost) may, but never under 97% of its first offer (`_CASH_CTX.cutting`); 'Never sell at a
+  loss' was removed (#479). Before each retry it re-checks Pause, Auto cash-out and `can_trade()` and re-reads the account fresh (`fetch_account(max_age=0)`); if the combo is gone, reduced or the account is unreadable the round stops without selling (`ACCOUNT_STOPS`, fail closed; the auto-sell order is not put back, the next pass re-places it), so a manual Cash out tap in the web app mid-round cannot be double-sold; `restart_when_quiet` also waits (`sell_busy()`, bounded 240 s) while a sale round runs; one
   `auto_sell_now` pass starts no new combo sale after the budget. Rich log in `combo_autosell_log.jsonl` (`round`, `rounds`,
   `tries`, `agreed`, `line`, `floor`, `purpose`, `stop`, `asked_again`, `ask_error`, `low_offer`). Singles keep their #334
   back-off (`SELL_FAILS`). **Words (#384):** the note now ends "Still holding, and we'll keep watching: it tries again when
@@ -1663,7 +1669,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `t_neverloss.py`, `t_hedge.py`, `t_cutloss.py`, `t_stoploss.py` unchanged.
 - **"Never sell at a loss": the copy matches Pete's rule (#382, #383; words only).** Pete's rule (2026-11-23): auto-sell never
   sells below what you paid, except when selling now loses less than waiting (the learned loss cut, or the guarded
-  stop-loss). A sale that was a profit never retries below cost; a loss cut never retries under 97% of its first offer
+  stop-loss). A sale that was a profit never retries below cost (superseded under `flex_sell`: see Flexible sell price, `began_at_profit_ended_below_cost`, with the 95%-of-cost profit floor); a loss cut never retries under 97% of its first offer
   (`CASH_SLIP`, kept as is). Checked against the code, which already behaves this way (`auto_sell_now`,
   `_accept_with_retries`, `smart_sell_singles`), so only the wording changed: the auto cash-out explainer, the `below_cost`
   knob description and the stale comment above the stop-loss guard. No decision logic, setting label or number changed. The
@@ -1698,8 +1704,9 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   sale. Pete approved building on it, so it is on by default, behind the switch `combo_sell_fee` (config, default `True`);
   set `False` and the cost floor judges the gross offer exactly as before. An offer with no readable `contracts` falls back
   to the old gross comparison and the decision log says so (`fee_note`), so it can never block every auto cash-out; the log
-  carries `net` next to the gross `offer`; and a sale whose gross offer is above cost is never labelled a loss cut or
-  stop-loss (it is "take a profit"). The cost floor on automatic combo cash-outs now counts the fee the way singles do
+  carries `net` next to the gross `offer`; and a sale whose gross offer is at or above cost but whose net after the fee is under it
+  is, when a guarded stop-loss is ready, tagged a stop-loss (`fee_loss`) and worded honestly as a small loss after Kalshi's selling fee
+  (release 507 review; before, it read "took the profit"). A real profit is still "take a profit". The cost floor on automatic combo cash-outs now counts the fee the way singles do
   (`single_fee`, rounded up to the cent per order): new `combo_sale_net(offer)` = offer minus `n * single_fee(offer / n, n)`.
   Before, an offer exactly at cost passed every cost floor and still lost the fee. Now:
   - the **below-cost test itself** (`below` in `auto_sell_now`) compares the offer's net of the fee with cost, as singles do.
@@ -1712,7 +1719,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     low"); an offer with no readable contracts falls back to the old gross comparison (`fee_note`), never a block.
 - Close to a tightening: nothing sells that did not before, and it only stops sales worth less than cost after the fee. Loss
   cuts (offer already below cost) keep their own rules (97% of the first offer, the smart-sell line). Deliberately **not
-  changed** (still open in #382/#383): a profit reason's below-cost first offer sold as a stop-loss, your own Cash out tap's
+  changed** (still open in #382/#383): your own Cash out tap's
   97% retry, the setting wording. Pause, caps, rule 8 untouched. Test: `t_combofee.py`.
 - **Loss-cut clock retry for a stuck combo (#396; Selling, auto cash-out when buyers back out, #372).** Pete's decision: a
   stuck combo **loss cut** (never a profit sale) is also retried on a clock, every 5 minutes (`LOSSCUT_CLOCK_SECS` 300), as a
@@ -1728,10 +1735,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   - **97% of the FIRST offer, across rounds, for EVERY loss-cut round** (review fix: also a round started by a game or price
     change, not only the timed retries): a try whose fresh offer is under 97% of the episode's first offer is skipped and
     logged; inside the round the retries' floor is 97% of that same first offer (`_CASH_CTX.first_offer`), so the price
-    cannot ratchet down round after round.
+    cannot ratchet down round after round. **Flexible sell price (below) can loosen this within a round:** a retry's floor
+    becomes what Flexible sell allows, down to the 85% backstop of fair value, not a hard 97%. Across rounds the 97% of the
+    first offer still holds. (Wording corrected in the release 507 review; no behaviour change.)
   - The smart-sell line, the cost floor for a profit-taking sale and the retired Never sell at a loss floor: unchanged.
     **Only the "cut loss" reason:** a profit reason (smart, take profit, lock in, checkpoint, plan) never uses the clock,
-    even when its below-cost first offer sold as a guarded stop-loss; that case stays as is until #382 is decided. **Purpose
+    even when its below-cost first offer sold as a guarded stop-loss (that case now records the wait as a cut, so its later rounds keep the 97%-of-first-offer guard, but still gets no clock try). **Purpose
     re-checked at the clock try:** if the offer is now at or above cost (a profit sale) the try is skipped (`stop` "clock
     retry is for loss cuts only").
   - **Fail closed:** an unreadable account, a combo gone or reduced, or a damaged wait record means no clock try, logged.
@@ -1759,8 +1768,10 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     fast they may go below the smart-sell line the sale started on. **A sale that began at a profit may end below cost**
     (Pete, 2026-11-24): in a fast-falling price, refusing can cost more later, so it is judged like any other offer (selling
     beats waiting now, past the backstop). A small loss can result and waiting could have been worse. Every such sale is
-    recorded in `flex_shadow.began_at_profit_ended_below_cost = 1` to measure whether it earned its keep. The only things
-    that govern a below-cost retry are this rule, the 85% backstop, the guards, the daily limit and Pause.
+    recorded in `flex_shadow.began_at_profit_ended_below_cost = 1` to measure whether it earned its keep. Since the
+    release 507 review an automatic profit sale may not accept under **95% of cost** (net of the selling fee) on a retry unless it is a
+    real loss cut (`cutting`, with the normal loss guards): the profit floor `FLEX_COST_SHARE`. Otherwise a below-cost retry is
+    governed by this rule, the 85% backstop, the guards, the daily limit and Pause.
   - It only ever loosens the old bar and never refuses something the old bar takes (beyond the backstop and the floors).
     **Fails closed:** anything missing or stale (no fresh score or book, a jumpy spread, a spread/total, same-game picks, no
     pick in play, any error) uses exactly the old bar. Switch off = decisions identical to develop.
@@ -2477,6 +2488,10 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `buy` → `accept_offer` (caps, Pause, rule 8), which now refuses an offer for other picks than shown (rule 7, every
   combo Buy). An unknown outcome leaves "Check Kalshi" on the card. Nothing buys by itself. Tests: `t_longshots.py`,
   `test_longshots_ui.py`.
+- **Scope of the legs check (release 507 review):** the check below (#203, extended in #445) covers only the web app's Buy
+  (`combo_watcher.py` ~4076, `expect_legs=shown`). Older callers of `accept_offer(i)` without `expect_legs` skip it: the planner's
+  own terminal flows (~14000, ~18673), the panel's own buy (~22204) and `combo_watcher.py` ~2433. They buy only on Pete's tap or an
+  approved panel, so this is a documented gap, not a change.
 - **Combo Buy re-checks the page's legs (#203, rule 7; guard only: nothing new is bought and no price, size or cap
   changes).** The web app's Buy sends the legs it shows (it already did, since #347). The Mac now checks them in
   `accept_offer(i, expect_legs=...)` (`buy_legs_refusal`): they must equal BOTH the stored offer's legs and the combo now on
@@ -2817,7 +2832,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   selling, Pause or rule 8 changed. Converted: `sell_single.js` (Sell sheet buttons), `build.js` (panel Skip/amount, Buy
   straight in rows, slip bar and slip card, Flip a team), `build_cards.js` (singles card), `combo.js` (Hedge/Ask/Sell),
   `game.js` (Buy a team), `ideas.js` (price/buy/pass/not now/dismiss/open), `longshots.js` (quote/buy), `live.js` (cash-out,
-  smart-sell chip, row open, Hedge sheet, Cash out sheet), `access.js` (copy link). Left to PR #412 (its lines): `pick(...)`
+  smart-sell chip, row open, Hedge sheet, Cash out sheet; NOT the Decision cards at `live.js` lines 97-103, whose Keep, Cash
+  out, Hedge and Ask buttons still paste the ticker into an inline `onclick`), `access.js` (copy link). Still inline (not converted, no change in this release): `overlap.js` line 15 (Add anyway), `pick(...)`
   in `build.js`, `openCombo`/`openGame`/results/overlap handlers, and `game.js` line 35. Test: `test_onclick_data_ui.py`
   renders each of these with a ticker holding a quote, angle brackets and an ampersand, taps every button and checks the
   handler got the exact string, nothing ran as code and the onclick text never contains the ticker; plus a source check that

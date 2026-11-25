@@ -142,8 +142,8 @@ def run(pg, label):
     pg.evaluate("S.gameSig=null;drawGame()"); time.sleep(.8)
     r = pg.evaluate("({svg:!!document.querySelector('#sheet .chartbox svg'),t:document.querySelector('#sheet .chartbox').textContent})")
     want_t = pg.evaluate("t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})", fut)
-    if r["svg"] or "Kicks off at " + want_t not in r["t"]:
-        probs.append(f"{label}: a game that has not started should say 'Kicks off at {want_t}' with no line: {r}")
+    if r["svg"] or "Starts at " + want_t not in r["t"]:
+        probs.append(f"{label}: a game that has not started should say 'Starts at {want_t}' with no line: {r}")
     STATE["g"] = game(pre, plays=[], start=None, state="pre", starts="Today 7:30 PM")
     pg.evaluate("S.gameSig=null;drawGame()"); time.sleep(.8)
     r = pg.evaluate("({svg:!!document.querySelector('#sheet .chartbox svg'),t:document.querySelector('#sheet .chartbox').textContent})")

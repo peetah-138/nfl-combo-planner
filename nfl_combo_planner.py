@@ -4863,7 +4863,7 @@ def guards_on():
 def guards_view(key):
     """Read-only text for Settings: what each learned selling guard stands at for league `key` right now, in plain
     words ({stale, brk, on}). Never raises; the starting values when the guards are off or nothing is recorded."""
-    out = {"on": False, "stale": "%d seconds (the starting value)" % SL_FEED_AGE,
+    out = {"on": False, "league": key, "stale": "%d seconds (the starting value)" % SL_FEED_AGE,
            "brk": "blocked: no sale at halftime or a break"}
     try:
         if not guards_on():
@@ -5895,9 +5895,11 @@ def auto_sell_now(plan):
             if below and why != "cut loss" and not sl_ready.get(t):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
-            if below and why != "cut loss" and gross_below:   # only a gross-below-cost sale is a stop-loss sale
+            if below and why != "cut loss":                   # a guarded stop-loss sale (gross below cost, or only the fee puts it below)
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
+                if not gross_below:
+                    rec["fee_loss"] = True                    # review of release 507: gross at/above cost, net under it: a small loss after fees, said honestly
             hg = hedge_for(t) if CFG.get("auto_hedge") and not clock and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             tks_ = [tk for (_, tk), _ in h.get("need") or []]
@@ -5946,7 +5948,7 @@ def auto_sell_now(plan):
             # cost is taking a profit and never takes a fresh offer below cost; a loss cut (the learned cut or a guarded
             # stop-loss, already below cost) may go below cost, down to the line, and not under 97% of its first offer.
             cutting = gross_below and (why == "cut loss" or bool(rec.get("stop_loss")))   # a sale above gross cost is never a loss cut
-            rec["purpose"] = "cut a loss" if cutting else "take a profit"
+            rec["purpose"] = "cut a loss" if cutting or rec.get("fee_loss") else "take a profit"
             if clock:
                 rec["clock_retry"] = COMBO_WAIT[t].get("clock_n")
                 if not cutting or why != "cut loss":         # #396: the clock is for loss cuts only (a profit reason, even a stop-loss on one, waits for a change)
@@ -5997,7 +5999,7 @@ def auto_sell_now(plan):
                 wait = stop in COMBO_BACKOFF_STOPS
                 if wait:                                  # re-tried when the game or the price changes, not on a clock
                     combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip),
-                                     cutting=cutting and why == "cut loss", agreed=info.get("agreed"))
+                                     cutting=cutting, agreed=info.get("agreed"))   # E1 (release 507 review): kept for a guarded stop-loss too, so its later rounds keep the 97% guard
                 note = combo_fail_note(h["label"], info, stop, wait, msg)
                 told = MINE.setdefault("combo_fail_told", {})
                 if time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
@@ -6010,7 +6012,10 @@ def auto_sell_now(plan):
                     "checkpoint": "🤖 Checkpoint: the early games came through, so it took the profit before the next ones. ",
                     "cut loss": "🤖 Cut a loss: in this league, selling a bet this far behind has done better than holding. "}.get(
                 why, "🤖 Auto cash-out (Let it ride: " + ride_level()[0] + "). ")
-            if rec.get("stop_loss"):
+            if rec.get("fee_loss"):
+                lead = ("🤖 Stop-loss: the offer was a little above what you paid, but after Kalshi's selling fee it came to "
+                        "slightly less, so this sold for a small loss. ")
+            elif rec.get("stop_loss"):
                 lead = ("🤖 Stop-loss (tuned for this league): sold for less than you paid. In this league, selling a "
                         "combo this far behind late in a game has beaten holding. "
                         if mode == "tune" else
@@ -6650,7 +6655,7 @@ def sell_backoff_note(t, side, count, rec, err, now=None):
 #   B  the learned loss cut, earlier, on a single in play that is clearly sliding: where the league has no cut of its
 #      own yet (it needs 30 settled bets), the tuner's own first number, MORE_LOSS (15%), stands in, with ALL the loss
 #      guards: a fresh score, a game at least half played, 3+ confirming checks over 3+ minutes, never at a break, a
-#      real fall from the pregame chance, never in 'Never sell at a loss' mode.
+#      real fall from the pregame chance. ('Never sell at a loss' mode was removed, #479: no mode check remains.)
 # What counts as fresh (fails closed: no new-path sale on anything older, missing or one-sided): the price must come
 # from a Kalshi fetch made within MORE_AGE seconds (SINGLES["mk_at"], per market: a fetch that failed and fell back to
 # the old copy never stamps it), with a bid AND an ask within LIVE_SPREAD, the chance is taken from that live
@@ -10552,7 +10557,11 @@ def flex_wait_line(hn):
     return wait_value(hn["pays"], chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
 
 
-def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, agreed=None, old_floor=None):
+FLEX_COST_SHARE = 0.95   # Pete, 2026-11-25: an automatic retry of a profit-taking sale never takes under 95% of cost (net of the selling fee)
+
+
+def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, agreed=None, old_floor=None,
+                cost_floor=None, net=None):
     """Judge one fresh retry offer (this share's dollars, `frac` of the combo). Returns {'ok', 'mode', 'old', ...}:
     mode 'old' = today's rule, exactly (switch off, or anything not readable fresh); 'flex' = judged at this moment.
     old = what today's bar would have said (offer >= bar_old and >= floor). In 'flex': the floor and the backstop must
@@ -10561,7 +10570,10 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
     holds. It only ever LOOSENS today's bar (never refuses what the old bar takes beyond the floor and backstop).
     The cost line of an automatic profit sale is not a floor here (`floor` is only a floor a caller passes on purpose;
     nothing does today: the 'Never sell at a loss' choice is gone); `old_floor` carries today's floors for the
-    fail-closed answer. 'bapebc' = began at a profit, accepted below cost."""
+    fail-closed answer. 'bapebc' = began at a profit, accepted below cost.
+    `cost_floor` (Pete, 2026-11-25; an automatic profit-taking sale's cost for this share, never a loss cut) with `net`
+    (the offer after the selling fee, combo_sale_net): in 'flex' the retry is refused when net is under FLEX_COST_SHARE
+    (95%) of it, however far fair has slid. Missing or unreadable cost/net skips nothing: it refuses (fail closed)."""
     of = floor if old_floor is None else old_floor      # today's floors (cost for a profit sale)
     old_ok = offer >= bar_old and (of is None or offer >= of)
     out = {"ok": old_ok, "mode": "old", "old": old_ok, "offer": round(offer, 2), "why": "", "bapebc": 0}
@@ -10595,8 +10607,16 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
             loss = smart_params([tk for (_, tk), _ in h.get("need") or []]).get("loss")
             cut_still = bool(loss) and hn["p"] <= loss
         why = ""
+        cost_low = False
+        if cost_floor is not None:
+            try:
+                cost_low = not (float(cost_floor) > 0 and float(net) >= FLEX_COST_SHARE * float(cost_floor) - 0.005)
+            except (TypeError, ValueError):
+                cost_low = True                          # unreadable: refuse (fail closed)
         if not floor_ok:
             ok, why = False, why0
+        elif cost_low:
+            ok, why = False, "under 95% of cost"
         elif whole < backstop:
             ok, why = False, "under the safety backstop"
         elif old_ok:
@@ -10947,7 +10967,7 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             net_ = combo_sale_net(o)                  # #382/#383: the cost floor is measured after the (assumed) selling fee
             old_floor = None if floor is None else floor - 0.005 + (o["offer"] - net_)   # that same floor on the gross offer (net_ >= floor - 0.005)
             fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, user_floor, cutting, agreed=agreed,
-                             old_floor=old_floor) \
+                             old_floor=old_floor, cost_floor=None if cutting else cost_floor, net=net_) \
                 if flex_on() else None      # Flexible sell price: this moment, not the first offer (fails closed to `bar`)
             if fx is not None:
                 info["flex"] = {k: fx[k] for k in ("mode", "why", "ok", "old", "fair", "wait", "backstop") if k in fx}
@@ -23419,8 +23439,8 @@ def _held_summary(rs):
         h = {"lost": len(lost), "seen": len(seen), "above": len(gaps), "none": len(lost) - len(seen),
              "lo": round(min(gaps), 2) if gaps else None, "hi": round(max(gaps), 2) if gaps else None, "few": len(lost) < BOARD_FEW}
         if seen:
-            h["line"] = (f"{len(gaps)} of {len(seen)} traded above what you paid before closing"
-                         + (f" (best bid beat cost by ${h['lo']:.2f}" + (f" to ${h['hi']:.2f}" if h["hi"] != h["lo"] else "") + ")"
+            h["line"] = (f"{len(gaps)} of {len(seen)} had a cash-out offer above what you paid before closing"
+                         + (f" (the best cash-out offer beat cost by ${h['lo']:.2f}" + (f" to ${h['hi']:.2f}" if h["hi"] != h["lo"] else "") + ")"
                             if gaps else "") + ".")
         else:
             h["line"] = "No price history to check these against."

@@ -44,7 +44,7 @@ def b():
     h = s["hist"]
     ok("B5 price history: 3 of 7 traded above cost, range, 5 singles with no price history",
        h["lost"] == 12 and h["seen"] == 7 and h["above"] == 3 and h["none"] == 5 and h["lo"] == h["hi"] == 0.5
-       and "3 of 7 traded above what you paid before closing" in h["line"] and "5 with no price history" in h["line"], h)
+       and "3 of 7 had a cash-out offer above what you paid before closing" in h["line"] and "5 with no price history" in h["line"], h)
     ok("B6 a range when the gaps differ", E._held_summary([row("lost", 2, 5, best=2.4), row("lost", 2, 5, best=5.1)])["hist"]["line"].count("to $3.10") == 1)
     ok("B7 small sample flags: the whole line under 20, the lost group under 20",
        s["few"] and h["few"] and not E._held_summary([row("won", 3, 10)] * 20)["few"])
@@ -52,7 +52,7 @@ def b():
     ok("B8 no payout known anywhere: no break-even and no division by zero", z["be"] is None and "no break-even" in z["line"] and z["hist"]["seen"] == 0
        and "No price history" in z["hist"]["line"], z)
     ok("B9 a zero payout is not divided by", E._held_summary([row("won", 3, 0)])["be"] is None)
-    ok("B10 nobody traded above cost: says so, no range", "0 of 1 traded above" in E._held_summary([row("lost", 3, 4, best=2.0)])["hist"]["line"]
+    ok("B10 nobody traded above cost: says so, no range", "0 of 1 had a cash-out offer above" in E._held_summary([row("lost", 3, 4, best=2.0)])["hist"]["line"]
        and "beat cost" not in E._held_summary([row("lost", 3, 4, best=2.0)])["hist"]["line"])
     ok("B11 only wins held: no lost line", "hist" not in E._held_summary([row("won", 3, 10)]))
     ok("B12 break-even never above 100%", E._held_summary([row("won", 12, 10)])["be"] == 1.0)

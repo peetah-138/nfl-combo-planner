@@ -63,7 +63,7 @@ function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];if(!a)return '';const
 /* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
 function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
  const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||q.small||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
- return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null,small})
+ return stakeCtl({key,rec,cur:mine!=null?mine:fresh&&!q.single?q.stake:rec,min:m.min||1,max:m.max||100,room:m.room,ev:fresh?q.ev:null,evNote:fresh&&!q.single&&q.ev!=null?'before fees':'',small})
   +(fresh&&q.note?`<div class="stkm" data-w="depth">${esc(q.note)}</div>`:'');}
 function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,false);const vd=ideaVd(x,q);
  return (x.n===1?`${ideaLiveNote(q)}<div class="dnums"><div>Price now<b>${Math.round(q.price*100)}¢</b></div><div>Fair chance<b>${pct(q.fair)}</b>${ideaSrc(q)}</div><div>Edge after fee${q.edge==null?'<b>—</b>':`<b class="${q.edge>0?'up':'down'}">${(q.edge*100).toFixed(1)}¢</b>`}</div><div>Buy now<b>${q.n} contract${q.n===1?'':'s'} · ${money(q.stake)}</b></div><div>Pays if it wins<b>${money(q.pays)}</b></div></div>`

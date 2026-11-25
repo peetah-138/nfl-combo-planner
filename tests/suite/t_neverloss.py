@@ -62,7 +62,9 @@ E.resting_single_sells = lambda: {}
 E.order_unsure = lambda t: False
 E.auto_cap_reached = lambda: False
 E.hands_off = lambda t: False
-E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
+# NOTE (release 507 review): single_sell_reason is stubbed to always say sell, on purpose. These checks prove only that the
+# saved-'never' setting no longer SKIPS a single (unknown cost / just under cost); they do not test the real sell reason.
+E.single_sell_reason = lambda x, bid, ask, cut_ok=False, **k: ("smart", 1.0)
 E.CFG.update(stop_loss_mode="never", smart_sell=True)
 def run(cost, n=3, bid=0.5):
     sold.clear()

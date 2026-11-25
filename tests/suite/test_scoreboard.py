@@ -103,7 +103,7 @@ with sync_playwright() as pw:
                 if tab == "How it ended":
                     et = pg.locator(".pb .pbb").inner_text()
                     if "vs holding" not in et: bad(tag, "How it ended has no vs holding column")
-                    for want in ("Won ", "to break even", "Could have been sold higher", "traded above what you paid before closing", "small sample", "no price history"):
+                    for want in ("Won ", "to break even", "Could have been sold higher", "had a cash-out offer above what you paid before closing", "small sample", "no price history"):
                         if want.lower() not in et.lower(): bad(tag, "held-to-end lines miss", repr(want))
                     if SHOTS:
                         pg.evaluate("window.scrollTo(0, document.querySelector('.pb .seg.pbt').getBoundingClientRect().top + scrollY - 70)"); time.sleep(.6)
