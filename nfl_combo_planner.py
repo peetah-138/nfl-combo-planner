@@ -50,6 +50,7 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'never' / 'tune' / 'allow'; None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
+    "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
     "panel_live": True,   # the daily panel may include games already under way, priced live (Pete opted in)
@@ -5633,15 +5634,16 @@ def auto_sell_now(plan):
                     out.append(f"🤖 Auto cash-out reached today's cap of {auto_cap_limit()} sales. "
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
-            net = combo_sale_net(o)                       # #382/#383: below cost AFTER Kalshi's selling fee, as singles judge it
-            if net is None:                               # no contracts or price to work the fee out on: no sale (fail closed)
-                log_decision(dict(rec, result="skipped", why="offer unreadable (no contracts to price the fee on)"))
-                continue
+            net, fee_note = combo_sale_net_info(o)        # #382/#383: below cost AFTER the selling fee (switch combo_sell_fee)
+            rec["net"] = round(net, 2)                    # log net next to gross (rec["offer"])
+            if fee_note:
+                rec["fee_note"] = fee_note                # fee model off, or no contracts: judged on the gross offer
+            gross_below = o["offer"] < h["cost"] * o.get("frac", 1.0) - 0.005
             below = net < h["cost"] * o.get("frac", 1.0) - 0.005
             if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
-                log_decision(dict(rec, result="skipped", why="below what you paid", net=round(net, 2)))
+                log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
-            if below and why != "cut loss":
+            if below and why != "cut loss" and gross_below:   # only a gross-below-cost sale is a stop-loss sale
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
             hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
@@ -5686,7 +5688,7 @@ def auto_sell_now(plan):
             # losses. Not when there's still an opportunity for it to get profit."): a sale whose offer was at or above
             # cost is taking a profit and never takes a fresh offer below cost; a loss cut (the learned cut or a guarded
             # stop-loss, already below cost) may go below cost, down to the line, and not under 97% of its first offer.
-            cutting = below and (why == "cut loss" or bool(rec.get("stop_loss")))
+            cutting = gross_below and (why == "cut loss" or bool(rec.get("stop_loss")))   # a sale above gross cost is never a loss cut
             rec["purpose"] = "cut a loss" if cutting else "take a profit"
             try:
                 _CASH_CTX.auto = True                     # up to 10 tries, short pauses, one more ask (Pete, 2026-11-23)
@@ -9566,16 +9568,33 @@ def accept_cash(ticker, floor=None):
         MINE["selling"].discard(ticker)
 
 
-def combo_sale_net(o):
-    """What a combo cash-out offer pays after Kalshi's selling fee, the way singles net it (`single_fee`, rounded up to
-    the cent per order). None when the offer's contracts or price can't be read (callers fail closed: no sale)."""
+def combo_sale_net_info(o):
+    """(net, note): what a combo cash-out offer pays after Kalshi's selling fee, the way singles net it (`single_fee`,
+    rounded up to the cent per order), and a note when the fee could not be applied.
+
+    UNCONFIRMED ASSUMPTION (issues #382/#383): that the combo cash-out selling fee equals the single-market taker fee.
+    Nobody has confirmed it against a real combo sale. That is why it sits behind CFG["combo_sell_fee"] (default ON, as
+    Pete approved; set False to go back to judging the gross offer). With the switch off, or when the offer has no
+    readable `contracts` (the fee can't be worked out), the old comparison against the gross offer is used and the note
+    says why: this never blocks an auto cash-out."""
     try:
-        n, offer = float(o.get("contracts") or 0), float(o.get("offer") or 0)
-        if n <= 0 or offer <= 0:
-            return None
-        return offer - n * single_fee(min(max(offer / n, 0.0), 1.0), n)
+        offer = float(o.get("offer") or 0)
     except (TypeError, ValueError):
-        return None
+        offer = 0.0
+    if not CFG.get("combo_sell_fee", True):
+        return offer, "fee model off (combo_sell_fee): gross offer"
+    try:
+        n = float(o.get("contracts") or 0)
+    except (TypeError, ValueError):
+        n = 0.0
+    if n <= 0 or offer <= 0:
+        return offer, "no contracts to price the fee on: gross offer"
+    return offer - n * single_fee(min(max(offer / n, 0.0), 1.0), n), ""
+
+
+def combo_sale_net(o):
+    """The net of `combo_sale_net_info` (assumption and switch are described there)."""
+    return combo_sale_net_info(o)[0]
 
 
 def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
@@ -9629,8 +9648,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             # 97% of the first price, but it should definitely stay above the smart sell line"): the same smart-sell
             # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
             bar = line if line is not None else CASH_SLIP * agreed
-            net_ = combo_sale_net(o)                  # #382/#383: the cost floor is measured after Kalshi's selling fee
-            if o["offer"] < bar or (floor is not None and (net_ is None or net_ < floor - 0.005)):
+            net_ = combo_sale_net(o)                  # #382/#383: the cost floor is measured after the (assumed) selling fee
+            if o["offer"] < bar or (floor is not None and net_ < floor - 0.005):
                 MINE["cash"][ticker] = o              # floor: Never sell at a loss / a profit-taking sale: not below cost
                 why = "new"
                 info["stop"], info["low_offer"] = "offer too low", round(o["offer"], 2)

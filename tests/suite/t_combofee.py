@@ -102,8 +102,16 @@ ok("...cost + the fee: sold", accepts == [10.35] and f and f[0]["result"] == "so
 out, f = run([13.0])
 ok("...a normal profit sale is unchanged", accepts == [13.0] and f[0]["result"] == "sold")
 out, f = run([10.35], contracts=0)
-ok("...an offer with no contracts to price the fee on: no sale (fail closed)", accepts == [] and f and f[0]["result"] == "skipped"
-   and "unreadable" in f[0]["why"])
+ok("...an offer with no contracts: falls back to the gross offer (sold at 10.35, never blocks), net logged = gross, note logged",
+   accepts == [10.35] and f and f[0]["result"] == "sold" and f[0]["net"] == 10.35 and "no contracts" in f[0]["fee_note"], (accepts, f))
+out, f = run([10.0], contracts=0)
+ok("...no contracts and the gross offer exactly at cost: judged on gross (not below), so it sells",
+   accepts == [10.0] and f[0]["result"] == "sold", (accepts, f))
+E.CFG["combo_sell_fee"] = False
+out, f = run([10.0])
+ok("switch combo_sell_fee OFF: the old gross comparison (offer at cost sells), fee_note logged",
+   accepts == [10.0] and f[0]["result"] == "sold" and "fee model off" in f[0]["fee_note"], (accepts, f))
+E.CFG["combo_sell_fee"] = True
 out, f = run([10.0], mode="never")
 ok("Never sell at a loss: an offer exactly at cost is no sale either", accepts == [] and f and f[0]["result"] == "skipped", (accepts, f))
 out, f = run([10.35], mode="never")
@@ -127,8 +135,9 @@ ok("a loss cut below cost keeps its own rules (97% of its first offer, the line)
 
 # ---- (3b) coherence: a better offer never refuses where a worse one sells (cut-loss reason, cost $10, 20 contracts)
 out, f = run([10.20], script=["executed"], why="cut loss")
-ok("a cut-loss reason, offer $10.20 (above cost, under cost + fee): sells as a loss cut, as the $9.90 below it does",
-   accepts == [10.2] and f and f[0]["result"] == "sold" and f[0]["purpose"] == "cut a loss", (accepts, f))
+ok("a cut-loss reason, offer $10.20 (above gross cost, under cost + fee): sells, but is NOT labelled a loss cut; net logged",
+   accepts == [10.2] and f and f[0]["result"] == "sold" and f[0]["purpose"] == "take a profit" and f[0]["net"] == 9.85
+   and not f[0].get("stop_loss"), (accepts, f))
 out, f = run([9.90], script=["executed"], why="cut loss")
 ok("...$9.90 sells too", accepts == [9.9] and f[0]["result"] == "sold" and f[0]["purpose"] == "cut a loss", (accepts, f))
 out, f = run([10.20], why="smart")
@@ -141,4 +150,4 @@ ok("the stop-loss classification of a below-cost first offer is as before",
    and 'if below and why != "cut loss":\n                rec["stop_loss"] = True' in src
    and "below = net < h[" in src)
 ok("a manual Cash out tap has no floor (its 97% rule is unchanged)", "accept_cash(ticker)\n" in src
-   and "floor is not None and (net_ is None" in src)
+   and "floor is not None and net_ < floor" in src)
