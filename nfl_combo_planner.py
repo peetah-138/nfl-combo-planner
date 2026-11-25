@@ -22756,9 +22756,12 @@ def _ledger_table():
     if STORE["db"] and not STORE.get("ledger_ok"):
         store_x("create table if not exists ledger(ticker text primary key, kind text, league text, side text, "
                 "cost real, back real, fees real, sold_back real, sell_fees real, n_sold real, status text, "
-                "opened real, closed real, legs text, outcome text, held real, seen real, nf int)")
-        store_x("alter table ledger add column nf int") if not any(
-            r.get("name") == "nf" for r in store_rows("pragma table_info(ledger)")) else None
+                "opened real, closed real, legs text, outcome text, held real, seen real, nf int, n_bought real, "
+                "unit_cost real)")
+        have = {r.get("name") for r in store_rows("pragma table_info(ledger)")}
+        for col, typ in (("nf", "int"), ("n_bought", "real"), ("unit_cost", "real")):   # older files: added, rows stay NULL
+            if col not in have:
+                store_x(f"alter table ledger add column {col} {typ}")
         store_x("create table if not exists sell_log(ts real, ticker text, result text, why text, kind text, "
                 "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
                 "outcome text, held real, done real, primary key(ts, ticker, result))")
@@ -22796,6 +22799,31 @@ def fill_yes_delta(f, pos, n):
     return -n if side == "no" else n
 
 
+def _unit_cost(total, n):
+    """All-in cost per contract (the buy fees included, sale fees not), rounded to 4 places; None when the count is unknown or zero."""
+    try:
+        total, n = float(total), float(n)
+    except (TypeError, ValueError):
+        return None
+    return round(total / n, 4) if n > 0.005 and total > 0 else None
+
+
+def ledger_price_paid(row):
+    """(contracts bought, all-in cost per contract) from a ledger row, or (None, None) when the row predates the
+    count (NULL), is a settlement-only row, or holds anything unusable. Never raises. Bookkeeping for display
+    (the Results 'could have been sold higher' line): nothing here decides a buy, a sell or a size."""
+    try:
+        n = row.get("n_bought")
+        n = float(n) if n is not None else None
+        if not n or n <= 0.005:
+            return None, None
+        u = row.get("unit_cost")
+        u = float(u) if u is not None else _unit_cost(row.get("cost"), n)
+        return (round(n, 2), u) if u and u > 0 else (None, None)
+    except (TypeError, ValueError, AttributeError):
+        return None, None
+
+
 def _single_ledger(fills, settles, now=None):
     """Finished single bets (game winners, spreads, totals) from Kalshi's fills and settlements, in dollars:
     {ticker: row}. Each fill is read as a change in a signed YES position, so buying NO, or selling, works the same
@@ -22805,6 +22833,7 @@ def _single_ledger(fills, settles, now=None):
     out = {}
     for t, fs in fills.items():
         pos, cost, back, fees, sold_back, sell_fees, n_sold, side = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, None
+        n_bought = 0.0                            # contracts opened (bought), for the price per contract; bookkeeping only
         first = last = None
         for f in sorted(fs, key=lambda f: str(f.get("created_time") or "")):
             n = count_of(f)
@@ -22827,6 +22856,7 @@ def _single_ledger(fills, settles, now=None):
             opening = abs(d) - closing
             if opening > 0:
                 cost += opening * (yes_px if d > 0 else 1 - yes_px)
+                n_bought += opening
                 side = side or ("yes" if d > 0 else "no")
             if closing:
                 n_sold += closing
@@ -22851,7 +22881,8 @@ def _single_ledger(fills, settles, now=None):
         out[t] = {"ticker": t, "kind": _bet_kind(t), "league": league_key(t), "side": side or "yes",
                   "cost": round(cost + fees, 2), "back": round(back, 2), "fees": round(fees, 2),
                   "sold_back": round(sold_back, 2), "sell_fees": round(sell_fees, 2), "n_sold": round(n_sold, 2),
-                  "status": status, "opened": first, "closed": closed, "legs": [t], "nf": len(fs)}
+                  "status": status, "opened": first, "closed": closed, "legs": [t], "nf": len(fs),
+                  "n_bought": round(n_bought, 2) or None, "unit_cost": _unit_cost(cost + fees - sell_fees, n_bought)}
     for t, s in settles.items():                 # settled with no fills in Kalshi's window: its settlement says it all
         if t in out or t in fills or is_combo(t):
             continue
@@ -22864,20 +22895,20 @@ def _single_ledger(fills, settles, now=None):
                   "side": "no" if dollars(s, "no_total_cost") > dollars(s, "yes_total_cost") else "yes",
                   "cost": round(cost + fee, 2), "back": round(rev, 2), "fees": round(fee, 2), "sold_back": 0.0,
                   "sell_fees": 0.0, "n_sold": 0.0, "status": "won" if rev > 0.005 else "lost", "opened": None,
-                  "closed": ts, "legs": [t], "settle_only": True}
+                  "closed": ts, "legs": [t], "settle_only": True, "n_bought": None, "unit_cost": None}
     return out
 
 
 _LEDGER_COLS = ("ticker", "kind", "league", "side", "cost", "back", "fees", "sold_back", "sell_fees", "n_sold",
-                "status", "opened", "closed", "legs", "seen", "nf")
+                "status", "opened", "closed", "legs", "seen", "nf", "n_bought", "unit_cost")
 
 
 def _ledger_same(old, new):
     """Whether the saved ledger row already holds exactly what would be written (money to the cent)."""
     for k, v in zip(_LEDGER_COLS, new):
         o = old.get(k)
-        if k == "opened" and v is None:
-            continue                              # the write keeps the saved opening time then
+        if k in ("opened", "n_bought", "unit_cost") and v is None:
+            continue                              # the write keeps the saved value then
         if isinstance(v, (int, float)) and not isinstance(v, bool) and isinstance(o, (int, float)):
             if abs(float(v) - float(o)) > 0.004:
                 return False
@@ -22907,14 +22938,15 @@ def ledger_note(bets, held, single_fills, settled, now=None):
                    "sold_back": round(h.get("sold", 0.0), 2), "sell_fees": round(h.get("sell_fees", 0.0), 2),
                    "n_sold": round(h.get("sold_n", 0.0), 2), "status": "sold" if b["status"] == "cashed" else b["status"],
                    "opened": h.get("first_ts"), "closed": b.get("cashed_at") or b.get("settled_at"), "legs": tks,
-                   "nf": h.get("nf", 0)}
+                   "nf": h.get("nf", 0), "n_bought": round(h.get("bought_n") or 0, 2) or None,
+                   "unit_cost": _unit_cost(b["cost"] + dollars(s, "fee_cost") - h.get("sell_fees", 0.0), h.get("bought_n") or 0)}
     rows.update(_single_ledger(single_fills or {}, settled or {}, now))
     sigs = {t: tuple(r.get(k) for k in ("cost", "back", "status", "n_sold", "closed", "nf")) for t, r in rows.items()}
     todo = [t for t in rows if LEDGER_SIG.get(t) != sigs[t]]
     if not todo:
         return 0                                  # nothing changed: no reads, no writes
     had = {r["ticker"]: r for r in store_rows("select ticker, kind, league, side, cost, back, fees, sold_back, "
-                                               "sell_fees, n_sold, status, opened, closed, legs, seen, nf from ledger")}
+                                               "sell_fees, n_sold, status, opened, closed, legs, seen, nf, n_bought, unit_cost from ledger")}
     mac = {r["combo"]: r["settled"] for r in store_rows("select combo, settled from bets where settled is not null")}
     write = []
     for t in todo:
@@ -22927,7 +22959,7 @@ def ledger_note(bets, held, single_fills, settled, now=None):
         closed = r["closed"] or old.get("closed") or mac.get(t)   # no time anywhere: undated (counted in All time only)
         new = (t, r["kind"], r["league"], r["side"], r["cost"], r["back"], r["fees"], r["sold_back"],
                r["sell_fees"], r["n_sold"], r["status"], r["opened"], closed, json.dumps(r["legs"]),
-               old.get("seen") or now, r.get("nf") or 0)
+               old.get("seen") or now, r.get("nf") or 0, r.get("n_bought"), r.get("unit_cost"))
         if old and _ledger_same(old, new):
             continue                              # the saved row already says this (e.g. after a restart): no write.
                                                   # A row written wrong before (#333) differs, so it's put right here
@@ -22942,11 +22974,13 @@ def ledger_note(bets, held, single_fills, settled, now=None):
                 db.execute("begin")
             db.executemany(
                 "insert into ledger(ticker, kind, league, side, cost, back, fees, sold_back, sell_fees, n_sold, status, "
-                "opened, closed, legs, seen, nf) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(ticker) do update set "
+                "opened, closed, legs, seen, nf, n_bought, unit_cost) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "on conflict(ticker) do update set "
                 "kind=excluded.kind, league=excluded.league, side=excluded.side, cost=excluded.cost, back=excluded.back, "
                 "fees=excluded.fees, sold_back=excluded.sold_back, sell_fees=excluded.sell_fees, n_sold=excluded.n_sold, "
                 "status=excluded.status, opened=coalesce(excluded.opened, ledger.opened), closed=excluded.closed, "
-                "legs=excluded.legs, nf=excluded.nf", write)
+                "legs=excluded.legs, nf=excluded.nf, n_bought=coalesce(excluded.n_bought, ledger.n_bought), "
+                "unit_cost=coalesce(excluded.unit_cost, ledger.unit_cost)", write)
             if own:
                 db.execute("commit")
         except Exception as err:
@@ -23070,6 +23104,7 @@ def _ledger_rows():
         except ValueError:
             r["legs"] = []
         r["pl"] = round((r["back"] or 0) - (r["cost"] or 0), 2)
+        r["n_bought"], r["unit_cost"] = ledger_price_paid(r)     # None, None for rows from before the count was kept
         out.append(r)
     return out
 
