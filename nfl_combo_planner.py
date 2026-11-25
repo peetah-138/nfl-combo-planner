@@ -8642,6 +8642,7 @@ def fetch_scores(max_age=None, code=None):
             teams = comp.get("competitors") or []
             if len(teams) != 2:
                 continue
+            sev_note_event(code, ev, comp, teams)      # memory-only note for the context recorder (never raises)
             # The team with the ball, by code (#318): ESPN's possession id matched to a competitor; '' when unknown.
             # (possessionText is the ball spot, "PHI 8", not who has it.) Display only.
             pid = str(sit.get("possession") or "") if sit_info and isinstance(sit, dict) else ""
@@ -9111,6 +9112,10 @@ def kalshi_live_kick(events, budget=None):
                     kalshi_live_refresh(evs)
                 except Exception as err:
                     print("kalshi live data:", type(err).__name__, err)
+                try:
+                    espn_mma_refresh(evs)
+                except Exception as err:
+                    klive_log_once("espn_ufc_refresh", "", err)
             th = threading.Thread(target=run, daemon=True, name="klive")
             KLIVE_JOB["t"] = th
             th.start()
@@ -9223,10 +9228,18 @@ def kalshi_score(l, max_age=900):
     """_kalshi_score, but a bad field in Kalshi's feed means "no score" for that game only (logged once), never an
     error that could stop the page build and the auto cash-out that follows it."""
     try:
-        return _kalshi_score(l, max_age)
+        sc = _kalshi_score(l, max_age)
     except Exception as err:
         klive_log_once("kalshi", (l or {}).get("ticker") if isinstance(l, dict) else l, err)
-        return None
+        sc = None
+    if isinstance(l, dict) and (l.get("ticker") or "").upper().startswith("KXUFC"):
+        try:                                   # a fight: ESPN's round and clock while it's on, or when Kalshi has nothing
+            es = espn_mma_score(l)
+            if es and (not sc or (es["state"] in ("in", "post") and sc["state"] != "post")):
+                sc = es
+        except Exception as err:
+            klive_log_once("espn_ufc", l.get("ticker"), err)
+    return sc
 
 
 def _kalshi_score(l, max_age=900):
@@ -9319,6 +9332,143 @@ def _espn_has(l):
         return bool(leg_score(l))
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------- ESPN's UFC scoreboard (display only, issue #25)
+# Kalshi's live data has no verified in-fight fields for UFC. ESPN's free mma/ufc scoreboard (the same site the other
+# scores come from, through the same hub cache when the Mac is up) has each fight's round, clock and winner. Shown
+# only, like Kalshi's data: leg_score, fetch_scores and SCORES_BY never see it. A fight is matched by the two
+# 3-letter name codes in its Kalshi ticker (KXUFCFIGHT-26DEC05REBBRE) and its date; anything unsure shows nothing.
+ESPN_MMA = {"boards": {}, "cool": 0.0}          # "" (ESPN's current card) or a YYYYMMDD -> {"at", "games"}
+ESPN_MMA_LIVE, ESPN_MMA_IDLE, ESPN_MMA_DAYS = 8, 120, 2   # seconds kept while a fight is on / otherwise; most extra dated boards
+
+
+def _mma_codes(name):
+    """Name codes Kalshi might use for a fighter: the first three letters of each name part, accents dropped."""
+    import unicodedata
+    flat = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().upper()
+    return {w[:3] for w in re.findall(r"[A-Z]+", flat) if len(w) >= 3}
+
+
+def espn_mma_parse(events):
+    """ESPN mma/ufc scoreboard events -> a flat list of fights. Never raises on an odd field: that fight is left out."""
+    out = []
+    for ev in events if isinstance(events, list) else []:
+        for comp in (ev.get("competitions") or []) if isinstance(ev, dict) else []:
+            try:
+                st = comp.get("status") or {}
+                typ = st.get("type") or {}
+                fs = comp.get("competitors") or []
+                if len(fs) != 2:
+                    continue
+                names = [((f.get("athlete") or {}).get("fullName") or (f.get("athlete") or {}).get("displayName") or "")
+                         for f in fs]
+                if not all(names):
+                    continue
+                out.append({"id": str(comp.get("id") or ""), "start": comp.get("date") or ev.get("date") or "",
+                            "day": espn_day(comp.get("date") or ev.get("date")),
+                            "state": typ.get("state") or "pre", "name": str(typ.get("name") or ""), "done": bool(typ.get("completed")),
+                            "period": int(st.get("period") or 0), "clock": str(st.get("displayClock") or "").strip(),
+                            "rounds": ((comp.get("format") or {}).get("regulation") or {}).get("periods"),
+                            "names": names, "codes": [_mma_codes(n) for n in names],
+                            "won": [bool(f.get("winner")) for f in fs]})
+            except (AttributeError, TypeError, ValueError):
+                continue
+    return out
+
+
+def espn_mma_refresh(events, now=None):
+    """Keep ESPN's UFC boards fresh for these fights' event tickers (only KXUFC ones). Light: the current card, plus
+    at most ESPN_MMA_DAYS dated boards for fights it doesn't show; 8 s while a fight is on, else 2 min; the last
+    good copy is kept and a failure pauses the asking for 60 s."""
+    import time
+    now = now or time.time()
+    days = {ticker_day(e) for e in events if (e or "").upper().startswith("KXUFC")}
+    if not days or now < ESPN_MMA["cool"]:
+        return 0
+    asked = 0
+
+    def board(key, params):
+        """Ask for one board if its copy is old; False when ESPN said no (pause)."""
+        nonlocal asked
+        b = ESPN_MMA["boards"].get(key)
+        if b and now - b["at"] < (ESPN_MMA_LIVE if any(g["state"] == "in" for g in b["games"]) else ESPN_MMA_IDLE):
+            return True
+        asked += 1
+        try:
+            r = requests.get(f"{ESPN_SITE}/mma/ufc/scoreboard", params=params, timeout=6)
+            evs = r.json().get("events") if r.ok else None
+            if not isinstance(evs, list):
+                raise ValueError("odd answer")
+        except (requests.RequestException, ValueError, AttributeError):
+            ESPN_MMA["cool"] = now + 60
+            return False
+        ESPN_MMA["boards"][key] = {"at": now, "games": espn_mma_parse(evs)}
+        return True
+
+    if not board("", {}):
+        return asked
+    have = {g["day"] for g in ESPN_MMA["boards"][""]["games"]}
+    for d in sorted(x for x in days if x and not any(h and abs((h - x).days) <= 1 for h in have))[:ESPN_MMA_DAYS]:
+        if not board(f"{d:%Y%m%d}", {"dates": f"{d:%Y%m%d}"}):
+            break
+    for k, b in list(ESPN_MMA["boards"].items()):      # forget old boards
+        if now - b["at"] > 6 * 3600:
+            ESPN_MMA["boards"].pop(k, None)
+    return asked
+
+
+def espn_mma_score(l, max_age=900):
+    """The fight this pick is on, from ESPN's UFC scoreboard, shaped like kalshi_score's (no points), or None. It carries
+    src='kalshi' (the page's flag for 'a display-only feed, not the usual score source') and via='espn'."""
+    import time
+    t = l.get("ticker") or ""
+    if not t.upper().startswith("KXUFC") or "-" not in t:
+        return None
+    ev, suffix = t.rsplit("-", 1)
+    m = re.search(r"-\d{2}[A-Z]{3}\d{2}(?:\d{4})?([A-Z]{6})$", ev)
+    if not m or suffix.upper() not in (m.group(1)[:3], m.group(1)[3:]):
+        return None
+    a, b, day = m.group(1)[:3], m.group(1)[3:], ticker_day(ev)
+    hits = []
+    for bd in list(ESPN_MMA["boards"].values()):
+        if time.time() - bd["at"] > max_age:
+            continue
+        for g in bd["games"]:
+            if day and g["day"] and abs((g["day"] - day).days) > 1:
+                continue
+            for i in (0, 1):
+                if a in g["codes"][i] and b in g["codes"][1 - i] and (g["id"], i) not in [(h[0]["id"], h[1]) for h in hits]:
+                    hits.append((g, i))
+    if len({h[0]["id"] for h in hits}) != 1 or len({h[1] for h in hits}) != 1:
+        return None                                   # no fight, or two fights it could be: say nothing
+    g, ia = hits[0]
+    mine = ia if suffix.upper() == a else 1 - ia
+    if l.get("side", "yes") == "no":
+        mine = 1 - mine
+    state, rounds = g["state"], g["rounds"]
+    if state == "post" and not (g.get("done") or "FINAL" in g["name"].upper()):
+        return None                                   # cancelled / postponed: not a finished fight
+    if state == "post":
+        won = g["won"][mine] if any(g["won"]) else None
+        detail = ("Fight over" + (f" · R{g['period']} {g['clock']}" if g["period"] and g["clock"] not in ("", "-") else ""))
+    elif state == "in":
+        if not g["period"]:
+            detail = "In progress"
+        else:
+            detail = f"Round {g['period']}{' of ' + str(rounds) if rounds else ''}"
+            if "END" in g["name"].upper():
+                detail = "End of " + detail
+            elif g["clock"] not in ("", "-", "0:00"):
+                detail += f" · {g['clock']} in"       # ESPN's MMA clock counts UP (a decision ends at 5:00)
+        won = None
+    else:
+        detail, won = "", None
+    codes = [a, b] if mine == ia else [b, a]
+    return {"me": None, "opp": None, "abbr": codes[0], "opp_abbr": codes[1], "opp_name": "", "state": state,
+            "detail": detail, "start": g["start"], "ball": False, "redzone": False, "sport": "ufc", "game": g["id"],
+            "day": day, "wp": None, "frac": None, "src": "kalshi", "via": "espn", "won": won, "delayed": False,
+            "age": round(time.time() - max(bd["at"] for bd in list(ESPN_MMA["boards"].values())))}
 
 
 def display_score(l, points=True, pre=False):
@@ -19476,7 +19626,7 @@ def close_prices(tickers, mid=False):
 # market-anchored fair is marked as a shadow skip and scored at $5 held to the end. Nothing here changes a pick, a
 # stake, a buy or a sale: mkt_fair_shadow only writes the mkt_fair table.
 MKT = {"grid": (0.0, 0.25, 0.5, 0.75, 1.0), "min_n": 200, "gain": 0.002, "se": 2.0, "every": 1800, "gap": 0.10,
-       "stake": 5.0, "keep": 60 * 86400}
+       "stake": 5.0, "keep": 60 * 86400, "hold_share": 0.30, "hold_min": 30}
 MKT_SEEN = {}                  # id -> when it was last logged (at most once per market per 30 minutes)
 MKT_W = {"at": 0, "w": {}}     # (league, kind, phase) -> the books' learned weight (0 = Kalshi's mid alone)
 
@@ -19530,7 +19680,13 @@ def _mkt_settled(lg=None):
 def mkt_learn():
     """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
     markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
-    MKT['min_n']+ markets (the same test line_gate uses). Everything else stays at 0: Kalshi's mid."""
+    MKT['min_n']+ markets (the same test line_gate uses) AND the same weight also beats the mid on the newest
+    MKT['hold_share'] of those markets by game date (a recency-stability veto, #345). That slice is NOT held out: the
+    weight is still picked on all the rows, newest included, so this is not an out-of-sample test. It can only make
+    the learner stricter (a weight is either 0 or what the old rule gave; never added or raised). A vetoed weight
+    moves longshot_leg_fair from the blend to the mid, which can change which legs fall in the 65-80% band (see
+    'vetoed' and 'hold_gain'). MKT['hold_min'] (30) is inert at min_n 200 (30% of 200 = 60) and only matters if
+    min_n is lowered. Everything else stays at 0: Kalshi's mid."""
     out = {}
     by = defaultdict(list)
     seen = set()
@@ -19543,6 +19699,7 @@ def mkt_learn():
         seen.add(ev)
         by[f"{r['lg']}|{r['kind']}|{r['phase']}"].append(r)
     for k, rs in by.items():
+        rs.sort(key=lambda r: (r["kick"] or r["ts"] or 0, r["id"]))     # oldest game first, so the tail is the newest
         ys = [r["outcome"] == "yes" for r in rs]
         base = [_ll(r["mid"], y) for r, y in zip(rs, ys)]
         best = (0.0, 0.0, 0.0)
@@ -19554,8 +19711,13 @@ def mkt_learn():
                 best = (w, g, se)
         w, g, se = best
         earned = len(rs) >= MKT["min_n"] and g >= MKT["gain"] and g >= MKT["se"] * se
-        out[k] = {"w": w if earned else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
-                  "ll_mid": round(sum(base) / len(base), 4)}
+        h_n = max(int(len(rs) * MKT["hold_share"]), 1)                   # the newest games by date: recency veto, not held out (#345)
+        h_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in
+                      zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if w else 0.0
+        held = h_n >= MKT["hold_min"] and h_gain > 0
+        out[k] = {"w": w if earned and held else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
+                  "ll_mid": round(sum(base) / len(base), 4), "hold_n": h_n, "hold_gain": round(h_gain, 4),
+                  "vetoed": bool(earned and not held)}
     MKT_W.update(at=time.time(), w=out)
     return out
 
@@ -19717,7 +19879,8 @@ def mkt_fair_summary():
         ww = (w.get(f"{lg}|{kind}|{phase}") or {}) if kind != "combo" else {}
         out.append({"lg": lg, "name": league_label(lg), "kind": kind, "phase": phase, "n": n, "few": n < BOARD_FEW,
                     "ll_mid": round(g["ll_mid"] / n, 4), "ll_book": round(g["ll_book"] / n, 4),
-                    "w": ww.get("w", 0.0), "claimed": g["claimed"], "vanish": g["vanish"],
+                    "w": ww.get("w", 0.0), "hold_gain": ww.get("hold_gain"), "vetoed": bool(ww.get("vetoed")),
+                    "claimed": g["claimed"], "vanish": g["vanish"],
                     "van_pl": round(g["van_pl"], 2), "kept": g["kept"], "kept_pl": round(g["kept_pl"], 2)})
     _mkt_table()
     logged = store_rows("select count(distinct id) n, count(distinct case when claimed = 1 then id end) c, "
@@ -20701,6 +20864,7 @@ def panel_collect(book_snap, code, log=print):
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
     slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
+    signal_events(code, games)                         # news + game-context recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -22743,6 +22907,7 @@ def analytics(max_age=600):
         out["tuning"] = []
     out["knobs"] = knob_view()                          # the knob registry, read-only (issue #228); never raises
     out["knob_shadow"] = knob_shadow_view()            # what self-tuning would change, not active yet (#228 PR2)
+    out["league_shadow"] = league_shadow_view()        # per-league numbers beside today's, read-only (#13)
     ANALYTICS.update(at=now, v=out)
     return out
 
@@ -23184,6 +23349,73 @@ def _board_group(rows, key, names=None, order=None, paper=None):
     return out
 
 
+def _in_n(x):
+    """A rate as 'N in M' when a small fraction is close (3 in 4), else a plain percent. Display only."""
+    best = min(((abs(x - k / d), k, d) for d in range(2, 11) for k in range(1, d)), default=None)
+    if best and best[0] <= 0.03:
+        return f"{best[1]} in {best[2]}"
+    return f"{round(x * 100)}%"
+
+
+def _held_facts(rows):
+    """#461, display only: for bets held to the end, what was paid per $1 of payout and the best real offer seen before
+    closing. Combos only: their payout is in `bets` and their real offers in `offers` (as the 'rode' line uses). A single
+    bet's contract count is not kept in the ledger, so its price paid is unknown: it gets neither. Read-only."""
+    held = [r for r in rows if r.get("end") in ("won", "lost")]
+    if not held:
+        return
+    pays = {}
+    try:
+        pays = {x["combo"]: x["pays"] for x in store_rows("select combo, pays from bets") if x.get("pays")}
+    except Exception as err:
+        print("held facts: payouts:", type(err).__name__, err)
+    for r in held:
+        r["pay_known"] = pays.get(r["ticker"]) if r["kind"] == "combo" else None
+        r["best_offer"] = None
+        if r["kind"] == "combo" and r["end"] == "lost":
+            try:
+                b = store_rows("select max(offer) as b from offers where combo=? and real_offer=1", (r["ticker"],))
+                r["best_offer"] = (b[0] or {}).get("b") if b else None
+            except Exception as err:
+                print("held facts: offers:", type(err).__name__, err)
+
+
+def _held_summary(rs):
+    """#461: the plain lines for the Results 'How it ended' tab, from rows that went through _held_facts.
+    None when nothing was held to the end. Every division is guarded. Display only: nothing here decides anything."""
+    held = [r for r in rs if r.get("end") in ("won", "lost")]
+    if not held:
+        return None
+    won = sum(1 for r in held if r["end"] == "won")
+    n = len(held)
+    out = {"n": n, "won": won, "lost": n - won, "few": n < BOARD_FEW, "line": f"Won {won} of {n}", "be": None, "priced": 0}
+    priced = [r for r in held if (r.get("pay_known") or 0) > 0]
+    pay = sum(r["pay_known"] for r in priced)
+    if priced and pay > 0:
+        be = min(1.0, sum(r["cost"] for r in priced) / pay)
+        out.update(be=round(be, 3), priced=len(priced))
+        out["line"] += f"; at these prices you needed about {_in_n(be)} to break even" + \
+            (f" (price known for {len(priced)} of {n})" if len(priced) < n else "")
+    else:
+        out["line"] += "; the price paid isn't on record, so no break-even"
+    lost = [r for r in held if r["end"] == "lost"]
+    if lost:
+        seen = [r for r in lost if r.get("best_offer") is not None]
+        gaps = [r["best_offer"] - r["cost"] for r in seen if r["best_offer"] > r["cost"] + 0.005]
+        h = {"lost": len(lost), "seen": len(seen), "above": len(gaps), "none": len(lost) - len(seen),
+             "lo": round(min(gaps), 2) if gaps else None, "hi": round(max(gaps), 2) if gaps else None, "few": len(lost) < BOARD_FEW}
+        if seen:
+            h["line"] = (f"{len(gaps)} of {len(seen)} traded above what you paid before closing"
+                         + (f" (best bid beat cost by ${h['lo']:.2f}" + (f" to ${h['hi']:.2f}" if h["hi"] != h["lo"] else "") + ")"
+                            if gaps else "") + ".")
+        else:
+            h["line"] = "No price history to check these against."
+        if seen and h["none"]:
+            h["line"] += f" {h['none']} with no price history."
+        out["hist"] = h
+    return out
+
+
 def _board_say(rows, what):
     """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
     big = [r for r in rows if not r["few"] and r["roi"] is not None]
@@ -23384,6 +23616,7 @@ def profit_board(now=None, max_age=120):
             r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
         else:
             r.pop("held", None)
+    _held_facts(rows)
     loc = dt.datetime.fromtimestamp(now)
     week0 = (loc - dt.timedelta(days=loc.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     month0 = loc.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -23476,7 +23709,8 @@ def profit_board(now=None, max_age=120):
                 "best": {"day": best[0], "pl": round(best[1], 2)} if best else None,
                 "worst": {"day": worst[0], "pl": round(worst[1], 2)} if worst else None,
                 "vs_hold": {"n": len(sold), "gain": round(sum(r["sold_net"] - r["held"] for r in sold), 2)},
-                "by": by, "say": say, "quality": quality(since), "few": len(rs) < BOARD_FEW}
+                "by": by, "say": say, "quality": quality(since), "few": len(rs) < BOARD_FEW,
+                "held": _held_summary(rs)}
     days = defaultdict(float)
     for r in rows:
         if r.get("closed"):
@@ -25986,10 +26220,15 @@ def knob_pass(now=None):
         pushes = knob_brake_pass(now)
         feed_resolve(now)                             # close score-age episodes that have waited long enough
         steps = knob_tune(now)
-        return [f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes
+        result = ([f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes)
     except Exception as err:
         print("knob pass:", type(err).__name__, err)
         return [], []
+    try:                                               # after the result is built: it can never lose or delay a brake alert
+        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table, nothing reads it
+    except Exception as err:
+        print("league shadow:", type(err).__name__, err)
+    return result
 
 
 def knob_shadow_view(now=None):
@@ -26053,6 +26292,196 @@ def knob_shadow_view(now=None):
                 "evidence": dict(KNOB_EVIDENCE), "brake": dict(KNOB_BRAKE)}
     except Exception as err:
         print("knob shadow view:", type(err).__name__, err)
+        return {}
+
+
+# ---------------------------------------------------------------- per-league learning, in SHADOW (issue #13)
+# Pete's rule: everything learns per league, not just per sport. This is the shadow-first step: once a day it works out
+# what each league's OWN numbers would be if a league learned for itself and borrowed from its sport, then from all
+# leagues, only for what it lacks (`lgsh_blend`: each level moves the value above it toward its own by n/(n+k), the same
+# sample-size weighting calib_fair has always used), and writes them beside the numbers the app uses today in the
+# `league_shadow` table. NOTHING reads that table to decide anything: no cut-off, fair price, size, sell or sport order
+# is changed, and the run never writes a settings or learning file (`test_leagueshadow` checks every one of these, and
+# that no decision function mentions `league_shadow`/`LGSH`). It is only shown, read-only, by `league_shadow_view`.
+#   cutoff  each league's combo cut-off by size: today's `_cut_level` against the blended one (all -> sport -> league).
+#   calib   each sub-league's fair-price nudge by chance band: `calib_fair` named by sport only (what a caller that
+#           passes no ticker gets) against `calib_fair` with the league named (its own record, sport's behind it).
+#   record  each league's settled-bet return (profit per dollar staked, the last 60 days: your real combos and the
+#           paper/real panel bets) shrunk toward 0 by n/(n+k) through all -> sport -> league: the evidence sizing and
+#           the panel's sport order would read. Today neither reads any league's record (current is empty).
+LGSH = {"every": 86400, "keep": 180 * 86400, "k_cut": CUT_MIN_N, "k_calib": 300, "k_roi": 30, "days": 60}
+_LGSH_SIZES = (2, 3, 5, 8)                              # a representative combo size for each of _cut_key's four buckets
+_LGSH_BANDS = ((0.0, 0.3), (0.3, 0.45), (0.45, 0.55), (0.55, 0.7), (0.7, 0.85), (0.85, 1.01))
+_LGSH_PRE = {v: k for k, v in SOCCER_LEAGUE.items()}          # league -> its ticker prefix (derived: one source of truth)
+_LGSH_TRIED = {"at": 0}                                  # last attempt, in memory: an empty run is not retried every round
+
+
+def lgsh_blend(start, levels, k):
+    """(value, shares): `levels` = [(name, value, n)] from the widest group to the narrowest. Each moves the value so far
+    toward its own by n/(n+k) of the gap (a level with no data, or no value, changes nothing). shares = how much of the
+    final value each level (and the start) accounts for, adding up to 1, so the number can be explained in a line."""
+    v, ws = float(start), []
+    for name, val, n in levels:
+        w = (n / (n + k)) if (val is not None and n and n > 0) else 0.0
+        v += w * (float(val) - v) if w else 0.0
+        ws.append((name, w, int(n or 0)))
+    shares, rest = {}, 1.0
+    for name, w, _n in reversed(ws):
+        shares[name] = round(rest * w, 4)
+        rest *= 1 - w
+    shares["start"] = round(rest, 4)
+    return v, shares
+
+
+def _lgsh_say(shares):
+    return ", ".join(f"{n} {x:.0%}" for n, x in sorted(shares.items(), key=lambda kv: -kv[1]) if x >= 0.005)
+
+
+def _lgsh_league_sport(lg):
+    """The sport a league key belongs to (a soccer league's is soccer; a league that is its own sport is itself)."""
+    return "soccer" if lg in _LGSH_PRE else lg
+
+
+def lgsh_rows(now=None):
+    """The shadow rows for every league with any record: [{league, sport, metric, key, current, shadow, n_own, n_sport,
+    n_all, shares, says}]. Reads the cut-off file, the history file and the calibration only; writes nothing."""
+    now = now or time.time()
+    out = []
+    # ---- cut-offs
+    d = load_json(CUTOFF_FILE, {})
+    leagues = {k.rsplit(":", 1)[0] for k in d if not k.startswith("_") and ":" in k} - {"all"}
+    if any(k.startswith("soccer:") for k in d):          # a soccer league with no file entry of its own still borrows
+        leagues |= set(_LGSH_PRE)
+    for lg in sorted(leagues):
+        sp = _lgsh_league_sport(lg)
+        for n in _LGSH_SIZES:
+            ea, es = d.get(_cut_key("all", n)) or {}, d.get(_cut_key(sp, n)) or {}
+            el = (d.get(_cut_key(lg, n)) or {}) if lg != sp else {}
+            if not (es or el):
+                continue
+            legs = [_LGSH_PRE[lg] + "GAME-X"] if lg in _LGSH_PRE else None
+            cur = _cut_level(d, sp, n, legs)[0]
+            v, sh = lgsh_blend(CUT_START, [("all", max(float(ea.get("level", CUT_START)), CUT_START) if ea else None,
+                                            ea.get("n", 0)),
+                                           ("sport", es.get("level") if es else None, es.get("n", 0)),
+                                           ("league", el.get("level") if el else None, el.get("n", 0))], LGSH["k_cut"])
+            v = min(max(v, 85.0), 110.0)
+            out.append({"league": lg, "sport": sp, "metric": "cutoff", "key": _cut_key("", n).lstrip(":"), "current": cur,
+                        "shadow": round(v, 2), "n_own": int(el.get("n", 0) or 0), "n_sport": int(es.get("n", 0) or 0),
+                        "n_all": int(ea.get("n", 0) or 0), "shares": sh, "says": _lgsh_say(sh)})
+    # ---- fair-price calibration of the sub-leagues
+    m = calibration()
+    for lg in sorted(_LGSH_PRE):
+        sp, tk = "soccer", _LGSH_PRE[lg] + "GAME-X"
+        for lo, hi in _LGSH_BANDS:
+            bl = next((b for b in m.get(lg, []) if b[0] == lo), None)
+            bs = next((b for b in m.get(sp, []) if b[0] == lo), None)
+            ba = next((b for b in m.get("all", []) if b[0] == lo), None)
+            if not bl:
+                continue
+            f = bl[2]
+            cur, new = calib_fair(sp, f), calib_fair(sp, f, tk)
+            sh = {"league": round(bl[4] / (bl[4] + LGSH["k_calib"]), 4)}
+            out.append({"league": lg, "sport": sp, "metric": "calib", "key": f"{lo:.2f}-{min(hi, 1.0):.2f}",
+                        "current": round(cur, 4), "shadow": round(new, 4), "n_own": bl[4], "n_sport": bs[4] if bs else 0,
+                        "n_all": ba[4] if ba else 0, "shares": sh,
+                        "says": f"its own record {sh['league']:.0%}, the rest from {sp} and all"})
+    # ---- each league's settled-bet return
+    by = defaultdict(lambda: [0, 0.0, 0.0])             # key -> [bets, staked, profit]
+    for c in _tune_items(LGSH["days"]):
+        tks = _tickers_of(c.get("legs"))
+        lg = bet_key(tks) if tks else None
+        stake, pl = c.get("stake"), c.get("pl")
+        if not lg or lg in ("mix", "other") or not stake or pl is None or stake <= 0:
+            continue
+        for key in {("all", None), ("sport", _lgsh_league_sport(lg)), ("league", lg)}:
+            x = by[key]
+            x[0] += 1
+            x[1] += float(stake)
+            x[2] += float(pl)
+    roi = lambda key: (by[key][2] / by[key][1]) if key in by and by[key][1] > 0 else None
+    for lg in sorted({k[1] for k in by if k[0] == "league"}):
+        sp = _lgsh_league_sport(lg)
+        v, sh = lgsh_blend(0.0, [("all", roi(("all", None)), by.get(("all", None), [0])[0]),
+                                 ("sport", roi(("sport", sp)), by.get(("sport", sp), [0])[0]),
+                                 ("league", roi(("league", lg)), by.get(("league", lg), [0])[0])], LGSH["k_roi"])
+        out.append({"league": lg, "sport": sp, "metric": "record", "key": f"{LGSH['days']}d", "current": None,
+                    "shadow": round(v, 4), "n_own": by[("league", lg)][0], "n_sport": by.get(("sport", sp), [0])[0],
+                    "n_all": by.get(("all", None), [0])[0], "shares": sh, "says": _lgsh_say(sh)})
+    return out
+
+
+def _league_shadow_table():
+    store_x("create table if not exists league_shadow(ts real, league text, sport text, metric text, key text, "
+            "current real, shadow real, n_own int, n_sport int, n_all int, shares text, says text)")
+    store_x("create index if not exists league_shadow_t on league_shadow(ts)")
+
+
+def league_shadow_run(now=None, force=False):
+    """The daily shadow run (the watcher's knob_pass calls it): appends today's rows to `league_shadow`, keeps 180 days.
+    Returns the rows written (0 when not due or no history). Writes only that table. Never raises."""
+    try:
+        now = now or time.time()
+        if not STORE["db"]:
+            return 0
+        _league_shadow_table()
+        last = max((store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t") or 0, _LGSH_TRIED["at"])
+        if not force and now - last < LGSH["every"]:
+            return 0
+        _LGSH_TRIED["at"] = now                        # remembered even when there is nothing to write (no 60-day re-read each round)
+        rows = lgsh_rows(now)
+        args = [(now, r["league"], r["sport"], r["metric"], r["key"], r["current"], r["shadow"], r["n_own"],
+                 r["n_sport"], r["n_all"], json.dumps(r["shares"], sort_keys=True), r["says"]) for r in rows]
+        with _SLOCK:                                   # all rows of a run in one transaction: a partial run cannot exist
+            db, own = STORE["db"], False
+            try:
+                own = not db.in_transaction
+                if own:
+                    db.execute("begin")
+                db.executemany("insert into league_shadow values(?,?,?,?,?,?,?,?,?,?,?,?)", args)
+                if own:
+                    db.execute("commit")
+            except Exception:
+                if own:
+                    try:
+                        db.execute("rollback")
+                    except Exception:
+                        pass
+                raise
+        store_x("delete from league_shadow where ts < ?", (now - LGSH["keep"],))
+        return len(rows)
+    except Exception as err:
+        print("league shadow:", type(err).__name__, err)
+        return 0
+
+
+def league_shadow_view():
+    """Results › What's working: the latest shadow run, read-only: per league, what its own numbers would be next to
+    today's. Nothing here is used by any decision. Never raises ({} on an error or before the first run)."""
+    try:
+        if not STORE["db"]:
+            return {}
+        _league_shadow_table()
+        last = (store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t")
+        if not last:
+            return {}
+        by = {}
+        for r in store_rows("select * from league_shadow where ts=? order by league, metric, key", (last,)):
+            e = by.setdefault(r["league"], {"key": r["league"], "name": league_label(r["league"]), "sport": r["sport"],
+                                            "cutoff": [], "calib": [], "record": None, "differs": 0})
+            row = {"key": r["key"], "current": r["current"], "shadow": r["shadow"], "n_own": r["n_own"],
+                   "n_sport": r["n_sport"], "n_all": r["n_all"], "says": r["says"]}
+            if r["metric"] == "record":
+                e["record"] = row
+            else:
+                e[r["metric"]].append(row)
+                e["differs"] += int(r["current"] is not None and abs(r["shadow"] - r["current"]) > 1e-9)
+        return {"mode": "shadow", "at": last, "every": LGSH["every"],
+                "note": "What each league's own numbers would be, borrowing its sport then everyone for what it lacks. "
+                        "Nothing uses these yet.",
+                "leagues": sorted(by.values(), key=lambda e: (-e["differs"], e["name"]))}
+    except Exception as err:
+        print("league shadow view:", type(err).__name__, err)
         return {}
 
 
@@ -27110,11 +27539,378 @@ def record_view(view):
     for x in view.get("singles") or []:             # single bets and spreads: their game's story too
         if x.get("state") in ("live", "pre") and x.get("ticker"):
             _legs(x["t"], [x])
+    exposure_paper_pass(view, now)                   # (#335) paper only: never raises, never read by a decision
     for e in ev:
         store_x("insert into events values(?,?,?,?)", (now, e["kind"], e.get("combo"), e["text"]))
     if len(last) > 20000:
         STORE["last"] = {k: v for k, v in list(last.items())[-10000:]}
     return ev
+
+
+# ---- (#335) no-both-sides and exposure caps, on PAPER only. Nothing here blocks, shrinks or changes any buy, sale or
+# panel: each Live refresh it records, in its own small tables, whether the account holds (or the panel would add) both
+# sides of one game or several bets stacked on it, and how much money rides on each game, league and day against the
+# bankroll; and for every bet the account holds it asks "would a no-both-sides rule or an exposure cap have stopped
+# this one?" and, once the bet is settled, adds up what those bets really made (the ledger's dollars, fees counted).
+# The answer is only shown: one plain line in the log. No decision reads these tables, and a failure here is swallowed
+# (the Live refresh and every trade carry on). The numbers in EXPO are paper guesses to be tuned from this record.
+EXPO = {"game": 0.10, "league": 0.30, "day": 0.40,       # shares of the bankroll one game / league / day may carry
+        "min_n": 5, "dollar_n": 20,                       # fewer bets than min_n: no count; fewer settled than dollar_n: no dollars
+        "keep_days": 60, "pass_days": 14, "pass_rows": 20000, "every": 120, "log_every": 600, "prune_every": 3600}
+EXPO_RULES = ("both_sides", "game_cap", "league_cap", "day_cap")
+EXPO_RULE_WORDS = {"both_sides": "a no-both-sides rule", "game_cap": "the per-game cap", "league_cap": "the per-league cap",
+                   "day_cap": "the per-day cap"}
+EXPO_STATE = {"at": 0.0, "sig": None, "wrote": 0.0, "logged": 0.0, "line": "", "db": None, "pruned": 0.0}
+
+
+def _expo_tables():
+    if EXPO_STATE["db"] is STORE["db"]:
+        return
+    store_x("create table if not exists expo_pos(pos text primary key, ts real, day text, league text, kind text, "
+            "cost real, bank real, games text, alloc text, seed int, blocked text, net real, settled real, batch int, own int)")
+    store_x("create index if not exists expo_pos_ts on expo_pos(ts)")
+    store_x("create table if not exists expo_pass(ts real, kind text, key text, held_n int, held_cost real, would_n int, "
+            "would_cost real, both_held int, both_would int, stacked int, bank real, pct real)")
+    if store_x("create index if not exists expo_pass_ts on expo_pass(ts)") is not None:
+        EXPO_STATE["db"] = STORE["db"]               # only once the tables exist: else try again next pass
+
+
+def _expo_stance(ticker, side):
+    """What a pick backs in its game, as 'kind:who:strike': a team ('win:DAL:', 'spread:~DAL:3'), or the over / under
+    ('total:over:47'). None when unknown. The kind and strike matter: a spread's NO and a different strike of the same
+    total are not the opposite side."""
+    parts = str(ticker or "").upper().split("-")
+    if len(parts) < 3:
+        return None
+    kind = _bet_kind(ticker)
+    no = side == "no"
+    strike = (re.search(r"(\d+)$", parts[2]) or [None, ""])[1]
+    if kind == "total":
+        return "total:%s:%s" % ("under" if no else "over", strike)
+    if kind in ("win", "spread"):
+        team = re.sub(r"\d+$", "", parts[2])
+        return "%s:%s%s:%s" % (kind, "~" if no else "", team, strike if kind == "spread" else "") if team else None
+    return None
+
+
+def _expo_opposed(a, b):
+    """Whether two stances on one game are the two sides of it (can't both win). A middle (over 40 with under 50), or a
+    spread's NO beside the same team to win, is not."""
+    ka, wa, sa = (a.split(":") + ["", ""])[:3]
+    kb, wb, sb = (b.split(":") + ["", ""])[:3]
+    if "total" in (ka, kb):
+        if ka != kb or {wa, wb} != {"over", "under"}:
+            return False
+        o, u = (sa, sb) if wa == "over" else (sb, sa)
+        try:
+            return float(o) >= float(u)
+        except ValueError:
+            return True
+    na, nb = wa.startswith("~"), wb.startswith("~")
+    ta, tb = wa.lstrip("~"), wb.lstrip("~")
+    if ka == kb == "spread" and ta == tb and na != nb:
+        return sa == sb                                  # same team, different strikes: a middle, not the other side
+    if "spread" in (ka, kb) and ka != kb and ta == tb:
+        return False                                     # a spread NO beside the same team to win can both hold
+    if ta == tb:
+        return na != nb
+    return na == nb                                      # two different teams backed, or two backed against
+
+
+def _expo_day(event, now):
+    m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})", event or "")
+    try:
+        return dt.datetime.strptime("".join(m.groups()), "%y%b%d").date().isoformat()
+    except Exception:
+        return dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+
+
+def _expo_pos(pos, kind, cost, legs, now, allow_zero=False, own=1):
+    """One bet as the paper check sees it: the games it touches (with what it backs in each), its full cost counted on
+    each of them (as game_exposure does), its day (the first game's) and league. None when nothing in it can be read."""
+    games = {}
+    for tk, side in legs:
+        st = _expo_stance(tk, side)
+        if st:
+            games.setdefault(game_event(str(tk).upper().rsplit("-", 1)[0]), set()).add(st)
+    try:
+        cost = float(cost or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if not games or (cost <= 0 and not allow_zero):
+        return None
+    return {"pos": str(pos), "kind": kind, "cost": cost, "games": {g: sorted(s) for g, s in games.items()},
+            "alloc": {g: cost for g in games}, "league": bet_key([t for t, _ in legs]),
+            "day": min(_expo_day(g, now) for g in games), "own": int(bool(own))}
+
+
+def _expo_positions(view, now):
+    """The bets the account holds right now, from the Live view: open combos and open single bets."""
+    out = []
+    for v in view.get("combos") or []:
+        if isinstance(v, dict) and v.get("group") == "pending" and v.get("t"):
+            p = _expo_pos(v["t"], "combo", v.get("cost"), [(l.get("ticker"), l.get("side", "yes")) for l in v.get("legs") or []
+                                                           if isinstance(l, dict)], now, own=v.get("own", 1))
+            out.append(p) if p else None
+    for x in view.get("singles") or []:
+        if isinstance(x, dict) and x.get("state") in ("live", "pre") and x.get("t"):
+            p = _expo_pos(x["t"], "single", x.get("cost"), [(x.get("ticker") or x["t"], x.get("side", "yes"))], now,
+                          own=x.get("own", 1))
+            out.append(p) if p else None
+    return out
+
+
+def _expo_would(held, now):
+    """What today's real panel would still buy (drafted or scheduled, not yet held), read only."""
+    mine = {p["pos"] for p in held}
+    out = []
+    for c in (panel_get("real") or {}).get("items") or []:
+        if c.get("state") not in (None, "scheduled", "buying"):
+            continue
+        legs = [(l.get("ticker"), "yes") for l in c.get("legs") or [] if l.get("ticker")]
+        p = _expo_pos("panel:" + str(c.get("id")), c.get("kind") or "combo", c.get("stake"), legs, now, allow_zero=True)
+        if p and not (len(legs) == 1 and legs[0][0] in mine):
+            out.append(p)
+    return out
+
+
+def _expo_judge(p, taken, bank):
+    """The first rule that would have stopped this bet given the bets already taken (a blocked bet never counts toward
+    the next one's room, as it would not have been bought): '' when none. Caps need a bankroll; both-sides doesn't."""
+    for g, sts in p["games"].items():
+        for t in taken:
+            if any(_expo_opposed(a, b) for a in sts for b in (t["games"].get(g) or [])):
+                return "both_sides"
+    if bank > 0:
+        for g, a in p["alloc"].items():
+            if a + sum(t["alloc"].get(g, 0.0) for t in taken) > EXPO["game"] * bank + 1e-9:
+                return "game_cap"
+        if p["league"] != "mix" and p["cost"] + sum(t["cost"] for t in taken if t["league"] == p["league"]
+                                                    and t["day"] == p["day"]) > EXPO["league"] * bank + 1e-9:
+            return "league_cap"
+        if p["cost"] + sum(t["cost"] for t in taken if t["day"] == p["day"]) > EXPO["day"] * bank + 1e-9:
+            return "day_cap"
+    return ""
+
+
+def _expo_name(event):
+    """'DALNYG' from 'KXNFLGAME-26NOV30DALNYG' (the teams, without the date)."""
+    return re.sub(r"^\d{2}[A-Z]{3}\d{2}", "", event.split("-")[1]) if event.count("-") else event
+
+
+def _expo_settle(now, held_pos):
+    """Fill in what each judged bet really made once the ledger has it closed after we first saw it and we no longer
+    hold it (back - cost, fees counted). A ledger cost far from ours (another bet shares the ticker) is left unsettled."""
+    _ledger_table()
+    rows = store_rows("select pos, ts, cost from expo_pos where settled is null and pos not like 'panel:%' "
+                      "order by ts limit 400")
+    rows = [r for r in rows if r["pos"] not in held_pos]
+    for i in range(0, len(rows), 100):
+        chunk = rows[i:i + 100]
+        by = {r["pos"]: r for r in chunk}
+        got = store_rows("select ticker, cost, back, closed from ledger where ticker in (%s)" % ",".join("?" * len(chunk)),
+                         tuple(by))
+        for r in got:
+            m = by[r["ticker"]]
+            lc = r["cost"] or 0
+            if not r["closed"] or r["closed"] < (m["ts"] or 0) or abs(lc - (m["cost"] or 0)) > max(0.10, 0.10 * lc):
+                continue
+            store_x("update expo_pos set net=?, settled=? where pos=?", (round((r["back"] or 0) - lc, 2), r["closed"], r["ticker"]))
+
+
+def exposure_paper_summary():
+    """What the paper rules would have blocked so far (bets first seen after the first look, one at a time: bets that
+    appeared together in one pass can't be put in order, so they are counted apart and never in dollars), in aggregate.
+    Dollars show only with EXPO['dollar_n'] settled bets, counts only with EXPO['min_n']. Read-only; {} when nothing
+    yet. Never raises."""
+    try:
+        if not STORE.get("db"):
+            return {}
+        _expo_tables()
+        allr = store_rows("select blocked, net, settled, cost, batch, own from expo_pos where seed=0")
+        if not allr:
+            return {}
+        rows = [r for r in allr if (r["batch"] or 1) <= 1]
+        ambig = sum(1 for r in allr if (r["batch"] or 1) > 1 and r["blocked"])
+        k = EXPO["min_n"]
+
+        def agg(rs):
+            s = [r for r in rs if r["settled"] is not None and r["net"] is not None]
+            ok = len(s) >= EXPO["dollar_n"]
+            staked = sum(r["cost"] or 0 for r in s)
+            return {"n": len(rs) if len(rs) >= k else None, "settled": len(s) if ok else None,
+                    "net": round(sum(r["net"] for r in s), 2) if ok else None,
+                    "staked": round(staked, 2) if ok else None,
+                    "roi": round(sum(r["net"] for r in s) / staked, 4) if ok and staked > 0 else None}
+        blocked = [r for r in rows if r["blocked"]]
+        return {"n": len(rows), "all": agg(rows), "blocked": agg(blocked), "ambiguous": ambig,
+                "by": {rule: agg([r for r in blocked if r["blocked"] == rule]) for rule in EXPO_RULES},
+                "origin": {name: agg([r for r in blocked if (r["own"] if r["own"] is not None else 1) == v])
+                           for name, v in (("app", 1), ("you", 0))}}
+    except Exception as err:
+        console_note(f"exposure paper: {type(err).__name__}: {err}")
+        return {}
+
+
+def _expo_money(x):
+    return "-$%.0f" % abs(x) if x < 0 else "$%.0f" % x
+
+
+def exposure_paper_line(info, summary):
+    """The plain-English line for the log. `info` is what the pass found (exposure_paper_pass's result)."""
+    bank = info.get("bank") or 0
+    bits = []
+    both = info.get("both_held") or []
+    bits.append("holding both sides of %s" % (", ".join(both[:3]) + (" and more" if len(both) > 3 else ""))
+                if both else "not holding both sides of any game")
+    if info.get("both_would"):
+        bits.append("the panel would add both sides of %s" % ", ".join(info["both_would"][:3]))
+    if info.get("stacked"):
+        bits.append("%d game%s with 2+ bets stacked" % (info["stacked"], "" if info["stacked"] == 1 else "s"))
+    top = info.get("top_game")
+    if top:
+        bits.append("biggest game %s %s%s" % (top[0], _expo_money(top[1]), " (%.0f%% of the bankroll)" % (100 * top[1] / bank) if bank else ""))
+    if info.get("day_cost") and bank:
+        bits.append("today %s (%.0f%%)" % (_expo_money(info["day_cost"]), 100 * info["day_cost"] / bank))
+    line = "exposure (paper only, nothing is blocked): " + "; ".join(bits) + "."
+    if summary and summary.get("n"):
+        b, a = summary["blocked"], summary["all"]
+        if b["n"] is None:
+            line += " Fewer than %d bets so far would have been stopped by a no-both-sides rule or the caps." % EXPO["min_n"]
+        else:
+            line += " The rules would have stopped %d of %d bets" % (b["n"], summary["n"])
+            if b["net"] is None:
+                line += ", too few settled yet (under %d) to show what they made." % EXPO["dollar_n"]
+            else:
+                line += ", and the %d that settled made %s on %s staked (%.0f%%)" % (
+                    b["settled"], _expo_money(b["net"]), _expo_money(b["staked"]), 100 * (b["roi"] or 0))
+                if a["roi"] is not None:
+                    line += " against %.0f%% for all bets" % (100 * a["roi"])
+                line += (", a small sample." if b["settled"] < 50 else ".")
+        if summary.get("ambiguous"):
+            line += " %d more arrived together and can't be told apart." % summary["ambiguous"]
+    return line
+
+
+def _expo_write(stmts):
+    """Run (sql, args) statements in one transaction, stopping at the first failure (rolled back). Best-effort."""
+    db = STORE.get("db")
+    if not db or not stmts:
+        return False
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for sql, args in stmts:
+                db.execute(sql, args)
+            if own:
+                db.execute("commit")
+            return True
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"exposure paper: {type(err).__name__}: {err}")
+            return False
+
+
+def exposure_paper_pass(view, now=None, force=False):
+    """Once every EXPO['every'] seconds, from the Live refresh (record_view): record exposure and the would-block
+    verdicts, settle the old ones, log the line. Paper only; never raises; returns what it found (None when it did
+    nothing). `CFG["expo_paper"]` = False turns it off. Pause, caps, the panel, buying and selling never see it."""
+    try:
+        now = now or time.time()
+        if CFG.get("expo_paper") is False or not STORE.get("db") or not isinstance(view, dict) \
+                or (not force and now - EXPO_STATE["at"] < EXPO["every"]):
+            return None
+        EXPO_STATE["at"] = now
+        _expo_tables()
+        if EXPO_STATE["db"] is not STORE["db"]:
+            return None
+        bank = float(CFG.get("bankroll") or 0)
+        held = _expo_positions(view, now)
+        held_pos = {p["pos"] for p in held}
+        had = {r["pos"]: r for r in store_rows("select pos, day, league, cost, games, alloc, blocked from expo_pos "
+                                                "where ts > ?", (now - EXPO["keep_days"] * 86400,))}
+        seed = not had and not store_rows("select 1 from expo_pos limit 1")        # the first look: order unknown, not judged
+        taken = []                                       # only what is held now: a finished bet no longer carries risk
+        for r in had.values():
+            if not r["blocked"] and r["pos"] in held_pos:
+                taken.append({"games": json.loads(r["games"] or "{}"), "alloc": json.loads(r["alloc"] or "{}"),
+                              "cost": r["cost"] or 0.0, "day": r["day"], "league": r["league"]})
+        new = sorted((p for p in held if p["pos"] not in had), key=lambda p: p["pos"])
+        stmts = []
+        for p in new:
+            why = "" if seed else _expo_judge(p, taken, bank)
+            stmts.append(("insert or ignore into expo_pos(pos, ts, day, league, kind, cost, bank, games, alloc, seed, blocked, "
+                          "batch, own) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (p["pos"], now, p["day"], p["league"], p["kind"], round(p["cost"], 2), bank, json.dumps(p["games"]),
+                           json.dumps(p["alloc"]), int(seed), why, len(new), p["own"])))
+            if not why:
+                taken.append(p)
+        _expo_write(stmts)
+        _expo_settle(now, held_pos)
+        would = _expo_would(held, now)
+        info = _expo_record(held, would, bank, now)
+        if now - EXPO_STATE["pruned"] >= EXPO["prune_every"]:
+            EXPO_STATE["pruned"] = now
+            _expo_write([("delete from expo_pos where ts < ?", (now - EXPO["keep_days"] * 86400,)),
+                         ("delete from expo_pass where ts < ? or rowid <= (select max(rowid) from expo_pass) - ?",
+                          (now - EXPO["pass_days"] * 86400, EXPO["pass_rows"]))])
+        line = exposure_paper_line(info, exposure_paper_summary())
+        if line != EXPO_STATE["line"] and now - EXPO_STATE["logged"] >= EXPO["log_every"]:
+            EXPO_STATE.update(line=line, logged=now)
+            console_note(line)
+        info["line"] = line
+        return info
+    except Exception as err:
+        console_note(f"exposure paper: {type(err).__name__}: {err}")
+        return None
+
+
+def _expo_record(held, would, bank, now):
+    """One pass's rows per game, league and day (only when something changed, or hourly) and the facts for the line."""
+    games = {}
+    for kind, ps in (("held", held), ("would", would)):
+        for p in ps:
+            for g, sts in p["games"].items():
+                games.setdefault(g, []).append((kind, p, sts))
+    rows, both_held, both_would, stacked = [], [], [], 0
+    groups = {"league": {}, "day": {}}
+    for g, xs in sorted(games.items()):
+        hn = [x for x in xs if x[0] == "held"]
+        wn = [x for x in xs if x[0] == "would"]
+        bh = any(_expo_opposed(a, b) for i, x in enumerate(hn) for y in hn[i + 1:] for a in x[2] for b in y[2])
+        bw = any(_expo_opposed(a, b) for w in wn for x in xs if x[1] is not w[1] for a in w[2] for b in x[2])
+        hc, wc = sum(x[1]["alloc"][g] for x in hn), sum(x[1]["alloc"][g] for x in wn)
+        stacked += len(xs) >= 2
+        name = _expo_name(g)
+        both_held += [name] if bh else []
+        both_would += [name] if bw else []
+        rows.append((now, "game", g, len(hn), round(hc, 2), len(wn), round(wc, 2), int(bh), int(bw), len(xs) if len(xs) >= 2 else 0,
+                     bank, round((hc + wc) / bank, 4) if bank else None))
+    for kind, ps in (("held", held), ("would", would)):
+        for p in ps:
+            for gk, key in (("league", p["league"]), ("day", p["day"])):
+                a = groups[gk].setdefault(key, [0, 0.0, 0, 0.0])
+                a[0 if kind == "held" else 2] += 1
+                a[1 if kind == "held" else 3] += p["cost"]
+    for gk, d in groups.items():
+        for key, (hn, hc, wn, wc) in sorted(d.items()):
+            rows.append((now, gk, key, hn, round(hc, 2), wn, round(wc, 2), 0, 0, 0, bank, round((hc + wc) / bank, 4) if bank else None))
+    sig = tuple(r[1:] for r in rows)
+    if rows and (sig != EXPO_STATE["sig"] or now - EXPO_STATE["wrote"] >= 3600):
+        EXPO_STATE.update(sig=sig, wrote=now)
+        _expo_write([("insert into expo_pass values(?,?,?,?,?,?,?,?,?,?,?,?)", r) for r in rows])
+    top = max(((_expo_name(r[2]), r[4] + r[6]) for r in rows if r[1] == "game"),
+              key=lambda t: t[1], default=None)
+    today = dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+    dayc = groups["day"].get(today)
+    return {"bank": bank, "both_held": both_held, "both_would": both_would, "stacked": stacked, "top_game": top,
+            "day_cost": (dayc[1] + dayc[3]) if dayc else 0.0, "rows": len(rows)}
 
 
 SPORT_SCORE_WORD = {"nhl": "Goal", "ahl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
@@ -29199,6 +29995,7 @@ def price_seen_markets(ms):
             price_flush(now)
     except Exception as err:
         print("price recorder:", type(err).__name__, err)
+    sev_tick()                                     # news follow-up samples from these prices (throttled, never raises)
 
 
 def price_seen_book(ticker, info):
@@ -29332,6 +30129,525 @@ def price_prune(now=None):
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
 
+
+# ---- signal events (news + game context recorder, write-only): PETE chose to RECORD two signal families and test them
+# later against the market. (1) Injury/lineup news: when ESPN's injury report (the cache league_injuries already keeps,
+# about half an hour) shows a new item or a changed status, one row in `sig_news` with Kalshi's bid/ask and the book
+# probability of that team's game-winner market at that moment, then `sig_news_fu` rows with the same market's bid/ask
+# and book probability about 5, 15 and 60 minutes later. (2) `sig_ctx`: one row a game, about 2 hours before the start and at
+# the start: venue (home, neutral, dome), rest days, back-to-back, games in the last 7 days, travel miles and time
+# zones crossed (a small static table below), and the weather ESPN already sends, next to the market's bid/ask/book
+# probability. ZERO trading effect: it only PEEKS at caches the app already fills (INJ, SCORES_BY's ESPN events, the
+# markets Kalshi lists already (PRICE_SEEN)): no fetch of its own, no Kalshi call, no Odds API call. Append-only new
+# tables (a follow-up is its own row, never an UPDATE), every call wrapped (errors swallowed), nothing in the engine
+# or the watcher reads these tables to decide anything (the loaders below, `_sev_load`, only rebuild this recorder's own
+# in-memory state after a restart). The flag is the shadow recorders' `sig_shadow` (ON by default, false = off).
+# Retention: about a year, plus a row ceiling per table that STOPS WRITES when reached (it never deletes to make room).
+SEV = {"keep_days": 365, "tick": 20.0, "last": 0.0, "prune": 0.0, "tbl": False, "load": False,
+       "cap": {"sig_news": 60000, "sig_news_fu": 200000, "sig_ctx": 80000}, "full": set(),
+       "inj": {}, "inj_at": {}, "team": {}, "games": {}, "fair": {}, "pend": {}, "espn": {}, "sched": {}, "cov": {},
+       "done": set(), "max_events": 80, "px_age": 180, "fair_age": 600.0, "pre_min": (20, 125), "start_late": 20,
+       "lock": threading.Lock()}
+SEV_HORIZONS = (5, 15, 60)                         # minutes after the news
+SEV_PRO = ("nfl", "nba", "nhl")                    # leagues with a travel table (college and soccer stay NULL)
+SEV_GEO_RAW = {                                    # team -> (latitude, longitude, standard-time UTC offset of its city)
+    # NFL
+    "Arizona Cardinals": (33.53, -112.26, -7), "Atlanta Falcons": (33.76, -84.40, -5), "Baltimore Ravens": (39.28, -76.62, -5),
+    "Buffalo Bills": (42.77, -78.79, -5), "Carolina Panthers": (35.23, -80.85, -5), "Chicago Bears": (41.86, -87.62, -6),
+    "Cincinnati Bengals": (39.10, -84.52, -5), "Cleveland Browns": (41.51, -81.70, -5), "Dallas Cowboys": (32.75, -97.09, -6),
+    "Denver Broncos": (39.74, -105.02, -7), "Detroit Lions": (42.34, -83.05, -5), "Green Bay Packers": (44.50, -88.06, -6),
+    "Houston Texans": (29.68, -95.41, -6), "Indianapolis Colts": (39.76, -86.16, -5), "Jacksonville Jaguars": (30.32, -81.64, -5),
+    "Kansas City Chiefs": (39.05, -94.48, -6), "Las Vegas Raiders": (36.09, -115.18, -8),
+    "Los Angeles Chargers": (33.95, -118.34, -8), "Los Angeles Rams": (33.95, -118.34, -8), "Miami Dolphins": (25.96, -80.24, -5),
+    "Minnesota Vikings": (44.97, -93.26, -6), "New England Patriots": (42.09, -71.26, -5),
+    "New Orleans Saints": (29.95, -90.08, -6), "New York Giants": (40.81, -74.07, -5), "New York Jets": (40.81, -74.07, -5),
+    "Philadelphia Eagles": (39.90, -75.17, -5), "Pittsburgh Steelers": (40.45, -80.02, -5),
+    "San Francisco 49ers": (37.40, -121.97, -8), "Seattle Seahawks": (47.60, -122.33, -8),
+    "Tampa Bay Buccaneers": (27.98, -82.50, -5), "Tennessee Titans": (36.17, -86.77, -6),
+    "Washington Commanders": (38.91, -76.86, -5),
+    # NBA
+    "Atlanta Hawks": (33.76, -84.39, -5), "Boston Celtics": (42.37, -71.06, -5), "Brooklyn Nets": (40.68, -73.97, -5),
+    "Charlotte Hornets": (35.23, -80.84, -5), "Chicago Bulls": (41.88, -87.67, -6), "Cleveland Cavaliers": (41.50, -81.69, -5),
+    "Dallas Mavericks": (32.79, -96.81, -6), "Denver Nuggets": (39.75, -105.00, -7), "Detroit Pistons": (42.34, -83.06, -5),
+    "Golden State Warriors": (37.77, -122.39, -8), "Houston Rockets": (29.75, -95.36, -6), "Indiana Pacers": (39.76, -86.16, -5),
+    "Los Angeles Clippers": (34.04, -118.27, -8), "LA Clippers": (34.04, -118.27, -8), "Los Angeles Lakers": (34.04, -118.27, -8),
+    "Memphis Grizzlies": (35.14, -90.05, -6), "Miami Heat": (25.78, -80.19, -5), "Milwaukee Bucks": (43.04, -87.92, -6),
+    "Minnesota Timberwolves": (44.98, -93.28, -6), "New Orleans Pelicans": (29.95, -90.08, -6),
+    "New York Knicks": (40.75, -73.99, -5), "Oklahoma City Thunder": (35.46, -97.52, -6), "Orlando Magic": (28.54, -81.38, -5),
+    "Philadelphia 76ers": (39.90, -75.17, -5), "Phoenix Suns": (33.45, -112.07, -7),
+    "Portland Trail Blazers": (45.53, -122.67, -8), "Sacramento Kings": (38.58, -121.50, -8),
+    "San Antonio Spurs": (29.43, -98.44, -6), "Toronto Raptors": (43.64, -79.38, -5), "Utah Jazz": (40.77, -111.90, -7),
+    "Washington Wizards": (38.90, -77.02, -5),
+    # NHL
+    "Anaheim Ducks": (33.81, -117.88, -8), "Boston Bruins": (42.37, -71.06, -5), "Buffalo Sabres": (42.88, -78.88, -5),
+    "Calgary Flames": (51.04, -114.05, -7), "Carolina Hurricanes": (35.80, -78.72, -5), "Chicago Blackhawks": (41.88, -87.67, -6),
+    "Colorado Avalanche": (39.75, -105.01, -7), "Columbus Blue Jackets": (39.97, -83.01, -5), "Dallas Stars": (32.79, -96.81, -6),
+    "Detroit Red Wings": (42.34, -83.06, -5), "Edmonton Oilers": (53.55, -113.50, -7), "Florida Panthers": (26.16, -80.33, -5),
+    "Los Angeles Kings": (34.04, -118.27, -8), "Minnesota Wild": (44.94, -93.10, -6), "Montreal Canadiens": (45.50, -73.57, -5),
+    "Nashville Predators": (36.16, -86.78, -6), "New Jersey Devils": (40.73, -74.17, -5),
+    "New York Islanders": (40.72, -73.59, -5), "New York Rangers": (40.75, -73.99, -5), "Ottawa Senators": (45.30, -75.93, -5),
+    "Philadelphia Flyers": (39.90, -75.17, -5), "Pittsburgh Penguins": (40.44, -79.99, -5), "San Jose Sharks": (37.33, -121.90, -8),
+    "Seattle Kraken": (47.62, -122.35, -8), "St Louis Blues": (38.63, -90.20, -6), "St. Louis Blues": (38.63, -90.20, -6),
+    "Tampa Bay Lightning": (27.94, -82.45, -5), "Toronto Maple Leafs": (43.64, -79.38, -5), "Utah Mammoth": (40.77, -111.90, -7),
+    "Vancouver Canucks": (49.28, -123.11, -8), "Vegas Golden Knights": (36.10, -115.18, -8),
+    "Washington Capitals": (38.90, -77.02, -5), "Winnipeg Jets": (49.89, -97.14, -6)}
+SEV_GEO = {norm_team(k): v for k, v in SEV_GEO_RAW.items()}
+SEV_NEWS_COLS = ("ekey", "ts", "news_ts", "league", "team", "player", "pos", "kind", "old_status", "new_status",
+                 "material", "game_event", "ticker", "bid", "ask", "fair_book", "fair_src", "px_age")
+SEV_FU_COLS = ("news_id", "horizon", "ts", "delay_s", "bid", "ask", "fair_book", "fair_age")
+SEV_CTX_COLS = ("ts", "phase", "mins_to_start", "league", "game_event", "start_ts", "start_src", "home_team", "away_team",
+                "home_ticker", "away_ticker", "neutral", "indoor", "venue_city", "venue_state", "home_rest", "away_rest",
+                "home_b2b", "away_b2b", "home_g7", "away_g7", "home_travel_mi", "away_travel_mi", "home_tz", "away_tz",
+                "wx_temp", "wx_wind", "wx_precip", "wx_text", "home_bid", "home_ask", "home_fair", "away_bid", "away_ask",
+                "away_fair", "fair_src")
+
+
+def _sev_tables():
+    """Create the three append-only tables (and their indexes) once a run. `create ... if not exists` only: an existing
+    history file is never altered, so this is safe on a file that already has them, or has none."""
+    if SEV["tbl"]:
+        return True
+    store_x("create table if not exists sig_news(id integer primary key, ekey text, ts real, news_ts real, league text, "
+            "team text, player text, pos text, kind text, old_status text, new_status text, material int, game_event text, "
+            "ticker text, bid real, ask real, fair_book real, fair_src text, px_age real)")
+    store_x("create unique index if not exists sig_news_k on sig_news(ekey)")
+    store_x("create index if not exists sig_news_ts on sig_news(ts)")
+    store_x("create table if not exists sig_news_fu(news_id integer, horizon int, ts real, delay_s real, bid real, "
+            "ask real, fair_book real, fair_age real)")
+    store_x("create unique index if not exists sig_news_fu_k on sig_news_fu(news_id, horizon)")
+    store_x("create index if not exists sig_news_fu_ts on sig_news_fu(ts)")
+    store_x("create table if not exists sig_ctx(" + ", ".join(
+        c + (" text" if c in ("phase", "league", "game_event", "start_src", "home_team", "away_team", "home_ticker",
+                               "away_ticker", "venue_city", "venue_state", "wx_text", "fair_src") else
+             " int" if c in ("neutral", "indoor", "home_b2b", "away_b2b", "home_g7", "away_g7", "home_tz", "away_tz")
+             else " real") for c in SEV_CTX_COLS) + ")")
+    store_x("create unique index if not exists sig_ctx_k on sig_ctx(game_event, phase)")
+    store_x("create index if not exists sig_ctx_ts on sig_ctx(ts)")
+    have = {r["name"] for r in store_rows("select name from sqlite_master where type='table'")}
+    SEV["tbl"] = {"sig_news", "sig_news_fu", "sig_ctx"} <= have
+    return SEV["tbl"]
+
+
+def _sev_write(table, cols, rows):
+    """Insert-or-ignore rows into one of the three tables in one transaction under the history lock; returns each row's
+    new rowid (None when it was a duplicate). [] when nothing was written. Stops (writes nothing) when the table's row
+    ceiling was reached. Never raises."""
+    db = STORE.get("db")
+    if not db or not rows or table in SEV["full"]:
+        return []
+    ids = []
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            sql = f"insert or ignore into {table}({','.join(cols)}) values({','.join('?' * len(cols))})"
+            for r in rows:
+                cur = db.execute(sql, r)
+                ids.append(cur.lastrowid if cur.rowcount == 1 else None)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"signal events: {type(err).__name__}: {err}")
+            return []
+    return ids
+
+
+def _sev_prune(now):
+    """Drop rows past a year, then count each table and set (or clear) its "full" flag: at the ceiling, writes stop."""
+    SEV["prune"] = now
+    for tbl in SEV["cap"]:
+        store_x(f"delete from {tbl} where ts < ?", (now - SEV["keep_days"] * 86400,))
+        got = store_rows(f"select count(*) n from {tbl}")
+        if got:
+            if got[0]["n"] >= SEV["cap"][tbl]:
+                SEV["full"].add(tbl)
+            else:
+                SEV["full"].discard(tbl)
+
+
+def _sev_load(now):
+    """After a restart, rebuild this recorder's own memory from its own tables: news still waiting for follow-ups, the
+    games already given their rows, each team's known game starts (for rest days) and since when each league has been
+    watched. True when it all read; a failure is retried at the next tick. (The only place that reads the tables.)"""
+    if SEV["load"]:
+        return True
+    try:
+        if not _sev_tables():
+            return False
+        have = {}
+        for r in store_rows_strict("select news_id, horizon from sig_news_fu where ts > ?", (now - 2 * 3600,)):
+            have.setdefault(r["news_id"], set()).add(r["horizon"])
+        for r in store_rows_strict("select id, ts, ticker from sig_news where ts > ? and ticker is not null",
+                                   (now - (max(SEV_HORIZONS) + 5) * 60,)):
+            todo = [h for h in SEV_HORIZONS if h not in have.get(r["id"], ()) and now - r["ts"] <= 2 * h * 60]
+            if todo:
+                SEV["pend"][r["id"]] = {"ts": r["ts"], "ticker": r["ticker"], "todo": set(todo)}
+        for r in store_rows_strict("select league, game_event, phase, home_team, away_team, start_ts from sig_ctx "
+                                   "where ts > ?", (now - 45 * 86400,)):
+            SEV["done"].add((r["game_event"], r["phase"]))
+            for t in (r["home_team"], r["away_team"]):
+                if t and r["start_ts"]:
+                    _sev_sched_add(r["league"], t, r["start_ts"])
+        for r in store_rows_strict("select league, min(ts) m from sig_ctx group by league"):
+            if r["m"]:
+                SEV["cov"][r["league"]] = min(SEV["cov"].get(r["league"], r["m"]), r["m"])
+        _sev_prune(now)
+        SEV["load"] = True
+    except Exception as err:
+        console_note(f"signal events load: {type(err).__name__}: {err}")
+    return SEV["load"]
+
+
+def _sev_same(code, a, b):
+    """Do two team names mean the same team (Kalshi's short pick name vs ESPN's full name)?"""
+    na, nb = norm_team(a), norm_team(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if code in SEV_PRO and na.split()[-1] == nb.split()[-1]:
+        return True
+    if f" {na} " in f" {nb} " or f" {nb} " in f" {na} ":
+        return True
+    ta, tb = na.split(), nb.split()                # Kalshi's short picks ("Los Angeles L"): word-prefixes of the full name
+    ta, tb = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return len(ta) >= 2 and all(y.startswith(x) for x, y in zip(ta, tb))
+
+
+def _sev_num(v):
+    """A number out of an ESPN field (12, "12", "12 mph"), else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        m = re.search(r"-?\d+(?:\.\d+)?", v)
+        return float(m.group()) if m else None
+    return None
+
+
+def _sev_sched_add(code, team, ts):
+    lst = SEV["sched"].setdefault((code, norm_team(team)), [])
+    if not any(abs(ts - t) < 3600 for t in lst):
+        lst.append(ts)
+        lst.sort()
+        del lst[:-40]
+
+
+def sev_note_event(code, ev, comp, teams):
+    """From the ESPN scoreboard read the app already makes (fetch_scores): keep, in memory only, this game's home/away,
+    neutral-site flag, dome flag, venue city and weather, and both teams' start (for rest days). No DB write, no
+    fetch; never raises."""
+    try:
+        start = _iso_dt(ev.get("date"))
+        gid = str(ev.get("id") or "")
+        if not start or not gid:
+            return
+        ts = start.timestamp()
+        by = {c.get("homeAway"): ((c.get("team") or {}).get("displayName") or "") for c in teams}
+        ven = comp.get("venue") or {}
+        adr = ven.get("address") or {}
+        w = ev.get("weather") or comp.get("weather") or {}
+        w = w if isinstance(w, dict) else {}
+        flag = lambda v: int(v) if isinstance(v, bool) else None         # a missing field stays unknown (NULL)
+        SEV["espn"][(code, gid)] = {
+            "code": code, "start": ts, "home": by.get("home") or None, "away": by.get("away") or None,
+            "neutral": flag(comp.get("neutralSite")), "indoor": flag(ven.get("indoor")),
+            "city": (adr.get("city") or "")[:40] or None, "state": (adr.get("state") or "")[:20] or None,
+            "temp": _sev_num(w.get("temperature")),
+            "wind": next((x for x in (_sev_num(w.get(k)) for k in ("windSpeed", "wind", "gust")) if x is not None), None),
+            "precip": next((x for x in (_sev_num(w.get(k)) for k in ("precipitation", "precipChance")) if x is not None), None),
+            "text": (str(w.get("displayValue") or "")[:40] or None)}
+        for c in teams:
+            nm = (c.get("team") or {}).get("displayName")
+            if nm:
+                _sev_sched_add(code, nm, ts)
+        got = SEV["cov"].get(code)                     # this read covers every game from its earliest one on
+        first = min((v["start"] for k, v in SEV["espn"].items() if k[0] == code and v["start"] >= ts - 86400 * 2),
+                    default=ts)
+        SEV["cov"][code] = min(got, first) if got is not None else first
+        if len(SEV["espn"]) > 4000:
+            for k in sorted(SEV["espn"], key=lambda k: SEV["espn"][k]["start"])[:1000]:
+                SEV["espn"].pop(k, None)
+    except Exception:
+        pass
+
+
+def _sev_miles(a, b):
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return round(2 * 3958.8 * math.asin(math.sqrt(h)), 0)
+
+
+def _sev_px(ticker, now):
+    """(bid, ask, age seconds) of a market from what the engine last read, or None when older than px_age."""
+    got = PRICE_SEEN.get(ticker)
+    if not got or now - got[0] > SEV["px_age"]:
+        return None
+    return got[1], got[2], round(now - got[0], 1)
+
+
+def _sev_diff(code, now):
+    """New items and status changes in this league's injury report since the last one we looked at: only when the
+    cache holds a NEW read (INJ is filled by league_injuries; we never call it), never from an empty read (a failed
+    read is cached as {}), and the first read after a start only sets the baseline. Teams missing from a read keep
+    their old baseline. Returns the events found (material ones first, at most max_events)."""
+    got = INJ.get(code)
+    if not got or SEV["inj_at"].get(code) == got[0]:
+        return []
+    SEV["inj_at"][code] = got[0]
+    snap = got[1]
+    if not isinstance(snap, dict) or not snap:
+        return []
+    cur = {}
+    for team, rows in snap.items():
+        for r in rows or ():
+            try:
+                player, pos, status, when = r[0], r[1], r[2], r[3]
+            except (TypeError, IndexError):
+                continue
+            if player:
+                cur[(team, player)] = (status or "", pos or "", when or "")
+    prev = SEV["inj"].get(code)
+    SEV["inj"][code] = {**{k: v for k, v in (prev or {}).items() if k[0] not in snap}, **cur}
+    if prev is None:
+        return []
+    out = []
+    for k, (st, pos, when) in cur.items():
+        old = prev.get(k)
+        if old is None:
+            out.append((k, "new", None, st, pos, when))
+        elif old[0] != st:
+            out.append((k, "change", old[0], st, pos, when))
+    for k, old in prev.items():
+        if k[0] in snap and k not in cur:
+            out.append((k, "removed", old[0], None, old[1], ""))
+    mat = lambda e: int(any(s and s.lower() not in ("active", "") for s in (e[2], e[3])))
+    out.sort(key=lambda e: -mat(e))
+    return [e + (mat(e),) for e in out[:SEV["max_events"]]]
+
+
+def _sev_news(code, now):
+    """Write this league's new injury events (with the team's game-winner prices now) and queue their follow-ups."""
+    evs = _sev_diff(code, now)
+    if not evs:
+        return 0
+    teams = SEV["team"].get(code) or {}
+    rows, meta = [], []
+    for (team, player), kind, old, new, pos, when, mat in evs:
+        hit = next((v for k, v in teams.items() if _sev_same(code, k, team)), None)
+        e = t = None
+        bid = ask = fair = src = age = None
+        if hit:
+            e, t = hit
+            px = _sev_px(t, now)
+            if px:
+                bid, ask, age = px
+            f = SEV["fair"].get(t)
+            if f and now - f[2] <= SEV["fair_age"]:         # a stale sharp value would fake "the books did not move"
+                fair, src = f[0], f[1]
+        nts = _iso_dt(when)
+        nts = nts.timestamp() if nts else None
+        rows.append((f"{code}|{team}|{player}|{old or ''}|{new or ''}|{when or int(now // 3600)}", round(now, 1),
+                     nts, code, team, player, pos or None, kind, old or None, new or None, mat, e, t, bid, ask, fair,
+                     src, age))
+        meta.append(t)
+    ids = _sev_write("sig_news", SEV_NEWS_COLS, rows)
+    n = 0
+    for nid, t in zip(ids, meta):
+        if nid is not None:
+            n += 1
+            if t:
+                SEV["pend"][nid] = {"ts": now, "ticker": t, "todo": set(SEV_HORIZONS)}
+    if len(SEV["pend"]) > 3000:                            # a flood never grows the list without bound
+        for k in sorted(SEV["pend"], key=lambda k: SEV["pend"][k]["ts"])[:1000]:
+            SEV["pend"].pop(k, None)
+    return n
+
+
+def _sev_followups(now):
+    """Samples of each queued news market at +5/+15/+60 min, from the prices the engine last read (no request). A
+    sample more than one horizon late (the app was busy or off) is dropped, never faked."""
+    rows, taken = [], []
+    for nid, p in list(SEV["pend"].items()):
+        for h in sorted(p["todo"]):
+            due = p["ts"] + h * 60
+            if now < due:
+                continue
+            if now - due > h * 60:
+                p["todo"].discard(h)
+                continue
+            px = _sev_px(p["ticker"], now)
+            if not px:
+                continue
+            f = SEV["fair"].get(p["ticker"])
+            fresh = f and now - f[2] <= SEV["fair_age"]
+            rows.append((nid, h, round(now, 1), round(now - due, 1), px[0], px[1], f[0] if fresh else None,
+                         round(now - f[2], 0) if f else None))
+            taken.append((nid, h))
+    for nid in [k for k, p in SEV["pend"].items() if not p["todo"]]:
+        SEV["pend"].pop(nid, None)
+    ids = _sev_write("sig_news_fu", SEV_FU_COLS, rows) if rows else []
+    if ids:                                                # a failed or refused write keeps the sample due (the late rule expires it)
+        for nid, h in taken:
+            p = SEV["pend"].get(nid)
+            if p:
+                p["todo"].discard(h)
+                if not p["todo"]:
+                    SEV["pend"].pop(nid, None)
+    return ids
+
+
+def _sev_rest(code, team, start):
+    """(rest days, back-to-back, games in the last 7 days) for a team before `start`, from the games we know of;
+    each None when the record doesn't reach back far enough to say (never a guess)."""
+    ls = SEV["sched"].get((code, norm_team(team))) or []
+    cov = SEV["cov"].get(code)
+    prev = [t for t in ls if t < start - 3600]
+    rest = b2b = g7 = None
+    if cov is not None:
+        if prev and cov <= max(prev):
+            rest = round((start - max(prev)) / 86400.0, 2)
+        if cov <= start - 30 * 3600:
+            b2b = int(any(start - 30 * 3600 < t < start - 3600 for t in prev))
+        if cov <= start - 7 * 86400:
+            g7 = sum(1 for t in prev if t > start - 7 * 86400)
+    return rest, b2b, g7
+
+
+def _sev_ctx_row(e, g, phase, now):
+    """One sig_ctx row for a game from the memory the panel pass and the ESPN read left. Unknown = None."""
+    code, start = g["code"], g["start"]
+    sides = g["sides"]
+    espn = [v for v in list(SEV["espn"].values()) if v["code"] == code and v["home"] and v["away"]
+            and abs(v["start"] - start) < 36 * 3600 and len(sides) >= 2
+            and all(any(_sev_same(code, s["pick"], n) for n in (v["home"], v["away"])) for s in sides[:2])]
+    v = min(espn, key=lambda v: abs(v["start"] - start)) if espn else None
+    row = dict.fromkeys(SEV_CTX_COLS)
+    row.update(ts=round(now, 1), phase=phase, mins_to_start=round((start - now) / 60.0, 1), league=code, game_event=e,
+               start_ts=round(start, 0), start_src=g.get("src"))
+    if v:
+        home_s = next((s for s in sides if _sev_same(code, s["pick"], v["home"])), None)
+        away_s = next((s for s in sides if s is not home_s and _sev_same(code, s["pick"], v["away"])), None)
+        row.update(home_team=v["home"], away_team=v["away"], neutral=v["neutral"], indoor=v["indoor"],
+                   venue_city=v["city"], venue_state=v["state"], wx_temp=v["temp"], wx_wind=v["wind"],
+                   wx_precip=v["precip"], wx_text=v["text"])
+        for side, s, nm in (("home", home_s, v["home"]), ("away", away_s, v["away"])):
+            row[side + "_rest"], row[side + "_b2b"], row[side + "_g7"] = _sev_rest(code, nm, start)
+            if s:
+                px = _sev_px(s["ticker"], now)
+                row.update({side + "_ticker": s["ticker"], side + "_bid": px[0] if px else None,
+                            side + "_ask": px[1] if px else None, side + "_fair": s.get("fair")})
+        row["fair_src"] = next((s.get("src") for s in sides if s.get("src")), None)
+        gh, ga = SEV_GEO.get(norm_team(v["home"])), SEV_GEO.get(norm_team(v["away"]))
+        if code in SEV_PRO and gh and ga and v["neutral"] == 0:       # the venue is the home team's city only when known
+            row.update(home_travel_mi=0.0, home_tz=0, away_travel_mi=_sev_miles(ga, gh), away_tz=abs(ga[2] - gh[2]))
+    return tuple(row[c] for c in SEV_CTX_COLS)
+
+
+def _sev_ctx(now):
+    """Give each game its rows: 'pre2h' (first look inside two hours, not closer than 20 minutes to the start) and
+    'start' (the first look at or after the start, up to 20 minutes late). One row each, kept for a year."""
+    rows, keys = [], []
+    for e, g in list(SEV["games"].items()):
+        if not g.get("start") or g.get("src") not in ("book", "feed") or len(g.get("sides") or ()) < 2:
+            continue
+        mins = (g["start"] - now) / 60.0
+        phase = ("pre2h" if SEV["pre_min"][0] <= mins <= SEV["pre_min"][1] else
+                 "start" if -SEV["start_late"] <= mins <= 0 else None)
+        if not phase or (e, phase) in SEV["done"]:
+            continue
+        try:
+            rows.append(_sev_ctx_row(e, g, phase, now))
+            keys.append((e, phase))
+        except Exception as err:
+            console_note(f"signal events ctx: {type(err).__name__}: {err}")
+            SEV["done"].add((e, phase))
+    if rows:
+        if _sev_write("sig_ctx", SEV_CTX_COLS, rows):      # not marked done when the write failed or the table is full
+            SEV["done"].update(keys)
+    return len(rows)
+
+
+def sev_tick(now=None, force=False):
+    """Everything the recorder does, from caches already in memory: injury diffs, due follow-ups, due context rows,
+    pruning. Throttled to one run per `tick` seconds; never raises, never blocks (a busy lock skips the call)."""
+    try:
+        if not STORE.get("db") or not CFG.get("sig_shadow", SIG["on"]):
+            return 0
+        now = now or time.time()
+        if not force and now - SEV["last"] < SEV["tick"]:
+            return 0
+        if not SEV["lock"].acquire(False):
+            return 0
+        try:
+            SEV["last"] = now
+            if not _sev_load(now):
+                return 0
+            n = sum(_sev_news(code, now) for code in list(INJ))
+            _sev_followups(now)
+            n += _sev_ctx(now)
+            if now - SEV["prune"] > 6 * 3600:
+                _sev_prune(now)
+            return n
+        finally:
+            SEV["lock"].release()
+    except Exception as err:
+        try:
+            console_note(f"signal events: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def signal_events(code, games, now=None):
+    """The panel pass's one call: remember this league's games (teams, tickers, start, the book probability next to each
+    side) so the tick can match news and write context rows, then run the tick. No request, never raises."""
+    try:
+        if not STORE.get("db") or not CFG.get("sig_shadow", SIG["on"]):
+            return 0
+        now = now or time.time()
+        team = {}
+        for e, sides in (games or {}).items():
+            two = [x for x in sides if isinstance(x, dict) and not x.get("tie") and x.get("ticker") and x.get("pick")]
+            if len(two) < 2:
+                continue
+            st, src = game_start(e, two[0]["ticker"], two[0].get("exp"))
+            info = []
+            for x in two[:2]:
+                f = x.get("fair_book")
+                if f is None and x.get("src") and not x.get("live"):
+                    f = x.get("fair")
+                f = round(f, 4) if isinstance(f, (int, float)) and not x.get("live") else None
+                info.append({"ticker": x["ticker"], "pick": x["pick"], "fair": f,
+                             "src": str(x["src"])[:20] if x.get("src") and f is not None else None})
+                if f is not None:
+                    SEV["fair"][x["ticker"]] = (f, info[-1]["src"], now)
+                team[norm_team(x["pick"])] = (e, x["ticker"])
+            SEV["games"][e] = {"code": code, "start": st.timestamp() if st else None, "src": src, "seen": now,
+                               "sides": info}
+        SEV["team"][code] = team
+        for e in [e for e, g in SEV["games"].items() if (g.get("start") or g["seen"]) < now - 4 * 3600]:
+            SEV["games"].pop(e, None)
+        if len(SEV["fair"]) > 6000:
+            for k in sorted(SEV["fair"], key=lambda k: SEV["fair"][k][2])[:3000]:
+                SEV["fair"].pop(k, None)
+        return sev_tick(now, force=True)
+    except Exception as err:
+        try:
+            console_note(f"signal events: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+# ---- end signal events
 
 # ---- paper shadows, part 1 (#323 step 2, #332): player-prop price recorder and slate-concentration recorder. Same
 # pattern as signal_shadow: bounded, errors swallowed, off the trading path, append-only, NEVER read by any decision
