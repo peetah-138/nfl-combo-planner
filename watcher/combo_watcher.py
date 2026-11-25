@@ -3518,7 +3518,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode",
                 "overlap_guard", "overlap_n", "overlap_pct")
 
     def send_synced():
@@ -3612,6 +3612,7 @@ def webapp_main():
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
                              "blocks": A.order_blocks(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
+                             "guards": A.guards_view(A.LEAGUE["code"]),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 

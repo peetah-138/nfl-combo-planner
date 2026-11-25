@@ -112,7 +112,7 @@ Real money is involved. Pete uses it daily.
    ended), and when the brake trips a league goes back to its start numbers but **never looser than what it had
    learned** (per number, the stricter of the two). Nothing raises `hedge_cap` or `auto_cap` yet (a later #228 PR wires
    their judge); a value Pete sets himself is never lowered or clamped. **Since 2026.11.21.134** (#228 PR5-PR7) the
-   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok`,
+   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok` (a loss sale only, behind `learned_guards`, see docs/changes/learned-guards.md),
    the hedge lock-in numbers, the `hedge_cap` raise (ceiling $150, `HEDGE_RAISE_LIVE = False`) and Smart Buy's
    `sb_ev_min` are still watch-only (Selling).
    **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
@@ -796,9 +796,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   "Self-tuning PR5-PR7" below).
 - **Stop-loss guards (issue #27):** with Selling at a loss on Allow (or tuned on for the league), auto cash-out may sell a combo below cost only when
   `stop_loss_check` passes: a pick on a **fresh** score feed (`leg_score`, never Kalshi's display-only data; scores
-  older than 150 s or missing = never, and any other pick whose game has started must have a fresh score too), game
-  in play and **not at halftime/a break/end of a period** (`at_break`; `break_ok` may lift this one day, watch-only
-  today), **game played ≥ the league's `prog`** (start
+  older than the league's learned tolerance (start 150 s, band 90-300 s, `learned_guards`) or missing = never, and any other pick whose game has started must have a fresh score too), game
+  in play and **not at halftime/a break/end of a period** (`at_break`; `break_ok` lifts this for a loss sale only, on a league's own learned record, with `learned_guards` on; off = always blocked), **game played ≥ the league's `prog`** (start
   50%, bounds 35–90%), pick under 50% and **≥ `drop` points below its pregame chance** (start 20 points, bounds
   10–45; `pre_of` on each held combo), all held on **3+ checks in a row spanning ≥ 3 min** (none > 5 min apart).
   `prog`/`drop` are learned weekly in `smart_tune` (`_sl_tune`/`_sl_replay` on recorded ticks + score lines, 50+
@@ -1031,7 +1030,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `t_exitpolicy`, `t_replaypolicy`, `t_hedge`, `t_stoploss`, `t_cutloss` pass unchanged. **Invariants listed:** Pause,
   the Pi never trades, Pete's switches (Auto cash-out, Smart sell, Let it ride, auto-hedge, the stop-loss override,
   "I'll sell it"), rule 8, `ACCEPT_WAIT` 15 s, `CASH_RETRIES` 3 (`AUTO_CASH_RETRIES` 9 for auto cash-out, Pete 2026-11-23), `OFFER_LIFE` 150 s, caps fail closed (120 s), fresh
-  score (150 s), in play, live price age (180 s), live-buy score age (120 s), singles' price age (180 s), a real fresh
+  score (150 s start; the loss-sale tolerance is learned, 90-300 s, `learned_guards`), in play, live price age (180 s), live-buy score age (120 s), singles' price age (180 s), a real fresh
   offer before any sale or hedge, secrets. **`knob_view()`** (`analytics()["knobs"]`, cached with it) gives every knob's
   start/bounds in plain words (`knob_say`) and, for the six already learned per league (floor, risk weight, loss cut,
   the loss guards' timing and fall, Smart Buy's dial), the value per league and whose record set it, by the same walk

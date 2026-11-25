@@ -179,6 +179,7 @@ T1 = "KXNBAGAME-26NOV21BOSNYK-BOS"
 put_knobs({"groups": {"nba": {"lv": {"brk_on": 1, "brk_move": 0.04}, "v": {"brk_on": 1, "brk_move": 0.04}, "lat": {}}}})
 brk_sc = {"state": "in", "detail": "Half", "frac": 0.5}
 E.PRICE_SEEN[T1] = (time.time(), 0.30, 0.34, 10)
+_g = E.guards_on; E.guards_on = lambda: False                 # the learned guards off = develop (t_learnedguards.py has them on)
 ok("break_ok never acts live (BRK_LIVE off, brk_on not a live knob), whatever is recorded",
    E.BRK_LIVE is False and "brk_on" not in E.KNOB_LIVE and "brk_move" not in E.KNOB_LIVE
    and E.break_ok(T1, "yes", brk_sc, time.time()) is False)
@@ -203,10 +204,12 @@ ok("a break episode is recorded with its reads, the price after, and when it wou
    row.get("ticker") == T1 and len(json.loads(row["reads"])) == 4 and row["after_bid"] == 0.15
    and row["would"] is not None and row["league"] == "nba")
 ok("a thin or old book is never read as a move", E._brk_book(T1, "yes", t0 + 200 + E.BRK_FRESH + 1) is None)
+E.GUARD_SWITCH.update(at=time.monotonic(), on=False)         # the learned guards off: develop's gross result
 ok("break judge: acting at the break vs just after it, per contract",
    abs(E._knob_res_brk({"reads": [(0, 0.3, 0.32), (30, 0.2, 0.22), (95, 0.2, 0.22)], "after": 0.15, "news": False},
                        {"brk_on": 1, "brk_move": 0.08}) - 0.05) < 1e-9
    and E._knob_res_brk({"reads": [(0, 0.3, 0.32)], "after": 0.15}, {"brk_on": 0, "brk_move": 0.08}) == 0.0)
+E.GUARD_SWITCH.update(at=0.0, on=None)                       # back to reading the real switch
 
 # ---- the stop-loss switch's judge and Smart Buy's watch-only bar
 c = {"stake": 10.0, "pl": -10.0, "pays": 20.0, "legs": [{"ticker": T1, "p": 0.6}]}
@@ -227,7 +230,7 @@ ok("the loss guards may step live; the break rule, the hedge lock-in numbers and
    and all(E.KNOB_JUDGED.get(n) for n in ("sl_auto", "brk_on", "brk_move", "hedge_lock_share", "sb_ev_min")))
 ok("invariants stay untouched (never judged, never live)",
    all(K[n]["cls"] == "invariant" and n not in E.KNOB_JUDGED and n not in E.KNOB_LIVE
-       for n in ("pause", "can_trade", "rule8", "cap_read_age", "sl_feed_age", "in_play", "fresh_quote", "secrets")))
+       for n in ("pause", "can_trade", "rule8", "cap_read_age", "in_play", "fresh_quote", "secrets")))
 ok("the confirmation counts can't be loosened below 3 checks over 3 minutes",
    all(K[n]["min"] == K[n]["start"] for n in ("sl_checks", "sl_span", "hedge_checks", "hedge_span")))
 ok("turning the stop-loss on by itself needs 3 standard errors (a stricter bar)",

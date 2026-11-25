@@ -53,7 +53,7 @@ for k in E.KNOBS:
 ok("every knob is complete, its start inside its bounds" + (f" {bad}" if bad else ""), not bad)
 inv = {k["name"] for k in E.KNOBS if k["cls"] == "invariant"}
 ok("the invariants Pete named are listed and untunable",
-   {"pause", "can_trade", "rule8", "cap_read_age", "sl_feed_age", "in_play", "live_line_age", "fresh_quote",
+   {"pause", "can_trade", "rule8", "cap_read_age", "in_play", "live_line_age", "fresh_quote",
     "secrets", "your_switches", "offer_life", "accept_wait", "cash_retries"} <= inv)
 ok("a hedge can never be tuned into locking in a loss (min 1x cost); the loss cut's first value is the tuner's",
    E.KNOB_BY["hedge_lock_cost"]["min"] == 1.0 and E.KNOB_BY["smart_loss"]["on_value"] == 0.15
@@ -134,7 +134,9 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
            # #228 PR5/PR6: the loss guards, the stop-loss's own switch, the hedge's numbers and cap (behind the switch),
            # and break_ok's watch-only episodes
            "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_err", "_knob_nums", "_knob_sale_league",
-           "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached"]
+           "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached",
+           # the learned selling guards (feed/break episodes, behind their own switch)
+           "KNOB_SHADOW_ROWS", "knob_live_names"]
 LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)

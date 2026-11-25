@@ -7,7 +7,7 @@ from the-odds-api.com). It never places a bet.
 Pythonista on iPhone: tap Run, set the sliders and switches, tap Build.
 Everything is remembered. No need to edit anything in this file.
 """
-import bisect, csv, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
+import bisect, csv, zlib, datetime as dt, hashlib, html, itertools, json, math, os, random, re, statistics, sys, threading, time
 from collections import Counter, defaultdict
 from urllib.parse import quote, unquote
 import requests
@@ -62,6 +62,7 @@ CFG = {
     "overlap_guard": True,    # pick lists leave out (grey) a game you already have overlap_n open bets on, or overlap_pct%
     "overlap_n": 2,           # of the sizing base at risk on; "Add anyway" on Pete's own tap shows it again (display only)
     "overlap_pct": 8,
+    "learned_guards": True,   # the selling guards (score age, break) learn from the app's own results; needs knobs_live
     "knobs_live": True,       # #228 PR3: smart sell tunes its own exit numbers per league (Pete's standing opt-in)
                               # (skip-only). A new key: the old preview switch's stored 'off' was a default, not a choice
     "auto_hedge": True,   # with Auto cash-out on: hedge instead when that locks in more (a purchase)
@@ -261,7 +262,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
 
 
 def next_league():
@@ -4810,6 +4811,155 @@ SL_CHECKS, SL_SPAN, SL_GAP = 3, 180, 300       # 3+ checks in a row, spanning 3+
 SL_FEED_AGE = 150                              # a score older than this (seconds) is stale: no loss sale
 SL_UNDER = 0.5                                 # a loss sale needs the pick under this chance (50%) right now
 
+# ---------------------------------------------------------------- learned guards (Pete: "allow some level of learning")
+# Three fixed selling guards become learned settings, on the same machinery as the exit knobs (the registry, the weekly
+# stepper, the brake, the evidence bar, the shadow move log), behind Settings > Cash out `learned_guards` (default ON,
+# effective only together with `knobs_live`; either one off = exactly develop):
+#   * the score-age tolerance (`sl_feed_age`, start 150 s, 90-300 s in 30 s steps): learned from `feed_ep`, episodes where
+#     only a stale score held a loss sale back (what selling then got after fees against 10 minutes later);
+#   * acting at a halftime or break (`brk_on` / `brk_move`): the existing break_ep episodes, now allowed to go live for
+#     a LOSS sale only (never a hedge) once a league has BRK_MIN_N of its own and the judge's bar is met;
+#   * "too early in the game" (`sl_prog`) is already learned (smart_tune, then the stepper): nothing new moves it.
+# A loosening step also needs a bootstrap range above zero in net dollars; a tightening one is held to a lighter bar.
+# What never moves: no score at all, a game not under way, a one-sided or empty book, Pause, rule 8, the manual Sell.
+GUARD_KNOBS = ("sl_feed_age", "brk_on", "brk_move")
+GUARD_SWITCH = {"at": 0.0, "on": None}
+FEED_BAND = (90, 300)                          # the registry's bounds for sl_feed_age: episodes outside it teach nothing
+FEED_WAIT, FEED_DROP, FEED_KEEP_ROWS = 600, 1800, 5000   # what waiting did: the price 10 min later (dropped after 30)
+FEED_MIN_N = 20                                # a league's own episodes before the judge may step the age
+KNOB_SHADOW_ROWS = 20000                       # the move log (knob_shadow) keeps this many rows at most
+BRK_KEEP_ROWS = 5000                           # the break_ep shadow table, with the learned guards on
+GUARD_BOOT = {"n": 400, "pct": 0.05}           # bootstrap resamples, and the lower percentile that must be above 0
+GUARD_TIGHT = {"band_n": 5, "gain": 0.02, "se": 1.5, "new": 10, "holdout": 0.30}   # a tightening step's lighter bar
+FEED_EP = {}                                   # (ticker, side) -> the open episode, until its 10 minutes are up
+FEED_ERR = {"at": 0.0}
+
+
+def guards_on():
+    """Settings > Cash out 'Let the selling guards learn' (`learned_guards`, on by default) AND `knobs_live`: both must
+    be on. Cached 10 s like knob_switch_on; an unreadable settings file or any error counts as off (develop's rules)."""
+    t = time.monotonic()
+    if GUARD_SWITCH["on"] is None or t - GUARD_SWITCH["at"] > 10:
+        try:
+            on = bool(knob_switch_on() and shared_flag("learned_guards"))
+        except Exception:
+            on = False
+        GUARD_SWITCH.update(at=t, on=on)
+    return bool(GUARD_SWITCH["on"])
+
+
+def guards_view(key):
+    """Read-only text for Settings: what each learned selling guard stands at for league `key` right now, in plain
+    words ({stale, brk, on}). Never raises; the starting values when the guards are off or nothing is recorded."""
+    out = {"on": False, "stale": "%d seconds (the starting value)" % SL_FEED_AGE,
+           "brk": "blocked: no sale at halftime or a break"}
+    try:
+        if not guards_on():
+            return out
+        out["on"] = True
+        st, sm, now = knob_state_cached(), smart_table(), time.time()
+        age, g = knob_live_value("sl_feed_age", key, None, st, sm, now)
+        on_, g2 = knob_live_value("brk_on", key, None, st, sm, now)
+        mv, _ = knob_live_value("brk_move", key, None, st, sm, now)
+        out["stale"] = ("%d seconds (the starting value)" % age if age == SL_FEED_AGE else
+                        "%d seconds, learned from this app's own sales" % age)
+        out["brk"] = ("a loss sale may go through at a break only after a move of %d points or more, learned from this "
+                      "app's own sales" % round(mv * 100) if on_ == 1 else
+                      "blocked: no sale at halftime or a break until %d break episodes show it pays after fees"
+                      % BRK_MIN_N)
+    except Exception as err:
+        print("guards view:", type(err).__name__, err)
+    return out
+
+
+def knob_live_names():
+    """The knobs that act live: KNOB_LIVE, plus the three learned guards while `guards_on()`."""
+    return KNOB_LIVE + GUARD_KNOBS if guards_on() else KNOB_LIVE
+
+
+def feed_age_limit(ticker, loose=False):
+    """How old a live score may be (seconds) before this pick's game counts as stale: SL_FEED_AGE (150) unless the
+    learned guards are on and this league has its own value (a borrowed one is only stricter, as every knob). Only the
+    loss sale (`loose=True`) may use a value above 150; the hedge and the 'sell more' check never go looser than today.
+    Any error, a missing, non-numeric or out-of-range value gives 150."""
+    if not guards_on():
+        return SL_FEED_AGE
+    try:
+        k, chain = _knob_bet_chain([ticker])
+        v, _ = knob_live_value("sl_feed_age", k, chain, knob_state_cached(), {}, time.time())
+        if v is None or not _knob_valid("sl_feed_age", v):
+            return SL_FEED_AGE
+        return v if loose else min(v, SL_FEED_AGE)
+    except Exception:
+        return SL_FEED_AGE
+
+
+def _feed_table():
+    if STORE.get("db") and not STORE.get("feed_ok"):
+        store_x("create table if not exists feed_ep(ts real, ticker text, side text, league text, age real, bid real, "
+                "later real)")
+        store_x("create index if not exists feed_ep_t on feed_ep(ts)")
+        STORE["feed_ok"] = bool(store_rows("select name from sqlite_master where type='table' and name='feed_ep'"))
+
+
+def feed_resolve(now=None):
+    """Closes the open score-age episodes whose 10 minutes are up: what the pick's bid was then (from a price the engine
+    already read, never fetched) is written to `feed_ep`. One that can't be priced within 30 minutes is dropped. The
+    table keeps its newest FEED_KEEP_ROWS. Never raises."""
+    try:
+        now = now or time.time()
+        for key, ep in list(FEED_EP.items()):
+            if now - ep["ts"] < FEED_WAIT:
+                continue
+            bk = _brk_book(key[0], key[1], now) if now - ep["ts"] <= FEED_DROP else None
+            if bk and STORE.get("db"):
+                _feed_table()
+                store_x("insert into feed_ep(ts, ticker, side, league, age, bid, later) values(?,?,?,?,?,?,?)",
+                        (ep["ts"], key[0], key[1], ep["league"], ep["age"], ep["bid"], bk[0]))
+                store_x("delete from feed_ep where rowid not in (select rowid from feed_ep order by ts desc limit ?)",
+                        (FEED_KEEP_ROWS,))
+            if bk or now - ep["ts"] > FEED_DROP:
+                FEED_EP.pop(key, None)
+    except Exception as err:
+        if time.time() - FEED_ERR["at"] > 600:
+            FEED_ERR["at"] = time.time()
+            print("score-age episodes:", type(err).__name__, err)
+
+
+def feed_note(ticker, side, pre, now_ch, pr, now=None, watch=None):
+    """Records one score-age episode for the judge (only while the learned guards are on; reads only, never raises):
+    a time every OTHER loss guard held (in play, not at a break, far enough into the game, the drop) while the score was
+    90-300 s old, with the pick's bid then (one per pick per 10 minutes). Its bid 10 minutes later is added by
+    feed_resolve. Selling then against waiting is what the judge compares."""
+    try:
+        if not guards_on() or pre is None or now_ch is None:
+            return
+        now = now or time.time()
+        feed_resolve(now)
+        sc = leg_score({"ticker": ticker, "side": side})
+        if not sc or sc.get("state") != "in" or at_break(sc):
+            return
+        played = game_played(sc)
+        if played is None or played < pr["prog"] or now_ch >= SL_UNDER or pre - now_ch < pr["drop"]:
+            return
+        age = score_age(ticker_sport(ticker) or "", now)
+        if not (FEED_BAND[0] <= age <= FEED_BAND[1]):
+            return
+        wt, ws = watch or (ticker, side)
+        key = (wt, ws or "yes")
+        if key in FEED_EP:
+            return
+        bk = _brk_book(wt, key[1], now)
+        if not bk or not math.isfinite(bk[0]):
+            return
+        while len(FEED_EP) > 200:
+            FEED_EP.pop(next(iter(FEED_EP)), None)
+        FEED_EP[key] = {"ts": now, "age": round(age, 1), "bid": bk[0], "league": _knob_bet_chain([wt])[0]}
+    except Exception as err:
+        if time.time() - FEED_ERR["at"] > 600:
+            FEED_ERR["at"] = time.time()
+            print("score-age episodes:", type(err).__name__, err)
+
 
 def stoploss_params(tickers):
     """How late in the game, and how big a fall from the pregame chance, the stop-loss switch needs for this bet:
@@ -4981,15 +5131,19 @@ BRK_ERR = {"at": 0.0, "hedge": 0.0}
 
 
 def break_ok(ticker, side, sc, now=None, what="loss", watch=None):
-    """At a break: may a loss sale or hedge act anyway? Records the episode (break_watch) and answers False in this
-    build: BRK_LIVE is off and `brk_on` is not a live knob, so the old rule (wait out the break) always stands. When a
-    later build turns it on, a league's own record must have switched `brk_on` on, the rule must hold on its reads
-    (brk_fires at its brk_move) and a fresh order book read now (max_age=0) must still show the move."""
+    """At a break: may a loss sale or hedge act anyway? Records the episode (break_watch). The old rule (wait out the
+    break) stands unless the learned guards are on (`guards_on()`) and the sale is a LOSS sale (never a hedge): then a
+    league's own record must have switched `brk_on` on (BRK_MIN_N episodes that pay after fees, a bootstrap range above
+    zero), the rule must hold on its reads (brk_fires at its brk_move) and a fresh two-sided order book read now
+    (max_age=0) must still show the move. BRK_LIVE (the old, unlearned way of opening it) stays off."""
     wt, ws = watch or (ticker, side)                  # (#316) a single's episode is filed under the held market
     break_watch(wt, ws, sc, now)
-    if not BRK_LIVE or "brk_on" not in KNOB_LIVE or not knob_switch_on():
-        return False
-    try:                                              # never reached in this build (the gates above)
+    if BRK_LIVE:
+        if "brk_on" not in KNOB_LIVE or not knob_switch_on():
+            return False
+    elif what != "loss" or not guards_on() or "brk_on" not in knob_live_names():
+        return False                                  # develop's rule; the learned guards open a LOSS sale only
+    try:
         k = _knob_bet_chain([ticker])[0]
         if knob("brk_on", k) != 1:
             return False
@@ -5016,13 +5170,15 @@ def game_played(sc):
     return round(1 - float(sc["frac"]), 3)
 
 
-def fresh_live_score(ticker, side, now=None):
+def fresh_live_score(ticker, side, now=None, loose=False):
     """This pick's game on a fresh score feed, while it's in play: (score, '') or (None, why not). Shared by every
-    guard that acts on a live game (the stop-loss switch, the learned loss cut, auto-hedge)."""
+    guard that acts on a live game (the stop-loss switch, the learned loss cut, auto-hedge). The age limit is
+    SL_FEED_AGE (150 s); with the learned guards on, a league's own learned limit (`feed_age_limit`), which only the
+    loss sale (`loose=True`) may use above 150. No score at all is always 'no score feed'."""
     sc = leg_score({"ticker": ticker, "side": side})   # never Kalshi's live data (display only)
     if not sc:
         return None, "no score feed"
-    if score_age(ticker_sport(ticker) or "", now) > SL_FEED_AGE:
+    if score_age(ticker_sport(ticker) or "", now) > feed_age_limit(ticker, loose):
         return None, "score feed stale"
     if sc.get("state") != "in":
         return None, "game not under way"
@@ -5031,8 +5187,10 @@ def fresh_live_score(ticker, side, now=None):
 
 def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None, watch=None):
     """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
-    sc, why = fresh_live_score(ticker, side, now)
+    sc, why = fresh_live_score(ticker, side, now, loose=True)
     if not sc:
+        if why == "score feed stale":
+            feed_note(ticker, side, pre, now_ch, pr, now, watch)
         return False, why
     if pre is None or now_ch is None:
         return False, "no pregame chance"
@@ -5043,6 +5201,7 @@ def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None, watch=None):
         return False, "too early in the game"
     if now_ch >= SL_UNDER or pre - now_ch < pr["drop"]:
         return False, "not far enough below its pregame chance"
+    feed_note(ticker, side, pre, now_ch, pr, now, watch)
     return True, ""
 
 
@@ -5133,7 +5292,7 @@ def _knob_nums(names, starts, tickers):
         st, now = knob_state_cached(), time.time()
         out = []
         for n, s0 in zip(names, starts):
-            if n not in KNOB_LIVE:                    # a watch-only knob (the hedge's lock-in numbers): its start
+            if n not in knob_live_names():                    # a watch-only knob (the hedge's lock-in numbers): its start
                 out.append(s0)
                 continue
             v, _ = knob_live_value(n, k, chain, st, {}, now)
@@ -22750,10 +22909,19 @@ KNOBS = (
      "owner": "sl_allowed (auto_sell_now)", "src": None, "start": 0, "min": 0, "max": 1, "step": 1, "unit": "rule",
      "stricter": "down", "borrow": "own", "learned": None,
      "metric": "return on stake of combos, selling at a loss vs holding (sale prices cut 3%)", "judge": "_sl_replay"},
+    {"name": "sl_feed_age", "group": "loss", "cls": "tunable", "label": "A live score older than this is stale",
+     "what": "A loss sale only acts on a fresh live score. This is how old a score may be (seconds). With \"Let the "
+             "selling guards learn\" on it moves in 30 second steps inside 90 to 300, from what selling on a "
+             "slightly stale score got against waiting 10 minutes (after fees). A missing score, or a game not in "
+             "play, is never allowed; the hedge and the sell-more check never go above the start.",
+     "owner": "fresh_live_score (stop_loss_leg)", "src": "SL_FEED_AGE", "start": 150, "min": 90, "max": 300,
+     "step": 30, "unit": "secs", "stricter": "down", "borrow": "chain-stricter", "learned": None,
+     "metric": "sell now vs the bid 10 minutes later, per contract, after fees", "judge": "score-age episodes"},
     {"name": "brk_on", "group": "loss", "cls": "tunable", "label": "Acts at a break on real news",
      "what": "At halftime, an intermission or the end of a period, a loss sale or a hedge waits. This would let it act "
-             "only when a fresh two-sided order book moved a long way (below) on two reads a minute apart. Watch-only "
-             "for now: it never acts live until a league has 40+ break episodes that show it pays.",
+             "only when a fresh two-sided order book moved a long way (below) on two reads a minute apart. Off until a "
+             "league has 40+ break episodes that show it pays after fees (bootstrap range above zero); with \"Let the "
+             "selling guards learn\" off it stays watch-only. A loss sale only, never a hedge.",
      "owner": "break_ok (stop_loss_leg, hedge_guard)", "src": None, "start": 0, "min": 0, "max": 1, "step": 1,
      "unit": "rule", "stricter": "down", "borrow": "own", "learned": None,
      "metric": "selling at the break vs right after it, per contract", "judge": "break episodes"},
@@ -22967,9 +23135,6 @@ KNOBS = (
     {"name": "cap_read_age", "group": "invariant", "cls": "invariant", "label": "Caps fail closed after",
      "owner": "cap_bets", "src": "CAP_READ_AGE", "start": 120, "unit": "secs",
      "why": "a cap is never checked against an account read older than this: no read, no buy"},
-    {"name": "sl_feed_age", "group": "invariant", "cls": "invariant", "label": "A live score older than this is stale",
-     "owner": "fresh_live_score", "src": "SL_FEED_AGE", "start": 150, "unit": "secs",
-     "why": "a loss sale or hedge only acts on a fresh score"},
     {"name": "in_play", "group": "invariant", "cls": "invariant", "label": "The game must be in play",
      "owner": "fresh_live_score", "src": None, "start": True, "unit": "rule",
      "why": "no loss sale or hedge on a game that hasn't started or is over"},
@@ -23123,7 +23288,7 @@ def _knob_league(key, d, now=None):
     if knob_switch_on():
         st = knob_state_cached()
         out = {}
-        for n in KNOB_LIVE:
+        for n in knob_live_names():
             x, g = knob_live_value(n, key, None, st, d, now)
             out[n] = (x, "back at its start until the brake ends" if g == "brake" else
                       "off until this league's own record turns it on" if n == "smart_loss" and g != key else
@@ -23220,7 +23385,7 @@ def knob_view(now=None):
             out.append(row)
         return {"knobs": out, "leagues": leagues, "groups": [{"key": a, "name": b} for a, b in KNOB_GROUPS],
                 "evidence": dict(KNOB_EVIDENCE), "brake": dict(KNOB_BRAKE), "live": knob_switch_on(),
-                "live_n": len(KNOB_LIVE)}
+                "live_n": len(knob_live_names())}
     except Exception as err:
         print("knob view:", type(err).__name__, err)
         return {}
@@ -23268,6 +23433,7 @@ KNOB_JUDGED = {"smart_floor": "replay", "smart_lam": "replay", "smart_loss": "re
                # (its recorded episodes, watch-only), the hedge's lock-in numbers (its recorded decisions) and Smart
                # Buy's smallest expected profit (its checked bets' results, watch-only)
                "sl_auto": "sl", "sl_checks": "sl", "sl_span": "sl", "sl_gap": "sl", "brk_on": "brk", "brk_move": "brk",
+               "sl_feed_age": "feed",
                "hedge_lock_share": "hedge", "hedge_lock_cost": "hedge", "sb_ev_min": "sbev"}
 # The haircut for loosening steps: a combo with no real offer recorded near the sale sells at 97% of the estimate (an
 # offer right at the slip line); a single with no recorded bid sells 3 cents a contract under its chance (half the
@@ -23281,7 +23447,7 @@ KNOB_STRICT_BAR = ("sl_auto",)
 # footing smart sell itself uses: a combo's offer against Kalshi's usual offer at that chance (kalshi_discount x chance x
 # payout), a single's sale after its fee against the chance after the fee less half the gap it sold into (at least 1c).
 KNOB_BRAKE_BID = 0.01
-KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N", "brk": "BRK_MIN_N", "hedge": "HEDGE_MIN_N",
+KNOB_MIN_N = {"replay": "SMART_MIN_N", "sl": "SL_MIN_N", "sb": "SB_LEARN_N", "brk": "BRK_MIN_N", "feed": "FEED_MIN_N", "hedge": "HEDGE_MIN_N",
               "sbev": "SB_LEARN_N"}   # results a group needs (the evidence knobs)
 # #258: knobs that do the same job never drift together. A tied knob is never stepped (it moves through its partner);
 # in a one-of set only one knob may stand off its start in a league; and the risk weight's whole product (each factor
@@ -23572,7 +23738,7 @@ def knob(name, key, st=None, now=None):
     if k["cls"] != "tunable":
         return k["start"] if k.get("src") is None else knob_live(name)
     now = now or time.time()
-    if name in KNOB_LIVE:
+    if name in knob_live_names():
         return knob_live_value(name, key, st=st, now=now)[0]
     st = st if st is not None else knob_state()
     if _knob_braked(st, key, now):
@@ -23853,6 +24019,11 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
             d = _knob_res_brk(r, new) - _knob_res_brk(r, cur)
             out.append((r.get("kick") or 0, round(d, 4), 1.0))
         return out
+    if judge == "feed":
+        for r in rows:
+            d = _knob_res_feed(r, new) - _knob_res_feed(r, cur)
+            out.append((r.get("kick") or 0, round(d, 4), 1.0))
+        return out
     if judge == "hedge":
         for r in rows:
             d = _knob_res_hedge(r, new) - _knob_res_hedge(r, cur)
@@ -23886,7 +24057,32 @@ def _knob_res_brk(r, vals):
     if not reads or r.get("after") is None:
         return 0.0
     i = brk_fires(reads, reads[0][2], vals.get("brk_move", BRK_MOVE), r.get("news"))
-    return 0.0 if i is None else reads[i][1] - r["after"]
+    if i is None:
+        return 0.0
+    if guards_on():                                   # net dollars after fees (the learned guards; off = develop's gross)
+        return (reads[i][1] - single_fee(reads[i][1])) - (r["after"] - single_fee(r["after"]))
+    return reads[i][1] - r["after"]
+
+
+def _knob_res_feed(r, vals):
+    """One score-age episode under `sl_feed_age`, per contract in net dollars after fees: nothing when the score was
+    older than the tolerance (no sale), else selling then (the bid) against waiting (the bid 10 minutes later)."""
+    tol = vals.get("sl_feed_age", SL_FEED_AGE)
+    if r["age"] > tol + 1e-9:
+        return 0.0
+    return (r["bid"] - single_fee(r["bid"])) - (r["later"] - single_fee(r["later"]))
+
+
+def _guard_bootstrap(ds, last_at, seed):
+    """Lower bound (5th percentile of a seeded, deterministic bootstrap of the mean) of the net dollars a loosening step
+    gained on the bets after the group's last step. A loosening guard step needs this above 0."""
+    xs = [d for k, d, _ in ds if abs(d) > KNOB_EPS and (not last_at or (k or 0) > last_at) and math.isfinite(d)]
+    if len(xs) < 2:
+        return -math.inf
+    rng = random.Random(zlib.crc32(seed.encode()))
+    n = len(xs)
+    means = sorted(sum(rng.choices(xs, k=n)) / n for _ in range(GUARD_BOOT["n"]))
+    return means[int(GUARD_BOOT["pct"] * (GUARD_BOOT["n"] - 1))]
 
 
 def _knob_res_hedge(r, vals):
@@ -23936,7 +24132,33 @@ def _knob_rows(now, deadline=None):
     except Exception as err:                          # Smart Buy's results unreadable: its dial just isn't judged
         print("knob stepper: smart buy results:", type(err).__name__, err)
     brk, hed = _knob_rows_brk_hedge(now)
-    return {"replay": rp, "sl": sl, "sb": sb, "sbev": sb, "brk": brk, "hedge": hed}
+    return {"replay": rp, "sl": sl, "sb": sb, "sbev": sb, "brk": brk, "hedge": hed, "feed": _knob_rows_feed(now)}
+
+
+def _knob_rows_feed(now):
+    """The score-age episodes (feed_ep) of the last KNOB_DAYS, by group (league, its sport, everyone); only while the
+    learned guards are on. Rows with a non-finite or missing number are skipped; unreadable = none."""
+    out = defaultdict(list)
+    if not guards_on():
+        return out
+    try:
+        _feed_table()
+        for r in store_rows("select ts, league, age, bid, later from feed_ep where ts > ? order by ts",
+                            (now - KNOB_DAYS * 86400,)):
+            try:
+                a, b, l_ = float(r["age"]), float(r["bid"]), float(r["later"])
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(x) for x in (a, b, l_)) or not (0 < b < 1 and 0 < l_ < 1):
+                continue
+            lg = r["league"] or ""
+            e = {"kick": r["ts"], "age": a, "bid": b, "later": l_}
+            for key in {lg or None, _knob_sport(lg) if lg and lg != "mix" else None, "all"}:
+                if key:
+                    out[key].append(e)
+    except Exception as err:
+        print("knob stepper: score-age episodes:", type(err).__name__, err)
+    return out
 
 
 def _knob_rows_brk_hedge(now):
@@ -24104,7 +24326,8 @@ def _knob_why_not(ev):
     c = ev["checks"]
     miss = [w for w, ok in (("too few bets it changes", c["band"]), ("gain under 2% of what was staked", c["gain"]),
                             ("within luck", c["se"]), ("too few new results since the last step", c["new"]),
-                            ("the newest bets disagree", c["holdout"])) if not ok]
+                            ("the newest bets disagree", c["holdout"]),
+                            ("its bootstrap range includes zero", c.get("bootstrap", True))) if not ok]
     return ", ".join(miss)
 
 
@@ -24146,11 +24369,12 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             dial = dial if isinstance(dial, dict) else {}
         except Exception:
             dial = {}
-        for j in ("sbev", "brk", "hedge"):            # judges whose evidence may be missing (an older caller)
+        for j in ("sbev", "brk", "hedge", "feed"):            # judges whose evidence may be missing (an older caller)
             rows.setdefault(j, rows.get("sb", {}) if j == "sbev" else {})
-        keys = set(rows["replay"]) | set(rows["sb"]) | set(rows["brk"]) | set(rows["hedge"])
+        keys = set(rows["replay"]) | set(rows["sb"]) | set(rows["brk"]) | set(rows["hedge"]) | set(rows["feed"])
         order = (["all"] if "all" in keys else []) + sorted(k for k in keys if k != "all")
-        tun = [k for k in KNOBS if k["cls"] == "tunable"]
+        gon = guards_on()
+        tun = [k for k in KNOBS if k["cls"] == "tunable" and (gon or k["name"] != "sl_feed_age")]   # off = develop's list
         ver = json.dumps({"ev": KNOB_EVIDENCE, "hold_min": KNOB_HOLD_MIN, "days": KNOB_DAYS, "mode": KNOB_MODE,
                           "live": live, "split": "older 70% / newest 30%, after the last step"})
         prev = st.get("run") if isinstance(st.get("run"), dict) else {}
@@ -24175,7 +24399,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             cur = {}
             for k in tun:                             # where each knob stands for this group now: what live uses from
                 n_ = k["name"]                        # its OWN record, re-read every run (#267)
-                if live and n_ in KNOB_LIVE:          # what live really uses, a borrowed (stricter) value included,
+                if live and n_ in knob_live_names():          # what live really uses, a borrowed (stricter) value included,
                     cur[n_] = knob_live_value(n_, g, None, st, smart, now)[0]   # so a step is judged from there
                 elif n_ in KNOB_SL_FIELD:             # #285 item 2: the loss guards as stoploss_params has them
                     cur[n_] = _knob_sl(g, smart)[0][KNOB_SL_FIELD[n_]]           # (a borrowed value only stricter)
@@ -24192,7 +24416,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 if n_ in KNOB_TIED:                   # moves only through its partner (they do the same job)
                     last.append({"knob": n_, "status": "tied"})
                     continue
-                if k.get("shared_with") and (n_ in KNOB_LIVE or not jd):   # also drives another decision: split
+                if k.get("shared_with") and (n_ in knob_live_names() or not jd):   # also drives another decision: split
                     last.append({"knob": n_, "status": "shared"})              # before it can move (watch-only steps
                     continue                                                   # of a shared one change nothing live)
                 if not jd:                            # its own test isn't built yet (PR3+)
@@ -24204,7 +24428,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                  "say": f"{k['label']}: needs {globals()[KNOB_MIN_N[jd]]} results of its own (has {len(rs)})"})
                     continue
                 v[n_] = cur[n_]                       # the group's own record from here on
-                staked = (5.0 * len(rs)) if jd in ("sb", "sbev") else float(len(rs)) if jd == "brk" else \
+                staked = (5.0 * len(rs)) if jd in ("sb", "sbev") else float(len(rs)) if jd in ("brk", "feed") else \
                     (sum(r["cost"] for r in rs) or 1.0) if jd == "hedge" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
                 top = SB_DIAL_MAX if len(rs) >= SB_DIAL_SOFT_N else SB_DIAL_SOFT
                 for to in knob_candidates(n_, cur[n_]):
@@ -24220,12 +24444,21 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     except KnobOutOfTime:
                         done = False
                         break
-                    is_live = live and n_ in KNOB_LIVE
+                    is_live = live and n_ in knob_live_names()
                     if is_live and g in ("all", "soccer") and (k.get("borrow") == "own" or knob_stricter(n_, to) != to):
                         is_live = False               # leagues borrow only stricter, never the loss cut: a step here
                     #                                   that no league would take stays a test
-                    ev = knob_evidence(ds, staked, e.get("lstep_at") if is_live else e.get("step_at"),
-                                       KNOB_EVIDENCE_STRICT if n_ in KNOB_STRICT_BAR and to != k["start"] else None)
+                    guard = n_ in GUARD_KNOBS and guards_on()
+                    loose_ = knob_loosens(n_, cur[n_], to)
+                    last_at_ = e.get("lstep_at") if is_live else e.get("step_at")
+                    ev = knob_evidence(ds, staked, last_at_,
+                                       KNOB_EVIDENCE_STRICT if n_ in KNOB_STRICT_BAR and to != k["start"] else
+                                       (GUARD_TIGHT if guard and not loose_ else None))
+                    if guard and loose_:               # loosening a guard: the bootstrap range must be above 0 too
+                        lo_ = _guard_bootstrap(ds, last_at_, f"{n_}|{g}")
+                        ev["checks"]["bootstrap"] = lo_ > 0
+                        ev["boot"] = round(lo_, 4) if math.isfinite(lo_) else None
+                        ev["ok"] = all(ev["checks"].values())
                     if ev["band"] == 0 and ev["hold_n"] == 0:
                         continue                      # changes nothing: nothing to log
                     status = "qualifies" if ev["ok"] else ("vetoed" if all(
@@ -24311,9 +24544,14 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             store_x("insert into knob_shadow(ts, league, knob, from_v, to_v, status, gain, share, band, t, new, hold, "
                     "hold_n, why, n, staked, live, ver) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
         store_x("delete from knob_shadow where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
-        for tb in ("break_ep", "hedge_seen"):          # the judges' evidence: kept as long as the shadow log
+        store_x("delete from knob_shadow where rowid not in (select rowid from knob_shadow order by ts desc limit ?)",
+                (KNOB_SHADOW_ROWS,))                   # bounded: the move log can never grow without limit
+        for tb in ("break_ep", "hedge_seen", "feed_ep"):          # the judges' evidence: kept as long as the shadow log
             if store_rows("select name from sqlite_master where type='table' and name=?", (tb,)):
                 store_x(f"delete from {tb} where ts < ?", (now - KNOB_KEEP_DAYS * 86400,))
+        if guards_on() and store_rows("select name from sqlite_master where type='table' and name='break_ep'"):
+            store_x("delete from break_ep where rowid not in (select rowid from break_ep order by ts desc limit ?)",
+                    (BRK_KEEP_ROWS,))
         ANALYTICS["at"] = 0
         return said + ([] if done else ["ran out of time; the rest waits a day"])
     except Exception as err:
@@ -24465,11 +24703,11 @@ def _knob_off_start(e, g, st, smart, live):
     live smart sell uses from the group's own record; shadow: the test's values). A value stricter than its start is
     kept (Pete, #284: back to the start, but never looser than what it had)."""
     vals = e.get("v") if isinstance(e.get("v"), dict) else {}
-    off = {n: x for n, x in vals.items() if n in KNOB_BY and not (live and n in KNOB_LIVE)
+    off = {n: x for n, x in vals.items() if n in KNOB_BY and not (live and n in knob_live_names())
            and knob_stricter_of(n, KNOB_BY[n]["start"], x) != x}
     if live:
         off = {}                                      # live: what live smart sell really changes back
-        for n in KNOB_LIVE:
+        for n in knob_live_names():
             has, x = _knob_own_live(n, g, st, smart)
             if has and knob_stricter_of(n, KNOB_BY[n]["start"], x) != x:
                 off[n] = x
@@ -24531,7 +24769,7 @@ def knob_brake_pass(now=None, force=False):
                     lv = dict(e.get("lv") or {}) if isinstance(e.get("lv"), dict) else {}     # anything smart_tune set
                     lat = dict(e.get("lat") or {}) if isinstance(e.get("lat"), dict) else {}
                     for n in off:
-                        if n in KNOB_LIVE:
+                        if n in knob_live_names():
                             lv[n], lat[n] = KNOB_BY[n]["start"], now
                     e.update(lv=lv, lat=lat, lstep_at=now,
                              hist=(list(e.get("hist") or []) + [{"at": int(now), "knob": "*", "brake": True, "live": True,
@@ -24567,6 +24805,7 @@ def knob_pass(now=None):
     (lines to log, messages to push). Never raises."""
     try:
         pushes = knob_brake_pass(now)
+        feed_resolve(now)                             # close score-age episodes that have waited long enough
         steps = knob_tune(now)
         return [f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes
     except Exception as err:
@@ -24597,9 +24836,9 @@ def knob_shadow_view(now=None):
             pick = lambda *s: [{x: r.get(x) for x in ("knob", "status", "say", "gain", "band", "t", "hold")}
                                for r in last if r.get("status") in s]
             moved = {n: x for n, x in (e.get("v") or {}).items() if n in KNOB_BY and x != KNOB_BY[n]["start"]
-                     and not (live and n in KNOB_LIVE)}  # live: the exit knobs come from the live record below
+                     and not (live and n in knob_live_names())}  # live: the exit knobs come from the live record below
             if live:
-                for n in KNOB_LIVE:
+                for n in knob_live_names():
                     has, x = _knob_own_live(n, g, st, smart)
                     if has and x != KNOB_BY[n]["start"]:
                         moved[n] = x
@@ -24619,7 +24858,7 @@ def knob_shadow_view(now=None):
             out.append({"key": g, "name": league_label(g), "steps": pick("would step"), "also": pick("qualifies"),
                         "vetoed": pick("vetoed"), "below": len(pick("below")), "thin": pick("thin"),
                         "brake": brake, "changes": changes,
-                        "moved": [{"knob": n, "label": KNOB_BY[n]["label"], "live": bool(live and n in KNOB_LIVE),
+                        "moved": [{"knob": n, "label": KNOB_BY[n]["label"], "live": bool(live and n in knob_live_names()),
                                    "say": knob_say(KNOB_BY[n]["unit"], x),
                                    "start": knob_say(KNOB_BY[n]["unit"], KNOB_BY[n]["start"])}
                                   for n, x in moved.items()]})
@@ -24627,7 +24866,7 @@ def knob_shadow_view(now=None):
         tun = [k for k in KNOBS if k["cls"] == "tunable"]
         return {"mode": "live" if live else KNOB_MODE, "at": st.get("_at"), "next": st.get("_next"), "done": run.get("done"),
                 "why": run.get("why"),
-                "live": [KNOB_BY[n]["label"] for n in KNOB_LIVE if n in KNOB_JUDGED] if live else [],
+                "live": [KNOB_BY[n]["label"] for n in knob_live_names() if n in KNOB_JUDGED] if live else [],
                 "leagues": out, "judged": [KNOB_BY[n]["label"] for n in KNOB_JUDGED],
                 "waits": sum(1 for k in tun if k["name"] not in KNOB_JUDGED and not k.get("shared_with")
                              and k["name"] not in KNOB_TIED),
