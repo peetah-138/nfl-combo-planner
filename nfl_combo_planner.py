@@ -21859,6 +21859,73 @@ def _board_group(rows, key, names=None, order=None, paper=None):
     return out
 
 
+def _in_n(x):
+    """A rate as 'N in M' when a small fraction is close (3 in 4), else a plain percent. Display only."""
+    best = min(((abs(x - k / d), k, d) for d in range(2, 11) for k in range(1, d)), default=None)
+    if best and best[0] <= 0.03:
+        return f"{best[1]} in {best[2]}"
+    return f"{round(x * 100)}%"
+
+
+def _held_facts(rows):
+    """#461, display only: for bets held to the end, what was paid per $1 of payout and the best real offer seen before
+    closing. Combos only: their payout is in `bets` and their real offers in `offers` (as the 'rode' line uses). A single
+    bet's contract count is not kept in the ledger, so its price paid is unknown: it gets neither. Read-only."""
+    held = [r for r in rows if r.get("end") in ("won", "lost")]
+    if not held:
+        return
+    pays = {}
+    try:
+        pays = {x["combo"]: x["pays"] for x in store_rows("select combo, pays from bets") if x.get("pays")}
+    except Exception as err:
+        print("held facts: payouts:", type(err).__name__, err)
+    for r in held:
+        r["pay_known"] = pays.get(r["ticker"]) if r["kind"] == "combo" else None
+        r["best_offer"] = None
+        if r["kind"] == "combo" and r["end"] == "lost":
+            try:
+                b = store_rows("select max(offer) as b from offers where combo=? and real_offer=1", (r["ticker"],))
+                r["best_offer"] = (b[0] or {}).get("b") if b else None
+            except Exception as err:
+                print("held facts: offers:", type(err).__name__, err)
+
+
+def _held_summary(rs):
+    """#461: the plain lines for the Results 'How it ended' tab, from rows that went through _held_facts.
+    None when nothing was held to the end. Every division is guarded. Display only: nothing here decides anything."""
+    held = [r for r in rs if r.get("end") in ("won", "lost")]
+    if not held:
+        return None
+    won = sum(1 for r in held if r["end"] == "won")
+    n = len(held)
+    out = {"n": n, "won": won, "lost": n - won, "few": n < BOARD_FEW, "line": f"Won {won} of {n}", "be": None, "priced": 0}
+    priced = [r for r in held if (r.get("pay_known") or 0) > 0]
+    pay = sum(r["pay_known"] for r in priced)
+    if priced and pay > 0:
+        be = min(1.0, sum(r["cost"] for r in priced) / pay)
+        out.update(be=round(be, 3), priced=len(priced))
+        out["line"] += f"; at these prices you needed about {_in_n(be)} to break even" + \
+            (f" (price known for {len(priced)} of {n})" if len(priced) < n else "")
+    else:
+        out["line"] += "; the price paid isn't on record, so no break-even"
+    lost = [r for r in held if r["end"] == "lost"]
+    if lost:
+        seen = [r for r in lost if r.get("best_offer") is not None]
+        gaps = [r["best_offer"] - r["cost"] for r in seen if r["best_offer"] > r["cost"] + 0.005]
+        h = {"lost": len(lost), "seen": len(seen), "above": len(gaps), "none": len(lost) - len(seen),
+             "lo": round(min(gaps), 2) if gaps else None, "hi": round(max(gaps), 2) if gaps else None, "few": len(lost) < BOARD_FEW}
+        if seen:
+            h["line"] = (f"{len(gaps)} of {len(seen)} traded above what you paid before closing"
+                         + (f" (best bid beat cost by ${h['lo']:.2f}" + (f" to ${h['hi']:.2f}" if h["hi"] != h["lo"] else "") + ")"
+                            if gaps else "") + ".")
+        else:
+            h["line"] = "No price history to check these against."
+        if seen and h["none"]:
+            h["line"] += f" {h['none']} with no price history."
+        out["hist"] = h
+    return out
+
+
 def _board_say(rows, what):
     """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
     big = [r for r in rows if not r["few"] and r["roi"] is not None]
@@ -22059,6 +22126,7 @@ def profit_board(now=None, max_age=120):
             r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
         else:
             r.pop("held", None)
+    _held_facts(rows)
     loc = dt.datetime.fromtimestamp(now)
     week0 = (loc - dt.timedelta(days=loc.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     month0 = loc.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -22151,7 +22219,8 @@ def profit_board(now=None, max_age=120):
                 "best": {"day": best[0], "pl": round(best[1], 2)} if best else None,
                 "worst": {"day": worst[0], "pl": round(worst[1], 2)} if worst else None,
                 "vs_hold": {"n": len(sold), "gain": round(sum(r["sold_net"] - r["held"] for r in sold), 2)},
-                "by": by, "say": say, "quality": quality(since), "few": len(rs) < BOARD_FEW}
+                "by": by, "say": say, "quality": quality(since), "few": len(rs) < BOARD_FEW,
+                "held": _held_summary(rs)}
     days = defaultdict(float)
     for r in rows:
         if r.get("closed"):
