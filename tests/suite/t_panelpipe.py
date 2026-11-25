@@ -8,6 +8,21 @@ import os, time, tempfile, importlib.util, copy
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 import datetime as _dt
+# Pin the clock to noon Pacific (issue: these fixtures put kickoffs at now+3h/+4h, and the panel's "today" ends at 4 a.m.
+# Pacific, so a run between 1 and 4 a.m. Pacific, e.g. CI at 11:54 UTC, saw those games as tomorrow's). Time still moves.
+import datetime as _rdt, types as _types
+_real_time = time.time
+_OFF = _rdt.datetime(2026, 11, 24, 20, 0, tzinfo=_rdt.timezone.utc).timestamp() - _real_time()
+time.time = lambda: _real_time() + _OFF
+
+
+class _FDT(_rdt.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _rdt.datetime.fromtimestamp(time.time(), tz)
+
+
+E.dt = _types.SimpleNamespace(**{k: getattr(_rdt, k) for k in dir(_rdt) if not k.startswith("__")}); E.dt.datetime = _FDT
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp(); E.SIZING_FILE = os.path.join(E.HERE, "s.json")
 E.CUTOFF_FILE = os.path.join(E.HERE, "c.json"); E.REBUILD_FLAG = os.path.join(E.HERE, "flag"); E.HELD_FILE = os.path.join(E.HERE, "held.json")
 E.MAIN_SAVED = os.path.join(E.HERE, "main.json")
