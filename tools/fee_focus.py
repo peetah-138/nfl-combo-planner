@@ -32,11 +32,54 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import exit_replay as ER                                      # noqa: E402  (its read-only opener and the engine's fee rate)
+
+
+def engine_fee_rate():
+    """Kalshi's fee rate from the engine's own FEE_RATE line (read as text: importing the engine would run it)."""
+    for src in (HERE.parent / "nfl_combo_planner.py", HERE / "nfl_combo_planner.py"):
+        try:
+            hit = re.search(r"^FEE_RATE\s*=\s*([0-9.]+)", src.read_text(errors="ignore"), re.M)
+        except OSError:
+            continue
+        if hit:
+            return float(hit.group(1))
+    return None
+
+
+FEE_RATE = engine_fee_rate()
+FEE_NOTE = None
+if FEE_RATE is None:                                         # no engine file beside the script: Kalshi's published 7%
+    FEE_RATE, FEE_NOTE = 0.07, "engine file not found next to this script: used Kalshi's standard 0.07 fee rate"
+
+
+# The same read-only helpers as tools/exit_replay.py, copied so this file runs alone (the Air has no tools/ folder).
+def open_ro(path):
+    """Open the history file read-only. A write through this connection fails: 'attempt to write a readonly database'."""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError("history file not found")
+    db = sqlite3.connect(p.as_uri() + "?mode=ro", uri=True, timeout=10)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def tables(db):
+    return {r[0] for r in db.execute("select name from sqlite_master where type='table'")}
+
+
+def columns(db, table):
+    return {r[1] for r in db.execute(f"pragma table_info({table})")}
+
+
+def need(db, table, cols):
+    """None when the table has all the columns, else a plain reason it can't be used."""
+    if table not in tables(db):
+        return f"table {table} is missing"
+    miss = [c for c in cols if c not in columns(db, table)]
+    return f"table {table} lacks column(s) {', '.join(miss)}" if miss else None
+
 
 HIDE_N = 20                  # a cell with fewer bets than this is never shown
-FEE_RATE = ER.FEE_RATE
 STAKE_B = ((0, 1, "$0-1"), (1, 2, "$1-2"), (2, 5, "$2-5"), (5, 10, "$5-10"), (10, 25, "$10-25"), (25, 1e12, "$25+"))
 PRICE_B = ((0, 0.15, "<15c"), (0.15, 0.30, "15-30c"), (0.30, 0.60, "30-60c"), (0.60, 0.85, "60-85c"), (0.85, 1.01, "85c+"))
 DAY_B = ((1, 2, "1-2 bets"), (3, 5, "3-5 bets"), (6, 10 ** 9, "6+ bets"))
@@ -74,6 +117,11 @@ def day_of(ts):
 def game_of(tickers):
     """The game(s) a bet is on, as one key (the engine's _sb_game: a spread or total counts as its game)."""
     return "+".join(sorted({re.sub(r"(SPREAD|TOTAL)-", "GAME-", t.rsplit("-", 1)[0]) for t in tickers or () if t}))
+
+
+def norm_key(tickers):
+    """One spelling of 'these legs' so a ledger row and a paper-book row on the same bet meet (order never matters)."""
+    return json.dumps(sorted(str(t) for t in tickers))
 
 
 def legs_of(text):
@@ -135,9 +183,9 @@ def by_group(items, keyfn, order, mk):
 def ledger_rows(db):
     """Every finished ledger row with the pieces both parts need. Nothing here is ever printed per row."""
     pays_by = {}
-    if not ER.need(db, "sell_log", ["ticker", "pays"]):
+    if not need(db, "sell_log", ["ticker", "pays"]):
         pays_by = {r["t"]: r["p"] for r in db.execute("select ticker t, max(pays) p from sell_log group by ticker")}
-    nf_ok = "nf" in ER.columns(db, "ledger")
+    nf_ok = "nf" in columns(db, "ledger")
     out = []
     sql = ("select ticker, kind, cost, back, fees, sold_back, sell_fees, n_sold, status, opened, closed, legs"
            + (", nf" if nf_ok else "") + " from ledger where cost > 0")
@@ -161,7 +209,7 @@ def ledger_rows(db):
                     "cost": cost, "back": r["back"] or 0.0, "fees": fees, "sell_fees": sell, "entry": fees - sell,
                     "money": money, "n": n if p else None, "p": p if p and 0 < p < 1 else None,
                     "nf": (r["nf"] if nf_ok else None), "day": day_of(ts) if ts else None, "ts": ts,
-                    "legs": json.dumps(legs), "game": game_of(legs) or r["ticker"]})
+                    "legs": norm_key(legs), "game": game_of(legs) or r["ticker"]})
     return out
 
 
@@ -174,8 +222,10 @@ def fee_formula_section(rows, fee_ratio_out):
                        "single-fill rows whose recorded entry fee equals the rounded formula to the cent."),
            "kinds": {}}
     for kg in ("single", "combo"):
-        use = [r for r in rows if r["kind"] == kg and r["p"] and r["entry"] > 0]
-        sub = {"rows_with_size_and_entry_fee": len(use)}
+        use = [r for r in rows if r["kind"] == kg and r["p"]]       # zero-fee rows stay in: they are the answer if combos pay nothing
+        sub = {"rows_with_size": len(use), "of_which_zero_entry_fee": sum(1 for r in use if r["entry"] <= 0.004)}
+        if 0 < sub["of_which_zero_entry_fee"] < HIDE_N:
+            sub["of_which_zero_entry_fee"] = f"n<{HIDE_N}, hidden"
         if len(use) < HIDE_N:
             sub["note"] = HIDE_NOTE
             out["kinds"][kg] = sub
@@ -193,7 +243,8 @@ def fee_formula_section(rows, fee_ratio_out):
             sub["single_fill_rows"] = f"{len(one)} (n<{HIDE_N}, hidden)"
         out["kinds"][kg] = sub
         if kg == "combo":
-            fee_ratio_out.append(sub.get("single_fill_ratio_to_rounded") or sub["ratio_recorded_to_unrounded_formula"])
+            r1 = sub.get("single_fill_ratio_to_unrounded")
+            fee_ratio_out.append(r1 if r1 is not None else sub["ratio_recorded_to_unrounded_formula"])
     zero = {kg: sum(1 for r in rows if r["kind"] == kg and r["entry"] <= 0) for kg in ("single", "combo")}
     neg = sum(1 for r in rows if r["fees"] < -0.004 or r["sell_fees"] < -0.004)
     out["rebates"] = {"rows_with_a_negative_fee_total": neg if neg >= HIDE_N or neg == 0 else f"{neg} (n<{HIDE_N}, hidden)",
@@ -279,6 +330,29 @@ def ledger_cells(rows, boot, matched):
     return out
 
 
+def matched_cells(rows, prows, boot):
+    """REAL finished ledger bets that the paper book also scored (same legs), by that bet's grade and EV quartile."""
+    book = {r["bet"]: r for r in prows}
+    pairs = [(r, book[r["legs"]]) for r in rows if r["status"] in ("won", "lost", "sold") and r["cost"] > 0 and r["legs"] in book]
+    out = {"rows": len(pairs), "net_is": "real money back minus real money out, fees included; grade and ev from the paper book"}
+    if len(pairs) < HIDE_N:
+        out["note"] = HIDE_NOTE
+        return out
+
+    def mk(g):
+        return cell([(r["game"], r["cost"], r["back"] - r["cost"]) for r, _ in g], boot)
+    out["all"] = mk(pairs)
+    out["by_grade"] = by_group(pairs, lambda t: t[1]["grade"], sorted({t[1]["grade"] for t in pairs}), mk)
+    evs = sorted(t[1]["ev"] for t in pairs)
+    if len(evs) >= 4 * HIDE_N:
+        e1, e2, e3 = (evs[int(q * (len(evs) - 1))] for q in (0.25, 0.5, 0.75))
+        names = ["Q1 lowest ev", "Q2", "Q3", "Q4 highest ev"]
+        out["by_ev_quartile"] = by_group(pairs, lambda t: names[(t[1]["ev"] > e1) + (t[1]["ev"] > e2) + (t[1]["ev"] > e3)], names, mk)
+    else:
+        out["by_ev_quartile"] = {"note": f"fewer than {4 * HIDE_N} matched real bets"}
+    return out
+
+
 def paper_rows(db, combo_ratio):
     """Settled sb_paper rows with the bet's win/loss, its price, and the fee-recomputed result at any stake."""
     out, skipped = [], 0
@@ -290,7 +364,7 @@ def paper_rows(db, combo_ratio):
         if not p or not 0 < p < 1 or r["ev"] is None:
             skipped += 1
             continue
-        out.append({"bet": r["bet"], "day": r["day"], "combo": combo, "grade": r["grade"] or "none", "role": r["role"],
+        out.append({"bet": norm_key(legs_of(r["bet"]) or [r["bet"]]), "day": r["day"], "combo": combo, "grade": r["grade"] or "none", "role": r["role"],
                     "p": p, "ev": r["ev"], "stake": r["stake"] or 0.0, "win": r["plain"] > 0, "recorded": r["plain"],
                     "game": r["game"] or r["bet"]})
     return out, skipped
@@ -371,9 +445,9 @@ def simulate(prows, boot, combo_ratio):
         by_day.setdefault(r["day"], []).append(r)
     for v in by_day.values():
         v.sort(key=lambda r: -r["ev"])
-    res = {"actual": {}, "rules": {}}
+    res = {"paper_book_as_staked": {}, "rules": {}}
     for part, rows in split.items():
-        res["actual"][part] = cell(evaluate(rows, lambda r: r["stake"], combo_ratio), boot)
+        res["paper_book_as_staked"][part] = cell(evaluate(rows, lambda r: r["stake"], combo_ratio), boot)
     best = None
     for n in TOP_N:
         for m in MULTS:
@@ -391,14 +465,14 @@ def simulate(prows, boot, combo_ratio):
     res["rule_picked_on_train_by_net_per_dollar"] = best[1] if best else None
     res["picked_rule_scored_on_test"] = res["rules"][best[1]]["test"] if best else None
     res["note"] = ("the pick uses only the first 70% of days; 'test' cells are the last 30%. Compare each rule's net with "
-                   "actual.test: a rule that keeps fewer bets bets less money, so look at per-dollar AND total.")
+                   "paper_book_as_staked.test: a rule that keeps fewer bets bets less money, so look at per-dollar AND total.")
     out.update(res)
     return out
 
 
 # ---------------------------------------------------------------- run
 def data_quality(db, rows, prows):
-    t = ER.tables(db)
+    t = tables(db)
     dq = {"ledger_rows": len(rows), "ledger_by_status": {}}
     for r in rows:
         dq["ledger_by_status"][r["status"]] = dq["ledger_by_status"].get(r["status"], 0) + 1
@@ -420,21 +494,27 @@ def data_quality(db, rows, prows):
 
 
 def show(label, obj, depth=0):
-    ER.show(label, obj, depth)
+    pad = "  " * depth
+    if isinstance(obj, dict):
+        print(f"{pad}{label}:")
+        for k, v in obj.items():
+            show(k, v, depth + 1)
+    else:
+        print(f"{pad}{label}: {obj}")
 
 
 def run(path, out_path, boot):
     try:
-        db = ER.open_ro(path)
+        db = open_ro(path)
         db.execute("select count(*) from sqlite_master").fetchone()
     except (OSError, sqlite3.Error) as err:
         print(f"cannot open the history file read-only: {type(err).__name__}")
         return 2, None
     summary = {"what": "fee focus, aggregates only; descriptive, not a decision; changes nothing in the app", "fee_rate": FEE_RATE}
-    if ER.FEE_NOTE:
-        summary["fee_rate_note"] = ER.FEE_NOTE
+    if FEE_NOTE:
+        summary["fee_rate_note"] = FEE_NOTE
     try:
-        why = ER.need(db, "ledger", ["ticker", "kind", "cost", "back", "fees", "sold_back", "sell_fees", "n_sold", "status", "opened", "closed"])
+        why = need(db, "ledger", ["ticker", "kind", "cost", "back", "fees", "sold_back", "sell_fees", "n_sold", "status", "opened", "closed"])
         rows = [] if why else ledger_rows(db)
         ratio = []
         if why:
@@ -444,9 +524,12 @@ def run(path, out_path, boot):
             a.update(fee_buckets_section(rows))
             a["round_trip"] = round_trip_section(rows)
             summary["part_a_fees"] = a
-        combo_ratio = ratio[0] if ratio and ratio[0] and 0.05 < ratio[0] < 3 else 1.0
-        summary["combo_fee_ratio_used_in_part_b"] = combo_ratio
-        pwhy = ER.need(db, "sb_paper", ["bet", "ts", "day", "kind", "grade", "role", "price", "ev", "pays", "stake", "plain", "game"])
+        if ratio and ratio[0] is not None and 0 <= ratio[0] < 3:
+            combo_ratio, why_ratio = ratio[0], "measured from the ledger's combo rows (Part A)"
+        else:
+            combo_ratio, why_ratio = 1.0, "no usable combo measurement (too few combo rows): the standard fee was assumed"
+        summary["combo_fee_ratio_used_in_part_b"] = {"ratio_to_unrounded_formula": round(combo_ratio, 3), "why": why_ratio}
+        pwhy = need(db, "sb_paper", ["bet", "ts", "day", "kind", "grade", "role", "price", "ev", "pays", "stake", "plain", "game"])
         prows, pskip = ([], 0) if pwhy else paper_rows(db, combo_ratio)
         summary["data_quality"] = data_quality(db, rows, prows)
         b = {}
@@ -456,6 +539,7 @@ def run(path, out_path, boot):
             keys = {r["bet"] for r in prows}
             matched = [r for r in rows if r["legs"] in keys]
             b["actual_bets"] = ledger_cells(rows, boot, matched)
+            b["real_bets_by_paper_grade_and_ev"] = matched_cells(rows, prows, boot) if not pwhy else {"skipped": pwhy}
         if pwhy:
             b["paper_book"] = {"skipped": pwhy}
             b["top_n_per_day_what_if"] = {"skipped": pwhy}

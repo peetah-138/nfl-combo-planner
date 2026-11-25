@@ -35,7 +35,7 @@ def build(path, paper=True, combo_mult=1.0):
         n, p = 10 + i % 7, 0.40
         fee = math.ceil(round(0.07 * n * p * (1 - p) * 100, 6)) / 100
         win = i % 2 == 0
-        t = f"KXNBAGAME-26NOV{i:02d}AAABBB-T{i}"
+        t = f"KXNBAGAME-26NOV{i:03d}AAABBB-T"
         db.execute("insert into ledger values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (t, "single", "nba", "yes", n * p + fee, n if win else 0.0, fee, 0, 0, 0, "won" if win else "lost",
                     base + i * 86400, base + i * 86400 + 9000, json.dumps([t]), None, None, None, 1))
@@ -87,7 +87,7 @@ def a():
     ok("singles match the rounded formula", k["single"].get("single_fill_ratio_to_rounded") == 1.0, k["single"])
     ok("single match pct 100", k["single"].get("matches_rounded_formula_pct") == 100.0, k["single"])
     ok("combo ratio ~1.0 with standard fee", abs(k["combo"]["ratio_recorded_to_unrounded_formula"] - 1.0) < 0.05, k["combo"])
-    ok("ratio fed to part B", abs(S["combo_fee_ratio_used_in_part_b"] - 1.0) < 0.1, S["combo_fee_ratio_used_in_part_b"])
+    ok("ratio fed to part B", abs(S["combo_fee_ratio_used_in_part_b"]["ratio_to_unrounded_formula"] - 1.0) < 0.1, S["combo_fee_ratio_used_in_part_b"])
     ok("round trip present", "single" in S["part_a_fees"]["round_trip"] and "combo" in S["part_a_fees"]["round_trip"])
 section("A", a)
 
@@ -96,6 +96,9 @@ def b():
     pb = S["part_b_few_strategic_bets"]
     ok("paper cells", pb["paper_book"]["rows_settled"] == 300 and "by_grade" in pb["paper_book"])
     sim = pb["top_n_per_day_what_if"]
+    m = pb["real_bets_by_paper_grade_and_ev"]
+    ok("real bets matched to the paper book by legs", m["rows"] == 60 and set(m["by_grade"]) == {"A", "B"}, m.get("rows"))
+    ok("paper_book_as_staked named", "paper_book_as_staked" in pb["top_n_per_day_what_if"])
     ok("sim has 70/30 days", sim.get("days_train") and sim.get("days_test") and sim["days_train"] > sim["days_test"], sim.get("days"))
     ok("sim rules grid", all(f"top{n}_x{m}" in sim["rules"] for n in (1, 2, 3, 5) for m in (1, 2, 3)))
     ok("rule picked on train only", sim["rule_picked_on_train_by_net_per_dollar"] in sim["rules"])
@@ -134,3 +137,14 @@ def e():
     r = S5["part_a_fees"]["formula_check"]["kinds"]["combo"]["ratio_recorded_to_unrounded_formula"]
     ok("double combo fee read as ~2", 1.8 < r < 2.3, r)
 section("E", e)
+
+
+def f():
+    P6 = os.path.join(TMP, "zero.db"); build(P6, combo_mult=0.0)
+    _, S6, _ = runit(P6)
+    k = S6["part_a_fees"]["formula_check"]["kinds"]["combo"]
+    ok("zero-fee combos read as ratio ~0", k["ratio_recorded_to_unrounded_formula"] < 0.05, k)
+    ok("zero-fee rows counted", k["of_which_zero_entry_fee"] == 30, k)
+    u = S6["combo_fee_ratio_used_in_part_b"]
+    ok("part B uses ~0, not 1", u["ratio_to_unrounded_formula"] < 0.05 and "measured" in u["why"], u)
+section("F", f)
