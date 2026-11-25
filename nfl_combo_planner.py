@@ -29,6 +29,8 @@ CFG = {
     "hedge_close": True,  # split coin-flip games between both sides across combos
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
+    "wp_shadow": True,    # (#483) record ESPN win chance beside Kalshi and our model (write-only, nothing reads it); false = off
+    "wp_hist": True,      # (#483) keep ESPN's win-chance history and betting line for followed games (rate-limited GETs); false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
@@ -7074,6 +7076,8 @@ def game_detail(event_id, code, max_age=6, budget=None):
         r = requests.get(url, params={"event": str(event_id)}, timeout=10)
         data = r.json() if r.ok else {}
         out = _parse_game_detail(data, event_id) if data else {}
+        if data:
+            wp_hist_ingest(code, event_id, data)             # (#483) record-only: reuses this fetch, never raises
     except (requests.RequestException, ValueError, TypeError, AttributeError) as err:
         # Keep serving the last good copy, but log it once per game (like kalshi_score/display_score) so a
         # persistent feed break is visible instead of silently falling back forever.
@@ -7911,6 +7915,7 @@ def fetch_scores(max_age=None, code=None):
                         "redzone": bool(sit.get("isRedZone")), "sport": code,
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
                         "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
+                        "wp_play": (str(lp.get("id") or "")[:40] or None) if state == "in" else None,   # (#483) the play that wp belongs to
                         "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
                 if state == "in" and code in CB_STAT_SPORTS:   # (#348) shots etc. ESPN already sent: comeback model only
                     info["stats"], info["ostats"] = _cb_team_stats(me), _cb_team_stats(opp)
@@ -18223,6 +18228,10 @@ def resolve_closes(limit=150):
     except Exception:
         pass
     try:
+        wp_resolve(limit)                              # (#483) outcomes for the ESPN win-chance recorder
+    except Exception:
+        pass
+    try:
         resolve_line_fairs(limit)
     except Exception:
         pass
@@ -19475,6 +19484,7 @@ def panel_collect(book_snap, code, log=print):
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
+    espn_wp_record(code, games)                        # (#483) ESPN win chance recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -28032,6 +28042,354 @@ def signal_shadow(code, games, lines=(), now=None):
         except Exception:
             pass
         return 0
+
+
+# ---- ESPN win-chance recorder (issue #483). RECORD-ONLY: NOTHING in the engine or watcher reads these tables (only
+# tools/espn_wp_scorecard.py, offline, read-only). Three append-only, bounded tables, all errors swallowed, never on the
+# trading path:
+#   wp_shadow  ESPN's raw scoreboard win chance (wp) for a game under way, its play id and how long we have seen that play,
+#              next to our pure model (no wp), the 50/50 blend and Kalshi's bid/ask/mid, joined later on ticker + ts. A row
+#              with wp NULL is a league/game that has none (coverage). From data already in memory: no request.
+#   wp_outcome the settled result of each ticker in wp_shadow (one row per ticker), for scoring.
+#   wp_hist    ESPN's summary `winprobability` history (new plays only) and wp_lines its `pickcenter` line when it changes,
+#              for followed NBA / college basketball / NFL / college football games. Reuses the football game page's own
+#              summary fetch; otherwise a polite, capped, key-free GET (WPH below), on a background thread.
+# Flags `wp_shadow` and `wp_hist` (real CFG keys, ON by default for recording; false = off).
+WPR = {"every": 60, "keep_days": 30, "cap": 300000, "prune": 0.0, "seen": {}, "play": {}}
+WPH = {"leagues": ("nfl", "ncaaf", "nba", "ncaamb"), "live_every": 300, "pre_every": 7200, "pre_window": 4 * 3600,
+       "per_hour": 240, "per_tick": 4, "gap": 0.5, "keep_days": 45, "cap": 400000, "lines_cap": 50000, "prune": 0.0,
+       "last": {}, "have": {}, "line": {}, "live": {}, "done": {}, "stamps": [], "busy": False, "lock": threading.Lock()}
+
+
+def _wp_tables():
+    store_x("create table if not exists wp_shadow(ts real, ticker text, league text, wp real, play_id text, "
+            "play_age real, feed_age real, model real, blend real, fair real, bid real, ask real, mid real, lead int, "
+            "frac real)")
+    store_x("create index if not exists wp_shadow_ts on wp_shadow(ts)")
+    store_x("create index if not exists wp_shadow_t on wp_shadow(ticker)")
+    store_x("create table if not exists wp_outcome(ticker text primary key, outcome text, ts real)")
+    store_x("create table if not exists wp_hist(ts real, league text, game text, seq int, play_id text, home_wp real, "
+            "tie real, wall real, home text, away text)")
+    store_x("create unique index if not exists wp_hist_g on wp_hist(game, play_id)")
+    store_x("create index if not exists wp_hist_ts on wp_hist(ts)")
+    store_x("create table if not exists wp_lines(ts real, league text, game text, provider text, details text, "
+            "spread real, total real, over_odds real, under_odds real, home_ml real, away_ml real, home text, "
+            "away text, state text)")
+    store_x("create index if not exists wp_lines_ts on wp_lines(ts)")
+
+
+def _wp_insert(batches):
+    """{table: [rows]} in one transaction under the history lock; best-effort, never raises. Duplicates are ignored."""
+    db = STORE.get("db")
+    if not db:
+        return
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for tbl, rows in batches.items():
+                if rows:
+                    db.executemany(f"insert or ignore into {tbl} values({','.join('?' * len(rows[0]))})", rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+
+
+def _wp_prune(now):
+    """Oldest-first only: rows past their retention days, then the oldest rows over the ceiling. Nothing else is deleted."""
+    WPR["prune"] = WPH["prune"] = now
+    for tbl, days, cap in (("wp_shadow", WPR["keep_days"], WPR["cap"]), ("wp_hist", WPH["keep_days"], WPH["cap"]),
+                           ("wp_lines", WPH["keep_days"], WPH["lines_cap"]), ("wp_outcome", 60, 100000)):
+        store_x(f"delete from {tbl} where ts < ?", (now - days * 86400,))
+        n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        if n > cap:
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+
+
+def _wp_num(v, lo=None, hi=None):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")) or (lo is not None and v < lo) or (hi is not None and v > hi):
+        return None
+    return v
+
+
+def wp_shadow(code, games, now=None):
+    """Record ESPN's raw win chance (wp) for each side of a game under way (about every 60 s a ticker), with its play id,
+    how long we have watched that play, the feed's age, our pure model and the 50/50 blend (before calibration), the
+    engine's own live fair, and Kalshi's bid/ask/mid. From cached scores and prices already held: never fetches.
+    Returns rows written; never raises, never reads the tables back into a decision."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_shadow", True):
+            return 0
+        now = now or time.time()
+        seen, plays, rows = WPR["seen"], WPR["play"], []
+        for e, sides in (games or {}).items():
+            for x in sides:
+                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker") or not x.get("live"):
+                    continue
+                t = x["ticker"]
+                if now - seen.get(t, 0) < WPR["every"]:
+                    continue
+                try:
+                    sc = leg_score({"ticker": t, "side": "yes"})          # cached scores only: never fetched here
+                except Exception:
+                    sc = None
+                if not sc or sc.get("state") != "in":
+                    continue
+                seen[t] = now
+                sport = ticker_sport(t) or code
+                wp, pid = _wp_num(sc.get("wp"), 0, 1), sc.get("wp_play")
+                first = plays.get(sc.get("game"))
+                if wp is not None and pid and (not first or first[0] != pid):
+                    plays[sc.get("game")] = first = (pid, now)           # the first time we saw this play
+                age = round(now - first[1], 1) if wp is not None and first and first[0] == pid else None
+                model = blend = None
+                try:
+                    lead, frac = int(sc["me"]) - int(sc["opp"]), float(sc["frac"])
+                    pre = x.get("pre") or pregame_fair(t)
+                    if pre and sport in LIVE_MODEL:
+                        base = calib_fair(sport, pre, t)
+                        model = _wp_num(live_model_chance(sport, base, lead, frac, None), 0, 1)
+                        blend = _wp_num(live_model_chance(sport, base, lead, frac, wp), 0, 1) if wp is not None else model
+                except Exception:
+                    lead = frac = None
+                bid, ask = _wp_num(x.get("bid"), 0, 1), _wp_num(x.get("p"), 0, 1)
+                mid = round((bid + ask) / 2, 4) if bid and ask else None
+                try:
+                    fa = round(score_age(sport, now), 1)
+                except Exception:
+                    fa = None
+                rows.append((round(now, 1), t, sport, wp, pid, age, fa,
+                             None if model is None else round(model, 4), None if blend is None else round(blend, 4),
+                             _wp_num(x.get("fair"), 0, 1), bid, ask, mid, lead,
+                             None if frac is None else round(frac, 3)))
+        if len(seen) > 20000:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        if len(plays) > 5000:
+            plays.clear()
+        if rows:
+            _wp_tables()
+            _wp_insert({"wp_shadow": rows})
+        if now - WPR["prune"] > 6 * 3600:
+            _wp_tables()
+            _wp_prune(now)
+        return len(rows)
+    except Exception as err:
+        try:
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def wp_resolve(limit=100, now=None):
+    """The settled result of each wp_shadow ticker whose last row is over 3 h old (Kalshi's own result, the same call
+    resolve_live_fairs makes); one that never settles is closed as 'void' after 3 days. Appends wp_outcome rows."""
+    now = now or time.time()
+    if not STORE.get("db"):
+        return 0
+    _wp_tables()
+    rows = store_rows("select ticker, max(ts) last from wp_shadow where ticker not in (select ticker from wp_outcome) "
+                      "group by ticker having max(ts) < ? limit ?", (now - 3 * 3600, limit))
+    res = fetch_results([r["ticker"] for r in rows]) if rows else {}
+    out = []
+    for r in rows:
+        if res.get(r["ticker"]) in ("yes", "no"):
+            out.append((r["ticker"], res[r["ticker"]], now))
+        elif now - r["last"] > 3 * 86400:
+            out.append((r["ticker"], "void", now))
+    if out:
+        _wp_insert({"wp_outcome": out})
+    return len(out)
+
+
+def _wp_wall(v):
+    try:
+        return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def wp_hist_ingest(code, game, data, state=None, now=None):
+    """Record the new plays of a summary's `winprobability` history and its `pickcenter` line (when it changed). `data` is
+    a summary the app already fetched (or wp_hist_fetch just did). Never raises; returns rows written."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_hist", True) or not isinstance(data, dict):
+            return 0
+        now = now or time.time()
+        game = str(game)
+        comp = (((data.get("header") or {}).get("competitions") or [{}])[0]) or {}
+        home = away = None
+        for c in comp.get("competitors") or []:
+            ab = str((c.get("team") or {}).get("abbreviation") or "")[:12] or None
+            if c.get("homeAway") == "home":
+                home = ab
+            elif c.get("homeAway") == "away":
+                away = ab
+        walls = {}
+        for p in (data.get("plays") or [])[-3000:]:
+            if isinstance(p, dict) and p.get("id") and p.get("wallclock"):
+                walls[str(p["id"])] = _wp_wall(p["wallclock"])
+        hist = [w for w in (data.get("winprobability") or []) if isinstance(w, dict)]
+        have = WPH["have"].get(game, 0)
+        rows = []
+        for i in range(have, len(hist)):
+            w = hist[i]
+            hw = _wp_num(w.get("homeWinPercentage"), 0, 1)
+            if hw is None or not w.get("playId"):
+                continue
+            pid = str(w["playId"])[:40]
+            rows.append((round(now, 1), code, game, i, pid, hw, _wp_num(w.get("tiePercentage"), 0, 1), walls.get(pid), home, away))
+        lines = []
+        for pc in (data.get("pickcenter") or [])[:4]:
+            if not isinstance(pc, dict):
+                continue
+            ho, ao = pc.get("homeTeamOdds") or {}, pc.get("awayTeamOdds") or {}
+            prov = str((pc.get("provider") or {}).get("name") or "")[:30]
+            rec = (str(pc.get("details") or "")[:30], _wp_num(pc.get("spread")), _wp_num(pc.get("overUnder")),
+                   _wp_num(pc.get("overOdds")), _wp_num(pc.get("underOdds")), _wp_num(ho.get("moneyLine")),
+                   _wp_num(ao.get("moneyLine")))
+            if any(v is not None and v != "" for v in rec) and WPH["line"].get((game, prov)) != rec:
+                WPH["line"][(game, prov)] = rec
+                lines.append((round(now, 1), code, game, prov) + rec + (home, away, state))
+        if rows or lines:
+            _wp_tables()
+            _wp_insert({"wp_hist": rows, "wp_lines": lines})
+            WPH["have"][game] = max(have, len(hist))
+        WPH["last"][game] = now                        # a game page's own summary counts: the poller skips it for a while
+        for d in (WPH["have"], WPH["line"], WPH["last"]):
+            if len(d) > 3000:
+                for k in list(d)[:1500]:
+                    d.pop(k, None)
+        return len(rows) + len(lines)
+    except Exception as err:
+        try:
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def wp_hist_fetch(code, game, state=None, now=None):
+    """ONE polite public GET of a game's ESPN summary (no key, no login), recorded by wp_hist_ingest. Counts one request
+    per path tried against the hourly ceiling. Never raises; returns rows written."""
+    try:
+        path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
+        paths = path if isinstance(path, list) else [path]
+        if not re.fullmatch(r"[0-9]{1,12}", str(game)):
+            return 0
+        for pth in [p for p in paths if p][:2]:
+            WPH["stamps"].append(time.time())
+            r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{pth}/summary",
+                             params={"event": str(game)}, timeout=10)
+            data = r.json() if r.ok else {}
+            if isinstance(data, dict) and data.get("header"):
+                return wp_hist_ingest(code, game, data, state, now)
+        return 0
+    except Exception:
+        return 0
+
+
+def _wp_hist_worker(jobs):
+    try:
+        for code, game, state in jobs:
+            if not CFG.get("wp_hist", True):
+                break
+            wp_hist_fetch(code, game, state)
+            time.sleep(WPH["gap"])
+    finally:
+        WPH["busy"] = False
+
+
+def wp_hist_due(code, games, now=None):
+    """[(code, game id, state)] the games to fetch now, at most WPH['per_tick'], and the hourly ceiling is never passed. A game is
+    due only if it has a Kalshi market in `games`, in a league of WPH['leagues'], and then: in play every `live_every` s;
+    before the start once per `pre_every` s inside `pre_window` of the kickoff; once more after it ends (if we saw it live).
+    Pure bookkeeping on cached scores: no request."""
+    now = now or time.time()
+    out = []
+    if code not in WPH["leagues"]:
+        return out
+    WPH["stamps"][:] = [t for t in WPH["stamps"] if now - t < 3600]
+    room = WPH["per_hour"] - len(WPH["stamps"])
+    seen = set()
+    for e, sides in (games or {}).items():
+        for x in sides:
+            try:
+                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker"):
+                    continue
+                sc = leg_score({"ticker": x["ticker"], "side": "yes"})
+                g = str((sc or {}).get("game") or "")
+                if not g or g in seen or not re.fullmatch(r"[0-9]{1,12}", g):
+                    continue
+                seen.add(g)
+                st, last = sc.get("state"), WPH["last"].get(g, 0)
+                if st == "in":
+                    WPH["live"][g] = now
+                    due = now - last >= WPH["live_every"]
+                elif st == "post":
+                    due = g in WPH["live"] and g not in WPH["done"] and now - last >= 60
+                elif st == "pre":
+                    k = _wp_wall(sc.get("start"))
+                    due = bool(k) and 0 <= k - now <= WPH["pre_window"] and now - last >= WPH["pre_every"]
+                else:
+                    due = False
+                if due and len(out) < min(room, WPH["per_tick"]):
+                    out.append((code, g, st))
+            except Exception:
+                continue
+    return out
+
+
+def wp_hist_tick(code, games, now=None):
+    """Called from the panel pass: starts at most one background thread (one request at a time, WPH['gap'] s apart) for the
+    games wp_hist_due names. Returns the number queued; never raises, never waits on the network."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_hist", True):
+            return 0
+        now = now or time.time()
+        with WPH["lock"]:
+            if WPH["busy"]:
+                return 0
+            jobs = wp_hist_due(code, games, now)
+            if not jobs:
+                return 0
+            for _c, g, st in jobs:
+                WPH["last"][g] = now                   # also the back-off if the fetch fails: the next try waits a full period
+                if st == "post":
+                    WPH["done"][g] = now
+            if len(WPH["done"]) > 3000 or len(WPH["live"]) > 3000:
+                WPH["done"].clear()
+                WPH["live"].clear()
+            WPH["busy"] = True
+        try:
+            threading.Thread(target=_wp_hist_worker, args=(jobs,), daemon=True, name="wp-hist").start()
+        except Exception:
+            WPH["busy"] = False
+            return 0
+        return len(jobs)
+    except Exception:
+        return 0
+
+
+def espn_wp_record(code, games):
+    """The one hook in the panel pass: both recorders, each wrapped. Never raises."""
+    for fn in (wp_shadow, wp_hist_tick):
+        try:
+            fn(code, games)
+        except Exception:
+            pass
 
 
 # ---- exit_shadow: old (today's rules) vs new (Smart Buy) for every candidate, for later calibration
