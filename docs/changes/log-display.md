@@ -9,4 +9,6 @@ No buy, sell or size decision changes in this PR.
 - **#300 (log only).** A combo auto-sale's log line carries `disc` (today's `kalshi_discount`) and `est` (disc x chance x pays x share). `knob_sale_expect` and the brake still read what they did before; not done: feeding `est` or ledger proceeds on retries into the brake (that changes selling). Singles already log `ask` and `chance`. Test: `t_logdisplay.py`.
 - **#316 items 1-2 (watch-only guards).** A single's break episode is filed under the held market, not the game-winner stand-in (`break_ok`/`stop_loss_leg` take `watch=`); a full `BRK_EP` drops its oldest episode instead of clearing every open one. Both are watch-only (`BRK_LIVE` is False). Test: `t_logdisplay.py`. Skipped: items 3 (smart_tune replay counts), 4 (stale-device `stop_loss_mode` in `sl_sync`) and 5 (97% retry floor on combo cash-outs), because each changes selling behaviour or settings semantics.
 
+Known gap (#316 item 1): a single's break episode is opened but not closed or written after play resumes (`break_watch_held` only walks combo legs); it ages out at 400 entries. Watch-only; not done here.
+
 ROADMAP: none

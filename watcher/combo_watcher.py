@@ -4594,7 +4594,7 @@ LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (
     "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
     "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
     "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
-    "clock", "period", "lead", "need", "won", "left", "est", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
+    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
 LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
                     "polymarket.com", "hockeytech.com", "theahl.com")
 LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)
