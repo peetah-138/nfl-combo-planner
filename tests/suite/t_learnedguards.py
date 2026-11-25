@@ -388,7 +388,7 @@ for u in users:
             callers.add(o)
 allowed = {"guards_on", "knob_live_names", "feed_age_limit", "fresh_live_score", "feed_note", "feed_resolve", "stop_loss_leg",
            "break_ok", "guards_view", "hedge_guard", "_knob_res_brk", "_knob_rows_feed", "knob_tune", "knob_pass",
-           "sell_more_guard", "knob_shadow_view", "_knob_league", "knob_view", "_knob_rows", "knob_tune", "knob_state_cached",
+           "sell_more_guard", "more_fresh", "knob_shadow_view", "_knob_league", "knob_view", "_knob_rows", "knob_tune", "knob_state_cached",
            "stoploss_params", "knob_live_names", "_knob_ctx", "knob_judge", "knob_cap", "knob", "break_watch", "break_watch_held"}
 odd = sorted(c for c in callers if c not in allowed and not str(c).startswith(("_knob", "knob", "hedge", "sell_more", "stop_loss", "sl_", "auto_")))
 ok("only the automatic sell paths and the stepper read the learned guards (never the manual Sell)" + (f" {odd}" if odd else ""), not odd)
