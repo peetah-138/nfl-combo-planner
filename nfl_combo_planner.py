@@ -5335,8 +5335,8 @@ HEDGE_SKIP_PRUNE = {"at": 0.0}
 def hedge_skip_note(kind, rec, whole, h=None):
     """PAPER ONLY (#312, never raises, never fetches, never buys): each time auto cash-out SKIPS a sale because it is
     below what you paid, record what selling right now would return (`whole`, net of fees, for the whole position)
-    next to what a hedge on the other side of the game would lock in right now (combos only, the same `hedge_for` sums
-    with its fee: `locked`), and what the position cost, so a later look can say whether weighing a hedge first would
+    next to what a hedge on the other side of the game would lock in at the BOARD price (combos only, the same `hedge_for` sums
+    with its fee: `locked`; a live hedge would re-price at the order-book ask, so this flatters it a little), and what the position cost, so a later look can say whether weighing a hedge first would
     have beaten skipping. One row per bet per 10 minutes, in `hedge_skip`. Nothing in the engine reads this table to
     decide anything (only `hedge_skip_report`, display). Both sums are of the moment of the skip, never a stale one."""
     try:
@@ -5354,7 +5354,7 @@ def hedge_skip_note(kind, rec, whole, h=None):
         hok = 0
         if kind == "combo" and h:
             hg = hedge_for(t)                          # board prices already in memory: no request
-            if hg and hg.get("n") and hg.get("locked") is not None:
+            if hg and hg.get("n") and hg.get("locked") is not None and not hg.get("done"):   # part-hedged: sums cover only the rest
                 hcost, locked = round(float(hg["cost"]), 2), round(float(hg["locked"]), 2)
                 tks = [tk for (_, tk), _ in h.get("need") or []]
                 hok = int(locked >= hedge_lock_cost(tks) * cost)    # the lock-in guard auto-hedge itself demands
@@ -5385,9 +5385,9 @@ def hedge_skip_report(days=30):
     """Aggregates only (no tickers, no settings) over the paper rows of the last `days`, each bet counted once at its
     LATEST recorded moment: how many below-cost sales were skipped, and, in dollars net of fees, what selling right then
     would have returned against cost (`sell_pnl`), what a hedge would have locked in against cost where one existed
-    (`hedge_pnl`, `hedge_n`; `hedge_ok_n` = it also met the lock-in guard), and, for the bets that have settled
+    (`hedge_pnl`, `hedge_n`; `locks_cost_n` = it locked in at least the combo's cost at the board price; NOT proof auto-hedge would have fired: the cap, spread, score and confirmation guards are not applied), and, for the bets that have settled
     (ledger outcome), what holding actually paid against cost (`hold_pnl`, `settled_n`) with the same bets' sell and
-    hedge figures beside it. `hedge_beats_hold` / `sell_beats_hold` are dollars gained over what skipping got.
+    hedge figures beside it. `hedge_beats_hold` / `sell_beats_hold` are dollars gained over HOLDING TO SETTLEMENT (a skipped bet may later have been sold above cost).
     Unreadable = {"n": 0}. Read-only; nothing decides from it."""
     out = {"n": 0}
     try:
@@ -5398,7 +5398,7 @@ def hedge_skip_report(days=30):
         rows = store_rows("select s.*, l.outcome from hedge_skip s left join ledger l on l.ticker = s.ticker "
                           "where s.ts > ? order by s.ts", (time.time() - days * 86400,))
         last = {r["ticker"]: r for r in rows}
-        out = {"n": len(last), "days": days, "sell_pnl": 0.0, "hedge_n": 0, "hedge_ok_n": 0, "hedge_pnl": 0.0,
+        out = {"n": len(last), "days": days, "sell_pnl": 0.0, "hedge_n": 0, "locks_cost_n": 0, "hedge_pnl": 0.0,
                "settled_n": 0, "hold_pnl": 0.0, "settled_sell_pnl": 0.0, "settled_hedge_n": 0,
                "settled_hedge_pnl": 0.0, "settled_hold_pnl_hedged": 0.0, "hedge_beats_hold": 0.0,
                "sell_beats_hold": 0.0}
@@ -5408,7 +5408,7 @@ def hedge_skip_report(days=30):
             hed = None if r["locked"] is None else r["locked"] - cost
             if hed is not None:
                 out["hedge_n"] += 1
-                out["hedge_ok_n"] += int(bool(r["hok"]))
+                out["locks_cost_n"] += int(bool(r["hok"]))
                 out["hedge_pnl"] += hed
             if r["outcome"] in ("won", "lost"):
                 hold = (r["pays"] or 0.0 if r["outcome"] == "won" else 0.0) - cost
@@ -5781,8 +5781,11 @@ def auto_sell_now(plan):
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
             if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
-                hedge_skip_note("combo", dict(rec, why="below what you paid"),
-                                o["offer"] / max(o.get("frac", 1.0), 0.01), h)   # paper only (#312)
+                try:
+                    hedge_skip_note("combo", dict(rec, why="below what you paid"),
+                                    o["offer"] / max(o.get("frac", 1.0), 0.01), h)   # paper only (#312)
+                except Exception:
+                    pass
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             if below and why != "cut loss":
@@ -6382,8 +6385,11 @@ def smart_sell_singles():
                "live": x.get("state") == "live", "ask": ask}
         if sl_mode() == "never" and (not x.get("cost") or not bid
                                      or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
-            hedge_skip_note("single", dict(rec, why="below what you paid"),
-                            x["n"] * (bid - single_fee(bid, x["n"])) if bid else None)   # paper only (#312)
+            try:
+                hedge_skip_note("single", dict(rec, why="below what you paid"),
+                                x["n"] * (bid - single_fee(bid, x["n"])) if bid else None)   # paper only (#312)
+            except Exception:
+                pass
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
             continue
         whole = int(math.floor(float(x["n"]) + 1e-6))

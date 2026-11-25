@@ -112,7 +112,7 @@ E.store_x(ins, (t0 - 90 * 86400, "D", "combo", "nba", "x", 1, 10, 20, 7, 6, 13, 
 for tk, oc in (("A", "won"), ("B", "lost")):
     E.store_x("insert into ledger(ticker, outcome) values(?,?)", (tk, oc))
 rep = E.hedge_skip_report(30)
-ok("counts each bet once, last moment, inside the window", rep["n"] == 3 and rep["hedge_n"] == 2 and rep["hedge_ok_n"] == 2)
+ok("counts each bet once, last moment, inside the window", rep["n"] == 3 and rep["hedge_n"] == 2 and rep["locks_cost_n"] == 2)
 ok("sell now vs cost: -2 -2 -3", rep["sell_pnl"] == -7.0)
 ok("hedge vs cost: +3.7 each", rep["hedge_pnl"] == 7.4)
 ok("settled: 2 bets, holding paid +10 and -10", rep["settled_n"] == 2 and rep["hold_pnl"] == 0.0)
