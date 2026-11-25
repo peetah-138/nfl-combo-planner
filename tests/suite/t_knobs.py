@@ -133,7 +133,7 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
            "knob_view",
            # #228 PR5/PR6: the loss guards, the stop-loss's own switch, the hedge's numbers and cap (behind the switch),
            # and break_ok's watch-only episodes
-           "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_err", "_knob_nums", "_knob_sale_league",
+           "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_braked", "_knob_err", "_knob_nums", "_knob_sale_league",
            "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached"]
 LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"

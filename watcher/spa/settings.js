@@ -1,6 +1,6 @@
 // ---------------- settings
-const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$',''],ideas_shown:['',''],overlap_n:['',' bets'],overlap_pct:['','% of panel money']};
-const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,11,1],hedge_cap:[25,500,25],ideas_shown:[1,10,1],overlap_n:[1,5,1],overlap_pct:[2,25,1]};
+const UNITS={panel_budget:['$',''],take_profit:['','% of payout'],stake:['$',''],budget:['$',''],accept_pct:['','%'],live_min:['','%'],max_share:['','%'],bankroll:['$',''],refresh_secs:['','s'],cash_every:['',' min'],auto_cap:['',''],hedge_cap:['$',''],sell_more_cap:['$',''],ideas_shown:['',''],overlap_n:['',' bets'],overlap_pct:['','% of panel money']};
+const RANGES={panel_budget:[10,200,5],take_profit:[0,95,5],stake:[1,20,1],budget:[10,200,10],accept_pct:[50,100,5],live_min:[10,50,5],max_share:[20,100,10],bankroll:[100,5000,100],refresh_secs:[10,120,5],cash_every:[1,10,1],auto_cap:[1,11,1],hedge_cap:[25,500,25],sell_more_cap:[10,200,10],ideas_shown:[1,10,1],overlap_n:[1,5,1],overlap_pct:[2,25,1]};
 /* Auto cash-outs a day: the slider's top stop (11) is "Unlimited", stored as AUTO_CAP_UNL (issue #217; an older
    process reads 1000 as a cap it never reaches). Anything over 10 shows and saves as Unlimited. */
 const AUTO_CAP_MAX=10,AUTO_CAP_UNL=1000;
@@ -142,7 +142,7 @@ function renderSettings(){const m=$('#main');const d=S.set;if(!d){m.innerHTML=(S
    +rng('take_profit','Take profit at','Sell once Kalshi offers this much of the payout, if it\'s at least 25% more than you paid',!v.auto_sell)
    +tgl('lock_trail','Lock in a run-up','After the offer reaches 60% of the payout, sell if it drops 20% from its high, while still a profit',!v.auto_sell)
    +slRow(!v.auto_sell)
-   +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)
+   +rng('auto_cap','Auto cash-outs a day, at most','',!v.auto_sell)+moreRows(v,d.more)
    +tgl('auto_hedge','Hedge instead when it locks in more','When a combo is down to its last game and a cash-out is due, buys the other side instead if that locks in more. It only does so while that game is in play on an up-to-date live score, never at halftime or a break, only if it locks in at least what you paid, only after that has held for 3+ minutes, and only after re-checking the price right before buying. Otherwise it waits or cashes out as usual.',!v.auto_sell)+tgl('prefer_hedge','Prefer hedging','Even at up to 5% less than the cash-out',!v.auto_sell)+rng('hedge_cap','Most to spend on one hedge','',!v.auto_sell))}
  ${scard('alerts','🔔','Notifications','From the Mac. Bundled to one every 30 minutes, quiet 10 PM–7 AM. Urgent ones come right away.',
    fidRow()+pushRow()+tgl('notify_value','Combos quoting at a fair price')+tgl('notify_price','A better price on a combo')+tgl('notify_cash','Cash-outs and hedges')+tgl('notify_news','Big line moves and news'))}
@@ -193,6 +193,15 @@ function macPass(){modal(`<h3>Combo Hub passcode</h3><p>Needed on devices other 
 async function savePass(){const r=await api('/app/mac',{a:'passcode',pass:$('#np').value});if(!r.ok){$('#perr').textContent=r.msg;return;}closeModal();toast(r.msg,5000);load('settings');}
 /* Settings › Money: the overlap guard. On: a game you already have enough on (this many open bets, or this share of
    the panel's sizing base riding on it) is greyed in every pick list with an "Add anyway" only your own tap sends. */
+/* Settings › Cash out: smart sell more (A: a lower profit line on cheaper singles, B: an earlier loss cut on a sliding
+   single). Each has its own switch; one daily dollar limit starts at the slider and moves by a written rule (d.more
+   is the engine's own plain-English reading of it: today's limit, what is used and why). */
+function moreRows(v,m){v=v||{};const off=!v.auto_sell;
+ const st=m?`<div class="srow ${off?'dim':''}"><div class="l"><b>Today's limit: ${m.paused?'paused':'$'+(+m.limit).toLocaleString()}</b><small>${m.used==null?'Used today: unknown, so it holds off. ':'Used today: $'+(+m.used).toLocaleString()+'. '}${esc(m.why||'')}</small></div></div>`:'';
+ return tgl('sell_more_cheap','Sell cheaper bets sooner','A bet you bought under 60¢ a contract can sell once it is worth 1.35× what you paid (the usual line is 1.5×), only in play, on a live price under a minute or two old, and only when selling still beats the risk of holding.',off)
+  +tgl('sell_more_loss','Cut a clearly sliding single sooner','A single in play that has fallen to about a 15% chance can sell for what is left, once the game is at least half played and the fall has held for 3+ checks, instead of waiting for its league to learn its own cut-off. Never in Never sell at a loss mode.',off)
+  +rng('sell_more_cap','Starting daily limit for these two','The most money they may sell in a day at first. The limit raises itself 25% after sales that beat holding and halves after ones that did worse; a losing streak pauses them for a week.',off)+st
+  +`<div class="srow ${off?'dim':''}"><div class="l"><small>Risk: either can sell a bet that would have gone on to win. They stop on old prices or scores, when you Pause, and when the daily limit is used up.</small></div></div>`;}
 function overlapRows(v){v=v||{};const off=!v.overlap_guard;
  return tgl('overlap_guard','Hold back games I already have bets on','On: Build, Best bets, Surprise me, Buy ideas and the panel\'s extras grey out a game you already have enough riding on, with Add anyway if you still want it. Buy prices also say when you already have a bet on that game.').replace("this.checked)","this.checked);renderSettings()")
   +(v.overlap_n!=null?rng('overlap_n','Held back from','Open bets on one game (combos, singles, spreads and totals each count once)',off):'')

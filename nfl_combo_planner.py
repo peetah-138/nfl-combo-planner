@@ -44,6 +44,9 @@ CFG = {
     "tp_ladder": True,    # auto-sell in thirds, from the wait-one-more-game price up toward the payout
     "tp_auto": False,     # put an auto-sell order on every live combo (every league)
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
+    "sell_more_cheap": True,   # smart sell more (A, Pete's opt-in 2026-11-24): a lower profit floor on cheaper singles
+    "sell_more_loss": True,    # smart sell more (B): the learned loss cut starts earlier on singles that are clearly sliding
+    "sell_more_cap": 50.0,     # the STARTING daily dollar limit for those two (it then grows/shrinks by its own rule); 50 when unreadable
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device); AUTO_CAP_UNLIMITED = no limit
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
@@ -261,7 +264,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
 
 
 def next_league():
@@ -6099,10 +6102,13 @@ def hands_off(t):
     return bool(t) and t in self_sell_set()
 
 
-def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
+def single_sell_reason(x, bid, ask, track=True, cut_ok=False, more=None):
     """Smart sell for a single bet, spread or total: the same rules as combos, on Kalshi's order book. A learned
     "cut loss" also needs `cut_ok` (cut_loss_single_check: every loss guard held); without it, never.
-    Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live)."""
+    Returns (reason, the least it may sell the whole position for, after fees) or (None, floor shown on Live).
+    `more` ("A" or "B") is smart sell more's second look (more_eval): "A" the lower profit floor for a cheap single
+    (MORE_FLOOR, never above the league's own), "B" the seeded loss cut-off (MORE_LOSS, only where the league has
+    none yet); each answers only with its own kind of sale. Without it, exactly as before."""
     n, cost, q = x.get("n") or 0, x.get("cost") or 0, x.get("chance")
     if not n or bid is None or bid <= 0 or q is None or x.get("state") not in ("live", "pre"):
         return None, 0.0
@@ -6119,9 +6125,17 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False):
         leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
         lam, _ = swing_lambda({"need": [((leg["side"], leg["ticker"]), "")], "legs_left": [(q, x.get("state") == "live", 0)]})
         lam *= pr["lam"] * rl
-        prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"])
+        flr, loss = pr["floor"], pr["loss"]
+        if more == "A":
+            flr, loss = min(flr, MORE_FLOOR), None
+            prm["cut_ok"] = False
+        elif more == "B" and loss is None:
+            loss = MORE_LOSS
+        prm.update(smart=True, lam=lam, floor=flr, loss=loss)
     d = exit_policy({"kind": "single", "value": net, "peak": peak.get(t, 0.0), "pays": n, "cost": cost, "q": q,
                      "live": x.get("state") == "live"}, prm)
+    if more and d["reason"] != {"A": "smart", "B": "cut loss"}[more]:
+        return None, d["floor"]
     return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
 
 
@@ -6237,6 +6251,332 @@ def sell_backoff_note(t, side, count, rec, err, now=None):
     return wait
 
 
+# ---------------------------------------------------------------- smart sell more (Pete's opt-in, 2026-11-24)
+# Two extra ways smart sell may sell a SINGLE, each behind its own Settings switch (on by default: Pete opted in; both
+# can be turned off), both inside one daily dollar cap, both only on FRESH, LIVE numbers, never on a stale reference.
+#   A  a lower profit floor on cheaper singles: bought under MORE_UNDER (60c) a contract, it may sell at MORE_FLOOR
+#      (1.35x what you paid, the conservative end of 1.3-1.35x; never above the league's own learned floor, never
+#      under smart sell's own lower bound of 1.2x) when the usual risk-adjusted hold-value comparison, the 50% chance
+#      minimum and every sell guard still say sell.
+#   B  the learned loss cut, earlier, on a single in play that is clearly sliding: where the league has no cut of its
+#      own yet (it needs 30 settled bets), the tuner's own first number, MORE_LOSS (15%), stands in, with ALL the loss
+#      guards: a fresh score, a game at least half played, 3+ confirming checks over 3+ minutes, never at a break, a
+#      real fall from the pregame chance, never in 'Never sell at a loss' mode.
+# What counts as fresh (fails closed: no new-path sale on anything older, missing or one-sided): the price must come
+# from a Kalshi fetch made within MORE_AGE seconds (SINGLES["mk_at"], per market: a fetch that failed and fell back to
+# the old copy never stamps it), with a bid AND an ask within LIVE_SPREAD, the chance is taken from that live
+# middle (never last trade, never a pregame number, never a sportsbook line), and the game's score feed must be fresh
+# (SL_FEED_AGE) and the game under way. The pregame chance is used only by the loss guard that was already there.
+# more_eval works out both verdicts once per pass: smart_sell_singles acts on them only when the switch is on,
+# more_shadow records them (write-only) to measure net dollars after fees against holding.
+MORE_FLOOR = 1.35          # A: profit floor, x cost
+MORE_UNDER = 0.60          # A: only singles bought under this price per contract
+MORE_LOSS = 0.15           # B: the cut-off stand-in (the self-tuning registry's first value for the loss cut)
+MORE_AGE = 120             # seconds: the quote must come from a Kalshi fetch no older than this
+MORE_PROG_MIN = 0.50       # B: never earlier in the game than this share played, whatever the tuner learned
+MORE_CHECKS_MIN = 3        # B: never fewer confirming checks than this, whatever the tuner learned
+MORE_CAP_DEFAULT = 50.0    # the STARTING dollars a day through A and B together (gross sale value); unreadable = this
+MORE_SW = {"at": 0.0, "v": None}
+
+
+def more_settings():
+    """{'a': bool, 'b': bool, 'cap': dollars}: the two switches and the daily cap, read from the shared settings file
+    too (like knob_switch_on), at most every 10 seconds. A missing file = the defaults; a damaged file or any error
+    = both OFF; an unreadable cap = MORE_CAP_DEFAULT, never unlimited."""
+    t = time.monotonic()
+    if MORE_SW["v"] is None or t - MORE_SW["at"] > 10:
+        try:
+            if os.path.exists(MAIN_SAVED):
+                with open(MAIN_SAVED) as f:
+                    d = json.load(f)
+                if not isinstance(d, dict):
+                    raise ValueError("settings file is not a dict")
+            else:
+                d = {}
+            raw = CFG.get("sell_more_cap", MORE_CAP_DEFAULT) if d.get("sell_more_cap") is None else d["sell_more_cap"]
+            try:
+                cap = float(raw)
+                if not math.isfinite(cap) or cap < 0:
+                    cap = MORE_CAP_DEFAULT
+            except (TypeError, ValueError):
+                cap = MORE_CAP_DEFAULT
+            v = {"a": shared_flag("sell_more_cheap"), "b": shared_flag("sell_more_loss"), "cap": cap}
+        except Exception:
+            v = {"a": False, "b": False, "cap": MORE_CAP_DEFAULT}
+        MORE_SW.update(at=t, v=v)
+    return dict(MORE_SW["v"])
+
+
+def more_sold_today():
+    """Dollars (the sale's offer) today's smart sell more sales and unclear ones ("check" may have gone through) came to,
+    from the decision log's tagged lines. A missing log is 0; a log that can't be read, or a tagged line that can't be
+    parsed, returns None (the caller treats it as the cap reached: fail closed)."""
+    today = dt.date.today().isoformat()
+    total = 0.0
+    try:
+        with open(SELL_LOG, encoding="utf-8") as f:
+            for line in f:
+                if '"more": ' not in line or f'"when": "{today}' not in line:
+                    continue
+                r = json.loads(line)
+                if r.get("more") and r.get("result") in ("sold", "check"):
+                    total += float(r.get("offer") or 0)
+    except FileNotFoundError:
+        return 0.0
+    except (OSError, ValueError, TypeError):
+        return None
+    return total
+
+
+def more_braked(tickers):
+    """Self-tuning's brake holds this league (so no stand-in cut-off may turn the loss cut back on); unreadable = braked."""
+    if not knob_switch_on():
+        return False
+    try:
+        _, chain = _knob_bet_chain(tickers)
+        st, now = knob_state_cached(), time.time()
+        return any(_knob_braked(st, g, now) for g in chain)
+    except Exception:
+        return True
+
+
+def more_fresh(x, m, now):
+    """The live reference smart sell more may act on: ((bid, ask, chance), '') or (None, why not). The market's own
+    fetch must be young (MORE_AGE), its book two-sided within LIVE_SPREAD, and its game in play on a fresh score
+    feed; the chance is that book's middle, recomputed here."""
+    at = (SINGLES.get("mk_at") or {}).get(x["t"])
+    if not at or now - at > MORE_AGE or now < at - 5:
+        return None, "price not fresh"
+    side = x["side"]
+    bid, ask = dollars(m, f"{side}_bid"), dollars(m, f"{side}_ask")
+    if not bid or not ask or bid <= 0 or ask <= 0 or ask < bid or round(ask - bid, 4) > LIVE_SPREAD:
+        return None, "no live two-sided price"
+    if x.get("state") != "live":
+        return None, "game not in play"
+    leg = _score_leg(x["t"], x.get("kind") or "win", side, x.get("sport") or "")
+    sc, why = fresh_live_score(leg["ticker"], leg["side"], now)
+    if not sc:
+        return None, why
+    return (bid, ask, round((bid + ask) / 2, 4)), ""
+
+
+def more_eval(x, m, now=None):
+    """What A and B would each do for this single right now, whatever their switches say: {'a': {...}, 'b': {...},
+    'bid', 'ask', 'q', 'age'}; each verdict has 'would' (bool), 'why' (the sale's reason, or why not) and 'floor'. Works
+    only from more_fresh's live numbers. B's confirming checks count under their own key ("cutB:"), never the real
+    loss cut's. Pure of orders and of Kalshi calls."""
+    now = now or time.time()
+    t = x["t"]
+    at = (SINGLES.get("mk_at") or {}).get(t)
+    res = {"a": {"would": False, "why": "", "floor": 0.0}, "b": {"would": False, "why": "", "floor": 0.0},
+           "bid": None, "ask": None, "q": None, "age": round(now - at, 1) if at else None}
+    fresh, why = more_fresh(x, m, now)
+    if not fresh:
+        res["a"]["why"] = res["b"]["why"] = why
+        return res
+    bid, ask, q = fresh
+    res.update(bid=bid, ask=ask, q=q)
+    x2 = dict(x, chance=q)
+    pr = smart_params([t])
+    n, cost = x.get("n") or 0, x.get("cost") or 0
+    a, b = res["a"], res["b"]
+    if not n or not cost:
+        a["why"] = "no cost known"
+    elif cost / n >= MORE_UNDER:
+        a["why"] = "not a cheap bet"
+    elif pr["floor"] <= MORE_FLOOR:
+        a["why"] = "league floor already lower"
+    else:
+        why, fl = single_sell_reason(x2, bid, ask, track=False, more="A")
+        a.update(would=bool(why), why=why or "under the lower floor", floor=fl)
+    if sl_mode() == "never" or not CFG.get("smart_sell", True) or ride_lam() is None:
+        b["why"] = "loss cuts are off"
+    elif pr["loss"] is not None:
+        b["why"] = "league has its own cut-off"
+    elif more_braked([t]):
+        b["why"] = "self-tuning brake"
+    else:
+        leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
+        sp = stoploss_params([t])
+        sp = dict(sp, prog=max(sp["prog"], MORE_PROG_MIN))
+        ok, gw = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, sp, now)
+        if ok and not q <= MORE_LOSS:
+            ok, gw = False, "not under the cut-off"
+        checks, span, gap = sl_confirm_params([t])
+        ready, gw = _sl_confirm("cutB:" + t, ok, gw, now, (max(checks, MORE_CHECKS_MIN), max(span, SL_SPAN), min(gap, SL_GAP)))
+        why, fl = single_sell_reason(x2, bid, ask, track=False, cut_ok=ready, more="B")
+        b.update(would=bool(why), why=why or gw or "held", floor=fl)
+    return res
+
+
+# The daily limit is not fixed: it STARTS at the Settings number (MORE_CAP_DEFAULT, $50) and moves by one plain rule
+# (Pete, 2026-11-24), worked out from the record alone (no network): each of these sales, once its game is over, is
+# compared with what holding would have paid (the sale log's outcome, the same follow-up the scorecard uses), net of the
+# sale's fee. `gain` = what the sale brought after fees minus what holding paid.
+#   - Nothing moves until MORE_MIN_N (20) of them have finished games.
+#   - Then, after every MORE_BLOCK (10) more, look at the last MORE_WINDOW (20): if selling beat holding by more than
+#     MORE_EDGE ($1) after fees, the limit grows by 25% (never more than once a week, never over MORE_MAX_MULT x the
+#     start); if it did worse than holding, the limit is cut in half (never under MORE_MIN_MULT x the start).
+#   - The brake: MORE_STREAK (4) sales in a row that did worse than holding, or the last 30 days under holding by
+#     MORE_DRAW ($25), pauses both ways for MORE_PAUSE_DAYS (7); then they start again at the smallest limit and must
+#     earn the way back up (nothing carries over).
+# Deterministic: the same record always gives the same limit. Stored: combo_more.json (what the Settings page shows
+# and what the engine falls back on if the record can't be read); never read from the shadow table.
+MORE_MIN_N, MORE_BLOCK, MORE_WINDOW = 20, 10, 20
+MORE_UP, MORE_DOWN, MORE_MAX_MULT, MORE_MIN_MULT, MORE_UP_DAYS = 1.25, 0.5, 4.0, 0.2, 7
+MORE_EDGE, MORE_STREAK, MORE_DRAW, MORE_PAUSE_DAYS, MORE_LOSE = 1.0, 4, 25.0, 7, 0.01
+MORE_FILE = os.path.join(HERE, "combo_more.json")
+MORE_LIM = {"at": 0.0, "v": None}
+
+
+def more_settled(now):
+    """This device's smart-sell-more sales whose games are over: [{'ts': when the result was known, 'gain', 'net', 'held'}],
+    oldest first. Raises on anything unreadable (the caller then uses the stored state and the smallest limit)."""
+    out = []
+    try:
+        with open(SELL_LOG, encoding="utf-8") as f:
+            lines = [ln for ln in f if '"more": ' in ln and '"result": "sold"' in ln]
+    except FileNotFoundError:
+        lines = []
+    _ledger_table()
+    for ln in lines:
+        r = json.loads(ln)
+        if not r.get("more") or r.get("at") is None or r.get("net") is None:
+            continue
+        got = store_rows_strict("select outcome, held, done from sell_log where ts=? and ticker=? and result='sold'",
+                                (r["at"], r.get("ticker") or ""))
+        if got and got[0]["outcome"] in ("won", "lost") and got[0]["held"] is not None and got[0]["done"]:
+            out.append({"ts": float(got[0]["done"]), "net": float(r["net"]), "held": float(got[0]["held"]),
+                        "gain": round(float(r["net"]) - float(got[0]["held"]), 4)})
+    return sorted(out, key=lambda r: r["ts"])
+
+
+def more_replay(res, now):
+    """The rule above, applied oldest to newest. Returns {'mult', 'paused_until', 'n', 'gain', 'why'}; `n`/`gain` count
+    the current stretch (since the last pause)."""
+    mult, until, last_up, seq, streak, why = 1.0, 0.0, 0.0, [], 0, ""
+    for r in res:
+        ts = r["ts"]
+        if until and ts < until:
+            continue                                   # settled during a pause: made before it, not counted
+        if until:                                      # the pause is over: start again at the smallest limit
+            mult, until, seq, streak, last_up = MORE_MIN_MULT, 0.0, [], 0, ts
+            why = "Restarted small after a pause; it has to earn its way back up."
+        seq.append(r)
+        streak = streak + 1 if r["gain"] < -MORE_LOSE else 0
+        month = sum(x["gain"] for x in seq if x["ts"] > ts - 30 * 86400)
+        if streak >= MORE_STREAK or month <= -MORE_DRAW:
+            until = ts + MORE_PAUSE_DAYS * 86400
+            why = (f"Paused: {MORE_STREAK} sales in a row did worse than holding." if streak >= MORE_STREAK else
+                   f"Paused: the last 30 days did ${-month:.0f} worse than holding.")
+            continue
+        n = len(seq)
+        if n >= MORE_MIN_N and (n - MORE_MIN_N) % MORE_BLOCK == 0:
+            g = sum(x["gain"] for x in seq[-MORE_WINDOW:])
+            if g > MORE_EDGE and ts - last_up >= MORE_UP_DAYS * 86400 and mult < MORE_MAX_MULT:
+                mult, last_up = min(MORE_MAX_MULT, mult * MORE_UP), ts
+                why = f"Raised: the last {MORE_WINDOW} finished sales beat holding by ${g:.2f} after fees."
+            elif g < 0 and mult > MORE_MIN_MULT:
+                mult = max(MORE_MIN_MULT, mult * MORE_DOWN)
+                why = f"Cut: the last {MORE_WINDOW} finished sales did ${-g:.2f} worse than holding."
+    if until and now >= until:
+        mult, until, seq = MORE_MIN_MULT, 0.0, []      # paused time is up and nothing new settled yet
+        why = "Restarted small after a pause; it has to earn its way back up."
+    return {"mult": mult, "paused_until": until, "n": len(seq), "gain": round(sum(x["gain"] for x in seq), 2), "why": why}
+
+
+def more_limit(now=None, fresh=False):
+    """Today's limit on dollars sold by smart sell more: {'limit', 'start', 'mult', 'paused', 'paused_until', 'n', 'gain',
+    'why'}. `limit` is 0 while paused. Cached a minute. Any problem reading the record uses the stored state, else the
+    SMALLEST limit (never the start): the limit can only be bigger than the start from a record that was read."""
+    now = now or time.time()
+    if not fresh and MORE_LIM["v"] is not None and now - MORE_LIM["at"] < 60:
+        return dict(MORE_LIM["v"])
+    start = more_settings()["cap"]
+    try:
+        if not STORE.get("db"):
+            raise RuntimeError("history file not open")
+        r = more_replay(more_settled(now), now)
+        save_json(MORE_FILE, dict(r, at=int(now)))
+    except Exception as err:
+        console_note(f"smart sell more limit: {type(err).__name__}: {err}")
+        d = load_json(MORE_FILE, {})
+        try:
+            r = {"mult": float(d["mult"]), "paused_until": float(d.get("paused_until") or 0), "n": int(d.get("n") or 0),
+                 "gain": float(d.get("gain") or 0), "why": str(d.get("why") or "")}
+            if r["paused_until"] and now >= r["paused_until"]:
+                r["mult"], r["paused_until"] = MORE_MIN_MULT, 0.0
+        except (KeyError, TypeError, ValueError):
+            r = {"mult": MORE_MIN_MULT, "paused_until": 0.0, "n": 0, "gain": 0.0,
+                 "why": "The record couldn't be read, so the smallest limit applies."}
+    r["mult"] = min(max(float(r["mult"]), MORE_MIN_MULT), MORE_MAX_MULT)
+    paused = bool(r["paused_until"] and now < r["paused_until"])
+    out = dict(r, start=start, paused=paused, limit=0.0 if paused else round(start * r["mult"], 2))
+    if not out["why"]:
+        out["why"] = f"Starting limit. It only changes after {MORE_MIN_N} of these sales have finished games (now {out['n']})."
+    MORE_LIM.update(at=now, v=out)
+    return dict(out)
+
+
+def more_view():
+    """Settings' plain-English line: today's limit, what is used, and why."""
+    try:
+        v = more_limit()
+        used = more_sold_today()
+        return {"limit": v["limit"], "start": v["start"], "paused": v["paused"], "n": v["n"], "gain": v["gain"],
+                "why": v["why"], "used": None if used is None else round(used, 2),
+                "until": int(v["paused_until"]) if v["paused"] else None}
+    except Exception:
+        return None
+
+
+def more_cap_blocks(offer):
+    """Whether this sale would take today's smart-sell-more total over today's limit (more_limit). Fails closed."""
+    done = more_sold_today()
+    return done is None or done + float(offer or 0) > more_limit()["limit"] + 1e-9
+
+
+# smart sell more's shadow record: per pass and held single, what A and B would do (and the numbers behind it), to
+# measure net dollars after fees against holding. Write-only: NOTHING in the engine reads this table (a test checks).
+# Bounded, throttled, errors swallowed, off the trading path (recording happens after the verdicts are made).
+MORE_SHADOW = {"every": 60, "keep_days": 60, "cap": 200000, "prune": 0.0, "made": False, "seen": {}}
+
+
+def more_shadow(x, ev, sw, now=None):
+    """Record one single's verdicts (about once a minute per bet). Never raises, never returns a value used by a decision."""
+    try:
+        if not STORE.get("db") or not CFG.get("sig_shadow", True):
+            return
+        now = now or time.time()
+        if now - MORE_SHADOW["seen"].get(x["t"], 0) < MORE_SHADOW["every"]:
+            return
+        MORE_SHADOW["seen"][x["t"]] = now
+        if len(MORE_SHADOW["seen"]) > 2000:
+            MORE_SHADOW["seen"].clear()
+        if not MORE_SHADOW["made"]:
+            store_x("create table if not exists more_shadow(ts real, ticker text, label text, sport text, side text, "
+                    "n real, cost real, bid real, ask real, chance real, ref_age real, a_on int, b_on int, a_would int, "
+                    "a_why text, a_floor real, b_would int, b_why text, net real)")
+            store_x("create index if not exists more_shadow_ts on more_shadow(ts)")
+            MORE_SHADOW["made"] = True
+        bid = ev.get("bid")
+        net = round(float(x.get("n") or 0) * (bid - single_fee(bid)), 4) if bid else None
+        a, b = ev["a"], ev["b"]
+        _sig_insert({"more_shadow": [(now, x["t"], str(x.get("label") or "")[:60], x.get("sport") or "", x.get("side") or "",
+                                      x.get("n"), x.get("cost"), bid, ev.get("ask"), ev.get("q"), ev.get("age"),
+                                      int(bool(sw.get("a"))), int(bool(sw.get("b"))), int(a["would"]),
+                                      str(a["why"])[:60], a["floor"], int(b["would"]), str(b["why"])[:60], net)]})
+        if now - MORE_SHADOW["prune"] > 6 * 3600:
+            MORE_SHADOW["prune"] = now
+            store_x("delete from more_shadow where ts < ?", (now - MORE_SHADOW["keep_days"] * 86400,))
+            n = (store_rows("select count(*) n from more_shadow") or [{"n": 0}])[0]["n"]
+            if n > MORE_SHADOW["cap"]:
+                store_x("delete from more_shadow where rowid in (select rowid from more_shadow order by ts limit ?)",
+                        (n - MORE_SHADOW["cap"],))
+    except Exception as err:
+        console_note(f"smart sell more shadow: {type(err).__name__}: {err}")
+
+
 def smart_sell_singles():
     """Auto cash-out for single bets, spreads and totals (yours or the app's): sells into Kalshi's order book when
     smart sell, take profit or lock-in says so. Skips ones set to "I'll sell it", ones with a sell order already
@@ -6262,6 +6602,20 @@ def smart_sell_singles():
             if not cut_ok and x.get("state") == "live" and x.get("chance") is not None and x["chance"] <= loss:
                 note_cut_held(x["t"], x.get("label", x["t"]), "cut loss", gw)
         why, floor = single_sell_reason(x, bid, ask, cut_ok=cut_ok)
+        path = None                                   # smart sell more (A / B): only where the usual rules said no
+        try:
+            sw = more_settings()
+            ev = more_eval(x, m)                      # always worked out (and recorded), acted on only with a switch on
+            more_shadow(x, ev, sw)
+            if not why:
+                for k, key in (("A", "a"), ("B", "b")):
+                    if sw[key] and ev[key]["would"]:
+                        path, why, floor = k, ev[key]["why"], ev[key]["floor"]
+                        bid, ask = ev["bid"], ev["ask"]
+                        break
+        except Exception as err:
+            console_note(f"smart sell more: {type(err).__name__}: {err}")
+            path = None
         if not why:
             continue
         if ask and bid and round(ask - bid, 4) > LIVE_SPREAD:   # rounded: 56c - 50c is 6c, not 6.0000001c
@@ -6275,6 +6629,9 @@ def smart_sell_singles():
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
                "live": x.get("state") == "live", "ask": ask}
+        if path:                                      # smart sell more: tagged for the cap and the scorecard
+            rec.update(more=path, chance=ev["q"], ref_age=ev["age"],
+                       net=round(x["n"] * (bid - single_fee(bid)), 2))
         if sl_mode() == "never" and (not x.get("cost") or not bid
                                      or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
@@ -6286,6 +6643,12 @@ def smart_sell_singles():
         wait = sell_backoff_left(x["t"], side, whole)
         if wait:
             continue                                  # failed again and again just now: waiting (logged once)
+        if path:
+            if trading_paused() or not can_trade():   # Pause read fresh right before the order, not at the pass start
+                continue
+            if more_cap_blocks(rec["offer"]):
+                log_decision(dict(rec, result="skipped", why="daily cap reached (smart sell more)"))
+                continue
         if auto_cap_reached():
             log_decision(dict(rec, result="skipped", why="daily cap reached"))
             continue
@@ -6301,7 +6664,8 @@ def smart_sell_singles():
             got = sold * (bid - single_fee(bid))
             paid = (x.get("cost") or 0) * (sold / x["n"]) if x.get("n") else 0   # the part sold, like the sell sheet
             lead = {"take profit": "🤖 Take profit", "lock in": "🤖 Locked in a profit",
-                    "smart": "🤖 Smart sell", "cut loss": "🤖 Cut a loss"}.get(why, "🤖 Smart sell")
+                    "smart": "🤖 Smart sell", "cut loss": "🤖 Cut a loss"}.get(why, "🤖 Smart sell") \
+                + (" (smart sell more)" if path else "")
             res = sale_result_note(got, paid, cutting=(why == "cut loss"))
             out.append(f"{lead}: sold {x['label']} for about {money(got)}" + (f": {res}." if res[0] != "(" else f" {res}."))
     return out
@@ -6324,7 +6688,7 @@ def account_events(max_age=1800):
     return set(d.get("events") or []) if time.time() - d.get("at", 0) < max_age else set()
 
 
-SINGLES = {"at": 0, "items": [], "mk": {}}
+SINGLES = {"at": 0, "items": [], "mk": {}, "mk_at": {}}
 
 
 def _bet_kind(t):
@@ -6401,7 +6765,7 @@ def open_singles(max_age=30):
         n = float(p.get("position_fp") or p.get("position") or 0)
         if t and not is_combo(t) and abs(n) > 0.005:
             held.append((t, n, p))
-    mk, got = {}, []
+    mk, got, mk_at = {}, [], {}
     for i in range(0, len(held), 50):
         chunk = [t for t, _, _ in held[i:i + 50]]
         try:
@@ -6410,6 +6774,7 @@ def open_singles(max_age=30):
             ms = r.json().get("markets", [])
             got += ms
             mk.update({m.get("ticker"): m for m in ms})
+            mk_at.update({m.get("ticker"): time.time() for m in ms})   # when each price was read (smart sell more)
         except (requests.RequestException, ValueError):
             mk.update({t: SINGLES["mk"][t] for t in chunk if t in SINGLES["mk"]})
     price_watch_held(held, mk)                         # Smart Buy's price recorder: the singles you hold
@@ -6496,7 +6861,7 @@ def open_singles(max_age=30):
         except Exception:
             x["sell_at"], x["sell_over"] = None, False
     out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))   # order kept: smart sell walks it
-    SINGLES.update(at=time.time(), items=out, mk=mk)
+    SINGLES.update(at=time.time(), items=out, mk=mk, mk_at=mk_at)   # a fallback copy has no stamp: never "fresh"
     return out
 
 
@@ -23001,6 +23366,22 @@ KNOBS = (
      "src": None, "start": True, "unit": "rule",
      "why": "Auto cash-out, Smart sell, Let it ride (and Ride it out), auto-hedge, the stop-loss override and a "
             "bet's \"I'll sell it\" are yours: nothing tunes or flips them"},
+    {"name": "sell_more_start", "group": "sell", "cls": "invariant", "label": "Smart sell more: starting daily limit",
+     "owner": "smart_sell_singles (more_limit)", "src": "MORE_CAP_DEFAULT", "start": 50.0, "unit": "usd",
+     "why": "Pete, 2026-11-24: the cheaper-single profit floor and the earlier loss cut share one daily dollar limit that "
+            "starts here and moves only by more_limit's written rule (up 25% after sales that beat holding, down 50% "
+            "after ones that did worse, paused after a losing streak); its state is combo_more.json"},
+    {"name": "sell_more_floor", "group": "sell", "cls": "invariant", "label": "Smart sell more: floor on cheaper singles",
+     "owner": "single_sell_reason (more A)", "src": "MORE_FLOOR", "start": 1.35, "unit": "x",
+     "why": "the conservative end of 1.3-1.35x what was paid; never above the league's own floor, never under smart "
+            "sell's 1.2x bound; bets bought under 60c a contract only"},
+    {"name": "sell_more_loss", "group": "sell", "cls": "invariant", "label": "Smart sell more: stand-in loss cut-off",
+     "owner": "single_sell_reason (more B)", "src": "MORE_LOSS", "start": 0.15, "unit": "share",
+     "why": "stands in for a league's learned loss cut until it has its own; every loss guard still holds"},
+    {"name": "sell_more_age", "group": "sell", "cls": "invariant", "label": "Smart sell more: how fresh its prices must be",
+     "owner": "more_fresh", "src": "MORE_AGE", "start": 120, "unit": "secs",
+     "why": "Pete, 2026-11-24: nothing it sells on may rest on a stale reference; the quote must come from a Kalshi read "
+            "this young, two-sided, with a fresh score feed, or it does not sell"},
     {"name": "secrets", "group": "invariant", "cls": "invariant", "label": "Keys and topics stay off GitHub",
      "owner": "the repo's secret checks", "src": None, "start": True, "unit": "rule",
      "why": "the repo is public; nothing tunes what is committed"},
