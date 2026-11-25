@@ -42,3 +42,8 @@ break loss-only, Pause wins, manual Sell unaffected, bounded tables), `test_lear
 `t_knobs`, `t_knobpr567` updated.
 
 ROADMAP: adds "Learned flex-sell 85% backstop and sell-more `MORE_PROG_MIN`: follow-ups once #479 and #480 land"
+
+**Merge with #479/#480 (Pete, 2026-11-25).** The synced-settings lists are a union: `learned_guards` is in `SHARED_KEYS`, the
+engine's `WATCHER_SYNCED` and the watcher's `SYNCED` and `SET_KEYS`, beside `flex_*` and `sell_more_*` (`t_newkeys.py`
+checks every one, and the Settings screen). The retired "Never sell at a loss" choice reads as 'tune', so the Settings
+line always shows the guards' wording.

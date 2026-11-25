@@ -350,8 +350,8 @@ def t_review():
     E.BOOK_LADDER["Z"] = (time.time(), [(0.4, 3)])
     ok("review: a book read in the last minute is used as is", E.books_now(["Z"], budget=0)["Z"] == [(0.4, 3)])
     js = open(os.path.join(os.environ.get("REPO", ".."), "watcher", "spa", "build.js")).read()
-    ok("review: the ticker reaches the tap through the escaped ticker, not an unescaped JS string",
-       "sbOpen('${esc(x.ticker)}'" in js and "lineFromBoard('${x.ticker}'" not in js)
+    ok("review: the ticker reaches the tap as an escaped data attribute, not inside the JS string",
+       "data-t=\"${esc(x.ticker)}\" onclick=\"sbOpen(this.dataset.t" in js and "lineFromBoard('${x.ticker}'" not in js)
 
 
 safe("review", t_review)

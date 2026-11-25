@@ -133,7 +133,7 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
            "knob_view",
            # #228 PR5/PR6: the loss guards, the stop-loss's own switch, the hedge's numbers and cap (behind the switch),
            # and break_ok's watch-only episodes
-           "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_err", "_knob_nums", "_knob_sale_league",
+           "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_braked", "_knob_err", "_knob_nums", "_knob_sale_league",
            "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached",
            # the learned selling guards (feed/break episodes, behind their own switch)
            "KNOB_SHADOW_ROWS", "knob_live_names"]
@@ -145,7 +145,7 @@ _callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_se
 ok("#228 PR4: smart sell's own slip (auto_slip) is read only by auto_sell_now, for a combo's automatic sale",
    (lambda a: "knob_auto_slip(" in a and "CASH_SLIP" not in a.replace("AUTO_CASH_SLIP", ""))(
        eng_src[eng_src.index("\ndef auto_sell_now("):eng_src.index("\ndef ", eng_src.index("\ndef auto_sell_now(") + 5)])
-   and "CASH_SLIP * agreed" in inspect.getsource(E._accept_with_retries))
+   and "CASH_SLIP * agreed" in inspect.getsource(E.flex_fallback_bar) and "flex_fallback_bar(" in inspect.getsource(E._accept_with_retries))
 ok("...and your own Cash out retries keep CASH_SLIP, listed as never moving by itself",
    E.KNOB_BY["cash_slip"]["cls"] == "invariant" and E.KNOB_BY["auto_slip"]["cls"] == "tunable"
    and E.AUTO_CASH_SLIP == E.CASH_SLIP == 0.97 and not E.KNOB_BY["auto_slip"].get("shared_with"))

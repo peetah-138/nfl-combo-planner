@@ -35,5 +35,5 @@ for bad in ("on", 1, True, "ALLOW", {"x": 1}):
         break
 ok("anything unreadable reads as Let it tune itself (the old switch off)", E.sl_mode() == "tune")
 E.CFG.update(stop_loss=True, stop_loss_mode="never")
-ok("a saved choice wins over the old switch", E.sl_mode() == "never")
+ok("a saved choice wins over the old switch; the retired 'never' reads as Let it tune itself", E.sl_mode() == "tune")
 E.CFG.update(stop_loss=False, stop_loss_mode=None)
