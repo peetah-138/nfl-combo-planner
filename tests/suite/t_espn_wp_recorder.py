@@ -85,13 +85,28 @@ def a2_screened():
        and {r["screened"] for r in sc} == {"spread"}, rows)
     ok("A2 a screened side never carries the engine's fair", all(r["fair"] is None for r in sc) and all(r["wp"] == 0.61 for r in sc))
     ok("A2 reasons map to words", [E._wp_why(t) for t in ("no live buyers or sellers on Kalshi", "nearly decided", "no fresh live score",
-       "Kalshi's live price and the live chance disagree too much", "zzz")] == ["no_buyers", "decided", "stale", "disagree", "other"])
+       "Kalshi's live price and the live chance disagree too much", "zzz", "the live price is jumpy", "no live score feed we trust for X", "the game is over", "no pre-game line to start from", "the score feed doesn't show it in play")]
+       == ["no_buyers", "decided", "stale", "disagree", "other", "spread", "no_feed", "over", "no_line", "not_in_play"])
     real, E.requests = E.requests, NoNet()
     try:
         E.espn_wp_record("nba", games(), scr)
     finally:
         E.requests = real
-    ok("A2 the hook takes screened games and makes no request itself", True)
+    ok("A2 the hook takes screened games and makes no request itself", E.espn_wp_record("nba", games(), scr) is None)
+    E.leg_score = lambda l: dict(score(l), wp=None)
+    n0 = count("wp_shadow"); E.WPR["seen"].clear()
+    E.wp_shadow("soc", {}, now=1600.0, screened={"G3": ([{"ticker": "KXSOCCERGAME-26NOV23AAABBB-AAA", "p": .5, "bid": .4}], "x")})
+    ok("A2 a screened game with no wp and no model is not recorded", count("wp_shadow") == n0)
+    E.leg_score = score
+    E.WPR["seen"].clear(); E.WPR["cols"] = False
+    try:
+        E.store_x("drop index if exists wp_shadow_ts"); E.store_x("alter table wp_shadow drop column screened")
+        E.WPR["cols"] = False
+        E.wp_shadow("nba", games(), now=1700.0)
+        ok("A2 a legacy 15-column table still takes rows (the column re-added or trimmed)", E.store_rows("select count(*) n from wp_shadow where ts=1700.0")[0]["n"] == 2)
+        ok("A2 and the column is back", E.store_rows("pragma table_info(wp_shadow)")[-1]["name"] == "screened")
+    finally:
+        E.WPR["cols"] = True
     st = E.store_rows("pragma table_info(wp_shadow)")
     ok("A2 screened is the last column", st[-1]["name"] == "screened")
 

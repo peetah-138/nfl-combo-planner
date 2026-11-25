@@ -28176,6 +28176,8 @@ def wp_shadow(code, games, now=None, screened=None):
                 seen[t] = now
                 sport = ticker_sport(t) or code
                 wp, pid = _wp_num(sc.get("wp"), 0, 1), sc.get("wp_play")
+                if scr is not None and wp is None and sport not in LIVE_MODEL:
+                    continue                                          # a screened game with no wp and no model: nothing to compare
                 first = plays.get(sc.get("game"))
                 if wp is not None and pid and (not first or first[0] != pid):
                     plays[sc.get("game")] = first = (pid, now)           # the first time we saw this play
@@ -28207,6 +28209,8 @@ def wp_shadow(code, games, now=None, screened=None):
             plays.clear()
         if rows:
             _wp_tables()
+            if not WPR.get("cols"):                                   # the column could not be added: the old 15-column shape
+                rows = [r[:15] for r in rows]
             _wp_insert({"wp_shadow": rows})
         return len(rows)
     except Exception as err:

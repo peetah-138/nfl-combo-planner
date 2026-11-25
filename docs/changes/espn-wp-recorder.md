@@ -52,7 +52,7 @@ the same rows and settled games: Brier and log score (lower is better) with a ga
 $1 staked after the entry fee (the engine's `FEE_RATE`) and the spread (a buy fills at the ask) for one rule, "buy once when a
 source is at least X above the ask, hold to settlement", X chosen on the first 70% of games by time and scored on the last 30%.
 **Pass bar** (as in `docs/EXIT_REPLAY.md`): a source passes in a league when, held out, it beats the blend by at least 1 cent per
-$1, its net is above 0 and its bootstrap range is above 0; it counts only if it passes in 2+ leagues. The scorecard also reports the kept and screened groups apart (each hidden under 20 games, with a count of screened games per reason); the headline numbers and the pass bar use both together. Coverage per league shows
+$1, its net is above 0 and its bootstrap range is above 0; it counts only if it passes in 2+ leagues. The scorecard also reports the kept and screened groups apart (each hidden under 20 games, with a count of screened games per reason); the scores headline uses both together, but the pass bar and verdict count only the games the panel kept (screened games are picked for a gap, which would bias an edge); a pooled verdict is shown beside it, informational. Only fully priced rows are scored, so some screened reasons (no buyers, no line) may not appear. A screened game with neither wp nor a model (e.g. soccer) is not recorded. Coverage per league shows
 whether it carries wp at all and how old the last play was (median and 90th percentile of the observed play age) and whether the
 summary history is recorded. Nothing consumes the result; deciding to use wp in pricing is a later, separate, Pete-approved PR.
 

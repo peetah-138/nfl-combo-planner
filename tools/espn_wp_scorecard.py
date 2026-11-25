@@ -281,6 +281,7 @@ def run(path, out_path=None, boot=400):
         for r in rows:
             by.setdefault(r["league"], []).append(r)
         passing = {s: [] for s in ("wp", "mid", "model")}
+        pooled_ok = {}
         for lg, rs in sorted(by.items()):
             n_games = len({r["game"] for r in rs})
             if n_games < HIDE_N:
@@ -294,8 +295,16 @@ def run(path, out_path=None, boot=400):
                     if v.get("passes"):
                         passing[s].append(lg)
             sec["groups"] = groups_section(rs, boot)
+            kept = (sec["groups"].get("kept") or {}).get("trade") or {}
+            for s_, v in (kept.get("sources") or {}).items():       # the verdict counts only games the panel keeps: the
+                if v.get("passes"):                                  # screened ones are picked for a gap, which biases an edge
+                    pooled_ok.setdefault(s_, []).append(lg)
             res["leagues"][lg] = sec
-        res["verdict"] = {s: {"passes_in": v, "passes": len(v) >= PASS_LEAGUES} for s, v in passing.items()}
+        kept_pass = {s: pooled_ok.get(s, []) for s in passing}
+        res["verdict"] = {s: {"passes_in": kept_pass[s], "passes": len(kept_pass[s]) >= PASS_LEAGUES,
+                              "pooled_passes_in": v} for s, v in passing.items()}
+        res["verdict_note"] = ("the verdict counts games the panel kept only; pooled_passes_in adds the screened games "
+                               "(informational). Only fully priced rows are scored, so some screened reasons may not appear.")
         names = {"wp": "ESPN win chance", "mid": "Kalshi mid", "model": "our model"}
         res["summary"] = [f"{names[s]}: " + (f"passes the bar in {', '.join(v['passes_in'])}: worth a separate, Pete-approved look"
                           if v["passes"] else "does NOT pass the bar" + (f" (only in {', '.join(v['passes_in'])})" if v["passes_in"] else ""))

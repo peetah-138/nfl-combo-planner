@@ -18,7 +18,7 @@ def section(name, fn):
         print("FAIL " + name + " raised: " + traceback.format_exc().strip().splitlines()[-1])
 
 
-def build(path, leagues=(("nba", 80), ("ncaamb", 80), ("nhl", 5)), informative_wp=True, tables=True):
+def build(path, leagues=(("nba", 80), ("ncaamb", 80), ("nhl", 5)), informative_wp=True, tables=True, screen=False):
     db = sqlite3.connect(path)
     if tables:
         db.executescript("""
@@ -36,7 +36,7 @@ def build(path, leagues=(("nba", 80), ("ncaamb", 80), ("nhl", 5)), informative_w
                 wp = (0.9 if yes else 0.1) if informative_wp else None
                 # the blend is wrong in odd games (it likes both sides at 55c), right-neutral in even games
                 blend = 0.55 if i % 2 else 0.5
-                scr = "spread" if i >= n // 2 else None
+                scr = "spread" if screen and i >= n // 2 else None
                 for j in range(2):
                     db.execute("insert into wp_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                (1_000_000 + k * 100 + j * 10, t, lg, wp, "p1", 5.0 + j, 3.0, 0.5, blend, 0.5, 0.48, 0.5, 0.49, 2, 0.5, scr))
@@ -84,16 +84,24 @@ def a_known_answer():
 
 
 def a2_groups():
-    p = os.path.join(TMP, "a2.db"); build(p)
+    p = os.path.join(TMP, "a2.db"); build(p, screen=True)
     res = S.run(p, None, 100)
     g = res["leagues"]["nba"]["groups"]
     ok("A2 kept and screened groups are both reported (40 games each)", g["kept"]["games"] == 40 and g["screened"]["games"] == 40, g)
     ok("A2 each group has its own scores, wp still 0.01", abs(g["screened"]["scores"]["wp"]["brier"] - 0.01) < 1e-9 and abs(g["kept"]["scores"]["wp"]["brier"] - 0.01) < 1e-9)
     ok("A2 the screened reasons are counted", g["screened"]["why"] == {"spread": 40})
     ok("A2 a league of 80 headlines both groups together", res["leagues"]["nba"]["games"] == 80)
-    p2 = os.path.join(TMP, "a3.db"); build(p2, leagues=(("nba", 30),))
+    p2 = os.path.join(TMP, "a3.db"); build(p2, leagues=(("nba", 30),), screen=True)
     g2 = S.run(p2, None, 100)["leagues"]["nba"]["groups"]
-    ok("A2 a group under 20 games is hidden", g2["screened"] == {"detail": "n<20, hidden"} or g2["screened"]["games"] >= 15, g2["screened"])
+    ok("A2 a group under 20 games is hidden", g2["screened"] == {"detail": "n<20, hidden"}, g2["screened"])
+    p3 = os.path.join(TMP, "a4.db"); build(p3, leagues=(("nba", 80),))
+    db = sqlite3.connect(p3); db.execute("alter table wp_shadow rename to w2"); db.execute("create table wp_shadow(ts real, ticker text, league text, wp real, play_id text, play_age real, feed_age real, model real, blend real, fair real, bid real, ask real, mid real, lead int, frac real)")
+    db.execute("insert into wp_shadow select ts,ticker,league,wp,play_id,play_age,feed_age,model,blend,fair,bid,ask,mid,lead,frac from w2"); db.commit(); db.close()
+    old = S.run(p3, None, 100)["leagues"]["nba"]["groups"]
+    ok("A2 a file with no screened column: everything is kept, screened hidden", old["kept"]["games"] == 80 and old["screened"] == {"detail": "n<20, hidden"}, old)
+    p5 = os.path.join(TMP, "a5.db"); build(p5)
+    res = S.run(p5, None, 100)
+    ok("A2 the verdict counts kept games only and shows the pooled one beside it", "pooled_passes_in" in res["verdict"]["wp"] and res["verdict"]["wp"]["passes"] is True)
 
 
 def b_one_league_is_not_enough():
