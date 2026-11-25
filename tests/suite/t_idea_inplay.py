@@ -152,3 +152,6 @@ ok(f"Buy straight: the same Kalshi mid is never a live line ({bq.get('how')})", 
 bq = E.single_buy_quote(dict(live_side, fair=0.97, line_live=True, line_at=time.time() - 20), 5)
 ok(f"Buy straight: a 97% live line = 'nearly decided', never green ({[w['k'] for w in bq.get('warn', [])]})",
    bq.get("ok") and any(w["k"] == "decided" for w in bq["warn"]) and not bq["clears"])
+
+ok("the idea quote logs why a game under way has no live fair price (#255), and that stays a manual card",
+   "no live fair price (" in blk and 'if fair is None and fi["live"]:' in blk and "auto" not in blk.split('if row["n"] == 1')[1].split('if row["kick"]')[0].lower())

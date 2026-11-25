@@ -11,14 +11,16 @@ async function openCombo(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOp
   <h2 style="margin:4px 0 6px">Picks <span class="n">${c.legs.length}</span></h2><div class="dlegs">${c.legs.map(l=>{const tk=(h.ticks||{})[l.ticker]||[];const pts=tk.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
    return `<div class="lg"><div><b>${ICON[l.sport]||''} ${esc(betPlain(l))}</b><div class="m" style="font-size:12.5px">${l.matchup?betWhere(l)+' · ':l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</div></div>
     ${l.res?`<span class="m" style="text-align:center">${l.res==='yes'?'✓ won':'✕ lost'}</span>`:spark(pts,120,28)}<b style="text-align:right">${l.res?'':pct(l.live!=null?l.live:l.chance)}</b></div>`;}).join('')}</div>
-  ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" onclick="closeModal();hedge('${c.t}')">Hedge · ${money(c.hedge.cost)}</button>`:''}
-   <button class="btn" onclick="closeModal();ask('${c.t}')">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" onclick="closeModal();sell('${c.t}')">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`,c.label);}
+  ${c.group==='pending'?`<div class="row" style="margin-top:16px;flex-wrap:wrap">${c.hedge&&!c.hedge.done?`<button class="btn" data-t="${esc(c.t)}" onclick="var t=this.dataset.t;closeModal();hedge(t)">Hedge · ${money(c.hedge.cost)}</button>`:''}
+   <button class="btn" data-t="${esc(c.t)}" onclick="var t=this.dataset.t;closeModal();ask(t)">${c.offer_real?'New offer':'Get cash-out offer'}</button>${c.offer_real?`<button class="btn yes" data-t="${esc(c.t)}" onclick="var t=this.dataset.t;closeModal();sell(t)">Cash out ${money(c.offer)}</button>`:''}</div>`:''}`,c.label);}
 
 // ---------------- a bet that has closed (sold, settled or expired): read-only detail from what the Mac stored
 function closedWhen(a){return esc(a.when||'')}
 async function openClosed(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOpen('Bet');await pushWait();if(S.comboOpen!==t)return;await closedFill(t,'Bet');}
 async function closedFill(t,title){const r=await api('/app/api/closed?t='+encodeURIComponent(t)).catch(()=>null);if(S.comboOpen!==t)return;
- if(!r||!r.found){pushFill('<h3>We can\'t find that bet</h3><p>It isn\'t live and the Mac has no record of it.</p>',title);return;}
+ /* (#406) no answer at all (the phone couldn't reach the Mac, or it sent something unreadable) is not "no record": say so and offer a retry */
+ if(!r||typeof r!=='object'||r.found===undefined){pushFill(`<h3>Couldn't load that bet</h3><p>Your phone couldn't reach the Mac just now. The bet is fine; this is only the page.</p><div class="row"><button type="button" class="btn acc" data-t="${esc(t)}" data-title="${esc(title)}" onclick="this.disabled=true;this.textContent='Trying…';closedFill(this.dataset.t,this.dataset.title)">Try again</button></div>`,title);return;}
+ if(!r.found){pushFill('<h3>We can\'t find that bet</h3><p>It isn\'t live and the Mac has no record of it.</p>',title);return;}
  const pl=r.pl,win=pl!=null&&pl>0,tag=pl==null?'':win?'good':pl<0?'bad':'';
  const picks=(r.picks||[]).map(p=>`<div class="lg"><div><b>${esc(p.name||'')}</b></div><span class="mark ${p.res==='yes'?'yes':p.res==='no'?'no':''}">${p.res==='yes'?'won':p.res==='no'?'lost':''}</span></div>`).join('');
  const at=(r.attempts||[]).map(a=>`<div class="srow"><div class="l"><b>${esc(a.when||'')} · ${esc(a.result||'')}${a.why?' · '+esc(a.why):''}</b>${a.note?`<small>${esc(a.note)}</small>`:''}${(a.tries||[]).map((x,i)=>`<small>Try ${i+1}: ${x.offer!=null?money(x.offer):''} ${esc(x.quote||'')}${x.error?' ('+esc(x.error)+')':''}</small>`).join('')}</div></div>`).join('');

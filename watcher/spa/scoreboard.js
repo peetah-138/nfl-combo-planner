@@ -54,7 +54,8 @@ function pbBreak(p){const t=S.pbt,by=p.by||{},say=p.say||{};
   body=grp('type','Bet type',hasP?{h:['Paper'],c:x=>[x.paper_n?`${pbRoi(x.paper_roi)} <span class="m">(${x.paper_n})</span>`:'<span class="m">—</span>']}:null);}
  else if(t==='league'){ex='The same bets by league. A combo across leagues counts as Mixed.';body=grp('league','League');}
  else if(t==='end'){ex='How each bet finished. For sold bets, "vs holding" is what selling made compared with riding it to the end, once the games are over.';
-  body=grp('end','How it ended',{h:['vs holding'],c:x=>[x.vs_n?`<b class="${x.vs>=0?'up':'down'}">${smoney(x.vs)}</b> <span class="m">(${x.vs_n})</span>`:'<span class="m">—</span>']});}
+  const hd=p.held,hs=hd?`<p class="pbheld">${esc(hd.line)}${hd.few?' <span class="few">small sample</span>':''}</p>`:'',hh=hd&&hd.hist?`<p class="pbheld pbhi"><b>Could have been sold higher</b> ${esc(hd.hist.line)}${hd.hist.few?' <span class="few">small sample</span>':''}</p>`:'';
+  body=hs+grp('end','How it ended',{h:['vs holding'],c:x=>[x.vs_n?`<b class="${x.vs>=0?'up':'down'}">${smoney(x.vs)}</b> <span class="m">(${x.vs_n})</span>`:'<span class="m">—</span>']})+hh;}
  else if(t==='source'){ex='Where each bet came from. Build and Live ideas are counted together for now.';body=grp('source','Source');}
  else if(t==='stake'){ex='By how much was staked on the bet, fees included.';body=grp('stake','Stake');}
  else{const q=p.quality||{},rq=q.real||{},pq=q.paper||{};ex='From the panel\'s own record: what it expected each bet to return, against what it did. The paper panel is shown apart, since it tests the same prices.';

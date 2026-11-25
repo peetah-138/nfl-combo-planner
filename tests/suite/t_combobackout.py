@@ -48,6 +48,7 @@ def fake_accept(o, t=None):
 
 
 E.accept_once = fake_accept
+E.combo_live_fair = lambda legs, now=None: (None, "no live chance in this test")   # Flexible sell price (default on) reads live chances: none here, so it fails closed to the old rule
 real_log = E.log_decision
 E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 plan = {"acts": {}}
@@ -76,7 +77,11 @@ out = tick(0)
 ok("failed round: 10 accepts, nothing sold", len(accepts) == 10, len(accepts))
 ok("...the push is a plain 'nothing was sold' note, no success lead",
    len(out) == 1 and "nothing was sold" in out[0] and "Took the profit" not in out[0] and "locking it in" not in out[0]
-   and "backed out 10 times" in out[0] and "try again" in out[0], out)
+   and "backed out 10 times" in out[0] and "try again" in out[0]
+   and "Still holding, and we'll keep watching" in out[0], out)    # warmer words (#384)
+ok("...the fallback note carries no raw error text",
+   "Tap to retry" not in E.combo_fail_note("Combo 3", {}, "weird", True, "HTTP 503 upstream. Tap to retry")
+   and "503" not in E.combo_fail_note("Combo 3", {}, "weird", True, "HTTP 503 upstream. Tap to retry"))
 f = [r for r in logs if r.get("result") == "failed"]
 ok("...one 'failed' line with round, tries, stop, offer, threshold, slip, why", len(f) == 1 and f[0]["round"] == 1
    and f[0]["stop"] == "cancelled" and f[0]["rounds"] == 10 and len(f[0]["tries"]) == 10 and f[0]["offer"] == 13.0
@@ -120,9 +125,9 @@ SC["sc"] = None
 out = tick(1870 + 3 * 3600 + 10, p=0.76)
 ok("a score that drops out of the feed is not a change (no retry on a flicker)", asks == [] and accepts == [])
 SC["sc"] = {"state": "post", "me": 24, "opp": 17, "brk": False}
-out = tick(1870 + 3 * 3600 + 20, p=0.76, cash={"offer": 13.1, "frac": 1.0, "rfq": "r"})
+out = tick(1870 + 3 * 3600 + 20, p=0.76, cash={"offer": 13.1, "frac": 1.0, "rfq": "r", "contracts": 20})
 ok("a newer real offer that barely moved (13.0 -> 13.1): still waiting", asks == [] and accepts == [])
-out = tick(1870 + 3 * 3600 + 30, p=0.76, cash={"offer": 14.0, "frac": 1.0, "rfq": "r"}, script=["cancelled"] * 10)
+out = tick(1870 + 3 * 3600 + 30, p=0.76, cash={"offer": 14.0, "frac": 1.0, "rfq": "r", "contracts": 20}, script=["cancelled"] * 10)
 ok("a newer real offer 5%+ away: tries again", len(accepts) == 10
    and [r["retry_on"] for r in logs if r.get("result") == "failed"] == ["the offer moved"], logs)
 out = tick(1870 + 3 * 3600 + 40, p=0.775)

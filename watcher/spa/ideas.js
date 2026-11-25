@@ -44,10 +44,11 @@ function ideaVerdict(x,q){if(!q)return {k:''};
  return {k:''};}
 function ideaButtons(x,q,fresh,left,det){const one=x.n===1,busy=!!(S.ibuy&&S.ibuy[x.id]),v=fresh?ideaVerdict(x,q):{k:''};
  const buy=busy?`<button class="btn ${v.k==='warn'?'warn':'yes'}" disabled><span class="spin"></span> Buying…</button>`
-  :v.k==='no'?`<button class="btn acc" data-ib="${x.id}" onclick="priceIdea('${x.id}')">Get a new price</button>`
-  :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
- return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}onclick="ideaPass('${x.id}',${det?'true':'false'})">Pass</button>${buy}`:
-  `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
+  :v.k==='no'?`<button class="btn acc" data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">Get a new price</button>`
+  :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" data-iid="${esc(x.id)}" onclick="${one?'buySingle':'buyIdea'}(this.dataset.iid)">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
+ if(busy&&!fresh)return `<div class="dbtns"><button class="btn ghost" disabled>Pass</button><button class="btn yes" disabled><span class="spin"></span> Buying…</button></div>`;   // #270: a buy still on its way after the countdown ended
+ return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}data-iid="${esc(x.id)}" onclick="ideaPass(this.dataset.iid,${det?'true':'false'})">Pass</button>${buy}`:
+  `<button class="btn ghost" data-iid="${esc(x.id)}" onclick="${det?'ideaNotNowSheet':'hideIdea'}(this.dataset.iid)">Not now</button><button class="btn acc" ${det?'':`id="ib-${esc(x.id)}" `}data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
 function ideaVd(x,q){const v=ideaVerdict(x,q);return (v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'')+ideaWarn(q);}
 /* where the fresh fair chance came from (#255), and Buy straight's cautions for a game under way (the first one, "under way",
    is said by the source line already) */
@@ -57,7 +58,8 @@ function ideaWarn(q){return (q&&q.warn||[]).filter(w=>w.k!=='live').map(w=>`<div
 function ideaLiveNote(q){return q&&q.live?`<div class="m inow">Kalshi's price now · game under way</div>`:`<div class="m inow">Kalshi's price now</div>`;}
 /* the last answer to a Buy tap on this idea, in plain words, on the card and the detail page (a toast alone sat behind
    the detail page, so a refusal there looked like nothing happened) */
-function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];return a?`<div class="ians ${a.tone||''}" role="status">${esc(a.m)}</div>`:'';}
+function ideaAnsHtml(x){const a=S.ideaAns&&S.ideaAns[x.id];if(!a)return '';const shk=a.tone==='bad'&&!a.shook;a.shook=true;   // (#275) a refusal shakes once, the visible result moment (its haptic fires after an await: silent on iOS 27)
+ return `<div class="ians ${a.tone||''}${shk?' shk':''}" role="status">${esc(a.m)}</div>`;}
 /* the amount row (issue #145): with a fresh price, or once Pete chose an amount (then Get price asks for that) */
 function ideaStake(x,q,fresh){const key='id:'+x.id,mine=stkGet(key);if(!fresh&&mine==null)return '';S.idRec=S.idRec||{};const m=(fresh&&q)||S.idRec[x.id]||{};
  const rec=m.rec||x.stake||5;const small=!!(fresh&&q&&(q.nofair||q.small||(q.single&&q.fair==null)));   // #255: no fair price = no recommendation, only the smallest usual bet
@@ -70,10 +72,10 @@ function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,fals
 function ideaOld(html,x,fresh){return fresh&&html?`<div class="iold"><div class="m">When this idea was found · ${esc(ideaAge(x.ts).replace(/^Price /,''))} · older than the price below</div>${html}</div>`:html;}
 function ideaCard(x){if(x.over)return ovIdea(x);const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;const k=x.idea_id||x.id;
- if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
- const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" onclick="event.stopPropagation();ideaX('${x.id}')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
+ if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${esc(x.id)}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
+ const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" data-iid="${esc(x.id)}" onclick="event.stopPropagation();ideaX(this.dataset.iid)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
  const cls=`dcard idea itap${x.stale?' stale':''}${x.below_bar?' below':''}${S.hl===x.id?' flash':''}${(S.ideaBack||[]).includes(k)?' rise':''}`;
- const open=`id="idea-${x.id}" data-ik="${k}" onclick="ideaOpen(event,'${x.id}')"`;
+ const open=`id="idea-${esc(x.id)}" data-ik="${k}" data-iid="${esc(x.id)}" onclick="ideaOpen(event,this.dataset.iid)"`;
  if(x.n===1){const li=(x.legs_info||[])[0];
   return `<div class="iw" data-id="${x.id}"><div class="${cls}" ${open}><div>${ideaHead(x,li)}
    <p>${esc(ideaAgeNote(x))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>
@@ -216,7 +218,7 @@ function ideaBody(x){const li=(x.legs_info||[])[0]||{},one=x.n===1,q=S.ideaq[x.i
   ${ideaMoved(x)}
   <h2 style="margin:18px 0 6px">Could you sell it?</h2>${ideaSell(x)}
   ${ideaQuote(x,q,fresh)}
-  <div class="idact">${ideaButtons(x,q,fresh,left,true)}${tk?`<button class="btn" type="button" onclick="openGame('${tk}')">Open the game page</button>`:''}</div>`;}
+  <div class="idact">${ideaButtons(x,q,fresh,left,true)}${tk?`<button class="btn" type="button" data-t="${esc(tk)}" onclick="openGame(this.dataset.t)">Open the game page</button>`:''}</div>`;}
 function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').classList.contains('on'))return;
  const x=ideaFind(id),sh=$('#sheet');
  if(!x){const sig='gone';if(S.ideaSig===sig)return;S.ideaSig=sig;pushFill('<h3>Not on the list any more</h3><p>This idea was bought, dismissed or has expired. New ones show up on Live.</p>','Buy idea');return;}
@@ -229,7 +231,7 @@ async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySel
  const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
  if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn,small:r.small};
+ S.ideaq[id]={i:r.i,legs:r.legs,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn,small:r.small};
  S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
  clearInterval(S.ideaT);S.ideaTid=id;S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 /* Buy (#252): every tap ends with an answer in plain words, on the page itself (the card, or the detail page, where a toast
@@ -249,9 +251,9 @@ async function ideaBuyGo(id,body,okMsg){const q=S.ideaq&&S.ideaq[id],x0=ideaFind
  r=r||{ok:false};S.ideaq[id]=null;if(r.ok&&S.stk)delete S.stk['id:'+id];
  const m=r.ok?okMsg(q,r):(r.msg||r.error||(r.check?'Kalshi didn\'t answer clearly, so this may or may not have been bought. Check Kalshi before trying again.':'Kalshi didn\'t take it, so nothing was bought. Get a new price to try again.'));
  const tone=r.ok?'good':r.check||r.lost?null:'bad';ideaAns(id,m,tone);
- if(r.ok||r.check||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
- if(r.ok||r.check)ideaDrop(id,'bought',x0);else ideaRedraw();load('live',true);}
-function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
+ if(r.ok||r.check||r.lost||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
+ if(r.ok||r.check||r.lost)ideaDrop(id,'bought',x0);else ideaRedraw();/* a lost reply hides it like a check (#270): it may have gone through */load('live',true);}
+function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i,legs:q.legs&&q.legs.length?q.legs:undefined}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
 function buySingle(id){return ideaBuyGo(id,q=>({a:'singlebuy',id,n:q.n,price:q.price}),(q,r)=>r.msg||'Bought.');}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
  setTimeout(()=>{delete S.ideaGone[id];ideaDrop(id,'gone');},4500);}

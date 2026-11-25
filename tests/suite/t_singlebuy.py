@@ -524,6 +524,34 @@ ok("a Live-idea single with no clear answer: 'check', the market blocked, never 
 n0 = len(D["sent"])
 r = E.idea_single_buy(T, 4, 0.72, log=LOG.append)
 ok("...a second tap sends nothing", not r["ok"] and len(D["sent"]) == n0)
+# (#270) the Mac marks the idea bought itself on ok or check (so a lost reply or a missed phone dismiss can't bring it back)
+E.IDEA_DISMISS = os.path.join(tempfile.mkdtemp(), "combo_idea_dismiss.json")
+ok("an idea single with no clear answer is not marked bought when no idea key came with it (not an idea tap)",
+   not os.path.exists(E.IDEA_DISMISS))
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+D["next"] = requests.Timeout("slow")
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="ideaX")
+ok("...with an idea key, a 'check' answer marks the idea bought on the Mac (it may have gone through)",
+   r.get("check") and E.idea_key([T]) in E._idea_state()["bought"])
+reset()
+E._SQ["ideas"] = {}
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+os.remove(E.IDEA_DISMISS)
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="ideaY")
+ok("...an ok buy marks it too", r["ok"] and E.idea_key([T]) in E._idea_state()["bought"])
+os.remove(E.IDEA_DISMISS)
+E._SQ["ideas"] = {}
+r = E.idea_single_buy(T, 4, 0.72, paused=True, log=LOG.append, key="ideaZ")
+ok("...a refusal (Pause) marks nothing: the idea stays live", not r["ok"] and not os.path.exists(E.IDEA_DISMISS))
+E.IDEA_DISMISS = os.path.join(tempfile.mkdtemp(), "no_such_dir", "x.json")      # an unwritable file never breaks the answer
+E._SQ["ideas"] = {}
+reset()
+E.ACCT_CACHE.update(at=time.time(), value=([], None, None))
+r = E.idea_single_buy(T, 4, 0.72, log=LOG.append, key="ideaW")
+ok("...and a failing write of the mark never changes the buy's answer", r["ok"] and len(D["sent"]) == 1)
+E.IDEA_DISMISS = os.path.join(tempfile.mkdtemp(), "combo_idea_dismiss.json")
 WSRC = open("wtest/combo_watcher.py").read()
 iq = WSRC.index('if a == "idea":')
 seg_q = WSRC[iq:WSRC.index('if row["kick"]', iq)]
@@ -533,6 +561,10 @@ ok("the web app's idea single quote checks its own league's cap (not the loaded 
    "A.single_cap_block(tk" in seg_q and "week_spend" not in seg_q and "A.NO_TRADE_MSG" in seg_q)
 ok("the web app's idea single buy goes through idea_single_buy (cap, Pause, block) and never buy_single directly",
    "A.idea_single_buy(" in seg_b and "paused_now()" in seg_b and "buy_single" not in seg_b and "key=" in seg_b)
+ib2 = WSRC.index('if a == "buy":')
+seg_c = WSRC[ib2:WSRC.index('if a == "panel_reprice":', ib2)]
+ok("the web app's combo Buy marks the idea bought on ok or check, after the order and never before it (#270)",
+   seg_c.index("A.accept_offer(i, expect_legs=shown)") < seg_c.index("A.idea_mark_bought(") and "or r.get(\"check\")" in seg_c)
 ok("Build's 'spent' line uses the display-only copy", "A.week_spend_shown()" in WSRC)
 
 # manual singles use their own league's cap even with the Mix loaded (Mix combos keep the Mix cap)

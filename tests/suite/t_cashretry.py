@@ -5,7 +5,7 @@
 # sell line") and, under Never sell at a loss, the cost; a short random pause (0.3-1 s) before each fresh offer; one more ask when none came in; an
 # unknown outcome stops at once (rule 8); your own Cash out tap keeps 3 retries and no pause. No real orders: every
 # Kalshi call is faked, and the pause only counts (nothing sleeps).
-import os, time, tempfile, importlib.util
+import os, time, json, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
@@ -111,7 +111,7 @@ msg, info = run(["cancelled"] * 3, offers=[9.0, 8.4])
 ok("a fresh offer under the smart-sell line stops the round; nothing accepted at it", accepts == [10.0, 9.0]
    and info["stop"] == "offer too low" and info["low_offer"] == 8.4, (accepts, info.get("stop")))
 msg, info = run(["cancelled"] * 3, offers=[9.9, 9.9, 8.8], floor=9.0)
-ok("under Never sell at a loss, a fresh offer below cost stops it (even above the line)", len(accepts) == 3
+ok("with an explicit floor (no setting passes one now), a fresh offer below cost stops it (even above the line)", len(accepts) == 3
    and 8.8 not in accepts and info["stop"] == "offer too low" and info["low_offer"] == 8.8 and info["floor"] == 9.0)
 msg, info = run(["cancelled"] * 3, offers=[8.9], cost_floor=9.0)
 ok("a profit-taking sale (cost floor): a fresh offer above the line but below cost stops it", accepts == [10.0]
@@ -185,3 +185,23 @@ msg, info = run(["cancelled", "executed"])
 ok("...a stop for a changed account never puts the auto-sell order back on contracts that may be gone", not placed)
 E.MINE["tp"] = {}
 ACCT["bets"] = "held"
+
+
+# ---- #395: a retry that sells under the first agreed offer is logged (below_agreed), counted, and still cleared the line
+E.SELL_LOG = os.path.join(tempfile.mkdtemp(), "sells2.jsonl")
+msg, info = run(["cancelled", "executed"], offers=[9.0], line=8.5)
+ok(f"auto retry sold at 9.00 under the agreed 10.00: below_agreed 1.00 ({info.get('below_agreed')})",
+   msg.startswith("✅") and info.get("below_agreed") == 1.0)
+msg, info = run(["executed"], line=8.5)
+ok("first accept at the agreed price: no below_agreed", msg.startswith("✅") and "below_agreed" not in info)
+msg, info = run(["cancelled", "executed"], offers=[10.0], line=8.5)
+ok("a retry at the agreed price: no below_agreed", msg.startswith("✅") and "below_agreed" not in info)
+msg, info = run(["cancelled", "executed"], offers=[9.0], auto=False)
+ok("your own tap: never tagged", "below_agreed" not in info)
+msg, info = run(["cancelled"], offers=[8.0, 8.0], line=8.5)
+ok("a retry offer under the smart-sell line is still refused (no loosening)", not msg.startswith("✅")
+   and info.get("stop") == "offer too low" and "below_agreed" not in info)
+with open(E.SELL_LOG, "w") as f:
+    f.write(json.dumps({"result": "sold", "below_agreed": 1.0}) + "\n" + json.dumps({"result": "sold"}) + "\n"
+            + json.dumps({"result": "sold", "below_agreed": 0.5}) + "\n")
+ok(f"scoreboard counter counts them ({E.retry_below_agreed()})", E.retry_below_agreed() == {"n": 2, "usd": 1.5})

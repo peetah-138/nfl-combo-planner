@@ -12,6 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
+from contextlib import nullcontext
 import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
@@ -21,10 +22,10 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.23.138"
+WATCHER_VERSION = "2026.11.24.139"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "learned_guards",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -902,6 +903,32 @@ def estimate_offers(E):
 
 # ---------------------------------------------------------------- Mac hub: the phone's data and trades
 HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate_event_collections|series)(/|$)")
+# Non-GET requests the phone may forward are only the ones the app itself sends (GitHub #102): order create/cancel,
+# quote requests (RFQs) and accepting a quote, and making a combo market. Anything else (batch or amend orders, other
+# writes under /portfolio) is refused with a logged reason. Money moves between pots stay on pot_move only.
+_ID = r"[A-Za-z0-9_.:-]{1,120}"
+HUB_WRITES = {
+    "POST": re.compile(r"/portfolio/orders|/portfolio/events/orders|/communications/rfqs|"
+                       r"/multivariate_event_collections/" + _ID),
+    "PUT": re.compile(r"/communications/rfqs/" + _ID + r"/quotes/" + _ID + r"/accept"),
+    "DELETE": re.compile(r"/portfolio/(events/)?orders/" + _ID + r"|/communications/rfqs/" + _ID),
+}
+
+
+def hub_refusal(method, path):
+    """Why the Mac won't forward this request for the phone, or '' when it may. GETs need only HUB_PATHS; anything
+    that writes must match HUB_WRITES exactly (fail closed), with no transfer/allocation/subaccount words."""
+    if method not in ("GET", "POST", "PUT", "DELETE"):
+        return "method not allowed"
+    if not HUB_PATHS.match(path):
+        return "path not allowed"
+    if method == "GET":
+        return ""
+    if ".." in path or re.search(r"transfer|balance_allocation|subaccount", path.lower()):
+        return "path not allowed for a write"
+    if not HUB_WRITES[method].fullmatch(path):
+        return "write not on the allow-list"
+    return ""
 
 
 def hub_address():
@@ -1747,6 +1774,8 @@ PUSH = Push(HOME)
 ICON_PNG = "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"
 
 SW_JS = """// Combo Hub service worker (v2: taps open '/', legacy '/app' targets are mapped): shows the Mac's notifications and opens the right screen when tapped.
+// It has no fetch handler and caches nothing, so it can never serve an old page (#150). The next line carries the app version, so every release changes this file's bytes and the browser installs the new worker.
+// app-version: @@VER@@
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', e => {
@@ -2730,7 +2759,8 @@ def webapp_main():
         scores = max(on) if on else (min(ages) if ages else None)
         # "live" is the real signal that a game is under way; "scores" alone is just the newest cache age when nothing is on
         return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
-                "live": bool(on), "fast": bool(LIVE.get("fast"))}
+                "live": bool(on), "fast": bool(LIVE.get("fast")),
+                "ver": str(getattr(A, "VERSION", "") or "")}       # the running version: the page compares it to the one it loaded with (#150)
 
     def live_extras(out):
         try:
@@ -3072,10 +3102,13 @@ def webapp_main():
             cviews = [v for v, _ in pairs]
             lines_now = (LINES.get(lg) or {}).get("lines", BUILD.get("lines") or [])   # #117: already vetted recommendations
             pregame = {e: sd for e, sd in games.items() if not any(A.started(x) for x in sd)}
+            held = A.held_markets()                     # (#414) a market Pete holds or just bought leaves the pick lists
+            fresh = {e: sd for e, sd in games.items() if not any(x.get("ticker") in held for x in sd)}   # either side of it
             try:                                        # Best bets today (#63): recommend-only, display only
                 best = A.best_bets_feed(                # without games over the line (they're listed as left out)
-                    {e: sd for e, sd in pregame.items() if not A.overlap_of(over, [e])},
-                    [x for x in lines_now if not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
+                    {e: sd for e, sd in pregame.items() if e in fresh and not A.overlap_of(over, [e])},
+                    [x for x in lines_now if x.get("ticker") not in held
+                     and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
                      for v, c in pairs if not v.get("bought") and not v.get("over")])
             except Exception as err:
@@ -3086,8 +3119,8 @@ def webapp_main():
                              "stake": A.CTX.get("stake"), "budget": A.CFG.get("budget"), "cut": A.CFG.get("accept_pct"),
                              "spent": A.week_spend_shown() if A.can_trade() else 0,   # display only, never a cap check
                              "board": board, "combos": cviews, "best": best,
-                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(games)],
-                             "lines": lines_now, "longshots": overlap_ls(ls_view(lg), over),
+                             "singles": [dict(x, over=A.overlap_of(over, [], [x["ticker"]])) for x in singles_view(fresh)],
+                             "lines": [x for x in lines_now if x.get("ticker") not in held], "longshots": overlap_ls(ls_view(lg), over),
                              "overlap": overlap_info(),
                              "lines_priced": (LINES.get(lg) or {}).get("priced", BUILD.get("lines_priced") or 0),
                              "lines_nobook": (LINES.get(lg) or {}).get("nobook", BUILD.get("lines_nobook") or 0),
@@ -3162,7 +3195,30 @@ def webapp_main():
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
 
+    CLOSED_CACHE = {}      # (#407) ticker -> (when, answer): one closed-bet page costs one account read and one log scan
+    CLOSED_TTL, CLOSED_TTL_MISS, CLOSED_CACHE_MAX = 20, 4, 64   # seconds kept (a miss only briefly: a bet just closed shows up soon)
+
     def api_closed(t):
+        """The closed-bet detail (api_closed_work), kept for CLOSED_TTL seconds per ticker so repeated requests (a page
+        refreshing, a scan of ids) don't each hold the account lock for an account read and rescan the whole sell log
+        (#407). A closed bet doesn't change, so the answer is the same; a bet that wasn't found is remembered for only a
+        few seconds. Anything that isn't a valid ticker is answered before the cache, as before."""
+        if not COMBO_TICKER.match(t or ""):
+            return {"found": False}
+        now = time.time()
+        hit = CLOSED_CACHE.get(t)
+        if hit and now - hit[0] < (CLOSED_TTL if hit[1].get("found") else CLOSED_TTL_MISS):
+            return hit[1]
+        out = api_closed_work(t)
+        if isinstance(out, dict):
+            for k in [k for k, v in CLOSED_CACHE.items() if now - v[0] > CLOSED_TTL]:
+                CLOSED_CACHE.pop(k, None)
+            while len(CLOSED_CACHE) >= CLOSED_CACHE_MAX:
+                CLOSED_CACHE.pop(next(iter(CLOSED_CACHE)), None)
+            CLOSED_CACHE[t] = (now, out)
+        return out
+
+    def api_closed_work(t):
         """Read-only detail of a bet that has already closed (sold, settled or expired), from what the app already stores:
         the account's bets, the history file, the automatic cash-out log. Only this bet's own ticker is looked up; nothing
         about the account itself goes out. found:False when it is nowhere (the page then says so)."""
@@ -3372,6 +3428,13 @@ def webapp_main():
                 A.klive_log_once("ideagame", t, err)
         leg = A.label_game_page(dict(leg)) if leg else leg    # display only: what the bet is, and which game
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
+        start = None                                        # kickoff / tip-off (epoch s): where the chance chart begins (display only)
+        try:
+            gs, gsrc = A.game_start(t.rsplit("-", 1)[0], t) if "-" in t else (None, None)
+            if gs and gsrc in ("book", "feed"):             # never the settle-time estimate: it can be hours off
+                start = gs.timestamp()
+        except Exception as err:
+            A.klive_log_once("gamestart", t, err)
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
             ch = leg.get("live") if leg.get("live") is not None else leg.get("chance")
@@ -3414,7 +3477,7 @@ def webapp_main():
         except Exception as err:                         # display only: no buttons, never a broken page
             A.klive_log_once("gamebuy", t, err)
             buy = []
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "start": start,
                          "detail": detail, "buy": buy, "fresh": freshness()})
 
     def api_game_warm(t):
@@ -3486,11 +3549,11 @@ def webapp_main():
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
-                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
+                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
-                "overlap_guard", "overlap_n", "overlap_pct")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode",
+                "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3537,7 +3600,7 @@ def webapp_main():
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
                         continue
-                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                    if k == "stop_loss_mode":           # #228 PR5: the 2-way choice (a saved 'never' becomes 'tune'); the old switch kept in step
                         A.sl_sync(A.CFG, {k: v})
                         continue
                     if k == "stop_loss":                # an older page's on/off may only make it stricter
@@ -3581,8 +3644,10 @@ def webapp_main():
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
-                             "blocks": A.order_blocks(),
+                             "blocks": A.order_blocks(), "flexfb": A.flex_fb_view(),
+                             "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
+                             "guards": A.guards_view(A.LEAGUE["code"]),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -3593,6 +3658,23 @@ def webapp_main():
             m = re.search(r"needs about \$([0-9][0-9,]*\.?[0-9]*)", str(msg or ""))
             need = float(m.group(1).replace(",", "")) if m else float(cost or 0)
             return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
+        except Exception:
+            return None
+
+    def combo_ev_cal(c, r):
+        """(#361) The quote's expected profit on the chance corrected by your own record (calib_fair, as notify_bar does),
+        for the sheet to show beside the books' one. Display only: nothing reads it to size or buy. A pick under way
+        (priced on its live chance) or a chance that can't be corrected: None. Never raises."""
+        try:
+            if r.get("live") or not r.get("pct") or not r.get("stake"):
+                return None
+            legs = c.get("legs") or []
+            shown = A.math.prod(l["fair"] for l in legs)
+            cal = A.math.prod(A.calib_fair(A.ticker_sport(l["ticker"]) or A.LEAGUE["code"], l.get("fair_book") or l["fair"],
+                                         l.get("ticker")) for l in legs)
+            if not (shown > 0 and cal > 0):
+                return None
+            return round(r["stake"] * (r["pct"] * cal / shown - 1), 2)
         except Exception:
             return None
 
@@ -3636,6 +3718,7 @@ def webapp_main():
         fair = r.get("fair", c.get("fair"))
         if fair:                                       # the books' chance of the combo (a pick under way: its live one)
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
+            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) display only: `ev` above still drives rec / small
         if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
             r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:
@@ -3763,7 +3846,7 @@ def webapp_main():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
-                with tap_mark(a in ("go", "hedgego")):
+                with tap_mark(a in ("go", "hedgego")), (A.manual_sell_mark(t) if a == "go" else nullcontext()):   # (#400) the auto seller skips it
                     A.cash_action("drop" if a == "keep" else a, t)
                 LIVE["at"] = 0
                 o = A.MINE["cash"].get(t) or {}
@@ -3813,7 +3896,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "i": i, "clears": r.get("ok"), "cut": 100,
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own")}})
             if a == "quote":
                 i = int(d.get("i", 0))
@@ -3829,7 +3912,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own", "why", "nofair", "live", "small", "overlap", "warn")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
@@ -3851,6 +3934,9 @@ def webapp_main():
                     if fi["over"]:
                         return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
                     fair = fi["fair"]
+                    if fair is None and fi["live"]:      # (#255) say why: this card shows Kalshi's price only, a manual tap
+                        log(f"idea {str(d.get('id', ''))[:12]} {tk}: no live fair price ({fi['nofair'] or 'none'}); "
+                            "card shows Kalshi's price only, no edge claimed")
                     if fair is None and not fi["live"]:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
@@ -3915,7 +4001,7 @@ def webapp_main():
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
-                out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                out = {"ok": True, "i": k, "legs": [l["ticker"] for l in c.get("legs") or []], "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                        "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small", "overlap", "warn")}}
                 if gap:                                 # (#358) priced on the live chance when every live guard passes
                     out.update(live=True, fair_src="live" if r.get("fair") else "none",
@@ -3951,7 +4037,7 @@ def webapp_main():
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
                     return {"ok": False, "msg": A.NO_SELL_MSG}
-                with tap_mark():                        # an update never restarts the web app mid-order
+                with tap_mark(), A.manual_sell_mark(t):   # an update never restarts the web app mid-order; auto sells skip it (#400)
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
                 return jsonable(r)
@@ -3981,15 +4067,12 @@ def webapp_main():
                 return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
-                shown = d.get("legs")                   # rule 7: the offer must be for the very picks on screen
-                if shown is not None:
-                    o = (A.CTX.get("offers") or {}).get(i) or {}
-                    if not isinstance(shown, list) or sorted(map(str, shown)) != sorted(o.get("legs") or []):
-                        return {"ok": False, "msg": "That price was for a different combo. Get a fresh price, then buy."}
+                shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
+                shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
-                        r = A.accept_offer(i)
+                        r = A.accept_offer(i, expect_legs=shown)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
@@ -4002,6 +4085,10 @@ def webapp_main():
                 LIVE["at"] = 0
                 if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
+                    try:                                # a Buy idea for these picks stays off the list too (#270)
+                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")])
+                    except Exception:
+                        pass
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
                                  "check": bool(r.get("check"))})
             if a == "panel_reprice":                # (#358) a Skipped / Didn't buy card: where it would land now (reads only)
@@ -4141,7 +4228,8 @@ def webapp_main():
             path, _, query = self.path.partition("?")
             local = self.headers.get("X-CW-Local") == "1"
             if path in ("/app", "/app/"):
-                return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false"), "text/html; charset=utf-8")
+                return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false")
+                                  .replace("__CWVER__", str(getattr(A, "VERSION", "") or "")), "text/html; charset=utf-8")
             if path.startswith("/app/api/"):
                 from urllib.parse import parse_qs
                 q = {k: v[0] for k, v in parse_qs(query).items()}
@@ -4181,6 +4269,8 @@ def webapp_main():
                         out = api_game_warm(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
+                    elif path == "/app/api/ver":            # read-only: the running version (a parked page checks it, #150)
+                        out = {"ok": True, "ver": str(getattr(A, "VERSION", "") or "")}
                     elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
                         try:
                             h = max(1, min(720, int(q.get("h") or 16)))
@@ -4357,7 +4447,7 @@ def mac_settings(conf, web, d, tok):
                 "quiet": not (7 <= time.localtime().tm_hour < 22),
                 "history": E.store_rows("select (select count(*) from quotes) q, (select count(*) from ticks) t, "
                                         "(select count(*) from bets) b")[0] if getattr(E, "STORE", {}).get("db") else None,
-                "log": tail, "odds": odds_info(E)}
+                "log": tail, "odds": odds_info(E), "logs": log_status(conf)}
     if a == "code":
         ip = mac_tailscale_ip()
         out = {"topic": conf["topic"], "secret": conf["secret"]}
@@ -4406,6 +4496,8 @@ def mac_settings(conf, web, d, tok):
         log("automatic updates", "on" if conf["auto_update"] else "off (waits for the phone)")
         return {"ok": True, "msg": "Updates install automatically." if conf["auto_update"] else
                 "Updates now wait until your phone approves them."}
+    if a == "logaccess":                                    # dev Mac log reading (issue #377): on = a new code
+        return log_access_set(conf, E, bool(d.get("on")))
     if a == "https":
         threading.Thread(target=tailscale_https, args=(conf, conf.get("hub_port", 8765)), daemon=True).start()
         return {"ok": True, "msg": "Checking Tailscale's https address…"}
@@ -4519,6 +4611,433 @@ def accuracy_loop(odds, every=300):
         time.sleep(every)
 
 
+# ---------------------------------------------------------------- dev Mac log reading (issue #377, docs/LOG_ACCESS.md)
+# A read-only, redacted tail of this Mac's logs for the dev Mac, over Tailscale only. Off until Pete turns on
+# Settings › This Mac › "Let the dev Mac read logs" on this Mac itself, which makes a read-only code (only its SHA-256
+# is kept, in watcher.json). It never takes a lock, never changes anything and never reads anything but the two files
+# below. Every answer is redacted here, before it leaves, and any error in that means nothing is sent (fail closed).
+LOG_PATH = "/api/logs"
+LOG_SOURCES = {"console": "watcher.log", "autosell": "combo_autosell_log.jsonl"}   # the only files it ever reads
+LOG_DEF_LINES, LOG_MAX_LINES, LOG_MAX_BYTES = 200, 500, 200_000                   # per answer, after redaction
+LOG_READ_BYTES = 1_500_000      # the most read from the end of a file per answer (never the whole file)
+LOG_LINE_MAX = 2000             # characters kept of one line
+LOG_RATE = (30, 60)             # answers per client per minute
+LOG_BAD = (5, 600)              # wrong codes per client per 10 minutes before that client is turned away
+LOG_BAD_ALL = (30, 600)         # wrong codes from everyone per 10 minutes before everyone is turned away
+LOG_SECRET_MIN = 6              # live secret values this long or longer are masked wherever they appear
+LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (anything else is dropped)
+    "at", "when", "by", "ride", "result", "why", "note", "guard", "combo", "ticker", "kind", "side", "cost", "offer",
+    "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
+    "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
+    "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
+    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
+LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
+                    "polymarket.com", "hockeytech.com", "theahl.com")
+LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)
+_LOG_SALT = os.urandom(16)      # per process: an id is shown as a short tag, the same within one run
+
+
+def _log_finite(x):
+    return x == x and abs(x) != float("inf")
+
+
+class LogLeak(Exception):
+    """A redacted answer still held a live secret: nothing is sent."""
+
+
+_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ")
+_LOG_SELL = re.compile(r"^(.*?auto cash-out: )(\{.*)$")
+_RX_PEM = re.compile(r"(?i)-----BEGIN[^\n]*?-----.*?(?:-----END[^\n]*?-----|\Z)", re.S)
+_RX_HDR = re.compile(r"(?i)\b(proxy-authorization|authorization|x-cw|set-cookie|cookie|kalshi-access-key|"
+                     r"kalshi-access-signature|x-api-key)([\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\r\n,;}]+)")
+_RX_BEARER = re.compile(r"(?i)\b(bearer(?=\s+\S)|basic(?=\s+\S{6}))(\s+)[A-Za-z0-9._~+/=-]+")
+_RX_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{2,}")
+_RX_CWCOOKIE = re.compile(r"(?i)(?<![A-Za-z0-9_-])(cw)(\s*[:=]\s*)[^\s,;&\"']+")
+_RX_KV = re.compile(r"(?i)(\\?[\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,40}?(?:secret|token|passw(?:or)?d|passcode|web_pass|api[ _-]?key|apikey|"
+                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session|cookie|topic|endpoint|p256dh|auth_?key|"
+                    r"member[ _-]?id|user[ _-]?id|account[ _-]?id|subaccount|e-?mail|watcher_code|pairing|passkey|credential)"
+                    r"[A-Za-z0-9_-]{0,40})\1(\s*[:=]\s*)(\\\"[^\"\\]*\\\"|\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[a-z: -]+\]|[^\s,;&}\])]+)")
+_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id|(?:user|member|account)[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>\\]+")
+_RX_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}")
+_RX_TSNET = re.compile(r"(?i)(?<![a-z0-9.-])[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,6}\.(?:ts|tailscale)\.net\b")
+_RX_IP4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d)(?!\.\d)")
+_RX_IP6 = re.compile(r"(?i)(?<![0-9a-z:])(?:(?:[0-9a-f]{1,4}:){5,7}[0-9a-f]{1,4}|"
+                     r"(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![0-9a-z:])")
+_RX_UUID = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+_RX_HOMEDIR = re.compile(r"/(Users|home)/[^/\s\"':]+")
+_RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
+_RX_MONEYLINE = re.compile(r"(?i)(?<!insufficient_)(?<!insufficient )balance|by pot|\bpots?\b|bankroll|portfolio_value")
+_RX_DOLLARS = re.compile(r"\$\s?-?[\d,]+(?:\.\d+)?")
+_RX_BALNUM = re.compile(r"(?i)(balance[a-z_]*[\"']?\s*[:=]\s*)-?[\d.,]+")
+_RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
+
+
+def log_enabled(conf):
+    """On only when Pete turned it on and a code's hash is stored."""
+    la = conf.get("log_access") if isinstance(conf, dict) else None
+    return isinstance(la, dict) and la.get("on") is True and bool(re.fullmatch(r"[0-9a-f]{64}", str(la.get("hash") or "")))
+
+
+def log_client_ok(ip, headers):
+    """Only the tailnet: a Tailscale address, Tailscale's own https front door with a signed-in person, or this Mac
+    itself. The home network and anything forwarded without a Tailscale identity (e.g. Funnel) are refused."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(str(ip).split("%")[0])
+    except ValueError:
+        return False
+    if getattr(a, "ipv4_mapped", None):
+        a = a.ipv4_mapped
+    if headers.get("Tailscale-Funnel-Request"):
+        return False
+    if a.is_loopback:
+        fwd = headers.get("X-Forwarded-For") or headers.get("Forwarded") or headers.get("X-Forwarded-Host")
+        return not fwd or bool(headers.get("Tailscale-User-Login"))
+    return any(a in ipaddress.ip_network(n) for n in ("100.64.0.0/10", "fd7a:115c:a1e0::/48")
+               if ipaddress.ip_network(n).version == a.version)
+
+
+def log_token_ok(conf, auth):
+    """Constant-time check of `Authorization: Bearer <code>` against the stored hash."""
+    want = str(((conf.get("log_access") or {}).get("hash")) or "")
+    m = re.fullmatch(r"Bearer ([A-Za-z0-9_-]{20,200})", str(auth or "").strip())
+    got = hashlib.sha256((m.group(1) if m else "-").encode()).hexdigest()
+    return hmac.compare_digest(got.encode(), want.encode().ljust(64, b"-")[:64]) and bool(m) and len(want) == 64
+
+
+def log_new_token(conf):
+    """Turn log reading on with a fresh code (the old one stops working). Returns the code; only its hash is kept."""
+    import secrets
+    tok = secrets.token_urlsafe(32)
+    conf["log_access"] = {"on": True, "hash": hashlib.sha256(tok.encode()).hexdigest(), "at": int(time.time())}
+    return tok
+
+
+class LogGate:
+    """Rate limits: LOG_RATE answers per client, and wrong codes (per client and from everyone)."""
+
+    def __init__(self):
+        self.lock, self.hits, self.bad, self.bad_all = threading.Lock(), {}, {}, []
+
+    @staticmethod
+    def _recent(lst, win, now):
+        return [t for t in lst if now - t < win]
+
+    def allow(self, ip, now=None):
+        now = now or time.time()
+        with self.lock:
+            if len(self.hits) > 500:
+                self.hits = {k: v for k, v in self.hits.items() if self._recent(v, LOG_RATE[1], now)}
+                self.bad = {k: v for k, v in self.bad.items() if self._recent(v, LOG_BAD[1], now)}
+            self.bad_all = self._recent(self.bad_all, LOG_BAD_ALL[1], now)
+            b = self.bad[ip] = self._recent(self.bad.get(ip, []), LOG_BAD[1], now)
+            if len(b) >= LOG_BAD[0] or len(self.bad_all) >= LOG_BAD_ALL[0]:
+                return False
+            h = self.hits[ip] = self._recent(self.hits.get(ip, []), LOG_RATE[1], now)
+            if len(h) >= LOG_RATE[0]:
+                return False
+            h.append(now)
+            return True
+
+    def wrong(self, ip, now=None):
+        now = now or time.time()
+        with self.lock:
+            self.bad.setdefault(ip, []).append(now)
+            self.bad_all.append(now)
+            n = len(self.bad_all)
+        if n in (LOG_BAD_ALL[0] // 2, LOG_BAD_ALL[0]):
+            log(f"dev Mac log reading: {n} wrong codes in 10 minutes")
+
+
+LOG_GATE = LogGate()
+
+
+def log_secrets(conf, E=None):
+    """The live secret values on this Mac, to mask wherever they appear (raises if they can't be read)."""
+    from urllib.parse import quote, urlsplit
+    vals = [conf.get(k) for k in ("topic", "secret", "web_pass", "passkey_user", "healthcheck_url")]
+    vals += [p.get("id") for p in conf.get("passkeys") or [] if isinstance(p, dict)]
+    host = urlsplit(str((conf.get("https") or {}).get("url") or "")).hostname or ""
+    vals += [host] + host.split(".")[:2]                       # the machine and tailnet names on their own too
+    cfg = getattr(E, "CFG", None) or {}
+    vals += [cfg.get(k) for k in getattr(E, "KEY_FIELDS", ("kalshi_key_id", "odds_key", "watcher_code"))]
+    out = set()
+    for v in vals:
+        if isinstance(v, str) and len(v.strip()) >= LOG_SECRET_MIN:
+            v = v.strip()
+            out.update((v, quote(v, safe=""), json.dumps(v)[1:-1]))
+    return sorted(out, key=len, reverse=True)
+
+
+def _log_url(m):
+    from urllib.parse import urlsplit, parse_qsl, urlencode
+    u = urlsplit(m.group(0))
+    host = (u.hostname or "").lower()
+    if any(host == h or host.endswith("." + h) for h in LOG_PUBLIC_HOSTS):
+        q = [(k, "[redacted]" if re.search(r"(?i)key|token|secret|sig|auth|pass|session|topic|mail|user|member|account", k)
+              else v) for k, v in parse_qsl(u.query, keep_blank_values=True)]
+        return f"{u.scheme}://{host}{u.path}" + ("?" + urlencode(q, safe="[]") if q else "")
+    if host in ("127.0.0.1", "localhost"):
+        return f"{u.scheme}://{host}" + (f":{u.port}" if u.port else "") + u.path
+    return f"{u.scheme}://[host]"
+
+
+def _log_kv(m):
+    v = m.group(4)
+    return f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}" + ('"[redacted]"' if v.startswith('"') else "[redacted]")
+
+
+def _log_ip4(m):
+    o = [int(x) for x in m.groups()]
+    if max(o) > 255 or o[0] == 127 or o == [0, 0, 0, 0]:
+        return m.group(0)
+    return "[ip]"
+
+
+def _log_secretish(s):
+    """A run of characters that looks like a key or code rather than a word, ticker or path."""
+    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s):    # Kalshi tickers; plain words
+        return False
+    if len(s) >= 32:
+        return True
+    return len(s) >= 16 and bool(re.search(r"\d", s) and re.search(r"[a-z]", s) and re.search(r"[A-Z]", s))
+
+
+def _log_blob(m):
+    s = m.group(0)
+    if "/" in s:                                                # a path: only the parts that look like keys
+        return "/".join("[redacted]" if _log_secretish(x) else x for x in s.split("/"))
+    return "[redacted]" if _log_secretish(s) else s
+
+
+def log_redact(text, secrets_):
+    """Mask secrets in one piece of log text. Order matters: whole secrets first, then shapes."""
+    text = _RX_CTRL.sub("", text)                                # colour codes / zero-width marks can't split a secret
+    if secrets_:
+        text = re.sub("|".join(re.escape(s) for s in secrets_), "[secret]", text, flags=re.I)
+    text = text[:LOG_LINE_MAX + 200]                             # bounded before the shape rules (they cost per character)
+    if "-----begin" in text.lower():
+        text = _RX_PEM.sub("[private key]", text)
+    text = _RX_HDR.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_BEARER.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_JWT.sub("[token]", text)
+    text = _RX_CWCOOKIE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_URL.sub(_log_url, text)
+    text = _RX_KV.sub(_log_kv, text)
+    text = _RX_KVSP.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    if "@" in text:
+        text = _RX_EMAIL.sub("[email]", text)
+    if ".net" in text.lower():
+        text = _RX_TSNET.sub("[tailnet-host]", text)
+    text = _RX_IP4.sub(_log_ip4, text)
+    text = _RX_IP6.sub("[ip]", text)
+    text = _RX_UUID.sub(lambda m: "[id:" + hmac.new(_LOG_SALT, m.group(0).lower().encode(), "sha256").hexdigest()[:6] + "]",
+                        text)
+    text = _RX_HOMEDIR.sub(lambda m: f"/{m.group(1)}/[user]", text)
+    text = _RX_BLOB.sub(_log_blob, text)
+    if _RX_MONEYLINE.search(text):                             # account-level money (balances, pots): masked
+        text = _RX_DOLLARS.sub("$[amount]", _RX_BALNUM.sub(lambda m: m.group(1) + "[amount]", text))
+    return text
+
+
+def log_fields(rec, secrets_):
+    """One auto cash-out record: allowlisted fields only (simple values, or short lists/maps of them), redacted."""
+    simple = (str, int, float, bool, type(None))
+
+    def clean(v):
+        if isinstance(v, float) and not _log_finite(v):
+            return None                                          # not valid JSON
+        return log_redact(v, secrets_)[:LOG_LINE_MAX] if isinstance(v, str) else v
+
+    out = {}
+    for k, v in (rec.items() if isinstance(rec, dict) else ()):
+        if k not in LOG_FIELDS:
+            continue
+        if isinstance(v, simple):
+            out[k] = clean(v)
+        elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, simple) for x in v):
+            out[k] = [clean(x) for x in v]
+        elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, list) and all(isinstance(y, simple) for y in x) for x in v):
+            out[k] = [[clean(y) for y in x] for x in v]
+        elif isinstance(v, dict) and len(v) <= 50 and all(isinstance(x, simple) for x in v.values()):
+            out[k] = {clean(str(a)): clean(x) for a, x in v.items() if str(a) in LOG_FIELDS}
+    return out
+
+
+def log_tail(path, budget=LOG_READ_BYTES):
+    """The last `budget` bytes of a regular file (never a link), as whole lines. Missing = no lines."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return ""
+    try:
+        import stat
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file")
+        start = max(0, st.st_size - budget)
+        os.lseek(fd, start, 0)
+        chunks, left = [], st.st_size - start
+        while left > 0:
+            b = os.read(fd, min(left, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            left -= len(b)
+    finally:
+        os.close(fd)
+    text = b"".join(chunks).decode("utf-8", "replace")
+    if start > 0:
+        text = text.split("\n", 1)[1] if "\n" in text else ""   # the first line was cut part-way
+    return text
+
+
+def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
+    """The redacted answer for one source, as JSON bytes. Raises on anything unexpected (the caller sends nothing)."""
+    name = LOG_SOURCES[source]                                  # KeyError for anything else
+    path = os.path.join(home or HOME, name)
+    secrets_ = log_secrets(conf, E)
+    limit = max(1, min(LOG_MAX_LINES, int(limit)))
+    text = log_tail(path)
+    if source == "console" and "-----begin" in text.lower():
+        text = _RX_PEM.sub("[private key]", text)              # a key block spans lines: masked before splitting
+    rows = []
+    last = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if source == "autosell":
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            t = rec.get("at") if isinstance(rec, dict) and isinstance(rec.get("at"), (int, float)) else None
+            rows.append((t, rec))
+        else:
+            m = _LOG_TS.match(line)
+            if not m and last is None:
+                continue                                        # before the first dated line: maybe the middle of something cut
+            if m:
+                try:
+                    last = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    pass
+            rows.append((last, line))                           # a line with no time (a traceback) takes the one above
+    if since is not None:
+        rows = [r for r in rows if r[0] is not None and r[0] >= since]
+    rows = rows[-limit:]
+    out = []
+    for t, x in rows:
+        if source == "autosell":
+            out.append({"t": t, "rec": log_fields(x, secrets_)})
+            continue
+        m = _LOG_SELL.match(x)
+        if m:                                                   # the console copy of an auto cash-out record
+            try:
+                x = m.group(1) + json.dumps(log_fields(json.loads(m.group(2)), secrets_))
+            except ValueError:
+                x = m.group(1) + "[record not shown]"
+        out.append({"t": t, "text": log_redact(x, secrets_)[:LOG_LINE_MAX]})
+    paused = conf.get("paused")
+    status = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
+              "paused": bool(paused), "paused_at": paused if isinstance(paused, (int, float)) and not isinstance(paused, bool) else None,
+              "role": "backup" if is_backup(conf) else "main",
+              "auto_sell": bool((getattr(E, "CFG", None) or {}).get("auto_sell")), "now": int(time.time())}
+    ans = {"ok": True, "source": source, "status": status, "lines": out, "truncated": False}
+    body = json.dumps(ans)                                       # ASCII only: a stray lone surrogate can't break it
+    while len(body) > LOG_MAX_BYTES and ans["lines"]:
+        drop = max(1, len(ans["lines"]) // 10)                   # the oldest go first
+        ans["lines"] = ans["lines"][drop:]
+        ans["truncated"] = True
+        body = json.dumps(ans)
+    low = body.lower()
+    if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", body):
+        raise LogLeak("a secret survived redaction")
+    return body.encode()
+
+
+def log_status(conf):
+    """For Settings on this Mac: on or off, since when, last read. Never the code or its hash."""
+    la = conf.get("log_access") or {}
+    return {"on": log_enabled(conf), "at": la.get("at") if log_enabled(conf) else None, "read": LOG_STATE["read"] or None}
+
+
+def log_access_set(conf, E, on):
+    """Settings › This Mac › "Let the dev Mac read logs". On makes a new code (shown once, the old one stops working)."""
+    before = conf.get("log_access")
+    tok = log_new_token(conf) if on else None
+    if not on:
+        conf.pop("log_access", None)
+    try:
+        E.save_json(CONF, conf, strict=True)                     # a code that wasn't saved must never be shown
+    except Exception as err:
+        if before is None:
+            conf.pop("log_access", None)
+        else:
+            conf["log_access"] = before
+        log("dev Mac log reading: setting not saved,", type(err).__name__)
+        return {"ok": False, "msg": "Couldn't save that on this Mac. Nothing changed; try again.", "logs": log_status(conf)}
+    log("dev Mac log reading", "turned on (new code)" if on else "turned off")
+    if not on:
+        return {"ok": True, "msg": "The dev Mac can no longer read logs.", "logs": log_status(conf)}
+    ip = mac_tailscale_ip()
+    url = f"http://{ip}:{conf.get('hub_port', 8765)}" if ip else ""
+    return {"ok": True, "token": tok, "url": url, "logs": log_status(conf),
+            "msg": "Copy the code now: it is shown only once."}
+
+
+def log_send(handler, code, body=b""):
+    """Every /api/logs answer: never cached, never sniffed, and an empty body for every refusal."""
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json" if body else "application/octet-stream")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    if code == 405:
+        handler.send_header("Allow", "GET")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    if body:
+        handler.wfile.write(body)
+
+
+def log_route(handler, conf, E):
+    """GET /api/logs?source=console|autosell&since=<unix seconds>&limit=N with `Authorization: Bearer <code>`.
+    404 when off or not from the tailnet, 401 for a wrong code, 429 when too fast, 400 for a bad question, 503 when
+    redaction failed. Every refusal has an empty body."""
+    from urllib.parse import urlparse, parse_qs
+
+    def send(code, body=b""):
+        return log_send(handler, code, body)
+
+    ip = handler.client_address[0]
+    if not log_enabled(conf) or not log_client_ok(ip, handler.headers):
+        return send(404)
+    if not LOG_GATE.allow(ip):
+        return send(429)
+    if not log_token_ok(conf, handler.headers.get("Authorization")):
+        LOG_GATE.wrong(ip)
+        return send(401)
+    q = parse_qs(urlparse(handler.path).query, keep_blank_values=True)
+    if set(q) - {"source", "since", "limit"} or any(len(v) != 1 for v in q.values()):
+        return send(400)
+    source = q.get("source", ["console"])[0]
+    try:
+        since = float(q["since"][0]) if "since" in q else None
+        limit = int(q.get("limit", [LOG_DEF_LINES])[0])
+        if source not in LOG_SOURCES or (since is not None and not _log_finite(since)) or limit < 1:
+            return send(400)
+    except (ValueError, OverflowError):
+        return send(400)
+    try:
+        body = log_answer(conf, E, source, since, limit)
+    except Exception as err:                                     # fail closed: nothing of the log is sent
+        log("dev Mac log read: nothing sent,", type(err).__name__)
+        return send(503)
+    LOG_STATE["read"] = int(time.time())
+    return send(200, body)
+
+
 def start_hub(conf, E, odds=None):
     """Serve the phone over Tailscale (or your home network). Every request must be sealed with the
     pairing secret, recent, and not a replay; anything else gets a bare 403."""
@@ -4536,8 +5055,18 @@ def start_hub(conf, E, odds=None):
             return {"v": WATCHER_VERSION, "engine": E.VERSION, "trade": E.can_trade(), "at": time.time()}
         if op == "account":
             # money moved since the last read (#242): read Kalshi fresh, so the web app never caches the old account
-            moved = getattr(E, "money_seen", float)() > (E.ACCT_CACHE.get("at") or 0)
-            return {"value": list(E.fetch_account(max_age=0 if moved else 15, every_league=True))}
+            # Floor (#271): only when the cached copy is over HUB_FRESH_FLOOR seconds old, so a stamp that keeps changing
+            # can't force a Kalshi read per request. A held-back copy is flagged: the app uses it but doesn't keep it.
+            at = E.ACCT_CACHE.get("at") or 0
+            moved = getattr(E, "money_seen", float)() > at
+            floor = getattr(E, "HUB_FRESH_FLOOR", 3)
+            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor
+            if held:
+                print(f"hub account: fresh read held back ({time.time() - at:.1f}s-old copy, floor {floor}s)", flush=True)
+            out = {"value": list(E.fetch_account(max_age=15 if held or not moved else 0, every_league=True))}
+            if held:
+                out["held_back"] = True
+            return out
         if op == "pots":                                 # read-only: Kalshi's cash by pot from the last balance read
             return {"pots": E.kalshi_pots()}
         if op == "pot_move":                             # Pete's confirmed tap: move cash between pots (never automatic)
@@ -4566,9 +5095,10 @@ def start_hub(conf, E, odds=None):
             return {"snap": odds.get(str(req.get("league") or "nfl"), str(req.get("key") or ""))}
         if op == "kalshi":
             method, path = str(req.get("method", "GET")).upper(), str(req.get("path", ""))
-            if method not in ("GET", "POST", "PUT", "DELETE") or not HUB_PATHS.match(path) or \
-                    (method != "GET" and (not re.fullmatch(r"[A-Za-z0-9_/.:-]+", path) or ".." in path or
-                                          re.search(r"transfer|balance_allocation|subaccount", path.lower()))):
+            why = hub_refusal(method, path)
+            if why:
+                if method != "GET":
+                    log("phone request refused:", why, method, path[:80])
                 return {"err": "kalshi", "msg": "That request isn't allowed through the Mac."}   # moves: pot_move only
             if method != "GET":
                 log("phone order:" if "/accept" in path or path.endswith("/orders") else "phone request:", method, path)
@@ -4606,6 +5136,8 @@ def start_hub(conf, E, odds=None):
             self.wfile.write(body)
 
         def do_POST(self):
+            if self.path.split("?")[0] == LOG_PATH:            # dev Mac log reading is read-only (404 while off)
+                return log_send(self, 405 if log_enabled(conf) else 404)
             n = int(self.headers.get("Content-Length") or 0)
             if web and self.path == "/app/admin":           # Mac settings: only from the Mac itself
                 tok = web.session(self)
@@ -4756,9 +5288,11 @@ def start_hub(conf, E, odds=None):
         def do_GET(self):
             from urllib.parse import urlparse, parse_qs
             u = urlparse(self.path)
+            if u.path == LOG_PATH:                              # dev Mac log reading (read-only, redacted)
+                return log_route(self, conf, E)
             if web and u.path in ("/sw.js", "/manifest.webmanifest", "/icon.png", "/apple-touch-icon.png"):
                 import base64
-                body, ctype = ((SW_JS.encode(), "text/javascript") if u.path == "/sw.js" else
+                body, ctype = ((SW_JS.replace("@@VER@@", WATCHER_VERSION).encode(), "text/javascript") if u.path == "/sw.js" else
                                (MANIFEST.encode(), "application/manifest+json") if u.path.endswith("webmanifest") else
                                (base64.b64decode(ICON_PNG), "image/png"))
                 self.send_response(200)
