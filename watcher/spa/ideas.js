@@ -44,11 +44,11 @@ function ideaVerdict(x,q){if(!q)return {k:''};
  return {k:''};}
 function ideaButtons(x,q,fresh,left,det){const one=x.n===1,busy=!!(S.ibuy&&S.ibuy[x.id]),v=fresh?ideaVerdict(x,q):{k:''};
  const buy=busy?`<button class="btn ${v.k==='warn'?'warn':'yes'}" disabled><span class="spin"></span> Buying…</button>`
-  :v.k==='no'?`<button class="btn acc" data-ib="${x.id}" onclick="priceIdea('${x.id}')">Get a new price</button>`
-  :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" onclick="${one?'buySingle':'buyIdea'}('${x.id}')">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
+  :v.k==='no'?`<button class="btn acc" data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">Get a new price</button>`
+  :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" data-iid="${esc(x.id)}" onclick="${one?'buySingle':'buyIdea'}(this.dataset.iid)">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
  if(busy&&!fresh)return `<div class="dbtns"><button class="btn ghost" disabled>Pass</button><button class="btn yes" disabled><span class="spin"></span> Buying…</button></div>`;   // #270: a buy still on its way after the countdown ended
- return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}onclick="ideaPass('${x.id}',${det?'true':'false'})">Pass</button>${buy}`:
-  `<button class="btn ghost" onclick="${det?'ideaNotNowSheet':'hideIdea'}('${x.id}')">Not now</button><button class="btn acc" ${det?'':`id="ib-${x.id}" `}data-ib="${x.id}" onclick="priceIdea('${x.id}')">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
+ return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}data-iid="${esc(x.id)}" onclick="ideaPass(this.dataset.iid,${det?'true':'false'})">Pass</button>${buy}`:
+  `<button class="btn ghost" data-iid="${esc(x.id)}" onclick="${det?'ideaNotNowSheet':'hideIdea'}(this.dataset.iid)">Not now</button><button class="btn acc" ${det?'':`id="ib-${esc(x.id)}" `}data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
 function ideaVd(x,q){const v=ideaVerdict(x,q);return (v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'')+ideaWarn(q);}
 /* where the fresh fair chance came from (#255), and Buy straight's cautions for a game under way (the first one, "under way",
    is said by the source line already) */
@@ -72,10 +72,10 @@ function ideaQuote(x,q,fresh){if(!fresh)return ideaAnsHtml(x)+ideaStake(x,q,fals
 function ideaOld(html,x,fresh){return fresh&&html?`<div class="iold"><div class="m">When this idea was found · ${esc(ideaAge(x.ts).replace(/^Price /,''))} · older than the price below</div>${html}</div>`:html;}
 function ideaCard(x){if(x.over)return ovIdea(x);const q=S.ideaq[x.id];const fresh=q&&Date.now()/1000-q.at<20;
  const left=fresh?Math.max(0,Math.round(20-(Date.now()/1000-q.at))):0;const k=x.idea_id||x.id;
- if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${x.id}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
- const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" onclick="event.stopPropagation();ideaX('${x.id}')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
+ if(S.ideaGone&&S.ideaGone[x.id])return `<div class="iw" data-id="${x.id}"><div class="dcard idea gone" id="idea-${esc(x.id)}"><div><h4>${x.n===1?'🎯':'💡'} ${esc(x.picks)}</h4><p>Not available on Kalshi right now, so this idea is coming off the list.</p></div></div></div>`;
+ const xb=`<button class="ix" type="button" aria-label="Dismiss this idea" data-iid="${esc(x.id)}" onclick="event.stopPropagation();ideaX(this.dataset.iid)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l8 8M16 8l-8 8"/></svg></button>`;
  const cls=`dcard idea itap${x.stale?' stale':''}${x.below_bar?' below':''}${S.hl===x.id?' flash':''}${(S.ideaBack||[]).includes(k)?' rise':''}`;
- const open=`id="idea-${x.id}" data-ik="${k}" onclick="ideaOpen(event,'${x.id}')"`;
+ const open=`id="idea-${esc(x.id)}" data-ik="${k}" data-iid="${esc(x.id)}" onclick="ideaOpen(event,this.dataset.iid)"`;
  if(x.n===1){const li=(x.legs_info||[])[0];
   return `<div class="iw" data-id="${x.id}"><div class="${cls}" ${open}><div>${ideaHead(x,li)}
    <p>${esc(ideaAgeNote(x))} · Kalshi's price is below the sharp books' chance of winning, after Kalshi's fee. No combo maker taking a cut.</p>

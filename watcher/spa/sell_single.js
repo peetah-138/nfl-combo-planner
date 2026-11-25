@@ -10,8 +10,8 @@ function ssAge(at){const s=Math.max(0,Math.round(Date.now()/1000-at));return s<5
 function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';const p=S.sellq[x.t],busy=S.ssBusy&&S.ssBusy[x.t];
  const line=p?(p.ok?`Kalshi bid <b>${Math.round(p.bid*100)}¢</b> · sell now for <b>${m2(p.got)}</b> after the fee${p.thin?' · <span class="down">thin market</span>':''} · ${ssAge(p.at)}`:`<span class="down">${esc(p.msg||'No price right now.')}</span>`):'Sell any time: the price comes straight from Kalshi.';
  return `<div class="sacts" onclick="event.stopPropagation()"><span class="s">${line}</span>
-  <button class="btn ghost sm" data-ssp="${esc(x.t)}" ${busy?'disabled':''} onclick="event.stopPropagation();ssPrice('${x.t}',this)">${busy?'<span class="spin"></span> Asking…':'Get new price'}</button>
-  <button class="btn yes sm" data-sss="${esc(x.t)}" onclick="event.stopPropagation();ssOpen('${x.t}')">Sell${p&&p.ok?' '+m2(p.got):''}</button></div>`;}
+  <button class="btn ghost sm" data-ssp="${esc(x.t)}" ${busy?'disabled':''} onclick="event.stopPropagation();ssPrice(this.dataset.ssp,this)">${busy?'<span class="spin"></span> Asking…':'Get new price'}</button>
+  <button class="btn yes sm" data-sss="${esc(x.t)}" onclick="event.stopPropagation();ssOpen(this.dataset.sss)">Sell${p&&p.ok?' '+m2(p.got):''}</button></div>`;}
 function ssFind(t){const d=S.live||{};return (d.singles||[]).find(x=>x.t===t)||null;}
 async function ssPrice(t,b){S.ssBusy=S.ssBusy||{};if(S.ssBusy[t])return;S.ssBusy[t]=1;if(b)btnBusy(b,'Asking…');
  const r=await api('/app/api/act',{a:'sellquote',t}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));delete S.ssBusy[t];
