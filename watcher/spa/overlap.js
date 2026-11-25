@@ -2,16 +2,18 @@
    number of open bets set in Settings › Money (2 by default), or that share of the panel's sizing base at risk (8%).
    Build, Best bets, Surprise me, Long shots, single games, Buy ideas and the panel's extras show it greyed and last,
    with one "Add anyway" button. That tap is yours alone: the game goes in S.ovAllow, a list kept only in this page
-   (gone on reload, never saved, never read by anything that buys on its own), and the list is fetched again. */
-S.ovAllow=S.ovAllow||new Set();
-function ovList(){return [...S.ovAllow];}
+   (gone on reload, never saved, never read by anything that buys on its own), and the list is fetched again. Each entry
+   carries the game's open bets and dollars at risk at the tap (KEY~n~risk), so once the game has more riding than
+   that the Mac greys it again (#366). */
+S.ovAllow=S.ovAllow||new Map();
+function ovList(){return [...S.ovAllow].map(([g,e])=>e&&e.n!=null?g+'~'+e.n+'~'+e.risk:g);}
 function ovQ(sep){const a=ovList();return a.length?sep+'allow='+encodeURIComponent(a.join(',')):'';}
 function ovLast(a,b){return (!!a.over)-(!!b.over);}
 function ovText(o){return o&&o.text?o.text:'You already have bets on this game.';}
 /* the note and the button under a greyed pick; v is the screen to fetch again ('build' or 'live') */
 function ovBar(o,v){if(!o)return '';
- return `<div class="ovbar" role="note"><span>${esc(ovText(o))}</span><button type="button" class="btn ovadd" aria-label="Add anyway: show this game's picks again" onclick="event.stopPropagation();ovAdd(this,'${esc(o.game||'')}','${v==='live'?'live':'build'}')">Add anyway</button></div>`;}
-async function ovAdd(b,g,v){hap();if(!g||(b&&b.disabled))return;S.ovAllow.add(g);
+ return `<div class="ovbar" role="note"><span>${esc(ovText(o))}</span><button type="button" class="btn ovadd" aria-label="Add anyway: show this game's picks again" onclick="event.stopPropagation();ovAdd(this,'${esc(o.game||'')}','${v==='live'?'live':'build'}',${Number.isFinite(+o.n)&&Number.isFinite(+o.risk)?+o.n+','+(+o.risk):'null,null'})">Add anyway</button></div>`;}
+async function ovAdd(b,g,v,n,risk){hap();if(!g||(b&&b.disabled))return;S.ovAllow.set(g,n==null?null:{n,risk});
  const snap=flipSnap();   // (#368) where every card is now, so the ones that move can slide instead of jump (smallwins.js)
  if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Showing…';}
  try{await load(v);}catch(e){toast('Couldn\'t refresh that game. Try again.');}   // (#402) no haptic after the await (silent on iOS 27): the tap ticked and the toast says it

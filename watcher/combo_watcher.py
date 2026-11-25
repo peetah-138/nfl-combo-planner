@@ -12,6 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
+from contextlib import nullcontext
 import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
@@ -3191,7 +3192,30 @@ def webapp_main():
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
 
+    CLOSED_CACHE = {}      # (#407) ticker -> (when, answer): one closed-bet page costs one account read and one log scan
+    CLOSED_TTL, CLOSED_TTL_MISS, CLOSED_CACHE_MAX = 20, 4, 64   # seconds kept (a miss only briefly: a bet just closed shows up soon)
+
     def api_closed(t):
+        """The closed-bet detail (api_closed_work), kept for CLOSED_TTL seconds per ticker so repeated requests (a page
+        refreshing, a scan of ids) don't each hold the account lock for an account read and rescan the whole sell log
+        (#407). A closed bet doesn't change, so the answer is the same; a bet that wasn't found is remembered for only a
+        few seconds. Anything that isn't a valid ticker is answered before the cache, as before."""
+        if not COMBO_TICKER.match(t or ""):
+            return {"found": False}
+        now = time.time()
+        hit = CLOSED_CACHE.get(t)
+        if hit and now - hit[0] < (CLOSED_TTL if hit[1].get("found") else CLOSED_TTL_MISS):
+            return hit[1]
+        out = api_closed_work(t)
+        if isinstance(out, dict):
+            for k in [k for k, v in CLOSED_CACHE.items() if now - v[0] > CLOSED_TTL]:
+                CLOSED_CACHE.pop(k, None)
+            while len(CLOSED_CACHE) >= CLOSED_CACHE_MAX:
+                CLOSED_CACHE.pop(next(iter(CLOSED_CACHE)), None)
+            CLOSED_CACHE[t] = (now, out)
+        return out
+
+    def api_closed_work(t):
         """Read-only detail of a bet that has already closed (sold, settled or expired), from what the app already stores:
         the account's bets, the history file, the automatic cash-out log. Only this bet's own ticker is looked up; nothing
         about the account itself goes out. found:False when it is nowhere (the page then says so)."""
@@ -3812,7 +3836,7 @@ def webapp_main():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
-                with tap_mark(a in ("go", "hedgego")):
+                with tap_mark(a in ("go", "hedgego")), (A.manual_sell_mark(t) if a == "go" else nullcontext()):   # (#400) the auto seller skips it
                     A.cash_action("drop" if a == "keep" else a, t)
                 LIVE["at"] = 0
                 o = A.MINE["cash"].get(t) or {}
@@ -4003,7 +4027,7 @@ def webapp_main():
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
                     return {"ok": False, "msg": A.NO_SELL_MSG}
-                with tap_mark():                        # an update never restarts the web app mid-order
+                with tap_mark(), A.manual_sell_mark(t):   # an update never restarts the web app mid-order; auto sells skip it (#400)
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
                 return jsonable(r)
