@@ -175,6 +175,12 @@ ok("below cost (12.00), 6.20 beats waiting now: taken (no Never floor)", accepts
 msg, info = run(["cancelled", "executed"], offers=[3.0], auto=True, cost=12, line=8.5)
 ok("...but under the 85% backstop (4.18): refused", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop", (accepts, info))
 
+# ---- a NaN live chance fails closed (it must not skip the backstop)
+LIVE["f"] = float("nan")
+msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=7)
+ok("NaN live chance: old rule, never the flexible path (2.90 under 97% of 10 is refused)", accepts == [10.0] and info["flex"]["mode"] == "old", (accepts, info))
+LIVE["f"] = 0.3
+
 # ---- Pause, rule 8
 PAUSED["on"] = True
 msg, info = run(["cancelled"] * 3, offers=[9.9] * 3)

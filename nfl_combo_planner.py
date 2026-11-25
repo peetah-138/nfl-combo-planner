@@ -9673,6 +9673,9 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
         usual = kalshi_discount(True) * fair             # a combo cash-out carries no separate fee: the offer is the cash
         backstop = flex_backstop() * usual
         wait = flex_wait_line(hn)
+        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (whole, fair, usual, backstop, wait)):
+            out["why"] = "live info unreadable"          # a NaN would skip the backstop: fail closed to the old bar
+            return out
         ref = math.prod(c for c in (h.get("ch_of") or {}).values() if c is not None) if h.get("ch_of") else None
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
         profit = offer >= (h.get("cost") or 0) * frac - 1e-9
