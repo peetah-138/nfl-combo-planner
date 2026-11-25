@@ -73,8 +73,9 @@ def reset():
 fee = E.combo_sale_net({"offer": 10.0, "contracts": 20})
 ok("net of the selling fee: $10.00 on 20 contracts nets $9.65", abs(fee - 9.65) < 1e-9, fee)
 ok("...the same fee the singles code uses", abs((10.0 - fee) - 20 * E.single_fee(0.5, 20)) < 1e-9)
-ok("...no contracts / no offer / junk: None (fail closed)", E.combo_sale_net({"offer": 10.0}) is None
-   and E.combo_sale_net({"contracts": 20}) is None and E.combo_sale_net({"offer": "x", "contracts": 20}) is None)
+ok("...no contracts / no offer / junk: the gross offer (0 when unreadable), with a note, never an error",
+   E.combo_sale_net({"offer": 10.0}) == 10.0 and E.combo_sale_net({"contracts": 20}) == 0.0
+   and E.combo_sale_net({"offer": "x", "contracts": 20}) == 0.0 and "no contracts" in E.combo_sale_net_info({"offer": 10.0})[1])
 
 
 def run(offs, mode=None, script=("executed",), dt_=0, contracts=20, why="smart"):
@@ -147,7 +148,7 @@ ok("a profit reason at $10.20 (net under cost, no stop-loss ready) does not sell
 src = open("wahome/engine.py", encoding="utf-8").read()
 ok("the stop-loss classification of a below-cost first offer is as before",
    'if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):' in src
-   and 'if below and why != "cut loss":\n                rec["stop_loss"] = True' in src
+   and 'if below and why != "cut loss" and gross_below:' in src
    and "below = net < h[" in src)
 ok("a manual Cash out tap has no floor (its 97% rule is unchanged)", "accept_cash(ticker)\n" in src
    and "floor is not None and net_ < floor" in src)
