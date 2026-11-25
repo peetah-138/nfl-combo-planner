@@ -13961,6 +13961,13 @@ def shadow_pass(book_snap, log=print, alert=None):
             log("shadow quote failed:", type(err).__name__, err)
             continue
         if (not r.get("error") and r.get("pct") and r["pct"] >= KILLER["combo_pct"] and not c.get("same_game")
+                and len(c["legs"]) <= KILLER["combo_legs"] and CFG.get("killer_mode", "watch") != "off"
+                and not r.get("ok")):
+            # (#398) get_offer's own verdict is final: a quote it held back ("suspect": over COMBO_SUSPECT of fair, a
+            # wrong chance far more often than a gift; or under its bar) is never a killer deal, in watch or on mode.
+            log(f"near-killer combo held back: the quote check said {r.get('why') or 'not ok'} "
+                f"({r['pct']:.0%} of fair)")
+        elif (not r.get("error") and r.get("pct") and r["pct"] >= KILLER["combo_pct"] and not c.get("same_game")
                 and len(c["legs"]) <= KILLER["combo_legs"] and CFG.get("killer_mode", "watch") != "off"):
             ok, why_not = killer_check(c["legs"], book_snap)
             if ok:                                         # a killer combo: take this quote while it's live
