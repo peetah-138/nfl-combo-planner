@@ -115,3 +115,27 @@ above the ask (else it is hold); `T-1h` / `T-15m` need a known kickoff. Ranges a
 normalized game), the best rule is chosen on the first 70% of games and scored on the last 30%, and a group from fewer than
 20 games prints "n<20, hidden". It treats every market as if bought at first sight, so it measures what a rule does to an
 average market, not to the app's picks: use it to learn timing and prediction, then confirm on the singles replay above.
+
+## News and context recorder (record only, zero trading effect)
+
+Two more write-only recorders ride the same `sig_shadow` flag (ON by default). They make no request of their own: the
+injury lists come from ESPN reads the app already makes (`INJ`, cache only), Kalshi bids from `PRICE_SEEN` (every read
+the app already does), the sharp-book probability from the panel pass, and schedules and weather from `fetch_scores`.
+A tick runs at most every 20 seconds, one transaction, errors swallowed, nothing in a decision reads these tables.
+
+| Table | What | When |
+|---|---|---|
+| `sig_news` | one row per injury/lineup change (new item, status change, or removal): time, league, team, player, old and new status, `material` (Out, Doubtful, Questionable and the like), game and ticker when known, Kalshi bid/ask and the sharp probability at that moment, and how old each price was | when a change is seen |
+| `sig_news_fu` | the same market's bid, ask and sharp probability at +5, +15 and +60 minutes, from the latest price already read; a sample more than one horizon late is dropped, never faked | follow-ups |
+| `sig_ctx` | per game: home flag, neutral-site flag, dome, rest days for both teams, back-to-back, games in the last 7 days, travel miles and time zones crossed (small table inside the engine, pro leagues only), weather from ESPN's field (wind, temperature, precipitation, text), and both sides' Kalshi bid/ask and sharp fair | about 2 hours before the start and at the start |
+
+Unknown stays NULL (never guessed): neutral site, dome, weather, rest and games-in-7-days when the schedule record does not
+reach back far enough, and travel when the site is not explicitly a home game. ESPN's scoreboard often has no weather, so
+those columns will usually be empty. Retention is 365 days, and each table has a row ceiling (news 60,000, follow-ups
+200,000, context 80,000) that stops writes and never deletes to make room.
+
+Report: `python3 tools/signal_events.py --out ~/signal_events_summary.json` (read-only, no network, aggregates only, groups under
+20 hidden). Part 1, the event study: after a news event, how far Kalshi's bid moved at +5/+15/+60 minutes next to how far the
+sharp probability moved, by league and material or not, with a game-level bootstrap range. Moves are oriented by the sign of the sharp move, so `gap_sharp_minus_kalshi` positive means Kalshi lagged the news. A stored `fair_book` is NULL when it was stale. Part 2, the residual test: whether
+a context factor explains what the sharp probability missed, fitted on the first 70% of games and scored (Brier) on the last
+30%, with a game-level bootstrap range. A lone factor "working" out of many tried is more likely luck than signal.
