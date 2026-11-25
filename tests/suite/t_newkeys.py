@@ -14,7 +14,7 @@ def tup(src, name):
 SYNC, SETK = tup(W, "SYNCED"), tup(W, "SET_KEYS")
 # every new key (by prefix) that exists in DEFAULTS, plus the ones that must exist
 NO_SCREEN_ROW = {"flex_backstop"}     # a number with no Settings row on purpose (still synced and saved)
-EXPECT = {"flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_cap"}
+EXPECT = {"flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_cap", "learned_guards"}
 NEW = {k for k in E.DEFAULTS if k.startswith(("flex_", "sell_more", "learned_guards"))} | EXPECT
 ok("the new sell keys exist in DEFAULTS", EXPECT <= set(E.DEFAULTS), sorted(EXPECT - set(E.DEFAULTS)))
 for k in sorted(NEW):

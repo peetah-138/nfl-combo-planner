@@ -29,7 +29,7 @@ E.can_trade = lambda: True
 E.trading_paused = lambda: False
 E.more_shadow = lambda *a, **k: None
 SC = {"ok": True, "frac": 0.4}
-E.fresh_live_score = lambda tk, side, now: (({"state": "in", "frac": SC["frac"], "detail": "Q3 5:00", "brk": False}, "") if SC["ok"] else (None, "score not fresh"))
+E.fresh_live_score = lambda tk, side, now=None, loose=False: (({"state": "in", "frac": SC["frac"], "detail": "Q3 5:00", "brk": False}, "") if SC["ok"] else (None, "score not fresh"))
 E.leg_score = lambda l: {"state": "in", "frac": SC["frac"], "detail": "Q3 5:00", "brk": False}
 E.SCORES_BY["nba"] = {"at": _real_time(), "by": {}}
 E.leg_start = lambda l, s: E.dt.datetime.fromtimestamp(_real_time() - 3600, E.dt.timezone.utc)
