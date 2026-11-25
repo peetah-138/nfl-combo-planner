@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.24.139"
+VERSION = "2026.11.25.140"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -20876,8 +20876,8 @@ def panel_collect(book_snap, code, log=print):
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
-    slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
     broad_shadow(code, every, lc_all)                  # watch-all recorder: write-only, no fetch, never raises
+    slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
     signal_events(code, games)                         # news + game-context recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates

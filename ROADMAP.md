@@ -61,6 +61,9 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   ride to the end), let the cut-off's self-adjustment use the lab's results, and revisit the 85% floor with Pete.
   Results › What's working › Combo price levels shows it as it fills in.
 
+### Capped profit line for favorites (#375)
+- Smart sell never takes a profit on a single bought above about 67c (its line is above what the bet can sell for). `exit_cap_shadow` (default off) records what a line capped 3c under the top would have done. **Waits on** that paper record and Pete's opt-in; **then** a live switch with old-versus-new logging.
+
 ### Self-tuning smart sell, first moves (≈ 1–2 weeks)
 - Nothing to build: each league starts moving once it has ~30 settled bets with recorded game prices. Worth a check
   that the first changes (Results › Selling, "🎛️ What self-tuning changed") look sensible, and that the reasons read
@@ -73,6 +76,8 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 - **#228 hedge knobs live:** judge `hedge_lock_share` / `hedge_lock_cost` / the cap raise on how the games ended
   (`sale_outcomes`), with fresh-book costs, then add them to `KNOB_LIVE` and set `HEDGE_RAISE_LIVE` (the confirmation
   counts need a judge too). Follow-ups from PR4's reviews: #298-#302.
+- **Learned selling guards, follow-ups:** make the flex-sell 85% backstop and smart sell more's `MORE_PROG_MIN` learned too,
+  once #479 and #480 have records to learn from.
 
 ### Panel pipeline, long shots and in-play (issue #341, #348)
 - **Long shots:** confirm Kalshi's fee on combo (RFQ) trades and set `LONGSHOT["fee_rate"]`; tune the leg band
@@ -89,6 +94,8 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
 - **Cost-carry combos (#341 C):** after a few weeks of paper results, decide whether near-even 2-3 leg combos become
   a panel kind.
 - **Cover test lean threshold (#340):** tune `COVER["lean_fav"]` (75%) once weeks of results exist.
+- **Prop price poller:** a public, key-free read of the prop series every 30 minutes, with a fair from the ESPN/DraftKings
+  line, to give `prop_shadow` data (needs Pete's OK for the extra Kalshi requests).
 
 ### Calibration and the paper gate
 - Fair-price calibration and the paper panel's record fill in on their own; just watch for oddities.
@@ -263,6 +270,9 @@ Short lines so nothing is lost; the issue has the detail.
   Results › What's working; no decision reads it. Before any go-live: log per-quote pass/skip under current vs blended
   and settle both to dollars (the gate is not measurable from stored numbers alone), and fix the blend's evidence
   double-counting (all includes sport includes league). See the follow-up issues on #471.
+- **Goes live in steps, each its own PR behind a switch:** read the blended cut-off, then the league-named calibration at
+  every caller, then sizing and the sport order. Waits on a few weeks of `league_shadow` showing the blended numbers
+  beat today's.
 
 ## Keeping this file honest
 
