@@ -96,10 +96,10 @@ ok("end of a period: no hedge", not sent and held("halftime or a break"))
 
 # ---- (4) locks in at least what the combo cost
 reset()
-E.get_cash_offer = lambda t, f=1.0: {"offer": 14.0, "frac": 1.0, "rfq": "x", "contracts": 20, "at": E.time.time()}
-tick(0, live, cost=13.8)
+E.get_cash_offer = lambda t, f=1.0: {"offer": 14.2, "frac": 1.0, "rfq": "x", "contracts": 20, "at": E.time.time()}
+tick(0, live, cost=13.8)   # (#382: the cash-out nets $13.91 after Kalshi's fee, so it still clears the $13.80 cost floor)
 E.get_cash_offer = lambda t, f=1.0: {"offer": 13.0, "frac": 1.0, "rfq": "x", "contracts": 20, "at": E.time.time()}
-ok("locks in $13.70 on a $13.80 combo (offer $14): no hedge, it cashes out", not sent and sold == ["C1"] and held("wouldn't lock in what you paid"))
+ok("locks in $13.70 on a $13.80 combo (offer $14.20): no hedge, it cashes out", not sent and sold == ["C1"] and held("wouldn't lock in what you paid"))
 
 # ---- (5) confirmed over 3 checks spanning 3+ minutes; the sale waits meanwhile
 reset()
@@ -143,7 +143,7 @@ reset()
 BOOK["b"] = {"bid": 0.33, "ask": 0.34, "spread": 0.01}      # locks in $12.88: still beats 95% of $13.50
 E.get_cash_offer = lambda t, f=1.0: {"offer": 13.5, "frac": 1.0, "rfq": "x", "contracts": 20, "at": E.time.time()}
 for k in range(3):
-    tick(k * 100, live, cost=13.3)
+    tick(k * 100, live, cost=13.1)   # (#382: the $13.50 offer nets $13.19 after the fee: above this cost)
 ok("the fresh price locks in less than the cost: no hedge", not sent and held("wouldn't lock in what you paid at the fresh price"))
 E.get_cash_offer = lambda t, f=1.0: {"offer": 13.0, "frac": 1.0, "rfq": "x", "contracts": 20, "at": E.time.time()}
 BOOK["b"] = {"bid": 0.29, "ask": 0.3, "spread": 0.01}
