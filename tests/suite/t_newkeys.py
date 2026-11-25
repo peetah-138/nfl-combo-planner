@@ -2,7 +2,7 @@
 # Every new sell switch must reach the engine: its key has to be in the engine's SHARED_KEYS and WATCHER_SYNCED, the
 # watcher's SYNCED and SET_KEYS lists, and the Settings screen (settings.js). A key dropped from any one of them (a merge
 # that kept one side's list) means the Settings switch is saved but never reaches the engine. (Pete, 2026-11-25)
-import os, re, importlib.util, tempfile
+import os, re, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not why else f" {why}"))
