@@ -24559,11 +24559,15 @@ def knob_pass(now=None):
     try:
         pushes = knob_brake_pass(now)
         steps = knob_tune(now)
-        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table, nothing reads it
-        return [f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes
+        result = ([f"brake: {m}" for m in pushes] + [f"self-tuning {m}" for m in steps], pushes)
     except Exception as err:
         print("knob pass:", type(err).__name__, err)
         return [], []
+    try:                                               # after the result is built: it can never lose or delay a brake alert
+        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table, nothing reads it
+    except Exception as err:
+        print("league shadow:", type(err).__name__, err)
+    return result
 
 
 def knob_shadow_view(now=None):
@@ -24647,10 +24651,8 @@ def knob_shadow_view(now=None):
 LGSH = {"every": 86400, "keep": 180 * 86400, "k_cut": CUT_MIN_N, "k_calib": 300, "k_roi": 30, "days": 60}
 _LGSH_SIZES = (2, 3, 5, 8)                              # a representative combo size for each of _cut_key's four buckets
 _LGSH_BANDS = ((0.0, 0.3), (0.3, 0.45), (0.45, 0.55), (0.55, 0.7), (0.7, 0.85), (0.85, 1.01))
-_LGSH_PRE = {v: k[:-4] if k.endswith("GAME") else k for k, v in
-             (("KXEPLGAME", "epl"), ("KXLALIGAGAME", "laliga"), ("KXSERIEAGAME", "seriea"),
-              ("KXBUNDESLIGAGAME", "bundesliga"), ("KXLIGUE1GAME", "ligue1"), ("KXMLSGAME", "mls"),
-              ("KXLIGAMXGAME", "ligamx"))}
+_LGSH_PRE = {v: k for k, v in SOCCER_LEAGUE.items()}          # league -> its ticker prefix (derived: one source of truth)
+_LGSH_TRIED = {"at": 0}                                  # last attempt, in memory: an empty run is not retried every round
 
 
 def lgsh_blend(start, levels, k):
@@ -24762,14 +24764,29 @@ def league_shadow_run(now=None, force=False):
         if not STORE["db"]:
             return 0
         _league_shadow_table()
-        last = (store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t") or 0
+        last = max((store_rows("select max(ts) t from league_shadow") or [{}])[0].get("t") or 0, _LGSH_TRIED["at"])
         if not force and now - last < LGSH["every"]:
             return 0
+        _LGSH_TRIED["at"] = now                        # remembered even when there is nothing to write (no 60-day re-read each round)
         rows = lgsh_rows(now)
-        for r in rows:
-            store_x("insert into league_shadow values(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (now, r["league"], r["sport"], r["metric"], r["key"], r["current"], r["shadow"], r["n_own"],
-                     r["n_sport"], r["n_all"], json.dumps(r["shares"], sort_keys=True), r["says"]))
+        args = [(now, r["league"], r["sport"], r["metric"], r["key"], r["current"], r["shadow"], r["n_own"],
+                 r["n_sport"], r["n_all"], json.dumps(r["shares"], sort_keys=True), r["says"]) for r in rows]
+        with _SLOCK:                                   # all rows of a run in one transaction: a partial run cannot exist
+            db, own = STORE["db"], False
+            try:
+                own = not db.in_transaction
+                if own:
+                    db.execute("begin")
+                db.executemany("insert into league_shadow values(?,?,?,?,?,?,?,?,?,?,?,?)", args)
+                if own:
+                    db.execute("commit")
+            except Exception:
+                if own:
+                    try:
+                        db.execute("rollback")
+                    except Exception:
+                        pass
+                raise
         store_x("delete from league_shadow where ts < ?", (now - LGSH["keep"],))
         return len(rows)
     except Exception as err:

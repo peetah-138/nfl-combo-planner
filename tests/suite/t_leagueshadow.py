@@ -120,6 +120,46 @@ db = E.STORE["db"]; E.STORE["db"] = None
 ok("view and run: never raise without a history file", E.league_shadow_view() == {} and E.league_shadow_run(now + 10 ** 6) == 0)
 E.STORE["db"] = db
 
+# ---- knob_pass: a shadow failure can never change what the watcher gets back (brake alerts included)
+E.LGSH_FAIL = 0
+real_run = E.league_shadow_run
+def boom(*a, **k):
+    E.LGSH_FAIL += 1
+    raise RuntimeError("shadow exploded")
+E.knob_brake_pass = lambda now=None: ["league X braked"]
+E.knob_tune = lambda now=None: ["epl lowered"]
+E.league_shadow_run = boom
+res = E.knob_pass(now)
+ok("knob_pass: league_shadow_run raising was actually hit", E.LGSH_FAIL == 1)
+ok("knob_pass: with the shadow raising, the brake messages and steps come back unchanged",
+   res == (["brake: league X braked", "self-tuning epl lowered"], ["league X braked"]))
+E.league_shadow_run = real_run
+
+# ---- an empty run is remembered (no 60-day re-read every round) and a run is all-or-nothing
+E._LGSH_TRIED["at"] = 0
+calls = []
+real_rows = E.lgsh_rows
+E.lgsh_rows = lambda now=None: (calls.append(1), [])[1]
+E.store_x("delete from league_shadow")
+t0 = now + 10 ** 7
+ok("empty run: writes nothing", E.league_shadow_run(t0) == 0)
+E.league_shadow_run(t0 + 1800); E.league_shadow_run(t0 + 3600)
+ok("empty run: not recomputed again within the day", len(calls) == 1)
+E.league_shadow_run(t0 + 90000)
+ok("empty run: tried again a day later", len(calls) == 2)
+E.lgsh_rows = real_rows
+E._LGSH_TRIED["at"] = 0
+E.store_x("delete from league_shadow")
+bad_rows = [dict(r) for r in real_rows(now)]
+bad_rows[-1]["shares"] = object()                      # json.dumps fails on the last row: nothing may be written
+E.lgsh_rows = lambda now=None: bad_rows
+ok("atomic: a run that fails part-way writes no rows at all",
+   E.league_shadow_run(now + 5 * 10 ** 6, force=True) == 0 and E.store_rows("select count(*) n from league_shadow")[0]["n"] == 0)
+E.lgsh_rows = real_rows
+ok("atomic: the next run writes it whole in one go",
+   E.league_shadow_run(now + 5 * 10 ** 6, force=True) == len(bad_rows) == E.store_rows("select count(*) n from league_shadow")[0]["n"])
+ok("derived: the ticker prefixes come from SOCCER_LEAGUE", E._LGSH_PRE == {v: k for k, v in E.SOCCER_LEAGUE.items()})
+
 # ---- no decision function reads the shadow: only the shadow's own functions, the watcher hook and the report do
 tree = ast.parse(open("wahome/engine.py").read())
 allowed = {"lgsh_blend", "_lgsh_say", "_lgsh_league_sport", "lgsh_rows", "_league_shadow_table", "league_shadow_run",
@@ -127,7 +167,10 @@ allowed = {"lgsh_blend", "_lgsh_say", "_lgsh_league_sport", "lgsh_rows", "_leagu
 bad = []
 for fn in [x for x in ast.walk(tree) if isinstance(x, ast.FunctionDef)]:
     names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
-    hit = {x for x in names if x in ("LGSH", "league_shadow", "league_shadow_run", "league_shadow_view", "lgsh_rows", "lgsh_blend")}
+    names |= {n.value for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and ("league_shadow" in n.value or "LGSH" in n.value)}          # SQL text, getattr names, etc.
+    hit = {x for x in names if x in ("LGSH", "_LGSH_TRIED", "league_shadow", "league_shadow_run", "league_shadow_view", "lgsh_rows", "lgsh_blend")
+           or (isinstance(x, str) and ("league_shadow" in x or "LGSH" in x))}
     if hit and fn.name not in allowed:
         bad.append((fn.name, sorted(hit)))
 ok(f"static: no decision function mentions the shadow {bad}", not bad)
