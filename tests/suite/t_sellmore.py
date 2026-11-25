@@ -19,6 +19,7 @@ E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "n": 
 
 sold, logs = [], []
 E.sell_single_now = lambda t, side, n, bid: (sold.append((t, bid)), (n, None))[1]
+_real_log_decision = E.log_decision
 E.log_decision = lambda rec: logs.append(rec)
 E.resting_single_sells = lambda: {}
 E.order_unsure = lambda t: False
@@ -135,8 +136,8 @@ E.MINE.get("sl_streak", {}).clear()
 SC["frac"] = 0.75
 ok("B: not before the game is half played", not any(slide2()))
 SC["frac"] = 0.4; E.MINE.get("sl_streak", {}).clear()
-E.CFG["stop_loss_mode"] = "never"
-ok("Never-at-a-loss mode blocks B", not any(slide2()))
+E.CFG["stop_loss_mode"] = "never"           # the retired 'Never sell at a loss' choice (#479): it reads as 'tune', so B is NOT blocked by it
+ok("a saved 'never' is retired: it reads as tune and no longer blocks B (the other loss guards still do)", E.sl_mode() == "tune" and any(slide2()))
 E.CFG["stop_loss_mode"] = "tune"; E.MINE.get("sl_streak", {}).clear()
 SC["ok"] = False
 ok("stale score blocks B", not any(slide2()))
@@ -218,6 +219,26 @@ with open(E.SELL_LOG, "w") as f:
 ok("daily cap: a sale that would pass today's limit is blocked, one inside it is not",
    E.more_cap_blocks(2.0) is True and E.more_cap_blocks(1.0) is False)
 E.MORE_LIM["v"] = None
+
+# ---- #479 + #480 together: a real sale is TAGGED in the decision log, counts toward today's dollars, and the daily limit applies
+E.log_decision = _real_log_decision                 # the real logger, writing to this test's own SELL_LOG
+open(E.SELL_LOG, "w").close(); E.MORE_LIM["v"] = None; E.MORE_SW.update(at=0, v=None)
+setsw(True, False)
+ok("start: nothing sold today, the starting limit is $50", E.more_sold_today() == 0.0 and E.more_limit(fresh=True)["limit"] == 50.0)
+got = put(0.56, 0.58, 3.8)
+rows_ = [json.loads(x) for x in open(E.SELL_LOG) if x.strip()]
+tagged = [r for r in rows_ if r.get("result") == "sold"]
+ok("a smart-sell-more sale is written to the log tagged `more` (A)", got and tagged and tagged[-1].get("more") == "A")
+ok("...so today's total counts its dollars (not $0)", abs((E.more_sold_today() or 0) - 5.6) < 0.01)
+with open(E.SELL_LOG, "a") as f:
+    f.write(json.dumps({"at": int(_real_time()), "ticker": "X", "result": "sold", "more": "A", "offer": 40.0, "when": E.dt.date.today().isoformat() + " 10:00"}) + "\n")
+E.MORE_LIM["v"] = None
+got = put(0.56, 0.58, 3.8)
+ok("the daily limit applies: $5.60 + $40 already sold + another $5.60 passes $50, so it is refused (it would pass without the first sale counted)",
+   got == [])
+ok("...and the refusal is logged", any(r.get("why") == "over smart sell more's daily limit" or r.get("result") == "skipped" for r in [json.loads(x) for x in open(E.SELL_LOG) if x.strip()][-2:]))
+E.log_decision = lambda rec: logs.append(rec)
+open(E.SELL_LOG, "w").close(); E.MORE_LIM["v"] = None
 
 # ---- the shadow table is never read by a decision
 bodies = [b for b in src.split("\ndef ") if not b.startswith("more_shadow(")]

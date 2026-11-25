@@ -24,7 +24,7 @@ NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
 WATCHER_VERSION = "2026.11.24.139"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -3515,7 +3515,7 @@ def webapp_main():
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
-                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
+                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
                 "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
@@ -3566,7 +3566,7 @@ def webapp_main():
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
                         continue
-                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                    if k == "stop_loss_mode":           # #228 PR5: the 2-way choice (a saved 'never' becomes 'tune'); the old switch kept in step
                         A.sl_sync(A.CFG, {k: v})
                         continue
                     if k == "stop_loss":                # an older page's on/off may only make it stricter
@@ -3610,7 +3610,7 @@ def webapp_main():
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
-                             "blocks": A.order_blocks(),
+                             "blocks": A.order_blocks(), "flexfb": A.flex_fb_view(),
                              "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
@@ -3623,6 +3623,23 @@ def webapp_main():
             m = re.search(r"needs about \$([0-9][0-9,]*\.?[0-9]*)", str(msg or ""))
             need = float(m.group(1).replace(",", "")) if m else float(cost or 0)
             return A.pot_shortfall(t, need) if 0 < need <= 10000 else None
+        except Exception:
+            return None
+
+    def combo_ev_cal(c, r):
+        """(#361) The quote's expected profit on the chance corrected by your own record (calib_fair, as notify_bar does),
+        for the sheet to show beside the books' one. Display only: nothing reads it to size or buy. A pick under way
+        (priced on its live chance) or a chance that can't be corrected: None. Never raises."""
+        try:
+            if r.get("live") or not r.get("pct") or not r.get("stake"):
+                return None
+            legs = c.get("legs") or []
+            shown = A.math.prod(l["fair"] for l in legs)
+            cal = A.math.prod(A.calib_fair(A.ticker_sport(l["ticker"]) or A.LEAGUE["code"], l.get("fair_book") or l["fair"],
+                                         l.get("ticker")) for l in legs)
+            if not (shown > 0 and cal > 0):
+                return None
+            return round(r["stake"] * (r["pct"] * cal / shown - 1), 2)
         except Exception:
             return None
 
@@ -3666,6 +3683,7 @@ def webapp_main():
         fair = r.get("fair", c.get("fair"))
         if fair:                                       # the books' chance of the combo (a pick under way: its live one)
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
+            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) display only: `ev` above still drives rec / small
         if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
             r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:
@@ -3843,7 +3861,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "i": i, "clears": r.get("ok"), "cut": 100,
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own")}})
             if a == "quote":
                 i = int(d.get("i", 0))
@@ -3859,7 +3877,7 @@ def webapp_main():
                 except (RuntimeError, PermissionError) as err:
                     return {"ok": False, "error": str(err).replace(" Try Swap.", "")}
                 return jsonable({"ok": not r.get("error"), "clears": r.get("ok"), "cut": r.get("bar") or A.CFG["accept_pct"],
-                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "room",
+                                 **{k: r.get(k) for k in ("pays", "stake", "pct", "error", "check", "rec", "ev", "ev_cal", "room",
                                                           "max", "min", "own", "why", "nofair", "live", "small", "overlap", "warn")}})
             if a == "idea":                             # a buy idea from the Mac: rebuild it, get your own price
                 rows = A.store_rows("select * from suggestions where id=?", (str(d.get("id", "")),))
@@ -4577,7 +4595,7 @@ LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (
     "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
     "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
     "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
-    "clock", "period", "lead", "need", "won", "left", "est", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
+    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
 LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
                     "polymarket.com", "hockeytech.com", "theahl.com")
 LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)

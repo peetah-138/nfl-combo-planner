@@ -17,8 +17,10 @@ a known last order, whole contracts.
 sell needs 30 settled bets per league) gets a stand-in cut-off of 15% (`MORE_LOSS`, the self-tuner's first value). It
 keeps every loss guard: a fresh score, game at least half played, a big fall below the pregame chance, never at a
 halftime or break, 3+ confirming checks over 3+ minutes (counted under its own key `cutB:`, never the real loss cut's),
-never below 97% of the bid. Skipped in "Never sell at a loss" mode, where the league's self-tuning brake is holding, and
-wherever the league already has its own learned cut-off (that one wins).
+never below 97% of the bid. Skipped where the league's self-tuning brake is holding, and wherever the league already has
+its own learned cut-off (that one wins). **No longer skipped in "Never sell at a loss" mode (Pete, 2026-11-25):** that
+choice was retired by Flexible sell (#479; a saved 'never' now reads as 'tune'), so anyone who had it saved becomes
+eligible for A's below-cost sales and B's loss cuts, still bounded by the daily dollar limit and every other guard.
 
 **Freshness, fail closed.** Neither path ever compares against a stale reference (a sportsbook line, a pre-game number
 that hasn't moved). `more_fresh` requires: the market's own Kalshi fetch no older than 120s (`MORE_AGE`, stamped per
@@ -40,18 +42,18 @@ fee.
 - Same record always gives the same limit. State is `combo_more.json`; an unreadable record uses it, else the smallest
   limit (never the start, never unlimited). Settings shows today's limit, what is used and why (`more_view`).
 The existing `auto_cap`, Pause (re-read right before the order), rule 8 (an unknown order outcome means "check", never
-retried), "Never sell at a loss" and the whole-contract guard all still apply.
+retried) and the whole-contract guard all still apply. (The retired "Never sell at a loss" no longer applies; see above.)
 
 **Recording.** Every pass writes the `more_shadow` table per held single (bounded: 60 days / 200k rows, 60s per ticker,
 errors swallowed, off the trading path, never read by a decision); a sale is a `log_decision` line tagged `more` (A/B)
 with its after-fee net, so net dollars after fees versus hold can be measured.
 
 **Registry.** KNOBS entries `sell_more_start`, `sell_more_floor`, `sell_more_loss`, `sell_more_age` (invariant, with their
-source constants); the keys are in `SHARED_KEYS` and the watcher's `SET_KEYS` but deliberately not phone-synced.
+source constants); the keys are in `SHARED_KEYS`, the engine's `WATCHER_SYNCED` and the watcher's `SET_KEYS` and `SYNCED` (Pete, 2026-11-25: a dropped key means the Settings switch never reaches the engine; `t_newkeys.py` checks every new sell key is in all of them and on the Settings screen).
 
 **Ambiguities.** "Under about 60c" is read as the entry price per contract. A works only in play with a fresh score. B is
 roughly neutral by construction (selling at about 15c against about a 15% chance), so the shadow record is how it gets
 judged. Pete's opt-in is recorded here, not in CLAUDE.md.
 
-**Tests:** `t_sellmore.py` (defaults, off = develop, A/B, stale blocks, Pause, rule 8, Never mode, whole contracts, limit
+**Tests:** `t_sellmore.py` (defaults, off = develop, A/B, stale blocks, Pause, rule 8, a saved 'never' no longer blocking, whole contracts, a real sale tagged `more` and counted by the daily dollar limit, limit
 grow/shrink/minimum sample/brake, shadow table unread), plus `t_knobs.py`'s allow-list.
