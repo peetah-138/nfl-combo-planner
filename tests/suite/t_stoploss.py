@@ -113,7 +113,7 @@ def run6(base):
     return out
 E.CFG.update(stop_loss=True, stop_loss_mode="never"); E.MINE.pop("sl_streak", None)
 run6(1500)
-ok("Never sell at a loss: never below cost, even with the old switch still on", not sold)
+ok("a saved 'never' (retired) reads as Let it tune itself: nothing learned, so no stop-loss sale, old switch on or not", not sold)
 E.CFG.update(stop_loss=False, stop_loss_mode="tune"); E.MINE.pop("sl_streak", None)
 E.KNOB_SWITCH.update(at=1e18, on=True); E.save_json(E.KNOBS_FILE, {}); E.KNOB_STATE_CACHE["d"] = None
 run6(2100)
