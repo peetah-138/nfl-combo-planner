@@ -31,11 +31,17 @@ with sync_playwright() as pw:
             bad(f"{scheme}: no Flexible sell price row on Settings"); ctx.close(); continue
         if not pg.evaluate(f"{ROW}.querySelector('input').checked"): bad(f"{scheme}: Flexible sell price is not ON by default")
         if saved() is not True: bad(f"{scheme}: the Mac reports flex_sell {saved()!r} by default, not True")
+        LROW = "[...document.querySelectorAll('.srow')].find(r => r.querySelector('b') && r.querySelector('b').textContent === 'Learn the fallback price')"
+        if not pg.evaluate(f"!!({LROW})"): bad(f"{scheme}: no Learn the fallback price row")
+        elif not pg.evaluate(f"{LROW}.querySelector('input').checked"): bad(f"{scheme}: Learn the fallback price is not ON by default")
+        elif "Learned now: 97%" not in pg.evaluate(f"{LROW}.textContent"): bad(f"{scheme}: the learned value is not shown: " + pg.evaluate(f"{LROW}.textContent")[-120:])
         if pg.evaluate("document.querySelector('#s-cash').classList.contains('shut')"): pg.evaluate("sTog('cash')")
         time.sleep(.4)
-        pg.evaluate(f"{ROW}.scrollIntoView({{block: 'center'}})"); time.sleep(.4)
+        pg.evaluate(f"{ROW}.scrollIntoView({{block: 'start'}}); window.scrollBy(0, -125)"); time.sleep(.4)
         if os.environ.get("FLEX_SHOTS"):
             pg.screenshot(path=os.path.join(os.environ["FLEX_SHOTS"], f"flexible-sell-{scheme}.png"))
+            pg.evaluate("document.querySelector('#slrow').scrollIntoView({block: 'start'}); window.scrollBy(0, -125)"); time.sleep(.4)
+            pg.screenshot(path=os.path.join(os.environ["FLEX_SHOTS"], f"selling-at-a-loss-{scheme}.png"))
         if scheme == "dark":
             pg.evaluate(f"{ROW}.querySelector('input').click()")
             if not wait_for(saved, False): bad(f"flipping it off saved {saved()!r}")

@@ -2,8 +2,8 @@
 # Flexible sell price (Pete, 2026-11-24): when a buyer backs out, each fresh cash-out offer is judged against the game
 # RIGHT NOW (current live chance, what waiting is worth now), not the stale first offer. ON by default (Pete's opt-in).
 # Never below FLEX_BACKSTOP (85%) of the combo's usual sale value now; fails closed to the old rule on stale/missing
-# live input; OFF = exactly today's decisions. Pause, rule 8, Never-at-a-loss, the cost floor and the manual tap keep
-# working. No real orders: every Kalshi call is faked.
+# live input; OFF = exactly today's decisions. Pause, rule 8, the cost floor (switch off / stale) and the manual tap keep
+# working. The 'Never sell at a loss' choice is gone (Pete's decision): nothing but this rule governs a below-cost retry. No real orders: every Kalshi call is faked.
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
@@ -91,11 +91,29 @@ ok("...switch OFF: the old line refuses it (identical to develop)", accepts == [
 E.CFG["flex_sell"] = True
 msg, info = run(["cancelled", "executed"], offers=[3.5], auto=True, cost=3, cost_floor=3, line=8.5)
 ok("...but never under the backstop (3.50 < ~4.18 at this chance)", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop")
-msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=3)
-ok("a tap that began at a profit never ends below cost on a retry", accepts == [10.0] and info["flex"]["why"] == "would turn a profit into a loss", (accepts, info))
-# ...but never below cost for a profit-taking sale
-msg, info = run(["cancelled", "executed"], offers=[2.9], auto=True, cost=3, cost_floor=3, line=0.5)
-ok("...never under cost (the cost floor still binds)", accepts == [10.0] and info["stop"] == "offer too low", (accepts, info))
+# ---- a sale that began at a profit is NOT held to cost (Pete, 2026-11-24): in a fast-falling price waiting can be worse
+LIVE["f"] = 0.3                                                       # wait line ~6.10, backstop ~4.18, first offer 10.00, cost 7
+msg, info = run(["cancelled", "executed"], offers=[6.2], auto=False, cost=7)
+ok("a tap that began at a profit ends below cost when selling beats waiting now", accepts == [10.0, 6.2] and info["flex"]["why"] == "selling beats waiting now", (accepts, info))
+last = rows()[-1]
+ok("...and it is recorded in flex_shadow as began_at_profit_ended_below_cost", last["began_at_profit_ended_below_cost"] == 1 and last["accept"] == 1, last)
+msg, info = run(["cancelled", "executed"], offers=[5.0], auto=False, cost=7)
+ok("...but not when waiting is worth more (5.00 under the 6.10 wait line)", accepts == [10.0] and info["flex"]["why"] == "waiting is worth more now", (accepts, info))
+ok("...a refusal is not flagged", rows()[-1]["began_at_profit_ended_below_cost"] == 0)
+msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=7)
+ok("...and never under the backstop, cost or no cost", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop")
+msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=7, cost_floor=7, line=0.5)
+ok("an automatic profit sale (its cost line is not a floor under flexible) is taken the same way", accepts == [10.0, 6.2] and rows()[-1]["began_at_profit_ended_below_cost"] == 1, (accepts, info))
+ok("there is no 'Never sell at a loss' exception left: nothing passes a floor into the retry loop",
+   'accept_cash(t, floor=' not in open(spec.origin).read())
+E.CFG["flex_sell"] = False
+msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=7, cost_floor=7, line=0.5)
+ok("...switch OFF: the cost floor refuses it (identical to develop)", accepts == [10.0] and info["stop"] == "offer too low")
+E.CFG["flex_sell"] = True
+LIVE["err"] = "no fresh live score"
+msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=7, cost_floor=7, line=0.5)
+ok("...stale live info: back to the old rules, the cost floor binds", accepts == [10.0] and info["flex"]["mode"] == "old")
+LIVE["err"] = None
 
 # ---- the backstop refuses a spiky offer, even a profit, even with the chance down
 LIVE["f"] = 0.5
@@ -149,11 +167,13 @@ msg, info = run(["cancelled", "executed"], offers=[7.5], auto=True, cost=12, lin
 ok("loss cut whose cut-off no longer holds (0.50 > 0.20), offer 7.50 under waiting and under 97% of the first: refused",
    accepts == [10.0] and info["flex"]["why"] == "waiting is worth more now", (accepts, info))
 
-# ---- Never sell at a loss: the floor binds under flexible too
+# ---- no Never exception: a below-cost auto sale is judged only by the flexible rule, backstop and guards
 E.smart_params = lambda tks: {"loss": None}
 LIVE["f"] = 0.3
-msg, info = run(["cancelled", "executed"], offers=[6.0], auto=True, cost=12, floor=12.0, line=8.5)
-ok("Never-at-a-loss floor (12.00): a flexible 6.00 is refused", accepts == [10.0] and info["stop"] == "offer too low", (accepts, info))
+msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=12, line=8.5)
+ok("below cost (12.00), 6.20 beats waiting now: taken (no Never floor)", accepts == [10.0, 6.2] and info["flex"]["why"] == "selling beats waiting now", (accepts, info))
+msg, info = run(["cancelled", "executed"], offers=[3.0], auto=True, cost=12, line=8.5)
+ok("...but under the 85% backstop (4.18): refused", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop", (accepts, info))
 
 # ---- Pause, rule 8
 PAUSED["on"] = True

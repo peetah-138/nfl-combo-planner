@@ -46,12 +46,13 @@ CFG = {
     "auto_sell": False,   # cash out by itself when the plan says to (Let it ride level), while open
     "auto_cap": 5,        # at most this many automatic cash-outs a day (per device); AUTO_CAP_UNLIMITED = no limit
     "flex_sell": True,    # a cash-out retry is judged against the game right now, not the first offer (Pete opted in; FLEX_BACKSTOP)
+    "flex_learn": True,   # ...and when live info is stale the fallback share (97%) learns from this app's own history
     "flex_backstop": 85,  # ...and never under this % of what the combo usually sells for right now (50-100)
     "take_profit": 0,     # auto cash-out: sell once Kalshi's offer reaches this % of the payout (0 = off)
     "tp_v2": False,       # (set once: the old 75% take-profit default switched off in favor of smart selling)
     "lock_trail": True,   # auto cash-out: after a big run-up, sell if the offer falls 20% from its high (still a profit)
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
-    "stop_loss_mode": None,   # #228 PR5: 'never' / 'tune' / 'allow'; None = read from stop_loss (sl_mode)
+    "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
@@ -263,7 +264,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct")
 
 
 def next_league():
@@ -4797,7 +4798,7 @@ def turning_against(h):
 # ---------------------------------------------------------------- the stop-loss switch, guarded (issue #27)
 # Pete's rule (2026-11-23, #382): auto-sell never sells below what you paid EXCEPT to lose less than waiting would (the
 # learned loss cut, or this guarded stop-loss); a sale that was a profit never takes a fresh offer below cost. Under
-# the Never setting even those two stay off. The stop-loss switch (off by default) lifts the "never below what you paid"
+# (the 'Never sell at a loss' choice was removed). The stop-loss switch (off by default) lifts the "never below what you paid"
 # guard for the stop-loss path only,
 # once ALL of these hold for a pick in the combo: its game is really under way on a fresh score feed (no feed or a
 # stale one: never), late enough in the game, not at halftime or a break, the pick has fallen a long way from its
@@ -5066,18 +5067,25 @@ def _sl_confirm(key, hit, why, now, cf=None):
     return True, ""
 
 
-SL_MODES = ("never", "tune", "allow")
-SL_MODE_SAY = {"never": "Never sell at a loss", "tune": "Let it tune itself", "allow": "Allow (guarded)"}
+SL_MODES = ("tune", "allow")                      # the 'Never sell at a loss' choice was removed (Pete's decision, #479)
+SL_MODE_SAY = {"tune": "Let it tune itself", "allow": "Allow (guarded)"}
+
+
+def sl_norm(m):
+    """A saved 'Selling at a loss' value as one of SL_MODES, or None when it is not one. The retired 'never' (saved on
+    any device before that choice was removed) reads as 'tune': never a crash, and never silently 'allow'."""
+    if m == "never":
+        return "tune"
+    return m if m in SL_MODES else None
 
 
 def sl_mode():
-    """Settings › Cash out › Selling at a loss (#228 PR5): 'never' (no automatic sale below what you paid: neither the
-    stop-loss nor the learned loss cut), 'tune' (the default: the stop-loss sells only in a league whose own record
-    turned it on, `sl_allowed`) or 'allow' (the old switch on: every guard still holds). A setting saved before this
-    (only the old on/off `stop_loss`) reads as 'allow' when it was on, else 'tune'; anything unreadable reads that way
-    too."""
-    m = CFG.get("stop_loss_mode")
-    if m in SL_MODES:
+    """Settings › Cash out › Selling at a loss (#228 PR5): 'tune' (the default: the stop-loss sells only in a league whose
+    own record turned it on, `sl_allowed`) or 'allow' (the old switch on: every guard still holds). The retired 'never'
+    reads as 'tune' (sl_norm). A setting saved before this (only the old on/off `stop_loss`) reads as 'allow' when it was
+    on, else 'tune'; anything unreadable reads that way too."""
+    m = sl_norm(CFG.get("stop_loss_mode"))
+    if m:
         return m
     return "allow" if CFG.get("stop_loss") is True else "tune"
 
@@ -5085,17 +5093,18 @@ def sl_mode():
 def sl_sync(cfg, incoming):
     """Applies a settings message's 'Selling at a loss' to `cfg` (the watcher's copy of the phone's or web app's
     settings, the web app's own save). A valid stop_loss_mode wins and the old switch is kept in step (on only for
-    Allow). A message without one (an older phone or page that only knows the on/off switch, or a phone with no control
-    for it, which sends None) may only make it STRICTER: 'off' turns Allow into Let it tune itself; 'on' is ignored, so a
-    stale old switch can never undo Never or Let it tune itself."""
-    m = incoming.get("stop_loss_mode")
-    if m in SL_MODES:
+    Allow); a retired 'never' from an older phone or saved file becomes 'tune'. A message without one (an older phone or
+    page that only knows the on/off switch, or a phone with no control for it, which sends None) may only make it
+    STRICTER: 'off' turns Allow into Let it tune itself; 'on' is ignored, so a stale old switch can never undo Let it
+    tune itself."""
+    m = sl_norm(incoming.get("stop_loss_mode"))
+    if m:
         cfg["stop_loss_mode"] = m
         cfg["stop_loss"] = m == "allow"
         return
     if incoming.get("stop_loss") is False:
-        cur = cfg.get("stop_loss_mode")
-        cur = cur if cur in SL_MODES else ("allow" if cfg.get("stop_loss") is True else "tune")
+        cur = sl_norm(cfg.get("stop_loss_mode"))
+        cur = cur if cur else ("allow" if cfg.get("stop_loss") is True else "tune")
         cfg["stop_loss_mode"] = "tune" if cur == "allow" else cur
         cfg["stop_loss"] = False
 
@@ -5103,7 +5112,7 @@ def sl_sync(cfg, incoming):
 def sl_allowed(tickers):
     """Whether the stop-loss may sell this combo below what it cost (every guard still has to hold): 'allow' = yes;
     'tune' = only with self-tuning on and this league's OWN record having turned `sl_auto` on (never borrowed, off
-    while its brake holds); 'never' = no. Off on any error."""
+    while its brake holds). Off on any error."""
     m = sl_mode()
     if m == "allow":
         return True
@@ -5605,12 +5614,11 @@ def auto_sell_now(plan):
         break_watch_held()                                # break episodes for the judge (watch-only, #228 PR5)
         mode = sl_mode()                                  # Settings › Selling at a loss (#228 PR5)
         sl_ready = {}                                     # the stop-loss switch: only once every guard holds
-        if mode != "never":
-            for t, h in list(MINE["hold"].items()):
-                if mode == "allow" or sl_allowed([tk for (_, tk), _ in h.get("need") or []]):
-                    sl_ready[t] = stop_loss_check(t, h)[0]
+        for t, h in list(MINE["hold"].items()):
+            if mode == "allow" or sl_allowed([tk for (_, tk), _ in h.get("need") or []]):
+                sl_ready[t] = stop_loss_check(t, h)[0]
         cut_ready = {}                                    # the learned loss cut: the same guards, counted apart
-        if CFG.get("smart_sell", True) and ride_lam() is not None and mode != "never":
+        if CFG.get("smart_sell", True) and ride_lam() is not None:
             for t, h in list(MINE["hold"].items()):
                 loss = smart_params([tk for (_, tk), _ in h.get("need") or []])["loss"]
                 if not loss:
@@ -5679,7 +5687,7 @@ def auto_sell_now(plan):
                                f"{h['label']} qualifies too: open the planner to cash it out yourself.")
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
-            if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
+            if below and why != "cut loss" and not sl_ready.get(t):
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             if below and why != "cut loss":
@@ -5734,7 +5742,7 @@ def auto_sell_now(plan):
                 _CASH_CTX.line = thr * (1.0 if why == "plan" else slip) * o.get("frac", 1.0) or None   # retries' bar
                 _CASH_CTX.cost_floor = None if cutting else h["cost"] * o.get("frac", 1.0)
                 _CASH_CTX.cutting = cutting
-                msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
+                msg = accept_cash(t)
             finally:
                 _CASH_CTX.auto, _CASH_CTX.line, _CASH_CTX.cost_floor, _CASH_CTX.cutting = False, None, None, False
             info = CASH_LAST.pop(t, None) or {}
@@ -6257,8 +6265,7 @@ def smart_sell_singles():
         bid = dollars(m, f"{side}_bid")
         ask = dollars(m, f"{side}_ask")
         cut_ok = False                                # the learned loss cut: only once every loss guard held
-        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None \
-            and sl_mode() != "never" else None        # 'Never sell at a loss' (#228 PR5): no cut either
+        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None else None
         if loss:
             cut_ok, gw = cut_loss_single_check(x, loss)
             if not cut_ok and x.get("state") == "live" and x.get("chance") is not None and x["chance"] <= loss:
@@ -6277,10 +6284,6 @@ def smart_sell_singles():
         rec = {"combo": x["label"], "ticker": x["t"], "offer": round(x["n"] * bid, 2), "cut_off": round(floor, 2),
                "why": why, "chance": x["chance"], "cost": x["cost"], "pays": x["n"], "kind": x["kind"], "side": side,
                "live": x.get("state") == "live", "ask": ask}
-        if sl_mode() == "never" and (not x.get("cost") or not bid
-                                     or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
-            log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
-            continue
         whole = int(math.floor(float(x["n"]) + 1e-6))
         if whole < SELL_MIN_CONTRACTS:                # Kalshi's minimum: a 0.92 leftover can't be sold (#334)
             log_decision(dict(rec, result="skipped", why="under one contract (Kalshi's minimum)"))
@@ -8983,7 +8986,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "flex_sell", "flex_backstop",
+                  "flex_sell", "flex_learn", "flex_backstop",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
                   "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
@@ -9542,8 +9545,8 @@ def get_cash_offer(ticker, frac=1.0):
 
 CASH_RETRIES = 3          # if the buyer backs out, try this many fresh offers (your own Cash out tap)
 AUTO_CASH_RETRIES = 9     # auto cash-out: up to 10 accepts a round, each on a fresh offer (Pete, 2026-11-23: "let it
-#                           retry 7, 8, 9 or even 10 times"); each fresh offer must still clear the smart-sell line
-#                           (and cost under Never sell at a loss); an unknown outcome is never retried (rule 8)
+#                           retry 7, 8, 9 or even 10 times"); each fresh offer must still clear the smart-sell line;
+#                           an unknown outcome is never retried (rule 8)
 AUTO_CASH_GAP = (0.3, 1.0)   # auto cash-out: a short random pause (seconds) before each fresh offer
 AUTO_CASH_BUDGET = 120    # auto cash-out: no new try starts this many seconds after the round began
 CASH_LAST = {}            # ticker -> what the last cash-out round did (tries, why it stopped), for the decision log
@@ -9569,7 +9572,7 @@ AUTO_CASH_SLIP = 0.97     # smart sell's own: a combo's real offer must reach th
 # out is judged against the game RIGHT NOW: it re-reads every open pick's live chance (fresh book and score, the panel's
 # own live guards), works out what waiting is worth now (wait_value, risk-adjusted, as Let it ride does) and takes the
 # offer when selling beats waiting, never under FLEX_BACKSTOP of what the combo usually sells for right now, and never
-# under the floors the sale already had (cost for a profit-taking sale, Never sell at a loss). Anything it cannot read
+# under the floors the sale already had (cost for a profit-taking sale). Anything it cannot read
 # fresh (a stale or missing book or score, a spread or total, same-game picks, no pick in play) FAILS CLOSED to the old
 # bar: it can then only do what the old rule did. Every decision is recorded in `flex_shadow` for comparing both.
 FLEX_BACKSTOP = 0.85      # an offer must reach this share of the combo's usual sale value at the current chance
@@ -9644,15 +9647,19 @@ def flex_wait_line(hn):
     return wait_value(hn["pays"], chances, mult, MINE.get("locked", 0)) * (1 + model_cushion(len(chances)))
 
 
-def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, agreed=None):
+def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None, agreed=None, old_floor=None):
     """Judge one fresh retry offer (this share's dollars, `frac` of the combo). Returns {'ok', 'mode', 'old', ...}:
     mode 'old' = today's rule, exactly (switch off, or anything not readable fresh); 'flex' = judged at this moment.
     old = what today's bar would have said (offer >= bar_old and >= floor). In 'flex': the floor and the backstop must
     both hold, then it takes the offer if today's bar does, or selling beats waiting now (offer >= wait line), or it
     is a profit (>= cost) and the chance has dropped since the round began, or it is a loss cut whose cut-off still
-    holds. It only ever LOOSENS today's bar (never refuses what the old bar takes beyond the floor and backstop)."""
-    old_ok = offer >= bar_old and (floor is None or offer >= floor)
-    out = {"ok": old_ok, "mode": "old", "old": old_ok, "offer": round(offer, 2), "why": ""}
+    holds. It only ever LOOSENS today's bar (never refuses what the old bar takes beyond the floor and backstop).
+    The cost line of an automatic profit sale is not a floor here (`floor` is only a floor a caller passes on purpose;
+    nothing does today: the 'Never sell at a loss' choice is gone); `old_floor` carries today's floors for the
+    fail-closed answer. 'bapebc' = began at a profit, accepted below cost."""
+    of = floor if old_floor is None else old_floor      # today's floors (cost for a profit sale)
+    old_ok = offer >= bar_old and (of is None or offer >= of)
+    out = {"ok": old_ok, "mode": "old", "old": old_ok, "offer": round(offer, 2), "why": "", "bapebc": 0}
     if not flex_on():
         return out
     try:
@@ -9669,12 +9676,12 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
         ref = math.prod(c for c in (h.get("ch_of") or {}).values() if c is not None) if h.get("ch_of") else None
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
         profit = offer >= (h.get("cost") or 0) * frac - 1e-9
-        floor_ok = floor is None or offer >= floor
+        floor_ok = floor is None or offer >= floor       # only a floor a caller passed on purpose binds here
         cost_fr = (h.get("cost") or 0) * fr
-        if not cutting and agreed is not None and agreed >= cost_fr - 1e-9 and offer < cost_fr - 1e-9:
-            floor_ok, why0 = False, "would turn a profit into a loss"      # a sale that began at a profit never ends at a loss
-        else:
-            why0 = "under the floor"
+        why0 = "under the floor"
+        # Pete, 2026-11-24: a sale that began at a profit may end a little below cost when the price is falling fast
+        # and waiting looks worse (refusing could cost more later). It is judged like any other offer and flagged.
+        bapebc = int(agreed is not None and cost_fr > 0 and agreed >= cost_fr - 1e-9 and offer < cost_fr - 1e-9)
         cut_still = False
         if cutting:
             loss = smart_params([tk for (_, tk), _ in h.get("need") or []]).get("loss")
@@ -9694,11 +9701,23 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
             ok, why = True, "the loss cut still holds"
         else:
             ok, why = False, "waiting is worth more now"
-        out.update(ok=ok, mode="flex", why=why, p_now=round(hn["p"], 4), fair=round(fair, 2), usual=round(usual, 2),
+        out.update(ok=ok, mode="flex", why=why, bapebc=int(bool(bapebc and ok)), p_now=round(hn["p"], 4), fair=round(fair, 2), usual=round(usual, 2),
                    wait=round(wait * fr, 2), backstop=round(backstop * fr, 2))
     except Exception as err:
         out.update(ok=old_ok, mode="old", why=f"error {type(err).__name__}")      # fail closed: today's rule
     return out
+
+
+def flex_shadow_table():
+    """The flex_shadow table (created once, with the began_at_profit_ended_below_cost column added when missing)."""
+    store_x("create table if not exists flex_shadow(ts real, ticker text, try int, auto int, cutting int, offer real, "
+            "first_offer real, fair real, usual real, wait real, backstop real, p_now real, mode text, why text, "
+            "accept int, old_accept int)")
+    if not _FLEX_N.get("col"):
+        if not any(r.get("name") == "began_at_profit_ended_below_cost"
+                   for r in store_rows("pragma table_info(flex_shadow)")):
+            store_x("alter table flex_shadow add column began_at_profit_ended_below_cost int")
+        _FLEX_N["col"] = True
 
 
 def flex_shadow_log(t, fx, attempt, agreed, auto, cutting):
@@ -9706,13 +9725,11 @@ def flex_shadow_log(t, fx, attempt, agreed, auto, cutting):
     try:
         if not STORE.get("db"):
             return
-        store_x("create table if not exists flex_shadow(ts real, ticker text, try int, auto int, cutting int, offer real, "
-                "first_offer real, fair real, usual real, wait real, backstop real, p_now real, mode text, why text, "
-                "accept int, old_accept int)")
-        store_x("insert into flex_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        flex_shadow_table()
+        store_x("insert into flex_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), t, attempt, int(bool(auto)), int(bool(cutting)), fx.get("offer"), round(agreed, 2),
                  fx.get("fair"), fx.get("usual"), fx.get("wait"), fx.get("backstop"), fx.get("p_now"), fx.get("mode"),
-                 str(fx.get("why") or "")[:60], int(bool(fx.get("ok"))), int(bool(fx.get("old")))))
+                 str(fx.get("why") or "")[:60], int(bool(fx.get("ok"))), int(bool(fx.get("old"))), int(bool(fx.get("bapebc")))))
         _FLEX_N["n"] += 1
         if _FLEX_N["n"] % 200 == 0:
             n = (store_rows("select count(*) n from flex_shadow") or [{"n": 0}])[0]["n"]
@@ -9721,6 +9738,172 @@ def flex_shadow_log(t, fx, attempt, agreed, auto, cutting):
                         (n - FLEX_KEEP,))
     except Exception:
         pass
+
+
+# ---- the learned fallback share (Pete, 2026-11-24) ----
+# When live info is stale or missing, a retry is judged by "at least this share of the first offer" (CASH_SLIP, 97%).
+# That share now LEARNS, slowly, from this app's own record: flex_shadow (each retry: the offer, the first offer, what
+# was decided) joined to what happened next (sell_log: what the position later sold for, or what holding paid).
+FLEX_FB_START, FLEX_FB_LO, FLEX_FB_HI = CASH_SLIP, 0.85, 0.99   # starts at 97%; a wide band a bug cannot leave
+FLEX_FB_STEP, FLEX_FB_MIN_N, FLEX_FB_EVERY = 0.005, 20, 3600    # one half-point per move, 20 comparable retries, hourly
+FLEX_FB_MARGIN, FLEX_FB_WINDOW, FLEX_FB_STREAK = 0.01, 21600, 3  # 1% of the offers to count, 6h to the outcome
+_FLEX_FB = {"at": 0.0, "vals": {}, "n": {}, "lg": {}}
+
+
+def flex_learn_on():
+    return bool(CFG.get("flex_learn", True))
+
+
+def _fb_ok(v):
+    """A fallback share is usable only if it is a real number inside the safety band."""
+    try:
+        v = float(v)
+        return v if math.isfinite(v) and FLEX_FB_LO <= v <= FLEX_FB_HI else None
+    except (TypeError, ValueError):
+        return None
+
+
+def flex_fb_table():
+    store_x("create table if not exists flex_learn(scope text primary key, value real, seen real, streak int, "
+            "n int, upd real)")
+
+
+def flex_fb_events(scope, since, lo_share, hi_share):
+    """Comparable retries newer than `since` (a retry whose share of the first offer is in [lo, hi)), each with what
+    waiting did: (offer, later) where later = what the position then sold for (a refused retry) or what holding paid
+    (an accepted retry). Corrupt rows (None, text, NaN, zero) are skipped. All in this share's dollars: a combo
+    cash-out carries no separate fee, so the offer is the net cash."""
+    rows = store_rows(
+        "select s.ts, s.offer, s.first_offer, s.accept, k.offer sale_offer, k.held, k.outcome, g.league "
+        "from flex_shadow s join sell_log k on k.ticker = s.ticker and k.result = 'sold' and k.ts >= s.ts "
+        "and k.ts < s.ts + ? and k.outcome in ('won', 'lost') left join ledger g on g.ticker = s.ticker "
+        "where s.try > 0 and s.ts > ? order by s.ts", (FLEX_FB_WINDOW, since))
+    out = []
+    for r in rows:
+        try:
+            off, first = float(r["offer"]), float(r["first_offer"])
+            if not (math.isfinite(off) and math.isfinite(first) and off > 0 and first > 0):
+                continue
+            if scope != "all" and (r.get("league") or "") != scope:
+                continue
+            if not lo_share <= off / first < hi_share:
+                continue
+            later = float(r["sale_offer"] if not r["accept"] else r["held"])
+            if not math.isfinite(later):
+                continue
+            out.append((float(r["ts"]), off, later))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
+def flex_fb_verdict(ev):
+    """'lower' / 'raise' / '' for a list of (ts, offer, later): later - offer is what waiting gained (+) or lost (-)."""
+    if len(ev) < FLEX_FB_MIN_N:
+        return ""
+    tot, base = sum(l - o for _, o, l in ev), sum(o for _, o, _ in ev)
+    if not base > 0:
+        return ""
+    r = tot / base
+    return "lower" if r < -FLEX_FB_MARGIN else "raise" if r > FLEX_FB_MARGIN else ""
+
+
+def flex_fb_step(scope, now=None):
+    """One evaluation for one scope ('all' or a league): reads the saved value, looks at the comparable retries since
+    its last move, and moves it by at most one step (never outside the band). Returns the value."""
+    now = now or time.time()
+    row = (store_rows("select * from flex_learn where scope = ?", (scope,)) or [None])[0]
+    v = _fb_ok(row["value"]) if row else None
+    v = FLEX_FB_START if v is None else v
+    seen, streak = (float(row["seen"] or 0), int(row["streak"] or 0)) if row else (0.0, 0)
+    ev = flex_fb_events(scope, seen, 0.5, v)                    # retries a lower share would have changed
+    verdict = flex_fb_verdict(ev)
+    if verdict:
+        if verdict == "lower":
+            v, streak = v - FLEX_FB_STEP, 0
+        elif v < FLEX_FB_START:                                   # lowering proved too cheap: shrink back, twice as fast
+            streak += 1
+            v = min(FLEX_FB_START, v + 2 * FLEX_FB_STEP)
+            if streak >= FLEX_FB_STREAK:
+                v, streak = FLEX_FB_START, 0                      # a losing streak: all the way back to 97%
+        else:
+            v += FLEX_FB_STEP
+        v = _fb_ok(round(v, 4)) or (FLEX_FB_LO if v < FLEX_FB_LO else FLEX_FB_HI if v > FLEX_FB_HI else FLEX_FB_START)
+        store_x("insert into flex_learn values(?,?,?,?,?,?) on conflict(scope) do update set value=excluded.value, "
+                "seen=excluded.seen, streak=excluded.streak, n=excluded.n, upd=excluded.upd",
+                (scope, v, max(t for t, _, _ in ev), streak, len(ev), now))
+    return v
+
+
+def flex_fb_refresh(now=None):
+    """Hourly: re-evaluates the global value and every league with enough comparable retries. Never raises."""
+    now = now or time.time()
+    if now - _FLEX_FB["at"] < FLEX_FB_EVERY or not STORE.get("db"):
+        return
+    _FLEX_FB["at"] = now
+    try:
+        flex_fb_table()
+        flex_shadow_table()
+        _ledger_table()
+        vals = {"all": flex_fb_step("all", now)}
+        for r in store_rows("select g.league l, count(*) n from flex_shadow s join ledger g on g.ticker = s.ticker "
+                            "where s.try > 0 group by g.league"):
+            if r.get("l") and (r.get("n") or 0) >= FLEX_FB_MIN_N:
+                vals[r["l"]] = flex_fb_step(r["l"], now)
+        _FLEX_FB["vals"] = vals
+    except Exception as err:
+        _FLEX_FB["vals"] = {}                                      # unreadable history: plain 97%
+        console_note(f"flex fallback: {type(err).__name__}")
+
+
+def flex_fallback(t=None):
+    """The share of the first offer a stale-input retry must reach: the learned value (this ticker's league if it has
+    enough history, else all), 97% when the switch is off, nothing is learned yet, or anything is unreadable."""
+    if not (flex_on() and flex_learn_on()):
+        return FLEX_FB_START
+    try:
+        flex_fb_refresh()
+        vals = _FLEX_FB["vals"]
+        lg = None
+        if t and len(vals) > 1:
+            lg = _FLEX_FB["lg"].get(t)
+            if lg is None:
+                r = store_rows("select league from ledger where ticker = ?", (t,))
+                lg = _FLEX_FB["lg"][t] = (r[0]["league"] if r else "") or ""
+        v = _fb_ok(vals.get(lg)) if lg else None
+        return v if v is not None else (_fb_ok(vals.get("all")) or FLEX_FB_START)
+    except Exception:
+        return FLEX_FB_START
+
+
+def flex_fallback_bar(t, h, agreed, frac):
+    """The stale-input bar in dollars: learned share of the first offer (97% = CASH_SLIP * agreed, exactly today's).
+    A share under 97% is never allowed under the backstop share of what the combo last read as worth, when that is known."""
+    base = CASH_SLIP * agreed
+    try:
+        v = flex_fallback(t)
+        if v >= CASH_SLIP:
+            return v * agreed
+        chs = list((h.get("ch_of") or {}).values()) if h else []
+        if chs and all(c is not None for c in chs) and h.get("pays"):
+            last = kalshi_discount(True) * math.prod(chs) * h["pays"] * max(frac, 0.01)
+            return max(v * agreed, min(base, flex_backstop() * last))
+        return v * agreed
+    except Exception:
+        return base
+
+
+def flex_fb_view():
+    """For Settings (read only): the learned share now, and per league where it differs. Never raises."""
+    try:
+        if not (flex_on() and flex_learn_on()):
+            return {"on": False, "all": FLEX_FB_START, "leagues": {}}
+        flex_fb_refresh()
+        vals = _FLEX_FB["vals"]
+        return {"on": True, "all": _fb_ok(vals.get("all")) or FLEX_FB_START,
+                "leagues": {k: v for k, v in vals.items() if k != "all" and _fb_ok(v) and abs(v - FLEX_FB_START) > 1e-9}}
+    except Exception:
+        return {"on": False, "all": FLEX_FB_START, "leagues": {}}
 
 
 def sale_result_note(got, cost, cutting=False):
@@ -9780,13 +9963,14 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
     retries = AUTO_CASH_RETRIES if auto else CASH_RETRIES
     line = getattr(_CASH_CTX, "line", None) if auto else None   # auto: the smart-sell line that justified the sale
     cost_floor = getattr(_CASH_CTX, "cost_floor", None) if auto else None   # auto, profit-taking: never below cost
+    user_floor = floor           # a floor passed on purpose (the cost line is not one under Flexible)
     if cost_floor is not None:
         floor = cost_floor if floor is None else max(floor, cost_floor)
     if line is not None and auto and getattr(_CASH_CTX, "cutting", False):
-        line = max(line, CASH_SLIP * agreed)  # a loss cut's line can be near 0: never under 97% of its first offer
+        line = max(line, flex_fallback_bar(ticker, h, agreed, frac))  # a loss cut's line can be near 0: never under the usual share of its first offer (97%, or the learned one)
     info = CASH_LAST[ticker] = {"stop": "", "rounds": 0, "tries": [], "agreed": round(agreed, 2),
                                 "line": None if line is None else round(line, 2),
-                                "slip": None if line is not None else CASH_SLIP,
+                                "slip": None if line is not None else round(flex_fallback(ticker), 4),
                                 "floor": None if floor is None else round(floor, 2)}
     began = time.time()
     had_tp = bool((MINE.get("tp") or {}).get(ticker)) or bool(resting_sells().get(ticker))
@@ -9819,9 +10003,10 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
             # The bar a fresh offer must reach. Auto cash-out (Pete, 2026-11-23: "I don't think it needs to be within
             # 97% of the first price, but it should definitely stay above the smart sell line"): the same smart-sell
             # line auto_sell_now sold on; your own tap (or no line given): CASH_SLIP of the price you confirmed.
-            bar = line if line is not None else CASH_SLIP * agreed
+            bar = line if line is not None else flex_fallback_bar(ticker, h, agreed, frac)
             cutting = bool(getattr(_CASH_CTX, "cutting", False))
-            fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, floor, cutting, agreed=agreed) \
+            fx = flex_decide(ticker, h, o["offer"], o.get("frac") or frac, bar, user_floor, cutting, agreed=agreed,
+                             old_floor=floor) \
                 if flex_on() else None      # Flexible sell price: this moment, not the first offer (fails closed to `bar`)
             if fx is not None:
                 info["flex"] = {k: fx[k] for k in ("mode", "why", "ok", "old", "fair", "wait", "backstop") if k in fx}
@@ -9831,7 +10016,7 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
                 break
             low = (o["offer"] < bar or (floor is not None and o["offer"] < floor)) if fx is None else not fx["ok"]
             if low:
-                MINE["cash"][ticker] = o              # floor: Never sell at a loss / a profit-taking sale: not below cost
+                MINE["cash"][ticker] = o              # floor: a profit-taking sale: not below cost (unless Flexible judges waiting worse)
                 why = "new"
                 info["stop"], info["low_offer"] = "offer too low", round(o["offer"], 2)
                 break
@@ -13002,8 +13187,12 @@ def settings_page(all_games, days, counts):
                         + slider("auto_cap", "Auto cash-outs a day, at most", 1, AUTO_CAP_MAX + 1, 1, "",
                                  names=[str(i) for i in range(AUTO_CAP_MAX + 1)] + ["Unlimited"])
                         + switch("flex_sell", "Flexible sell price: when a buyer backs out, judge each new offer by the game "
-                                 "right now, not the first price (risk: can sell a bit lower, never under 85% of its "
-                                 "worth right now)")
+                                 "right now, not the first price (risk: in a fast-falling price it can sell a bit lower, "
+                                 "even a small loss on a bet that began in profit, because waiting could have been "
+                                 "worse; never under 85% of its worth right now)")
+                        + switch("flex_learn", "Learn the fallback price: when live info is stale, the share of the "
+                                 "first offer a new offer must reach (97% to start) adjusts half a point at a time "
+                                 "from your own history, between 85% and 99%")
                         + switch("auto_hedge", "Hedge instead when that locks in more (only on a fresh live "
                                  "score, never at a break, at least what you paid, held 3+ min, fresh price)")
                         + switch("prefer_hedge", "Prefer hedging, even at up to 5% less")
@@ -23076,8 +23265,8 @@ KNOBS = (
     {"name": "below_cost", "group": "loss", "cls": "tunable", "label": "Never sells below what you paid",
      "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or your stop-loss "
              "override (every guard held) says selling now loses less than waiting. A sale that was a profit never "
-             "retries below cost; a loss cut never retries under 97% of its first offer. The Never setting turns "
-             "even the loss cut and the stop-loss off.",
+             "retries below cost; a loss cut never retries under 97% of its first offer. (Flexible sell, on by default, "
+             "can judge a retry at the current moment instead.)",
      "owner": "auto_sell_now", "src": None, "start": True, "min": None, "max": None, "step": None, "unit": "rule",
      "stricter": "up", "borrow": "none", "learned": None,
      "metric": "return on stake, selling at a loss vs holding", "judge": "_sl_replay"},
@@ -23176,7 +23365,7 @@ KNOBS = (
      "label": "Auto cash-out: fresh offers after a clear refusal",
      "owner": "_accept_with_retries", "src": "AUTO_CASH_RETRIES", "start": 9, "unit": "count",
      "why": "Pete, 2026-11-23: up to 10 tries a round for an automatic combo sale, each on a fresh offer that must "
-            "still clear the smart-sell line (and cost under Never sell at a loss); only after Kalshi clearly said no, an unclear answer is never retried"},
+            "still clear the smart-sell line; only after Kalshi clearly said no, an unclear answer is never retried"},
     {"name": "your_switches", "group": "invariant", "cls": "invariant", "label": "Your switches always win",
      "owner": "auto_sell_now, smart_sell_singles (auto_sell, smart_sell, ride, auto_hedge, stop_loss, I'll sell it)",
      "src": None, "start": True, "unit": "rule",
