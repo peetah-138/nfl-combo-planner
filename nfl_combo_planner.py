@@ -31,6 +31,7 @@ CFG = {
     "prop_shadow": True,  # record player-prop prices a pass already read (paper only, write-only); false = off
     "slate_shadow": True, # record slate-concentration aggregates (write-only, nothing reads them); false = off
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
+    "broad_shadow": True,   # watch-all recorder (bp_* tables): price paths + signals for every market already fetched; write-only; false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
@@ -15982,6 +15983,15 @@ def margin_prob(lg, kind, strike, team_is_home=True, g=None):
     return min(max(sum(v for x, v in p.items() if x > strike + 1e-9), 0.0), 1.0)
 
 
+LINE_BUCKET_WORDS = {"far below": "well short of the line", "below": "a bit short of the line", "at the line": "right at the line",
+                     "above": "a bit past the line", "far above": "well past the line"}
+
+
+def line_bucket_words(bucket):
+    """A strike band in plain words for Pete ('far above' -> 'well past the line'); an unknown key is returned as is."""
+    return LINE_BUCKET_WORDS.get(bucket, bucket)
+
+
 def line_bucket(code, kind, strike, center):
     """How far the strike is from the sportsbook's line, in five bands (points for football and basketball, in
     units of a typical miss; goals for hockey and soccer)."""
@@ -16564,7 +16574,7 @@ def line_clv_block(lg, kind, bucket, now=None):
             if not s or s["games"] < LINE_CLV["games"]:
                 continue
             if s["mean"] <= LINE_CLV["mean"] and s["se"] and s["mean"] / s["se"] <= -LINE_CLV["t"]:
-                return (f"{'spreads' if kind == 'spread' else 'totals'} {bucket} closed {abs(s['mean']) * 100:.1f}¢ "
+                return (f"{'spreads' if kind == 'spread' else 'totals'} {line_bucket_words(bucket)} closed {abs(s['mean']) * 100:.1f}¢ "
                         f"under the price we saw, on average over {s['games']} games"
                         + (f" ({who})" if who else ""))
             if who is None:
@@ -16597,7 +16607,8 @@ def line_fill(ticker, fair, need, stake, asks=None):
     """The biggest buy of a strike, up to `stake` dollars, that keeps every contract at least `need` under `fair` after
     Kalshi's fee, walking up the order book. {'n' contracts, 'cost' dollars with the fee, 'per' (cost a contract),
     'exp' (expected profit of that buy at fair, after fees), 'depth' (contracts for sale inside the edge, any stake),
-    'best' (best ask), 'capped' ('depth' = the book ran out inside the edge first, else 'stake')}. None = the book
+    'best' (best ask), 'avg' (average ask paid, before the fee), 'capped' ('depth' = the book ran out inside the edge
+    first, else 'stake')}. None = the book
     couldn't be read (so nothing is recommended)."""
     asks = book_asks(ticker) if asks is None else asks
     if asks is None:
@@ -16623,6 +16634,7 @@ def line_fill(ticker, fair, need, stake, asks=None):
     cost = _fill_total(take) if n else 0.0
     return {"n": n, "cost": round(cost, 2), "per": round(cost / n, 4) if n else None,
             "exp": round(n * fair - cost, 2) if n else 0.0, "depth": depth,
+            "avg": round(sum(p * k for p, k in take) / n, 4) if n else None,
             "best": take[0][0] if take else inside[0][0] if inside else asks[0][0] if asks else None,
             "capped": "depth" if n and n >= depth else "stake"}
 
@@ -16671,7 +16683,7 @@ def _line_rec_one(code, x, base, now, asks):
     if exp < SB_EV_MIN:
         return None, "small"
     return dict(x, rec=True, p=ask, edge=round(fair - ask - single_fee(ask), 4), stake=fill["cost"], n=fill["n"],
-                per=fill["per"], exp=exp, hold_exp=fill["exp"], depth=fill["depth"], capped=fill["capped"],
+                per=fill["per"], avg=fill["avg"], exp=exp, hold_exp=fill["exp"], depth=fill["depth"], capped=fill["capped"],
                 p_exit=sim["p_exit"], win=sim["win"], route=sim["route"], exit_mins=sim.get("exit_mins")), None
 
 
@@ -19592,6 +19604,7 @@ def resolve_closes(limit=150):
             fn()
         except Exception as err:
             console_note(f"{fn.__name__}: {type(err).__name__}: {err}")
+    bp_maintain()                                      # watch-all recorder: prune, copy labels, size check (never raises)
     rows = store_rows("select ticker from closes where outcome is null and kick < ? limit ?", (time.time() - 4 * 3600, limit))
     if not rows:
         return 0
@@ -20864,6 +20877,7 @@ def panel_collect(book_snap, code, log=print):
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
     slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
+    broad_shadow(code, every, lc_all)                  # watch-all recorder: write-only, no fetch, never raises
     signal_events(code, games)                         # news + game-context recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
@@ -29907,7 +29921,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                             "chance": x["fair"], "edge": x["edge"], "stake": round(x["stake"] * k, 2), "ev": round(x["exp"] * k, 2),
                             "route": x.get("route"), "p_exit": x.get("p_exit"), "win": x.get("win"), "exit_mins": x.get("exit_mins"),
                             "n": x.get("n"), "capped": x.get("capped"), "min_edge": x.get("min_edge"),
-                            "exposure": _best_exposure(lg_)})
+                            "avg": x.get("avg"), "exposure": _best_exposure(lg_)})
             except Exception as err:
                 console_note(f"best bets line: {type(err).__name__}: {err}")
         for c in cands[:BEST_LOOK]:
@@ -30974,6 +30988,460 @@ def signal_shadow(code, games, lines=(), now=None):
     except Exception as err:
         try:
             console_note(f"signal shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+# ---- broad recorder (watch all games): price paths and signals for EVERY market the engine already fetched. Pete's goal:
+# keep learning from many games, not only the bets he makes. It records, into NEW compact append-only tables (bp_mkt,
+# bp_path, bp_day), what PRICE_SEEN already holds (every market a series list or held-markets refresh returned: bid, ask,
+# and the book's depth when one was read), next to the sharp-book / live-model / line-model fair the panel pass already
+# worked out and the cached score feed's state of the game. NO new request of any kind (requests is never touched here;
+# a market the app does not fetch is simply not covered), no order, nothing on the trading path reads these tables (only
+# tools/exit_replay.py --broad, offline, on a read-only copy). Never raises. Writes are capped by rows and time per flush;
+# pruning, labelling and the size check run from the history loop (bp_maintain), never in the panel pass.
+# Storage controls: change-only rows with a long far-from-game heartbeat, a retention age, an oldest-first row cap and a hard
+# byte / free-disk ceiling that STOPS recording until pruning frees room. Prices are whole tenths of a cent (BP_SCALE).
+# Labels (bp_mkt.result 1 = yes, 0 = no; bp_mkt.rs = where it came from) are copied from tables the existing loops already
+# resolve (closes, live_fairs, line_fairs, mkt_fair), plus a price-implied one (rs 9) once a market has gone quiet at the
+# end; markets no existing loop resolves stay unlabelled (the replay reports the share).
+BP_SCALE = 1000                  # stored price = round(price x BP_SCALE); tools/exit_replay.py reads this line
+BP = {"on": True, "near_every": 60, "far_every": 300, "event_every": 20, "near_beat": 600, "far_beat": 10800,
+      "near_before": 3 * 3600, "near_after": 6 * 3600, "stop_after": 8 * 3600, "stale": 600, "flush_every": 45,
+      "budget": 0.15, "max_rows_flush": 3000, "keep_days": 21, "max_bytes": 250 * 2 ** 20, "row_bytes": 60,
+      "min_free": 3 * 2 ** 30, "chunk": 5000, "chunks": 40, "label_days": 4,
+      "flush": 0.0, "maint": 0.0, "logged": 0.0, "full": None, "rows": 0, "disk": 0.0, "cursor": 0, "tbl": None,
+      "ids": {}, "mk": {}, "kdb": {}, "last": {}, "fair": {}, "win": {}, "day": None}
+BP_COLS = (("bp_mkt", (("ticker", "text"), ("ev", "text"), ("sp", "text"), ("kind", "text"), ("kick", "integer"),
+                       ("first", "integer"), ("result", "integer"), ("rs", "integer"))),
+           ("bp_path", (("ts", "integer"), ("m", "integer"), ("bid", "integer"), ("ask", "integer"), ("dep", "integer"),
+                        ("fb", "integer"), ("fk", "integer"), ("ld", "integer"), ("pt", "integer"), ("fr", "integer"),
+                        ("st", "integer"), ("pos", "integer"), ("dn", "integer"), ("ds", "integer"))),
+           ("bp_day", (("mk", "integer"), ("gm", "integer"), ("rows", "integer"))))
+
+
+def _bp_on():
+    return bool(CFG.get("broad_shadow", BP["on"]))
+
+
+def _bp_cap_rows():
+    return int(BP["max_bytes"] * 0.8 / BP["row_bytes"])      # the row cap sits below the byte ceiling: a backstop is not the norm
+
+
+def _bp_tables():
+    """Create (or complete: a missing column is added) the three tables, once per open database. Safe on a file that already
+    has them, or has none; existing history tables are never touched."""
+    db = STORE.get("db")
+    if db is None or BP["tbl"] is db:
+        return db is not None
+    ok = True
+    for sql in ("create table if not exists bp_mkt(id integer primary key, ticker text unique, ev text, sp text, kind text, "
+                "kick integer, first integer, result integer, rs integer)",
+                "create table if not exists bp_path(ts integer, m integer, bid integer, ask integer, dep integer, fb integer, "
+                "fk integer, ld integer, pt integer, fr integer, st integer, pos integer, dn integer, ds integer)",
+                "create index if not exists bp_path_m on bp_path(m, ts)",
+                "create table if not exists bp_day(d integer primary key, mk integer, gm integer, rows integer)"):
+        ok = store_x(sql) is not None and ok
+    for tbl, cols in BP_COLS:                          # a file made by an older build: add what it lacks
+        have = {r["name"] for r in store_rows(f"pragma table_info({tbl})")}
+        for col, typ in cols:
+            if col not in have:
+                ok = store_x(f"alter table {tbl} add column {col} {typ}") is not None and ok
+    if ok:
+        BP["tbl"] = db
+    return ok
+
+
+def _bp_p(x):
+    try:
+        return int(round(float(x) * BP_SCALE)) if x else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _bp_ev(t):
+    return game_event("-".join(str(t).split("-")[:2]))
+
+
+def _bp_meta(t, now):
+    """(event, kick, kind, sport, checked) for a market; the kick is looked up again every 10 minutes while unknown."""
+    m = BP["mk"].get(t)
+    if m and (m[1] or now - m[4] < 600):
+        return m
+    ev = _bp_ev(t)
+    try:
+        kick = _kick_ts({"event": ev})
+    except Exception:
+        kick = None
+    kind = _bet_kind(t)
+    m = (ev, int(kick) if kick else None, kind, league_key(t), now)
+    BP["mk"][t] = m
+    if kind == "win":
+        BP["win"][ev] = t
+    if len(BP["mk"]) > 40000:
+        for k in list(BP["mk"])[:20000]:
+            BP["mk"].pop(k, None)
+    return m
+
+
+def broad_shadow(code, games, lines=(), now=None):
+    """Panel-pass hook: note each priced side's fair (sharp book before the game, the live model in play) and each line's
+    model fair for the markets the engine already holds, then write the flush that is due. Reads nothing back, never
+    fetches, never raises; returns the rows written."""
+    try:
+        if not STORE.get("db") or not _bp_on():
+            return 0
+        now = now or time.time()
+        fair = BP["fair"]
+        for sides in (games or {}).values():
+            for x in sides:
+                t = x.get("ticker") if isinstance(x, dict) else None
+                if not t or x.get("tie"):
+                    continue
+                if x.get("live") and x.get("fair") is not None:
+                    fair[t] = (now, _bp_p(x["fair"]), 2)
+                elif x.get("src") and (x.get("fair_book") is not None or x.get("fair") is not None):
+                    k = _kick_ts(x)
+                    if not k or k > now:                          # a started game's book line is the old pre-game one
+                        fair[t] = (now, _bp_p(x.get("fair_book") if x.get("fair_book") is not None else x["fair"]), 1)
+        for x in lines or ():
+            if isinstance(x, dict) and x.get("ticker") and x.get("fair") is not None:
+                fair[x["ticker"]] = (now, _bp_p(x["fair"]), 3)
+        if len(fair) > 40000:
+            for k in [k for k, v in fair.items() if now - v[0] > 1800]:
+                fair.pop(k, None)
+        return _bp_flush(now)
+    except Exception as err:
+        try:
+            console_note(f"broad recorder: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def _bp_score(t):
+    """(lead, total points, share left, state, possession, down, distance) from the CACHED score feed for market t's team, or
+    None. leg_score never fetches."""
+    sc = leg_score({"ticker": t, "side": "yes"})
+    if not sc or sc.get("state") not in ("in", "post"):
+        return None
+    s = sc.get("situation") if isinstance(sc.get("situation"), dict) else {}
+    me, opp = int(sc.get("me") or 0), int(sc.get("opp") or 0)
+    fr = round(float(sc["frac"]) * BP_SCALE) if sc.get("state") == "in" and sc.get("frac") is not None else None
+    return (me - opp, me + opp, fr, 1 if sc.get("state") == "in" else 2,
+            None if s.get("possession") is None else int(bool(s.get("possession"))),
+            s.get("down") if isinstance(s.get("down"), int) else None,
+            s.get("distance") if isinstance(s.get("distance"), int) else None)
+
+
+def _bp_flush(now, force=False):
+    """One row per market whose price is due: every minute near its game (an event, a score change, 20 s), every 5 minutes
+    otherwise, only when something changed (bid, ask, fair or score) unless the heartbeat passed (10 min near a game, 3 h
+    far). At most BP['max_rows_flush'] rows and BP['budget'] seconds of work a call, resuming where it stopped."""
+    if now - BP["flush"] < BP["flush_every"] and not force:
+        return 0
+    BP["flush"] = now
+    if BP["full"] or not _bp_tables():
+        return 0
+    if now - BP["disk"] > 600:                         # a free-disk floor, checked every 10 minutes
+        BP["disk"] = now
+        if _bp_disk_low():
+            BP["full"] = "disk"
+            return 0
+    t0 = time.perf_counter()
+    items = list(PRICE_SEEN.items())
+    if not items:
+        return 0
+    start = BP["cursor"] % len(items)
+    last, fair, rows, metas, scores = BP["last"], BP["fair"], [], {}, {}
+    stopped_at = 0
+    for n, (t, seen) in enumerate(items[start:] + items[:start]):
+        if (n & 127) == 127 and time.perf_counter() - t0 > BP["budget"]:
+            stopped_at = n
+            break
+        if len(rows) >= BP["max_rows_flush"]:
+            stopped_at = n
+            break
+        try:
+            ots, bid, ask, dep = seen
+            ots + 0
+        except Exception:
+            continue                                   # one malformed entry never stops the rest
+        st = last.get(t)
+        if now - ots > BP["stale"] or (st and ots <= st[0]) or not (bid or ask):
+            continue
+        try:
+            ev, kick, kind, sp, _ = m = _bp_meta(t, now)
+        except Exception:
+            continue
+        if kick and now > kick + BP["stop_after"]:
+            continue                                   # the game is long over: nothing more to learn from a parked price
+        near = bool(kick) and kick - BP["near_before"] <= now <= kick + BP["near_after"]
+        b, a = _bp_p(bid), _bp_p(ask)
+        fv = fair.get(t)
+        fb, fk = (fv[1], fv[2]) if fv and now - fv[0] <= 900 else (None, None)
+        sc, scored = None, False
+        if near and kick <= now:                       # the score feed, cached: one look per game per flush (win markets: own side)
+            key = t if kind == "win" else ev
+            if key not in scores:
+                try:
+                    wt = t if kind == "win" else BP["win"].get(ev)
+                    scores[key] = _bp_score(wt) if wt else None
+                except Exception:
+                    scores[key] = None
+            sc = scores[key]
+            scored = True
+        pt = sc[1] if sc else None
+        if st:
+            gap = now - st[1]
+            moved = (b, a) != (st[2], st[3]) or (near and fb is not None and st[4] is not None and abs(fb - st[4]) >= 5)
+            event = near and scored and pt != st[5]
+            if not (moved or event) and gap < (BP["near_beat"] if near else BP["far_beat"]):
+                last[t] = (ots, st[1], st[2], st[3], st[4], st[5])        # looked at, nothing new: do not look again until it changes
+                continue
+            if gap < (BP["event_every"] if event and not moved else BP["near_every"] if near else BP["far_every"]):
+                continue
+        last[t] = (ots, now, b, a, fb, pt)
+        own = sc if kind == "win" else None
+        rows.append((t, int(ots), b, a, int(dep) if dep else None, fb, fk, own[0] if own else None, pt,
+                     sc[2] if sc else None, sc[3] if sc else 0, own[4] if own else None, sc[5] if sc else None,
+                     sc[6] if sc else None))
+        metas[t] = m
+    BP["cursor"] = (start + stopped_at) % len(items) if stopped_at else 0
+    if len(last) > 40000:
+        for k in list(last)[:20000]:
+            last.pop(k, None)
+    if not rows:
+        return 0
+    return _bp_write(rows, metas, now)
+
+
+def _bp_write(rows, metas, now):
+    """The rows in one transaction under the history lock, held briefly. Best-effort: never raises."""
+    db = STORE.get("db")
+    if not db:
+        return 0
+    new_ids, out = [], []
+    with _SLOCK:
+        own = not db.in_transaction
+        if not own:
+            return 0                                   # never write inside another transaction: skip this flush
+        try:
+            db.execute("begin")
+            for r in rows:
+                t = r[0]
+                mid = BP["ids"].get(t)
+                if mid is None:
+                    ev, kick, kind, sp, _ = metas[t]
+                    db.execute("insert or ignore into bp_mkt(ticker, ev, sp, kind, kick, first) values(?,?,?,?,?,?)",
+                               (t, ev, sp, kind, kick, int(now)))
+                    mid = db.execute("select id from bp_mkt where ticker=?", (t,)).fetchone()[0]
+                    BP["ids"][t] = mid
+                    new_ids.append(t)
+                    if metas[t][1]:                                           # a row made earlier may still lack its kickoff
+                        db.execute("update bp_mkt set kick=? where id=? and kick is null", (metas[t][1], mid))
+                    BP["kdb"][t] = metas[t][1]
+                elif metas[t][1] and BP["kdb"].get(t) != metas[t][1]:     # its kickoff became known (or moved)
+                    db.execute("update bp_mkt set kick=? where id=?", (metas[t][1], mid))
+                    BP["kdb"][t] = metas[t][1]
+                out.append((r[1], mid) + tuple(r[2:]))
+            db.executemany("insert into bp_path values(" + ",".join("?" * 14) + ")", out)
+            db.execute("commit")
+        except Exception as err:
+            try:
+                db.execute("rollback")                 # we began it, so we always end it
+            except Exception:
+                pass
+            for t in new_ids:
+                BP["ids"].pop(t, None)
+                BP["kdb"].pop(t, None)
+            console_note(f"broad recorder: {type(err).__name__}")      # the type only: a message could carry a ticker
+            return 0
+    if len(BP["ids"]) > 40000:
+        for k in list(BP["ids"])[:20000]:
+            BP["ids"].pop(k, None)
+    d = int(now // 86400)
+    day = BP["day"]
+    if not day or day["d"] != d:
+        day = BP["day"] = {"d": d, "mk": set(), "gm": set(), "rows": 0}
+    for r in rows:
+        day["mk"].add(r[0])
+        day["gm"].add(metas[r[0]][0])
+    day["rows"] += len(rows)
+    BP["rows"] = (BP["rows"] or 0) + len(rows)
+    if BP["rows"] * BP["row_bytes"] > BP["max_bytes"]:
+        BP["full"] = "size"                            # the ceiling: stop recording until pruning frees room (bp_maintain)
+    return len(rows)
+
+
+def _bp_disk_low():
+    try:
+        import shutil
+        return shutil.disk_usage(os.path.dirname(STORE.get("path") or HERE) or ".").free < BP["min_free"]
+    except Exception:
+        return False
+
+
+def _bp_rowspan():
+    r = store_rows("select min(rowid) lo, max(rowid) hi from bp_path")
+    return (r[0]["lo"], r[0]["hi"]) if r and r[0]["lo"] is not None else (None, None)
+
+
+def _bp_cut(cutoff):
+    """The first rowid whose time is >= cutoff (rows are appended in time order, so rowid order is time order): a binary
+    search, a couple of dozen indexed lookups, no scan."""
+    lo, hi = _bp_rowspan()
+    if lo is None:
+        return None
+    ans, top = hi + 1, hi
+    while lo <= top:
+        mid = (lo + top) // 2
+        r = store_rows("select rowid r, ts from bp_path where rowid >= ? order by rowid limit 1", (mid,))
+        if not r:
+            return None                                # rowids only grow: no row at or after mid means a failed read; never guess
+        if r[0]["ts"] >= cutoff:
+            ans, top = r[0]["r"], mid - 1
+        else:
+            lo = r[0]["r"] + 1
+    return ans
+
+
+def _bp_prune(now):
+    """Age first (keep_days), then the oldest rows over the row cap, in small chunks (each its own short transaction, with a
+    breath between) so the history lock is never held long. Returns the rows deleted."""
+    lo, hi = _bp_rowspan()
+    if lo is None:
+        return 0
+    c = _bp_cut(now - BP["keep_days"] * 86400)
+    cut = max(lo if c is None else c, hi - _bp_cap_rows() + 1)   # a failed lookup skips the age cut; the row cap still holds
+    done = 0
+    while lo < cut and done < BP["chunks"] * BP["chunk"]:
+        store_x("delete from bp_path where rowid >= ? and rowid < ?", (lo, min(lo + BP["chunk"], cut)))
+        lo += BP["chunk"]
+        done += BP["chunk"]
+        time.sleep(0.01)
+    n0 = (store_rows("select count(*) n from bp_mkt") or [{"n": 0}])[0]["n"]
+    store_x("delete from bp_mkt where id in (select id from bp_mkt where first < ? and not exists "
+            "(select 1 from bp_path where m = bp_mkt.id) limit ?)", (int(now - (BP["keep_days"] + 2) * 86400), BP["chunk"]))
+    if (store_rows("select count(*) n from bp_mkt") or [{"n": n0}])[0]["n"] != n0:
+        BP["ids"].clear()                              # a cached id must never outlive its market row
+    return done
+
+
+def _bp_labels(now):
+    """Results for recorded markets, copied from tables the existing loops already resolve: no request. Returns the labels set."""
+    since = now - BP["label_days"] * 86400
+    todo = {r["t"] for r in store_rows("select ticker t from bp_mkt where (result is null or rs = 9) and first > ? limit 100000",
+                                       (int(now - (BP["keep_days"] + 2) * 86400),))}
+    if not todo:
+        return 0
+    got = 0
+    for rs, sql in ((1, "select ticker t, outcome o from closes where outcome in ('yes','no') and ts > ? order by ts desc limit 30000"),
+                    (2, "select distinct ticker t, outcome o from live_fairs where outcome in ('yes','no') and ts > ? limit 30000"),
+                    (4, "select distinct ticker t, outcome o from line_fairs where outcome in ('yes','no') and ts > ? limit 30000"),
+                    (3, "select tickers t, outcome o from mkt_fair where outcome in ('yes','no') and ts > ? "
+                        "and tickers not like '%,%' limit 30000")):
+        rows = [r for r in store_rows(sql, (since,)) if r["t"] in todo]      # only markets still unlabelled: few updates
+        if rows:
+            got += _bp_set_results([(1 if r["o"] == "yes" else 0, rs, r["t"]) for r in rows])
+            todo -= {r["t"] for r in rows}
+    return got
+
+
+def _bp_set_results(vals):
+    db = STORE.get("db")
+    if not db or not vals:
+        return 0
+    n = 0
+    for k in range(0, len(vals), 1000):                # short transactions: the history lock is never held long
+        with _SLOCK:
+            if db.in_transaction:
+                return n
+            try:
+                db.execute("begin")
+                for v in vals[k:k + 1000]:
+                    n += db.execute("update bp_mkt set result=?, rs=? where ticker=? and (result is null or rs = 9)", v).rowcount
+                db.execute("commit")
+            except Exception as err:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+                console_note(f"broad recorder labels: {type(err).__name__}")
+                return n
+    return n
+
+
+def _bp_implied(now, limit=300):
+    """A price-implied label (rs 9) for a market whose game is long over and whose last recorded price is settled-looking
+    (bid >= 97c, or ask <= 3c): only where no resolver has labelled it. Kept apart (rs 9) so the replay can leave it out."""
+    vals = []
+    for r in store_rows("select id, ticker from bp_mkt where result is null and kick is not null and kick < ? "
+                        "order by id desc limit ?", (int(now - BP["stop_after"] - 3600), limit)):
+        x = store_rows("select bid, ask from bp_path where m=? order by ts desc limit 1", (r["id"],))
+        if not x:
+            continue
+        b, a = x[0]["bid"] or 0, x[0]["ask"]
+        if b >= 0.97 * BP_SCALE and (a is None or a >= 0.98 * BP_SCALE):
+            vals.append((1, 9, r["ticker"]))
+        elif a is not None and a <= 0.03 * BP_SCALE and b <= 0.02 * BP_SCALE:
+            vals.append((0, 9, r["ticker"]))
+    return _bp_set_results(vals)
+
+
+def bp_status(now=None):
+    """Counts only (no tickers, ids or dates): today's markets and games recorded, rows, the table's size estimate and how
+    many finished markets carry a label. For the watcher log; reads our own tables, nothing decides from it."""
+    now = now or time.time()
+    day = BP["day"] if BP["day"] and BP["day"]["d"] == int(now // 86400) else None
+    lo, hi = _bp_rowspan()
+    rows = (hi - lo + 1) if lo is not None else 0
+    fin = store_rows("select count(*) n, sum(result is not null) l from bp_mkt where kick is not null and kick < ?",
+                     (int(now - 6 * 3600),))
+    return {"on": _bp_on(), "stopped": BP["full"] or None, "markets_today": len(day["mk"]) if day else 0,
+            "games_today": len(day["gm"]) if day else 0, "rows_today": day["rows"] if day else 0, "rows": rows,
+            "mb_estimate": round(rows * BP["row_bytes"] / 2 ** 20, 1),
+            "finished_markets": (fin[0]["n"] or 0) if fin else 0, "labelled": (fin[0]["l"] or 0) if fin else 0}
+
+
+def bp_maintain(now=None):
+    """History-loop job (every ~15 minutes, never the panel pass): prune by age and row cap, copy labels, update the stop flag
+    against the byte ceiling and the free-disk floor, save today's coverage and log one counts-only line an hour. Never raises."""
+    try:
+        if not STORE.get("db"):
+            return 0
+        now = now or time.time()
+        if not store_rows("select 1 from sqlite_master where type='table' and name='bp_path'"):
+            return 0                                   # never recorded here (or switched off from the start): nothing to keep
+        if not _bp_tables():
+            return 0
+        BP["maint"] = now
+        _bp_prune(now)
+        _bp_labels(now)
+        _bp_implied(now)
+        lo, hi = _bp_rowspan()
+        BP["rows"] = (hi - lo + 1) if lo is not None else 0
+        if BP["full"] == "disk" or BP["full"] == "size" or BP["full"] is None:
+            BP["full"] = "size" if BP["rows"] * BP["row_bytes"] > BP["max_bytes"] else ("disk" if _bp_disk_low() else None)
+        day = BP["day"]
+        if day:
+            prev = store_rows("select mk, gm, rows from bp_day where d=?", (day["d"],))
+            store_x("insert or replace into bp_day values(?,?,?,?)",
+                    (day["d"], max(len(day["mk"]), prev[0]["mk"] if prev else 0), max(len(day["gm"]), prev[0]["gm"] if prev else 0),
+                     max(day["rows"], prev[0]["rows"] if prev else 0)))
+            store_x("delete from bp_day where d < ?", (day["d"] - 90,))
+        if now - BP["logged"] >= 3600:
+            BP["logged"] = now
+            s = bp_status(now)
+            console_note(f"broad recorder: today {s['markets_today']} markets in {s['games_today']} games, {s['rows_today']} rows; "
+                         f"table {s['rows']} rows (~{s['mb_estimate']} MB of {BP['max_bytes'] // 2 ** 20} MB); "
+                         f"{s['labelled']} of {s['finished_markets']} finished markets labelled"
+                         + (f"; RECORDING STOPPED ({s['stopped']})" if s["stopped"] else ""))
+        return 1
+    except Exception as err:
+        try:
+            console_note(f"broad recorder maintain: {type(err).__name__}: {err}")
         except Exception:
             pass
         return 0

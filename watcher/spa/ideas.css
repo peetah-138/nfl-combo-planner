@@ -28,6 +28,23 @@
 #undo button{min-height:44px;padding:0 14px;background:none;border:0;border-radius:9px;color:inherit;font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}
 @media (prefers-reduced-motion:reduce){.sfold .chev,.scard{transition:none!important}.fold,.iw,.iw.out .dcard,#undo{transition:none!important}}
 h2.lsec .r.clr{width:auto;margin-left:auto;order:0}h2.lsec .r.clr .btn{padding:5px 12px;min-height:32px}
+/* change vs paid (#100): tabular, sign always printed, two fixed lines (% over $) so a sign flip never moves the row.
+   <html data-chg> picks what shows; the colour follows what is shown (data-b both, data-p %, data-u $). */
+.chg{display:flex;flex-direction:column;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1.35;min-width:5.6ch}
+html[data-chg=pct] .chg .cd,html[data-chg=usd] .chg .cp,html[data-chg=pct] .dch:not(.nop) .cd,html[data-chg=usd] .dch .cp{display:none}
+html[data-chg=both] .chg[data-b=up],html[data-chg=pct] .chg[data-p=up],html[data-chg=usd] .chg[data-u=up]{color:var(--yes)}
+html[data-chg=both] .chg[data-b=down],html[data-chg=pct] .chg[data-p=down],html[data-chg=usd] .chg[data-u=down]{color:var(--no)}
+html[data-chg=both] .chg[data-b=flat],html[data-chg=pct] .chg[data-p=flat],html[data-chg=usd] .chg[data-u=flat]{color:var(--sub)}
+html[data-chg=both] .dch:not(.nop) .cp::before{content:' ('}html[data-chg=both] .dch:not(.nop) .cp::after{content:')'}
+html[data-chg=both] .dch.est .cd::before,html[data-chg=usd] .dch.est .cd::before,html[data-chg=pct] .dch.est .cp::before,.dch.est.nop .cd::before{content:'≈ '}
+.dkpis .chg{margin-top:2px}.dkpis .chg span{color:inherit;font-size:12px;text-transform:none;letter-spacing:normal}
+.chgbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 6px;font-size:11.5px;color:var(--mute)}
+.chgsw{display:inline-flex}.chgsw button{border:0;background:none;color:var(--mute);font-weight:700;font-size:12px;letter-spacing:.04em;border-radius:7px;
+ min-width:44px;min-height:44px;margin:-14px 0;padding:0 8px;display:inline-flex;align-items:center;justify-content:center}
+.chgsw button.on{color:var(--ink);background:var(--panel2)}
+.chgsw button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.num .chg,.offer .chg{align-items:flex-end}
+@media (max-width:1360px){.trow .numwrap .chg{align-items:flex-start}}
 /* #252: a fresh price's verdict, the answer to a Buy tap, and the older "when found" numbers */
 .ivd,.ians{margin:10px 0 2px;padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.4;background:var(--panel2);color:var(--ink)}
 .ivd.no{background:var(--nobg)}.ivd.warn{background:rgba(245,181,68,.16)}

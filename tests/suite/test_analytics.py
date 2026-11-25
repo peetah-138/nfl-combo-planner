@@ -156,7 +156,7 @@ with sync_playwright() as pw:
         hd.click(); wait(pg, "!!document.querySelector('.an .sbp .antbl')", 5)
         sb = pg.locator(".an .sbp").inner_text()
         if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "Learning (12 of 30)" not in sb \
-                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes, on paper: not yet · 34 of 50 settled · +$8.20" not in sb or "Bigger stakes: not yet · 12 of 50" not in sb \
+                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes, on paper: not yet · 34 of 50 settled" not in sb or "Bigger stakes: not yet · 12 of 50 settled" not in sb \
                 or "It only ever skips" not in sb or "preview" in sb.lower() \
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])

@@ -22,6 +22,14 @@ offers (offers table) and reported apart, with their own confidence range. Exit 
 above cost, or hold. The peak is never reported as a result. Ranges are a game-level bootstrap (rows in one game move
 together); the best rule is picked on the first 70% of games by time and scored on the last 30%.
 
+Third mode, the broad dataset the watch-all recorder writes (bp_mkt / bp_path, every market the app already fetched,
+not only the bets it made; see docs/EXIT_REPLAY.md):
+
+    python3 tools/exit_replay.py --broad --out ~/broad_summary.json
+
+Same fixed rules, same fees, same game-level bootstrap and 70/30 time split, per sport x price bucket, over every
+labelled market: enter at the first recorded ask between 10c and 90c, exit at the bid.
+
 Missing tables or columns never crash it: that part prints a clear "skipped: ..." line and the rest still runs.
 """
 import argparse
@@ -382,6 +390,91 @@ def measured(acc):
     return out
 
 
+# ---------------------------------------------------------------- broad: every market the recorder watched
+RS_NAMES = {1: "closes", 2: "live_fairs", 3: "mkt_fair", 4: "line_fairs", 9: "price_implied"}
+
+
+def engine_bp_scale():
+    """BP_SCALE (stored prices are whole thousandths of a dollar) from the engine's own line, read as text."""
+    for src in (HERE.parent / "nfl_combo_planner.py", HERE / "nfl_combo_planner.py"):
+        try:
+            hit = re.search(r"^BP_SCALE\s*=\s*(\d+)", src.read_text(errors="ignore"), re.M)
+        except OSError:
+            continue
+        if hit:
+            return int(hit.group(1))
+    return 1000
+
+
+def broad_group(rows, boot):
+    """group_result, also hidden when the rows come from fewer than 20 different games (the n<20 rule, game-level)."""
+    if len({r["game"] for r in rows}) < HIDE_N:
+        return {"n": len(rows), "games": len({r["game"] for r in rows}), "note": "n<20, hidden"}
+    return group_result(rows, boot)
+
+
+def broad_section(db, boot, gates, include_implied=False):
+    """The replay on the recorder's own tables. One row per labelled market: the first recorded ask in 10-90c (with a
+    bid), bought there, every rule replayed on the path after it. Read-only; aggregates only."""
+    for t, cols in (("bp_mkt", ["id", "ev", "sp", "kick", "result", "rs"]),
+                    ("bp_path", ["ts", "m", "bid", "ask", "fb", "st"])):
+        why = need(db, t, cols)
+        if why:
+            return {"skipped": why + " (the watch-all recorder has not run on this file yet)"}
+    sc = float(engine_bp_scale())
+    src = {}
+    for r in db.execute("select rs, count(*) n from bp_mkt where result is not null group by rs"):
+        src[RS_NAMES.get(r["rs"], "other")] = r["n"]
+    total = db.execute("select count(*) from bp_mkt").fetchone()[0]
+    labelled = sum(src.values())
+    if not include_implied:
+        labelled -= src.get("price_implied", 0)
+    q = ("select id, ev, sp, kick, result from bp_mkt where result is not null"
+         + ("" if include_implied else " and (rs is null or rs != 9)"))
+    rows, used = [], 0
+    for m in [dict(r) for r in db.execute(q + " order by id")]:
+        path = [(r["ts"], r["bid"] / sc if r["bid"] else None, r["ask"] / sc if r["ask"] else None,
+                 r["st"], r["fb"] / sc if r["fb"] else None)
+                for r in db.execute("select ts, bid, ask, st, fb from bp_path where m=? order by ts", (m["id"],))]
+        i = next((k for k, x in enumerate(path) if x[2] and x[1] and 0.10 <= x[2] < 0.90), None)
+        if i is None:
+            continue
+        ts0, _b, ask, _st, fb = path[i]
+        buy = {"ask": ask, "fair": fb if fb and fb > ask else None, "won": m["result"] == 1}
+        c, pnl = replay_buy(path[i + 1:], buy, m["kick"])
+        if pnl["fair"] is None:                              # no sharp fair above the ask: that rule is plain hold
+            pnl["fair"] = pnl["hold"]
+        used += 1
+        rows.append({"game": m["ev"] or str(m["id"]), "ts": ts0, "cost": c, "pnl": pnl, "sport": m["sp"] or "?",
+                     "bucket": bucket(ask)})
+    span = db.execute("select min(ts), max(ts), count(*) from bp_path").fetchone()
+    gates = {"markets_recorded": total, "labelled_markets": labelled, "labelled_by_source": src,
+             "unlabelled_share": round(1 - labelled / total, 3) if total else None,
+             "price_implied_labels_used": bool(include_implied),
+             "markets_without_kickoff": db.execute("select count(*) from bp_mkt where kick is null").fetchone()[0], "markets_replayed": used,
+             "path_rows": span[2], "span_days": round((span[1] - span[0]) / 86400.0, 1) if span[0] else 0}
+    out = {"data_quality": gates,
+           "entry_rule": "first recorded ask from 10c to 90c with a bid on the book is bought; each rule exits at the bid "
+                         "(the 'fair' rule at the sharp-book fair when it is above the ask, else hold); fees both ways",
+           "fee_note": f"fee = ceil({FEE_RATE} x n x p x (1-p)) per order, n={EXIT_FEE_N}, paid on entry and on exit; "
+                       "entry at the ask, exit at the bid, so the spread is paid",
+           "caveat": "every market is treated as if bought at the first sighting: this measures what an exit rule does to "
+                     "an average market, not to the bets the app picks; prices are sampled, not every tick; entry may be days out or in "
+                     "play (not stratified); an exit is assumed to fill at the recorded bid whatever its size (depth is "
+                     "recorded, not used); many cells are shown, so treat one good cell as a lead, not a result"}
+    if not rows:
+        out["skipped"] = "no labelled market has a replayable path yet"
+        return out
+    out["all"] = broad_group(rows, boot)
+    out["by_sport"] = {v: broad_group([r for r in rows if r["sport"] == v], boot) for v in sorted({r["sport"] for r in rows})}
+    out["by_price_bucket"] = {v: broad_group([r for r in rows if r["bucket"] == v], boot)
+                              for v in sorted({r["bucket"] for r in rows})}
+    out["by_sport_and_bucket"] = {f"{a} {b}": broad_group([r for r in rows if r["sport"] == a and r["bucket"] == b], boot)
+                                  for a in sorted({r["sport"] for r in rows}) for b in sorted({r["bucket"] for r in rows})
+                                  if any(r["sport"] == a and r["bucket"] == b for r in rows)}
+    return out
+
+
 # ---------------------------------------------------------------- combos: from Kalshi's real buyback offers
 def combo_section(db, boot, gates):
     why = need(db, "offers", ["ts", "combo", "p", "pays", "hold", "offer", "real_offer"])
@@ -506,7 +599,7 @@ def show(label, obj, depth=0):
         print(f"{pad}{label}: {obj}")
 
 
-def run(path, out_path, boot, combo_fee=False):
+def run(path, out_path, boot, combo_fee=False, broad=False, include_implied=False):
     try:
         db = open_ro(path)
         db.execute("select count(*) from sqlite_master").fetchone()      # a file that is not a database fails here
@@ -517,7 +610,12 @@ def run(path, out_path, boot, combo_fee=False):
     if FEE_NOTE:
         summary["fee_rate_note"] = FEE_NOTE
     try:
-        if combo_fee:
+        if broad:
+            try:
+                summary["broad"] = broad_section(db, boot, {}, include_implied)
+            except sqlite3.Error as err:
+                summary["broad"] = {"skipped": f"database error ({type(err).__name__})"}
+        elif combo_fee:
             try:
                 summary["combo_fee"] = combo_fee_section(db)
             except sqlite3.Error as err:
@@ -551,6 +649,8 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="where to write the summary file")
     ap.add_argument("--boot", type=int, default=400, help="bootstrap rounds (default 400)")
     ap.add_argument("--combo-fee", action="store_true", help="only report recorded combo entry fee vs the standard formula")
+    ap.add_argument("--broad", action="store_true", help="replay on the watch-all recorder's tables (every market watched)")
+    ap.add_argument("--include-implied", action="store_true", help="--broad: also use price-implied labels (default: resolver labels only)")
     a = ap.parse_args(argv)
     path = a.db
     if not path:
@@ -562,7 +662,7 @@ def main(argv=None):
     if not path:
         print("no history file found: pass --db <file> (run this where the app's combo_history.db lives)")
         return 2
-    code, _ = run(path, a.out, max(a.boot, 50), a.combo_fee)
+    code, _ = run(path, a.out, max(a.boot, 50), a.combo_fee, a.broad, a.include_implied)
     return code
 
 

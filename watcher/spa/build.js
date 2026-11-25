@@ -21,8 +21,8 @@ function _renderBuild(){const d=S.build;const m=$('#main');
  if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
  const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
  const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
- if(!d||d.lg!==S.lg){m.innerHTML=chipRow+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
- const adv=S.adv||S.slip.length>0,narrow=narrowBuild();
+ if(!d||d.lg!==S.lg){m.innerHTML=chipRow+(S.dayHold&&S.dayHold.lg===S.lg&&S.dayHold.days?dayRange(S.dayHold):'')+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
+ S.dayHold=null;const adv=S.adv||S.slip.length>0,narrow=narrowBuild();
  m.innerHTML=chipRow+dayRange(d)+`<div class="grid"><div>
   <div id="pblock">${panelBlock(S.panel)}</div>
   ${bestFeed(d)}
@@ -234,7 +234,7 @@ function bfRow(x){const k=BF_KIND[x.kind]||['•',x.kind];const ex=x.exposure;
  const route=x.kind==='line'?`${lineRoute(x)}.${x.n?` Stake ${money(x.stake)} for ${Number(x.n).toLocaleString()} contract${x.n===1?'':'s'}${x.capped==='depth'?', all Kalshi has inside the edge right now':''}.`:''}${x.min_edge?` Your bar here: ${(x.min_edge*100).toFixed(1)}¢.`:''}`:x.route==='sell'?`Likely to cash out early for a profit: <b>${Math.round((x.p_exit||0)*100)}%</b>${x.exit_mins?` · ${exitWhen(x.exit_mins)}`:''}`:`Profit if it holds: <b>${Math.round((x.win||0)*100)}%</b> to win, +${((x.edge||0)*100).toFixed(1)}${x.kind==='combo'?'%':'¢'} edge`;
  const warn=ex&&ex.label!=='low'?`<div class="bfwarn ${ex.label==='watch it'?'w':'h'}" role="note">⚠ ${esc(short(ex.team||''))} is already in ${ex.n} of your ${ex.of} open combos (${esc(ex.label)}). The stake is cut to match.</div>`:'';
  const nums=x.kind==='combo'?`<div>Chance to hit<b>${pct(x.chance)}</b></div><div>Pays vs fair<b class="up">≈${pct((x.edge||0)+1)}</b></div><div>Stake<b>${money(x.stake)}</b></div>`
-  :`<div>Kalshi<b>${Math.round((x.price||0)*100)}¢</b></div><div>Our fair<b>${pct(x.fair)}</b></div><div>Edge<b class="up">${((x.edge||0)*100).toFixed(1)}¢</b></div><div>Stake<b>${money(x.stake)}</b></div>`;
+  :`<div>Kalshi<b>${Math.round((x.price||0)*100)}¢</b>${x.kind==='line'&&x.avg!=null&&Math.round(x.avg*100)!==Math.round((x.price||0)*100)?`<small class="avgc">avg ${Math.round(x.avg*100)}¢</small>`:''}</div><div>Our fair<b>${pct(x.fair)}</b></div><div>Edge<b class="up">${((x.edge||0)*100).toFixed(1)}¢</b></div><div>Stake<b>${money(x.stake)}</b></div>`;
  const btn=x.kind==='combo'?`<button class="btn acc" style="width:100%" onclick="feedCombo(${+x.i})">Price it ›</button>`:`<button class="btn acc" style="width:100%" data-t="${esc(x.ticker)}" onclick="sbOpen(this.dataset.t,S.lg)">Buy straight ›</button>`;
  return `<div class="bet bfrow" data-key="bf:${esc(x.id)}"><div class="bt"><div><span class="kind">${esc(x.icon||k[0])} ${k[1]}${x.league?' · '+esc(x.league):''}${x.kick?' · '+esc(pTime(x.kick)):''}</span><b>${esc(x.pick)}</b>${x.game&&x.kind!=='combo'?`<div class="m" style="font-size:12px">${esc(x.game)}</div>`:''}</div>
   <span class="ret"><span data-num="bf:${esc(x.id)}" data-v="${(+x.ev||0).toFixed(2)}" data-pre="+">+${money(x.ev)}</span><small>expected</small></span></div>
