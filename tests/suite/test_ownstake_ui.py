@@ -82,6 +82,15 @@ setc(); r = post({"a": "quote", "i": 1, "stake": "7.509"})
 if not r.get("ok") or OFFERS[-1] != 7.5 or r.get("stake") != 7.5: bad(f"combo price at $7.509 should ask Kalshi for exactly $7.50: {r} {OFFERS[-3:]}")
 if r.get("ev") is None or r.get("rec") is None or r.get("max") is None or r.get("own") is not True: bad(f"the price should carry rec, ev, max and own: {r}")
 if abs(r["ev"] - round(7.5 * 3.1 * 5.0 / 11.0 - 7.5, 2)) > 0.011: bad(f"expected profit should be pays x chance - stake: {r['ev']}")
+real_cal = A.calib_fair                            # (#361) the profit on the chance corrected by his record is sent beside the books' one
+A.calib_fair = lambda code, f, t=None, table="closes": f * 0.9
+setc(); r = post({"a": "quote", "i": 1, "stake": 7.5})
+if r.get("ev_cal") != round(7.5 * (1.02 * 0.9 - 1), 2): bad(f"ev_cal should be stake x (pct x calibrated/shown - 1) = {round(7.5 * (1.02 * 0.9 - 1), 2)}: {r.get('ev_cal')}")
+if abs(r["ev"] - round(7.5 * 3.1 * 5.0 / 11.0 - 7.5, 2)) > 0.011: bad(f"the books' ev (it decides rec / small) must not change: {r['ev']}")
+A.calib_fair = lambda code, f, t=None, table="closes": 1 / 0
+setc(); r = post({"a": "quote", "i": 1, "stake": 7.5})
+if not r.get("ok") or r.get("ev_cal") is not None or r.get("ev") is None: bad(f"a chance that can't be corrected: ev_cal None, the price still comes back: {r}")
+A.calib_fair = real_cal
 setc(); r = post({"a": "quote", "i": 1})
 if not r.get("ok") or r.get("own") is not False: bad(f"no amount = the recommended size, as before: {r}")
 

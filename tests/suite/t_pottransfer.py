@@ -274,7 +274,7 @@ ok("lost the Mac mid-move: check (never 'nothing moved')", not r["ok"] and r.get
 i = src.index('if op == "kalshi":')
 seg = src[i:i + 600]
 ok("the hub's generic Kalshi relay refuses transfers and target balance allocation (moves go through pot_move only)",
-   "transfer|balance_allocation|subaccount" in seg)
+   "hub_refusal(method, path)" in seg and "transfer|balance_allocation|subaccount" in src[src.index("def hub_refusal"):][:900])
 esrc = open("wahome/engine.py").read()
 ok("the app never sets Kalshi's automatic rebalancing (target_balance_allocation is never called)",
    "/portfolio/target_balance_allocation" not in esrc)

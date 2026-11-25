@@ -80,7 +80,13 @@ def part_a():
         ok("A7 skip-only: the same dicts in the same order with the same stakes",
            [x["id"] for x in kept] == ["combo:2", "combo:3", "combo:6"] and all(x["stake"] == 2.0 for x in kept))
         why = {x["id"]: x["why"] for x in skipped}
-        ok("A8 the reason is plain words", "pays 97% of what it's worth" in (why.get("combo:1") or "") and "smart sell" in why["combo:1"])
+        ok("A8 the reason is plain words", "3% under what we think it's worth" in (why.get("combo:1") or "") and "6¢ per $2" in why["combo:1"] and "selling early" in why["combo:1"].lower() and "isn't likely" not in why["combo:1"])
+        w99 = E._sb_under_words(0.99)
+        ok("A8b a 99% quote reads '1% under' with the cents lost per $2, no doubled 'of fair' line, both exits kept",
+           "about 1% under what we think it's worth" in w99 and "about 2¢ per $2" in w99 and "of what it's worth" not in w99
+           and "held it to the end" in w99 and "selling early" in w99.lower() and "smart sell" not in w99.lower())
+        ok("A8c just under 100% never rounds to a misleading figure", "a little under" in E._sb_under_words(0.9991)
+           and "a fraction of a cent" in E._sb_under_words(0.9991) and "still checking" in E._sb_under_words(0.97, True).lower())
         ok("A9 a single is never touched by this rule",
            E.smart_buy_gate({"id": "single:x", "kind": "single", "legs": [{"ticker": "KXNBAGAME-26NOV23Z-A"}],
                              "pct": 0.9}, now)[0] is True)
@@ -96,7 +102,7 @@ def part_a():
         sim = {"win": 0.27, "p_exit": 0.1, "p_sell": 0.1, "exit_profit": None, "hold_profit": -0.15, "ev": -0.3,
                "exit_mins": None, "route": "none"}
         row = E._sb_row(a, spec_, sim, "panel", "panel:x", now, True, "cand", None, 0.27, -0.03)
-        ok("A12 the shadow log records the skip, so the card's counts are honest", row[22] and "97%" in row[22])
+        ok("A12 the shadow log records the skip, so the card's counts are honest", row[22] and "3% under" in row[22])
     finally:
         E._sb_sim = real_sim
     # Buy ideas: a combo idea under fair needs the shadow's verdict that smart sell likely profits
@@ -115,7 +121,7 @@ def part_a():
        "i1" not in ids and "i2" in ids)
     ok("A14 ...ideas at or over fair, and single ideas, are as before", "i3" in ids and "i4" in ids)
     ok("A15 ...and the skip says why (a quote not checked yet says so)",
-       any(s["id"] == "i1" and "97%" in s["why"] and "still checking" in s["why"] for s in skipped))
+       any(s["id"] == "i1" and "3% under" in s["why"] and "still checking" in s["why"].lower() for s in skipped))
     ok("A16 ...judged on the quote shown, never an older quote of the same picks", "i1" not in ids)
     real_dial = E.sb_dial
     E.sb_dial = lambda *a, **k: 1 / 0
@@ -131,7 +137,7 @@ def part_a():
         SIM["combo:7"] = "none"
         c7 = combo(7, 1.02)
         ok("A18 buy time: Kalshi's quote at 96% with no likely profitable exit is skipped before any accept",
-           "96%" in (E._sb_quote_under_fair(c7, 0.96) or ""))
+           "4% under" in (E._sb_quote_under_fair(c7, 0.96) or ""))
         SIM["combo:7"] = "sell"
         ok("A19 ...a likely cash-out at that price is bought; a quote at fair or better is untouched",
            E._sb_quote_under_fair(c7, 0.96) is None and E._sb_quote_under_fair(c7, 1.01) is None)
