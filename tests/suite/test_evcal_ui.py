@@ -30,7 +30,7 @@ with sync_playwright() as pw:
         return pg.evaluate("(()=>{const e=document.querySelector('#main .ccard .stk');return e?e.innerText:''})()")
     t = show({"ev": 0.6, "ev_cal": -0.35})
     if "Expected profit −$0.35 on your record, before fees" not in t: bad(f"the calibrated profit should be shown: {t!r}")
-    if "recommended" not in t.lower(): bad(f"'recommended' still follows the books' (positive) ev: {t!r}")
+    if "recommended" in t.lower().replace("no edge", "") and "Recommended" in t or "no edge" not in t: bad(f"release 507 review: the profit SHOWN decides the tag, so a red shown profit says 'no edge', never Recommended: {t!r}")
     if "down" not in pg.evaluate("document.querySelector('#main .ccard .stkev').className"): bad("a negative calibrated profit should be red")
     SHOTS_DIR = os.environ.get("SHOTS")
     if SHOTS_DIR:
@@ -45,7 +45,7 @@ with sync_playwright() as pw:
     t = show({"ev": 0.6, "ev_cal": None})
     if "Expected profit +$0.60 before fees" not in t: bad(f"ev_cal null: the books' profit as before: {t!r}")
     t = show({"ev": -0.2, "ev_cal": 0.4})
-    if "recommended" in t.lower().replace("no edge", "") and "Recommended" in t: bad(f"a negative books' ev never says Recommended: {t!r}")
+    if "recommended" not in t.lower() or "no edge" in t: bad(f"release 507 review: a positive SHOWN (calibrated) profit says recommended even when the books' is negative: {t!r}")
     if "Expected profit +$0.40 on your record" not in t: bad(f"the calibrated profit is shown even when the books' is negative: {t!r}")
     if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): bad("sideways scroll")
     if errs: bad(f"JS errors: {errs[:3]}")

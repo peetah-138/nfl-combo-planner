@@ -103,7 +103,8 @@ ok("...a refusal is not flagged", rows()[-1]["began_at_profit_ended_below_cost"]
 msg, info = run(["cancelled", "executed"], offers=[2.9], auto=False, cost=7)
 ok("...and never under the backstop, cost or no cost", accepts == [10.0] and info["flex"]["why"] == "under the safety backstop")
 msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=7, cost_floor=7, line=0.5)
-ok("an automatic profit sale (its cost line is not a floor under flexible) is taken the same way", accepts == [10.0, 6.2] and rows()[-1]["began_at_profit_ended_below_cost"] == 1, (accepts, info))
+ok("an automatic profit sale is no longer taken at 6.20 on cost 7 (Pete, 2026-11-25: never under 95% of cost; t_flexcostfloor.py)",
+   accepts == [10.0] and info["flex"]["why"] == "under 95% of cost", (accepts, info))
 ok("there is no 'Never sell at a loss' exception left: nothing passes a floor into the retry loop",
    'accept_cash(t, floor=' not in open(spec.origin).read())
 E.CFG["flex_sell"] = False

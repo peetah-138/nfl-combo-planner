@@ -3663,7 +3663,8 @@ def webapp_main():
 
     def combo_ev_cal(c, r):
         """(#361) The quote's expected profit on the chance corrected by your own record (calib_fair, as notify_bar does),
-        for the sheet to show beside the books' one. Display only: nothing reads it to size or buy. A pick under way
+        for the sheet to show beside the books' one. The sheet decides its "recommended" tag from the profit it shows (this
+        one when there is one), but nothing here sizes or buys: size and `small` still come from `ev`. A pick under way
         (priced on its live chance) or a chance that can't be corrected: None. Never raises."""
         try:
             if r.get("live") or not r.get("pct") or not r.get("stake"):
@@ -3718,7 +3719,7 @@ def webapp_main():
         fair = r.get("fair", c.get("fair"))
         if fair:                                       # the books' chance of the combo (a pick under way: its live one)
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
-            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) display only: `ev` above still drives rec / small
+            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) the sheet's tag follows what it shows; `ev` above still drives rec / small
         if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
             r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:

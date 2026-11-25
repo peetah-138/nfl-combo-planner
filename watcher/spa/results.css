@@ -15,5 +15,5 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 .setsk{display:grid;gap:14px}.setsk>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;display:grid;gap:12px}.setsk i{display:block;background:var(--panel2);border-radius:9px}
 @media (prefers-reduced-motion:reduce){.streak .fl,.netbar i{animation:none}#ptr{transition:none}}
 /* Smart Buy "Bigger stakes" line (#178): the short form on one line, the four figures behind a tap */
-.sbmore summary{cursor:pointer;list-style:none;min-height:24px}.sbmore summary::-webkit-details-marker{display:none}.sbmore summary::after{content:' ▾';opacity:.6}.sbmore[open] summary::after{content:' ▴'}
+.sbmore summary{cursor:pointer;list-style:none;min-height:44px;display:flex;align-items:center}.sbmore summary::-webkit-details-marker{display:none}.sbmore summary::after{content:' ▾';opacity:.6}.sbmore[open] summary::after{content:' ▴'}
 .sbmore[open]{padding-bottom:2px}

@@ -214,8 +214,8 @@ E.stop_loss_check = lambda t, h, also=False, key=None: (True, "")
 E.CFG.update(stop_loss_mode="allow")
 E.take_profit_reason = lambda t, h, cut_ok=False: ("smart", 9.0)
 tick(0, script=["cancelled"] * 10)
-ok("a profit reason with a ready stop-loss fails its round: parked, but not as a loss cut",
-   len(accepts) == 10 and E.COMBO_WAIT["C1"]["cutting"] is False, E.COMBO_WAIT)
+ok("a profit reason with a ready stop-loss fails its round: parked as a cut (E1: keeps the 97% guard), but no clock retry",
+   len(accepts) == 10 and E.COMBO_WAIT["C1"]["cutting"] is True, E.COMBO_WAIT)
 tick(S + 5, script=["cancelled"] * 10)
 tick(4 * S, script=["cancelled"] * 10)
 ok("...and no clock retry later", accepts == [] and asks == [])

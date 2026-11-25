@@ -23,3 +23,11 @@ for k in sorted(NEW):
     ok(f"{k}: in the watcher's SYNCED", k in SYNC)
     ok(f"{k}: in the watcher's SET_KEYS", k in SETK)
     ok(f"{k}: on the Settings screen", k in NO_SCREEN_ROW or ("'" + k + "'") in JS or ('"' + k + '"') in JS)
+
+# combo_sell_fee (#382/#383, #428) is Mac-file-only on purpose (release 507 review): a config switch in DEFAULTS that is in
+# no sync list and has no Settings row. If someone adds it to Settings later, this check must be changed with it, so the
+# decision is never made by accident (a key in only some of the lists would be saved but never reach the engine).
+ok("combo_sell_fee: exists in DEFAULTS (default on)", E.DEFAULTS.get("combo_sell_fee") is True)
+ok("combo_sell_fee: Mac-file-only: in no sync list, no SET_KEYS, no Settings row",
+   "combo_sell_fee" not in E.SHARED_KEYS and "combo_sell_fee" not in E.WATCHER_SYNCED and "combo_sell_fee" not in SYNC
+   and "combo_sell_fee" not in SETK and "combo_sell_fee" not in JS)

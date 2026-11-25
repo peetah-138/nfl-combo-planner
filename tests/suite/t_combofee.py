@@ -148,7 +148,42 @@ ok("a profit reason at $10.20 (net under cost, no stop-loss ready) does not sell
 src = open("wahome/engine.py", encoding="utf-8").read()
 ok("the stop-loss classification of a below-cost first offer is as before",
    'if below and why != "cut loss" and not sl_ready.get(t):' in src   # ('Never sell at a loss' is retired: #479)
-   and 'if below and why != "cut loss" and gross_below:' in src
+   and 'if below and why != "cut loss":                   # a guarded stop-loss sale' in src
    and "below = net < h[" in src)
 ok("a manual Cash out tap has no floor (its 97% rule is unchanged)", "accept_cash(ticker)\n" in src
    and "floor is not None and net_ < floor" in src)
+
+
+# ---- (5) release 507 review, E3: gross offer at/above cost, net of the fee under it, a guarded stop-loss ready
+# (the sale is then a stop-loss sale: tagged, worded as a small loss after fees; before, it read "took the profit")
+import itertools
+E.stop_loss_check = lambda t, h, **k: (True, "")
+E.sl_allowed = lambda tks: True
+out, f = run([10.20], mode="allow", why="smart")
+ok("E3: $10.20 gross (cost $10, net $9.85) with the stop-loss ready sells, tagged stop-loss and a loss cut in the log",
+   accepts == [10.2] and f and f[0]["result"] == "sold" and f[0].get("stop_loss") is True and f[0].get("fee_loss") is True
+   and f[0]["purpose"] == "cut a loss", (accepts, f))
+ok("E3: ...and the message says it honestly, never 'took the profit'",
+   out and "small loss" in out[0] and "selling fee" in out[0] and "Took the profit" not in out[0], out)
+out, f = run([13.0], mode="allow", why="smart")
+ok("E3: a real profit is still 'took the profit', no stop-loss tag", f[0]["result"] == "sold" and not f[0].get("stop_loss")
+   and "Took the profit" in out[0], (out, f))
+
+# ---- (6) E1: a guarded stop-loss that started for a profit reason keeps its first offer across rounds (97% guard)
+E.CFG["flex_sell"] = False
+reset()
+E.SELL_LOG = os.path.join(tempfile.mkdtemp(), "s.jsonl")
+OFFER["n"] = 20
+E.CFG.update(stop_loss_mode="allow")
+E.take_profit_reason = lambda t, h, cut_ok=False: ("smart", 7.0)
+offers = itertools.repeat(8.0)
+E.get_cash_offer = lambda t, f=1.0: (asks.append(t), {"offer": next(offers), "frac": 1.0, "rfq": "x", "quote": "q",
+                                                      "contracts": 20, "at": E.time.time()})[1]
+tick(0, script=["cancelled"] * 40)
+w = E.COMBO_WAIT.get("C1") or {}
+ok("E1: round 1 (buyers back out every time) records a stop-loss sale as a cut, with its first offer",
+   w.get("cutting") is True and abs((w.get("first") or 0) - 8.0) < 0.01, w)
+w["at"] = _real_time() - 100; w["p"] = 0.0                     # something changed: the next round goes
+offers = itertools.repeat(7.7)                                  # 96% of the first 8.00: under the 97% guard
+tick(5, script=["executed"])
+ok("E1: a later round at 96% of the first offer is not sold (no step-down across rounds)", accepts == [], accepts)
