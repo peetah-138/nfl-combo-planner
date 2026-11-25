@@ -6511,8 +6511,11 @@ def open_singles(max_age=30):
                                                            sell_top(x.get("n"), single=True))
         except Exception:
             x["sell_at"], x["sell_over"] = None, False
-        if x.get("sell_over"):
-            exit_cap_shadow(x, dollars(m, f"{x['side']}_bid"))   # #375 paper record (default off, swallows its own errors)
+        if x.get("sell_over") and CFG.get("exit_cap_shadow") is True:   # the switch is read here, before the bid is looked up (a missing side can't raise)
+            try:
+                exit_cap_shadow(x, dollars(m, f"{x['side']}_bid"))   # #375 paper record (default off, swallows its own errors)
+            except Exception:
+                pass
     out.sort(key=lambda x: (x["state"] != "live", x["state"] == "done", x["starts"] or "~"))   # order kept: smart sell walks it
     SINGLES.update(at=time.time(), items=out, mk=mk)
     return out
