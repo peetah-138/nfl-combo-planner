@@ -25682,11 +25682,378 @@ def record_view(view):
     for x in view.get("singles") or []:             # single bets and spreads: their game's story too
         if x.get("state") in ("live", "pre") and x.get("ticker"):
             _legs(x["t"], [x])
+    exposure_paper_pass(view, now)                   # (#335) paper only: never raises, never read by a decision
     for e in ev:
         store_x("insert into events values(?,?,?,?)", (now, e["kind"], e.get("combo"), e["text"]))
     if len(last) > 20000:
         STORE["last"] = {k: v for k, v in list(last.items())[-10000:]}
     return ev
+
+
+# ---- (#335) no-both-sides and exposure caps, on PAPER only. Nothing here blocks, shrinks or changes any buy, sale or
+# panel: each Live refresh it records, in its own small tables, whether the account holds (or the panel would add) both
+# sides of one game or several bets stacked on it, and how much money rides on each game, league and day against the
+# bankroll; and for every bet the account holds it asks "would a no-both-sides rule or an exposure cap have stopped
+# this one?" and, once the bet is settled, adds up what those bets really made (the ledger's dollars, fees counted).
+# The answer is only shown: one plain line in the log. No decision reads these tables, and a failure here is swallowed
+# (the Live refresh and every trade carry on). The numbers in EXPO are paper guesses to be tuned from this record.
+EXPO = {"game": 0.10, "league": 0.30, "day": 0.40,       # shares of the bankroll one game / league / day may carry
+        "min_n": 5, "dollar_n": 20,                       # fewer bets than min_n: no count; fewer settled than dollar_n: no dollars
+        "keep_days": 60, "pass_days": 14, "pass_rows": 20000, "every": 120, "log_every": 600, "prune_every": 3600}
+EXPO_RULES = ("both_sides", "game_cap", "league_cap", "day_cap")
+EXPO_RULE_WORDS = {"both_sides": "a no-both-sides rule", "game_cap": "the per-game cap", "league_cap": "the per-league cap",
+                   "day_cap": "the per-day cap"}
+EXPO_STATE = {"at": 0.0, "sig": None, "wrote": 0.0, "logged": 0.0, "line": "", "db": None, "pruned": 0.0}
+
+
+def _expo_tables():
+    if EXPO_STATE["db"] is STORE["db"]:
+        return
+    store_x("create table if not exists expo_pos(pos text primary key, ts real, day text, league text, kind text, "
+            "cost real, bank real, games text, alloc text, seed int, blocked text, net real, settled real, batch int, own int)")
+    store_x("create index if not exists expo_pos_ts on expo_pos(ts)")
+    store_x("create table if not exists expo_pass(ts real, kind text, key text, held_n int, held_cost real, would_n int, "
+            "would_cost real, both_held int, both_would int, stacked int, bank real, pct real)")
+    if store_x("create index if not exists expo_pass_ts on expo_pass(ts)") is not None:
+        EXPO_STATE["db"] = STORE["db"]               # only once the tables exist: else try again next pass
+
+
+def _expo_stance(ticker, side):
+    """What a pick backs in its game, as 'kind:who:strike': a team ('win:DAL:', 'spread:~DAL:3'), or the over / under
+    ('total:over:47'). None when unknown. The kind and strike matter: a spread's NO and a different strike of the same
+    total are not the opposite side."""
+    parts = str(ticker or "").upper().split("-")
+    if len(parts) < 3:
+        return None
+    kind = _bet_kind(ticker)
+    no = side == "no"
+    strike = (re.search(r"(\d+)$", parts[2]) or [None, ""])[1]
+    if kind == "total":
+        return "total:%s:%s" % ("under" if no else "over", strike)
+    if kind in ("win", "spread"):
+        team = re.sub(r"\d+$", "", parts[2])
+        return "%s:%s%s:%s" % (kind, "~" if no else "", team, strike if kind == "spread" else "") if team else None
+    return None
+
+
+def _expo_opposed(a, b):
+    """Whether two stances on one game are the two sides of it (can't both win). A middle (over 40 with under 50), or a
+    spread's NO beside the same team to win, is not."""
+    ka, wa, sa = (a.split(":") + ["", ""])[:3]
+    kb, wb, sb = (b.split(":") + ["", ""])[:3]
+    if "total" in (ka, kb):
+        if ka != kb or {wa, wb} != {"over", "under"}:
+            return False
+        o, u = (sa, sb) if wa == "over" else (sb, sa)
+        try:
+            return float(o) >= float(u)
+        except ValueError:
+            return True
+    na, nb = wa.startswith("~"), wb.startswith("~")
+    ta, tb = wa.lstrip("~"), wb.lstrip("~")
+    if ka == kb == "spread" and ta == tb and na != nb:
+        return sa == sb                                  # same team, different strikes: a middle, not the other side
+    if "spread" in (ka, kb) and ka != kb and ta == tb:
+        return False                                     # a spread NO beside the same team to win can both hold
+    if ta == tb:
+        return na != nb
+    return na == nb                                      # two different teams backed, or two backed against
+
+
+def _expo_day(event, now):
+    m = re.search(r"-(\d{2})([A-Z]{3})(\d{2})", event or "")
+    try:
+        return dt.datetime.strptime("".join(m.groups()), "%y%b%d").date().isoformat()
+    except Exception:
+        return dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+
+
+def _expo_pos(pos, kind, cost, legs, now, allow_zero=False, own=1):
+    """One bet as the paper check sees it: the games it touches (with what it backs in each), its full cost counted on
+    each of them (as game_exposure does), its day (the first game's) and league. None when nothing in it can be read."""
+    games = {}
+    for tk, side in legs:
+        st = _expo_stance(tk, side)
+        if st:
+            games.setdefault(game_event(str(tk).upper().rsplit("-", 1)[0]), set()).add(st)
+    try:
+        cost = float(cost or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if not games or (cost <= 0 and not allow_zero):
+        return None
+    return {"pos": str(pos), "kind": kind, "cost": cost, "games": {g: sorted(s) for g, s in games.items()},
+            "alloc": {g: cost for g in games}, "league": bet_key([t for t, _ in legs]),
+            "day": min(_expo_day(g, now) for g in games), "own": int(bool(own))}
+
+
+def _expo_positions(view, now):
+    """The bets the account holds right now, from the Live view: open combos and open single bets."""
+    out = []
+    for v in view.get("combos") or []:
+        if isinstance(v, dict) and v.get("group") == "pending" and v.get("t"):
+            p = _expo_pos(v["t"], "combo", v.get("cost"), [(l.get("ticker"), l.get("side", "yes")) for l in v.get("legs") or []
+                                                           if isinstance(l, dict)], now, own=v.get("own", 1))
+            out.append(p) if p else None
+    for x in view.get("singles") or []:
+        if isinstance(x, dict) and x.get("state") in ("live", "pre") and x.get("t"):
+            p = _expo_pos(x["t"], "single", x.get("cost"), [(x.get("ticker") or x["t"], x.get("side", "yes"))], now,
+                          own=x.get("own", 1))
+            out.append(p) if p else None
+    return out
+
+
+def _expo_would(held, now):
+    """What today's real panel would still buy (drafted or scheduled, not yet held), read only."""
+    mine = {p["pos"] for p in held}
+    out = []
+    for c in (panel_get("real") or {}).get("items") or []:
+        if c.get("state") not in (None, "scheduled", "buying"):
+            continue
+        legs = [(l.get("ticker"), "yes") for l in c.get("legs") or [] if l.get("ticker")]
+        p = _expo_pos("panel:" + str(c.get("id")), c.get("kind") or "combo", c.get("stake"), legs, now, allow_zero=True)
+        if p and not (len(legs) == 1 and legs[0][0] in mine):
+            out.append(p)
+    return out
+
+
+def _expo_judge(p, taken, bank):
+    """The first rule that would have stopped this bet given the bets already taken (a blocked bet never counts toward
+    the next one's room, as it would not have been bought): '' when none. Caps need a bankroll; both-sides doesn't."""
+    for g, sts in p["games"].items():
+        for t in taken:
+            if any(_expo_opposed(a, b) for a in sts for b in (t["games"].get(g) or [])):
+                return "both_sides"
+    if bank > 0:
+        for g, a in p["alloc"].items():
+            if a + sum(t["alloc"].get(g, 0.0) for t in taken) > EXPO["game"] * bank + 1e-9:
+                return "game_cap"
+        if p["league"] != "mix" and p["cost"] + sum(t["cost"] for t in taken if t["league"] == p["league"]
+                                                    and t["day"] == p["day"]) > EXPO["league"] * bank + 1e-9:
+            return "league_cap"
+        if p["cost"] + sum(t["cost"] for t in taken if t["day"] == p["day"]) > EXPO["day"] * bank + 1e-9:
+            return "day_cap"
+    return ""
+
+
+def _expo_name(event):
+    """'DALNYG' from 'KXNFLGAME-26NOV30DALNYG' (the teams, without the date)."""
+    return re.sub(r"^\d{2}[A-Z]{3}\d{2}", "", event.split("-")[1]) if event.count("-") else event
+
+
+def _expo_settle(now, held_pos):
+    """Fill in what each judged bet really made once the ledger has it closed after we first saw it and we no longer
+    hold it (back - cost, fees counted). A ledger cost far from ours (another bet shares the ticker) is left unsettled."""
+    _ledger_table()
+    rows = store_rows("select pos, ts, cost from expo_pos where settled is null and pos not like 'panel:%' "
+                      "order by ts limit 400")
+    rows = [r for r in rows if r["pos"] not in held_pos]
+    for i in range(0, len(rows), 100):
+        chunk = rows[i:i + 100]
+        by = {r["pos"]: r for r in chunk}
+        got = store_rows("select ticker, cost, back, closed from ledger where ticker in (%s)" % ",".join("?" * len(chunk)),
+                         tuple(by))
+        for r in got:
+            m = by[r["ticker"]]
+            lc = r["cost"] or 0
+            if not r["closed"] or r["closed"] < (m["ts"] or 0) or abs(lc - (m["cost"] or 0)) > max(0.10, 0.10 * lc):
+                continue
+            store_x("update expo_pos set net=?, settled=? where pos=?", (round((r["back"] or 0) - lc, 2), r["closed"], r["ticker"]))
+
+
+def exposure_paper_summary():
+    """What the paper rules would have blocked so far (bets first seen after the first look, one at a time: bets that
+    appeared together in one pass can't be put in order, so they are counted apart and never in dollars), in aggregate.
+    Dollars show only with EXPO['dollar_n'] settled bets, counts only with EXPO['min_n']. Read-only; {} when nothing
+    yet. Never raises."""
+    try:
+        if not STORE.get("db"):
+            return {}
+        _expo_tables()
+        allr = store_rows("select blocked, net, settled, cost, batch, own from expo_pos where seed=0")
+        if not allr:
+            return {}
+        rows = [r for r in allr if (r["batch"] or 1) <= 1]
+        ambig = sum(1 for r in allr if (r["batch"] or 1) > 1 and r["blocked"])
+        k = EXPO["min_n"]
+
+        def agg(rs):
+            s = [r for r in rs if r["settled"] is not None and r["net"] is not None]
+            ok = len(s) >= EXPO["dollar_n"]
+            staked = sum(r["cost"] or 0 for r in s)
+            return {"n": len(rs) if len(rs) >= k else None, "settled": len(s) if ok else None,
+                    "net": round(sum(r["net"] for r in s), 2) if ok else None,
+                    "staked": round(staked, 2) if ok else None,
+                    "roi": round(sum(r["net"] for r in s) / staked, 4) if ok and staked > 0 else None}
+        blocked = [r for r in rows if r["blocked"]]
+        return {"n": len(rows), "all": agg(rows), "blocked": agg(blocked), "ambiguous": ambig,
+                "by": {rule: agg([r for r in blocked if r["blocked"] == rule]) for rule in EXPO_RULES},
+                "origin": {name: agg([r for r in blocked if (r["own"] if r["own"] is not None else 1) == v])
+                           for name, v in (("app", 1), ("you", 0))}}
+    except Exception as err:
+        console_note(f"exposure paper: {type(err).__name__}: {err}")
+        return {}
+
+
+def _expo_money(x):
+    return "-$%.0f" % abs(x) if x < 0 else "$%.0f" % x
+
+
+def exposure_paper_line(info, summary):
+    """The plain-English line for the log. `info` is what the pass found (exposure_paper_pass's result)."""
+    bank = info.get("bank") or 0
+    bits = []
+    both = info.get("both_held") or []
+    bits.append("holding both sides of %s" % (", ".join(both[:3]) + (" and more" if len(both) > 3 else ""))
+                if both else "not holding both sides of any game")
+    if info.get("both_would"):
+        bits.append("the panel would add both sides of %s" % ", ".join(info["both_would"][:3]))
+    if info.get("stacked"):
+        bits.append("%d game%s with 2+ bets stacked" % (info["stacked"], "" if info["stacked"] == 1 else "s"))
+    top = info.get("top_game")
+    if top:
+        bits.append("biggest game %s %s%s" % (top[0], _expo_money(top[1]), " (%.0f%% of the bankroll)" % (100 * top[1] / bank) if bank else ""))
+    if info.get("day_cost") and bank:
+        bits.append("today %s (%.0f%%)" % (_expo_money(info["day_cost"]), 100 * info["day_cost"] / bank))
+    line = "exposure (paper only, nothing is blocked): " + "; ".join(bits) + "."
+    if summary and summary.get("n"):
+        b, a = summary["blocked"], summary["all"]
+        if b["n"] is None:
+            line += " Fewer than %d bets so far would have been stopped by a no-both-sides rule or the caps." % EXPO["min_n"]
+        else:
+            line += " The rules would have stopped %d of %d bets" % (b["n"], summary["n"])
+            if b["net"] is None:
+                line += ", too few settled yet (under %d) to show what they made." % EXPO["dollar_n"]
+            else:
+                line += ", and the %d that settled made %s on %s staked (%.0f%%)" % (
+                    b["settled"], _expo_money(b["net"]), _expo_money(b["staked"]), 100 * (b["roi"] or 0))
+                if a["roi"] is not None:
+                    line += " against %.0f%% for all bets" % (100 * a["roi"])
+                line += (", a small sample." if b["settled"] < 50 else ".")
+        if summary.get("ambiguous"):
+            line += " %d more arrived together and can't be told apart." % summary["ambiguous"]
+    return line
+
+
+def _expo_write(stmts):
+    """Run (sql, args) statements in one transaction, stopping at the first failure (rolled back). Best-effort."""
+    db = STORE.get("db")
+    if not db or not stmts:
+        return False
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for sql, args in stmts:
+                db.execute(sql, args)
+            if own:
+                db.execute("commit")
+            return True
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"exposure paper: {type(err).__name__}: {err}")
+            return False
+
+
+def exposure_paper_pass(view, now=None, force=False):
+    """Once every EXPO['every'] seconds, from the Live refresh (record_view): record exposure and the would-block
+    verdicts, settle the old ones, log the line. Paper only; never raises; returns what it found (None when it did
+    nothing). `CFG["expo_paper"]` = False turns it off. Pause, caps, the panel, buying and selling never see it."""
+    try:
+        now = now or time.time()
+        if CFG.get("expo_paper") is False or not STORE.get("db") or not isinstance(view, dict) \
+                or (not force and now - EXPO_STATE["at"] < EXPO["every"]):
+            return None
+        EXPO_STATE["at"] = now
+        _expo_tables()
+        if EXPO_STATE["db"] is not STORE["db"]:
+            return None
+        bank = float(CFG.get("bankroll") or 0)
+        held = _expo_positions(view, now)
+        held_pos = {p["pos"] for p in held}
+        had = {r["pos"]: r for r in store_rows("select pos, day, league, cost, games, alloc, blocked from expo_pos "
+                                                "where ts > ?", (now - EXPO["keep_days"] * 86400,))}
+        seed = not had and not store_rows("select 1 from expo_pos limit 1")        # the first look: order unknown, not judged
+        taken = []                                       # only what is held now: a finished bet no longer carries risk
+        for r in had.values():
+            if not r["blocked"] and r["pos"] in held_pos:
+                taken.append({"games": json.loads(r["games"] or "{}"), "alloc": json.loads(r["alloc"] or "{}"),
+                              "cost": r["cost"] or 0.0, "day": r["day"], "league": r["league"]})
+        new = sorted((p for p in held if p["pos"] not in had), key=lambda p: p["pos"])
+        stmts = []
+        for p in new:
+            why = "" if seed else _expo_judge(p, taken, bank)
+            stmts.append(("insert or ignore into expo_pos(pos, ts, day, league, kind, cost, bank, games, alloc, seed, blocked, "
+                          "batch, own) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (p["pos"], now, p["day"], p["league"], p["kind"], round(p["cost"], 2), bank, json.dumps(p["games"]),
+                           json.dumps(p["alloc"]), int(seed), why, len(new), p["own"])))
+            if not why:
+                taken.append(p)
+        _expo_write(stmts)
+        _expo_settle(now, held_pos)
+        would = _expo_would(held, now)
+        info = _expo_record(held, would, bank, now)
+        if now - EXPO_STATE["pruned"] >= EXPO["prune_every"]:
+            EXPO_STATE["pruned"] = now
+            _expo_write([("delete from expo_pos where ts < ?", (now - EXPO["keep_days"] * 86400,)),
+                         ("delete from expo_pass where ts < ? or rowid <= (select max(rowid) from expo_pass) - ?",
+                          (now - EXPO["pass_days"] * 86400, EXPO["pass_rows"]))])
+        line = exposure_paper_line(info, exposure_paper_summary())
+        if line != EXPO_STATE["line"] and now - EXPO_STATE["logged"] >= EXPO["log_every"]:
+            EXPO_STATE.update(line=line, logged=now)
+            console_note(line)
+        info["line"] = line
+        return info
+    except Exception as err:
+        console_note(f"exposure paper: {type(err).__name__}: {err}")
+        return None
+
+
+def _expo_record(held, would, bank, now):
+    """One pass's rows per game, league and day (only when something changed, or hourly) and the facts for the line."""
+    games = {}
+    for kind, ps in (("held", held), ("would", would)):
+        for p in ps:
+            for g, sts in p["games"].items():
+                games.setdefault(g, []).append((kind, p, sts))
+    rows, both_held, both_would, stacked = [], [], [], 0
+    groups = {"league": {}, "day": {}}
+    for g, xs in sorted(games.items()):
+        hn = [x for x in xs if x[0] == "held"]
+        wn = [x for x in xs if x[0] == "would"]
+        bh = any(_expo_opposed(a, b) for i, x in enumerate(hn) for y in hn[i + 1:] for a in x[2] for b in y[2])
+        bw = any(_expo_opposed(a, b) for w in wn for x in xs if x[1] is not w[1] for a in w[2] for b in x[2])
+        hc, wc = sum(x[1]["alloc"][g] for x in hn), sum(x[1]["alloc"][g] for x in wn)
+        stacked += len(xs) >= 2
+        name = _expo_name(g)
+        both_held += [name] if bh else []
+        both_would += [name] if bw else []
+        rows.append((now, "game", g, len(hn), round(hc, 2), len(wn), round(wc, 2), int(bh), int(bw), len(xs) if len(xs) >= 2 else 0,
+                     bank, round((hc + wc) / bank, 4) if bank else None))
+    for kind, ps in (("held", held), ("would", would)):
+        for p in ps:
+            for gk, key in (("league", p["league"]), ("day", p["day"])):
+                a = groups[gk].setdefault(key, [0, 0.0, 0, 0.0])
+                a[0 if kind == "held" else 2] += 1
+                a[1 if kind == "held" else 3] += p["cost"]
+    for gk, d in groups.items():
+        for key, (hn, hc, wn, wc) in sorted(d.items()):
+            rows.append((now, gk, key, hn, round(hc, 2), wn, round(wc, 2), 0, 0, 0, bank, round((hc + wc) / bank, 4) if bank else None))
+    sig = tuple(r[1:] for r in rows)
+    if rows and (sig != EXPO_STATE["sig"] or now - EXPO_STATE["wrote"] >= 3600):
+        EXPO_STATE.update(sig=sig, wrote=now)
+        _expo_write([("insert into expo_pass values(?,?,?,?,?,?,?,?,?,?,?,?)", r) for r in rows])
+    top = max(((_expo_name(r[2]), r[4] + r[6]) for r in rows if r[1] == "game"),
+              key=lambda t: t[1], default=None)
+    today = dt.datetime.fromtimestamp(now, PACIFIC).date().isoformat()
+    dayc = groups["day"].get(today)
+    return {"bank": bank, "both_held": both_held, "both_would": both_would, "stacked": stacked, "top_game": top,
+            "day_cost": (dayc[1] + dayc[3]) if dayc else 0.0, "rows": len(rows)}
 
 
 SPORT_SCORE_WORD = {"nhl": "Goal", "ahl": "Goal", "soccer": "Goal", "nfl": "Score", "ncaaf": "Score"}
