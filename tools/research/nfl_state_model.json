@@ -1,0 +1,27 @@
+{
+ "model": "nfl_state_logistic_v1",
+ "features": [
+  "z1",
+  "d",
+  "pre",
+  "pre_t",
+  "pre_sqrt_t",
+  "poss",
+  "poss_t",
+  "poss_sqrt_t"
+ ],
+ "coef": [
+  0.041271,
+  0.067652,
+  0.421995,
+  -0.010275,
+  0.599423,
+  0.526432,
+  0.387345,
+  -0.761766
+ ],
+ "k_spread": 0.14145,
+ "trained_on": "seasons 1999-2026",
+ "attribution": "Data: nflverse (https://github.com/nflverse), play-by-play releases and nfldata games.csv, licensed CC-BY-4.0. Credit: nflverse contributors.",
+ "recipe": "team-centric: d = my score - opponent score, t = share of game left (0..1), poss = +1 my ball, -1 their ball, 0 unknown, pre = logit of my pre-game win chance; z1 = d/sqrt(t+0.02); features = [z1, d, pre, pre*t, pre*sqrt(t), poss, poss*t, poss*sqrt(t)]; p = sigmoid(coef . features)"
+}

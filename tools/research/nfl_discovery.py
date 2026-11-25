@@ -392,6 +392,7 @@ class GBM:
         self.engine = "lightgbm" if (cfg.get("engine") in ("auto", "lightgbm") and have_lightgbm()) else "sklearn"
         self.best = None
         self.model = None
+        self.cal = None
 
     def fit(self, Xtr, ytr, Xva, yva):
         c = self.cfg
@@ -404,6 +405,7 @@ class GBM:
             self.model.fit(Xtr, ytr, eval_set=[(Xva, yva)],
                            callbacks=[lgb.early_stopping(25, verbose=False)])
             self.best = int(self.model.best_iteration_ or c["max_iter"])
+            self._recalibrate(Xva, yva)
             return self
         from sklearn.ensemble import HistGradientBoostingClassifier
         self.model = HistGradientBoostingClassifier(
@@ -417,15 +419,31 @@ class GBM:
             if ll < best_ll - 1e-7:
                 best, best_ll = i, ll
         self.best = best
+        self._recalibrate(Xva, yva)
         return self
 
-    def predict(self, X):
+    def _raw(self, X):
         if self.engine == "lightgbm":
             return self.model.predict_proba(X, num_iteration=self.best)[:, 1]
         for i, p in enumerate(self.model.staged_predict_proba(X), 1):
             if i == self.best:
                 return p[:, 1]
         return p[:, 1]
+
+    def _recalibrate(self, Xva, yva):
+        """Heavily smoothed trees come out under-confident at the extremes (a late 21-point lead priced at 96% that wins
+        98%). A two-number logistic stretch (slope, intercept) is fit on the validation seasons, which are earlier than
+        every season the model will score, so it is not look-ahead. Without it the scan reports the model's own
+        timidity as 'trends'."""
+        from sklearn.linear_model import LogisticRegression
+        p = np.clip(self._raw(Xva), 1e-5, 1 - 1e-5)
+        z = np.log(p / (1 - p)).reshape(-1, 1)
+        self.cal = LogisticRegression(C=1e4, max_iter=200).fit(z, np.asarray(yva))
+
+    def predict(self, X):
+        p = np.clip(self._raw(X), 1e-5, 1 - 1e-5)
+        z = np.log(p / (1 - p)).reshape(-1, 1)
+        return self.cal.predict_proba(z)[:, 1]
 
 
 def walk_forward(pl, feats, test_seasons, cfg):
