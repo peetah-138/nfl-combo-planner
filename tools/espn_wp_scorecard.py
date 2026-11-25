@@ -194,10 +194,12 @@ def trade_section(rows, boot):
         net, rng = per_dollar(gs), bootstrap(gs, per_dollar, boot)
         d = diff_range(gs, base, boot) if src != "blend" else None
         bd = (net - per_dollar(base)) if (net is not None and per_dollar(base) is not None) else None
+        nb = sum(1 for g in gs if g[1] > 0)
+        enough = nb >= HIDE_N                  # too few bets: no number is shown and it cannot pass
         out["sources"][src] = {
-            "x_cents": round(x * 100), "bets": sum(1 for g in gs if g[1] > 0), "net_per_dollar": None if net is None else round(net, 4),
+            "x_cents": round(x * 100), "bets": nb if enough else "n<20, hidden", "net_per_dollar": None if net is None else round(net, 4),
             "range": rng, "vs_blend": None if bd is None or src == "blend" else round(bd, 4), "vs_blend_range": d,
-            "passes": bool(src in ("wp", "model", "mid") and net is not None and net > 0 and rng and rng[0] > 0
+            "passes": bool(src in ("wp", "model", "mid") and enough and d and d[0] > 0 and net is not None and net > 0 and rng and rng[0] > 0
                            and bd is not None and bd >= PASS_CENTS)}
     return out
 
@@ -269,6 +271,11 @@ def run(path, out_path=None, boot=400):
                         passing[s].append(lg)
             res["leagues"][lg] = sec
         res["verdict"] = {s: {"passes_in": v, "passes": len(v) >= PASS_LEAGUES} for s, v in passing.items()}
+        names = {"wp": "ESPN win chance", "mid": "Kalshi mid", "model": "our model"}
+        res["summary"] = [f"{names[s]}: " + (f"passes the bar in {', '.join(v['passes_in'])}: worth a separate, Pete-approved look"
+                          if v["passes"] else "does NOT pass the bar" + (f" (only in {', '.join(v['passes_in'])})" if v["passes_in"] else ""))
+                          for s, v in res["verdict"].items()]
+        res["summary"].append("Kalshi mid can never fire a buy (it sits at or below the ask): that is expected, not a fault.")
     db.close()
     if out_path:
         Path(out_path).expanduser().write_text(json.dumps(res, indent=1))

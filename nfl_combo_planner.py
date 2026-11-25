@@ -27921,8 +27921,10 @@ def price_prune(now=None):
             store_x("delete from exit_shadow where rowid in (select rowid from exit_shadow where source='universe' "
                     "order by ts limit ?)", (n - cap,))
             n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
-        if n > cap:
-            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+        while n > cap:                                  # in chunks, so the shared lock is freed between them
+            k = min(n - cap, 5000)
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (k,))
+            n -= k
 
 
 # ---- signal shadow (early-exit test, phase 1): sharp-book prob beside Kalshi's bid/ask, sibling-market bids and game
@@ -28057,8 +28059,8 @@ def signal_shadow(code, games, lines=(), now=None):
 # Flags `wp_shadow` and `wp_hist` (real CFG keys, ON by default for recording; false = off).
 WPR = {"every": 60, "keep_days": 30, "cap": 300000, "prune": 0.0, "seen": {}, "play": {}}
 WPH = {"leagues": ("nfl", "ncaaf", "nba", "ncaamb"), "live_every": 300, "pre_every": 7200, "pre_window": 4 * 3600,
-       "per_hour": 240, "per_tick": 4, "gap": 0.5, "keep_days": 45, "cap": 400000, "lines_cap": 50000, "prune": 0.0,
-       "last": {}, "have": {}, "line": {}, "live": {}, "done": {}, "stamps": [], "busy": False, "lock": threading.Lock()}
+       "per_hour": 240, "per_tick": 12, "gap": 0.5, "keep_days": 45, "cap": 400000, "lines_cap": 50000, "prune": 0.0,
+       "last": {}, "have": {}, "line": {}, "live": {}, "code": {}, "done": {}, "stamps": [], "busy": False, "lock": threading.Lock()}
 
 
 def _wp_tables():
@@ -28109,8 +28111,10 @@ def _wp_prune(now):
                            ("wp_lines", WPH["keep_days"], WPH["lines_cap"]), ("wp_outcome", 60, 100000)):
         store_x(f"delete from {tbl} where ts < ?", (now - days * 86400,))
         n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
-        if n > cap:
-            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+        while n > cap:                                  # in chunks, so the shared lock is freed between them
+            k = min(n - cap, 5000)
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (k,))
+            n -= k
 
 
 def _wp_num(v, lo=None, hi=None):
@@ -28181,9 +28185,6 @@ def wp_shadow(code, games, now=None):
         if rows:
             _wp_tables()
             _wp_insert({"wp_shadow": rows})
-        if now - WPR["prune"] > 6 * 3600:
-            _wp_tables()
-            _wp_prune(now)
         return len(rows)
     except Exception as err:
         try:
@@ -28324,6 +28325,7 @@ def wp_hist_due(code, games, now=None):
     WPH["stamps"][:] = [t for t in WPH["stamps"] if now - t < 3600]
     room = WPH["per_hour"] - len(WPH["stamps"])
     seen = set()
+    cand = []
     for e, sides in (games or {}).items():
         for x in sides:
             try:
@@ -28337,6 +28339,8 @@ def wp_hist_due(code, games, now=None):
                 st, last = sc.get("state"), WPH["last"].get(g, 0)
                 if st == "in":
                     WPH["live"][g] = now
+                    WPH["code"][g] = code
+                    WPH["done"].pop(g, None)
                     due = now - last >= WPH["live_every"]
                 elif st == "post":
                     due = g in WPH["live"] and g not in WPH["done"] and now - last >= 60
@@ -28345,11 +28349,15 @@ def wp_hist_due(code, games, now=None):
                     due = bool(k) and 0 <= k - now <= WPH["pre_window"] and now - last >= WPH["pre_every"]
                 else:
                     due = False
-                if due and len(out) < min(room, WPH["per_tick"]):
-                    out.append((code, g, st))
+                if due:
+                    cand.append((last, g, st))
             except Exception:
                 continue
-    return out
+    for g, t in list(WPH["live"].items()):       # a game that has left the panel (over, or screened out) still gets its final fetch
+        if g not in seen and WPH["code"].get(g) == code and g not in WPH["done"] and now - t > 600 and now - WPH["last"].get(g, 0) >= 60:
+            cand.append((WPH["last"].get(g, 0), g, "post"))
+    cand.sort()                                  # least recently fetched first, so no game is starved when there are many
+    return [(code, g, st) for _l, g, st in cand[:max(0, min(room, WPH["per_tick"]))]]
 
 
 def wp_hist_tick(code, games, now=None):
@@ -28372,6 +28380,7 @@ def wp_hist_tick(code, games, now=None):
             if len(WPH["done"]) > 3000 or len(WPH["live"]) > 3000:
                 WPH["done"].clear()
                 WPH["live"].clear()
+                WPH["code"].clear()
             WPH["busy"] = True
         try:
             threading.Thread(target=_wp_hist_worker, args=(jobs,), daemon=True, name="wp-hist").start()
@@ -28390,6 +28399,13 @@ def espn_wp_record(code, games):
             fn(code, games)
         except Exception:
             pass
+    try:                                              # the prune runs whichever flag is on, so no table grows unbounded
+        now = time.time()
+        if STORE.get("db") and now - WPR["prune"] > 6 * 3600:
+            _wp_tables()
+            _wp_prune(now)
+    except Exception:
+        pass
 
 
 # ---- exit_shadow: old (today's rules) vs new (Smart Buy) for every candidate, for later calibration

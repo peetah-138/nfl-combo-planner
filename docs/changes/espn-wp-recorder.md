@@ -14,7 +14,7 @@ scan test proves it). Pause, rule 8, caps and the Pi are untouched. Everything i
 and it runs off the trading path (the panel pass's one wrapped call, and a background thread for requests).
 
 ## Tables (new, in the history file; they join on `ticker` + `ts`, no hot-path table is altered)
-- **`wp_shadow`**: for a game in play, every side of a game-winner market about every 60 s (`WPR["every"]`): ESPN's raw win
+- **`wp_shadow`**: for a game in play, every side of a game-winner market at most every 60 s (`WPR["every"]`), but the panel pass only runs every ~150 s in play, so in practice a row every ~150 s: ESPN's raw win
   chance `wp`, its play id (`play_id`), `play_age` (seconds since we FIRST saw that play: the scoreboard has no wall clock for
   the last play), `feed_age` (the score cache's age), our pure model chance (`model`, no wp), the 50/50 blend with wp
   (`blend`, both **before** the league's calibration), the engine's live `fair`, Kalshi `bid`/`ask`/`mid`, the lead and the clock
@@ -35,13 +35,14 @@ keys, ON by default for recording (a saved false is kept).
   new request, and it counts as the game's recent look so the poller skips it.
 - **New (key-free public GET of ESPN's summary, `wp_hist_fetch`),** NFL, college football, NBA and men's college basketball only,
   only for a game that has a Kalshi market in the panel's games:
-  - in play: **1 per game per 300 s = 12 an hour per game**;
+  - in play: **1 per game per 300 s = 12 an hour per game** (the panel pass runs every ~150 s, so each pass serves up to 12 due games);
   - before the start: at most **1 per 2 h**, and only within **4 h** of the kickoff (so 2 at most);
-  - **1 final fetch** after the game ends (only if we saw it in play).
-  - Global ceilings: **240 requests an hour** across all games, at most 4 queued per panel pass, one background thread, 0.5 s
+  - **1 final fetch** after the game ends or leaves the panel for 10 min (only if we saw it in play).
+  - Global ceilings: **240 requests an hour** across all games, at most 12 queued per panel pass, least recently fetched first, one background thread, 0.5 s
     between requests, 10 s timeout. No key, no login; any error just records nothing.
   - A typical NBA game (about 2.5 h) is about 2 + 30 + 1 = **~33 requests**; a football game about 3.3 h, ~43; the average is ~39. A
     heavy night with 12 followed games in play at once is 144 an hour, under the 240 cap. Pete approves this volume in the PR.
+- Known limit: the recorder sees the panel's games, which already drop games with a wide spread, a stale score, a fair of 95%+ or a fair 8+ points from Kalshi. Those games are not recorded, so the scorecard under-states any wp edge on large disagreements and cannot measure staleness there. Widening that is a separate, deliberate change.
 - Switch: `wp_hist` (default ON). Off stops the background GETs and the ingest.
 
 ## Scorecard (Proposal 3): `tools/espn_wp_scorecard.py`

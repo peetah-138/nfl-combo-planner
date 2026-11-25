@@ -38,7 +38,7 @@ def count(t):
 
 
 def reset():
-    for d in (E.WPR["seen"], E.WPR["play"], E.WPH["have"], E.WPH["line"], E.WPH["last"], E.WPH["live"], E.WPH["done"]):
+    for d in (E.WPR["seen"], E.WPR["play"], E.WPH["have"], E.WPH["line"], E.WPH["last"], E.WPH["live"], E.WPH["code"], E.WPH["done"]):
         d.clear()
     E.WPH["stamps"][:] = []; E.WPH["busy"] = False
     E.WPR["prune"] = E.WPH["prune"] = 0.0
@@ -153,6 +153,18 @@ def d_bounded():
     ok("D oldest first: the newest rows survive", [r["ticker"] for r in left][-1] == "t0" and "t29" not in {r["ticker"] for r in left})
 
 
+def d2_prune_independent():
+    reset(); E.CFG["wp_shadow"] = False
+    for t in ("wp_hist",):
+        E.store_x(f"delete from {t}")
+    E.store_x("insert into wp_hist(ts, league, game, seq, play_id) values(?,?,?,?,?)", (1.0, "nba", "g", 1, "ancient"))
+    try:
+        E.espn_wp_record("nba", {})
+    finally:
+        E.CFG["wp_shadow"] = True
+    ok("D the prune runs even with wp_shadow off (wp_hist is bounded too)", count("wp_hist") == 0)
+
+
 def e_unread():
     src = open(os.path.join(REPO, "nfl_combo_planner.py")).read()
     a, b = src.index("# ---- ESPN win-chance recorder (issue #483"), src.index("# ---- exit_shadow: old")
@@ -215,6 +227,17 @@ def f_hist():
     ok("F ... and none at the ceiling", E.wp_hist_due("nba", many, now=1000.0) == [])
     ok("F the ceiling frees after an hour", E.wp_hist_due("nba", many, now=1000.0 + 3700) != [])
     reset()
+    E.WPH["last"].update({"%d" % (100 + i): 900.0 + i for i in range(1, 20)})   # game 100 never fetched, the rest were
+    first = E.wp_hist_due("nba", many, now=1000.0)
+    ok("F least recently fetched first (the never-fetched game leads)", first and first[0][1] == "100", first[:2])
+    reset(); st["s"] = "in"
+    E.leg_score = lambda l: {"state": "in", "game": "500"}
+    E.wp_hist_due("nba", g, now=2000.0); E.leg_score = lambda l: {"state": "pre", "game": "999"}
+    ok("F a game that left the panel still gets its one final fetch after 10 min", E.wp_hist_due("nba", {}, now=2000.0 + 700) == [("nba", "500", "post")])
+    E.WPH["done"]["500"] = 1.0
+    ok("F ... and only once", E.wp_hist_due("nba", {}, now=2000.0 + 900) == [])
+    E.leg_score = lambda l: {"state": "in", "game": str(100 + int(re.search(r"X(\d+)", l["ticker"]).group(1)))}
+    reset()
     calls = []
     E.wp_hist_fetch = lambda code, g, state=None, now=None: calls.append(g) or 0
     E.time.sleep = lambda s: None
@@ -237,5 +260,5 @@ def g_resolve():
     ok("G outcomes are yes and no", {r["outcome"] for r in E.store_rows("select outcome from wp_outcome")} == {"yes", "no"})
 
 
-for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flags), ("d", d_bounded), ("e", e_unread), ("f", f_hist), ("g", g_resolve)):
+for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flags), ("d", d_bounded), ("d2", d2_prune_independent), ("e", e_unread), ("f", f_hist), ("g", g_resolve)):
     section(n, f)
