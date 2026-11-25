@@ -5327,6 +5327,109 @@ def hedge_seen_note(t, h, hg, whole):
             print("hedge record:", type(err).__name__, err)
 
 
+HEDGE_SKIP_SEEN = {}                               # ticker -> when last recorded (one row per bet per 10 minutes)
+HEDGE_SKIP_KEEP_DAYS, HEDGE_SKIP_CAP = 60, 20000   # the paper table stays small: 60 days, 20000 rows at most
+HEDGE_SKIP_PRUNE = {"at": 0.0}
+
+
+def hedge_skip_note(kind, rec, whole, h=None):
+    """PAPER ONLY (#312, never raises, never fetches, never buys): each time auto cash-out SKIPS a sale because it is
+    below what you paid, record what selling right now would return (`whole`, net of fees, for the whole position)
+    next to what a hedge on the other side of the game would lock in right now (combos only, the same `hedge_for` sums
+    with its fee: `locked`), and what the position cost, so a later look can say whether weighing a hedge first would
+    have beaten skipping. One row per bet per 10 minutes, in `hedge_skip`. Nothing in the engine reads this table to
+    decide anything (only `hedge_skip_report`, display). Both sums are of the moment of the skip, never a stale one."""
+    try:
+        now = time.time()
+        t = rec.get("ticker")
+        if not t or not STORE.get("db") or now - HEDGE_SKIP_SEEN.get(t, 0) < 600:
+            return
+        HEDGE_SKIP_SEEN[t] = now
+        if len(HEDGE_SKIP_SEEN) > 2000:
+            HEDGE_SKIP_SEEN.clear()
+        cost, pays = float(rec.get("cost") or 0), float(rec.get("pays") or 0)
+        if cost <= 0 or whole is None:
+            return
+        hcost = locked = None
+        hok = 0
+        if kind == "combo" and h:
+            hg = hedge_for(t)                          # board prices already in memory: no request
+            if hg and hg.get("n") and hg.get("locked") is not None:
+                hcost, locked = round(float(hg["cost"]), 2), round(float(hg["locked"]), 2)
+                tks = [tk for (_, tk), _ in h.get("need") or []]
+                hok = int(locked >= hedge_lock_cost(tks) * cost)    # the lock-in guard auto-hedge itself demands
+        if not STORE.get("hskip_ok"):
+            store_x("create table if not exists hedge_skip(ts real, ticker text, kind text, league text, why text, "
+                    "live int, cost real, pays real, whole real, hcost real, locked real, hok int, chance real)")
+            store_x("create index if not exists hedge_skip_t on hedge_skip(ts)")
+            STORE["hskip_ok"] = bool(store_rows("select name from sqlite_master where type='table' and name='hedge_skip'"))
+        store_x("insert into hedge_skip(ts, ticker, kind, league, why, live, cost, pays, whole, hcost, locked, hok, chance) "
+                "values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now, t, kind, _knob_sale_league(t, {}), str(rec.get("why") or "")[:40], int(bool(rec.get("live"))),
+                 round(cost, 2), round(pays, 2), round(float(whole), 2), hcost, locked, hok,
+                 None if rec.get("chance") is None else round(float(rec["chance"]), 4)))
+        if now - HEDGE_SKIP_PRUNE["at"] > 6 * 3600:
+            HEDGE_SKIP_PRUNE["at"] = now
+            store_x("delete from hedge_skip where ts < ?", (now - HEDGE_SKIP_KEEP_DAYS * 86400,))
+            n = (store_rows("select count(*) n from hedge_skip") or [{"n": 0}])[0]["n"]
+            if n > HEDGE_SKIP_CAP:
+                store_x("delete from hedge_skip where rowid in (select rowid from hedge_skip order by ts limit ?)",
+                        (n - HEDGE_SKIP_CAP,))
+    except Exception as err:
+        if time.time() - BRK_ERR.get("hedge_skip", 0) > 600:
+            BRK_ERR["hedge_skip"] = time.time()
+            print("hedge skip record:", type(err).__name__, err)
+
+
+def hedge_skip_report(days=30):
+    """Aggregates only (no tickers, no settings) over the paper rows of the last `days`, each bet counted once at its
+    LATEST recorded moment: how many below-cost sales were skipped, and, in dollars net of fees, what selling right then
+    would have returned against cost (`sell_pnl`), what a hedge would have locked in against cost where one existed
+    (`hedge_pnl`, `hedge_n`; `hedge_ok_n` = it also met the lock-in guard), and, for the bets that have settled
+    (ledger outcome), what holding actually paid against cost (`hold_pnl`, `settled_n`) with the same bets' sell and
+    hedge figures beside it. `hedge_beats_hold` / `sell_beats_hold` are dollars gained over what skipping got.
+    Unreadable = {"n": 0}. Read-only; nothing decides from it."""
+    out = {"n": 0}
+    try:
+        if not STORE.get("db") or not store_rows(
+                "select name from sqlite_master where type='table' and name='hedge_skip'"):
+            return out
+        _ledger_table()
+        rows = store_rows("select s.*, l.outcome from hedge_skip s left join ledger l on l.ticker = s.ticker "
+                          "where s.ts > ? order by s.ts", (time.time() - days * 86400,))
+        last = {r["ticker"]: r for r in rows}
+        out = {"n": len(last), "days": days, "sell_pnl": 0.0, "hedge_n": 0, "hedge_ok_n": 0, "hedge_pnl": 0.0,
+               "settled_n": 0, "hold_pnl": 0.0, "settled_sell_pnl": 0.0, "settled_hedge_n": 0,
+               "settled_hedge_pnl": 0.0, "settled_hold_pnl_hedged": 0.0, "hedge_beats_hold": 0.0,
+               "sell_beats_hold": 0.0}
+        for r in last.values():
+            cost, sell = r["cost"] or 0.0, (r["whole"] or 0.0) - (r["cost"] or 0.0)
+            out["sell_pnl"] += sell
+            hed = None if r["locked"] is None else r["locked"] - cost
+            if hed is not None:
+                out["hedge_n"] += 1
+                out["hedge_ok_n"] += int(bool(r["hok"]))
+                out["hedge_pnl"] += hed
+            if r["outcome"] in ("won", "lost"):
+                hold = (r["pays"] or 0.0 if r["outcome"] == "won" else 0.0) - cost
+                out["settled_n"] += 1
+                out["hold_pnl"] += hold
+                out["settled_sell_pnl"] += sell
+                out["sell_beats_hold"] += sell - hold
+                if hed is not None:
+                    out["settled_hedge_n"] += 1
+                    out["settled_hedge_pnl"] += hed
+                    out["settled_hold_pnl_hedged"] += hold
+                    out["hedge_beats_hold"] += hed - hold
+        for k, v in list(out.items()):
+            if isinstance(v, float):
+                out[k] = round(v, 2)
+    except Exception as err:
+        print("hedge skip report:", type(err).__name__, err)
+        return {"n": 0}
+    return out
+
+
 def break_watch_held():
     """Break episodes for every live pick of the combos you hold (watch-only, from cached scores and prices)."""
     try:
@@ -5678,6 +5781,8 @@ def auto_sell_now(plan):
                 continue
             below = o["offer"] < h["cost"] * o.get("frac", 1.0)
             if below and (mode == "never" or (why != "cut loss" and not sl_ready.get(t))):
+                hedge_skip_note("combo", dict(rec, why="below what you paid"),
+                                o["offer"] / max(o.get("frac", 1.0), 0.01), h)   # paper only (#312)
                 log_decision(dict(rec, result="skipped", why="below what you paid"))
                 continue
             if below and why != "cut loss":
@@ -6277,6 +6382,8 @@ def smart_sell_singles():
                "live": x.get("state") == "live", "ask": ask}
         if sl_mode() == "never" and (not x.get("cost") or not bid
                                      or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
+            hedge_skip_note("single", dict(rec, why="below what you paid"),
+                            x["n"] * (bid - single_fee(bid, x["n"])) if bid else None)   # paper only (#312)
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
             continue
         whole = int(math.floor(float(x["n"]) + 1e-6))
