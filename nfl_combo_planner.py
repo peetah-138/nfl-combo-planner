@@ -18255,7 +18255,7 @@ def close_prices(tickers, mid=False):
 # market-anchored fair is marked as a shadow skip and scored at $5 held to the end. Nothing here changes a pick, a
 # stake, a buy or a sale: mkt_fair_shadow only writes the mkt_fair table.
 MKT = {"grid": (0.0, 0.25, 0.5, 0.75, 1.0), "min_n": 200, "gain": 0.002, "se": 2.0, "every": 1800, "gap": 0.10,
-       "stake": 5.0, "keep": 60 * 86400}
+       "stake": 5.0, "keep": 60 * 86400, "hold_share": 0.30, "hold_min": 30}
 MKT_SEEN = {}                  # id -> when it was last logged (at most once per market per 30 minutes)
 MKT_W = {"at": 0, "w": {}}     # (league, kind, phase) -> the books' learned weight (0 = Kalshi's mid alone)
 
@@ -18309,7 +18309,10 @@ def _mkt_settled(lg=None):
 def mkt_learn():
     """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
     markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
-    MKT['min_n']+ markets (the same test line_gate uses). Everything else stays at 0: Kalshi's mid."""
+    MKT['min_n']+ markets (the same test line_gate uses) AND the same weight also beats the mid on the newest
+    MKT['hold_share'] of those markets by game date (the held-out check, #345: at least MKT['hold_min'] of them, a
+    gain above zero). The held-out check can only ever take a weight away: it never adds or raises one. Everything
+    else stays at 0: Kalshi's mid."""
     out = {}
     by = defaultdict(list)
     seen = set()
@@ -18322,6 +18325,7 @@ def mkt_learn():
         seen.add(ev)
         by[f"{r['lg']}|{r['kind']}|{r['phase']}"].append(r)
     for k, rs in by.items():
+        rs.sort(key=lambda r: (r["kick"] or r["ts"] or 0, r["id"]))     # oldest game first, so the tail is the newest
         ys = [r["outcome"] == "yes" for r in rs]
         base = [_ll(r["mid"], y) for r, y in zip(rs, ys)]
         best = (0.0, 0.0, 0.0)
@@ -18333,8 +18337,13 @@ def mkt_learn():
                 best = (w, g, se)
         w, g, se = best
         earned = len(rs) >= MKT["min_n"] and g >= MKT["gain"] and g >= MKT["se"] * se
-        out[k] = {"w": w if earned else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
-                  "ll_mid": round(sum(base) / len(base), 4)}
+        h_n = max(int(len(rs) * MKT["hold_share"]), 1)                   # the newest games, by date, kept back (#345)
+        h_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in
+                      zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if w else 0.0
+        held = h_n >= MKT["hold_min"] and h_gain > 0
+        out[k] = {"w": w if earned and held else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
+                  "ll_mid": round(sum(base) / len(base), 4), "hold_n": h_n, "hold_gain": round(h_gain, 4),
+                  "vetoed": bool(earned and not held)}
     MKT_W.update(at=time.time(), w=out)
     return out
 
@@ -18496,7 +18505,8 @@ def mkt_fair_summary():
         ww = (w.get(f"{lg}|{kind}|{phase}") or {}) if kind != "combo" else {}
         out.append({"lg": lg, "name": league_label(lg), "kind": kind, "phase": phase, "n": n, "few": n < BOARD_FEW,
                     "ll_mid": round(g["ll_mid"] / n, 4), "ll_book": round(g["ll_book"] / n, 4),
-                    "w": ww.get("w", 0.0), "claimed": g["claimed"], "vanish": g["vanish"],
+                    "w": ww.get("w", 0.0), "hold_gain": ww.get("hold_gain"), "vetoed": bool(ww.get("vetoed")),
+                    "claimed": g["claimed"], "vanish": g["vanish"],
                     "van_pl": round(g["van_pl"], 2), "kept": g["kept"], "kept_pl": round(g["kept_pl"], 2)})
     _mkt_table()
     logged = store_rows("select count(distinct id) n, count(distinct case when claimed = 1 then id end) c, "
