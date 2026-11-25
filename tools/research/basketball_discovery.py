@@ -306,7 +306,7 @@ def run_scan_wp(lg, te, log):
 def run_totals(lg, s, g, log):
     T = GEOM[lg]["T"]
     s = s[s.pre_total.notna()].copy()
-    rows, resid_parts, sd_rows = [], [], []
+    rows, resid_parts = [], []
     for Y in TEST_YEARS:
         tr, te = s[(s.season < Y)], s[s.season == Y].copy()
         if len(tr) == 0 or len(te) == 0:
@@ -406,6 +406,16 @@ def run_scan_totals(lg, R, log):
     seg = total_segments(R, T)
     gl = game_level(R, seg)
     res, n, per = scan(gl, MIN_EFFECT_TOT, "totals scan")
+    # SECONDARY (added after seeing the first run, so labelled post-hoc): the same cells scored against the flexible GBM's residual.
+    # The pre-registered OLS residual is a weak baseline (linear in pace), so segments built from its own inputs misfit by construction;
+    # a cell that is still material after the GBM has had a go is more believable.
+    Rg = R.assign(val=R.res_gb)
+    glg = game_level(Rg, seg)
+    resg, _, _ = scan(glg, MIN_EFFECT_TOT, "totals scan (gbm residual)")
+    mg = res[["seg", "effect"]].merge(resg[["seg", "effect", "q"]], on="seg", how="left", suffixes=("", "_gbm"))
+    res["gbm_effect"] = mg.effect_gbm.values
+    res["gbm_q"] = mg.q.values
+    res["survives_gbm"] = ((res.gbm_q < Q) & (res.gbm_effect.abs() >= MIN_EFFECT_TOT) & (np.sign(res.gbm_effect) == np.sign(res.effect))).values
     an = totals_anecdotes(R, T, lg)
     glA = game_level(R, an)
     resA, nA, perA = scan(glA, MIN_EFFECT_TOT, "totals anecdotes")
@@ -440,9 +450,25 @@ def season_effects(gl, segs):
 
 
 # ------------------------------------------------------------------ report
-def fmt_scan(res, n, k=12):
-    t = res.sort_values("p").head(k)[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign"]].copy()
-    return dc.md_table(t, "%.3f")
+def ints(df, cols):
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].round().astype("Int64").astype(str)
+    return df
+
+
+INTCOLS = ["season", "games", "n_games", "n", "phase", "seasons", "same_sign"]
+
+
+def is_diag(seg):
+    """Lead-bucket cells are calibration diagnostics of the baseline, not trend claims."""
+    return seg.startswith("lead_")
+
+
+def survivors_table(res, extra=()):
+    cols = ["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "other_effect", "other_z"] + list(extra)
+    return res[res.survivor][cols].sort_values("q")
 
 
 def main():
@@ -488,7 +514,7 @@ def main():
         w("")
         w("### 1. Baseline win probability (state only) per held-out season")
         cols = ["season", "games", "sigma_pts", "ll_analytic", "ll_base", "ll_rich", "brier_analytic", "brier_base", "brier_rich", "ece_base"]
-        w(dc.md_table(st["per"][cols], "%.4f"))
+        w(dc.md_table(ints(st["per"][cols], INTCOLS), "%.4f"))
         w("Paired log-loss difference per game (negative = first is better), game-clustered SE:")
         w(dc.md_table(st["per"][["season", "base_minus_analytic_ll", "se_ba", "rich_minus_base_ll", "se_rb"]], "%.5f"))
         w("Baseline calibration (all held-out seasons pooled):")
@@ -506,11 +532,14 @@ def main():
         w("BH rejections: %d; pass stability+size: %d; survivors after replication: %d" % (r.bh_reject.sum(), r.pre_repl.sum(), r.survivor.sum() if "survivor" in r else 0))
         w("Smallest p-values (top 12):")
         t = r.sort_values("p").head(12)[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "replicates"] if "replicates" in r else ["seg", "n_games", "effect", "se", "q"]]
-        w(dc.md_table(t, "%.3f"))
+        w(dc.md_table(ints(t, INTCOLS), "%.3f"))
+        nd = int(r[r.survivor & r.seg.map(is_diag)].shape[0]) if "survivor" in r else 0
+        w("Of the survivors, %d are lead-bucket cells: these are calibration diagnostics of the baseline (it is over- or under-confident in that lead band), not trend claims." % nd)
+        w(dc.md_table(ints(survivors_table(r), INTCOLS), "%.3f") if "survivor" in r else "")
         w("### 4. Pre-registered win-probability anecdotes")
         w("Hypotheses tested (separate BH family): **%d**" % st["nA"])
         ra = st["resA"].sort_values("p")
-        w(dc.md_table(ra[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "bh_reject", "replicates"] if "replicates" in ra else ["seg", "n_games", "effect", "se", "q"]], "%.3f"))
+        w(dc.md_table(ra[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "bh_reject", "replicates", "survivor"] if "replicates" in ra else ["seg", "n_games", "effect", "se", "q"]].pipe(ints, INTCOLS), "%.3f"))
         w("### 5. Totals: pre-game anchor vs pace projection vs OLS vs GBM (held-out RMSE of points still to come, by game progress quartile)")
         w(dc.md_table(st["tper"], "%.3f"))
         w("Final total minus the pre-game total (all games incl. OT; skew/kurt are excess kurtosis), per season:")
@@ -519,8 +548,10 @@ def main():
         w("Hypotheses tested (BH family, totals scan): **%d**; anecdotes (own family): **%d**" % (st["nT"], st["nTA"]))
         rt = st["resT"]
         w("BH rejections: %d; survivors after stability, size and replication: %d" % (rt.bh_reject.sum(), rt.survivor.sum() if "survivor" in rt else 0))
-        w(dc.md_table(rt.sort_values("p").head(12)[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "replicates"] if "replicates" in rt else ["seg", "n_games", "effect", "se", "q"]], "%.3f"))
-        w(dc.md_table(st["resTA"].sort_values("p")[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "bh_reject"]], "%.3f"))
+        w("Smallest p-values (top 12), with the post-hoc GBM-residual cross-check (gbm_effect, survives_gbm):")
+        w(dc.md_table(ints(rt.sort_values("p").head(12)[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "replicates", "gbm_effect", "survives_gbm"] if "replicates" in rt else ["seg", "n_games", "effect", "se", "q"]], INTCOLS), "%.3f"))
+        w("Totals anecdotes:")
+        w(dc.md_table(ints(st["resTA"].sort_values("p")[["seg", "n_games", "effect", "se", "q", "seasons", "same_sign", "bh_reject", "survivor"]], INTCOLS), "%.3f"))
         w("### 7. Decay tracker (effect by held-out season, slope per season; 5 seasons is low power, a non-significant slope is NOT evidence of no decay)")
         rW = st["resW"].sort_values("p").head(10).seg.tolist()
         glW = game_level(perspective(st["te"], lg), {k: v for k, v in win_segments(perspective(st["te"], lg), lg).items() if k in rW})

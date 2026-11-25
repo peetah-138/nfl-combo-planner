@@ -12,6 +12,7 @@ Leak rules (every game-level feature is known BEFORE tip-off; every snapshot fea
 Data caveats written down here because they matter: possession is DERIVED from event types (approximate), the free
 throw order is unknown in the college feed, and officials / rest days come from the schedule and officials files.
 """
+import math
 import os
 from pathlib import Path
 
@@ -249,7 +250,7 @@ def build(lg, seasons, force=False):
     sched = load_schedule(lg, seasons)
     form = team_form(sched)
     rest = rest_table(sched)
-    snaps_all, games_all, foul_rows = [], [], []
+    snaps_all, games_all = [], []
     for y in seasons:
         f = RAW / lg / f"pbp_{y}.parquet"
         if not f.exists():
@@ -306,7 +307,6 @@ def build(lg, seasons, force=False):
     else:
         pgp = games.pgp.astype(float).clip(0.01, 0.99)
         # ESPN pre-game win probability expressed as an approximate point margin (college margin sd ~ 11)
-        from math import sqrt
         z = np.sqrt(2) * _erfinv(2 * pgp.values - 1)
         games["pre_margin"] = z * 11.0
         games["pre_total"] = games.pre_total_proxy
@@ -347,11 +347,9 @@ def _erfinv(y):
     ln = np.log(1 - y * y)
     t = 2 / (np.pi * a) + ln / 2
     x = np.sign(y) * np.sqrt(np.sqrt(t * t - ln / a) - t)
-    from math import pi
     for _ in range(2):
-        import math
         err = np.array([math.erf(v) for v in x]) - y
-        x = x - err / (2 / np.sqrt(pi) * np.exp(-x * x))
+        x = x - err / (2 / np.sqrt(np.pi) * np.exp(-x * x))
     return x
 
 

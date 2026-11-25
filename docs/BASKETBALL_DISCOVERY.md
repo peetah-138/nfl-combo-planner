@@ -134,3 +134,13 @@ python3 -m venv ~/dev/research/venv && ~/dev/research/venv/bin/pip install numpy
 
 The synthetic test (`tests/suite/t_discovery_synth.py`) plants a known effect in fake data and checks the scan finds it and
 leaves null segments alone.
+
+
+## Run notes added after the first run
+
+* The totals scan also reports a post-hoc cross-check against the boosted model's residual (`gbm_effect`, `gbm_q`,
+  `survives_gbm`). It was not in the pre-registration and is labelled as such; it is used to say a cell is the linear
+  baseline's fault, never to rescue a survivor.
+* Lead-bucket cells (`lead_*`) in the win-probability scan are baseline calibration diagnostics, not trend claims, and
+  are counted separately in the report.
+* Results: `docs/results/basketball-discovery-first-run.md`.
