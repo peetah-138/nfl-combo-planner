@@ -176,7 +176,7 @@ def t_build():
     ok("build: the on-screen offers are re-read before every quote (a callable skip)", len(calls) >= len(q.calls) >= 1)
     w = open("wtest/combo_watcher.py").read() if os.path.exists("wtest/combo_watcher.py") else ""
     ok("watcher: Buy refuses an offer for other picks than the ones shown (rule 7)",
-       not w or "sorted(map(str, shown)) != sorted(o.get(\"legs\") or [])" in w)
+       not w or ("expect_legs=shown" in w and "different combo" in open("wahome/engine.py").read()))
     ok("watcher: long shots are never worked out for a warm-up (only a Build Pete opened)", not w or "if not warming:" in w)
     ok("watcher: the act re-prices each pick fresh before quoting", not w or "A.longshot_leg_fair(x)" in w)
     g2 = slate([0.72, 0.75, 0.78, 0.70, 0.68, 0.74, 0.76, 0.73], started=True)

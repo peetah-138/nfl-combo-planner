@@ -43,17 +43,19 @@ with sync_playwright() as pw:
         if pg.evaluate("document.querySelector('#s-cash').classList.contains('shut')"):
             pg.evaluate("sTog('cash')"); time.sleep(.8)            # open the Cash out & hedging card
         names = pg.evaluate("[...document.querySelectorAll('#slrow .slseg button')].map(b=>b.textContent)")
-        if names != ["Never sell at a loss", "Let it tune itself", "Allow (guarded)"]: bad(f"the choices read {names}")
+        if names != ["Let it tune itself", "Allow (guarded)"]: bad(f"the choices read {names}")
         if pg.evaluate("document.querySelector('#slrow b').textContent") != "Selling at a loss": bad("the row isn't titled 'Selling at a loss'")
         if "Manual override" in pg.evaluate("document.body.innerText"): bad("the old 'Manual override' switch is still shown")
         old = pg.evaluate("(()=>{const k=S.set.values,a=[k.stop_loss,k.stop_loss_mode];k.stop_loss=true;k.stop_loss_mode=null;"
                           "const r=[slMode()];k.stop_loss=false;r.push(slMode());k.stop_loss=a[0];k.stop_loss_mode=a[1];return r})()")
         if old != ["allow", "tune"]: bad(f"an old saved on/off reads as {old}, not allow/tune")
-        for want, words, old in (("never", "Nothing sells for less than you paid", False),
-                                 ("tune", "own results show", False), ("allow", "late in a game", True)):
+        nv = pg.evaluate("(()=>{const k=S.set.values,a=[k.stop_loss,k.stop_loss_mode];k.stop_loss=true;k.stop_loss_mode='never';"
+                         "const r=slMode();k.stop_loss=a[0];k.stop_loss_mode=a[1];return r})()")
+        if nv != "tune": bad(f"a saved 'never' reads as {nv}, not tune (the choice was removed)")
+        for want, words, old in (("tune", "own results show", False), ("allow", "late in a game", True)):
             pg.evaluate(f"document.querySelector('#slrow button[data-slm={want}]').click()")
             time.sleep(.3)
-            if pg.evaluate(ON) != [{"never": "Never sell at a loss", "tune": "Let it tune itself", "allow": "Allow (guarded)"}[want]]:
+            if pg.evaluate(ON) != [{"tune": "Let it tune itself", "allow": "Allow (guarded)"}[want]]:
                 bad(f"after tapping {want} the highlighted choice is {pg.evaluate(ON)}")
             if words not in pg.evaluate("document.querySelector('#slrow small').textContent"):
                 bad(f"the words under {want} don't say '{words}'")
@@ -65,6 +67,8 @@ with sync_playwright() as pw:
         pg.screenshot(path=f"slmode_{scheme}.png")
         requests.post(B + "/app/api/settings", headers={"X-CW": "x"}, json={"lg": "nba", "values": {"stop_loss_mode": "bogus"}})
         if saved()[0] != "allow": bad(f"an unknown value was saved ({saved()})")
+        requests.post(B + "/app/api/settings", headers={"X-CW": "x"}, json={"lg": "nba", "values": {"stop_loss_mode": "never"}})
+        if not wait_for(saved, ("tune", False)): bad(f"a saved 'never' from another device was kept as {saved()}, not tune")
         print(scheme, "JS errors:", errs[:3])
         if errs: bad(f"JS errors: {errs[:2]}")
         ctx.close()
