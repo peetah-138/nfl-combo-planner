@@ -231,7 +231,7 @@ async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySel
  const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
  if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}
- S.ideaq[id]={i:r.i,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn,small:r.small};
+ S.ideaq[id]={i:r.i,legs:r.legs,pays:r.pays,stake:r.stake,pct:r.pct,clears:r.clears,at:Date.now()/1000,price:r.price,n:r.n,edge:r.edge,fair:r.fair,single:r.single,rec:r.rec,ev:r.ev,room:r.room,max:r.max,min:r.min,note:r.note,live:r.live,how:r.how,fair_src:r.fair_src,nofair:r.nofair,warn:r.warn,small:r.small};
  S.idRec=S.idRec||{};S.idRec[id]={rec:r.rec,room:r.room,max:r.max,min:r.min};if(S.ideaOpen===id)ideaSheet();renderLive();
  clearInterval(S.ideaT);S.ideaTid=id;S.ideaT=setInterval(()=>{const open=$('#modal').classList.contains('on');if(S.ideaOpen&&open)ideaSheet();else if(S.view==='live'&&!open)renderLive();const q=S.ideaq[id];if(!q||Date.now()/1000-q.at>21){clearInterval(S.ideaT);renderLive();}},1000);}
 /* Buy (#252): every tap ends with an answer in plain words, on the page itself (the card, or the detail page, where a toast
@@ -253,7 +253,7 @@ async function ideaBuyGo(id,body,okMsg){const q=S.ideaq&&S.ideaq[id],x0=ideaFind
  const tone=r.ok?'good':r.check||r.lost?null:'bad';ideaAns(id,m,tone);
  if(r.ok||r.check||r.lost||!ideaOnPage())toast(m,6000,tone);else hap(tone==='bad'?'error':'warning');   // on the detail page a refusal shows on the page itself (the toast would cover its buttons)
  if(r.ok||r.check||r.lost)ideaDrop(id,'bought',x0);else ideaRedraw();/* a lost reply hides it like a check (#270): it may have gone through */load('live',true);}
-function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
+function buyIdea(id){return ideaBuyGo(id,q=>({a:'buy',i:q.i,legs:q.legs&&q.legs.length?q.legs:undefined}),(q,r)=>`Bought: ${money(q.stake)} to win ${money(r.pays||q.pays)}. It shows in your combos within a minute.`);}
 function buySingle(id){return ideaBuyGo(id,q=>({a:'singlebuy',id,n:q.n,price:q.price}),(q,r)=>r.msg||'Bought.');}
 function ideaGone(id,msg){S.ideaGone=S.ideaGone||{};S.ideaGone[id]=1;hap('light');toast(msg||'That idea isn\'t on Kalshi any more.',3500);renderLive();
  setTimeout(()=>{delete S.ideaGone[id];ideaDrop(id,'gone');},4500);}
