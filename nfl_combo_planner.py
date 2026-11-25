@@ -28,6 +28,8 @@ CFG = {
     "max_share": 50,      # no pick in more than this % of safer/middle/moonshot combos
     "hedge_close": True,  # split coin-flip games between both sides across combos
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
+    "prop_shadow": True,  # record player-prop prices a pass already read (paper only, write-only); false = off
+    "slate_shadow": True, # record slate-concentration aggregates (write-only, nothing reads them); false = off
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
@@ -628,6 +630,7 @@ def fetch_series(series):
         cursor = data.get("cursor")
         if not cursor:
             price_seen_markets(out)                    # Smart Buy's price recorder: what we just read, no new call
+            prop_shadow(out, series)                   # (#323) player-prop prices, only if a prop series was read: no new call
             return out
 
 
@@ -19465,6 +19468,7 @@ def panel_collect(book_snap, code, log=print):
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
     signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
+    slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -27903,6 +27907,214 @@ def price_prune(now=None):
             n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+
+
+# ---- paper shadows, part 1 (#323 step 2, #332): player-prop price recorder and slate-concentration recorder. Same
+# pattern as signal_shadow: bounded, errors swallowed, off the trading path, append-only, NEVER read by any decision
+# (a test fails if the engine mentions the tables outside this block). Neither adds a Kalshi or Odds API request:
+# prop_shadow only sees a prop series that something else already read (today nothing does, so it writes nothing until
+# a later, separately approved poller reads one), and slate_shadow only describes what the panel pass and the account
+# cache already hold in memory. Settings: "prop_shadow" / "slate_shadow" (ON by default for recording; false = off).
+PROP = {"on": True, "every": 1800, "keep_days": 14, "cap": 150000, "per_pass": 800, "gap": 0.06, "lo": 0.10, "hi": 0.90,
+        "prune": 0.0, "seen": {}}
+PROP_RE = re.compile(r"^KX(NFL|NBA|NHL)(RECYDS|REC|RSHYDS|PASSYDS|PTS|REB|AST|3PT|GOAL)-")   # plain series only, never PROT
+SLATE = {"on": True, "every": 1800, "keep_days": 90, "cap": 20000, "prune": 0.0, "seen": {}}
+
+
+def _shadow_insert(table, rows, what):
+    """Rows into one of the shadow tables in one transaction under the history lock; best-effort, never raises."""
+    db = STORE.get("db")
+    if not db or not rows:
+        return
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            db.executemany(f"insert into {table} values({','.join('?' * len(rows[0]))})", rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"{what}: {type(err).__name__}: {err}")
+
+
+def _shadow_prune(table, keep_days, cap, now):
+    store_x(f"delete from {table} where ts < ?", (now - keep_days * 86400,))
+    n = (store_rows(f"select count(*) n from {table}") or [{"n": 0}])[0]["n"]
+    if n > cap:
+        store_x(f"delete from {table} where rowid in (select rowid from {table} order by ts limit ?)", (n - cap,))
+
+
+def _prop_tables():
+    store_x("create table if not exists prop_shadow(ts real, ticker text, event text, league text, stat text, strike real, "
+            "bid real, ask real, mid real, ask_size real, volume real, kick real, result text)")
+    store_x("create index if not exists prop_shadow_ts on prop_shadow(ts)")
+    store_x("create index if not exists prop_shadow_t on prop_shadow(ticker)")
+
+
+def _prop_num(m, *names):
+    for n in names:
+        v = m.get(n)
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def prop_shadow(markets, series="", now=None):
+    """Record player-prop markets (plain series only) that the engine ALREADY read from Kalshi: ticker, bid, ask, the
+    size at the ask when Kalshi gave it, volume, the game's kickoff and, when a market comes back settled, its result.
+    Pre-game only (the game's kickoff must be known and ahead), a mid of 10-90%, a gap of 6c or less (smart sell's rule),
+    one row per market per 30 minutes, at most 800 rows a call. The last row before the kickoff is the close. No fair is
+    recorded: there is no free price to derive one from (#323 recon). Never fetches, never raises, never changes
+    `markets`. Returns the rows written."""
+    try:
+        if not STORE.get("db") or not CFG.get("prop_shadow", PROP["on"]) or not PROP_RE.match((series or "") + "-"):
+            return 0
+        now = now or time.time()
+        seen, rows = PROP["seen"], []
+        for m in markets or ():
+            t = m.get("ticker") if isinstance(m, dict) else None
+            hit = PROP_RE.match(t) if isinstance(t, str) else None
+            if not hit or len(rows) >= PROP["per_pass"] or now - seen.get(t, 0) < PROP["every"]:
+                continue
+            ev = m.get("event_ticker") or t.rsplit("-", 2)[0]
+            try:                                         # the prop's game: KXNFLRECYDS-<game> -> KXNFLGAME-<game>
+                kick = _kick_ts({"event": f"KX{hit.group(1)}GAME-" + ev.split("-", 1)[1]}) if "-" in ev else None
+            except Exception:
+                kick = None
+            res = str(m.get("result") or "").lower()
+            res = res if res in ("yes", "no") else None
+            try:
+                bid, ask = dollars(m, "yes_bid") or None, dollars(m, "yes_ask") or None
+            except (TypeError, ValueError):
+                continue                                 # an odd price field: skip this market, not the pass
+            if not res:
+                if not kick or kick <= now or not bid or not ask or ask - bid > PROP["gap"]:
+                    continue
+                if not PROP["lo"] <= (bid + ask) / 2 <= PROP["hi"]:
+                    continue
+            seen[t] = now
+            rows.append((round(now, 1), t, ev, hit.group(1), hit.group(2), _prop_num(m, "floor_strike"), bid, ask,
+                         round((bid + ask) / 2, 4) if bid and ask else None,
+                         _prop_num(m, "yes_ask_size_fp", "yes_ask_size"), _prop_num(m, "volume_fp", "volume"), kick, res))
+        if len(seen) > 20000:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        if rows:
+            _prop_tables()
+            _shadow_insert("prop_shadow", rows, "prop shadow")
+        if now - PROP["prune"] > 6 * 3600:
+            PROP["prune"] = now
+            _prop_tables()
+            _shadow_prune("prop_shadow", PROP["keep_days"], PROP["cap"], now)
+        return len(rows)
+    except Exception as err:
+        try:
+            console_note(f"prop shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def _slate_tables():
+    store_x("create table if not exists slate_shadow(ts real, day text, scope text, code text, n int, games int, "
+            "w real, top1 real, top3 real, hhi real, eff_games real, max_on_game int, lg_top real, slot_top real, "
+            "fav real, cls_top real, same_game int)")
+    store_x("create index if not exists slate_shadow_ts on slate_shadow(ts)")
+
+
+def _share_stats(per_game, weights):
+    """(games, top1, top3, hhi, effective games, max bets on one game) from {game: weight} (dollars or counts)."""
+    tot = sum(weights.values()) or 0.0
+    if tot <= 0:
+        return 0, None, None, None, None, 0
+    sh = sorted((w / tot for w in weights.values()), reverse=True)
+    hhi = sum(s * s for s in sh)
+    return (len(sh), round(sh[0], 3), round(sum(sh[:3]), 3), round(hhi, 4), round(1 / hhi, 2),
+            max(per_game.values()) if per_game else 0)
+
+
+def _top_share(d):
+    tot = sum(d.values()) or 0.0
+    return round(max(d.values()) / tot, 3) if tot > 0 and d else None
+
+
+def _lg_of_event(ev):
+    hit = re.match(r"^KX([A-Z0-9]+?)(GAME|SPREAD|TOTAL)", ev or "")
+    return hit.group(1) if hit else "?"
+
+
+def slate_shadow(code, cands=(), now=None):
+    """Aggregates of how concentrated the day's positions are (#332): `held` = the open bets from the account and
+    panel caches (what `game_exposure` already holds; dollars at risk), `pool` = this league's panel candidates before
+    the choice (counted equally, no stake yet). Per row: bets, games, the share on the top game / top three, the
+    Herfindahl index and its 'effective number of games' (1/index), most bets on one game, the share in the top league
+    and top kickoff slot (3-hour blocks, Pacific), the share of bets that are favourites (chance >= 50%), the share in
+    the top bet class (single/spread/total/combo) and the number of combos with two picks in one game. Aggregates only:
+    no tickers, no ids. At most one row per scope and league every 30 minutes. Never fetches, never raises, never
+    changes anything it is handed."""
+    try:
+        if not STORE.get("db") or not CFG.get("slate_shadow", SLATE["on"]):
+            return 0
+        now = now or time.time()
+        seen, rows, day = SLATE["seen"], [], _panel_day(now)
+        if now - seen.get(("held", "all"), 0) >= SLATE["every"]:
+            seen[("held", "all")] = now
+            exp = game_exposure() or {}
+            if exp:
+                w = {g: float(x.get("risk") or 0) for g, x in exp.items()}
+                per = {g: int(x.get("n") or 0) for g, x in exp.items()}
+                lg = defaultdict(float)
+                for g, v in w.items():
+                    lg[_lg_of_event(g)] += v
+                g_n, t1, t3, hhi, eff, mx = _share_stats(per, w)
+                rows.append((round(now, 1), day, "held", "all", sum(per.values()), g_n, round(sum(w.values()), 2), t1, t3,
+                             hhi, eff, mx, _top_share(lg), None, None, None, None))
+        cands = [c for c in cands or () if isinstance(c, dict)]
+        if cands and now - seen.get(("pool", code), 0) >= SLATE["every"]:
+            seen[("pool", code)] = now
+            w, per, slot, cls, fav, same = defaultdict(float), defaultdict(int), defaultdict(float), defaultdict(float), 0, 0
+            for c in cands:
+                evs = {e for e in _events_of(c) if e}
+                for e in evs:                                # a combo counts once on each game it touches
+                    w[e] += 1.0 / len(evs)
+                    per[e] += 1
+                if len(evs) < len(c.get("legs") or ()):
+                    same += 1
+                if c.get("kick"):
+                    t = dt.datetime.fromtimestamp(c["kick"], PACIFIC)
+                    slot[(t.date().isoformat(), t.hour // 3)] += 1.0
+                cls[c.get("kind") or "?"] += 1.0
+                fav += 1 if (c.get("chance") or 0) >= 0.5 else 0
+            n = len(cands)
+            g_n, t1, t3, hhi, eff, mx = _share_stats(per, w)
+            rows.append((round(now, 1), day, "pool", str(code)[:12], n, g_n, float(n), t1, t3, hhi, eff, mx, 1.0 if n else None,
+                         _top_share(slot), round(fav / n, 3) if n else None, _top_share(cls), same))
+        if len(seen) > 500:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        if rows:
+            _slate_tables()
+            _shadow_insert("slate_shadow", rows, "slate shadow")
+        if now - SLATE["prune"] > 6 * 3600:
+            SLATE["prune"] = now
+            _slate_tables()
+            _shadow_prune("slate_shadow", SLATE["keep_days"], SLATE["cap"], now)
+        return len(rows)
+    except Exception as err:
+        try:
+            console_note(f"slate shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
 
 
 # ---- signal shadow (early-exit test, phase 1): sharp-book prob beside Kalshi's bid/ask, sibling-market bids and game
