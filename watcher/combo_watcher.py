@@ -3401,6 +3401,13 @@ def webapp_main():
                 A.klive_log_once("ideagame", t, err)
         leg = A.label_game_page(dict(leg)) if leg else leg    # display only: what the bet is, and which game
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
+        start = None                                        # kickoff / tip-off (epoch s): where the chance chart begins (display only)
+        try:
+            gs, gsrc = A.game_start(t.rsplit("-", 1)[0], t) if "-" in t else (None, None)
+            if gs and gsrc in ("book", "feed"):             # never the settle-time estimate: it can be hours off
+                start = gs.timestamp()
+        except Exception as err:
+            A.klive_log_once("gamestart", t, err)
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
             ch = leg.get("live") if leg.get("live") is not None else leg.get("chance")
@@ -3443,7 +3450,7 @@ def webapp_main():
         except Exception as err:                         # display only: no buttons, never a broken page
             A.klive_log_once("gamebuy", t, err)
             buy = []
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "start": start,
                          "detail": detail, "buy": buy, "fresh": freshness()})
 
     def api_game_warm(t):
