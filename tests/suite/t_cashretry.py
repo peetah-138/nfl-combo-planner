@@ -111,7 +111,7 @@ msg, info = run(["cancelled"] * 3, offers=[9.0, 8.4])
 ok("a fresh offer under the smart-sell line stops the round; nothing accepted at it", accepts == [10.0, 9.0]
    and info["stop"] == "offer too low" and info["low_offer"] == 8.4, (accepts, info.get("stop")))
 msg, info = run(["cancelled"] * 3, offers=[9.9, 9.9, 8.8], floor=9.0)
-ok("under Never sell at a loss, a fresh offer below cost stops it (even above the line)", len(accepts) == 3
+ok("with an explicit floor (no setting passes one now), a fresh offer below cost stops it (even above the line)", len(accepts) == 3
    and 8.8 not in accepts and info["stop"] == "offer too low" and info["low_offer"] == 8.8 and info["floor"] == 9.0)
 msg, info = run(["cancelled"] * 3, offers=[8.9], cost_floor=9.0)
 ok("a profit-taking sale (cost floor): a fresh offer above the line but below cost stops it", accepts == [10.0]

@@ -18,8 +18,8 @@ function lsCard(r){r.check=r.check||!!(S.lsChecked&&S.lsChecked[r.id]);   // (#3
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'worth it after the fee':'now under what it\'s worth'} · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>`:''}
   ${S.lsErr&&S.lsErr[r.id]?`<div class="lsfail${S.lsErr[r.id].fresh?' pin':''}" role="alert"><b>Couldn't get a price.</b> ${esc(S.lsErr[r.id].m)} Nothing was bought.</div>`:''}
   <div class="brow">${busy?`<button class="btn pri" disabled><span class="spin"></span> ${S.lsBuying?'Buying… confirming with Kalshi':'Asking Kalshi…'}</button>`:
-   fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" onclick="lsBuy('${esc(r.id)}',this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
-   `<button class="btn pri" onclick="lsQuote('${esc(r.id)}',this)">Get price · ${money(r.stake)}</button>`}</div></div>`;}
+   fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" data-lsid="${esc(r.id)}" onclick="lsBuy(this.dataset.lsid,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
+   `<button class="btn pri" data-lsid="${esc(r.id)}" onclick="lsQuote(this.dataset.lsid,this)">Get price · ${money(r.stake)}</button>`}</div></div>`;}
 function lsSection(d,inBoard){const L=d.longshots||{},rs=L.recs||[];
  if(!inBoard&&!rs.length)return '';   // nothing to recommend: the empty state sits with the board, not on top of the page
  if(inBoard&&rs.length)return '';     // already drawn above the board

@@ -54,7 +54,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
 /* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
    fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
 function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
- return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen(this.dataset.t,'${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');
