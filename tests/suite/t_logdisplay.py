@@ -88,7 +88,7 @@ ok("#300 ...the same offer and cut-off as before (logging only)", sold[0]["cut_o
 # ---- #316 item 1: a single's break episode is filed under the held market
 SEEN = []
 E.break_watch = lambda tk, side, sc, now=None: SEEN.append((tk, side))
-E.fresh_live_score = lambda tk, side, now=None: ({"state": "in", "brk": True, "frac": 0.2}, "")
+E.fresh_live_score = lambda tk, side, now=None, loose=False: ({"state": "in", "brk": True, "frac": 0.2}, "")
 E.single_pre = lambda x: 0.6
 E.stoploss_params = lambda tks: {"prog": 0.0, "drop": 0.0}
 E.sl_confirm_params = lambda tks: None
