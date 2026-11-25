@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.23.138"
+VERSION = "2026.11.24.139"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -28,6 +28,7 @@ CFG = {
     "max_share": 50,      # no pick in more than this % of safer/middle/moonshot combos
     "hedge_close": True,  # split coin-flip games between both sides across combos
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
+    "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
@@ -2261,7 +2262,12 @@ ACCT_CACHE = {"at": 0, "value": None}
 # Live snapshot and Results caches and open pages refetch within seconds instead of waiting out their caches. Only
 # its time matters (the file's mtime). Nothing that buys, sells or sizes reads it.
 MONEY_FLAG = os.path.join(HERE, "combo_money.json")     # git-ignored (combo_*.json)
-MONEY_FP = {"v": None}                 # this copy's last account fingerprint (None = not read yet: no stamp at start)
+MONEY_FP = {"v": None, "pb": None}     # this copy's last account fingerprints (None = not read yet: no stamp at start);
+                                       # "v" = combos + positions + balance (complete reads only), "pb" = positions + balance
+MONEY_FAIL_AT = {}                     # (ticker, result) -> when a failed (nothing sold) cash-out last stamped (#271)
+MONEY_FAIL_GAP = 60                    # seconds: a failed cash-out repeated every pass stamps at most this often
+HUB_FRESH_FLOOR = 3                    # seconds: the hub's forced fresh account read needs a cached copy older than this
+ACCT_HUB_STALE = {"v": False}          # the hub just answered with a copy it held back from refreshing (#271)
 
 
 def money_mark():
@@ -2282,10 +2288,24 @@ def money_seen():
         return 0.0
 
 
-def money_note(bets, positions, balance):
+def money_note(bets, positions, balance, incomplete=0):
     """After a direct account read: stamp when anything a screen shows changed (a combo's status or money, any
-    position, the balance). The first read of a process only remembers. Never raises."""
+    position, the balance). The first read of a process only remembers. Never raises.
+    `incomplete` (#271) = how many combos were left out because their legs couldn't be read. Such a read would change
+    the combo part of the fingerprint (a combo drops out, then comes back) and stamp for nothing, so it only compares
+    positions + balance (real money moves) and leaves the combo fingerprint alone; the log says why it didn't stamp."""
     try:
+        pb = hash((tuple(sorted((str(p.get("ticker") or p.get("market_ticker")),
+                                 str(p.get("position_fp") if p.get("position_fp") is not None else p.get("position")))
+                                for p in positions or [] if isinstance(p, dict))), str(balance)))
+        if incomplete:
+            if MONEY_FP["pb"] is not None and pb != MONEY_FP["pb"]:
+                money_mark()
+            elif MONEY_FP["v"] is not None and MONEY_FP.get("inc") != incomplete:
+                MONEY_FP["inc"] = incomplete          # said once per change, not every pass
+                console_note(f"money stamp skipped: {incomplete} combo(s) couldn't be read this pass")
+            MONEY_FP["pb"] = pb
+            return
         fp = hash((tuple(sorted((str(a.get("ticker")), str(a.get("status")), a.get("back"), a.get("cost"), a.get("pays"))
                                 for a in bets or [])),
                    tuple(sorted((str(p.get("ticker") or p.get("market_ticker")),
@@ -2295,6 +2315,8 @@ def money_note(bets, positions, balance):
         if MONEY_FP["v"] is not None and fp != MONEY_FP["v"]:
             money_mark()
         MONEY_FP["v"] = fp
+        MONEY_FP["pb"] = pb
+        MONEY_FP["inc"] = 0
     except Exception:
         pass
 
@@ -2355,9 +2377,12 @@ def fetch_account(max_age=60, every_league=False):
     if ACCT_CACHE["value"] and time.time() - ACCT_CACHE["at"] < max_age:
         value = ACCT_CACHE["value"]
     else:
+        ACCT_HUB_STALE["v"] = False
         value = _fetch_account()
         if value[0] is not None:
-            ACCT_CACHE.update(at=time.time(), value=value)
+            # a copy the hub held back from refreshing (#271) is used but never kept: the next call asks again
+            ACCT_CACHE.update(at=0 if ACCT_HUB_STALE["v"] else time.time(), value=value)
+            ACCT_HUB_STALE["v"] = False
     bets, balance, note = value
     if bets is None or every_league:
         return value
@@ -2368,6 +2393,7 @@ def _fetch_account():
     if hub_up():
         got = hub_call("account", timeout=30)
         if got and isinstance(got.get("value"), list):
+            ACCT_HUB_STALE["v"] = bool(got.get("held_back"))
             return tuple(got["value"])
     key_id = CFG.get("kalshi_key_id", "").strip()
     if not key_id or not os.path.exists(KEYFILE):
@@ -2446,9 +2472,11 @@ def _fetch_account():
     cache = load_json(LEGS_CACHE, {})
     fetch_legs_parallel(list(held), cache)
     bets = []
+    unread = 0                                   # combos left out because their legs couldn't be read (#271)
     for t, h in held.items():
         legs = combo_legs(t, cache)
         if not legs:
+            unread += 1
             continue
         lg = combo_league(legs)
         s = settled.get(t)
@@ -2494,7 +2522,7 @@ def _fetch_account():
     except Exception as err:
         console_note(f"ledger: {type(err).__name__}: {err}")
     balance = dollars(bal, "balance")
-    money_note(bets, positions, balance)         # display only (#242): open screens refresh when money moved
+    money_note(bets, positions, balance, unread)  # display only (#242): open screens refresh when money moved
     return bets, balance, f"From your Kalshi account · balance {money(balance)}"
 
 
@@ -4668,6 +4696,21 @@ def _skip_repeat(rec):
     return False
 
 
+def _fail_stamp_due(rec):
+    """False only for a repeat of a plain failed cash-out ("failed"/"hedge failed": nothing was sold) on the same bet
+    within MONEY_FAIL_GAP seconds (#271): a loop logging the same failure every pass must not make every open screen
+    force a fresh Kalshi account read each time. Sold, hedged and every unclear ("check") result always stamp."""
+    if rec.get("result") not in ("failed", "hedge failed"):
+        return True
+    t, now = (str(rec.get("ticker") or rec.get("combo") or ""), rec.get("result")), time.time()
+    if now - MONEY_FAIL_AT.get(t, 0) < MONEY_FAIL_GAP:
+        return False
+    if len(MONEY_FAIL_AT) > 2000:
+        MONEY_FAIL_AT.clear()
+    MONEY_FAIL_AT[t] = now
+    return True
+
+
 def _trim_sell_log():
     """Keeps every sale, hedge and unclear order, and the newest SELL_KEEP other lines."""
     with open(SELL_LOG, encoding="utf-8") as f:
@@ -4704,7 +4747,7 @@ def log_decision(rec):
                 _trim_sell_log()
     except OSError:
         pass
-    if rec.get("result") in SALE_RESULTS:
+    if rec.get("result") in SALE_RESULTS and _fail_stamp_due(rec):
         money_mark()                             # display only (#242): open screens refresh now
     try:
         if rec.get("result") in SALE_RESULTS:
@@ -4904,8 +4947,8 @@ def break_watch(ticker, side, sc, now=None):
             return
         if at_break(sc):
             if ep is None:
-                if len(BRK_EP) > 400:
-                    BRK_EP.clear()
+                while len(BRK_EP) > 400:             # (#316) drop the oldest episode, not every open one
+                    BRK_EP.pop(next(iter(BRK_EP)), None)
                 ep = BRK_EP[key] = {"start": now, "detail": str(sc.get("detail") or "")[:40], "reads": [],
                                     "news": _brk_news(ticker, sc), "would": None}
                 price_watch([ticker], hours=3)        # its price path (with score lines) is recorded too
@@ -4938,19 +4981,20 @@ def break_watch(ticker, side, sc, now=None):
 BRK_ERR = {"at": 0.0, "hedge": 0.0}
 
 
-def break_ok(ticker, side, sc, now=None, what="loss"):
+def break_ok(ticker, side, sc, now=None, what="loss", watch=None):
     """At a break: may a loss sale or hedge act anyway? Records the episode (break_watch) and answers False in this
     build: BRK_LIVE is off and `brk_on` is not a live knob, so the old rule (wait out the break) always stands. When a
     later build turns it on, a league's own record must have switched `brk_on` on, the rule must hold on its reads
     (brk_fires at its brk_move) and a fresh order book read now (max_age=0) must still show the move."""
-    break_watch(ticker, side, sc, now)
+    wt, ws = watch or (ticker, side)                  # (#316) a single's episode is filed under the held market
+    break_watch(wt, ws, sc, now)
     if not BRK_LIVE or "brk_on" not in KNOB_LIVE or not knob_switch_on():
         return False
     try:                                              # never reached in this build (the gates above)
         k = _knob_bet_chain([ticker])[0]
         if knob("brk_on", k) != 1:
             return False
-        ep = BRK_EP.get((ticker, side or "yes"))
+        ep = BRK_EP.get((wt, ws or "yes"))
         if not ep or not ep["reads"]:
             return False
         mv = knob("brk_move", k)
@@ -4986,14 +5030,14 @@ def fresh_live_score(ticker, side, now=None):
     return sc, ""
 
 
-def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None):
+def stop_loss_leg(ticker, side, pre, now_ch, pr, now=None, watch=None):
     """Whether one pick passes every stop-loss guard right now: (True, '') or (False, why not)."""
     sc, why = fresh_live_score(ticker, side, now)
     if not sc:
         return False, why
     if pre is None or now_ch is None:
         return False, "no pregame chance"
-    if at_break(sc) and not break_ok(ticker, side, sc, now, "loss"):
+    if at_break(sc) and not break_ok(ticker, side, sc, now, "loss", watch):
         return False, "halftime or a break"
     played = game_played(sc)
     if played is None or played < pr["prog"]:
@@ -5161,7 +5205,8 @@ def cut_loss_single_check(x, loss, now=None):
     now = now or time.time()
     leg = _score_leg(x["t"], x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
     q = x.get("chance")
-    ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now)
+    ok, why = stop_loss_leg(leg["ticker"], leg["side"], single_pre(x), q, stoploss_params([x["t"]]), now,
+                            watch=(x["t"], x.get("side") or "yes"))    # (#316) the break evidence is the held market's
     if ok and not (loss and q is not None and q <= loss):
         ok, why = False, "not under the cut-off"
     return _sl_confirm("cut:" + x["t"], ok, why, now, sl_confirm_params([x["t"]]))
@@ -5602,13 +5647,19 @@ def auto_sell_now(plan):
                 if not thr:
                     continue
             slip = knob_auto_slip([tk for (_, tk), _ in h.get("need") or []]) if why != "plan" else AUTO_CASH_SLIP
-            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip))
+            held_why = combo_wait_why(t, h, f, thr * (1.0 if why == "plan" else slip), kind=why)
             if held_why:
                 continue                                  # buyers backed out: waiting for the game or price to change
+            clock = bool((COMBO_WAIT.get(t) or {}).get("clock_now"))   # #396: this try is the loss-cut clock retry
+            first_offer = (COMBO_WAIT.get(t) or {}).get("first") if (COMBO_WAIT.get(t) or {}).get("cutting") else None   # only a loss cut's own first offer (not a profit round's)
             if why == "plan" and o["offer"] / max(o.get("frac", 1.0), 0.01) < thr:
                 continue
             if why != "plan" and o.get("rfq") not in (None, "estimate") and time.time() - o.get("at", 0) <= offer_life() \
                     and o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
+                if clock:
+                    log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                  "why": "loss-cut clock retry: the offer is under the smart-sell line",
+                                  "clock_retry": COMBO_WAIT[t].get("clock_n"), "offer": round(o["offer"], 2)})
                 continue                                  # a real offer just came in below the line
             if why != "plan" and (o.get("rfq") in (None, "estimate") or time.time() - o.get("at", 0) > offer_life()):
                 o = dict(o, rfq="estimate")
@@ -5616,10 +5667,20 @@ def auto_sell_now(plan):
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
                 if not o.get("offer") or o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
+                    if clock:
+                        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                      "why": "loss-cut clock retry: " + ("no fresh offer came in" if not o.get("offer")
+                                                                         else "the offer is under the smart-sell line"),
+                                      "clock_retry": COMBO_WAIT[t].get("clock_n"), "offer": round(o.get("offer") or 0, 2)})
                     continue
-            held = {a["ticker"]: a for a in (fetch_account(max_age=0, every_league=True)[0] or [])}
+            acct = fetch_account(max_age=0, every_league=True)[0]
+            held = {a["ticker"]: a for a in (acct or [])}
             a = held.get(t)
             if not a or a.get("status") != "pending" or a.get("pays", 0) < o.get("contracts", 0) - 0.01:
+                if clock:                       # fail closed, and say so (#396)
+                    log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
+                                  "why": "loss-cut clock retry: account unreadable" if acct is None else
+                                         "loss-cut clock retry: combo gone or reduced", "clock_retry": COMBO_WAIT[t].get("clock_n")})
                 drop_cash(t)                    # already sold (by you, the Pi or the phone): leave it
                 continue
             rec = {"combo": h["label"], "ticker": t, "offer": round(o["offer"], 2), "cut_off": round(thr, 2), "why": why,
@@ -5627,6 +5688,11 @@ def auto_sell_now(plan):
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
                    "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes",
                    "live": any(lv for _, lv, _ in h.get("legs_left") or [])}
+            try:                                      # (#300) log only: the estimate smart sell held this sale against
+                rec["disc"] = round(kalshi_discount(rec["live"]), 4)
+                rec["est"] = round(rec["disc"] * h["p"] * h["pays"] * o.get("frac", 1.0), 2)
+            except Exception:
+                pass
             if auto_cap_reached():
                 log_decision(dict(rec, result="skipped", why="daily cap reached"))
                 if MINE.get("cap_told") != dt.date.today().isoformat():
@@ -5646,7 +5712,7 @@ def auto_sell_now(plan):
             if below and why != "cut loss" and gross_below:   # only a gross-below-cost sale is a stop-loss sale
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
-            hg = hedge_for(t) if CFG.get("auto_hedge") and not restriction_holding("buy") else None   # a hedge is a buy (#134)
+            hg = hedge_for(t) if CFG.get("auto_hedge") and not clock and not restriction_holding("buy") else None   # a hedge is a buy (#134)
             whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
             tks_ = [tk for (_, tk), _ in h.get("need") or []]
             better = hedge_beats(hg, whole, tks_) if hg and hg.get("n") else False
@@ -5690,14 +5756,32 @@ def auto_sell_now(plan):
             # stop-loss, already below cost) may go below cost, down to the line, and not under 97% of its first offer.
             cutting = gross_below and (why == "cut loss" or bool(rec.get("stop_loss")))   # a sale above gross cost is never a loss cut
             rec["purpose"] = "cut a loss" if cutting else "take a profit"
+            if clock:
+                rec["clock_retry"] = COMBO_WAIT[t].get("clock_n")
+                if not cutting or why != "cut loss":         # #396: the clock is for loss cuts only (a profit reason, even a stop-loss on one, waits for a change)
+                    log_decision(dict(rec, result="skipped", stop="clock retry is for loss cuts only",
+                                      why="loss-cut clock retry: not a loss cut now"))
+                    continue
+                if not first_offer or o["offer"] < first_offer_floor(first_offer):   # the 97% guard holds across rounds
+                    log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
+                                      why="loss-cut clock retry: offer under 97% of the first offer"))
+                    continue
+            if cutting and first_offer and not clock and o["offer"] < first_offer_floor(first_offer):
+                # review fix: the same 97%-of-the-first-offer floor holds for EVERY loss-cut round, also one started by a
+                # game or price change, not only the timed retries
+                log_decision(dict(rec, result="skipped", stop="below 97% of the first offer", first_offer=first_offer,
+                                  why="loss-cut retry: offer under 97% of the first offer"))
+                continue
             try:
                 _CASH_CTX.auto = True                     # up to 10 tries, short pauses, one more ask (Pete, 2026-11-23)
                 _CASH_CTX.line = thr * (1.0 if why == "plan" else slip) * o.get("frac", 1.0) or None   # retries' bar
                 _CASH_CTX.cost_floor = None if cutting else h["cost"] * o.get("frac", 1.0)
                 _CASH_CTX.cutting = cutting
+                _CASH_CTX.first_offer = first_offer if cutting else None   # #396: EVERY loss-cut round keeps 97% of the episode's FIRST offer
                 msg = accept_cash(t, floor=h["cost"] * o.get("frac", 1.0)) if mode == "never" else accept_cash(t)
             finally:
                 _CASH_CTX.auto, _CASH_CTX.line, _CASH_CTX.cost_floor, _CASH_CTX.cutting = False, None, None, False
+                _CASH_CTX.first_offer = None
             info = CASH_LAST.pop(t, None) or {}
             result = "sold" if msg.startswith("✅") else "check" if msg.startswith("⚠️") else "failed"
             stop = info.get("stop") or {"sold": "sold", "check": "unknown"}.get(result, "")
@@ -5721,7 +5805,8 @@ def auto_sell_now(plan):
             if result == "failed":
                 wait = stop in COMBO_BACKOFF_STOPS
                 if wait:                                  # re-tried when the game or the price changes, not on a clock
-                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip))
+                    combo_wait_start(t, h, bkey, rec["offer"], info, thr * (1.0 if why == "plan" else slip),
+                                     cutting=cutting and why == "cut loss", agreed=info.get("agreed"))
                 note = combo_fail_note(h["label"], info, stop, wait, msg)
                 told = MINE.setdefault("combo_fail_told", {})
                 if time.time() - told.get(t, 0) >= COMBO_FAIL_TELL:
@@ -5769,7 +5854,13 @@ COMBO_RETRY_MOVE = 0.05   # 5% of the combo's value / offer / line, and at least
 COMBO_RETRY_MIN_P = 0.02  # 2 points of chance (a 5% move on a 10% chance is noise)
 COMBO_RETRY_MIN_USD = 0.25  # 25 cents of offer or line
 COMBO_RETRY_GAP = 5       # seconds
-COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now"}
+COMBO_WAIT = {}           # ticker -> {"key", "snap", "p", "offer", "line", "at", "total", "told", "why_now", + the #396 clock keys}
+# #396 (Pete's decision): a stuck LOSS CUT (never a profit sale) is also retried on a clock, a safety valve for when
+# nothing moves. Every bound still applies: Pause (auto_sell_now returns first), rule 8 (an unknown outcome is never
+# retried), the 97%-of-the-FIRST-offer guard across rounds, the smart-sell line, and at most LOSSCUT_CLOCK_MAX of
+# these clock tries per position (kept in memory; a restart or a sale starts it over).
+LOSSCUT_CLOCK_SECS = 300  # 5 minutes after the last failed round or clock try
+LOSSCUT_CLOCK_MAX = 6     # at most 6 clock tries per position (about 30 minutes), then it waits for a real change only
 
 
 def combo_game_snap(h):
@@ -5792,13 +5883,17 @@ def _game_changed(a, b):
     return set(da) != set(db) or any(da[k] is not None and db[k] is not None and da[k] != db[k] for k in da)
 
 
-def combo_wait_start(t, h, key, offer, info, line):
-    """A round failed: remember the game and the price, so the next try waits for one of them to change."""
+def combo_wait_start(t, h, key, offer, info, line, cutting=False, agreed=None):
+    """A round failed: remember the game and the price, so the next try waits for one of them to change.
+    #396: also whether it was a loss cut, the episode's FIRST offer (kept across rounds) and the clock tries used."""
     prev = COMBO_WAIT.get(t) or {}
-    total = (prev.get("total", 0) if prev.get("key") == key else 0) + 1
+    same = prev.get("key") == key
+    total = (prev.get("total", 0) if same else 0) + 1
     last = ((info or {}).get("tries") or [{}])[-1].get("offer") or offer
     COMBO_WAIT[t] = {"key": key, "snap": combo_game_snap(h), "p": h.get("p") or 0.0,
-                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total}
+                     "offer": (info or {}).get("low_offer") or last, "line": line, "at": time.time(), "total": total,
+                     "cutting": bool(cutting), "first": (prev.get("first") if same and prev.get("cutting") and prev.get("first") else agreed),   # a profit round's offer is not a loss cut's first
+                     "clock_n": prev.get("clock_n", 0) if same else 0, "clock_at": time.time()}
 
 
 def _moved(a, b, least):
@@ -5806,7 +5901,25 @@ def _moved(a, b, least):
     return abs(a - b) >= max(COMBO_RETRY_MOVE * max(abs(a), abs(b)), least)
 
 
-def combo_wait_why(t, h, f, line):
+def first_offer_floor(first):
+    """#396: the least a loss cut's offer may be, measured from the episode's FIRST offer (97%, the same CASH_SLIP guard)."""
+    return CASH_SLIP * first
+
+
+def _clock_due(w, kind):
+    """#396: '' unless this wait is a stuck loss cut whose 5 minutes are up and whose clock tries are not used up.
+    Anything odd or missing in the wait record means no clock retry (fail closed)."""
+    try:
+        if not (w.get("cutting") and kind == "cut loss" and w.get("first")):
+            return ""
+        if w.get("clock_n", 0) >= LOSSCUT_CLOCK_MAX:
+            return "cap"
+        return "due" if time.time() - float(w["clock_at"]) >= LOSSCUT_CLOCK_SECS else ""
+    except Exception:
+        return ""
+
+
+def combo_wait_why(t, h, f, line, kind=""):
     """'' to go ahead, else why this combo still waits after buyers backed out (logged once a wait). Something must
     have changed since the failed round: the games (combo_game_snap), the combo's chance, the cached offer, the line."""
     w = COMBO_WAIT.get(t)
@@ -5824,8 +5937,17 @@ def combo_wait_why(t, h, f, line):
            "the combo's chance moved" if _moved(h.get("p"), w["p"], COMBO_RETRY_MIN_P) else
            "the offer moved" if seen and _moved(seen, w["offer"], COMBO_RETRY_MIN_USD) else
            "the smart-sell line moved" if _moved(line, w["line"], COMBO_RETRY_MIN_USD) else "")
+    clock = _clock_due(w, kind) if not why else ""
+    if clock == "due":                               # #396: nothing moved, but a stuck loss cut gets its 5-minute try
+        w["clock_n"] = w.get("clock_n", 0) + 1
+        why = f"loss-cut clock retry {w['clock_n']} of {LOSSCUT_CLOCK_MAX} (every {LOSSCUT_CLOCK_SECS // 60} min)"
+    if clock == "cap" and not w.get("cap_told"):
+        w["cap_told"] = True
+        log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped", "round": w["total"],
+                      "why": f"loss-cut clock retries used up ({LOSSCUT_CLOCK_MAX}); waiting for the game or price to change"})
     if why:                                          # go (logged with the next round); the new state is the baseline,
-        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False)
+        w.update(why_now=why, at=time.time(), snap=snap, p=h.get("p") or 0.0, line=line, told=False,
+                 clock_now=bool(clock == "due"), clock_at=time.time())
         if seen:                                     # so a pass that then skips for another reason waits again
             w["offer"] = seen
         return ""
@@ -5857,9 +5979,9 @@ def combo_fail_note(label, info, stop, wait, msg):
             "offer too low": f"the buyer backed out {tries} and the next offer "
                              f"({money((info or {}).get('low_offer') or 0)}) was {_low_words(info or {})}"}.get(stop)
     head = f"🤖 Auto cash-out tried to sell {label}: {said}, so nothing was sold." if said else \
-        "🤖 Auto cash-out didn't sell: " + re.sub(r"\s*Tap .*$", "", msg)
-    return head + (" It will try again when the game or the price changes." if wait
-                   else " It will try again on the next check.")
+        f"🤖 Auto cash-out didn't sell {label} this time (Kalshi didn't take the sale), so nothing was sold."   # no raw error text (#384)
+    return head + (" Still holding, and we'll keep watching: it will try again when the game or the price changes." if wait
+                   else " Still holding, and we'll keep watching: it will try again on the next check.")
 
 
 def notify(msg):
@@ -6682,7 +6804,7 @@ def plan_words(t, f, o, h, W):
         shown, over = sell_line_shown(thr, sell_top(pays))      # never "cash out at $14" on a $13 combo (#371)
         return (f"Waiting is worth more: {'the game under way' if nxt[1] else 'the next game'} "
                 f"({chance_pct(nxt[0])} to go your way) makes this combo worth more to sell after. "
-                + (f"No offer Kalshi can make beats waiting: it pays {money(pays)} at most." if over else
+                + (f"No offer can beat waiting: it pays {money(pays)} at most." if over else
                    f"Worth cashing out at about ${shown:,.2f}."))
     return f"Holding is worth about {money(single_value(p, pays, W))} to you, more than this offer."
 
@@ -7019,7 +7141,7 @@ def game_detail(event_id, code, max_age=6, budget=None):
     path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
     # football only (slice 1); the event id must be the plain numeric ESPN id (defence in depth: a bad value is
     # already handled below, but guard it explicitly so a surprising id never reaches the ESPN fetch).
-    if not event_id or "football/" not in str(path) or not re.match(r"^\d+$", str(event_id)):
+    if not event_id or "football/" not in str(path) or not re.fullmatch(r"[0-9]+", str(event_id)):
         return {}
     got = GAME_DETAIL.get(event_id)
     if got and time.time() - got[0] < max_age:
@@ -9613,6 +9735,8 @@ def _accept_with_retries(ticker, o, h, label, frac, agreed, floor=None):
         floor = cost_floor if floor is None else max(floor, cost_floor)
     if line is not None and auto and getattr(_CASH_CTX, "cutting", False):
         line = max(line, CASH_SLIP * agreed)  # a loss cut's line can be near 0: never under 97% of its first offer
+        if getattr(_CASH_CTX, "first_offer", None):   # #396: a clock retry also keeps the episode's FIRST offer
+            line = max(line, first_offer_floor(_CASH_CTX.first_offer))
     info = CASH_LAST[ticker] = {"stop": "", "rounds": 0, "tries": [], "agreed": round(agreed, 2),
                                 "line": None if line is None else round(line, 2),
                                 "slip": None if line is not None else CASH_SLIP,
@@ -11053,7 +11177,8 @@ def order_intent(body):
         _refuse("the order had an unknown time limit")
     exp = _dec(body.get("expiration_time") if body.get("expiration_time") is not None else body.get("expiration_ts"))
     exp = None if exp is None or tif == "immediate_or_cancel" else int(exp // 1000 if exp > 10 ** 11 else exp)
-    reduce_only = bool(body.get("reduce_only"))
+    # a legacy sell can only close a position: without this, sell YES becomes an ask that BUYS NO (GitHub #102)
+    reduce_only = bool(body.get("reduce_only")) or (legacy is not None and legacy.get("action") == "sell")
     if reduce_only and tif != "immediate_or_cancel":
         _refuse("Kalshi now only takes sell-only orders that fill at once, so this standing sell order wasn't "
                 "placed", "app_reduce_only_resting")
@@ -12226,9 +12351,12 @@ def get_offer(i, amount=None, check_cap=True):
             cand = {"id": "quote:" + "+".join(l["ticker"] for l in legs_now), "kind": "combo", "live": True,
                     "code": _combo_code(legs_now), "legs": legs_now, "stake": stake, "pct": pct,
                     "fair_mult": fair_pay / CTX["stake"]}
-            exit_ok, _ = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote")
-        except Exception:
-            exit_ok = False
+            exit_ok, exit_why = inplay_exit_ok(cand, sim=_sb_sim(cand, None), source="quote", force_log=True)
+        except Exception as err:
+            exit_ok, exit_why = False, f"error {type(err).__name__}"
+        print(f"combo quote exit-route check (live green Buy): {'passed' if exit_ok else 'held back'}"   # (#397) log only
+              f"{'' if exit_ok else ' (' + str(exit_why)[:80] + ')'} at {pct:.0%} of fair "
+              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
         if not exit_ok:
             ok, why = False, "inplay"
     if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
@@ -15775,6 +15903,36 @@ def _killer_single(ticker, n, price):
     return True, f"Bought {filled:g} at {price * 100:.0f}¢."
 
 
+RECENT_BUYS = {}                # market ticker -> when a single was just bought (or may have been): display only (#414)
+RECENT_BUY_SECS = 600           # how long that keeps the market's card out of the pick lists, until the account shows it
+
+
+def held_markets():
+    """Tickers of the single game / spread / total markets Pete holds, just bought (last 10 minutes) or has an unclear
+    order on, from what is already in memory (never a lookup). The Build pick lists leave these out so the market he just
+    bought is not offered again (#414). Display only: no buy path reads it. Anything unreadable adds nothing."""
+    out = set()
+    try:
+        for x in _overlap_singles():
+            if x.get("t") and x.get("state") not in ("over", "done"):
+                out.add(x["t"])
+    except Exception:
+        pass
+    try:
+        for b in order_blocks():
+            if b.get("ticker") and not is_combo(b["ticker"]):
+                out.add(b["ticker"])
+    except Exception:
+        pass
+    now = time.time()
+    for t, at in list(RECENT_BUYS.items()):
+        if now - at < RECENT_BUY_SECS:
+            out.add(t)
+        else:
+            RECENT_BUYS.pop(t, None)
+    return out
+
+
 def buy_single(ticker, n, price, coid=None, exact=False):
     """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap.
     coid: a client order id of the caller's (a manual buy uses its quote's, so Kalshi itself sees one order).
@@ -15796,11 +15954,14 @@ def buy_single(ticker, n, price, coid=None, exact=False):
     except Exception as err:
         if order_outcome(err) == "unknown":
             ACCT_CACHE["at"] = 0
+            RECENT_BUYS[ticker] = time.time()          # display memory only (#414): the card leaves Best bets meanwhile
             raise                                      # may have gone through: the caller marks it "check"
         return 0, f"Kalshi didn't take the order: {order_words(err)}"
     filled = float(o.get("fill_count_fp") or o.get("fill_count") or
                    (body["count"] - float(o.get("remaining_count") or 0) if o.get("status") == "executed" else 0))
     ACCT_CACHE["at"] = 0
+    if filled:
+        RECENT_BUYS[ticker] = time.time()              # display memory only (#414)
     return filled, None
 
 
@@ -16734,6 +16895,8 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
                 pass
             _manual_note(t, n * per, log)
             log(f"idea single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
+            if key:
+                idea_mark_bought([t])                  # may have gone through: the idea stays off the list (#270)
             return {"ok": False, "check": True,
                     "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi before "
                            "trying again; the app won't send it again."}
@@ -16743,6 +16906,8 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
             return {"ok": False, "msg": err or f"Nobody was selling at {price * 100:.0f}¢ any more. Nothing was bought."}
         _manual_note(t, filled * per, log)            # before the answer goes back; never lost (see _manual_note)
     log(f"single bought: {filled:g} of {t} at {price:.2f}")
+    if key:
+        idea_mark_bought([t])                          # the Mac's own record, not only the phone's follow-up (#270)
     return {"ok": True, "pays": filled, "msg": f"Bought {filled:g} contract{'s' * (filled != 1)} at {price * 100:.0f}¢: "
                                                f"pays {money(filled)} if it wins."}
 
@@ -17022,6 +17187,22 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None, seen=None):
                 st["items"][r["key"]] = base
         save_json(IDEA_DISMISS, st)
     return {"n": len(take), "ids": [r["idea_id"] for r in take]}
+
+
+def idea_mark_bought(legs, now=None):
+    """The Mac's own note that a Buy idea was bought, or may have been (#270): so the idea stays gone after a lost reply,
+    a reload or another phone, not only when the phone's follow-up dismiss lands. Hiding is the safe side: it only ever
+    takes an idea off the list. Never raises, never blocks the order's answer. Returns True when it was written."""
+    try:
+        now = now or time.time()
+        with file_lock(IDEA_DISMISS):
+            st = _idea_state(now)
+            st["bought"][idea_key(legs)] = now
+            save_json(IDEA_DISMISS, st)
+        return True
+    except Exception as err:
+        console_note(f"idea bought mark: {type(err).__name__}: {err}")
+        return False
 
 
 def idea_undismiss(ids=None, everything=False, now=None):
@@ -19403,6 +19584,7 @@ def panel_collect(book_snap, code, log=print):
         mkt_fair_shadow(code, games, cands, lc_all)
     except Exception as err:
         log(f"market fair {code}:", type(err).__name__, err)
+    signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -20791,7 +20973,7 @@ def panel_reprice(pid, paused=False, now=None):
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair: too far over to trust. The "
                "chance it's priced on is probably wrong, so the panel wouldn't buy it.")
     elif under:
-        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}, {pct:.0%} of fair, but {under}."
+        would, why = False, f"Kalshi pays {money(q['pays'])} for {money(stake)}. {_cap1(under.rstrip().rstrip('.'))}."
     else:
         why = (f"Kalshi pays {money(q['pays'])} for {money(stake)}: {pct:.0%} of its fair payout"
                f"{' on the live chance' if live else ''}. The panel's bar is {cut:.0%}.")
@@ -24304,13 +24486,13 @@ def knob_brake_check(sales, ev=None):
     ev = ev or KNOB_BRAKE
     n = ev["losses"]
     if len(sales) >= n and all(p < -KNOB_EPS for _, p, _ in sales[-n:]):
-        return (f"the last {n} sales the app made on its own all got less than holding was expected to pay when they "
-                f"sold (${-sum(p for _, p, _ in sales[-n:]):.2f} less)")
+        return (f"the last {n} sales the app made on its own all got less than holding was worth at the time "
+                f"they sold (${-sum(p for _, p, _ in sales[-n:]):.2f} less)")
     stake = sum(s for _, _, s in sales)
     net = sum(p for _, p, _ in sales)
     if len(sales) >= KNOB_BRAKE_MIN_SALES and stake > 0 and net < -ev["month_share"] * stake:
         return (f"over the last 30 days the sales the app made on its own got ${-net:.2f} less than holding was "
-                f"expected to pay when they sold, {-net / stake:.0%} of the ${stake:.2f} they staked")
+                f"worth at the time they sold, {-net / stake:.0%} of the ${stake:.2f} they staked")
     return None
 
 
@@ -26334,16 +26516,31 @@ def _sb_sim(c, now):
 
 
 SB_UNDER_FAIR = 1.0        # a combo priced under this share of its fair value loses money held to the end (#142 leak 1)
-SB_UNDER_FAIR_WHY = ("it loses money if held to the end, and smart sell isn't likely to cash it out early for a "
-                     "profit")
+SB_UNDER_FAIR_WHY = ("Selling early could still make a profit, but not often enough to make up for that, so it is "
+                     "left out")
+
+
+def _gap_words(pct):
+    """How far under fair a share-of-fair is, in whole percent, rounded the way the pages round it (a share that shows
+    as 99% on screen reads '1% under'; just under 100% reads 'a little under'). Wording only."""
+    gap = max(0.0, 1.0 - float(pct))
+    return "a little" if gap < 0.005 else f"about {math.floor(gap * 100 + 0.5):d}%"
 
 
 def _sb_under_words(pct=None, pending=False):
-    """The plain reason an under-fair combo was left out (pending: smart sell's chance of a profit isn't checked yet)."""
-    head = f"Kalshi pays {pct:.0%} of what it's worth" if pct else "Kalshi pays less than it's worth"
+    """The plain reason an under-fair combo was left out: Kalshi's price is under what the picks are worth, so held to
+    the end it loses on average; selling early is the other way out (pending: not checked yet). Wording only."""
+    if pct:
+        lose = (1.0 - float(pct)) * 200                   # cents lost per $2 on average, held to the end
+        cents = "a fraction of a cent" if lose < 0.5 else f"about {math.floor(lose + 0.5):d}¢"
+        head = (f"Kalshi's price is {_gap_words(pct)} under what we think it's worth, so on average you'd lose "
+                f"{cents} per $2 if you held it to the end")
+    else:
+        head = ("Kalshi's price is under what we think it's worth, so on average you'd lose a little if you held it "
+                "to the end")
     if pending:
-        return f"{head}, so it loses money if held to the end; still checking whether smart sell could cash it out early"
-    return f"{head}: {SB_UNDER_FAIR_WHY}"
+        return f"{head}. Still checking whether selling early could make up for it."
+    return f"{head}. {SB_UNDER_FAIR_WHY}."
 
 
 def _sb_combo_pct(c):
@@ -27826,6 +28023,125 @@ def price_prune(now=None):
             n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
         if n > cap:
             store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+
+
+# ---- signal shadow (early-exit test, phase 1): sharp-book prob beside Kalshi's bid/ask, sibling-market bids and game
+# state, recorded for a later look at whether anything leads Kalshi's bid. Write-only: NOTHING in the engine reads these
+# tables (only tools/exit_replay.py's later phases, offline). It uses what the panel pass already holds in memory (the
+# sides' prices and books, the cached score feed): no request of its own. Every call is wrapped and swallows errors;
+# the flag defaults ON for recording ("sig_shadow": false in settings turns it off). Combo RFQ samples are NOT added:
+# held combos are already sampled in `offers`, and candidates would need extra quote calls.
+SIG = {"on": True, "sharp_every": 60, "rel_every": 120, "state_every": 60, "keep_days": 21, "cap": 300000,
+       "prune": 0.0, "seen": {}}
+
+
+def _sig_tables():
+    store_x("create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
+            "live int, line_live int)")
+    store_x("create index if not exists sig_sharp_ts on sig_sharp(ts)")
+    store_x("create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)")
+    store_x("create index if not exists sig_related_ts on sig_related(ts)")
+    store_x("create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
+            "down int, dist int, pts int)")
+    store_x("create index if not exists sig_state_ts on sig_state(ts)")
+
+
+def _sig_insert(batches):
+    """{table: [rows]} in one transaction under the history lock; best-effort, never raises."""
+    db = STORE.get("db")
+    if not db:
+        return
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for tbl, rows in batches.items():
+                if rows:
+                    db.executemany(f"insert into {tbl} values({','.join('?' * len(rows[0]))})", rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"signal shadow: {type(err).__name__}: {err}")
+
+
+def _sig_prune(now):
+    SIG["prune"] = now
+    for tbl in ("sig_sharp", "sig_related", "sig_state"):
+        store_x(f"delete from {tbl} where ts < ?", (now - SIG["keep_days"] * 86400,))
+        n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        if n > SIG["cap"]:
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - SIG["cap"],))
+
+
+def signal_shadow(code, games, lines=(), now=None):
+    """Record, from what the panel pass already has: (a) each side's sharp-book probability next to Kalshi's bid/ask
+    (about every 60 s), (b) the bids of one game's sibling markets side by side (about every 2 min), (c) the score,
+    clock and possession/down/pace fields of games under way, from the cached feed (about every 60 s). Returns the
+    rows written. Never raises, never reads the tables back into a decision, never fetches."""
+    try:
+        if not STORE.get("db") or not (CFG.get("sig_shadow", SIG["on"])):
+            return 0
+        now = now or time.time()
+        seen = SIG["seen"]
+        sharp, rel, state, by_game = [], [], [], {}
+        for e, sides in (games or {}).items():
+            for x in sides:
+                if x.get("tie") or not x.get("ticker"):
+                    continue
+                t = x["ticker"]
+                bid, ask = x.get("bid"), x.get("p")
+                if x.get("src") and x.get("fair") is not None and (bid or ask) and now - seen.get(("a", t), 0) >= SIG["sharp_every"]:
+                    seen[("a", t)] = now
+                    sharp.append((round(now, 1), t, round(x["fair"], 4), bid, ask, str(x.get("src"))[:20],
+                                  int(bool(x.get("live"))), int(bool(x.get("line_live")))))
+                if bid:
+                    by_game.setdefault(e, []).append((t, "win", bid, ask))
+                if x.get("live") and now - seen.get(("c", t), 0) >= SIG["state_every"]:
+                    seen[("c", t)] = now
+                    try:
+                        sc = leg_score({"ticker": t, "side": "yes"})          # cached scores only: never fetched here
+                        if sc and sc.get("state") == "in":
+                            s = sc.get("situation") if isinstance(sc.get("situation"), dict) else {}
+                            me, opp = int(sc.get("me") or 0), int(sc.get("opp") or 0)
+                            frac = round(float(sc["frac"]), 3) if sc.get("frac") is not None else None
+                            state.append((round(now, 1), t, me, opp, frac,
+                                          None if s.get("possession") is None else int(bool(s.get("possession"))),
+                                          s.get("down") if isinstance(s.get("down"), int) else None,
+                                          s.get("distance") if isinstance(s.get("distance"), int) else None, me + opp))
+                    except Exception:
+                        pass
+        for x in lines or ():
+            if x.get("ticker") and x.get("bid"):
+                ev = game_event(x.get("event") or "-".join(x["ticker"].split("-")[:2]))
+                by_game.setdefault(ev, []).append((x["ticker"], _bet_kind(x["ticker"]), x["bid"], x.get("p")))
+        for ev, ms in by_game.items():
+            if len(ms) >= 2 and now - seen.get(("b", ev), 0) >= SIG["rel_every"]:
+                seen[("b", ev)] = now
+                rel += [(round(now, 1), ev, t, k, b, a) for t, k, b, a in ms]
+        if len(seen) > 20000:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        rows = {"sig_sharp": sharp, "sig_related": rel, "sig_state": state}
+        n = sum(len(v) for v in rows.values())
+        if n:
+            _sig_tables()
+            _sig_insert(rows)
+        if now - SIG["prune"] > 6 * 3600:
+            _sig_tables()
+            _sig_prune(now)
+        return n
+    except Exception as err:
+        try:
+            console_note(f"signal shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
 
 
 # ---- exit_shadow: old (today's rules) vs new (Smart Buy) for every candidate, for later calibration

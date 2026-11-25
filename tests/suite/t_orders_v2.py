@@ -88,6 +88,19 @@ e = refused({"ticker": T, "action": "sell", "side": "yes", "count": 5, "yes_pric
              "time_in_force": "good_till_canceled", "reduce_only": True})
 ok("a standing (GTC) reduce-only sell is refused before sending (V2 takes reduce-only only with IOC)",
    e is not None and e.code == "app_reduce_only_resting" and "standing sell" in str(e))
+# GitHub #102 A: a legacy sell can only close a position, even when the caller forgot reduce_only
+fs = v2({"ticker": T, "action": "sell", "side": "yes", "count": 3, "yes_price": 52, "time_in_force": "immediate_or_cancel"})
+ok("legacy sell YES with no reduce_only flag is forced reduce-only (never opens a NO position)",
+   fs["side"] == "ask" and fs["reduce_only"] is True)
+fs = v2({"ticker": T, "action": "sell", "side": "no", "count": 3, "no_price": 30, "time_in_force": "immediate_or_cancel",
+         "reduce_only": False})
+ok("legacy sell NO with reduce_only False is still forced reduce-only", fs["side"] == "bid" and fs["reduce_only"] is True)
+e = refused({"ticker": T, "action": "sell", "side": "yes", "count": 5, "yes_price": 52})
+ok("a legacy sell with no flag and the default standing time limit is refused, not sent",
+   e is not None and e.code == "app_reduce_only_resting")
+ok("a legacy buy and a V2 order are not given reduce-only",
+   "reduce_only" not in v2({"ticker": T, "action": "buy", "side": "yes", "count": 1, "yes_price": 40}) and
+   "reduce_only" not in v2({"ticker": T, "side": "bid", "count": "1", "price": "0.40"}))
 ok("expiration: kept in seconds for GTC (ms converted), dropped for IOC",
    v2({"ticker": T, "action": "buy", "side": "yes", "count": 1, "yes_price": 40, "expiration_ts": 1800000000})[
        "expiration_time"] == 1800000000 and

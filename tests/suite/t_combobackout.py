@@ -76,7 +76,11 @@ out = tick(0)
 ok("failed round: 10 accepts, nothing sold", len(accepts) == 10, len(accepts))
 ok("...the push is a plain 'nothing was sold' note, no success lead",
    len(out) == 1 and "nothing was sold" in out[0] and "Took the profit" not in out[0] and "locking it in" not in out[0]
-   and "backed out 10 times" in out[0] and "try again" in out[0], out)
+   and "backed out 10 times" in out[0] and "try again" in out[0]
+   and "Still holding, and we'll keep watching" in out[0], out)    # warmer words (#384)
+ok("...the fallback note carries no raw error text",
+   "Tap to retry" not in E.combo_fail_note("Combo 3", {}, "weird", True, "HTTP 503 upstream. Tap to retry")
+   and "503" not in E.combo_fail_note("Combo 3", {}, "weird", True, "HTTP 503 upstream. Tap to retry"))
 f = [r for r in logs if r.get("result") == "failed"]
 ok("...one 'failed' line with round, tries, stop, offer, threshold, slip, why", len(f) == 1 and f[0]["round"] == 1
    and f[0]["stop"] == "cancelled" and f[0]["rounds"] == 10 and len(f[0]["tries"]) == 10 and f[0]["offer"] == 13.0

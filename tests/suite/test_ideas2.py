@@ -228,6 +228,17 @@ with sync_playwright() as pw:
             pg.evaluate("ideaPass('%s',false)" % pid); time.sleep(.8)
             if not pg.evaluate("!!document.querySelector('.iw[data-id=\"%s\"]')&&!!S.ideaq['%s']" % (pid, pid)) or "BBB" not in server_picks(): bad(f"{tag}: Pass must do nothing while a buy is in flight")
             pg.evaluate("S.ibuy={};S.ideaq={};clearInterval(S.ideaT);S.ideaT=null;renderLive()")
+        # (#270) a buy still on its way after the countdown ended (no fresh quote) shows Buying..., not Get today's price
+        seed(); inject(pg); pid = pg.evaluate("S.live.ideas[0].id")
+        pg.evaluate("S.ideaq={};S.ibuy={'%s':1};renderLive()" % pid); time.sleep(.3)
+        row = pg.evaluate("(()=>{const e=document.querySelector('.iw[data-id=\"%s\"] .dbtns');return e?{t:e.innerText,p:[...e.querySelectorAll('button')].map(b=>b.disabled)}:null})()" % pid)
+        if not row or "Buying" not in row["t"] or "price" in row["t"].lower() or not all(row["p"]): bad(f"{tag}: a buy in flight with no fresh quote should show a disabled Buying row: {row}")
+        if SHOTS and tag == "phone390":
+            for scheme in ("dark", "light"):
+                pg.emulate_media(color_scheme=scheme); time.sleep(.3)
+                pg.locator('.iw[data-id="%s"]' % pid).screenshot(path=os.path.join(SHOTS, f"buying_row_{scheme}.png"))
+            pg.emulate_media(color_scheme="dark")
+        pg.evaluate("S.ibuy={};renderLive()")
         # Pass on the detail page closes the page and dismisses
         seed(); inject(pg); pid = pg.evaluate("S.live.ideas.find(i=>i.picks.startsWith('CCC')).id")
         pg.evaluate("openIdea('%s')" % pid)
