@@ -12,6 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
+from contextlib import nullcontext
 import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
@@ -24,7 +25,7 @@ NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
 WATCHER_VERSION = "2026.11.24.139"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "learned_guards",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -3194,7 +3195,30 @@ def webapp_main():
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
 
+    CLOSED_CACHE = {}      # (#407) ticker -> (when, answer): one closed-bet page costs one account read and one log scan
+    CLOSED_TTL, CLOSED_TTL_MISS, CLOSED_CACHE_MAX = 20, 4, 64   # seconds kept (a miss only briefly: a bet just closed shows up soon)
+
     def api_closed(t):
+        """The closed-bet detail (api_closed_work), kept for CLOSED_TTL seconds per ticker so repeated requests (a page
+        refreshing, a scan of ids) don't each hold the account lock for an account read and rescan the whole sell log
+        (#407). A closed bet doesn't change, so the answer is the same; a bet that wasn't found is remembered for only a
+        few seconds. Anything that isn't a valid ticker is answered before the cache, as before."""
+        if not COMBO_TICKER.match(t or ""):
+            return {"found": False}
+        now = time.time()
+        hit = CLOSED_CACHE.get(t)
+        if hit and now - hit[0] < (CLOSED_TTL if hit[1].get("found") else CLOSED_TTL_MISS):
+            return hit[1]
+        out = api_closed_work(t)
+        if isinstance(out, dict):
+            for k in [k for k, v in CLOSED_CACHE.items() if now - v[0] > CLOSED_TTL]:
+                CLOSED_CACHE.pop(k, None)
+            while len(CLOSED_CACHE) >= CLOSED_CACHE_MAX:
+                CLOSED_CACHE.pop(next(iter(CLOSED_CACHE)), None)
+            CLOSED_CACHE[t] = (now, out)
+        return out
+
+    def api_closed_work(t):
         """Read-only detail of a bet that has already closed (sold, settled or expired), from what the app already stores:
         the account's bets, the history file, the automatic cash-out log. Only this bet's own ticker is looked up; nothing
         about the account itself goes out. found:False when it is nowhere (the page then says so)."""
@@ -3518,11 +3542,11 @@ def webapp_main():
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
-                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
+                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
-                "overlap_guard", "overlap_n", "overlap_pct")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode",
+                "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3569,7 +3593,7 @@ def webapp_main():
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
                         continue
-                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                    if k == "stop_loss_mode":           # #228 PR5: the 2-way choice (a saved 'never' becomes 'tune'); the old switch kept in step
                         A.sl_sync(A.CFG, {k: v})
                         continue
                     if k == "stop_loss":                # an older page's on/off may only make it stricter
@@ -3613,8 +3637,10 @@ def webapp_main():
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
-                             "blocks": A.order_blocks(),
+                             "blocks": A.order_blocks(), "flexfb": A.flex_fb_view(),
+                             "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
+                             "guards": A.guards_view(A.LEAGUE["code"]),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -3813,7 +3839,7 @@ def webapp_main():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
-                with tap_mark(a in ("go", "hedgego")):
+                with tap_mark(a in ("go", "hedgego")), (A.manual_sell_mark(t) if a == "go" else nullcontext()):   # (#400) the auto seller skips it
                     A.cash_action("drop" if a == "keep" else a, t)
                 LIVE["at"] = 0
                 o = A.MINE["cash"].get(t) or {}
@@ -4004,7 +4030,7 @@ def webapp_main():
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
                     return {"ok": False, "msg": A.NO_SELL_MSG}
-                with tap_mark():                        # an update never restarts the web app mid-order
+                with tap_mark(), A.manual_sell_mark(t):   # an update never restarts the web app mid-order; auto sells skip it (#400)
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
                 return jsonable(r)

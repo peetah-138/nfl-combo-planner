@@ -278,7 +278,7 @@ E.clear_my_rfqs = lambda t: sent.append(("CLEAR", t))
 did2 = E.carry_pass({}, log=lambda *a: None)
 ok("carry_pass: no price = an asked row (counts toward the day, never asked again), withdrawn",
    did2 and "no price" in did2[0] and E.store_rows("select count(*) n from carry where source='carry'")[0]["n"] == rows_c + 1
-   and ("DELETE", "/communications/rfqs/R2") in sent and any(x[0] == "CLEAR" for x in sent))
+   and ("DELETE", "/communications/rfqs/R2") in sent and not any(x[0] == "CLEAR" for x in sent))   # #350: never withdraws a request that is not its own
 ok("carry: asked rows never show as quotes", sum(r["quotes"] for r in E.carry_summary()["rows"]) ==
    E.store_rows("select count(*) n from carry where price is not null")[0]["n"])
 E.KICKOFF["KXNBAGAME-X1"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 600))
