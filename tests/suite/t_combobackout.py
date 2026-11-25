@@ -48,6 +48,7 @@ def fake_accept(o, t=None):
 
 
 E.accept_once = fake_accept
+E.combo_live_fair = lambda legs, now=None: (None, "no live chance in this test")   # Flexible sell price (default on) reads live chances: none here, so it fails closed to the old rule
 real_log = E.log_decision
 E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 plan = {"acts": {}}
