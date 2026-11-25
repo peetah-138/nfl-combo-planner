@@ -224,3 +224,22 @@ bodies = [b for b in src.split("\ndef ") if not b.startswith("more_shadow(")]
 ok("no decision code reads the shadow table", not any("from more_shadow" in b or "join more_shadow" in b for b in bodies))
 if os.environ.get("DBG"):
     pass
+
+# ---- review fixes: a saved cap is bounded, a NaN saved limit can't switch the limit off, the logged net uses Kalshi's rounded fee
+E.save_json(E.MAIN_SAVED, {"sell_more_cheap": True, "sell_more_loss": True, "sell_more_cap": 1e9}); E.MORE_SW.update(at=0, v=None)
+ok("a huge saved daily limit reads as the slider's top ($200), never more", E.more_settings()["cap"] == 200.0)
+E.save_json(E.MAIN_SAVED, {"sell_more_cheap": True, "sell_more_loss": True, "sell_more_cap": "nan"}); E.MORE_SW.update(at=0, v=None)
+ok("a NaN saved limit reads as the $50 start", E.more_settings()["cap"] == 50.0)
+E.save_json(E.MAIN_SAVED, {"sell_more_cheap": True, "sell_more_loss": True, "sell_more_cap": 50.0}); E.MORE_SW.update(at=0, v=None)
+open(E.MORE_FILE, "w").write('{"mult": NaN, "paused_until": 0, "n": 0, "gain": 0, "why": ""}')
+E.more_replay = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+E.MORE_LIM["v"] = None
+v = E.more_limit(fresh=True)
+ok("a NaN in the saved limit file falls to the smallest limit, not an unlimited one", v["limit"] == 10.0)
+E.more_replay = real_rep
+E.MORE_LIM.update(at=_real_time(), v={"limit": float("nan"), "paused": False})
+ok("a NaN limit blocks a sale (the cap check fails closed)", E.more_cap_blocks(1.0) is True)
+E.MORE_LIM["v"] = None
+setsw(); put(0.56, 0.58, 3.8)
+ok("a smart-sell-more sale's logged net uses the order's rounded fee",
+   bool(logs) and logs[-1].get("net") == round(10 * (0.56 - E.single_fee(0.56, 10)), 2))

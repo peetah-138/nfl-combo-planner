@@ -6275,6 +6275,7 @@ MORE_LOSS = 0.15           # B: the cut-off stand-in (the self-tuning registry's
 MORE_AGE = 120             # seconds: the quote must come from a Kalshi fetch no older than this
 MORE_PROG_MIN = 0.50       # B: never earlier in the game than this share played, whatever the tuner learned
 MORE_CHECKS_MIN = 3        # B: never fewer confirming checks than this, whatever the tuner learned
+MORE_CAP_MAX = 200.0        # the Settings slider's top: a saved number above it (the watcher accepts any float) reads as this
 MORE_CAP_DEFAULT = 50.0    # the STARTING dollars a day through A and B together (gross sale value); unreadable = this
 MORE_SW = {"at": 0.0, "v": None}
 
@@ -6298,6 +6299,7 @@ def more_settings():
                 cap = float(raw)
                 if not math.isfinite(cap) or cap < 0:
                     cap = MORE_CAP_DEFAULT
+                cap = min(cap, MORE_CAP_MAX)
             except (TypeError, ValueError):
                 cap = MORE_CAP_DEFAULT
             v = {"a": shared_flag("sell_more_cheap"), "b": shared_flag("sell_more_loss"), "cap": cap}
@@ -6504,6 +6506,8 @@ def more_limit(now=None, fresh=False):
         try:
             r = {"mult": float(d["mult"]), "paused_until": float(d.get("paused_until") or 0), "n": int(d.get("n") or 0),
                  "gain": float(d.get("gain") or 0), "why": str(d.get("why") or "")}
+            if not math.isfinite(r["mult"]) or not math.isfinite(r["paused_until"]):
+                raise ValueError("non-finite saved state")   # NaN would make every comparison false: never a limit
             if r["paused_until"] and now >= r["paused_until"]:
                 r["mult"], r["paused_until"] = MORE_MIN_MULT, 0.0
         except (KeyError, TypeError, ValueError):
@@ -6533,7 +6537,7 @@ def more_view():
 def more_cap_blocks(offer):
     """Whether this sale would take today's smart-sell-more total over today's limit (more_limit). Fails closed."""
     done = more_sold_today()
-    return done is None or done + float(offer or 0) > more_limit()["limit"] + 1e-9
+    return done is None or not (done + float(offer or 0) <= more_limit()["limit"] + 1e-9)   # NaN blocks too
 
 
 # smart sell more's shadow record: per pass and held single, what A and B would do (and the numbers behind it), to
@@ -6631,7 +6635,7 @@ def smart_sell_singles():
                "live": x.get("state") == "live", "ask": ask}
         if path:                                      # smart sell more: tagged for the cap and the scorecard
             rec.update(more=path, chance=ev["q"], ref_age=ev["age"],
-                       net=round(x["n"] * (bid - single_fee(bid)), 2))
+                       net=round(x["n"] * (bid - single_fee(bid, x["n"])), 2))   # Kalshi's per-order rounded fee
         if sl_mode() == "never" and (not x.get("cost") or not bid
                                      or x["n"] * (bid - single_fee(bid, x["n"])) < x["cost"]):   # unknown cost = skip
             log_decision(dict(rec, result="skipped", why="below what you paid"))   # 'Never sell at a loss' (#228)
