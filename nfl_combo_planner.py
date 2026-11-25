@@ -9109,6 +9109,10 @@ def kalshi_live_kick(events, budget=None):
                     kalshi_live_refresh(evs)
                 except Exception as err:
                     print("kalshi live data:", type(err).__name__, err)
+                try:
+                    espn_mma_refresh(evs)
+                except Exception as err:
+                    klive_log_once("espn_ufc_refresh", "", err)
             th = threading.Thread(target=run, daemon=True, name="klive")
             KLIVE_JOB["t"] = th
             th.start()
@@ -9221,10 +9225,18 @@ def kalshi_score(l, max_age=900):
     """_kalshi_score, but a bad field in Kalshi's feed means "no score" for that game only (logged once), never an
     error that could stop the page build and the auto cash-out that follows it."""
     try:
-        return _kalshi_score(l, max_age)
+        sc = _kalshi_score(l, max_age)
     except Exception as err:
         klive_log_once("kalshi", (l or {}).get("ticker") if isinstance(l, dict) else l, err)
-        return None
+        sc = None
+    if isinstance(l, dict) and (l.get("ticker") or "").upper().startswith("KXUFC"):
+        try:                                   # a fight: ESPN's round and clock while it's on, or when Kalshi has nothing
+            es = espn_mma_score(l)
+            if es and (not sc or (es["state"] in ("in", "post") and sc["state"] != "post")):
+                sc = es
+        except Exception as err:
+            klive_log_once("espn_ufc", l.get("ticker"), err)
+    return sc
 
 
 def _kalshi_score(l, max_age=900):
@@ -9317,6 +9329,143 @@ def _espn_has(l):
         return bool(leg_score(l))
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------- ESPN's UFC scoreboard (display only, issue #25)
+# Kalshi's live data has no verified in-fight fields for UFC. ESPN's free mma/ufc scoreboard (the same site the other
+# scores come from, through the same hub cache when the Mac is up) has each fight's round, clock and winner. Shown
+# only, like Kalshi's data: leg_score, fetch_scores and SCORES_BY never see it. A fight is matched by the two
+# 3-letter name codes in its Kalshi ticker (KXUFCFIGHT-26DEC05REBBRE) and its date; anything unsure shows nothing.
+ESPN_MMA = {"boards": {}, "cool": 0.0}          # "" (ESPN's current card) or a YYYYMMDD -> {"at", "games"}
+ESPN_MMA_LIVE, ESPN_MMA_IDLE, ESPN_MMA_DAYS = 8, 120, 2   # seconds kept while a fight is on / otherwise; most extra dated boards
+
+
+def _mma_codes(name):
+    """Name codes Kalshi might use for a fighter: the first three letters of each name part, accents dropped."""
+    import unicodedata
+    flat = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().upper()
+    return {w[:3] for w in re.findall(r"[A-Z]+", flat) if len(w) >= 3}
+
+
+def espn_mma_parse(events):
+    """ESPN mma/ufc scoreboard events -> a flat list of fights. Never raises on an odd field: that fight is left out."""
+    out = []
+    for ev in events if isinstance(events, list) else []:
+        for comp in (ev.get("competitions") or []) if isinstance(ev, dict) else []:
+            try:
+                st = comp.get("status") or {}
+                typ = st.get("type") or {}
+                fs = comp.get("competitors") or []
+                if len(fs) != 2:
+                    continue
+                names = [((f.get("athlete") or {}).get("fullName") or (f.get("athlete") or {}).get("displayName") or "")
+                         for f in fs]
+                if not all(names):
+                    continue
+                out.append({"id": str(comp.get("id") or ""), "start": comp.get("date") or ev.get("date") or "",
+                            "day": espn_day(comp.get("date") or ev.get("date")),
+                            "state": typ.get("state") or "pre", "name": str(typ.get("name") or ""), "done": bool(typ.get("completed")),
+                            "period": int(st.get("period") or 0), "clock": str(st.get("displayClock") or "").strip(),
+                            "rounds": ((comp.get("format") or {}).get("regulation") or {}).get("periods"),
+                            "names": names, "codes": [_mma_codes(n) for n in names],
+                            "won": [bool(f.get("winner")) for f in fs]})
+            except (AttributeError, TypeError, ValueError):
+                continue
+    return out
+
+
+def espn_mma_refresh(events, now=None):
+    """Keep ESPN's UFC boards fresh for these fights' event tickers (only KXUFC ones). Light: the current card, plus
+    at most ESPN_MMA_DAYS dated boards for fights it doesn't show; 8 s while a fight is on, else 2 min; the last
+    good copy is kept and a failure pauses the asking for 60 s."""
+    import time
+    now = now or time.time()
+    days = {ticker_day(e) for e in events if (e or "").upper().startswith("KXUFC")}
+    if not days or now < ESPN_MMA["cool"]:
+        return 0
+    asked = 0
+
+    def board(key, params):
+        """Ask for one board if its copy is old; False when ESPN said no (pause)."""
+        nonlocal asked
+        b = ESPN_MMA["boards"].get(key)
+        if b and now - b["at"] < (ESPN_MMA_LIVE if any(g["state"] == "in" for g in b["games"]) else ESPN_MMA_IDLE):
+            return True
+        asked += 1
+        try:
+            r = requests.get(f"{ESPN_SITE}/mma/ufc/scoreboard", params=params, timeout=6)
+            evs = r.json().get("events") if r.ok else None
+            if not isinstance(evs, list):
+                raise ValueError("odd answer")
+        except (requests.RequestException, ValueError, AttributeError):
+            ESPN_MMA["cool"] = now + 60
+            return False
+        ESPN_MMA["boards"][key] = {"at": now, "games": espn_mma_parse(evs)}
+        return True
+
+    if not board("", {}):
+        return asked
+    have = {g["day"] for g in ESPN_MMA["boards"][""]["games"]}
+    for d in sorted(x for x in days if x and not any(h and abs((h - x).days) <= 1 for h in have))[:ESPN_MMA_DAYS]:
+        if not board(f"{d:%Y%m%d}", {"dates": f"{d:%Y%m%d}"}):
+            break
+    for k, b in list(ESPN_MMA["boards"].items()):      # forget old boards
+        if now - b["at"] > 6 * 3600:
+            ESPN_MMA["boards"].pop(k, None)
+    return asked
+
+
+def espn_mma_score(l, max_age=900):
+    """The fight this pick is on, from ESPN's UFC scoreboard, shaped like kalshi_score's (no points), or None. It carries
+    src='kalshi' (the page's flag for 'a display-only feed, not the usual score source') and via='espn'."""
+    import time
+    t = l.get("ticker") or ""
+    if not t.upper().startswith("KXUFC") or "-" not in t:
+        return None
+    ev, suffix = t.rsplit("-", 1)
+    m = re.search(r"-\d{2}[A-Z]{3}\d{2}(?:\d{4})?([A-Z]{6})$", ev)
+    if not m or suffix.upper() not in (m.group(1)[:3], m.group(1)[3:]):
+        return None
+    a, b, day = m.group(1)[:3], m.group(1)[3:], ticker_day(ev)
+    hits = []
+    for bd in list(ESPN_MMA["boards"].values()):
+        if time.time() - bd["at"] > max_age:
+            continue
+        for g in bd["games"]:
+            if day and g["day"] and abs((g["day"] - day).days) > 1:
+                continue
+            for i in (0, 1):
+                if a in g["codes"][i] and b in g["codes"][1 - i] and (g["id"], i) not in [(h[0]["id"], h[1]) for h in hits]:
+                    hits.append((g, i))
+    if len({h[0]["id"] for h in hits}) != 1 or len({h[1] for h in hits}) != 1:
+        return None                                   # no fight, or two fights it could be: say nothing
+    g, ia = hits[0]
+    mine = ia if suffix.upper() == a else 1 - ia
+    if l.get("side", "yes") == "no":
+        mine = 1 - mine
+    state, rounds = g["state"], g["rounds"]
+    if state == "post" and not (g.get("done") or "FINAL" in g["name"].upper()):
+        return None                                   # cancelled / postponed: not a finished fight
+    if state == "post":
+        won = g["won"][mine] if any(g["won"]) else None
+        detail = ("Fight over" + (f" · R{g['period']} {g['clock']}" if g["period"] and g["clock"] not in ("", "-") else ""))
+    elif state == "in":
+        if not g["period"]:
+            detail = "In progress"
+        else:
+            detail = f"Round {g['period']}{' of ' + str(rounds) if rounds else ''}"
+            if "END" in g["name"].upper():
+                detail = "End of " + detail
+            elif g["clock"] not in ("", "-", "0:00"):
+                detail += f" · {g['clock']} in"       # ESPN's MMA clock counts UP (a decision ends at 5:00)
+        won = None
+    else:
+        detail, won = "", None
+    codes = [a, b] if mine == ia else [b, a]
+    return {"me": None, "opp": None, "abbr": codes[0], "opp_abbr": codes[1], "opp_name": "", "state": state,
+            "detail": detail, "start": g["start"], "ball": False, "redzone": False, "sport": "ufc", "game": g["id"],
+            "day": day, "wp": None, "frac": None, "src": "kalshi", "via": "espn", "won": won, "delayed": False,
+            "age": round(time.time() - max(bd["at"] for bd in list(ESPN_MMA["boards"].values())))}
 
 
 def display_score(l, points=True, pre=False):
