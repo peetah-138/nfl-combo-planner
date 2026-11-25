@@ -112,7 +112,7 @@ Real money is involved. Pete uses it daily.
    ended), and when the brake trips a league goes back to its start numbers but **never looser than what it had
    learned** (per number, the stricter of the two). Nothing raises `hedge_cap` or `auto_cap` yet (a later #228 PR wires
    their judge); a value Pete sets himself is never lowered or clamped. **Since 2026.11.21.134** (#228 PR5-PR7) the
-   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok` (a loss sale only, behind `learned_guards`, see docs/changes/learned-guards.md),
+   loss guards and their confirmation counts tune live too, and the stop-loss switch is the 3-way choice; `break_ok` (a loss sale only, behind `learned_guards`, see Selling),
    the hedge lock-in numbers, the `hedge_cap` raise (ceiling $150, `HEDGE_RAISE_LIVE = False`) and Smart Buy's
    `sb_ev_min` are still watch-only (Selling).
    **Smart Buy graduation (Pete's standing opt-in, 2026-11-21; not built yet):** per league, once Smart Buy clears
@@ -209,7 +209,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.24.139`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.25.140`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -280,6 +280,17 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   interleaved (no product code changed). Already fixed on develop: #189 (#234: hermetic engine tests, netguard), #331 (#330:
   `_clear_of_starts` pins the test clock), #298 (`run_checks.sh` counts a non-zero exit status as FAIL), #159 (`_SID` counter
   in `store_suggestion`, #220).
+- **Engine tests no longer depend on the time of day (no product change).** `t_panelpipe` and `t_review` failed on CI runs
+  between 1 a.m. and 4 a.m. Pacific (for example 11:54 UTC, 03:54 Pacific) and passed the rest of the day; it was not the
+  calendar date rolling over. Their fixtures put kickoffs at `now + 3h` and `now + 4h` by the wall clock, and the panel's
+  "today" deliberately ends at 4 a.m. Pacific (`_local_day_end`; the panel day itself starts at 4 a.m., `_panel_day`). In
+  that window the fixture games fell after the cut, were treated as tomorrow's, the panel came out empty and the tests
+  failed. Verdict: **test bug, not a product bug**; the 4 a.m. Pacific boundary is intended and unchanged, and no trading
+  behavior, sizing or money path was touched. `t_panelpipe` and `t_review` now pin the clock (`time.time` and
+  `E.dt.datetime.now`) to noon Pacific on 2026-11-24 (time still moves forward, only the start point is fixed). New
+  `t_clockday` pins the clock at the boundary: `_local_day_end` and `_panel_day` at 03:59 and 04:00 Pacific, and
+  `build_panel` at 02:00 and noon (a 03:30 game is today's, a 04:30 game is not, games 3h and 4h ahead at noon both are).
+  When writing a test with kickoffs relative to `now`, pin the clock first (see the top of `t_review`).
 - Both files compile (Python 3.10), `node --check` on every `watcher/spa/*.js` and on the assembled SPA's and
   `LOGIN_HTML`'s scripts, the spa files/manifest (`t_spa_files`) and the update path (`t_spa_update`),
   pyflakes for undefined names, secret grep.
@@ -564,6 +575,244 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     Tests: `t_comeback.py` (leakage, borrowed-only-stricter shrinkage, fail closed, a 300-state property test that the
     verdict is never looser than today's, features, logging/throttling, paper side, resolve and summary, the ideas gate with
     the switch off, every path uses it, no request); `t_inplay_exit.py`, `t_live_panel.py`, `t_orderbook.py` stub the layer.
+- **Killer combos respect the quote check's verdict (#398; stricter only).** `shadow_pass` used to take a killer combo on
+  `pct >= KILLER["combo_pct"]` alone, so a quote `get_offer` held back as `why="suspect"` (over `COMBO_SUSPECT` = 1.30 of
+  fair, a wrong chance far more often than a gift) or under its bar still reached `killer_check` and `killer_act`. Now
+  `ok=False` from `get_offer` is final for the killer combo path, in watch and on mode: the deal is skipped and logged
+  ("near-killer combo held back: the quote check said suspect (140% of fair)"). An ok quote behaves as before; killer mode
+  off logs nothing new. **Wider than "suspect" (Pete chose to KEEP this):** the skip is on ANY `ok=False` verdict, so it also
+  covers the **inplay** and **longshot** verdicts and combos **under the green bar**, even when the quote is above the 115%
+  killer line; such a quote is held back and logged with the verdict's own words. Fewer killer buys, never more; no new
+  switch; no valuation, early-exit, caps, Pause or rule 8 change. Test: `t_killer_suspect.py` (suspect and under-bar quotes
+  skipped with a logged reason in watch and on mode; an ok quote still reaches the killer check and act).
+- **`mkt_learn` recency-stability veto (#345; stricter only, not a true holdout).** `mkt_learn` keeps a grid weight on the
+  books when it beats Kalshi's mid by `MKT["gain"]` (0.002) and 2 standard errors over 200+ settled markets. It now also
+  needs the same weight to beat the mid on the newest 30% of that league/bet type/phase's settled markets **by game date**
+  (`kick`, else the log time; ties by id; `MKT["hold_share"]`): the log-loss gain on that slice must be above zero, otherwise
+  the weight is 0 (Kalshi's mid alone). The weight is still picked on all the markets, the newest 30% included, exactly as
+  before, and it never adds or raises a weight, so every learned weight is 0 or what the old rule gave. A vetoed weight moves
+  `longshot_leg_fair` from the blend to Kalshi's mid, so it can change which legs fall in the 65-80% band (the one place
+  behaviour can move: the paper table and the long-shot `mkt_weight` reads only see a weight that is 0 more often).
+  `MKT["hold_min"]` (30) is inert at `min_n` 200 (30% of 200 = 60); it only matters if `min_n` is lowered. Each `MKT_W` entry
+  also carries `hold_n`, `hold_gain` and `vetoed` (true when the in-sample bar was cleared and the holdout disagreed);
+  `mkt_fair_summary` groups show `hold_gain` and `vetoed`. Picks, stakes, buys and sales are unchanged. A truly out-of-sample
+  test is a follow-up issue. Not done (the issue's second sentence): whether the 24 withdrawn carry RFQs a day affect maker
+  quote quality needs real quote data and cannot be answered from the dev Mac; left open on #345. Tests: `t_mkthold.py`
+  (books right throughout is earned; right in old games and wrong in the newest 30% clears the old bar and is vetoed; ordered
+  by game date not id; `kick=None` falls back to the log time; tied kick breaks by id; mixed kick/log-time rows;
+  stricter-only across datasets; a slice under `hold_min` earns nothing, distinct from a real veto; under 200 markets is not
+  "vetoed"), `t_panelpipe.py`.
+- **Live data gaps: UFC round and clock from ESPN (#14, #25, #21; display only).** Already there (checked, not rebuilt): AHL
+  scores, periods and clocks come from the league's own feed (`_fetch_feed_scores`, #14); tennis, EuroLeague and UFC come
+  from Kalshi's public live data (`kalshi_score`, `display_score`, `KLIVE`, #25); the page's polling and Live rebuilds were
+  already sped up, and the remaining wait is the feeds' own cache times (`SCORES_MAX_AGE`), kept so Kalshi and ESPN are not
+  hit harder (#21: no further safe display-only change found). **Added:** Kalshi's UFC data had no in-fight round or clock
+  ("Round 2 of 3 · no clock"), so `espn_mma_refresh(events)` reads ESPN's free `mma/ufc/scoreboard` (same `ESPN_SITE` base
+  and hub cache as the other ESPN reads): the current board plus at most `ESPN_MMA_DAYS` (2) dated boards for fights on days
+  it does not cover. It runs from `kalshi_live_kick.run()` only when a UFC market is held or shown, polls at most every
+  `ESPN_MMA_LIVE` (8 s) while a fight is on and `ESPN_MMA_IDLE` (120 s) otherwise, and a failure pauses it 60 s
+  (`ESPN_MMA["cool"]`). `espn_mma_parse` turns events into fights keyed by both fighters' codes; `espn_mma_score(l)` returns
+  `leg_score`'s shape from the pick's side. Wording: "Round 2 of 5 · 3:12 in" (ESPN's MMA clock counts UP, so a decision
+  reads 5:00), "End of Round 2", "In progress" with no round, "Fight over · R3 5:00". `kalshi_score` uses ESPN's answer only
+  when Kalshi has none, or ESPN says in play and Kalshi does not say post. The wording is built from ESPN's field names plus
+  a real finished sample (no fight was on air); it is unverified live. **Isolation:** `src` stays `"kalshi"`, so the UI
+  treats it as a display feed; nothing here is read by `leg_score`, `fetch_scores`, `SCORES_BY`, `pick_state`, `started`,
+  smart sell or any buy, sell or panel path; no new Kalshi or Odds API call; any error is caught and logged once
+  (`klive_log_once("espn_ufc", ...)`). **Not added:** tennis from ESPN (its scoreboard lists tournaments, not live set/game
+  state keyed to Kalshi's tickers; Kalshi's own feed already gives sets, games and points), EuroLeague (no free official feed
+  with a stable open API; Kalshi's already gives points and clock), AHL via Kalshi as a fallback (the league feed is live and
+  complete; a second source adds disagreement risk). Tests: `t_espn_ufc.py` with `fixtures/espn_ufc.json` (a trimmed real
+  ESPN board: parse, both sides, round/clock wording, finished fights, request counts and cooldown, fallback precedence, no
+  money path reads it); `t_kalshi_live`, `t_robust` unchanged.
+- **News and game-context recorder (record only; beside `signal_shadow`).** Pete chose to record, with zero trading effect,
+  two signal families to test later against the market. `signal_events` (engine block "signal events", hooks in
+  `panel_collect`, `fetch_scores` and `price_seen_markets`) writes three append-only tables in the history file, behind the
+  existing `sig_shadow` flag (ON by default). It makes no Kalshi, Odds API or ESPN request of its own: it reads the injury
+  cache (`INJ`), `PRICE_SEEN`, the panel's games and the scoreboard records `fetch_scores` already fetched. A tick runs at
+  most every 20 s (`SEV["tick"]`), writes in one transaction under the history lock, swallows every error, and nothing in a
+  decision path reads the tables (`t_signal_events.py` F scans for it).
+  - `sig_news(id, ekey unique, ts, news_ts, league, team, player, pos, kind new|change|removed, old_status, new_status,
+    material, game_event, ticker, bid, ask, fair_book, fair_src, px_age)`: one row per injury change. The first read after a
+    start only sets the baseline; an empty read is never treated as news.
+  - `sig_news_fu(news_id, horizon, ts, delay_s, bid, ask, fair_book, fair_age)`, unique on (news_id, horizon): the same
+    market at +5/+15/+60 min from the latest price already read; a sample more than one horizon late is dropped. `fair_book`
+    (here and in `sig_news`) is stored only when the sharp-book price is fresh (within the recorder's fair-age limit); a
+    stale one is NULL while `fair_age` is still recorded. A failed write is retried at the next tick, not lost.
+  - `sig_ctx(ts, phase pre2h|start, mins_to_start, league, game_event, start_ts, ..., neutral, indoor, venue, home/away rest,
+    b2b, g7, travel_mi, tz, wx_temp, wx_wind, wx_precip, wx_text, bids/asks/fair)`, unique on (game_event, phase): written
+    about 2 h before the start (window 20 to 125 min) and at the start (up to 20 min late). Unknown stays NULL. Travel and
+    time zones come from a small static table inside the engine (`SEV_GEO_RAW`, NFL/NBA/NHL; the Air copies only the app
+    files).
+  - Retention 365 days (`_sev_prune`, hourly) plus a row ceiling per table (60,000 / 200,000 / 80,000) that stops writes and
+    never deletes to make room. `create ... if not exists` only, so an existing history file is never altered.
+  - `tools/signal_events.py`: read-only (`mode=ro`), aggregates-only report (groups under 20 hidden): the news event study
+    and the 70/30 residual test of context factors against plain sharp fair, with game-level bootstrap ranges. Not reused:
+    the watch-all recorder's helpers (its PR was not checked); this block keeps its own small helpers. Docs:
+    `docs/EXIT_REPLAY.md`.
+  - Tests: `t_signal_events.py` (detection without duplicates, follow-ups, NULLs, retention, ceiling, migration, errors
+    swallowed, no decision reads, hook counts, no network), `t_signal_events_tool.py` (synthetic history: read-only,
+    aggregates only, n<20 hidden, missing tables).
+- **Paper shadows: player-prop prices and slate concentration (#323 step 2, #332, #341).** Two more write-only recorders,
+  same pattern as `signal_shadow`: bounded, every error swallowed, off the trading path, append-only, and **no decision reads
+  them** (`t_paper_shadows.py` fails if the engine mentions the tables outside the block). Neither adds a Kalshi or Odds API
+  request, neither buys, sells, sizes, ranks or gates anything.
+  - **`prop_shadow`** (#323 step 2). `fetch_series` hands every market list it reads to `prop_shadow(out, series)`. It only
+    acts on a plain player-prop series (regex `PROP_RE`: NFL RECYDS/REC/RSHYDS/PASSYDS, NBA PTS/REB/AST/3PT, NHL GOAL/PTS;
+    protected `…PROT`, ladders and soccer never). Per market: ticker, league, stat, strike, bid, ask, mid, size at the ask
+    (when Kalshi sends it), volume, the game's kickoff (`KICKOFF` of the matching `KX<LG>GAME-<game>`; unknown or past
+    kickoff = skipped, so pre-game only), and `result` when a settled market comes back. Kept only with a mid of 10-90% and a
+    gap of 6c or less (smart sell's rule), one row per market per 30 minutes, at most 800 rows a call. The last row before
+    kickoff is the close. **No fair is recorded:** the recon found no free de-viggable price, and reading the ESPN/DraftKings
+    line would be a new request. **Today nothing reads a prop series, so the table stays empty** until a later, separately
+    approved poller (public `GET /markets?series_ticker=KX…`, about 15 series every 30 minutes, no key) feeds it. Settings
+    key `prop_shadow` (ON for recording; false = off). Bound: 14 days and 150,000 rows (checked every 6 hours).
+  - **`slate_shadow`** (#332). Called once at the end of `panel_collect` for each league. Aggregates only (no tickers or
+    ids), at most one row per scope per 30 minutes: `held` (all leagues; the open bets from the account and panel caches via
+    `game_exposure`, weighted by dollars at risk) and `pool` (that league's panel candidates before the choice, counted
+    equally). Columns: bets, games, total weight, share on the top game and top three, Herfindahl index (`hhi`) and effective
+    number of games (1/hhi), most bets on one game, share in the top league, share in the top kickoff slot (3-hour blocks,
+    Pacific; pool only), share of bets that are favourites (chance 50%+; pool only), share in the top bet class
+    (single/line/combo; pool only), combos with two picks in one game. Join `day` to the stored panel's predicted chance of
+    finishing ahead and its result to answer "did a samey slate cause the bad day". Settings key `slate_shadow` (ON; false =
+    off). Bound: 90 days and 20,000 rows.
+  - **#341 (a) and (b) were already built** (`mkt_fair_shadow` / `mkt_fair` and the cost-carry test / `carry`, merged with
+    #347 and follow-ups), so nothing was added for them. Still open: the held-out check before the learned market weight is
+    used by any pick (ROADMAP), and scoring the carry test needs more settled days. Tests: `t_paper_shadows.py`.
+- **Watch all games: price paths and signals for every market the app already fetches.** Pete's goal is that the system keeps
+  learning from many games, not only its own bets, to get better at prediction and sell timing (day trading: sell above cost
+  before close, or settle at 100). `broad_shadow(code, every, lc_all)` (engine, one wrapped line in `panel_collect` after
+  `signal_shadow`) writes a price path and the signals for every market already in `PRICE_SEEN`, with the sharp-book /
+  live-model / line-model fair and the cached score, into three append-only tables: `bp_mkt` (market, game, sport, kind,
+  kickoff, final result and its source), `bp_path` (bid, ask, depth, fair and its kind, lead, points, share left, state,
+  possession, down, distance; prices in thousandths, `BP_SCALE`) and `bp_day` (counts per day). It never writes `price_path`
+  (live decisions read that), makes no request, places no order, swallows every error and is read by no decision
+  (`t_broad_shadow.py` scans the engine and watcher for any mention of the tables outside the recorder). Setting
+  `broad_shadow` (default on) turns it off.
+  - **Storage controls (`BP` dict):** change-only rows, at most one a minute from 3 h before kickoff to 6 h after (heartbeat
+    10 min) and one every 5 minutes (heartbeat 3 h) otherwise; a flush at most every 45 s, capped at 3,000 rows and 0.15 s,
+    resuming where it stopped; retention 21 days; oldest-first row cap at 80% of a 250 MB ceiling; recording stops at the
+    ceiling or under 3 GB free disk and resumes after pruning. Pruning, label copying (from `closes`, `live_fairs`,
+    `line_fairs`, `mkt_fair`, plus a separate price-implied label, `rs` 9) and the size check run from `resolve_closes` in
+    the history loop (`bp_maintain`), never the panel pass. The watcher log gets one counts-only line an hour (markets,
+    games, rows today, table size, labelled share).
+  - `tools/exit_replay.py --broad` replays the fixed exit rules on the broad dataset per sport x price bucket, net of fees
+    and spread, with a game-level bootstrap and a 70/30 time split, aggregates only (groups under 20 games hidden), read-only
+    (docs/EXIT_REPLAY.md). Tests: `t_broad_shadow.py` (bounded, swallows errors, no request, flag off, prune, row cap, size
+    ceiling, migration of an older file, 30,000-market flush time bound, no reader, bytes a row), `t_broad_replay.py` (the
+    replay on a database the engine's recorder wrote).
+  - Review follow-ups: a failed lookup while pruning by age no longer risks emptying the table (the age cut is skipped, the
+    row cap still holds); a kickoff learned after a market row exists is written to it (the id cache is cleared only when
+    market rows were actually deleted); a resolver label (closes, live_fairs, line_fairs, mkt_fair) replaces a price-implied
+    one, and label work only touches still-unlabelled markets in short 1,000-update transactions so the history lock is held
+    briefly; rows are stamped with the time the price was seen, not written; the recorder never writes inside another
+    transaction (it skips that flush) and always rolls back one it began; errors log the type only; the replay's unlabelled
+    share is correct when implied labels are excluded, its data-quality block counts markets without a kickoff, and its
+    caveats say entry is not stratified by phase and exits assume a fill at the recorded bid whatever its size. Known and
+    accepted: the 45 s flush throttle means the 20 s event cadence is effectively 45 s, and the byte ceiling is a row
+    estimate (rows x 60 bytes), not the file size; the row cap (80% of the ceiling, about 17 days at the busy-week estimate)
+    can shorten retention.
+- **Per-league learning, in shadow (#13; nothing live changes, no decision reads it).** Pete's rule is that everything learns
+  per league, not just per sport. Once a day (`league_shadow_run`, called from `knob_pass` after the weekly stepper, due at
+  most every 24 hours, rows kept 180 days) the app works out what each league's own numbers would be if the league learned
+  for itself and borrowed only what it lacks, and records them beside today's in the history table `league_shadow` (ts,
+  league, sport, metric, key, current, shadow, n_own, n_sport, n_all, shares, says).
+  - **Borrowing rule** (`lgsh_blend`, deterministic and explainable): start from a neutral value, then walk all leagues ->
+    the league's sport -> the league; each level moves the value so far toward its own by `n/(n+k)` of the gap (n = that
+    level's results, k = `LGSH["k_cut"]` 30 quotes, `k_calib` 300 games, `k_roi` 30 bets). A level with no data changes
+    nothing, so a league with no results is exactly its sport and a sport with none is everyone. `shares` says how much of
+    the final number each level accounts for ("league 31%, sport 40%, all 22%, start 7%").
+  - **Metrics:** `cutoff` = each league's combo cut-off by size bucket, today's `_cut_level` (a hard switch at 30 quotes)
+    against the blended level (never under 85 or over 110; a borrowed all-leagues level never under the 95% start). `calib` =
+    each soccer league's fair-price nudge per chance band: `calib_fair` named by sport only (what a caller passing no ticker
+    gets) against `calib_fair` with the league named (its own record, its sport's behind it; already weighted n/(n+300)
+    today, so the row shows only what naming the league changes). `record` = each league's settled-bet return over the last
+    60 days (real combos plus paper/real panel bets, `_tune_items`; mixed-league combos left out) shrunk toward 0 through all
+    -> sport -> league: what evidence sizing and the panel's sport order would read. Neither reads any league's record today,
+    so `current` is empty; no multiplier or priority is invented.
+  - **Report:** `league_shadow_view` (read-only, never raises) is in the Results analytics payload as `league_shadow` (latest
+    run, per league: cut-offs, calibration, record, how many rows differ from today; leagues that differ first). No page card
+    yet; the data is there for one.
+  - **Never touches:** any cut-off, fair price, stake, size, buy, sell, Pause, the caps, rule 8, the knobs or any
+    settings/learning file (`combo_cutoffs.json`, `combo_knobs.json`, `combo_smart.json`...). The run writes only
+    `league_shadow`. Later steps, each its own PR behind a switch: read the blended cut-off, then the league-named
+    calibration at every caller, then sizing and the sport order. Tests: `t_leagueshadow.py` (blend maths and shares;
+    cut-off, calibration and record rows against hand-worked numbers and today's real `combo_cutoff`/`calib_fair`; the daily
+    gate and 180-day prune; identical decisions before and after a run for `combo_cutoff`, `calib_fair`, `_size` and
+    `smart_params`, no settings/learning file written, no decision table touched; an AST check that no decision function
+    mentions the shadow).
+- **Logging and display only: calibrated profit, exit-route log, sale estimate (#361 part 1, #397, #300, #316).** No buy,
+  sell or size decision changes.
+  - **#361 part 1 (display).** A combo quote carries `ev_cal` (built in `combo_ev_cal` inside `combo_offer`,
+    `watcher/combo_watcher.py`): the expected profit on the chance corrected by Pete's own record (`calib_fair` per leg, over
+    the books' fair chance), `stake x (pct x calibrated / shown - 1)`. The Build card and slip show it ("on your record,
+    before fees") through `evShow` in `stakeCtl`; with no `ev_cal` (live quotes, longshots, a leg that cannot be corrected)
+    they show the books' profit as before. The books' `ev` still decides `rec`, `small` and the "recommended" label, so a
+    card can say "recommended" with a negative calibrated profit. The 130% tuning half of #361 is left to #397. Tests:
+    `test_evcal_ui.py` (390x844, dark and light), `test_ownstake_ui.py`.
+  - **#397 (log only).** The live green-Buy exit-route check in `get_offer` always writes its comeback_shadow line
+    (`force_log=True`) and prints "combo quote exit-route check (live green Buy): passed|held back (why)". The verdict is
+    unchanged; no tuning. Test: `t_combo_live_fair.py`.
+  - **#300 (log only).** A combo auto-sale's log line carries `disc` (today's `kalshi_discount`) and `est` (disc x chance x
+    pays x share). `knob_sale_expect` and the brake still read what they did before; not done: feeding `est` or ledger
+    proceeds on retries into the brake (that changes selling). Singles already log `ask` and `chance`. Test:
+    `t_logdisplay.py`.
+  - **#316 items 1-2 (watch-only guards).** A single's break episode is filed under the held market, not the game-winner
+    stand-in (`break_ok`/`stop_loss_leg` take `watch=`); a full `BRK_EP` drops its oldest episode instead of clearing every
+    open one. Both watch-only (`BRK_LIVE` is False). Test: `t_logdisplay.py`. Skipped: items 3 (smart_tune replay counts), 4
+    (stale-device `stop_loss_mode` in `sl_sync`) and 5 (97% retry floor on combo cash-outs), because each changes selling
+    behaviour or settings semantics. Known gap (item 1): a single's break episode is opened but not closed or written after
+    play resumes (`break_watch_held` only walks combo legs); it ages out at 400 entries.
+- **No-both-sides and exposure caps, on paper (#335; measuring only, changes no buy).** Pete's call (2026-11-22): no extra
+  confirm tap, a warning at most, never block; and the big losers were the app's own suggestions, not his picks.
+  `nfl_combo_planner.py` has one new block ("(#335) no-both-sides and exposure caps, on PAPER only", just above
+  `SPORT_SCORE_WORD`) and one call in `record_view` (the Live refresh's recorder): `exposure_paper_pass(view, now)`. It runs
+  at most every 2 minutes (`EXPO["every"]`), writes each pass in one transaction (stops at the first failed write), can be
+  turned off with `CFG["expo_paper"] = False`, is wrapped so it never raises, and no buy, sell, size, panel, Smart Buy, Pause
+  or cap path reads it (`t_exposure.py` greps the engine to prove only `record_view` calls it, and that `get_offer`,
+  `accept_offer`, `_size`, `smart_buy_ok`, `exit_policy`, `single_sell_reason` and `build_panel` never mention it).
+  - **Recorded** (history file, own small tables). `expo_pass`: each pass, one row per game, league and day with a held bet
+    or one the panel would still buy. Per game: how many held bets and dollars, how many panel bets and dollars it would
+    still add, whether both sides are held (`both_held`) or the panel would add the other side of a held or panel bet
+    (`both_would`), how many bets are stacked, and the share of the bankroll (`CFG["bankroll"]`). Written only when something
+    changed (or hourly); kept 14 days, at most 20000 rows. A combo's whole cost counts on each game it touches (as
+    `game_exposure` does) and in the league and day totals (the league is `mix` for a cross-league combo, which skips the
+    league cap).
+  - `expo_pos`: one row per held bet, the first time the Live view shows it: its games and what it backs in each, its cost,
+    day (the first game's date), league, and the first paper rule that would have stopped it (`blocked`: `both_sides`,
+    `game_cap`, `league_cap` or `day_cap`, else empty). A bet is judged against the bets already taken that are still held (a
+    finished bet carries no risk); a blocked bet never uses up room for the next one. Once the bet is no longer held and the
+    ledger closed it after we first saw it (with a cost within 10% of ours, else it is left unsettled: another bet shared the
+    ticker), `net` = what it really made (`back - cost`, fees counted). `batch` = how many new bets showed up in the same
+    pass; `own` = the app's own bet (1) or not (0). Kept 60 days (pruned hourly).
+  - "What it backs": kind, team (or against it) and strike. Two bets on one game are the two sides when they back different
+    teams, a team and against the same team (same strike for spreads), or an over and an under whose strikes cross (over 50
+    with under 40; over 40 with under 50 is a middle and is not). A spread's NO beside the same team to win is not both
+    sides. A draw is its own side. Known gap: a hedge bought on purpose looks like both sides (the view does not say why a
+    bet was bought). The paper numbers, all in `EXPO` and to be tuned from this record: a game 10% of the bankroll, a
+    league's day 30%, a whole day 40%. They are guesses, not rules.
+  - **Shown** (nowhere else, no screen, no push): one plain-English line in the log when it changes, at most every 10
+    minutes, e.g. "exposure (paper only, nothing is blocked): holding both sides of DALNYG; 2 games with 2+ bets stacked;
+    biggest game DALNYG $23 (18% of the bankroll); today $41 (33%). The rules would have stopped 7 of 52 bets, and those made
+    -$31 net after settling." `exposure_paper_summary()` gives the same as numbers: bets seen, blocked, and per rule, with
+    the net of the blocked bets once settled; also split by rule and by origin (app / not own). A group of fewer than
+    `EXPO["min_n"]` (5) bets shows no count and no dollars; dollars wait for `EXPO["dollar_n"]` (20) settled bets, then the
+    line gives the settled count, the money staked, the return on it and the same return for all bets as a baseline, and says
+    "a small sample" under 50 settled.
+  - **Limits:** the first look (an empty table) records the bets already open as `seed` rows: they count toward later bets'
+    room but are never judged or counted, because their order is unknown. Bets first seen in the same pass cannot be put in
+    order (judged by id), so they are marked as one batch and reported by count only, never in the dollars. The record sees
+    only what the Live view shows (open combos and open single bets, including ones Pete bought by hand): it cannot say which
+    came from the panel, a standing order or Build. A game's cost is the whole combo cost on each of its games, a
+    conservative read. It is a measurement to decide from, not a back-test of a rule.
+  - **Design for a later opt-in (not built):** if the numbers say the rules would have saved money, add a setting (off by
+    default, Pete's explicit opt-in, as for every new automatic money step) read by ONE function, e.g.
+    `expo_check(positions_after_this_buy)`, called from each buy path (panel buy, `get_offer`/`accept_offer`, standing
+    orders, killer deals, hedges) before the order and failing toward a plain warning first (warn, never block, no extra
+    tap), then, only if he asks, a refusal with a logged reason. It would reuse `_expo_judge` on the live account's open bets
+    (not this table), respect Pause and rule 8, and log old versus new here so the effect is measured. Both-sides on purpose
+    (the covering idea in #74) would need its own exception and is a separate design. Tests: `t_exposure.py` (stances and
+    both-sides, each cap, a blocked bet not using up room, the first look not judged, the panel's would-add, settlement from
+    the ledger, small groups hidden, bounded tables, errors swallowed, no decision path reads it).
 
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
@@ -1430,6 +1679,224 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   (`_accept_with_retries`, yours or automatic), automatic single sales (`smart_sell_singles`) and your single Sell
   (`single_sell`); hedges and standing orders are buys and unchanged. Wording only. Tests: `t_sellprofit_helper.py`,
   `t_sellprofit_paths.py`.
+- **Paper test: capped profit line for favorites bought above ~67c (#375; record only, default OFF).** Smart sell's profit
+  line for a single (`max(q*P - lam*P*sqrt(q(1-q)), floor*cost)`) is above what the bet can ever sell for once it was bought
+  above about 1/floor, so smart sell never takes a profit on those favorites (`sell_line_shown`'s "over", #371). Pete's call
+  (2026-11-24): paper first, default OFF, nothing new automatic; this only RECORDS. `exit_cap_shadow(x, bid)` (called from
+  `open_singles` for a held single whose line is out of reach, only when the new setting `exit_cap_shadow` is on; default
+  False) writes one row to the table `exit_cap_shadow` with the time, the sale price after fees, today's answer
+  (`live_decision`, hold or the reason) and the answer a line capped at `sell_top - EXIT_CAP_MARGIN` (3c a contract) would
+  give (`alt_decision`, `alt_line`). Rows are throttled (a changed answer at once, an unchanged one every 5 minutes), pruned
+  at 60 days / 100k rows, every error swallowed. Nothing reads the table back. `single_sell_reason` got an optional
+  `cap=None` argument that only the recorder passes (always with `track=False`, so no peak moves); with `cap=None` the code
+  path is the one that was there. No sell, buy, Pause, cap or rule 8 path is touched. Turning the paper rule into a live one
+  is a separate decision for Pete, judged on this record. Tests: `t_exitcapshadow.py` (default off; row contents; the live
+  decision identical with the switch on or off over a grid, through `smart_sell_singles`, with peaks and settings untouched;
+  throttle, prune, failures swallowed, no reader).
+- **Combo cost floor counts Kalshi's selling fee (#382, #383).** **UNCONFIRMED ASSUMPTION, stated plainly:** that Kalshi's
+  combo cash-out selling fee equals the single-market taker fee (`single_fee`) has NOT been confirmed against a real combo
+  sale. Pete approved building on it, so it is on by default, behind the switch `combo_sell_fee` (config, default `True`);
+  set `False` and the cost floor judges the gross offer exactly as before. An offer with no readable `contracts` falls back
+  to the old gross comparison and the decision log says so (`fee_note`), so it can never block every auto cash-out; the log
+  carries `net` next to the gross `offer`; and a sale whose gross offer is above cost is never labelled a loss cut or
+  stop-loss (it is "take a profit"). The cost floor on automatic combo cash-outs now counts the fee the way singles do
+  (`single_fee`, rounded up to the cent per order): new `combo_sale_net(offer)` = offer minus `n * single_fee(offer / n, n)`.
+  Before, an offer exactly at cost passed every cost floor and still lost the fee. Now:
+  - the **below-cost test itself** (`below` in `auto_sell_now`) compares the offer's net of the fee with cost, as singles do.
+    An offer between cost and cost + fee used to count as "not below", so a profit sale took it and lost the fee; now it
+    follows the existing below-cost rules unchanged (a cut-loss reason or a ready stop-loss sells it as a loss cut; a profit
+    reason without a ready stop-loss is skipped, "below what you paid", with `net` logged; Never sell at a loss skipped it,
+    see the retirement note below). So a better offer can never be refused where a worse one sells. This changes the INPUT to
+    the existing stop-loss-on-a-profit-reason rule (a few cents more offers count as below cost), not the rule;
+  - a **retry's fresh offer** must clear the same floor (`_accept_with_retries`: every profit-taking sale, `stop` "offer too
+    low"); an offer with no readable contracts falls back to the old gross comparison (`fee_note`), never a block.
+- Close to a tightening: nothing sells that did not before, and it only stops sales worth less than cost after the fee. Loss
+  cuts (offer already below cost) keep their own rules (97% of the first offer, the smart-sell line). Deliberately **not
+  changed** (still open in #382/#383): a profit reason's below-cost first offer sold as a stop-loss, your own Cash out tap's
+  97% retry, the setting wording. Pause, caps, rule 8 untouched. Test: `t_combofee.py`.
+- **Loss-cut clock retry for a stuck combo (#396; Selling, auto cash-out when buyers back out, #372).** Pete's decision: a
+  stuck combo **loss cut** (never a profit sale) is also retried on a clock, every 5 minutes (`LOSSCUT_CLOCK_SECS` 300), as a
+  safety valve for when nothing in the game or the price moves. Until now a failed round parked the combo until the game,
+  chance, offer or line changed (`combo_wait_why`), and the park is memory-only. `combo_wait_start` now also records whether
+  the failed round was a loss cut (`cutting`), the episode's **first** offer (`first`, kept across rounds) and the clock
+  tries used (`clock_n`). `combo_wait_why(..., kind=why)` grants a clock try only when nothing else changed, the wait is a
+  loss cut, the sale is not a plan (profit) cash-out, 5 minutes have passed since the last failed round or clock try, and
+  fewer than **`LOSSCUT_CLOCK_MAX` 6** clock tries were used for that position (about 30 minutes; after that only a real
+  change reopens it; a sale resets it; a restart clears it). Every existing bound still applies, and two are added:
+  - **Pause:** `auto_sell_now` returns first when paused; accepts re-check Pause, Auto cash-out and `can_trade()`. **Rule
+    8:** an unknown outcome is `check`, its wait is dropped and `rfq_unsure` blocks it; the clock never retries it.
+  - **97% of the FIRST offer, across rounds, for EVERY loss-cut round** (review fix: also a round started by a game or price
+    change, not only the timed retries): a try whose fresh offer is under 97% of the episode's first offer is skipped and
+    logged; inside the round the retries' floor is 97% of that same first offer (`_CASH_CTX.first_offer`), so the price
+    cannot ratchet down round after round.
+  - The smart-sell line, the cost floor for a profit-taking sale and the retired Never sell at a loss floor: unchanged.
+    **Only the "cut loss" reason:** a profit reason (smart, take profit, lock in, checkpoint, plan) never uses the clock,
+    even when its below-cost first offer sold as a guarded stop-loss; that case stays as is until #382 is decided. **Purpose
+    re-checked at the clock try:** if the offer is now at or above cost (a profit sale) the try is skipped (`stop` "clock
+    retry is for loss cuts only").
+  - **Fail closed:** an unreadable account, a combo gone or reduced, or a damaged wait record means no clock try, logged.
+    **Logged:** each clock try's decision line carries `retry_on` ("loss-cut clock retry N of 6 ..."), `clock_retry`, and its
+    normal `stop`; skips log why; the cap is logged once per wait.
+- Cadence (follow-up, not built): 5 minutes is the starting value. Pete said "let it tune itself": a follow-up issue records
+  learning the cadence inside a safe band; nothing self-tunes here. No new automatic path for profit sales; nothing loosened.
+  Tests: `t_losscutclock.py` (paused, unknown outcome, cap reached, 97% guard, profit-reason and profit-reason-stop-loss
+  excluded, unreadable data, line/97% inside the try); `t_combobackout.py`, `t_cashretry.py` unchanged.
+- **Flexible sell price (Selling, cash-out retries; ON by default, Pete's explicit opt-in 2026-11-24; Settings > Cash out >
+  "Flexible sell price").** When a buyer backs out and the app asks for a fresh cash-out offer, the fixed "at least 97% of
+  the first offer" line (your own Cash out tap, and an automatic loss cut) was judged against a price that can be minutes old
+  in a fast game. With `flex_sell` on, each retry is judged against the game right now (`flex_decide`, called from
+  `_accept_with_retries`):
+  - `flex_now` re-reads every open pick: picks in play get their live chance through `combo_live_fair` (a fresh score,
+    Kalshi's fresh book, the panel's own live guards); picks not started keep their last chance. It needs at least one pick
+    in play, one pick per game, and no spread or total in play. `flex_wait_line` is what waiting is worth now (`wait_value`,
+    risk-adjusted with the Let it ride multiple, plus the per-pick cushion, same as `wait_threshold`).
+  - An offer is taken when it passes the **safety backstop** (at least `flex_backstop`, default 85%, of the combo's current
+    FAIR value now: live chance x pays, NOT discounted by Kalshi's usual offer share (Pete, 2026-11-25); a combo cash-out
+    carries no separate fee) and the floors the sale already had, AND one of: the old bar would have taken it; selling beats
+    waiting now (offer at or above the wait line); it is a profit (at or above cost) and the chance has dropped 8% or more
+    under the holdings' last reading; or it is a loss cut whose learned cut-off still holds on the fresh chance.
+  - Automatic profit sales follow the same flexible rule as your tap and loss cuts (Pete, 2026-11-24): when the game moves
+    fast they may go below the smart-sell line the sale started on. **A sale that began at a profit may end below cost**
+    (Pete, 2026-11-24): in a fast-falling price, refusing can cost more later, so it is judged like any other offer (selling
+    beats waiting now, past the backstop). A small loss can result and waiting could have been worse. Every such sale is
+    recorded in `flex_shadow.began_at_profit_ended_below_cost = 1` to measure whether it earned its keep. The only things
+    that govern a below-cost retry are this rule, the 85% backstop, the guards, the daily limit and Pause.
+  - It only ever loosens the old bar and never refuses something the old bar takes (beyond the backstop and the floors).
+    **Fails closed:** anything missing or stale (no fresh score or book, a jumpy spread, a spread/total, same-game picks, no
+    pick in play, any error) uses exactly the old bar. Switch off = decisions identical to develop.
+  - Kept as they were: the daily cap (`auto_cap`), the per-position attempt cap, the 1.5x smart-sell floor setting, Pause,
+    rule 8 (an unknown outcome stops everything), known-order outcome checks, and the 85% backstop. With the switch off, or
+    stale/missing live info, today's cost floor for a profit-taking sale still applies exactly as before. No new fixed daily
+    dollar cap was added (Pete: not needed). When a sale is taken under the first offer, its message says why;
+    `CASH_LAST[...]["flex"]` and each try's `flex` hold the verdict.
+  - `flex_shadow` (SQLite) records every retry decision: offer, first offer, current fair, usual value, wait value, backstop,
+    chance now, mode, reason, accept, and what the old rule would have said. Bounded (20,000 rows), errors swallowed. No sale
+    decision reads it; only the fallback learner below does (and it only nudges one share).
+  - **Learned fallback share** (`flex_learn`, ON by default, Pete 2026-11-24). When live info is stale or missing, a retry
+    must still reach a share of the first offer: 97% (`CASH_SLIP`) to start. `flex_fallback` learns it from this app's own
+    record: `flex_shadow` retries joined to `sell_log` (what the position later sold for after a refused retry, or what
+    holding paid after an accepted one; a combo cash-out carries no separate fee so the offer is the net cash). Needs 20
+    comparable retries (`FLEX_FB_MIN_N`) before a move, moves at most one half-point (`FLEX_FB_STEP`) per hourly evaluation,
+    lowers only when waiting lost more than 1% of the offers' value, raises when it gained more, is hard-bounded to 85%-99%
+    (`_fb_ok`, so NaN, text or out-of-band values read as 97%), per league (ledger league) once a league has 20 retries else
+    global, shrinks back at twice the step when lowering proved too cheap and snaps to 97% after 3 such rounds in a row. A
+    learned share under 97% is never below the 85% backstop of what the combo last read as worth (fair value, no Kalshi
+    discount). State lives in the `flex_learn` table. Any error or switch off = plain 97% (exactly develop's bar). Applies to
+    the tap and loss-cut bar; an automatic profit sale's own bar is its smart-sell line (already tuned by `auto_slip`). The
+    Settings row shows the learned value read-only (`flex_fb_view`).
+  - Settings: `flex_sell` and `flex_learn` (default True) and `flex_backstop` (default 85), plumbed through DEFAULTS,
+    SHARED_KEYS, WATCHER_SYNCED, the watcher's SYNCED and settings keys, the web app and the legacy settings page. Tests:
+    `t_flexsell.py` (default on; fast-moving accept; profit not refused; below-cost end flagged, no Never exception; backstop
+    refuses a spike; stale input falls back to 97%; OFF identical to develop; loss cut; Pause; rule 8; tap/auto parity;
+    shadow errors) and `t_flexlearn.py` (sample threshold, step size, bounds, per-league, corrupt/NaN history, errors,
+    streak).
+- **The "Never sell at a loss" choice is removed (Pete's explicit decision; supersedes the Never wording elsewhere in this
+  section).** Settings > Cash out > Selling at a loss now has two choices: **Let it tune itself** and **Allow (guarded)**. A
+  saved `stop_loss_mode: "never"` (any device, an old settings file, an old phone or page) is read as **Let it tune itself**
+  (`sl_norm`): migrate on read, no crash, never silently Allow. `sl_mode`, `sl_sync` (phone/web/watcher merge and save),
+  `sl_allowed`, the auto cash-out loop and the singles loop all go through it; the web page shows it as Let it tune itself
+  too. Gone with it: the auto cash-out cost floor passed for Never, the "skip a single with unknown cost / under cost after
+  fee" check, and the flexible rule's Never floor. Below-cost sales are governed by the flexible rule, the 85% backstop, the
+  guards, the daily limit and Pause. Untouched: the loss-cut trigger conditions, never at halftime/break/early game/stale
+  score, the stop-loss's own guards and per-day limits, rule 8, Pause. Tests: `t_neverloss.py` (rewritten for the migration
+  on every path), `t_settings`, `t_stoploss`, `t_knobpr567`, `t_flexsell`, `test_slmode_ui.py`.
+- **Sell guards: under-hold note, shared tap marker, closed-bet cache (#244, #400, #407).** **#244, the under-hold note:**
+  `single_sell_quote` adds a `{"k": "under"}` warning when a manual single sale brings less than holding is worth: "That's $X
+  under what holding is worth (about $Y). You can still sell." `_sell_under_hold` uses smart sell's own hold value
+  (`single_sell_reason`, `track=False`, records nothing), or chance x contracts with smart sell off, and says nothing when
+  smart sell would sell the bet anyway. Display only: `clears`, `ok`, the checks in `single_sell` and Pete's tap are
+  untouched; a failure in the helper is swallowed. **#400, one seller at a time:** the web app and the watcher are separate
+  processes, so Pete's Cash out tap (`go` and `singlesell`) writes a short marker (`combo_manual_sell.json`,
+  `manual_sell_mark`) and the automatic sellers (`auto_sell_now`, `smart_sell_singles`, `autosell_pass`) skip that bet while
+  a fresh marker (under `MANUAL_SELL_MAX` = 90 s) stands, and check it again next round (a skip is logged). One direction
+  only: the tap never reads or waits on the marker, a marker that cannot be written never holds the tap up, and a crashed
+  tap's old marker counts for nothing. No new sale is made; an automatic sale only waits. **#407, closed-bet detail:**
+  `api_closed` answers from a small per-ticker cache (20 s, 4 s for "not found", at most 64 entries) in front of
+  `api_closed_work`, the original lookup, so a refreshing page does not rescan the sell log and hold the account lock per
+  request. The ticker is checked before the cache. Same answers, fewer scans. Tests: `t_guards2.py`.
+- **Learned selling guards (Settings > Cash out > "Let the selling guards learn", `learned_guards`; shared, ON by default,
+  effective only with `knobs_live`; either off = exactly develop: same live set, 150 s, a break always blocks, nothing
+  recorded).** Pete: "we're just making up rules that we should allow to have some level of learning." `guards_on()` is
+  cached 10 s and fails closed. Converted, on the existing knob machinery (registry, weekly stepper, bootstrap bar, brake,
+  `knob_shadow` move log, which now keeps 20000 rows via `KNOB_SHADOW_ROWS`):
+  - **Score age** (`sl_feed_age`, start 150 s, band 90-300 s, step 30 s, shorter = stricter, per league else global; a global
+    value is only borrowed when stricter). `feed_age_limit`, `fresh_live_score(loose=)`. Only a LOSS sale (`stop_loss_leg`)
+    uses the learned tolerance; hedge and sell-more callers can only be stricter. Evidence: the bounded `feed_ep` table
+    (`feed_note`, `feed_resolve`): a stale-score refusal with every other guard holding and a two-sided book is recorded (age
+    90-300 s) and closed 10 minutes later with that later bid (dropped after 30 min). Judge `feed` (`_knob_res_feed`): net
+    dollars after the single-leg fee, selling now versus the bid 10 minutes later. Min sample `FEED_MIN_N` 20. Loosening
+    needs a seeded bootstrap lower bound above 0 (`_guard_bootstrap`); tightening uses the lighter `GUARD_TIGHT` bar.
+  - **Halftime / break** (`brk_on`, `brk_move`, already in the registry as watch-only): `break_ok` may now open for a LOSS
+    sale only (never a hedge), only on a league's own learned record (not borrowed), on a fresh two-sided book and two reads.
+    `BRK_LIVE` stays False. Min sample `BRK_MIN_N` 40 (stricter than 20); judge is net of fees with guards on. The `break_ep`
+    shadow table is bounded to `BRK_KEEP_ROWS` 5000. **Early in a game** (`sl_prog`): already learned by smart_tune and the
+    stepper; no second mover added.
+  - **Not converted (kept fixed):** Pause, the one-tap Sell, rule 8, no score at all / not in play / one-sided or empty book
+    = no sale, the daily limit (PR #480 self-adjusts it), the 85% flex-sell backstop (follow-up). Other fixed sell-timing
+    constants left as they are, each tied to data validity or already judged elsewhere: `swing_base`, `checkpoint_lam`,
+    `cushion_*`, `hedge_gap`, `live_spread`, `BRK_READS`, `BRK_SPACE`, `sl_under` (judged by `_sl_replay`, not live), #479's
+    8% drop, #480's `MORE_PROG_MIN` and `MORE_*` (follow-ups).
+  - **Review fixes:** a below-cost sale never goes ahead while a better hedge is blocked by a stale score or a break (the
+    wider learned age and the break rule open the loss sale only); a score older than 150 s (learned wider age) also needs a
+    fresh two-sided book, since a break may hide inside the window; the break rule needs a falling price for a loss sale
+    (live check and judge); junk `break_ep` rows are skipped. Known follow-ups: break evidence still includes picks the live
+    rule would not act on (winners, above 50%), and episode counts are per pick, not per game. Behaviour notes: the global
+    group can only tighten (chain-stricter borrowing); the feed evidence is a 10-minute-later proxy; the knob views list
+    `sl_feed_age` as tunable even with the switch off (display only).
+  - **Merge with #479/#480 (Pete, 2026-11-25).** The synced-settings lists are a union: `learned_guards` is in `SHARED_KEYS`,
+    the engine's `WATCHER_SYNCED` and the watcher's `SYNCED` and `SET_KEYS`, beside `flex_*` and `sell_more_*`
+    (`t_newkeys.py` checks every one, and the Settings screen). The retired "Never sell at a loss" choice reads as 'tune', so
+    the Settings line always shows the guards' wording. Tests: `t_learnedguards.py` (sample threshold, bounds, step,
+    bootstrap, NaN/corrupt fallback, switch-OFF identity, brake, break loss-only, Pause wins, manual Sell unaffected, bounded
+    tables), `test_learnedguards_ui.py` (Settings, dark/light); `t_knobs`, `t_knobpr567` updated.
+- **Smart sell more (Pete's opt-in, 2026-11-24; default-ON on purpose).** Pete explicitly opted in to smart sell acting more
+  with real money, so the two switches (`sell_more_cheap`, `sell_more_loss`) are **ON by default** and live in Settings >
+  Cash out so he can turn either off. Everything is additive: it is only looked at where smart sell's own rule already said
+  "hold", so with both switches off every decision is exactly develop's (`t_sellmore.py` proves it). Pete's opt-in is
+  recorded here, not elsewhere.
+  - **A, a lower profit floor for cheaper singles (`sell_more_cheap`).** A single bought under 60c a contract (entry price,
+    `MORE_UNDER`) may sell at 1.35x what was paid (`MORE_FLOOR`) instead of its league's learned floor, never above that
+    league floor and never under smart sell's 1.2x bound. Everything else in `exit_policy` still has to hold: the
+    risk-adjusted hold-value comparison, chance of winning at least 0.5, spread within `LIVE_SPREAD` (6c), no resting sell, a
+    known last order, whole contracts.
+  - **B, an earlier loss cut on a clearly sliding single (`sell_more_loss`).** A league with no learned loss cut yet (smart
+    sell needs 30 settled bets per league) gets a stand-in cut-off of 15% (`MORE_LOSS`, the self-tuner's first value). It
+    keeps every loss guard: a fresh score, game at least half played, a big fall below the pregame chance, never at a
+    halftime or break, 3+ confirming checks over 3+ minutes (counted under its own key `cutB:`, never the real loss cut's),
+    never below 97% of the bid. Skipped where the league's self-tuning brake is holding, and wherever the league already has
+    its own learned cut-off (that one wins). **No longer skipped in "Never sell at a loss" mode (Pete, 2026-11-25):** that
+    choice was retired by Flexible sell (#479; a saved 'never' now reads as 'tune'), so anyone who had it saved becomes
+    eligible for A's below-cost sales and B's loss cuts, still bounded by the daily dollar limit and every other guard.
+  - **Freshness, fail closed.** Neither path ever compares against a stale reference (a sportsbook line, a pre-game number
+    that hasn't moved). `more_fresh` requires: the market's own Kalshi fetch no older than 120 s (`MORE_AGE`, stamped per
+    market in `SINGLES["mk_at"]`; an old fallback copy has no stamp), a two-sided bid and ask within the spread limit (no
+    last-price-only or one-sided book), the game in play, and a score feed under 150 s old. The chance used is that book's
+    middle, recomputed on the spot. Any missing means no sale. (B's existing pre-game drop guard still compares to a pre-game
+    chance as an extra restriction; B's trigger itself is live-only.)
+  - **Self-adjusting daily limit (replaces a fixed cap).** Both paths share one dollar limit on what they may sell in a day
+    (`more_limit`, `more_cap_blocks`). It starts at the Settings number (`sell_more_cap`, $50) and moves by a written rule,
+    from the record alone with no network: each smart-sell-more sale whose game is over (the history file's
+    `sell_log.outcome`/`held`, filled by `sale_outcomes`) is compared with what holding would have paid, net of the sale's
+    fee. Nothing moves until 20 such sales have finished games (`MORE_MIN_N`). Then after every 10 more, over the last 20:
+    beat holding by more than $1 means +25%, at most weekly and never over 4x the start; worse than holding means halved,
+    never under 20% of the start. Brake: 4 sales in a row worse than holding, or the last 30 days $25 under holding, pauses
+    both for 7 days; after that it restarts at the smallest limit and must earn its way back (nothing carries over). Same
+    record always gives the same limit. State is `combo_more.json`; an unreadable record uses it, else the smallest limit
+    (never the start, never unlimited). Settings shows today's limit, what is used and why (`more_view`). The existing
+    `auto_cap`, Pause (re-read right before the order), rule 8 (an unknown order outcome means "check", never retried) and
+    the whole-contract guard all still apply.
+  - **Recording.** Every pass writes the `more_shadow` table per held single (bounded: 60 days / 200k rows, 60 s per ticker,
+    errors swallowed, off the trading path, never read by a decision); a sale is a `log_decision` line tagged `more` (A/B)
+    with its after-fee net, so net dollars after fees versus hold can be measured. **Registry.** KNOBS entries
+    `sell_more_start`, `sell_more_floor`, `sell_more_loss`, `sell_more_age` (invariant, with their source constants); the
+    keys are in `SHARED_KEYS`, the engine's `WATCHER_SYNCED` and the watcher's `SET_KEYS` and `SYNCED` (Pete, 2026-11-25: a
+    dropped key means the Settings switch never reaches the engine; `t_newkeys.py` checks every new sell key is in all of
+    them and on the Settings screen).
+  - **Ambiguities.** "Under about 60c" is read as the entry price per contract. A works only in play with a fresh score. B is
+    roughly neutral by construction (selling at about 15c against about a 15% chance), so the shadow record is how it gets
+    judged. Tests: `t_sellmore.py` (defaults, off = develop, A/B, stale blocks, Pause, rule 8, a saved 'never' no longer
+    blocking, whole contracts, a real sale tagged `more` and counted by the daily dollar limit, limit grow/shrink/minimum
+    sample/brake, shadow table unread), plus `t_knobs.py`'s allow-list.
 
 ### Live page
 - **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
@@ -1812,6 +2279,49 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   (learned from pre-game prices): `value_label(legs)` (used by `value_combos`) labels it `mix` / "Live pick", and `combo_star(c)`
   (used by `combo_view`) re-checks at view time; a live combo also gets no `pred`, `est` or auto-size. Uses
   `idea_combo_live_gap` (a leg it can't judge counts as live; fail closed). Tests: `t_surprise_star.py`, `test_surprise_star.py`.
+- **Change vs paid on Live rows, hero and combo detail (#100; display only).** Combo rows (next to the offer, `offNow`),
+  single/spread/total rows (Worth now) and the combo detail's Offer carry the change against what was paid: "−7%" over
+  "−$0.22" (`chgHtml` in `live.js`; formats `chg`/`chgd`/`absm` in `fmtNum`; dollars always with cents; rounding symmetric on
+  magnitude, `rndm`; a zero prints no sign). Both parts are rolling `data-num` numbers, tabular, always two lines so a sign
+  flip never moves the row. An estimate (no real Kalshi offer) is prefixed with "≈". The colour follows what is SHOWN in the
+  chosen mode (`data-b` both / `data-p` % / `data-u` $: paid $10, offer $9.97 in % mode is a grey "0%"). The hero pill rolls
+  its percent and signed dollar change the same way (`heroChg`). A "Change vs paid" switch (`% + $` / `%` / `$`, 44pt hit
+  targets, `aria-pressed`, `:focus-visible`) shows above every table with a change line; it only sets `<html data-chg>`
+  (`setChg`, remembered as `cw_chg`), so CSS shows the parts and nothing redraws. Same number the row already shows; no
+  engine, sell or valuation change. CSS lives in `ideas.css`. Test: `test_pctchange.py`.
+- **A newer version reaches an open page (#150, display only).** The web app fills the running version into the page
+  (`PAGE_VER`, `__CWVER__` in `SPA`, from `A.VERSION`; the page is `no-store`). Every live/games/game answer carries it
+  (`fresh.ver`), and any view also asks the small read-only `GET /app/api/ver` (same sign-in, no app lock, no money) on the
+  Mac's tick, every 12 s and when the app comes back (`verPoll`), so a phone parked on Build/Results/Settings notices too.
+  `watcher/spa/update.js` (`verSeen`) compares it with `PAGE_VER`. Different + idle = reload by itself with a quiet fade,
+  then an "Updated to <version>" toast; busy = a "New version ready: tap to refresh" pill (44 px, labelled, hidden = not
+  focusable; `verTap` fires the light haptic inside the real tap, then reloads). **Busy (`verBusy`)** = a finger down, a
+  scrub, a sheet or pushed page (game/combo/idea) open, `S.buying`/`S.pSend`/a pot move sending, **any POST still in flight**
+  (`api()` counts them in `S.inflight`), a 15 s hold after a buy/go/hedge/single buy/pot move/panel
+  approve/add/cancel/restart result (`S.verHold`, so its message can be read), `S.busy`, quote/buy entries
+  (`S.qpend`/`S.bpend`) younger than 60 s, a flip, a combo quote or custom offer under 25 s old, a Live Buy-idea quote
+  (`S.ideaq`) under 25 s old, a visible bad or "check" toast, a field being typed in, an armed Approve/Add. Idle also needs
+  1.5 s since the last touch, scroll or key. The "already reloaded for this version" note (5 min) is kept in sessionStorage
+  and localStorage; if neither can be written, or it is there, only the pill shows (no loop). An unreadable version does
+  nothing. The service worker has no fetch handler (caches nothing) and carries `WATCHER_VERSION`, so every release changes
+  it. Settings > The Mac shows "Up to date" with the app version, or "A newer version is ready" with a Reload button. Tests:
+  `t_newversion`, `test_newversion`. Follow-ups: #213, #214.
+- **Game page: the "Chance to win" chart starts at kickoff (#486; display only).** Pete: the chart began hours before the
+  game (12:41 PM for a later kickoff), a long flat line with the real game squeezed into the last sliver, because the Mac
+  records each game's price from long before kickoff and the chart ran from the first sample. No buy, sell, pricing or size
+  decision changes, and nothing in the trading loop reads any of this. `api_game` (`watcher/combo_watcher.py`) now also
+  returns `start`: the game's kickoff as epoch seconds, from `A.game_start`, but only when it comes from the sportsbooks or
+  the score feed (the settle-time estimate, which can be hours off, #223, is never offered; then `start` is null). A failure
+  is logged once (`gamestart`) and the page works without it. The page (`winRange` in `watcher/spa/game_tabs.js`, used by
+  `paintGame`) takes `t0` = `start`, else the first sample marked in play, else the first score change. Samples before `t0`
+  (and any still marked pre-game) are not drawn and cannot be scrubbed. The x-axis starts at `t0` (left label = kickoff
+  time); score-change markers use the same scale, so they stay aligned. With nothing to anchor on, every in-game sample is
+  drawn as before. A game that has not started (start in the future, or state pre with no start) shows "Kicks off at 7:30 PM.
+  The win-chance line starts at kickoff..." (or "Starts <label>") instead of a flat line. "Drag to look back" works across
+  the played game from kickoff on; it cannot reach pre-game history any more (that would need a separate pre-game axis, left
+  out on purpose). Tests: `test_chartstart_ui.py` (synthetic series with 4 hours of pre-game samples; axis, point count,
+  scrub range, marker x, both fallbacks, not-started notes, 390x844 dark and light), `test_gamedetail_api.py` (`start` from a
+  book kickoff; an estimate is never offered).
 
 ### Build page
 - Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
@@ -1967,6 +2477,44 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `buy` → `accept_offer` (caps, Pause, rule 8), which now refuses an offer for other picks than shown (rule 7, every
   combo Buy). An unknown outcome leaves "Check Kalshi" on the card. Nothing buys by itself. Tests: `t_longshots.py`,
   `test_longshots_ui.py`.
+- **Combo Buy re-checks the page's legs (#203, rule 7; guard only: nothing new is bought and no price, size or cap
+  changes).** The web app's Buy sends the legs it shows (it already did, since #347). The Mac now checks them in
+  `accept_offer(i, expect_legs=...)` (`buy_legs_refusal`): they must equal BOTH the stored offer's legs and the combo now on
+  that card (`CTX["combos"][i-1]`), compared as sets of tickers, exactly as `quote` checks the card. Any mismatch sends
+  nothing, keeps the offer, prints `buy combo N: refused before the accept (reason); page=... offer=... card=...`, and
+  answers "That price was for a different combo, or this page is out of date. Reload the page..." (`legs_mismatch`), so a
+  combo-changing path that forgets to pop its offer can no longer buy legs other than the ones on screen. **Pages that send
+  no legs:** the idea Buy used to send none, and a stale tab may too. They are NOT refused for missing legs (that would have
+  blocked every multi-game idea Buy) but are held to offer = card, so a combo that changed under its offer is still refused.
+  The idea price (`a: "idea"`) now returns the combo's `legs`; `ideas.js` keeps them (`S.ideaq[id].legs`) and sends them with
+  Buy, so idea Buys are checked against the page's own legs too. The panel, killer and other callers of `accept_offer` pass
+  no `expect_legs` and are unchanged. Tests: `t_buy_legs_203.py` (engine) and `test_buy_legs_203.py` (real `/app/api/act`:
+  idea Buy with and without legs, other legs, flip without popping the offer, Build card, long shot).
+- **Overlap re-grey after Add anyway, overlap log, own request kept (#366, #367, #350).** **#366, never looser:** "Add
+  anyway" now carries the game's exposure at the tap (`KEY~n~risk`; `overlap.js` `S.ovAllow` is a Map). `overlap_allow`
+  returns a set subclass with the exposure; `overlap_games` greys the game again when more bets (`n`) or more dollars at risk
+  than at the tap are riding. Exposure that fell never greys by itself. An older page that sends a plain key is let through
+  as before. Malformed or negative values are dropped; duplicates keep the stricter one. **#367, measurement:**
+  `overlap_log(kind, game, n, risk, why)` writes greyed games ("grey", once per 30 minutes per game and exposure) and Add
+  anyway taps ("add") to the `overlap_log` table; it never raises and never changes the answer. **#350:** `carry_quote` no
+  longer withdraws Pete's own open "Get price" request on the same combo: if any request is open (or the list cannot be read)
+  it makes no quote instead of calling `clear_my_rfqs`. Tests: `t_guards2.py`.
+- **iPhone tap, scroll and layout polish (#274, #273, #272, #178, #186; Build, Results, Live toasts and sheets).** Build date
+  card: the "Sunday is always in" note is plain text (no tappable-looking span), the day and week chips are 44px high
+  targets, and a refused date change shows an inline `.derr` alert inside the card (from `S.dayErr`) instead of a toast that
+  vanished. While the board reloads after a change, the card is kept on screen (`S.dayHold`, rendered by the skeleton branch
+  of `build.js`) so it no longer jumps. When a date change clears picks, `setDays` toasts "Picks cleared for the new dates."
+  (#274, #273). Toasts: `toast()` drops its tap action while a sheet (`#modal.on`) is open, and `app.css` blocks pointer
+  events and the chevron behind the sheet, so a toast can no longer be tapped through a sheet (#272). Idea dismiss/undo: the
+  delayed save sleep is cancellable (`job.wake`), so Undo brings the idea back immediately with a "Bringing it back..." toast
+  and no server round trip when nothing was saved yet (#178). Results: the Smart Buy "Bigger stakes" line is a collapsible
+  `<details class="sbmore">`; the Stopped column uses plain-English `BUCKET_WORDS`, and the engine mirrors that with
+  `LINE_BUCKET_WORDS` / `line_bucket_words` in the `line_clv_block` message. Best Bets line cards show "avg N¢" when the
+  average fill differs from the quoted price; `line_fill` now returns `avg` and `best_bets_feed` passes it through (display
+  only, no pricing or stake change) (#186). Already done on develop and not rebuilt: #281, #151, #218. #205 already works at
+  normal row height (rows taller than 64px skip the see-through switch). #196's switch no longer exists. #206 needs a
+  real-phone look and a design decision. Tests: `t_tap_polish.py` (engine), `test_tap_polish.py` (page),
+  `test_buildlayout.py` (extended).
 
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
@@ -2053,6 +2601,41 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   near-even 2-3 leg quotes and paper-buys $5 at or under the legs' mid product (same-game only logged; none with a game
   under way). `carry_resolve` settles after the taking fee. Results: `carryCard`/`carry_summary` ("too few to trust"
   under 20).
+- **Held to the end: how it has done, on Results (#461; "How it ended" tab; display only, nothing moves money).** Pete saw
+  the "How it ended" breakdown, concluded that holding to the end has a poor record, and wants smart sell to become aware of
+  it; he chose to show it on Results first while the paper test (`tools/exit_replay.py`) measures it. No buy, sell, sizing or
+  gate decision changes. `profit_board()` adds `periods[*].held` (from `_held_facts` + `_held_summary`, both read-only; the
+  existing groups and the "vs holding" column are untouched). The tab shows, above the table: `Won 5 of 17; at these prices
+  you needed about 3 in 4 to break even`, the break-even being the average cost per $1 of payout (`_in_n` turns it into "N in
+  M" or a percent), tagged `small sample` under `BOARD_FEW` (20) bets; and below it (under "Held to the end: lost"): **Could
+  have been sold higher**, `N of M traded above what you paid before closing (best bid beat cost by $a to $b)`, plus how many
+  had no price history, also tagged `small sample`. Data: only what the app already stores. A combo's payout comes from
+  `bets.pays` and its best price from its real `offers` (the same source as the "rode to the end" line); a single bet's
+  contract count was not kept in the ledger, so its price paid was unknown: it counted as "no price history" and was left out
+  of the break-even (counting only the winners would bias it; see the next bullet for the stored count). No division by zero:
+  no payout known gives "no break-even", no bets gives no line. Tests: `t_heldlosers.py` (the rate wording, every empty and
+  zero case, board end to end), `test_scoreboard.py` (the lines on the page, phone dark and light).
+- **Each bet's contract count is stored in the ledger (follow-up to #461; bookkeeping only).** Single bets did not keep how
+  many contracts were bought, so Results could not price them (the "could have been sold higher" line only covered combos,
+  whose payout is in `bets.pays`). The `ledger` table now keeps per bet `n_bought` (real: contracts opened; a fill that
+  closes a position is not counted; a fill that flips the side counts only the part that opens) and `unit_cost` (real: all-in
+  cost per contract: money paid to open plus the buy fees, not the sale fees; `(ledger.cost - sell_fees) / n_bought`, rounded
+  to 4 places). No buy, sell, sizing or gate decision reads these fields; nothing moves money; rule 8 untouched; the buy path
+  itself is not touched. No new Kalshi call: both come from the fills `_single_ledger` / `ledger_note` already read
+  (`bought_n` for combos). Schema is additive and backward compatible: `_ledger_table` adds the columns to an older file with
+  `alter table` (checked against `pragma table_info`, so safe to run twice), alongside the existing `nf` column. Old rows
+  stay NULL = unknown. The first account read after a restart fills a row whose fills are still inside Kalshi's window
+  (`LEDGER_SIG` starts empty; `_ledger_same` sees the difference); a row whose fills have aged out stays NULL, and a saved
+  count is never overwritten by an unknown one (`coalesce(excluded.n_bought, ledger.n_bought)`). A settlement-only row (no
+  fills) stays unknown rather than guessed. Reading: `ledger_price_paid(row)` returns `(contracts, cost per contract)` or
+  `(None, None)`; it never raises on NULL, zero, negative, text or a missing key. `_ledger_rows()` puts the cleaned
+  `n_bought` / `unit_cost` on every row, so `profit_board` rows carry them. **Follow-up (small, not done because #462 was not
+  in develop):** once #462 (held losers) lands, `_held_facts` can price a single from `ledger_price_paid(r)` (payout =
+  `n_bought`, a contract pays $1; best sell price from the single's own price history; "no price history" when `(None,
+  None)`), and the "a single bet's contract count is not kept" wording in `_held_facts` / `_held_summary` and its doc should
+  be replaced. Tests: `t_storecounts.py` (counts from fills, settlement-only unknown, migration of an old-schema file, NULL
+  handling, `ledger_price_paid` edge cases, and that the new names appear only in ledger bookkeeping, never in a
+  buy/sell/sizing function); `t_ledgersales.py` unchanged.
 
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
@@ -2225,6 +2808,20 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     roles, keyboard, focus ring, one-shot animations, failure feedback, retry, no JS errors, no sideways scroll);
     `test_reprice_ui`, `test_comeback_ui`, `test_closed_ui`, `test_overlap_ui`, `test_longshots_ui` still pass.
 - Next makeover work (Kalshi-style game page drill-down, shareable result card, more charts): `ROADMAP.md` and issue #12.
+- **Tickers and ids travel as data, not as code, in tap handlers (#247, part of #408).** Buttons in the web app used to paste
+  a ticker or id straight into the JavaScript of their `onclick` (`ssPrice('${x.t}',this)`). Even with `esc()` that is not
+  safe: the browser decodes `&#39;` back to `'` before it runs the handler, so a ticker holding a quote could end the string
+  and run code. Now each such button carries the value in a `data-*` attribute (escaped with `esc()`) and the handler reads
+  `this.dataset.<name>` when tapped. The handler stays inline on purpose (not a document-level listener):
+  `event.stopPropagation()` and bubbling work exactly as before. Same actions, endpoints and guards; nothing about buying,
+  selling, Pause or rule 8 changed. Converted: `sell_single.js` (Sell sheet buttons), `build.js` (panel Skip/amount, Buy
+  straight in rows, slip bar and slip card, Flip a team), `build_cards.js` (singles card), `combo.js` (Hedge/Ask/Sell),
+  `game.js` (Buy a team), `ideas.js` (price/buy/pass/not now/dismiss/open), `longshots.js` (quote/buy), `live.js` (cash-out,
+  smart-sell chip, row open, Hedge sheet, Cash out sheet), `access.js` (copy link). Left to PR #412 (its lines): `pick(...)`
+  in `build.js`, `openCombo`/`openGame`/results/overlap handlers, and `game.js` line 35. Test: `test_onclick_data_ui.py`
+  renders each of these with a ticker holding a quote, angle brackets and an ampersand, taps every button and checks the
+  handler got the exact string, nothing ran as code and the onclick text never contains the ticker; plus a source check that
+  converted handlers stay converted.
 
 ## Kalshi API watch (GitHub issue #82)
 
