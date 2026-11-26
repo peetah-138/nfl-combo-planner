@@ -172,7 +172,7 @@ SENT = []
 E.kalshi_send = lambda m, p, b=None, params=None: (SENT.append((m, p, b)), {"order": {"fill_count_fp": f"{b['count']:.2f}"}})[1]
 E.hands_off = lambda t: False
 E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
-E.smart_params = lambda ts: {"loss": None}
+E.smart_params = lambda ts, **kw: {"loss": None}
 E.resting_single_sells = lambda: set()
 E.sold_today = lambda: 0
 E.log_decision = lambda rec: None

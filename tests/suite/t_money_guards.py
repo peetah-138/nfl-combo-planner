@@ -18,7 +18,7 @@ E.CFG["flex_sell"] = True
 E.started = lambda leg: True
 E.combo_live_fair = lambda legs, now=None: ([dict(legs[0], fair=0.3)], None)
 E.leg_start = lambda l, s: None
-E.smart_params = lambda tks: {"loss": 0.45}
+E.smart_params = lambda tks, **kw: {"loss": 0.45}
 E.flex_wait_line = lambda hn: 1e9                 # waiting is never "worth more" here: only the profit rule can accept
 h = {"label": "Combo 1", "pays": 20, "cost": 7.0, "p": 0.6, "need": [(("yes", "KXNFLGAME-26-A-X"), "A")],
      "ch_of": {"KXNFLGAME-26-A-X": 0.6}}

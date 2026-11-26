@@ -87,8 +87,8 @@ with sync_playwright() as pw:
         pg.locator(".an .knp .knlg button", has_text="Premier League").click()
         wait(pg, "(document.querySelector('.an .knp .knr[data-k=\"smart_floor\"]')||{innerText:''}).innerText.includes('Soccer')", 5)
         if "borrowed from Soccer" not in floor_row(): P.append(tag + ": the EPL's borrowed floor not shown: " + floor_row().replace("\n", " / "))
-        if "off until this league's own record" not in pg.locator('.an .knp .knr[data-k="smart_loss"]').inner_text():
-            P.append(tag + ": a borrowed loss cut should read off")
+        if "cautious default" not in pg.locator('.an .knp .knr[data-k="smart_loss"]').inner_text():
+            P.append(tag + ": a league with no loss cut of its own should show the cautious default")
         if pg.locator(".an .knp input, .an .knp select, .an .knp textarea").count():
             P.append(tag + ": the registry card has a setting control (it must be read-only)")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): P.append(tag + ": Results scrolls sideways")
