@@ -7643,17 +7643,45 @@ def game_event(ev):
     return re.sub(r"(SPREAD|TOTAL)-", "GAME-", ev or "")
 
 
-def note_held(events):
+def note_held(events, fams=None, combo_events=None):
+    """Save the games Pete holds himself for the panel. `events`: every game (as before). `fams` (money-h): the single bets
+    by game and kind ("GAME-EVENT|total" or "GAME-EVENT|side": a winner and a spread are one family, a total is its
+    own), `combo_events`: the games his combos touch. Without them (an older file) every game blocks as before."""
     events = sorted(e for e in events if e)
+    new = {"events": events}
+    if fams is not None:
+        new["fams"] = sorted(set(fams))
+        new["combo_events"] = sorted(e for e in (combo_events or ()) if e)
     old = load_json(HELD_FILE, {})
-    if old.get("events") != events or time.time() - old.get("at", 0) > 300:
-        save_json(HELD_FILE, {"at": time.time(), "events": events})
+    if any(old.get(k) != v for k, v in new.items()) or time.time() - old.get("at", 0) > 300:
+        save_json(HELD_FILE, dict(new, at=time.time()))
 
 
 def account_events(max_age=1800):
     """Games you bet on Kalshi yourself (not through the app), so the panel doesn't double up on them."""
     d = load_json(HELD_FILE, {})
     return set(d.get("events") or []) if time.time() - d.get("at", 0) < max_age else set()
+
+
+def account_held(max_age=1800):
+    """(games that block every bet, {(game, family)} that block only that kind of bet) from Pete's own account. A winner
+    he holds does not block a total on the game (Pete, money-h); it still blocks a spread and the other team (same family),
+    and a combo he holds blocks the whole game (open question). An older file or a stale read: every game blocks."""
+    d = load_json(HELD_FILE, {})
+    if time.time() - d.get("at", 0) >= max_age:
+        return set(), set()
+    if "fams" not in d:
+        return set(d.get("events") or []), set()
+    fams = set()
+    for x in d.get("fams") or []:
+        g, _, f = str(x).rpartition("|")
+        fams.add((g, f))
+    return set(d.get("combo_events") or []), fams
+
+
+def bet_family(ticker):
+    """A winner and a spread are nearly the same bet (one family, "side"); a total-points bet is its own ("total")."""
+    return "total" if "TOTAL-" in str(ticker or "").upper() else "side"
 
 
 SINGLES = {"at": 0, "items": [], "mk": {}, "mk_at": {}}
@@ -7990,8 +8018,12 @@ def live_view(mine, views, plan, chance_one, balance):
         for x in singles:
             x["own"] = is_own(x["t"])
             x["self"] = x["t"] in mine_sell
-        note_held({game_event(l.get("event") or "") for a in mine if a.get("status") == "pending" and is_own(a["ticker"])
-                   for l in a["legs"]} | {game_event(x["event"]) for x in singles if x["own"]})
+        own_c = {game_event(l.get("event") or "") for a in mine if a.get("status") == "pending" and is_own(a["ticker"])
+                 for l in a["legs"]}
+        own_s = [x for x in singles if x["own"]]
+        note_held(own_c | {game_event(x["event"]) for x in own_s},
+                  fams={game_event(x["event"]) + "|" + bet_family(x["t"]) for x in own_s if x.get("event")},
+                  combo_events=own_c | {game_event(x["event"]) for x in own_s if not x.get("event")})
     except Exception as err:
         print("bet origins:", type(err).__name__, err)
     week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
@@ -14260,6 +14292,14 @@ def accept_offer(i, skip_cap=False, expect_legs=None, legs_sent_empty=False):
         except Exception:
             pass
         return {"error": PAUSE_MSG, "paused": True}
+    clash = combo_contradiction(o.get("legs") or [])   # a leg against a single he holds (Chicago held, Detroit in the combo): never bought
+    if clash:
+        CTX["offers"].pop(i, None)
+        try:
+            kalshi_send("DELETE", f"/communications/rfqs/{o['rfq']}")
+        except Exception:
+            pass
+        return {"error": clash, "contradicts": True}
     try:
         spent = 0 if skip_cap else week_spend()
     except Exception as err:                       # CapUnknown (or anything else): refused, nothing sent
@@ -17528,6 +17568,9 @@ def maker_cancel_all(why="paused", log=print):
 
 def _maker_post(ticker, n, price, expire_ts):
     import uuid
+    why = opposite_side_refusal(ticker, "yes")           # never both sides of one market, also for a standing order (a fresh read, fails closed)
+    if why:
+        raise RuntimeError(why)                          # the caller logs it and posts nothing
     body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
             "yes_price": int(round(price * 100)), "client_order_id": str(uuid.uuid4()),
             "expiration_ts": int(expire_ts)}                # Kalshi drops it by itself before the game
@@ -17812,6 +17855,190 @@ def held_markets():
     return out
 
 
+ORDER_PAGES_MAX = 10            # waiting-orders pages read (200 each) before the read gives up and the guard fails closed
+
+
+def _held_all():
+    """[(game, ticker, side, how)] of every straight (non-combo) bet the account holds, has an order waiting on, or may
+    hold after an order with no clear answer (or a buy in the last minutes), read now. RAISES when the positions or the
+    waiting orders can't be read, or there are more waiting-order pages than are read (the caller fails closed)."""
+    out = []
+    for p in _positions_strict():
+        t = p.get("ticker") or p.get("market_ticker")
+        g = overlap_key("", t) if t and not is_combo(t) else ""
+        if not g:
+            continue
+        n = float(p.get("position_fp") or p.get("position") or 0)
+        if abs(n) > 0.005:
+            out.append((g, t, "yes" if n > 0 else "no", "hold"))
+    orders, cursor = [], None
+    for _ in range(ORDER_PAGES_MAX):                     # page through: an order past the first 200 still counts
+        params = {"status": "resting", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        data = kalshi_send("GET", "/portfolio/orders", params=params)
+        if not isinstance(data, dict):
+            raise ValueError("resting orders answer isn't readable")
+        orders += data.get("orders") or []
+        cursor = data.get("cursor")
+        if not cursor:
+            break
+    else:
+        raise ValueError(f"more than {ORDER_PAGES_MAX * 200} waiting orders: can't read them all")
+    for o in orders:
+        t = o.get("ticker") or o.get("market_ticker")
+        g = overlap_key("", t) if t and not is_combo(t) else ""
+        if not g:
+            continue
+        if o.get("action") == "buy":
+            side = o.get("side") or "yes"
+        elif not o.get("action") and (o.get("book_side") == "bid" or o.get("outcome_side") == "yes" and o.get("book_side") is None):
+            side = "yes"                                 # newer fields: a bid is a YES buy (an ask can't be told from a sale: skipped)
+        else:
+            continue
+        out.append((g, t, side, "order"))
+    for b in order_blocks():
+        if b.get("ticker") and not is_combo(b["ticker"]) and b.get("side") == "YES" and overlap_key("", b["ticker"]):
+            out.append((overlap_key("", b["ticker"]), b["ticker"], "yes", "order"))
+    now = time.time()
+    for t, at in list(RECENT_BUYS.items()):
+        if now - at < RECENT_BUY_SECS and not is_combo(t) and overlap_key("", t):
+            out.append((overlap_key("", t), t, "yes", "hold"))
+    return out
+
+
+def _held_stances(want_game):
+    """[(ticker, side, how)] of the straight bets held (or waiting) on this one game (see _held_all). RAISES when unreadable."""
+    return [(t, sd, how) for g, t, sd, how in _held_all() if g == want_game]
+
+
+def _stance_words(ticker, side):
+    """'NYJ to win', 'DAL to cover', 'the over', 'the under': the bet as a few plain words (team codes from the ticker)."""
+    st = _expo_stance(ticker, side) or ""
+    kind, who, _ = (st.split(":") + ["", ""])[:3]
+    team = who.lstrip("~")
+    if kind == "total":
+        return "the " + who
+    if kind == "spread":
+        return f"{team} to cover" if not who.startswith("~") else f"{team} not to cover"
+    return f"{team} to win" if not who.startswith("~") else f"{team} not to win"
+
+
+def opposite_side_refusal(ticker, side="yes"):
+    """None when a single buy on this market may go ahead, else the plain-English reason it must not: the account holds,
+    or has an order waiting (or one with no clear answer, or a buy in the last minutes) on, the OTHER side of the same
+    market on this game. A winner and a spread are one family (the other team to win, or to cover, is the other side), a
+    total is its own (over against under); a winner never blocks a total. The same market and side again is not touched
+    here. Read fresh every time and FAILS CLOSED: if the positions or waiting orders can't be read, nothing is bought.
+    Stricter only (it can only refuse). Hedges and combos don't come through here."""
+    try:
+        game = overlap_key("", ticker)
+        want = _expo_stance(ticker, side)
+        if not game or not want or is_combo(ticker):
+            return None                                  # not a straight game bet we can read: as before
+        held = _held_stances(game)
+    except PermissionError as err:
+        return str(err)                                  # no key / not allowed: the plain refusal the send itself would give
+    except Exception as err:
+        print(f"opposite-side check couldn't read your bets ({type(err).__name__}: {err})", flush=True)
+        _REFUSAL.unread = True                           # the panel puts such a bet back to waiting, not "failed" for good
+        return UNREAD_BETS
+    return _opposing(ticker, side, held, "{want} was not bought.")
+
+
+UNREAD_BETS = "Couldn't check your open bets on this game, so nothing was bought. Try again in a minute."
+
+
+def unread_take():
+    """True when this thread's last guard refusal was 'couldn't read your open bets' (nothing was bought, nothing is wrong
+    with the bet itself); cleared on read. The panel puts such a bet back to scheduled instead of failing it for good."""
+    r = bool(getattr(_REFUSAL, "unread", False))
+    _REFUSAL.unread = False
+    return r
+
+
+def _opposing(ticker, side, held, ending):
+    """The reason a bet on `ticker`/`side` contradicts one of `held` ([(ticker, side, how)] on its game), else None. Same
+    family only (a winner and a spread, or a total on its own) and a stance that can't both win. `ending` has {want}."""
+    want = _expo_stance(ticker, side)
+    fam = bet_family(ticker)
+    for t, sd, how in held:
+        have = _expo_stance(t, sd)
+        if not want or not have or bet_family(t) != fam or not _expo_opposed(want, have):
+            continue
+        tail = ending.format(want=_stance_words(ticker, side))
+        if how == "hold":
+            return f"You already hold {_stance_words(t, sd)} on this game, so {tail}"
+        return (f"You already have an order out for {_stance_words(t, sd)} on this game (or one with no clear answer), "
+                f"so {tail}")
+    return None
+
+
+def _combo_leg_sides(legs):
+    """[(ticker, side)] of a combo's legs given as tickers or leg dicts (YES unless a leg says 'no')."""
+    out = []
+    for l in legs or []:
+        t = l if isinstance(l, str) else (l.get("ticker") or l.get("market_ticker"))
+        sd = "yes" if isinstance(l, str) else str(l.get("side") or "yes").lower()
+        if t:
+            out.append((t, sd))
+    return out
+
+
+def _combo_clash(legs, held_all):
+    """Reason string when a leg of this combo contradicts a straight bet held in `held_all` (see _held_all), else None.
+    Detroit to win in the combo against Chicago to win held is a clash; the same side, or a total beside a winner, is not."""
+    for t, sd in _combo_leg_sides(legs):
+        g = overlap_key("", t)
+        if not g or not _expo_stance(t, sd):
+            continue
+        why = _opposing(t, sd, [(ht, hs, how) for hg, ht, hs, how in held_all if hg == g],
+                        "this combo (with {want}) was not offered or bought.")
+        if why:
+            return why
+    return None
+
+
+def combo_contradiction(legs):
+    """None when a combo may be offered or bought, else the plain reason: one of its legs contradicts a single bet the
+    account holds or has waiting (Pete, money-h: hold Chicago to win, no combo with Detroit to win). Read fresh and FAILS
+    CLOSED (unreadable = refused, with the same 'couldn't check' words and flag as opposite_side_refusal)."""
+    sides = [(t, sd) for t, sd in _combo_leg_sides(legs) if overlap_key("", t) and _expo_stance(t, sd)]
+    if not sides:
+        return None
+    try:
+        held = _held_all()
+    except PermissionError as err:
+        return str(err)
+    except Exception as err:
+        print(f"combo contradiction check couldn't read your bets ({type(err).__name__}: {err})", flush=True)
+        _REFUSAL.unread = True
+        return UNREAD_BETS
+    return _combo_clash(legs, held)
+
+
+LIST_HELD = {"at": 0.0, "held": None}
+LIST_HELD_SECS = 10             # lists (ideas, the panel's pool) reuse one good read this long; every buy reads fresh
+
+
+def hide_contradicting(items, legs_of):
+    """The combos in `items` whose legs don't contradict a held single (legs_of(item) = its legs, [] or one leg for a
+    straight bet: those always stay). One read for the whole list, FAILS CLOSED: unreadable = every combo is hidden.
+    Never raises."""
+    items = list(items)
+    if not any(len(legs_of(c) or []) > 1 for c in items):
+        return items
+    try:
+        if time.time() - LIST_HELD["at"] > LIST_HELD_SECS or LIST_HELD["held"] is None:
+            LIST_HELD["held"], LIST_HELD["at"] = _held_all(), time.time()
+        held = LIST_HELD["held"]
+    except Exception as err:
+        LIST_HELD["held"] = None
+        print(f"combo ideas hidden: couldn't read your open bets ({type(err).__name__}: {err})", flush=True)
+        return [c for c in items if len(legs_of(c) or []) <= 1]
+    return [c for c in items if len(legs_of(c) or []) <= 1 or not _combo_clash(legs_of(c), held)]
+
+
 def buy_single(ticker, n, price, coid=None, exact=False):
     """Buy n YES contracts at `price` or better, now or not at all (fills now or cancels). After your tap.
     coid: a client order id of the caller's (a manual buy uses its quote's, so Kalshi itself sees one order).
@@ -17820,6 +18047,9 @@ def buy_single(ticker, n, price, coid=None, exact=False):
     held, words = hold_refusal("buy")                # nothing is sent while Kalshi's restriction is being waited out
     if held:
         return 0, words
+    why = opposite_side_refusal(ticker, "yes")       # never both sides of one market (Pete, money-h): a fresh read, fails closed
+    if why:
+        return 0, why
     body = {"ticker": ticker, "action": "buy", "side": "yes", "type": "limit", "count": int(n),
             "yes_price": int(round(price * 100)), "time_in_force": "immediate_or_cancel",
             "client_order_id": coid or str(uuid.uuid4())}
@@ -19031,6 +19261,7 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
                 for k in gone:
                     st2["items"].pop(k, None)
                 save_json(IDEA_DISMISS, st2)
+        out = hide_contradicting(out, lambda r: r["legs"])      # a combo idea with a leg against a single he holds is not offered
         out.sort(key=lambda r: (r["below_bar"], -r["ep"], -(r.get("pct") or 0), -(r.get("ts") or 0)))
         out = out[:keep]
         out, lc_skipped = low_credit_ideas(out, now)       # low on odds credits: far games on free lines only go
@@ -21622,6 +21853,37 @@ def _events_of(c):
     return [re.sub(r"(SPREAD|TOTAL)-", "GAME-", l.get("event") or "") for l in c["legs"]]
 
 
+def _fams_of(c):
+    """[(game, family)] for a straight bet (one leg, not a combo); [] for a combo. A winner and a spread are the same
+    family, a total is its own (bet_family): holding one never hides a bet of the other family on the game."""
+    if c.get("kind") == "combo" or len(c.get("legs") or []) != 1:
+        return []
+    l = c["legs"][0]
+    return [(_events_of(c)[0], bet_family(l.get("ticker")))]
+
+
+def _busy_of(items):
+    """(games, fams) the given panel bets hold: a combo holds its whole game, a straight bet only its family on it."""
+    games, fams = set(), set()
+    for c in items:
+        f = _fams_of(c)
+        if f:
+            fams.update(f)
+        else:
+            games.update(_events_of(c))
+    return games, fams
+
+
+def _busy_hit(c, games, fams):
+    """Whether bet `c` clashes with what is held. A straight bet clashes with a held combo on its game or a bet of its own
+    family; a combo (open question for Pete) clashes with anything held on any of its games."""
+    f = _fams_of(c)
+    if f:
+        return f[0][0] in games or f[0] in fams
+    evs = set(_events_of(c))
+    return bool(evs & games) or any(e in evs for e, _ in fams)
+
+
 def _sim_panel(items, n=3000, seed=7):
     """Monte Carlo of the panel's total profit. One draw per game, so bets on the same game move together and
     the two teams in a game can never both win (a single on one team and a combo with the other are exclusive).
@@ -21695,7 +21957,7 @@ def choose_panel(cands, budget, base, size=None):
     size = size or PANEL["size"]
     dollars = rank_dollars()
     picked, spent, per_game = [], 0.0, defaultdict(int)
-    solo = set()                                       # games that already carry a single, spread or total
+    solo = set()                                       # (game, family) a straight bet already holds: winner+spread one, total its own
     fun = {"bar": dict(Counter(c["kind"] for c in cands if not _qualifies(c)))}   # #341: left out by the bar, by kind
     pool = [dict(c, stake=_size(c, base)) for c in cands if _qualifies(c)]
     fun["pool"] = len(pool)
@@ -21707,8 +21969,8 @@ def choose_panel(cands, budget, base, size=None):
             evs = _events_of(c)
             if any(per_game[e] >= PANEL["per_game"] for e in evs):
                 continue
-            if c["kind"] != "combo" and evs[0] in solo:
-                continue                                       # one straight bet per game: no team + over overlap
+            if c["kind"] != "combo" and _fams_of(c) and _fams_of(c)[0] in solo:
+                continue                                       # one straight bet per game and family (a total is its own)
             if c["kind"] == "line" and sum(1 for x in picked if x["kind"] == "line") >= max(2, int(size * PANEL["line_share"])):
                 continue                                       # spreads and totals: at most about a third of the panel
             if spent + c["stake"] > budget + 0.01:
@@ -21737,8 +21999,7 @@ def choose_panel(cands, budget, base, size=None):
         pool = [x for x in pool if x["id"] != c["id"]]
         for e in _events_of(c):
             per_game[e] += 1
-            if c["kind"] != "combo":
-                solo.add(e)
+        solo.update(_fams_of(c))
     # every prefix of that order is a candidate panel. Find the best chance of finishing ahead any prefix reaches;
     # keep the prefixes whose chance is over the floor, and of those take the one that expects to make the most.
     # (Old rule: within 5 points of the best chance.) That spends the budget on the bets worth the most dollars
@@ -21746,7 +22007,7 @@ def choose_panel(cands, budget, base, size=None):
     left = Counter()                                   # #341: why each qualifying bet that wasn't picked stayed out
     for c in pool:
         evs = _events_of(c)
-        if any(per_game[e] >= PANEL["per_game"] for e in evs) or (c["kind"] != "combo" and evs[0] in solo):
+        if any(per_game[e] >= PANEL["per_game"] for e in evs) or (c["kind"] != "combo" and _fams_of(c) and _fams_of(c)[0] in solo):
             left["overlap"] += 1
         elif c["kind"] == "line" and sum(1 for x in picked if x["kind"] == "line") >= max(2, int(size * PANEL["line_share"])):
             left["line_share"] += 1
@@ -21860,9 +22121,9 @@ def funnel_words(fun):
     return out
 
 
-def build_panel(codes=None, budget=None, now=None, exclude=()):
+def build_panel(codes=None, budget=None, now=None, exclude=(), exclude_fams=()):
     """Today's panel (and a couple of longer plays) from the latest candidates of each league. exclude: games
-    to leave out (already bet on). budget given explicitly is used as-is (what's left for extras)."""
+    to leave out (already bet on); exclude_fams: (game, family) pairs left out (a straight bet of that kind is held). budget given explicitly is used as-is (what's left for extras)."""
     now = now or time.time()
     budget = float(budget) if budget is not None else float(CFG.get("panel_budget", PANEL["budget"])) - spent_earlier_today(now)
     base, _ = sizing_base()
@@ -21896,11 +22157,17 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
                 longer.append(c)
             else:
                 drop["later"] += 1
-    held = {e for c in day_items(_panel_day(now)) if c.get("state") in ("bought", "buying", "check") for e in _events_of(c)}
-    held |= set(exclude) | account_events()
+    held, held_f = _busy_of([c for c in day_items(_panel_day(now)) if c.get("state") in ("bought", "buying", "check")])
+    held |= set(exclude)
+    acct_g, acct_f = account_held()
+    held |= acct_g
+    held_f |= acct_f | set(exclude_fams)
     n0 = len(today)
-    today = [c for c in today if not held & set(_events_of(c))]     # games an earlier panel today already bet on
+    today = [c for c in today if not _busy_hit(c, held, held_f)]    # games an earlier panel today already bet on (a held winner leaves totals open)
     drop["held"] = n0 - len(today)
+    n1 = len(today)
+    today = hide_contradicting(today, lambda c: c.get("legs"))     # a combo with a leg against a single he holds: not offered
+    drop["contradicts"] = n1 - len(today)
     games_today = len({e for c in today for e in _events_of(c)})
     size = min(14, max(6, 4 + games_today // 3))       # heavy hockey/NBA nights get a bigger panel
     nfl_day = any(c["code"] == "nfl" and c["kick"] <= day_end for c in today)
@@ -21937,6 +22204,7 @@ def build_panel(codes=None, budget=None, now=None, exclude=()):
     except Exception as err:                           # display only: never in the way of the panel
         console_note(f"panel funnel: {type(err).__name__}: {err}")
     used = used0
+    longer = hide_contradicting(longer, lambda c: c.get("legs"))
     longer = [dict(c, stake=_size(c, base)) for c in
               sorted(longer, key=lambda c: -c["ret"]) if not used & set(_events_of(c))][:PANEL["longer_max"]]
     longer, lc_long = low_credit_filter(longer, now)
@@ -22161,8 +22429,9 @@ def _extras_filter(items, real):
     """Extras without any bet today's panel has tried (PANEL_TRIED) and without games a live panel bet is on."""
     its = (real or {}).get("items", [])
     taken = {c["id"] for c in its if c.get("state") in PANEL_TRIED}
-    used = {e for c in its if c.get("state") in PANEL_LIVE for e in _events_of(c)}
-    return [c for c in items if c["id"] not in taken and not (used & set(_events_of(c)))]
+    used, used_f = _busy_of([c for c in its if c.get("state") in PANEL_LIVE])
+    left = [c for c in items if c["id"] not in taken and not _busy_hit(c, used, used_f)]
+    return hide_contradicting(left, lambda c: c.get("legs"))     # a combo against a single he holds is never offered
 
 
 def panel_extras(real=None):
@@ -22579,7 +22848,7 @@ def panel_add(ids, view, stakes=None):
             msg["no"] = "Today's panel isn't approved, so approve this one instead."
             return None
         active = [c for c in cur["items"] if c.get("state") in ("scheduled", "buying", "bought", "check")]
-        used = {e for c in active for e in _events_of(c)}
+        used, used_f = _busy_of(active)
         room = float(cur.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
         added, skipped = [], []
         for c in src["items"]:
@@ -22590,14 +22859,16 @@ def panel_add(ids, view, stakes=None):
             if not _start_ok(c, time.time(), 5 * 60):
                 skipped.append(c["legs"][0]["pick"])
                 continue
-            if used & set(_events_of(c)):
+            if _busy_hit(c, used, used_f):
                 skipped.append(c["legs"][0]["pick"])
                 continue
             if c["stake"] > room + 0.01:
                 skipped.append(c["legs"][0]["pick"])
                 continue
             room -= c["stake"]
-            used |= set(_events_of(c))
+            g1, f1 = _busy_of([c])
+            used |= g1
+            used_f |= f1
             if old:                                       # it was skipped/swapped earlier: this replaces that entry
                 cur["items"] = [i for i in cur["items"] if i["id"] != c["id"]]
             cur["items"].append(dict({k: v for k, v in c.items() if k != "buy_at"}, state="scheduled",
@@ -22782,8 +23053,7 @@ def _line_ok(x, f, p):
 
 def _replacement(c, p):
     """A similar bet: same kind of risk (chance within 12 points), starting within 2 hours, no overlap."""
-    used = {e for x in p["items"] if x.get("state") in ("scheduled", "buying", "bought", "paper", "check")
-            for e in _events_of(x)}
+    used, used_f = _busy_of([x for x in p["items"] if x.get("state") in ("scheduled", "buying", "bought", "paper", "check")])
     best = None
     for code, (at, cands) in PANEL_POOL.items():
         if time.time() - at > PANEL["fresh_age"]:
@@ -22795,8 +23065,10 @@ def _replacement(c, p):
                 continue
             if abs(x["chance"] - c["chance"]) > 0.12 or abs((x["kick"] or 0) - (c["kick"] or 0)) > 2 * 3600:
                 continue
-            if used & set(_events_of(x)) or any(y["id"] == x["id"] for y in p["items"]):
+            if _busy_hit(x, used, used_f) or any(y["id"] == x["id"] for y in p["items"]):
                 continue
+            if not hide_contradicting([x], lambda c: c.get("legs")):
+                continue                                 # a combo with a leg against a single he holds
             if best is None or x["ret"] > best["ret"]:
                 best = x
     if best is not None and (not smart_buy_gate(best)[0] or not low_credit_filter([best])[0]):
@@ -22882,6 +23154,9 @@ def _buy_panel_bet(c):
             e = post_sell(l["ticker"], filled, c["exit"])
             d["exit_order"] = "placed" if not e else f"failed: {e}"
         return True, f"bought {filled:g} at {ask * 100:.0f}¢", d
+    clash = combo_contradiction(c["legs"])               # no quote asked for a combo that goes against a single he holds
+    if clash:
+        return False, clash, {}
     cut = combo_cutoff(c["code"], len(c["legs"]), c["legs"])
 
     def go():
@@ -23223,11 +23498,18 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             if not claimed:
                 continue
             refusal_take()                                  # forget any older refusal on this thread
+            unread_take()
             try:
                 ok, note, d = _buy_panel_bet(dict(c, **upd))
             except Exception as err:
                 ok, note, d = None, f"{type(err).__name__}: {err}", {}
             ref = refusal_take() or {}
+            if ok is False and (unread_take() or note == UNREAD_BETS):   # "couldn't check your open bets" (a read failure or 429): nothing
+                try:                                        # was placed and nothing is wrong with the bet, so it waits and
+                    _set_items(day, mode, {c["id"]: {"state": "scheduled", "hold": "bets", "note": note}})   # is tried again next pass
+                except Exception as err:
+                    log("panel: couldn't put an unchecked bet back:", type(err).__name__, err)
+                continue
             if ok is False and ref.get("restricted"):       # Kalshi refused for the account or region: nothing was
                 try:                                        # placed, so it goes back to waiting (never "check", never
                     _set_items(day, mode, {c["id"]: {"state": "scheduled", "hold": "region", "note": note}})   # tried in a loop)
@@ -27302,10 +27584,10 @@ def panel_pass(log=print):
         left = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"])) - sum(c["stake"] for c in active)
         sk = [x for x in real.get("sb_skipped") or [] if isinstance(x, dict) and not x.get("longer")]   # Smart Buy's skips keep their budget
         left -= sum(float(x.get("stake") or 0) for x in sk)                     # and their games: a skip never makes
-        ex = {e for c in active for e in _events_of(c)} | {e for x in sk if not x.get("credits")
-                                                            for e in x.get("events") or []}   # room; a credits skip's
+        ex, ex_f = _busy_of(active)
+        ex |= {e for x in sk if not x.get("credits") for e in x.get("events") or []}   # room; a credits skip's
         # game may come back as an extra (Pete's Add) once it is near or has a sharp line, inside the same budget
-        x = build_panel(budget=max(left, 0), exclude=ex)
+        x = build_panel(budget=max(left, 0), exclude=ex, exclude_fams=ex_f)
         # only a skipped, swapped or left-out bet may come back if it's good again; today's panel is read again
         # here because building took a while and an Add may have landed meanwhile
         x["items"] = _extras_filter(x["items"], panel_get("real") or real)
@@ -30665,6 +30947,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
             c["i"] = i
             c["edge"] = round(pct - 1, 4)
             cands.append(c)
+        cands = hide_contradicting(cands, lambda c: c.get("legs"))    # a combo against a single he holds is never listed
         for c in cands:
             looked[c["kind"]] += 1
         cands.sort(key=lambda c: -(c.get("ret") or 0))

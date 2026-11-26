@@ -19,6 +19,7 @@ def load():
     A = real_load()
     A.fetch_account = lambda max_age=60, every_league=False: ([], 211.03, "test")
     A.fetch_results = lambda t: {}
+    A._held_all = lambda: []   # no singles held (the combo-vs-held-single guard reads the account)
     A.resting_sells = lambda: {}
     A.open_singles = lambda: []
     A.book_depth = lambda t, max_age=60: {"bid": .59, "ask": .60, "spread": .01, "ask_size": 94080, "thin": False}

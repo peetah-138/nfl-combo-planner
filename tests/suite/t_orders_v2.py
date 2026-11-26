@@ -16,6 +16,7 @@ E.ORDER_LEDGER = os.path.join(E.HERE, "orders.json")
 E.CFG["kalshi_key_id"] = "fake-key-id"
 E.hub_conf = lambda: None
 E.haptic = lambda *a: None
+E.opposite_side_refusal = lambda *a, **k: None   # the no-both-sides guard reads positions (fakenet has none); it has its own test, t_money_h
 import requests
 import fakenet
 fakenet.install(port=1)
