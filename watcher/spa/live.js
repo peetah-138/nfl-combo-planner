@@ -153,12 +153,14 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const most=pend.reduce((a,c)=>a+c.pays,0)+sOpen.reduce((a,x)=>a+(x.pays||0),0);const big=Math.max(d.best||0,...sOpen.map(x=>x.pays||0));
  const K=kalshiNow(pend,sOpen),kd=K-St;   /* #413: the big number is Kalshi's own value; our sale estimate (W) sits small beside it */
  const cls=Math.abs(kd)<.005?'flat':kd>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
+ /* #195: only a number that really moves may roll and flash. The big figure and its change pill follow Kalshi's own value (combos at cost, singles at the bid), so they move only with a single's price: with no single open the pill stays still. The 'If sold now' estimate rolls only if some estimated combo was priced live (offer_live); with none it only changes when a leg settles, so it just updates (data-still). */
+ const moves=sOpen.some(x=>x.worth!=null),estC=(d.combos||[]).filter(c=>c.group==='pending'&&!c.offer_real),still=est&&!estC.some(c=>c.offer_live!=null);
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
  return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now on Kalshi<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <div class="hrow"><b class="big" data-num="h:kalshi" data-v="${K.toFixed(2)}">${money(K)}</b>
-   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b></span></div>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,true,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
+   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}"${still?' data-still="1"':''}>${est?'≈ ':''}${money(W)}</b></span></div>
+   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,moves,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>

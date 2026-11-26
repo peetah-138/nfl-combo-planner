@@ -26,7 +26,7 @@ def ask(t, f=1.0):
 E.get_cash_offer = ask
 E.fetch_account = lambda **k: ([{"ticker": "C1", "status": "pending", "pays": 20}], 300.0, None)
 E.CFG.update(auto_sell=True, auto_hedge=False, smart_sell=True, auto_cap=9, real_offer_ask=True)
-HOLD = {"label": "Combo 5", "cost": 8.0, "p": 0.7, "pays": 20, "left": 1, "legs_left": [(0.7, True, 0)]}
+HOLD = {"label": "Celtics + Nuggets", "cost": 8.0, "p": 0.7, "pays": 20, "left": 1, "legs_left": [(0.7, True, 0)]}
 BAR = {"v": ("smart", 12.0)}
 E.take_profit_reason = lambda t, h, cut_ok=False: BAR["v"]
 
@@ -96,6 +96,10 @@ E.rfq_unsure = lambda t, side=None, **k: False
 BAR["v"] = ("smart", 5.0)                              # a low bar: the real offer ($7.50) clears it but is under what was paid ($8)
 out = run(EST, 7.5, clear_state=True)
 ok("a real offer over the bar but under cost is not taken for a profit reason", ASKS == ["C1"] and not ACC, ASKS, ACC)
+import json
+LOGS = [json.loads(l) for l in open(E.SELL_LOG, encoding="utf-8") if l.strip()]
+ok("#525 the under-cost run was stopped by the cost rule ('below what you paid'), not by the bar",
+   any(r.get("why") == "below what you paid" and r.get("offer") == 7.5 and r.get("cut_off") == 5.0 for r in LOGS), LOGS[-3:])
 out = run(EST, 8.6, clear_state=True)
 ok("control: the same low bar with an offer over cost does sell", ACC == ["C1"], ASKS, ACC)
 BAR["v"] = ("smart", 12.0)
@@ -122,6 +126,23 @@ ok("card (on): will ask Kalshi for a real offer", "will ask Kalshi for a real of
 E.MINE["real_asks"] = {"by": {"C1": [time.time() - 5]}, "all": []}
 tr3 = E.smart_trigger("C1", h)
 ok("card (throttled): softened, never promises an ask now", "will ask Kalshi" not in tr3["smart_txt"] + tr3["smart_chip"] and "holding off" in tr3["smart_txt"], tr3)
+# #525: lock-in (armed) and a guarded stop-loss ask past the back-off, so the card must not say "holding off" for them
+E.MINE["real_asks"] = {"by": {"C1": [time.time() - 70]}, "all": [], "low": {"C1": 4}}      # a plain ask waits 600 s, an exempt one 60 s
+E.CFG["lock_trail"] = True; E.MINE["peak"] = {}
+trp = E.smart_trigger("C1", h)
+ok("#525 control: backed off, lock-in not armed -> the card says holding off", "holding off" in trp["smart_txt"], trp)
+E.MINE["peak"] = {"C1": 1000.0}                                                           # past the arm line
+tra = E.smart_trigger("C1", h)
+ok("#525 backed off but lock-in is armed -> the card does not say holding off (it would still ask)",
+   "holding off" not in tra["smart_txt"] + tra["smart_chip"] and "will ask Kalshi" in tra["smart_txt"], tra)
+E.CFG["lock_trail"] = False
+trn = E.smart_trigger("C1", h)
+ok("#525 lock-in switched off: armed peak no longer exempts, holding off again", "holding off" in trn["smart_txt"], trn)
+E.CFG["lock_trail"] = True; E.MINE["peak"] = {}
+E.MINE["sl_ready"] = {"C1": True}
+trs = E.smart_trigger("C1", h)
+ok("#525 a guarded stop-loss ready -> the card does not say holding off", "holding off" not in trs["smart_txt"], trs)
+E.MINE["sl_ready"] = {}
 E.MINE.pop("real_asks", None)
 E.CFG["real_offer_ask"] = False
 tr2 = E.smart_trigger("C1", h)

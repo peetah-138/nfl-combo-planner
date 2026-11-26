@@ -147,11 +147,13 @@ const BUCKET_WORDS={'far below':'well short of the line','below':'a bit short of
 function sbLine(g){const sm=v=>`${v>=0?'+':'−'}$${Math.abs(+v||0).toFixed(2)}`,am=v=>`$${Math.abs(+v||0).toFixed(2)}`,o=g.optin||{},sc=g.scored||{};
  const st=g.state==='active'?`Active · strictness ${g.level} · skipped ${g.skipped} · ${g.skipped?(g.saved>=0?`shadow saved ${am(g.saved)}`:`skips cost ${am(g.saved)}`):'nothing skipped yet'}`
   :`Learning (${Math.min(g.own,g.need)} of ${g.need})${sc.n>g.own?' · only bets good enough for the panel count':''}${g.level&&g.early?` · already a bit stricter, from ${g.key==='all'?"all leagues'":g.from?esc(g.from)+"'s":'its own'} first results`:g.level&&g.from?` · using ${esc(g.from)}'s strictness ${g.level}`:''}`;
- const head=`Bigger stakes${o.paper?', on paper':''}: ${o.met?'bar met, not switched on':'not yet'} · ${Math.min(o.n||0,o.n_need||50)} of ${o.n_need||50} settled`,
-  more=`${sm(o.ahead||0)} · ${pct(o.days_up||0)} of days up · CLV ${o.clv==null?'—':(o.clv>=0?'+':'−')+Math.abs(o.clv*100).toFixed(1)+'%'} · skips helping: ${o.beats==null?'—':o.beats?'yes':'no'}`,
-  bar=`<details class="sbmore"><summary>${head}</summary>${more}</details>`;   // #178: one short line on a phone, the other four figures behind a tap
- return `<div class="sbl" style="padding:9px 0;border-top:1px solid var(--line)"><div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b>${esc(g.name)}</b><span class="${g.state==='active'?'':'m'}" style="font-size:13px">${st}</span></div>
-  ${g.why&&g.state==='active'?`<div class="m" style="font-size:12px;margin-top:2px">Last change: ${esc(g.why)}</div>`:''}<div class="m" style="font-size:12px;margin-top:2px">${bar}</div></div>`;}
+ // #290: one progress line per league (settled, dollars, days up); CLV and "skips helping" only when that is what holds it back
+ const nd=o.n_need||50,nn=Math.min(o.n||0,nd),dsh=(o.days||0)>0||(o.days_up||0)>0;
+ const prog=`Bigger stakes${o.paper?', on paper':''}: ${nn} of ${nd} settled${nn?` · ${sm(o.ahead||0)}${dsh?` · ${pct(o.days_up||0)} of days up`:''}`:''}${o.met?' · bar met, not switched on':''}`,
+  why=o.met?[]:[...(o.clv!=null&&o.clv<0?['losing to the closing price']:[]),...(o.beats===false?['its skips are not helping yet']:[])],
+  bar=`<div class="sbprog">${prog}</div>${why.length?`<div class="sbheld">Held back: ${why.join(' and ')}</div>`:''}`;
+return `<div class="sbl" style="padding:9px 0;border-top:1px solid var(--line)"><div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b>${esc(g.name)}</b><span class="${g.state==='active'?'':'m'}" style="font-size:13px">${st}</span></div>
+  ${g.why&&g.state==='active'?`<div class="m" style="font-size:12px;margin-top:2px">Last change: ${esc(g.why)}</div>`:''}<div class="m sbbar" style="font-size:12px;margin-top:2px">${bar}</div></div>`;}
 /* #137 'accelerate': how many bets Smart Buy has scored on paper, and where they came from. Paper only: the extra
    markets and the history never change a bet, and only panel-grade ones teach the dial. */
 function sbScored(sc){if(!sc||!sc.n)return '';const by=sc.by||{},nm={panel:['panel pick','panel picks'],idea:['Buy idea','Buy ideas'],universe:['other market the Mac priced','other markets the Mac priced'],backfill:['past bet','past bets']};
