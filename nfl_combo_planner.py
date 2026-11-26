@@ -24469,10 +24469,10 @@ def smart_params(tickers, single=False):
     `loss` = LOSS_CUT_DEFAULT (12.5%) and `loss_src` "default" while the `loss_cut_default` switch is on. A league's own
     record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None that nothing chose,
     like the one an untouched league's file entry carries, is not that); singles never get it (the evidence was
-    combos only)."""
+    combos only). While self-tuning's brake holds the league there is no default either (no cut is the strictest)."""
     out = _smart_params_walk(tickers)
     if out.get("loss") is None and not single and CFG.get("loss_cut_default", True) \
-            and not _loss_cut_chosen_off(bet_key(tickers)):
+            and not _loss_cut_chosen_off(bet_key(tickers)) and not more_braked(tickers):
         out = dict(out, loss=LOSS_CUT_DEFAULT, loss_src="default")
     return out
 
@@ -25425,9 +25425,21 @@ def _knob_league(key, d, now=None):
     """_knob_league_raw plus the cautious default loss cut, so the card shows what live smart sell really uses."""
     out = _knob_league_raw(key, d, now)
     v = out.get("smart_loss")
-    if v and v[0] is None and CFG.get("loss_cut_default", True) and not _loss_cut_chosen_off(key):
+    if v and v[0] is None and CFG.get("loss_cut_default", True) and not _loss_cut_chosen_off(key) \
+            and not _key_braked(key):
         out["smart_loss"] = (LOSS_CUT_DEFAULT, "starting value: the cautious default for combos (12.5%) until this league has its own record")
     return out
+
+
+def _key_braked(key):
+    """more_braked for a league key (the card has no tickers): any group in its chain is braked; unreadable = braked."""
+    if not knob_switch_on():
+        return False
+    try:
+        st, now = knob_state_cached(), time.time()
+        return any(_knob_braked(st, g, now) for g in dict.fromkeys((key, _knob_sport(key), "all")) if g)
+    except Exception:
+        return True
 
 
 def _knob_league_raw(key, d, now=None):

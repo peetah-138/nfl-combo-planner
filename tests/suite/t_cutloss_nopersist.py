@@ -84,7 +84,16 @@ json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w"));
 E.knob_brake_pass(now + 5000, force=True)
 S = E.knob_state(); E.KNOB_STATE_CACHE["d"] = None
 ok("no own value, brake fires: nothing persisted for the loss cut", "smart_loss" not in ((S["groups"].get("nba") or {}).get("lv") or {}))
-ok("...combos still get the default at read time", E.smart_params([T])["loss"] == 0.125)
+ok("...but during the brake the default is skipped (no cut is the strictest)", E.smart_params([T])["loss"] is None)
+ok("...and the card shows no default while braked", (E._knob_league("nba", E.load_json(E.SMART_FILE, {})).get("smart_loss") or (None,))[0] is None)
+_t = E.time.time; E.time.time = lambda: now + 5000 + 86400 * 40
+try:
+    E.KNOB_STATE_CACHE["d"] = None
+    ok("...and the default returns once the brake ends", E.smart_params([T])["loss"] == 0.125)
+    ok("...and the card shows it again", (E._knob_league("nba", E.load_json(E.SMART_FILE, {})).get("smart_loss") or (None,))[0] == 0.125)
+finally:
+    E.time.time = _t
+    E.KNOB_STATE_CACHE["d"] = None
 ok("...singles never", E.smart_params([T], single=True)["loss"] is None)
 
 json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
