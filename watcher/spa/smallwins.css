@@ -24,3 +24,5 @@
 /* (#406) "Add anyway" keeps its width while it says "Showing…" */
 .btn.ovadd{min-width:118px;justify-content:center}
 @media (prefers-reduced-motion:reduce){.cbh.cbjust .chev,.cbbody.cbin,.pitem .prq.pin,.pitem .prq.fail.pin,.lsfail.pin,.ians.bad.shk{animation:none!important}}
+/* (#456) the idea Buy button keeps its width when "Buy · 12s" turns into "Buying…" (the countdown bar is drawn inside the button, so it takes no room) */
+.dbtns .btn.qb,.dbtns .btn[aria-busy=true]{min-width:8.5em;justify-content:center}

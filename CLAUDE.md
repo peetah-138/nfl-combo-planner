@@ -138,12 +138,11 @@ Real money is involved. Pete uses it daily.
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
 9. **The dev Mac never gets the Kalshi key, `~/combowatch`, a copy of the history database file or any `combo_*.json` file.** It **may**
    read the production Mac's logs, and the answers to read-only SELECT questions about the collected data (`source=db`,
-   rows only, never the file; rule wording changed 2026-11-25 in PR #524; query results are never dumped in bulk to disk), through the read-only,
-   credential-scrubbed `/api/logs` endpoint (Pete decision, 2026-11-23,
-   issue #377; `docs/LOG_ACCESS.md`): off by default, turned on only on the production Mac itself (Settings › This
-   Mac › "Let the dev Mac read logs"), Tailscale only, its own read-only code (only a hash is stored), two allowlisted
-   log files plus the SELECT-only data window, credential-scrubbed server-side and failing closed. It can never buy, sell, pause or change anything; nothing
-   about it is a money path.
+   rows only, never the file; query results are never dumped in bulk to disk), through the read-only, credential-scrubbed
+   log-access endpoint (Pete decision, 2026-11-23, issue #377; rule wording changed 2026-11-25 in PR #524). It is off by
+   default, turned on only on the production Mac itself, and can never buy, sell, pause or change anything; nothing about it
+   is a money path. The details (switch, code, allowlists, limits) live in one place: `docs/LOG_ACCESS.md`; how to use it
+   is under "Reading production logs from the dev Mac" below (`tools/read_prod_logs.py`).
 
 **How these are enforced in code (money-safety hardening, issue #143; tested by `t_safety.py`):**
 - *The Pi:* the watcher's `backup_safe(conf, E)` forces `auto_sell`/`auto_hedge` off and killer/maker `off` at
