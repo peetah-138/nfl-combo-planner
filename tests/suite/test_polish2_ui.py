@@ -103,7 +103,7 @@ with sync_playwright() as pw:
             role = pg.evaluate("[document.getElementById('sheet').getAttribute('role'),document.getElementById('sheet').getAttribute('aria-modal'),document.getElementById('sheet').getAttribute('aria-label')]")
             if role != ["dialog", "true", "Code for the dev Mac"]: bad(f"{scheme}: the sheet should be a labelled modal dialog: {role}")
             txt = pg.evaluate("document.getElementById('sheet').innerText")
-            if "nfl-combo-logs-token" not in txt: bad(f"{scheme}: the code sheet lost its keychain name: {txt[:300]!r}")
+            if "Give it to Claude" not in txt or "Terminal" in txt or "keychain" in txt: bad(f"{scheme}: the code sheet should tell Pete to give the code to Claude, with no Terminal steps: {txt[:300]!r}")
             for h in pg.evaluate("[...document.querySelectorAll('#sheet .btn')].map(b=>Math.round(b.getBoundingClientRect().height))"):
                 if h < 44: bad(f"{scheme}: a code sheet button is {h}px tall")
             shot(pg, f"code_sheet_{scheme}.png")
