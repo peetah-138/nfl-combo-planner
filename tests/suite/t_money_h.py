@@ -9,7 +9,7 @@ os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.HELD_FILE = os.path.join(E.HERE, "held_events.json")
-ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+ok = lambda n, c, *x: print(("PASS " if c else "FAIL ") + n + ("" if c or not x else " :: " + repr(x)))
 now = time.time()
 tag = time.strftime("%y%b%d", time.gmtime(now)).upper()
 GW = f"KXNFLGAME-{tag}DALNYG"            # the game's winner event
@@ -181,3 +181,164 @@ E._positions_strict = lambda: list(POS)
 E.kalshi_send = lambda m, p, b=None, params=None: (_ for _ in ()).throw(RuntimeError("down")) if m == "GET" else fake_send(m, p, b, params)
 (got, err), sent = tries(f"{GW}-NYG")
 ok("waiting orders can't be read: fails closed, nothing sent", got == 0 and not sent and "Couldn't check" in err)
+
+# ======== round 2 (Pete): a combo with a leg against a single he holds is hidden and never bought =======
+MIA = "KXNFLGAME-%sMIABUF" % tag
+CHI = f"KXNFLGAME-{tag}CHIDET"
+
+
+def cmb2(*legs, kind="combo"):
+    return dict(E._cand(kind, "nfl", [leg(t, t.rsplit("-", 1)[0]) for t in legs], 0.25, 0.1, "w"), kick=now + 3600, last=now + 3600)
+
+
+E.kalshi_send = fake_send
+E._positions_strict = lambda: list(POS)
+E.order_blocks = lambda: []
+E.RECENT_BUYS.clear()
+E.LIST_HELD.update(at=0.0, held=None)
+POS[:] = [pos(f"{CHI}-CHI", 5)]                          # he holds Chicago to win
+det_c, chi_c = cmb2(f"{CHI}-DET", f"{MIA}-MIA"), cmb2(f"{CHI}-CHI", f"{MIA}-MIA")
+why = E.combo_contradiction([{"ticker": f"{CHI}-DET", "side": "yes"}, {"ticker": f"{MIA}-MIA"}])
+ok("combo with Detroit to win while holding Chicago to win: refused, naming both teams",
+   why and "CHI to win" in why and "DET to win" in why, why)
+ok("combo with Chicago to win (same side) is fine", E.combo_contradiction([f"{CHI}-CHI", f"{MIA}-MIA"]) is None)
+ok("combo with a total on that game is fine (a winner never blocks a total)", E.combo_contradiction([f"KXNFLTOTAL-{tag}CHIDET-47", f"{MIA}-MIA"]) is None)
+ok("combo with Detroit's spread while holding Chicago to win: refused", E.combo_contradiction([f"KXNFLSPREAD-{tag}CHIDET-DET3"]) is not None)
+ok("combo with NO on Chicago (a leg 'no' side): refused", E.combo_contradiction([{"ticker": f"{CHI}-CHI", "side": "no"}]) is not None)
+
+# idea lists / panel pool / extras / best bets: hidden, singles untouched, one read for the list
+E.LIST_HELD.update(at=0.0, held=None)
+got = E.hide_contradicting([det_c, chi_c, single(f"{CHI}-DET", CHI)], lambda c: c["legs"])
+ok("lists: the Detroit combo is hidden, the Chicago combo and a single stay", [c["id"] for c in got] == [chi_c["id"], single(f"{CHI}-DET", CHI)["id"]])
+E.LIST_HELD.update(at=0.0, held=None)
+ok("extras: a combo against his holding is left out", [c["id"] for c in E._extras_filter([det_c, chi_c], {"items": []})] == [chi_c["id"]])
+E.LIST_HELD.update(at=0.0, held=None)
+E.PANEL_POOL.clear()
+E.PANEL_POOL["nfl"] = (now, [dict(c, pct=9.9, prio=0.0) for c in (det_c, chi_c)])
+E.account_held = lambda max_age=1800: (set(), set())
+p = E.build_panel(codes=["nfl"])
+ids = [c["id"] for c in p["items"]]
+ok("build_panel: the Detroit combo is not offered", det_c["id"] not in ids)
+E.LIST_HELD.update(at=0.0, held=None)
+E._positions_strict = lambda: (_ for _ in ()).throw(RuntimeError("429"))
+ok("lists fail closed: unreadable bets hide every combo (singles stay)",
+   E.hide_contradicting([det_c, chi_c, single(f"{CHI}-DET", CHI)], lambda c: c["legs"])[0]["kind"] != "combo"
+   and len(E.hide_contradicting([det_c, chi_c, single(f"{CHI}-DET", CHI)], lambda c: c["legs"])) == 1)
+E._positions_strict = lambda: list(POS)
+
+# live ideas (the Live page's Buy ideas)
+E.LIST_HELD.update(at=0.0, held=None)
+E.live_suggestions = lambda **k: [{"legs": [f"{CHI}-DET", f"{MIA}-MIA"], "live": 0, "legs_info": [], "pct": 1.1, "profit": 1.0, "ts": now},
+                                  {"legs": [f"{CHI}-CHI", f"{MIA}-MIA"], "live": 0, "legs_info": [], "pct": 1.1, "profit": 1.0, "ts": now}]
+E._idea_state = lambda now=None: {"bought": [], "items": {}}
+E._held_idea_markets = lambda: (set(), set())
+E.low_credit_ideas = lambda out, now=None: (out, 0)
+E.smart_buy_ideas_gate = lambda out, now=None: (out, 0)
+E._idea_below_bar = lambda r: False
+E._idea_history = lambda keys, now: {}
+ideas = E.live_ideas()
+ok("live ideas: the Detroit combo idea is hidden, the Chicago one stays",
+   [r["legs"][0] for r in ideas] == [f"{CHI}-CHI"], [r["legs"] for r in ideas])
+
+# the buy path: accept_offer refuses before anything is accepted, and drops the quote request
+SENT.clear()
+CALLS = []
+E.kalshi_send = lambda m, p, b=None, params=None: (CALLS.append((m, p)), fake_send(m, p, b, params))[1]
+E.CTX["offers"] = {1: {"rfq": "R1", "quote": "Q1", "pays": 20.0, "market": "KXMVE-X", "price": 0.4, "stake": 8.0, "p": 0.3,
+                       "legs": [f"{CHI}-DET", f"{MIA}-MIA"]}}
+E.trading_paused = lambda: False
+r = E.accept_offer(1, skip_cap=True)
+ok("accept_offer: a combo with Detroit to win is refused, named, never accepted",
+   r.get("error") and "CHI to win" in r["error"] and not any(m == "PUT" for m, _ in CALLS)
+   and any(m == "DELETE" and "R1" in p for m, p in CALLS) and 1 not in E.CTX["offers"], r)
+POS[:] = []
+E.CTX["offers"] = {1: {"rfq": "R2", "quote": "Q2", "pays": 20.0, "market": "KXMVE-X", "price": 0.4, "stake": 8.0, "p": 0.3,
+                       "legs": [f"{CHI}-DET", f"{MIA}-MIA"]}}
+E.rfq_unsure = lambda *a, **k: False
+E.ACCEPT_WAIT = 0
+CALLS.clear()
+E.accept_offer(1, skip_cap=True)
+ok("accept_offer: nothing held, the accept goes out", any(m == "PUT" for m, _ in CALLS))
+POS[:] = [pos(f"{CHI}-CHI", 5)]
+E._positions_strict = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+E.CTX["offers"] = {1: {"rfq": "R3", "quote": "Q3", "pays": 20.0, "market": "KXMVE-X", "price": 0.4, "stake": 8.0, "p": 0.3,
+                       "legs": [f"{CHI}-CHI", f"{MIA}-MIA"]}}
+CALLS.clear()
+E.unread_take()
+r = E.accept_offer(1, skip_cap=True)
+ok("accept_offer: bets unreadable fails closed, flagged as 'couldn't check'", "Couldn't check" in (r.get("error") or "")
+   and not any(m == "PUT" for m, _ in CALLS) and E.unread_take())
+E._positions_strict = lambda: list(POS)
+
+# the panel's combo buy: no quote is even asked for
+POS[:] = [pos(f"{CHI}-CHI", 5)]
+E.get_offer = lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked Kalshi for a price"))
+okb, note, d = E._buy_panel_bet(dict(det_c, stake=5.0, fair_mult=4.0, code="nfl"))
+ok("panel combo buy: refused before any quote", okb is False and "CHI to win" in note)
+
+# ======== standing orders (maker_mode 'on') ========
+SENT.clear()
+POS[:] = [pos(f"{GW}-DAL", 5)]
+E.kalshi_send = fake_send
+try:
+    E._maker_post(f"{GW}-NYG", 3, 0.40, now + 3600); posted = True
+except RuntimeError as err:
+    posted = False
+ok("maker 'on': a standing buy of the other side is refused, nothing posted", not posted and not SENT)
+POS[:] = []
+ok("maker 'on': nothing held, it posts", E._maker_post(f"{GW}-NYG", 3, 0.40, now + 3600) is None and len(SENT) == 1)
+E._positions_strict = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+SENT.clear()
+try:
+    E._maker_post(f"{GW}-NYG", 3, 0.40, now + 3600); posted = True
+except RuntimeError:
+    posted = False
+ok("maker 'on': unreadable bets fail closed", not posted and not SENT)
+E._positions_strict = lambda: list(POS)
+
+# ======== waiting orders: more than 200 are paged through, or it fails closed ========
+POS[:] = []
+PAGES = {None: {"orders": [], "cursor": "c2"},
+         "c2": {"orders": [{"ticker": f"{GW}-DAL", "action": "buy", "side": "yes", "status": "resting"}], "cursor": ""}}
+
+
+def paged(m, p, b=None, params=None):
+    if m == "GET":
+        return PAGES[(params or {}).get("cursor")]
+    SENT.append(b)
+    return {"order": {"fill_count": b["count"], "status": "executed"}}
+
+
+E.kalshi_send = paged
+(got, err), sent = tries(f"{GW}-NYG")
+ok("waiting orders: an order on page 2 still blocks the other side", got == 0 and not sent and "order out for DAL" in err)
+E.kalshi_send = lambda m, p, b=None, params=None: {"orders": [], "cursor": "more"} if m == "GET" else fake_send(m, p, b, params)
+(got, err), sent = tries(f"{GW}-NYG")
+ok("waiting orders: pages that never end fail closed", got == 0 and not sent and "Couldn't check" in err)
+
+# ======== a panel bet refused for 'couldn't check' goes back to scheduled, not failed ========
+import json
+E.kalshi_send = fake_send
+E.store_x("delete from panel")
+E.PANEL_POOL.clear()
+E.PANEL_POOL["nfl"] = (now, [dict(single(f"{GT}-47", GT), pct=9.9, prio=0.0)])
+E.panel_pass(); E.panel_approve(None, "all")
+pp = E.panel_get("real")
+ok("panel: a bet is scheduled to start with", pp and pp["items"][0]["state"] == "scheduled")
+E.book_depth = lambda t, max_age=5: {"ask": 0.40, "bid": 0.38}
+E.news_gap = lambda *a, **k: None
+E.can_trade = lambda *a, **k: True
+E.base_unread = lambda: False
+E.trading_paused = lambda: False
+E._positions_strict = lambda: (_ for _ in ()).throw(RuntimeError("429 slow down"))
+for c in pp["items"]:
+    c.update(buy_at=now - 10)
+E.store_x("update panel set body=? where mode='real'", (json.dumps(pp),))
+E.panel_exec(paused=False)
+it = E.panel_get("real")["items"][0]
+ok("panel: refused for 'couldn't check' goes back to scheduled (not failed for good)",
+   it["state"] == "scheduled" and it.get("hold") == "bets" and "Couldn't check" in it.get("note", ""), (it["state"], it.get("note")))
+E._positions_strict = lambda: list(POS)
+E.panel_exec(paused=False)
+it = E.panel_get("real")["items"][0]
+ok("panel: next pass, bets readable, it buys", it["state"] == "bought", (it["state"], it.get("note")))

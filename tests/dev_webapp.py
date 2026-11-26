@@ -124,6 +124,7 @@ def load():
     ENGINE.append(A)
     A.fetch_account = lambda max_age=60, every_league=False: (BETS, 211.03, "dev")     # seeded bets, never the account
     A.fetch_results = lambda t: {}
+    A._held_all = lambda: []   # no singles held (the combo-vs-held-single guard reads the account)
     A.open_singles = lambda max_age=30: seed_singles()      # seeded single bets, spreads and totals (no Kalshi account here)
     A.resting_sells = lambda: {}
     A.hub_call = lambda *a, **k: None                       # no hub, ever

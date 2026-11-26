@@ -31,3 +31,12 @@ a winner leg; combos whose legs contradict a held single; buying the same side t
 repeat on idea buys).
 
 Tests: `t_money_h.py` (fails on the old code).
+
+**Round 2 (Pete):**
+- A combo with a leg that goes against a single he holds (holds Chicago to win, combo has Detroit to win) is hidden from
+  idea lists, the panel pool/extras/replacements and Best bets (`hide_contradicting`, one read per list, fails closed,
+  reused 10 s), and refused on every buy path (`accept_offer`, the panel's combo buy before any quote:
+  `combo_contradiction`, fresh read, fails closed, names the teams). Same-side legs and totals beside a winner stay.
+- Standing orders (`maker_mode` on): `_maker_post` now runs `opposite_side_refusal` (fails closed).
+- A panel bet refused with "couldn't check your open bets" goes back to scheduled (hold `bets`), not failed.
+- The waiting-orders read pages through (`ORDER_PAGES_MAX`) and fails closed if pages never end.
