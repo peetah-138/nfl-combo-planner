@@ -1,7 +1,7 @@
 # Brief for Claude: the Kalshi combo planner
 
 You are picking up a long-running project with Pete. This file holds the decisions, rules and context from the
-earlier sessions (up to version 2026.11.24.139). Read it all before changing anything. When something here
+earlier sessions (up to version 2026.11.25.140). Read it all before changing anything. When something here
 conflicts with what Pete tells you now, Pete wins: update this file in the same change so it stays true.
 
 **Two machines (Pete, 2026-11-23).** The dev Mac (`~/dev/nfl-combo-planner`) is the development machine: it owns ALL
@@ -2530,6 +2530,16 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   normal row height (rows taller than 64px skip the see-through switch). #196's switch no longer exists. #206 needs a
   real-phone look and a design decision. Tests: `t_tap_polish.py` (engine), `test_tap_polish.py` (page),
   `test_buildlayout.py` (extended).
+- **Release 507 review follow-ups (display and wording only; #508, #509).** The sale rules from the review (95%-of-cost profit
+  floor, fee-only loss as a stop-loss, 97% guard kept on guarded stop-loss back-outs) are described under Selling. Screens: the
+  Settings text is plain English (the guards line names the league, 95% of cost, the ~$800/day smart-sell-more limit, paused
+  until a date); stake and slip notes say "before fees"; the Results "more" row (`.sbmore summary`) is a block with a 44px
+  minimum so the arrow sits right after the label; the Learned guards switch shows off and disabled with "Off for now: turn on
+  ... first." when Auto cash-out or self-tuning is off (`tgl` takes an optional `why`); the Ideas card's "Expected profit" sits on
+  its own line at the left (`.stkev` full width); the chart's pre-game note is only "The win-chance line fills in once play
+  begins." (the banner above already says the kickoff time; kickoff wording stays out because the app is multi-sport).
+  `combo_sell_fee` is a Mac-file-only key (`t_newkeys.py` documents it); `t_neverloss.py` marks its stub. Tests:
+  `t_flexcostfloor.py`, `t_flexsell.py`, `t_combofee.py`, `t_losscutclock.py`, `test_chartstart_ui.py`, `test_learnedguards_ui.py`.
 
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
