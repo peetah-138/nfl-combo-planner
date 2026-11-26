@@ -2106,13 +2106,19 @@ def account_get(key, key_id, path, params=None):
     return r.json()
 
 
-def all_positions(key, key_id):
-    """Positions including ones you've closed (sold back to zero) but that haven't settled."""
+def all_positions(key, key_id, strict=False):
+    """Positions including ones you've closed (sold back to zero) but that haven't settled. A failed read answers []
+    unless strict=True, which raises instead (#451): a caller that treats "no positions" as "holds nothing" or caches
+    the answer must be strict, so an unread account is never taken for an empty one."""
+    last = None
     for params in ({"count_filter": "position,total_traded"}, None):
         try:
             return account_pages(key, key_id, "/portfolio/positions", "market_positions", params)
-        except requests.RequestException:
+        except requests.RequestException as err:
+            last = err
             continue
+    if strict and last is not None:
+        raise last
     return []
 
 
@@ -2435,7 +2441,7 @@ def _fetch_account(fresh=False):
         fills = account_pages(key, key_id, "/portfolio/fills", "fills",
                               {"min_ts": int((dt.datetime.now() - dt.timedelta(days=200)).timestamp())})
         settles = account_pages(key, key_id, "/portfolio/settlements", "settlements")
-        positions = all_positions(key, key_id)
+        positions = all_positions(key, key_id, strict=True)     # a failed read is not cached as "no positions" (#451)
         ACCT_POS.update(at=time.time(), items=positions)
         bal = account_get(key, key_id, "/portfolio/balance")
         note_pots(bal)
@@ -7753,7 +7759,7 @@ def open_singles(max_age=30):
             return []
         with open(KEYFILE, encoding="utf-8") as f:
             key = load_private_key(f.read())
-        pos = all_positions(key, key_id)
+        pos = all_positions(key, key_id, strict=True)   # raises on a failed read: nothing cached, live_view fails closed (#451)
         ACCT_POS.update(at=time.time(), items=pos)
     held = []
     for p in pos:
@@ -8003,11 +8009,12 @@ def live_view(mine, views, plan, chance_one, balance):
             x["combos"] += 1
             x["pays"] += v["pays"]
     games = sorted(need.values(), key=lambda x: (x["state"] != "live", -x["combos"]))
+    singles_ok = True
     try:
         singles = open_singles()
     except Exception as err:
         print("singles on Live:", type(err).__name__, err)
-        singles = []
+        singles, singles_ok = [], False                # an empty list from a failed read is NOT "holds nothing" (#451)
     label_bets(singles, views)                       # display only: what each bet is, and which game
     try:
         seed_origins([v["t"] for v in views if v["group"] == "pending"] + [x["t"] for x in singles])
@@ -8031,7 +8038,7 @@ def live_view(mine, views, plan, chance_one, balance):
     week_pl = sum((a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0) - a["cost"]
                   for a in settled)
     today = day_money(MINE.get("acct") or mine)
-    return {"at": time.time(), "balance": balance, "combos": views, "today": today, "singles": singles,
+    return {"at": time.time(), "balance": balance, "combos": views, "today": today, "singles": singles, "singles_ok": singles_ok,
             "auto_sell": bool(CFG.get("auto_sell")),
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
@@ -12276,6 +12283,7 @@ def mine_page(live=False):
     MINE["plan"] = plan
     try:
         MINE["view"] = live_view(mine, views, plan, hits_any / trials, balance)
+        MINE["view_at"] = time.time()             # when this read of your positions was built (#451 checks it is fresh)
     except Exception as err:                      # the data copy must never break the page
         MINE["view"] = {"error": f"{type(err).__name__}: {err}"}
     cards = [(g, re.sub(r"@@CASH:([^@]+)@@", lambda m: cash_block(m.group(1), plan), c)) for g, c in cards]
@@ -15829,10 +15837,11 @@ def shadow_pass(book_snap, log=print, alert=None):
             url = f"/#s={sid}" if sid else "/"
             pays_txt = f"{money(r['stake'])} pays about {money(r['pays'])}"
             inplay = ""
-            if alert and before is None:
+            push_ok = bool(alert) and idea_push_ok(sid)    # (#177) no push for an idea the Live page's Smart Buy gate hides
+            if push_ok and before is None:
                 _alert(alert, f"💡 Buy idea: {picks} ({LG()['name']}) is priced at {pct:.0%} of fair. "
                               f"{pays_txt}. Tap to get your price.{inplay}", "value", url)
-            elif alert:
+            elif push_ok:
                 _alert(alert, f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair. {pays_txt}.",
                        "price", url)
         st["quotes"].append({"day": today, "pct": round(pct, 4), "legs": len(c["legs"]), "league": LEAGUE["code"]})
@@ -17803,7 +17812,7 @@ def single_pass(book_snap, alert=None, log=print):
         msg = (f"🎯 Single: {x['pick']}{live} at {x['p'] * 100:.0f}¢ on Kalshi; the sharp books say "
                f"{x['fair']:.0%}. About {x['edge'] * 100:.1f}¢ a contract in your favour after the fee."
                + (f" Injuries: {'; '.join(inj[:2])}." if inj else ""))
-        if alert and not told:
+        if alert and not told and idea_push_ok(sid):       # (#177) the page's Smart Buy gate decides the push too
             _alert(alert, msg, "value", f"/#s={sid}" if sid else "/")
         did.append(f"single idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
@@ -19029,7 +19038,7 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
             _manual_note(t, n * per, log)
             log(f"idea single {t}: outcome unknown ({type(err).__name__}): check Kalshi")
             if key:
-                idea_mark_bought([t])                  # may have gone through: the idea stays off the list (#270)
+                idea_mark_bought([t], unsure=True)     # may have gone through: off the list while the order may be live (#270, #451)
             return {"ok": False, "check": True,
                     "msg": "Kalshi didn't answer clearly, so this may or may not have been bought. Check Kalshi before "
                            "trying again; the app won't send it again."}
@@ -19088,6 +19097,26 @@ def store_suggestion(c, r, pct):
     return sid
 
 
+def idea_push_ok(sid, now=None):
+    """(#177) Whether a Buy idea's push may go out: only if the Live page would show it, by the same Smart Buy gate
+    (smart_buy_ideas_gate on the idea's own stored row). Skip-only: it can only hold a push back, never send one, and it
+    fails closed (no stored row, no history, any error: no push). The idea card itself is unaffected."""
+    try:
+        if not sid:
+            return False
+        rows = store_rows("select * from suggestions where id=?", (sid,))
+        if not rows:
+            return False
+        r = dict(rows[0], legs=json.loads(rows[0]["legs"]))
+        r.update(idea_describe(r))
+        r["idea_id"] = idea_id(r["legs"])
+        kept, _ = smart_buy_ideas_gate([r], now or time.time())
+        return bool(kept)
+    except Exception as err:
+        console_note(f"idea push gate: {type(err).__name__}: {err}")
+        return False
+
+
 def live_suggestions(max_age=3600, limit=6, newest=False):
     """Buy ideas still worth a look: recent, games not started yet, best price first, one per set of picks (newest=True:
     the newest quote of each, which is what the Live page ranks and dates)."""
@@ -19118,6 +19147,9 @@ IDEA_SHOWN_DEFAULT = 3
 IDEA_RE_EDGE = 0.03            # a dismissed idea comes back when its edge improves by this much (3 points)...
 IDEA_RE_PRICE = 2.0            # ...or its price drops by this many cents
 IDEA_BOUGHT_DAYS = 3           # a bought idea never comes back (kept this long; its games are over by then)
+IDEA_UNSURE_SECS = 2 * 3600    # (#451) an idea whose order got no clear answer is hidden only this long (ORDER_UNSURE_SECS' span:
+                               # while the order might still be live; the buy is fill-now-or-cancel), and only if the Mac can
+                               # see what you hold, so a fill still keeps it off the list
 
 
 def idea_key(legs):
@@ -19155,7 +19187,30 @@ def _idea_state(now=None):
         st["items"] = {}
     bought = st.get("bought") if isinstance(st.get("bought"), dict) else {}
     st["bought"] = {k: v for k, v in bought.items() if isinstance(v, (int, float)) and now - v < IDEA_BOUGHT_DAYS * 86400}
+    unsure = st.get("unsure") if isinstance(st.get("unsure"), dict) else {}
+    st["unsure"] = {k: v for k, v in unsure.items() if k in st["bought"] and isinstance(v, (int, float))}   # (#451)
     return st
+
+
+IDEA_VIEW_FRESH_SECS = 600     # (#451) the read of your positions must be this recent (and newer than the unclear order)
+
+
+def _idea_unsure_over(key, st, now):
+    """(#451) True when this 'bought' idea only has an unclear order behind it (no clear answer came back) and that order can
+    no longer be live: IDEA_UNSURE_SECS have passed AND the Mac has a fresh read of what you hold, built after the order (a fill
+    would show there and keep it hidden). Anything else, including no view of your positions, stays hidden as before. Only ever brings an idea
+    back once the order can no longer be live; never sends an order."""
+    t = (st.get("unsure") or {}).get(key)
+    if t is None or now - t < IDEA_UNSURE_SECS:
+        return False
+    try:
+        v, at = MINE.get("view") or {}, float(MINE.get("view_at") or 0)
+        if not (t < at <= now + 5 and now - at <= IDEA_VIEW_FRESH_SECS):   # a read built before the unclear order, or old: can't tell
+            return False
+        return (not v.get("error") and v.get("singles_ok") is True      # a failed singles read (or none recorded) fails closed
+                and isinstance(v.get("singles"), list) and isinstance(v.get("combos"), list))
+    except Exception:
+        return False
 
 
 def _idea_better(row, base):
@@ -19237,7 +19292,7 @@ def live_ideas(now=None, info=None, keep=IDEA_KEEP):
         gone, hidden, out = [], 0, []
         for r in rows:
             r["key"], r["idea_id"] = idea_key(r["legs"]), idea_id(r["legs"])
-            if r["key"] in st["bought"]:
+            if r["key"] in st["bought"] and not _idea_unsure_over(r["key"], st, now):
                 continue
             if (len(r["legs"]) == 1 and r["legs"][0] in held_s) or frozenset(r["legs"]) in held_c:
                 continue                                         # already yours (bought somewhere else)
@@ -19308,8 +19363,13 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None, seen=None):
     with file_lock(IDEA_DISMISS):
         st = _idea_state(now)
         for r in take:
-            if bought:
+            if bought == "unsure":                        # (#451) the phone got no clear answer: hidden only while it may be live
+                if r["key"] not in st["bought"]:           # never softens a mark the Mac already wrote
+                    st["bought"][r["key"]] = now
+                    st["unsure"][r["key"]] = now
+            elif bought:
                 st["bought"][r["key"]] = now
+                st["unsure"].pop(r["key"], None)
             else:
                 base = {"at": now, "edge": r.get("edge"), "price_c": r.get("price_c")}
                 sv = _idea_seen(seen.get(r["idea_id"]))
@@ -19323,15 +19383,24 @@ def idea_dismiss(ids=None, everything=False, bought=False, now=None, seen=None):
     return {"n": len(take), "ids": [r["idea_id"] for r in take]}
 
 
-def idea_mark_bought(legs, now=None):
+def idea_mark_bought(legs, now=None, unsure=False):
     """The Mac's own note that a Buy idea was bought, or may have been (#270): so the idea stays gone after a lost reply,
     a reload or another phone, not only when the phone's follow-up dismiss lands. Hiding is the safe side: it only ever
-    takes an idea off the list. Never raises, never blocks the order's answer. Returns True when it was written."""
+    takes an idea off the list. `unsure` (#451): the order got no clear answer; then it is hidden only while it may still be
+    live (IDEA_UNSURE_SECS), not for days. A definite buy always overrides that. Never raises, never blocks the order's
+    answer. Returns True when it was written."""
     try:
         now = now or time.time()
         with file_lock(IDEA_DISMISS):
             st = _idea_state(now)
-            st["bought"][idea_key(legs)] = now
+            k = idea_key(legs)
+            if unsure:
+                if k not in st["bought"]:
+                    st["bought"][k] = now
+                    st["unsure"][k] = now
+            else:
+                st["bought"][k] = now
+                st["unsure"].pop(k, None)
             save_json(IDEA_DISMISS, st)
         return True
     except Exception as err:

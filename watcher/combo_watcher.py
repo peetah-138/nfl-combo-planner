@@ -3795,7 +3795,7 @@ def webapp_main():
         try:
             if a == "idea_dismiss":
                 seen = d.get("seen") if isinstance(d.get("seen"), dict) else {}
-                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought",
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=("unsure" if d.get("why") == "unsure" else d.get("why") == "bought"),
                                    seen={k: v for k, v in list(seen.items())[:40] if k in ids})
                 return {"ok": True, "n": r["n"], "ids": r["ids"]}
             if a == "idea_undo":
@@ -4104,7 +4104,8 @@ def webapp_main():
                 if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
                     try:                                # a Buy idea for these picks stays off the list too (#270)
-                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")])
+                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")],
+                                           unsure=bool(r.get("check")))
                     except Exception:
                         pass
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
