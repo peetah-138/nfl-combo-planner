@@ -31,6 +31,10 @@ with sync_playwright() as pw:
             time.sleep(.2)
         if not pg.evaluate(f"!!({ROW})"):
             bad(f"{scheme}: no 'Let the selling guards learn' row on Settings"); ctx.close(); continue
+        # while Auto cash-out / self-tuning is off the row must look off: switch off and disabled, with a plain reason
+        off = pg.evaluate(f"(()=>{{const i={ROW}.querySelector('input');return [i.checked,i.disabled,{ROW}.textContent.includes('Off for now')]}})()")
+        if off != [False, True, True]: bad(f"{scheme}: a row that cannot act should show its switch off, disabled, with 'Off for now': {off}")
+        pg.evaluate("S.set.values.auto_sell=true;S.set.values.knobs_live=true;renderSettings()"); time.sleep(.3)
         if not pg.evaluate(f"{ROW}.querySelector('input').checked"): bad(f"{scheme}: the switch is not ON by default")
         if saved() is not True: bad(f"{scheme}: the Mac reports learned_guards {saved()!r} by default, not True")
         if pg.evaluate("document.querySelector('#s-cash').classList.contains('shut')"): pg.evaluate("sTog('cash')")
