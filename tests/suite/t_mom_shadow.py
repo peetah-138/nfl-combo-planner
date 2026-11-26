@@ -209,10 +209,10 @@ def f_card():
     ok("F it touches no peak", E.MINE["peak"] == before)
     h = mk(0.7)
     v = E.smart_trigger(T, h)
-    ok("F no real offer: text and chip say a real Kalshi offer of the bar is needed", "needs a real Kalshi offer of $" in v["smart_txt"] and v["smart_chip"].startswith("needs a real Kalshi offer of $") and v["smart_chip"].endswith("+"), v)
+    ok("F no real offer: text and chip say a real Kalshi offer of the bar is needed", "ask Kalshi for a real offer once the estimate reaches $" in v["smart_txt"] and v["smart_chip"].startswith("will ask Kalshi") and v["smart_chip"].endswith(chr(36)+"%.2f" % v["smart_at"]), v)
     h = mk(0.7, offer=9.0)
     v = E.smart_trigger(T, h)
-    ok("F offer at the bar and every gate open: it says it should sell next check", v["smart_state"] == "go" and "should sell on the next check" in v["smart_txt"], v)
+    ok("F offer at the bar and every gate open: it says it should sell next check", v["smart_state"] == "go" and "set up to sell once a real offer meets the bar" in v["smart_txt"], v)
     ok("F lock-in is said in plain words", "Lock in arms" not in v["smart_txt"] and (v["lock_at"] is None or isinstance(v["lock_at"], float)))
     h = mk(0.7, offer=1.0)
     v = E.smart_trigger(T, h)
@@ -224,6 +224,13 @@ def f_card():
     setup_trade(paused=True); h = mk(0.7, offer=1.0)
     v = E.smart_trigger(T, h)
     ok("F Pause with the offer under the bar: the chip does not say 'sells at'", "sells at" not in v["smart_chip"] and "paused" in v["smart_chip"], v)
+    ok("F Pause: no Lock in promise, the pause reason is shown instead", v["lock_at"] is None and "Pause is on" in v["smart_txt"], v)
+    setup_trade(); E._HEDGE_UNSURE_MEM[T] = 1
+    try:
+        v = E.smart_trigger(T, mk(0.7, offer=9.0))
+    finally:
+        E._HEDGE_UNSURE_MEM.pop(T, None)
+    ok("F a hedge needing a look stops the 'set up to sell' promise", v["smart_state"] == "reached" and "hedge" in v["smart_txt"], v)
     setup_trade(auto=False); h = mk(0.7, offer=9.0)
     v = E.smart_trigger(T, h)
     ok("F Auto cash-out off: nothing is said about a bar that never fires", v["smart_txt"] == "" and v["smart_chip"] == "" and v["smart_state"] == "", v)
@@ -239,7 +246,7 @@ def f_card():
     E.CFG.update(lock_trail=True, smart_sell=True)
     js = open(os.path.join(REPO, "watcher", "spa", "live.js")).read()
     ok("F the card calls the old number the let-it-ride line and has plain lock-in words", "let-it-ride line" in js and "Let-it-ride line" in js and "wait line" not in js.lower() and "Protects a profit once the offer has reached" in js and "Lock in arms once" not in js)
-    ok("F the card hides the smart text when selling is off or yours, and the badge follows the bar", "smart_txt&&!c.self&&S.live.auto_sell!==false" in js and "SELLS SOON" in js and "AT THE BAR" in js and "x.smart_chip" in js)
+    ok("F the card hides the smart text when selling is off or yours, and the badge follows the bar", "smart_txt&&!c.self&&S.live.auto_sell!==false" in js and "SET TO SELL" in js and "AT THE BAR" in js and "x.smart_chip" in js)
     setup_trade(); E.hands_off = lambda t: bool(t) and t in E.self_sell_set(); E.auto_cap_reached = E.auto_cap_reached
 
 

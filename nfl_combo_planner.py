@@ -5764,7 +5764,8 @@ def auto_sell_blockers(t):
             ("you sell it", "it is set to I'll sell it", lambda: hands_off(t)),
             ("Kalshi refusing sales", "Kalshi is refusing sales right now", lambda: bool(hold_refusal("sell")[0])),
             ("daily limit used", "today's automatic-sale limit is used up", auto_cap_reached),
-            ("last sale unclear", "the last Kalshi cash-out for it came back unclear", lambda: rfq_unsure(t, "sell"))):
+            ("last sale unclear", "the last Kalshi cash-out for it came back unclear", lambda: rfq_unsure(t, "sell")),
+            ("hedge needs a look", "a hedge on it needs your check", lambda: hedge_unsure(t))):
         try:
             if test():
                 out.append((short, words))
@@ -5799,11 +5800,11 @@ def smart_trigger(t, h):
     lock_on = bool(CFG.get("lock_trail", True))
     if CFG.get("lock_trail", True):
         arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
-        if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005:
+        if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005 and not any(s == "paused" for s, _ in blk):
             out["lock_at"] = round(arm, 2)
     others = [w for w, on in ((f"your take-profit line (${max(tp * P, TP_MIN_GAIN * cost):.2f})", tp > 0),
                               ("Lock in after a run-up", lock_on)) if on]
-    only = (" Only " + " and ".join(others) + " can still sell this combo.") if others else " Nothing else sells this combo for you."
+    only = (" Only " + " and ".join(others) + " can still sell this combo.") if others else " Nothing else sells this combo for you, apart from the plan's Cash out once a pick has won."
     if not CFG.get("smart_sell", True) or rl is None:
         out["smart_txt"] = "Smart sell is off." + only + stop
         out["smart_chip"] = stop_chip or ("off · " + " & ".join(w.split(" (")[0].replace("your ", "") for w in others) + " only" if others else "off")
@@ -5826,9 +5827,9 @@ def smart_trigger(t, h):
             (f" It also needs an offer of ${at:.2f}+." if at else "") + stop
         out["smart_chip"] = stop_chip or f"waiting (needs {q_min:.0%}+ win chance)"
     elif not ro:
-        out["smart_txt"] = (f"Smart sell needs a real Kalshi offer of ${at:.2f}+ before it sells; an estimate isn't enough."
-                            if at else "Smart sell needs a real Kalshi offer before it sells; an estimate isn't enough.") + stop
-        out["smart_chip"] = stop_chip or (f"needs a real Kalshi offer of ${at:.2f}+" if at else "needs a real Kalshi offer")
+        out["smart_txt"] = (f"Smart sell will ask Kalshi for a real offer once the estimate reaches ${at:.2f}; it only sells on a real offer."
+                            if at else "Smart sell will ask Kalshi for a real offer once the estimate clears its bar; it only sells on a real offer.") + stop
+        out["smart_chip"] = stop_chip or (f"will ask Kalshi once the estimate reaches ${at:.2f}" if at else "will ask Kalshi for a real offer")
     elif at and ro < at:
         out["smart_txt"] = f"Smart sell sells once the offer reaches ${at:.2f}; it is ${ro:.2f} now." + stop
         out["smart_chip"] = stop_chip or f"sells at ${at:.2f}+"
@@ -5836,8 +5837,8 @@ def smart_trigger(t, h):
         out["smart_state"] = "reached" if other else "go"
         out["smart_txt"] = (f"The offer (${ro:.2f}) is at smart sell's bar" + (f" (${at:.2f})" if at else "") + \
                             (f", but it won't sell on its own right now: {other[0][1]}." if other
-                             else ", so it should sell on the next check."))
-        out["smart_chip"] = f"bar reached, won't sell now ({other[0][0]})" if other else "selling on the next check"
+                             else "; it is set up to sell once a real offer meets the bar."))
+        out["smart_chip"] = f"bar reached, won't sell now ({other[0][0]})" if other else "set up to sell at the bar"
     return out
 
 

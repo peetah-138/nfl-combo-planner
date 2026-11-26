@@ -43,7 +43,7 @@ function verdictShown(c){return planOn(c)?c.verdict:'hold';}
 function whyShown(c){return planOn(c)||c.verdict==='hold'?c.why:'';}
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
  const v=verdictShown(c);if(v==='sell')return['sell','SELL'];if(v==='half')return['sell','SELL ½'];
- if(c.smart_state==='go'&&!c.self)return['sell','SELLS SOON'];if(c.smart_state==='reached'&&!c.self)return['hold','AT THE BAR'];return['hold','HOLD'];}
+ if(c.smart_state==='go'&&!c.self)return['sell','SET TO SELL'];if(c.smart_state==='reached'&&!c.self)return['hold','AT THE BAR'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
  const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
  if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
