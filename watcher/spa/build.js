@@ -178,7 +178,9 @@ async function panelApprove(b){if(S.pSend||b.disabled)return;const its=(S.panel.
  if(!b.dataset.sure){pArm(b,'Tap again to approve');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Sending…';let r;
  try{r=await pPost({a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at,stakes});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');if(r.ok)pStakeClear(its);S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
+ if(r.ok){const tot=its.reduce((a,c)=>a+(+stakes[c.id]||+c.stake||0),0);okSheet('Approved',`${its.length} bet${its.length===1?'':'s'}${tot>0?' · '+money(tot)+' at work':''}`,r.msg||'The Mac buys them within seconds.');pStakeClear(its);}   // #140: a big Approved moment, after the answer is in
+ else{hap('error');}
+ S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();else btnFail('button[onclick^="panelApprove"]',r.msg,b);}
 /* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
 function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
  if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
@@ -192,14 +194,14 @@ async function panelAdd(b,view){if(S.pSend||b.disabled)return;const src=view==='
  if(!b.dataset.sure){pArm(b,'Tap again to add');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Adding…';let r;
  try{r=await pPost({a:'panel_add',ids,view:view||S.pview,stakes,allow:ovList()});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');if(r.ok)pStakeClear(its);
+ hap(r.ok?'success':'error');if(r.ok)toast(r.msg,6000,'good');if(r.ok)pStakeClear(its);
  if(r.ok){if(view==='extra'){S.pSent=S.pSent||{};const now=Date.now();ids.forEach(id=>S.pSent[id]=now);}
   if(b.isConnected){b.innerHTML='✓ Added';b.classList.add('done');}await new Promise(res=>setTimeout(res,700));}
  S.pOff=new Set();await load('build');
  /* keep hidden only what today's panel now really has; anything the Mac left out (budget, same game) shows again */
  if(r.ok&&view==='extra'&&S.panel&&S.panel.panel){const has=new Set((S.panel.panel.items||[]).filter(c=>['scheduled','buying','bought','check','failed'].includes(c.state)).map(c=>c.id));
   let back=false;ids.forEach(id=>{if(!has.has(id)){delete S.pSent[id];back=true;}});if(back)renderBuild();}
- if(r.ok)pBuyWatch();}
+ if(r.ok)pBuyWatch();else btnFail('button[onclick^="panelAdd"]',r.msg,b);}
 /* Approve/Add requests give up waiting after 30 s so a hung link can't leave every button dead; the Mac's side is
    safe to repeat (panel_tx), so the next tap can't buy anything twice. */
 function pPost(body){return Promise.race([api('/app/api/act',body).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'})),
@@ -387,9 +389,10 @@ async function buy(i,custom,btn){if(S.buying)return;
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';}
  const lgs=custom?S.slip.slice():(((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs||[]).map(l=>l.ticker);   // rule 7: the Mac checks the offer is for these picks
  let r;try{r=await api('/app/api/act',{a:'buy',i,legs:lgs.length?lgs:undefined});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
- S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
+ S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{S.failMsg=r.msg||'Didn\'t go through.';}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
- if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
+ if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();
+ if(!r.ok){const m=S.failMsg;S.failMsg=null;if(r.check)toast(m,9000,'bad');else btnFail(custom?'#main .qb, #main .ccard':'.ccard[data-i="'+i+'"]',m);}}
 
 // A bet the auto-buy skipped or couldn't place: what it was and why, read-only, from the panel data already on the page.
 function panelClosed(id){const its=(S.panel&&S.panel.panel&&S.panel.panel.items)||[];const c=its.find(x=>x.id===id);if(!c)return;
