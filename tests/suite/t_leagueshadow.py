@@ -52,6 +52,12 @@ for i in range(5):
     E.store_x("insert into bets values(?,?,?,?,?,?,?,?,?,?)", (f"M{i}", now - 86400, 10.0, 99.0, json.dumps(["KXNBAGAME-M-A", "KXEPLGAME-M-B"]),
                                                               "mix", "won", 0, now - 3600, 0.4))
 
+# ---- #476 look-ahead: the first run must not backfill. Old quotes (already settled, the cut-offs were learned from them) are skipped
+E.store_x("insert into quotes(ts, source, sport, n, legs, stake, pays, fair, kalshi, pct, hours, outcome, resolved) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (now - 90 * 86400, "build", "soccer", 2, json.dumps([["KXEPLGAME-OLD1", 0.5, 0.5], ["KXEPLGAME-OLD2", 0.5, 0.5]]), 10.0, 25.0, 30.0, 25.0, 0.99, 5.0, "won", now - 89 * 86400))
+ok("quotes: the first run logs nothing historical", E.lgsh_log_quotes(now) == (0, 0) and E.store_rows("select count(*) n from league_shadow_q")[0]["n"] == 0)
+ok("quotes: ... and sets its place at the newest quote", E.store_rows("select v from league_shadow_mark where k='last'")[0]["v"] == E.store_rows("select max(rowid) m from quotes")[0]["m"])
+FEE = E.single_fee(10.0 / 25.0, 25) * 25
 # ---- quotes for the #476 settle-to-dollars log: epl size 2 (three of them), an nba one, a mixed-sport one, one with no price
 def addq(sport, legs, pct, stake=10.0, pays=25.0, outcome=None):
     E.store_x("insert into quotes(ts, source, sport, n, legs, stake, pays, fair, kalshi, pct, hours, outcome, resolved) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -151,22 +157,38 @@ ok("quotes: the cut-offs logged are today's and the blended one for that league 
    close(r1["cut_now"], cut_now) and close(r1["cut_blend"], cut_blend, 0.01) and r1["league"] == "epl" and r5["league"] == "nba" and r5["cut_now"] == 92.0)
 ok("quotes: a price between the two cut-offs passes under exactly one of them", r1["pass_now"] != r1["pass_blend"] and r1["pass_now"] == int(cut_now < cut_blend))
 ok("quotes: high price passes both, low price skips both", (r2["pass_now"], r2["pass_blend"], r3["pass_now"], r3["pass_blend"]) == (1, 1, 0, 0))
-ok("quotes: a settled quote carries its dollars if bought (won +15, lost -10); an unsettled one waits", (r1["pnl"], r2["pnl"], r3["pnl"], r5["pnl"]) == (15.0, -10.0, -10.0, 15.0)
+ok("quotes: a settled quote carries its dollars if bought (won +15, lost -10); an unsettled one waits", tuple(round(x, 4) for x in (r1["pnl"], r2["pnl"], r3["pnl"], r5["pnl"])) == tuple(round(x, 4) for x in (15.0 - FEE, -10.0 - FEE, -10.0 - FEE, 15.0 - FEE))
    and r4["outcome"] is None and r4["pnl"] is None)
 g = E.lgsh_gate()
 e_ = next(x for x in g["leagues"] if x["league"] == "epl")
-now_d = (15.0 if cut_now < cut_blend else 0.0) - 10.0              # epl: quote 1 only under the rule that passes it, quote 2 under both, quote 3 under neither
-blend_d = (15.0 if cut_blend < cut_now else 0.0) - 10.0
+now_d = (15.0 - FEE if cut_now < cut_blend else 0.0) - 10.0 - FEE              # epl: quote 1 only under the rule that passes it, quote 2 under both, quote 3 under neither
+blend_d = (15.0 - FEE if cut_blend < cut_now else 0.0) - 10.0 - FEE
 ok("gate: epl dollars under today's rule and the blend, settled quotes only", e_["settled"] == 3 and close(e_["dollars_now"], now_d) and close(e_["dollars_blend"], blend_d)
    and close(e_["diff"], blend_d - now_d) and e_["flips"] == 1)
-ok("gate: 'all' adds the nba quote (both pass, +15)", g["all"]["settled"] == 4 and close(g["all"]["dollars_now"], now_d + 15.0) and close(g["all"]["dollars_blend"], blend_d + 15.0))
+ok("gate: 'all' adds the nba quote (both pass, +15)", g["all"]["settled"] == 4 and close(g["all"]["dollars_now"], now_d + 15.0 - FEE) and close(g["all"]["dollars_blend"], blend_d + 15.0 - FEE))
 E.store_x("update quotes set outcome='won', resolved=? where legs like '%KXEPLGAME-D1%'", (now,))
 E.league_shadow_run(now + 3600, force=True)
 ok("quotes: a forced run does not log a quote twice, and settles the one that has since settled",
-   E.store_rows("select count(*) n from league_shadow_q")[0]["n"] == 5 and E.store_rows("select pnl from league_shadow_q where qid=?", (r4["qid"],))[0]["pnl"] == 15.0)
+   E.store_rows("select count(*) n from league_shadow_q")[0]["n"] == 5 and E.store_rows("select pnl from league_shadow_q where qid=?", (r4["qid"],))[0]["pnl"] - (15.0 - FEE) < 1e-6)
 ok("gate: nothing settled = {}", (E.store_x("update league_shadow_q set outcome=null, pnl=null"), E.lgsh_gate())[1] == {})
 E.lgsh_log_quotes(now + 7200)
 ok("gate: the next run settles them again", E.lgsh_gate()["all"]["settled"] == 5)
+# prune must not reset the place: even with every logged row gone, nothing is re-logged and new quotes still are
+E.store_x("update league_shadow_q set ts = ts - ?", (200 * 86400,))
+mk = E.store_rows("select v from league_shadow_mark where k='last'")[0]["v"]
+E.lgsh_log_quotes(now + 7300)
+ok("quotes: pruning every old row does not reset the place or re-log the quotes", E.store_rows("select count(*) n from league_shadow_q")[0]["n"] == 0
+   and E.store_rows("select v from league_shadow_mark where k='last'")[0]["v"] == mk)
+mx = E.store_rows("select max(rowid) m from quotes")[0]["m"]
+addq("nba", ["KXNBAGAME-Z1", "KXNBAGAME-Z2"], 0.99)
+ok("quotes: a new quote after the prune is still logged", E.lgsh_log_quotes(now + 7400)[0] == 1)
+for i in range(5200):                                    # more than one 5000 batch in a day: the log drains them all
+    E.STORE["db"].execute("insert into quotes(ts, source, sport, n, legs, stake, pays, fair, kalshi, pct, hours) values(?,?,?,?,?,?,?,?,?,?,?)",
+                          (now, "build", "nba", 2, json.dumps([["KXNBAGAME-B%d" % i, 0.5, 0.5], ["KXNBAGAME-C%d" % i, 0.5, 0.5]]), 10.0, 25.0, 30.0, 25.0, 0.99, 5.0))
+E.STORE["db"].commit()
+ok("quotes: a busy day is drained in full, not capped at 5000", E.lgsh_log_quotes(now + 7500)[0] == 5200)
+E.store_x("delete from quotes where rowid > ?", (mx,))                # put the history back as it was
+E.store_x("delete from league_shadow_q where qid > ?", (mx,))
 E.store_x("update league_shadow set ts = ts - ?", (200 * 86400,))
 E.league_shadow_run(now + 2 * 90000)
 ok("run: rows older than 180 days are pruned", E.store_rows("select count(*) n from league_shadow where ts < ?", (now - 100 * 86400,))[0]["n"] == 0)
@@ -230,7 +252,7 @@ ok("derived: the ticker prefixes come from SOCCER_LEAGUE", E._LGSH_PRE == {v: k 
 # ---- no decision function reads the shadow: only the shadow's own functions, the watcher hook and the report do
 tree = ast.parse(open("wahome/engine.py").read())
 allowed = {"lgsh_blend", "_lgsh_say", "_lgsh_league_sport", "lgsh_rows", "_league_shadow_table", "league_shadow_run",
-           "league_shadow_view", "knob_pass", "analytics", "_lgsh_minus", "_league_shadow_q_table", "lgsh_log_quotes", "lgsh_gate"}
+           "league_shadow_view", "knob_pass", "analytics", "_lgsh_minus", "_league_shadow_q_table", "lgsh_log_quotes", "lgsh_gate", "_lgsh_mark", "_lgsh_log_batch", "_lgsh_pnl"}
 bad = []
 for fn in [x for x in ast.walk(tree) if isinstance(x, ast.FunctionDef)]:
     names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}

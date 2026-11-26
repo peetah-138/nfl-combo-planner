@@ -27188,14 +27188,26 @@ def league_shadow_run(now=None, force=False):
 #     (a soccer league, else the sport; mixed-sport quotes are not logged); n = legs; pct = price as a share of fair, the
 #     number the cut-off is compared with; stake / pays = dollars at that quote; cut_now / cut_blend = the cut-off in
 #     % under today's rule and the blended one, as of the run that logged it; pass_* = 1 when pct*100 >= that cut-off;
-#     outcome = 'won'/'lost' once the quote settles, else NULL; pnl = (pays if won else 0) - stake, set with outcome.
+#     outcome = 'won'/'lost' once the quote settles, else NULL; pnl = (pays if won else 0) - stake - Kalshi's fee, set with outcome.
 #   Dollars for a policy = pass * pnl, summed over settled rows (`lgsh_gate`). A skipped quote makes and loses 0.
 #   Limits: the cut-off is the one in force when the daily run logged the quote (up to a day, and cut-offs move weekly);
-#   pnl is the hold-to-settle result, with no early exit or fee.
+#   pnl is the hold-to-settle result after the fee, with no early exit. The log starts at the newest quote when first run
+#   (never backfills: today's cut-offs were learned from the old outcomes) and keeps its place in league_shadow_mark.
 def _league_shadow_q_table():
     store_x("create table if not exists league_shadow_q(qid integer primary key, ts real, league text, sport text, n int, "
             "pct real, stake real, pays real, cut_now real, cut_blend real, pass_now int, pass_blend int, outcome text, pnl real)")
     store_x("create index if not exists league_shadow_q_t on league_shadow_q(ts)")
+    # the log's own watermark (the last quotes rowid looked at): kept apart from the rows so pruning can never reset it
+    store_x("create table if not exists league_shadow_mark(k text primary key, v integer)")
+
+
+def _lgsh_mark(new=None):
+    """The watermark: the last `quotes` rowid the log has looked at. None = never set. With `new`, store it (never backwards)."""
+    cur = (store_rows("select v from league_shadow_mark where k='last'") or [{}])[0].get("v")
+    if new is not None and (cur is None or new > cur):
+        store_x("insert or replace into league_shadow_mark values('last', ?)", (int(new),))
+        return int(new)
+    return cur
 
 
 def lgsh_log_quotes(now=None, rows=None):
@@ -27210,40 +27222,75 @@ def lgsh_log_quotes(now=None, rows=None):
         rows = lgsh_rows(now) if rows is None else rows
         blend = {(r["league"], r["key"]): r["shadow"] for r in rows if r["metric"] == "cutoff"}
         d = load_json(CUTOFF_FILE, {})
-        last = max((store_rows("select max(qid) q from league_shadow_q") or [{}])[0].get("q") or 0, 0)
-        new = store_rows("select rowid qid, ts, sport, n, legs, stake, pays, pct from quotes where rowid > ? and pct is not null "
-                         "and stake > 0 order by rowid limit 5000", (last,))
-        args = []
-        for q in new:
-            sps = (q["sport"] or "").split(",")
-            if len(sps) != 1 or not sps[0]:
-                continue
-            try:
-                legs = json.loads(q["legs"] or "[]")
-            except Exception:
-                continue
-            sp, n = sps[0], q["n"] or 2
-            lg = _combo_league(sp, legs) or sp
-            cur = _cut_level(d, sp, n, legs)[0]
-            cb = blend.get((lg, _cut_key("", n).lstrip(":")), cur)
-            pct = float(q["pct"]) * 100
-            args.append((q["qid"], q["ts"], lg, sp, n, float(q["pct"]), q["stake"], q["pays"], cur, cb,
-                         int(pct >= cur), int(pct >= cb), None, None))
-        if args:
-            with _SLOCK:
-                STORE["db"].executemany("insert or ignore into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args)
-                STORE["db"].commit()
+        last = _lgsh_mark()
+        if last is None:
+            # First run: start from NOW. Today's cut-offs were learned from the settled quotes, so logging the old ones
+            # would grade the rule on its own homework. Only quotes that arrive from here on are logged.
+            _lgsh_mark((store_rows("select max(rowid) m from quotes") or [{}])[0].get("m") or 0)
+            last = _lgsh_mark()
+        logged = 0
+        for _ in range(40):                       # drain in batches so a busy day still catches up (up to 200k a run)
+            new = store_rows("select rowid qid, ts, sport, n, legs, stake, pays, pct from quotes where rowid > ? and pct is not null "
+                             "and stake > 0 order by rowid limit 5000", (last,))
+            if not new:
+                break
+            logged += _lgsh_log_batch(new, d, blend)
+            last = new[-1]["qid"]
+            _lgsh_mark(last)
+            if len(new) < 5000:
+                break
         done = 0
-        for r in store_rows("select s.qid, s.stake, s.pays, q.outcome from league_shadow_q s join quotes q on q.rowid = s.qid "
-                            "where s.outcome is null and q.outcome in ('won','lost') limit 5000"):
-            store_x("update league_shadow_q set outcome=?, pnl=? where qid=?",
-                    (r["outcome"], round((r["pays"] if r["outcome"] == "won" else 0.0) - r["stake"], 4), r["qid"]))
-            done += 1
+        for _ in range(40):
+            got = store_rows("select s.qid, s.stake, s.pays, q.outcome from league_shadow_q s join quotes q on q.rowid = s.qid "
+                             "where s.outcome is null and q.outcome in ('won','lost') limit 5000")
+            for r in got:
+                store_x("update league_shadow_q set outcome=?, pnl=? where qid=?", (r["outcome"], _lgsh_pnl(r["outcome"], r["stake"], r["pays"]), r["qid"]))
+            done += len(got)
+            if len(got) < 5000:
+                break
         store_x("delete from league_shadow_q where ts < ?", (now - LGSH["keep"],))
-        return (len(args), done)
+        return (logged, done)
     except Exception as err:
         print("league shadow quotes:", type(err).__name__, err)
         return (0, 0)
+
+
+def _lgsh_pnl(outcome, stake, pays):
+    """Dollars a bought quote made held to settle, after Kalshi's fee (the app's `single_fee` on the combo's price, per contract)."""
+    fee = 0.0
+    try:
+        if pays and 0 < stake / pays < 1:
+            fee = pays * single_fee(stake / pays, pays)
+    except Exception:
+        fee = 0.0
+    return round((pays if outcome == "won" else 0.0) - stake - fee, 4)
+
+
+def _lgsh_log_batch(new, d, blend):
+    """Insert one batch of quotes with their pass/skip; returns how many were logged."""
+    args = []
+    # the green Buy never goes below your accept-% (green_bar), so neither does a pass
+    floor = CFG["accept_pct"] if shared_flag("idea_bar_strict") else 0
+    for q in new:
+        sps = (q["sport"] or "").split(",")
+        if len(sps) != 1 or not sps[0]:
+            continue
+        try:
+            legs = json.loads(q["legs"] or "[]")
+        except Exception:
+            continue
+        sp, n = sps[0], q["n"] or 2
+        lg = _combo_league(sp, legs) or sp
+        cur = _cut_level(d, sp, n, legs)[0]
+        cb = blend.get((lg, _cut_key("", n).lstrip(":")), cur)
+        pct = float(q["pct"]) * 100
+        args.append((q["qid"], q["ts"], lg, sp, n, float(q["pct"]), q["stake"], q["pays"], cur, cb,
+                     int(pct >= max(cur, floor)), int(pct >= max(cb, floor)), None, None))
+    if args:
+        with _SLOCK:
+            STORE["db"].executemany("insert or ignore into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args)
+            STORE["db"].commit()
+    return len(args)
 
 
 def lgsh_gate(days=None):
