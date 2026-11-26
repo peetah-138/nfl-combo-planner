@@ -14115,7 +14115,7 @@ def get_offer(i, amount=None, check_cap=True):
     if ok and pct is not None and pct > COMBO_SUSPECT:
         ok, why = False, "suspect"                 # (#358) far over fair is almost always a wrong chance: never green
         print(f"combo quote {pct:.0%} of fair: over {COMBO_SUSPECT:.0%}, held back as suspect "
-              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
+              f"({legs_log_name(legs_now)})", flush=True)
     if ok and live:                                # (#358) under way and over the bar: the panel's in-play test too
         try:
             cand = {"id": "quote:" + "+".join(l["ticker"] for l in legs_now), "kind": "combo", "live": True,
@@ -14126,7 +14126,7 @@ def get_offer(i, amount=None, check_cap=True):
             exit_ok, exit_why = False, f"error {type(err).__name__}"
         print(f"combo quote exit-route check (live green Buy): {'passed' if exit_ok else 'held back'}"   # (#397) log only
               f"{'' if exit_ok else ' (' + str(exit_why)[:80] + ')'} at {pct:.0%} of fair "
-              f"({'+'.join(l['ticker'] for l in legs_now)})", flush=True)
+              f"({legs_log_name(legs_now)})", flush=True)
         if not exit_ok:
             ok, why = False, "inplay"
     if c.get("kind") == "longshot":                 # (#341) a long shot's green Buy: Pete's hold-to-win test on this quote
@@ -19792,6 +19792,16 @@ def combo_names(legs_per_combo, starts=None):
             used[n2] = used.get(n2, 0) + 1
             names[i] = n2 if used[n2] == 1 else f"{n2} ({used[n2]})"
     return names
+
+
+def legs_log_name(legs):
+    """(#518) A combo's legs named for a log line the way Pete reads them ('Nuggets + Chiefs +2'), never as joined
+    tickers. Log text only: nothing keys off it. Any trouble falls back to the tickers."""
+    try:
+        return combo_names([[(l.get("pick") or _pick_label(l.get("ticker") or ""), ticker_sport(l.get("ticker") or ""))
+                             for l in legs or []]])[0]
+    except Exception:
+        return "+".join(str(l.get("ticker")) for l in legs or [] if isinstance(l, dict))
 
 
 def stamp_games(code, games):
