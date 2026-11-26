@@ -15,6 +15,12 @@ PRE, LIVE = 0.88, 0.82
 assert abs(E.kalshi_discount(False) - PRE) < 1e-9 and abs(E.kalshi_discount(True) - LIVE) < 1e-9
 
 
+import time
+E.MARKET_INFO[""] = {"at": time.time()}      # test legs carry no ticker: give them a fresh price stamp (a missing one is stale, #112)
+E.MARKET_INFO["KXNBAGAME-X-BOS"] = {"at": time.time()}
+E.MARKET_INFO["KXNBAGAME-Y-DEN"] = {"at": time.time()}
+
+
 def leg(res=None, live=None):
     return {"res": res, "live": live}
 
@@ -152,6 +158,8 @@ ok("a just-fetched leg price is used", E.live_offer_est(h, v) is not None)
 v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-26NOV19BOSNYK-BOS"},
              {"res": None, "live": 0.7, "ticker": "KXNBASPREAD-26NOV19BOSNYK-BOS5"}], live=True)
 ok("two open legs in one game -> None (correlated)", E.live_offer_est(h, v) is None)
+E.MARKET_INFO["KXNBAGAME-26NOV19BOSNYK-BOS"] = {"at": time.time()}
+E.MARKET_INFO["KXNBAGAME-26NOV19DENLAL-DEN"] = {"at": time.time()}
 v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-26NOV19BOSNYK-BOS"},
              {"res": None, "live": 0.7, "ticker": "KXNBAGAME-26NOV19DENLAL-DEN"}], live=True)
 ok("two open legs in different games are multiplied", E.live_offer_est(h, v) is not None)
@@ -160,3 +168,7 @@ ok("hero_worth: real quote wins", E.hero_worth({"offer": 7.5, "offer_live": 3.3,
 ok("hero_worth: no offer -> adds nothing", E.hero_worth({"offer": None, "offer_live": 3.3, "offer_real": False}) == 0)
 ok("the pulse (chart) sum uses hero_worth, same as cash_now", "worth = sum(hero_worth(v) for v in pend)" in
    open(os.path.join(os.environ.get("REPO", "."), "nfl_combo_planner.py")).read())
+# #112: a leg price with no timestamp at all is not fresh either -> None (the frozen estimate stays)
+E.MARKET_INFO["KXNBAGAME-A-BOS"] = {"live": 0.8}
+v, h = view([{"res": None, "live": 0.8, "ticker": "KXNBAGAME-A-BOS"}, leg(live=0.5)], live=True)
+ok("a leg price with no timestamp counts as stale -> None (#112)", E.live_offer_est(h, v) is None)

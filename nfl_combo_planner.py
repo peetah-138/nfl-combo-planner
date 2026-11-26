@@ -7680,8 +7680,8 @@ def live_offer_est(h, v):
                 return None                              # an open leg with no live price: fall back
             tk = lg.get("ticker") or ""
             at = (MARKET_INFO.get(tk) or {}).get("at")
-            if at is not None and now - at > LIVE_EST_AGE:
-                return None                              # the price is older than the build: not "fresh", fall back
+            if at is None or now - at > LIVE_EST_AGE:
+                return None                              # older than the build, or no timestamp at all: not "fresh" (#112)
             parts = tk.split("-")
             if len(parts) >= 3:                          # two open picks in one game move together: not independent
                 if parts[1] in events:
