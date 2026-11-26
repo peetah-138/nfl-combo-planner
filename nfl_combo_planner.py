@@ -24541,16 +24541,23 @@ def sim_exit(c, until=None):
     return _replay(c, path, pr["floor"], pr["lam"], pr["loss"], cut_at=cut_at)
 
 
-def _tune_items(days=60):
-    """Settled bets with recorded game prices: panel, paper and lab bets, and your real combos."""
-    cut = time.time() - days * 86400
-    out = []
+def _tune_items(days=60, now=None, dedupe=False):
+    """Settled bets with recorded game prices: panel, paper and lab bets, and your real combos. `now` is the clock the
+    window counts back from (#478; default the real clock). dedupe=True (the league shadow only, #478) leaves out a
+    bets-table row that is the same market as a real panel buy already in the list, so it is not counted twice;
+    smart_tune and the others keep their old list (False)."""
+    cut = (now or time.time()) - days * 86400
+    out, real_mkts = [], set()
     _panel_table()
-    for r in store_rows("select body from panel where (mode in ('real','paper','lab') or mode like 'real#%') and ts > ?", (cut,)):
+    for r in store_rows("select mode, body from panel where (mode in ('real','paper','lab') or mode like 'real#%') and ts > ?", (cut,)):
         for c in json.loads(r["body"]).get("items", []):
             if c.get("result") and c.get("kind") != "early" and c.get("kick") and c.get("pl") is not None:
                 out.append(c)
+                if r["mode"].split("#")[0] == "real" and _panel_ticker(c):
+                    real_mkts.add(_panel_ticker(c))
     for r in store_rows("select combo, cost, pays, legs, status, first_seen from bets where status in ('won','lost') and settled > ?", (cut,)):
+        if dedupe and r["combo"] in real_mkts:
+            continue
         try:
             tks = json.loads(r["legs"] or "[]")
         except ValueError:
@@ -27021,6 +27028,14 @@ def _lgsh_league_sport(lg):
     return "soccer" if lg in _LGSH_PRE else lg
 
 
+def _lgsh_n(e):
+    """The quote count a cut-off entry weighs with in the shadow blend. An entry with no quotes of its own (n=0) but a
+    recorded move (`why`, the borrowed level) counts as one quote, as `_cut_own` treats it as the group's own (#478);
+    the n shown beside the row stays the raw count."""
+    n = int((e or {}).get("n", 0) or 0)
+    return n if n > 0 or not _cut_own(e) else 1
+
+
 def lgsh_rows(now=None):
     """The shadow rows for every league with any record: [{league, sport, metric, key, current, shadow, n_own, n_sport,
     n_all, shares, says}]. Reads the cut-off file, the history file and the calibration only; writes nothing."""
@@ -27041,9 +27056,9 @@ def lgsh_rows(now=None):
             legs = [_LGSH_PRE[lg] + "GAME-X"] if lg in _LGSH_PRE else None
             cur = _cut_level(d, sp, n, legs)[0]
             v, sh = lgsh_blend(CUT_START, [("all", max(float(ea.get("level", CUT_START)), CUT_START) if ea else None,
-                                            ea.get("n", 0)),
-                                           ("sport", es.get("level") if es else None, es.get("n", 0)),
-                                           ("league", el.get("level") if el else None, el.get("n", 0))], LGSH["k_cut"])
+                                            _lgsh_n(ea)),
+                                           ("sport", es.get("level") if es else None, _lgsh_n(es)),
+                                           ("league", el.get("level") if el else None, _lgsh_n(el))], LGSH["k_cut"])
             v = min(max(v, 85.0), 110.0)
             out.append({"league": lg, "sport": sp, "metric": "cutoff", "key": _cut_key("", n).lstrip(":"), "current": cur,
                         "shadow": round(v, 2), "n_own": int(el.get("n", 0) or 0), "n_sport": int(es.get("n", 0) or 0),
@@ -27067,7 +27082,7 @@ def lgsh_rows(now=None):
                         "says": f"its own record {sh['league']:.0%}, the rest from {sp} and all"})
     # ---- each league's settled-bet return
     by = defaultdict(lambda: [0, 0.0, 0.0])             # key -> [bets, staked, profit]
-    for c in _tune_items(LGSH["days"]):
+    for c in _tune_items(LGSH["days"], now, dedupe=True):
         tks = _tickers_of(c.get("legs"))
         lg = bet_key(tks) if tks else None
         stake, pl = c.get("stake"), c.get("pl")
