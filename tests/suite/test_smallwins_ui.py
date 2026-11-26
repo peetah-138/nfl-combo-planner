@@ -111,6 +111,14 @@ with sync_playwright() as pw:
         pg.evaluate("document.querySelector('.cbh').focus()")
         pg.evaluate("document.querySelector('.cbp').scrollIntoView({block:'center'})"); time.sleep(.5)
         shot(pg, "comebacks_open_focus", scheme)
+        # (#438) closing slides shut (the body shrinks over ~220 ms) instead of snapping, then is gone; focus stays on the header
+        pg.evaluate("document.querySelector('.cbh').click()")
+        time.sleep(.09)
+        mid = pg.evaluate("(()=>{const b=document.querySelector('.cbbody');return b?b.getBoundingClientRect().height:-1})()")
+        check(f"{scheme} #438: mid-close the body is still there but smaller ({mid})", mid > 0 and pg.evaluate("document.querySelector('.cbh').getAttribute('aria-expanded')")=="false")
+        check(f"{scheme} #438: after the slide the body is gone and focus is on the header",
+              until(pg, "!document.querySelector('.cbbody')&&document.activeElement.classList.contains('cbh')", 5))
+        pg.evaluate("document.querySelector('.cbh').click()"); until(pg, "!!document.querySelector('.cbbody')", 5)
         check(f"{scheme} #404: still 44px tall, no sideways scroll", pg.evaluate("document.querySelector('.cbh').getBoundingClientRect().height>=44&&document.documentElement.scrollWidth<=innerWidth+1"))
 
         # ---- #405 Results rows
@@ -167,6 +175,10 @@ with sync_playwright() as pw:
         before = pg.evaluate("document.querySelector('.pitem.prp').getBoundingClientRect().height")
         pg.evaluate("document.querySelector('.pitem.prp .prbtn').click()")
         check(f"{scheme} #403: a failed reprice keeps 'Just priced' and its reason on the card", until(pg, "(document.querySelector('.pitem.prp .prq.fail')||{}).innerText&&document.querySelector('.pitem.prp .prq.fail').innerText.includes('Give it a few seconds')", 8))
+        check(f"{scheme} #435: focus lands back on the card's button and the result is spoken in a live region",
+              pg.evaluate("document.activeElement&&document.activeElement.classList.contains('prbtn')&&!!document.activeElement.closest('.pitem.prp')")
+              and pg.evaluate("(document.getElementById('repLive')||{}).getAttribute&&document.getElementById('repLive').getAttribute('aria-live')")=="polite"
+              and "Just priced" in pg.evaluate("document.getElementById('repLive').textContent"))
         txt = pg.evaluate("document.querySelector('.pitem.prp .prq.fail').innerText")
         check(f"{scheme} #403: it says nothing was bought and offers Try again ({txt!r})", "Just priced" in txt and "Nothing was bought" in txt and pg.evaluate("[...document.querySelectorAll('.pitem.prp .prbtn')].some(b=>b.innerText.trim()==='Try again')"))
         check(f"{scheme} #403: stored as would:false with the message", pg.evaluate("(()=>{const r=Object.values(S.prep)[0];return r&&r.would===false&&r.fail===true&&/few seconds/.test(r.why)})()"))

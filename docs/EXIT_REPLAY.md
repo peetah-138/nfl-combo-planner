@@ -11,8 +11,10 @@ The Air's updater copies only the app's own files, so `tools/` is not in `~/comb
 line fetches the script (public code, no key) and runs it:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/tools/exit_replay.py -o ~/combowatch/exit_replay.py && python3 ~/combowatch/exit_replay.py --out ~/exit_replay_summary.json
+curl -fsSL https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/1c51b335600ab177aee0f757a453931b6ff8867c/tools/exit_replay.py -o ~/combowatch/exit_replay.py && echo "ad7db841bceda1ed637ad5f6e5b524a383ac3d01dadaacf9184bca88ad37951d  $HOME/combowatch/exit_replay.py" | shasum -a 256 -c - && python3 ~/combowatch/exit_replay.py --out ~/exit_replay_summary.json
 ```
+
+The line fetches one fixed version of the script (pinned to a commit, not the moving `main`) and checks its fingerprint before running it; if the check says FAILED, stop and do not run it. When `tools/exit_replay.py` changes, update the commit and fingerprint here (a test fails until you do).
 
 (From a full clone it is `python3 tools/exit_replay.py --out ~/exit_replay_summary.json`.)
 

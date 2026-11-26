@@ -22,10 +22,10 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.25.140"
+WATCHER_VERSION = "2026.11.26.141"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "learned_guards",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards", "mkt_hold",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -906,7 +906,7 @@ HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate
 # Non-GET requests the phone may forward are only the ones the app itself sends (GitHub #102): order create/cancel,
 # quote requests (RFQs) and accepting a quote, and making a combo market. Anything else (batch or amend orders, other
 # writes under /portfolio) is refused with a logged reason. Money moves between pots stay on pot_move only.
-_ID = r"[A-Za-z0-9_.:-]{1,120}"
+_ID = r"(?!\.+(?:/|$))[A-Za-z0-9_.:-]{1,120}"   # never a bare "." or ".." as the id (#458)
 HUB_WRITES = {
     "POST": re.compile(r"/portfolio/orders|/portfolio/events/orders|/communications/rfqs|"
                        r"/multivariate_event_collections/" + _ID),
@@ -1259,17 +1259,26 @@ COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
 
 def combo_link(E, msg):
     """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
-    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
-    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    combos Live shows right now, else None (the tap opens Live as before). A combo is named by its picks ("Nuggets +
+    Chiefs", #520) or, for text that still says it, its old number ("Combo 24", whole word so "Combo 2" isn't "Combo
+    24"); a name that is part of a longer matching name doesn't count. Names are read from this refresh's own data, so
+    they match the text just built. Only the market ticker goes in the link (URL-safe characters only, COMBO_TICKER)."""
     try:
-        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
-        if len(named) != 1:
-            return None
-        want = "Combo " + named.pop()
+        msg = msg or ""
         mine = dict(E.MINE.get("snap") or {})
         mine.update(E.MINE.get("hold") or {})
-        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
-        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+        spans = {}
+        for t, c in mine.items():
+            if not COMBO_TICKER.match(t or ""):
+                continue
+            for lab in {(c or {}).get("label") or "", (c or {}).get("num") or ""}:
+                if len(lab) >= 3:
+                    spans.setdefault(t, []).extend(m.span() for m in re.finditer(r"(?<!\w)" + re.escape(lab) + r"(?!\w)", msg))
+        # a match that sits wholly inside another combo's longer match is the same words, not a second combo
+        hits = [t for t, sp in spans.items() if sp and not all(
+            any(o[0] <= x[0] and x[1] <= o[1] and (o[1] - o[0]) > (x[1] - x[0]) for u, osp in spans.items() if u != t for o in osp)
+            for x in sp)]
+        return "/#c=" + hits[0] if len(hits) == 1 else None
     except Exception:
         return None
 
@@ -2417,11 +2426,16 @@ class WebBuild:
         verdict = "" if r.get("ok") else f" That's under your {r.get('bar') or b['cut']}% cut-off."
         return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
 
-    def buy(self, i):
+    def buy(self, i, legs=None):
+        """legs (#498, rule 7): the tickers of the card the form was drawn for. The Buy goes out only if they are exactly the
+        legs the stored offer was priced for and the combo now on that card (accept_offer re-checks both). None or empty
+        (an old page, a hand-made post) is refused: nothing is bought."""
         b = self.cur
         off = (b or {}).get("offers", {}).get(i)
         if not off or time.time() - off["got"] > 20:
             return "That price expired. Tap Get price again."
+        if not legs:
+            return "That page is out of date. Reload it, get a fresh price, then buy. Nothing was bought."
         o = self.odds
         with o.lock:
             H = o.engine()
@@ -2430,7 +2444,7 @@ class WebBuild:
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
             log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
             with H.manual_tap():
-                r = H.accept_offer(i)
+                r = H.accept_offer(i, expect_legs=list(legs))
         b["offers"].pop(i, None)
         if r.get("error"):
             return r["error"]
@@ -2463,6 +2477,7 @@ class WebBuild:
                          f"{H.money(c['fair'])} for {H.money(b['stake'])}</div><div style='margin:6px 0'>{picks}</div>"
                          f"<div class='mute'>{est}</div>{thin}<form method='post' action='/act' style='margin-top:8px'>"
                          f"<input type='hidden' name='tok' value='{e(tok)}'><input type='hidden' name='i' value='{i}'>"
+                         f"<input type='hidden' name='legs' value='{e(','.join(str(l.get('ticker')) for l in c['legs']))}'>"
                          f"{btn}</form></div>")
         return (f"<div class='tabs'>{tabs}</div><div class='mute'>{e(b['name'])} suggestions · built "
                 f"{time.strftime('%-I:%M %p', time.localtime(b['at']))} · your weekly cap still applies</div>"
@@ -3552,8 +3567,8 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode",
-                "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode",
+                "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3648,6 +3663,7 @@ def webapp_main():
                              "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
                              "guards": A.guards_view(A.LEAGUE["code"]),
+                             "sl_auto": A.sl_auto_view(),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -4069,11 +4085,12 @@ def webapp_main():
             if a == "buy":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
+                sent_empty = isinstance(shown, list) and not shown   # #498: a list that was sent but is empty is refused (an older page or hand-made post may leave the key out)
                 shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
-                        r = A.accept_offer(i, expect_legs=shown)
+                        r = A.accept_offer(i, expect_legs=shown, legs_sent_empty=sent_empty)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
@@ -4615,27 +4632,21 @@ def accuracy_loop(odds, every=300):
 # ---------------------------------------------------------------- dev Mac log reading (issue #377, docs/LOG_ACCESS.md)
 # A read-only, redacted tail of this Mac's logs for the dev Mac, over Tailscale only. Off until Pete turns on
 # Settings › This Mac › "Let the dev Mac read logs" on this Mac itself, which makes a read-only code (only its SHA-256
-# is kept, in watcher.json). It never takes a lock, never changes anything and never reads anything but the two files
-# below. Every answer is redacted here, before it leaves, and any error in that means nothing is sent (fail closed).
+# is kept, in watcher.json). It never changes anything and only reads the two log files below and (source=db) the
+# history database through its own mode=ro, SELECT-only connection. Credentials are scrubbed here, before anything
+# leaves; a credential that can't be scrubbed means nothing is sent (fail closed).
 LOG_PATH = "/api/logs"
 LOG_SOURCES = {"console": "watcher.log", "autosell": "combo_autosell_log.jsonl"}   # the only files it ever reads
 LOG_DEF_LINES, LOG_MAX_LINES, LOG_MAX_BYTES = 200, 500, 200_000                   # per answer, after redaction
 LOG_READ_BYTES = 1_500_000      # the most read from the end of a file per answer (never the whole file)
 LOG_LINE_MAX = 2000             # characters kept of one line
+LOG_LINE_HUGE = 20_000          # a line longer than this is replaced by LOG_LINE_LONG before any scrubbing (#380)
+LOG_LINE_LONG = "[line too long]"
 LOG_RATE = (30, 60)             # answers per client per minute
 LOG_BAD = (5, 600)              # wrong codes per client per 10 minutes before that client is turned away
 LOG_BAD_ALL = (30, 600)         # wrong codes from everyone per 10 minutes before everyone is turned away
 LOG_SECRET_MIN = 6              # live secret values this long or longer are masked wherever they appear
-LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (anything else is dropped)
-    "at", "when", "by", "ride", "result", "why", "note", "guard", "combo", "ticker", "kind", "side", "cost", "offer",
-    "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
-    "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
-    "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
-    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
-LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
-                    "polymarket.com", "hockeytech.com", "theahl.com")
 LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)
-_LOG_SALT = os.urandom(16)      # per process: an id is shown as a short tag, the same within one run
 
 
 def _log_finite(x):
@@ -4654,24 +4665,20 @@ _RX_HDR = re.compile(r"(?i)\b(proxy-authorization|authorization|x-cw|set-cookie|
 _RX_BEARER = re.compile(r"(?i)\b(bearer(?=\s+\S)|basic(?=\s+\S{6}))(\s+)[A-Za-z0-9._~+/=-]+")
 _RX_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{2,}")
 _RX_CWCOOKIE = re.compile(r"(?i)(?<![A-Za-z0-9_-])(cw)(\s*[:=]\s*)[^\s,;&\"']+")
+# Names that say "this value is a credential". Ordinary data (emails, ids, balances, hosts, team names) is NOT here.
 _RX_KV = re.compile(r"(?i)(\\?[\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,40}?(?:secret|token|passw(?:or)?d|passcode|web_pass|api[ _-]?key|apikey|"
-                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session|cookie|topic|endpoint|p256dh|auth_?key|"
-                    r"member[ _-]?id|user[ _-]?id|account[ _-]?id|subaccount|e-?mail|watcher_code|pairing|passkey|credential)"
+                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session[ _-]?(?:id|key|token)|cookie|p256dh|auth_?key|"
+                    r"watcher_code|pairing|passkey|credential|topic|endpoint)"
                     r"[A-Za-z0-9_-]{0,40})\1(\s*[:=]\s*)(\\\"[^\"\\]*\\\"|\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[a-z: -]+\]|[^\s,;&}\])]+)")
-_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id|(?:user|member|account)[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_PUSHURL = re.compile(r"(?i)\bhttps?://(?:[a-z0-9-]+\.)*(?:push\.services\.mozilla\.com|fcm\.googleapis\.com|web\.push\.apple\.com|notify\.windows\.com)/[^\s\"'<>\\]*")
 _RX_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>\\]+")
-_RX_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}")
-_RX_TSNET = re.compile(r"(?i)(?<![a-z0-9.-])[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,6}\.(?:ts|tailscale)\.net\b")
-_RX_IP4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d)(?!\.\d)")
-_RX_IP6 = re.compile(r"(?i)(?<![0-9a-z:])(?:(?:[0-9a-f]{1,4}:){5,7}[0-9a-f]{1,4}|"
-                     r"(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![0-9a-z:])")
-_RX_UUID = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-_RX_HOMEDIR = re.compile(r"/(Users|home)/[^/\s\"':]+")
+_RX_USERINFO = re.compile(r"(?i)^((?:https?|wss?)://)[^/?#@\s]*@")
+_RX_QSECRET = re.compile(r"(?i)([?&;](?:[A-Za-z0-9_.-]*(?:key|token|secret|sig|auth|pass|session|cookie|credential)[A-Za-z0-9_.-]*)=)[^&#\s]*")
+_RX_UUIDSHAPE = re.compile(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
-_RX_MONEYLINE = re.compile(r"(?i)(?<!insufficient_)(?<!insufficient )balance|by pot|\bpots?\b|bankroll|portfolio_value")
-_RX_DOLLARS = re.compile(r"\$\s?-?[\d,]+(?:\.\d+)?")
-_RX_BALNUM = re.compile(r"(?i)(balance[a-z_]*[\"']?\s*[:=]\s*)-?[\d.,]+")
 _RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
+_RX_SECRETCOL = re.compile(r"(?i)secret|token|key_?id|passw|passcode|api_?key|odds_?key|private|signature|cookie|credential|pairing|passkey|p256dh|auth_?key|topic|endpoint")
 
 
 def log_enabled(conf):
@@ -4755,12 +4762,11 @@ LOG_GATE = LogGate()
 
 
 def log_secrets(conf, E=None):
-    """The live secret values on this Mac, to mask wherever they appear (raises if they can't be read)."""
-    from urllib.parse import quote, urlsplit
+    """The live credential values on this Mac, to mask wherever they appear (raises if they can't be read). The machine
+    and tailnet names are not credentials and are no longer included (they only caused false alarms)."""
+    from urllib.parse import quote
     vals = [conf.get(k) for k in ("topic", "secret", "web_pass", "passkey_user", "healthcheck_url")]
     vals += [p.get("id") for p in conf.get("passkeys") or [] if isinstance(p, dict)]
-    host = urlsplit(str((conf.get("https") or {}).get("url") or "")).hostname or ""
-    vals += [host] + host.split(".")[:2]                       # the machine and tailnet names on their own too
     cfg = getattr(E, "CFG", None) or {}
     vals += [cfg.get(k) for k in getattr(E, "KEY_FIELDS", ("kalshi_key_id", "odds_key", "watcher_code"))]
     out = set()
@@ -4772,16 +4778,10 @@ def log_secrets(conf, E=None):
 
 
 def _log_url(m):
-    from urllib.parse import urlsplit, parse_qsl, urlencode
-    u = urlsplit(m.group(0))
-    host = (u.hostname or "").lower()
-    if any(host == h or host.endswith("." + h) for h in LOG_PUBLIC_HOSTS):
-        q = [(k, "[redacted]" if re.search(r"(?i)key|token|secret|sig|auth|pass|session|topic|mail|user|member|account", k)
-              else v) for k, v in parse_qsl(u.query, keep_blank_values=True)]
-        return f"{u.scheme}://{host}{u.path}" + ("?" + urlencode(q, safe="[]") if q else "")
-    if host in ("127.0.0.1", "localhost"):
-        return f"{u.scheme}://{host}" + (f":{u.port}" if u.port else "") + u.path
-    return f"{u.scheme}://[host]"
+    """Keep the address (hosts and paths are ordinary); drop `user:pass@` and mask credential-looking query values.
+    Pure regex: no URL parser, so a malformed address (`https://x.com]`, `http://[::1`) can never raise (#log-access-wide)."""
+    u = _RX_USERINFO.sub(lambda k: k.group(1) + "[redacted]@", m.group(0))
+    return _RX_QSECRET.sub(lambda k: k.group(1) + "[redacted]", u)
 
 
 def _log_kv(m):
@@ -4789,17 +4789,10 @@ def _log_kv(m):
     return f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}" + ('"[redacted]"' if v.startswith('"') else "[redacted]")
 
 
-def _log_ip4(m):
-    o = [int(x) for x in m.groups()]
-    if max(o) > 255 or o[0] == 127 or o == [0, 0, 0, 0]:
-        return m.group(0)
-    return "[ip]"
-
-
 def _log_secretish(s):
-    """A run of characters that looks like a key or code rather than a word, ticker or path."""
-    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s):    # Kalshi tickers; plain words
-        return False
+    """A run of characters that looks like a key or code rather than a word, ticker, id or path."""
+    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s) or _RX_UUIDSHAPE.fullmatch(s):
+        return False                                             # Kalshi tickers; plain words; order ids (UUIDs)
     if len(s) >= 32:
         return True
     return len(s) >= 16 and bool(re.search(r"\d", s) and re.search(r"[a-z]", s) and re.search(r"[A-Z]", s))
@@ -4813,7 +4806,9 @@ def _log_blob(m):
 
 
 def log_redact(text, secrets_):
-    """Mask secrets in one piece of log text. Order matters: whole secrets first, then shapes."""
+    """Mask CREDENTIALS in one piece of log text (live secret values, key blocks, auth headers, tokens, passwords, key
+    ids). Ordinary content (teams, tickers, prices, outcomes, balances, hosts, ids) is kept. Order matters: whole
+    secrets first, then shapes. Safe to run twice (the second pass changes nothing)."""
     text = _RX_CTRL.sub("", text)                                # colour codes / zero-width marks can't split a secret
     if secrets_:
         text = re.sub("|".join(re.escape(s) for s in secrets_), "[secret]", text, flags=re.I)
@@ -4824,36 +4819,44 @@ def log_redact(text, secrets_):
     text = _RX_BEARER.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
     text = _RX_JWT.sub("[token]", text)
     text = _RX_CWCOOKIE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_PUSHURL.sub("[push endpoint]", text)            # a browser's web-push address is a credential
     text = _RX_URL.sub(_log_url, text)
     text = _RX_KV.sub(_log_kv, text)
     text = _RX_KVSP.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
-    if "@" in text:
-        text = _RX_EMAIL.sub("[email]", text)
-    if ".net" in text.lower():
-        text = _RX_TSNET.sub("[tailnet-host]", text)
-    text = _RX_IP4.sub(_log_ip4, text)
-    text = _RX_IP6.sub("[ip]", text)
-    text = _RX_UUID.sub(lambda m: "[id:" + hmac.new(_LOG_SALT, m.group(0).lower().encode(), "sha256").hexdigest()[:6] + "]",
-                        text)
-    text = _RX_HOMEDIR.sub(lambda m: f"/{m.group(1)}/[user]", text)
     text = _RX_BLOB.sub(_log_blob, text)
-    if _RX_MONEYLINE.search(text):                             # account-level money (balances, pots): masked
-        text = _RX_DOLLARS.sub("$[amount]", _RX_BALNUM.sub(lambda m: m.group(1) + "[amount]", text))
     return text
 
 
+LOG_WITHHELD = "[line withheld: could not be scrubbed safely]"
+
+
+def log_safe(text, secrets_):
+    """log_redact for one line or cell that can never take the whole answer down: if scrubbing raises, or a live secret is
+    still in the result, that one line is withheld (never sent raw) and the rest of the answer goes out."""
+    try:
+        out = log_redact(text, secrets_)[:LOG_LINE_MAX]
+        low = out.lower()
+        if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", out):
+            return LOG_WITHHELD
+        return out
+    except Exception:
+        return LOG_WITHHELD
+
+
 def log_fields(rec, secrets_):
-    """One auto cash-out record: allowlisted fields only (simple values, or short lists/maps of them), redacted."""
+    """One auto cash-out record: every field is kept (simple values, or short lists/maps of them) except credential-named
+    ones, and every string is scrubbed."""
     simple = (str, int, float, bool, type(None))
 
     def clean(v):
         if isinstance(v, float) and not _log_finite(v):
             return None                                          # not valid JSON
-        return log_redact(v, secrets_)[:LOG_LINE_MAX] if isinstance(v, str) else v
+        return log_safe(v, secrets_) if isinstance(v, str) else v
 
     out = {}
     for k, v in (rec.items() if isinstance(rec, dict) else ()):
-        if k not in LOG_FIELDS:
+        k = str(k)[:60]
+        if _RX_SECRETCOL.search(k):
             continue
         if isinstance(v, simple):
             out[k] = clean(v)
@@ -4862,7 +4865,7 @@ def log_fields(rec, secrets_):
         elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, list) and all(isinstance(y, simple) for y in x) for x in v):
             out[k] = [[clean(y) for y in x] for x in v]
         elif isinstance(v, dict) and len(v) <= 50 and all(isinstance(x, simple) for x in v.values()):
-            out[k] = {clean(str(a)): clean(x) for a, x in v.items() if str(a) in LOG_FIELDS}
+            out[k] = {log_safe(str(a), secrets_)[:60]: clean(x) for a, x in v.items() if not _RX_SECRETCOL.search(str(a))}
     return out
 
 
@@ -4908,6 +4911,8 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
     for line in text.splitlines():
         if not line.strip():
             continue
+        if len(line) > LOG_LINE_HUGE:
+            line = LOG_LINE_LONG                                # never run the scrubbers over a giant line
         if source == "autosell":
             try:
                 rec = json.loads(line)
@@ -4939,7 +4944,7 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
                 x = m.group(1) + json.dumps(log_fields(json.loads(m.group(2)), secrets_))
             except ValueError:
                 x = m.group(1) + "[record not shown]"
-        out.append({"t": t, "text": log_redact(x, secrets_)[:LOG_LINE_MAX]})
+        out.append({"t": t, "text": log_safe(x, secrets_)})     # one bad line is withheld; the rest still go out
     paused = conf.get("paused")
     status = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
               "paused": bool(paused), "paused_at": paused if isinstance(paused, (int, float)) and not isinstance(paused, bool) else None,
@@ -4952,9 +4957,211 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
         ans["lines"] = ans["lines"][drop:]
         ans["truncated"] = True
         body = json.dumps(ans)
+    log_tripwire(json.dumps(ans["lines"]), secrets_)
+    return body.encode()
+
+
+def log_tripwire(body, secrets_):
+    """Last line of defence on the data part of an answer: a live credential (or a key block) still in it means nothing is
+    sent (503). Only the data is checked, never the answer's own field names, so a short secret can't false-alarm on them."""
     low = body.lower()
     if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", body):
         raise LogLeak("a secret survived redaction")
+
+
+# ---- the collected data (history database), read-only, same code and same gates as the logs ("source=db")
+LOG_DB_FILE = "combo_history.db"            # the only database it ever opens, from HOME, by this fixed name
+LOG_DB_DEF_ROWS, LOG_DB_MAX_ROWS = 200, 1000
+LOG_DB_MAX_BYTES = 1_500_000                # per answer, after scrubbing (the newest rows are kept)
+LOG_DB_SQL_MAX = 4000                       # characters of a --sql question
+LOG_DB_SECONDS = 5.0                        # a question that runs longer is stopped
+LOG_DB_VALUE_MAX = 65_536
+LOG_DB_COLUMNS_MAX = 100                    # columns in one answer row (#528): the budget is checked per row, so this bounds one row
+LOG_DB_CELL = 2000                          # characters kept of one value
+LOG_DB_FUNCS = frozenset((
+    "abs", "avg", "count", "sum", "total", "min", "max", "round", "length", "substr", "substring", "lower", "upper",
+    "coalesce", "ifnull", "nullif", "iif", "typeof", "trim", "ltrim", "rtrim", "instr", "like", "glob",
+    "strftime", "date", "time", "datetime", "julianday", "unixepoch", "group_concat", "json_extract",
+    "json_array_length", "json_valid", "json_type", "sign", "sqrt", "ln", "exp", "pow", "ceil", "floor", "log", "log10",
+    "mod", "unicode", "likely", "unlikely", "coalesce", "max", "min"))
+_LOG_DB_LOCK = threading.Lock()             # one question at a time: a second one is told to wait (429)
+_RX_DB_TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_RX_DB_START = re.compile(r"(?is)^\s*(select|with)\b")
+
+
+class LogDbBad(Exception):
+    """A question the data endpoint refuses (400): the message is short, fixed wording, safe to send back."""
+
+
+def _log_db_auth(action, a1, a2, dbname, src):
+    """sqlite's own gate, on every statement it compiles: reading is allowed, everything else is not (so INSERT, UPDATE,
+    DELETE, DROP, CREATE, ATTACH, PRAGMA, transactions, extensions all fail even if a check above was fooled)."""
+    import sqlite3
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_READ:
+        t = str(a1 or "").lower()
+        if t.startswith("pragma_") or (t.startswith("sqlite_") and t not in ("sqlite_master", "sqlite_schema", "sqlite_temp_master")):
+            return sqlite3.SQLITE_DENY
+        if _RX_SECRETCOL.search(str(a2 or "")):
+            return sqlite3.SQLITE_IGNORE                       # a credential-named column reads as NULL, however it is selected
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_FUNCTION:
+        return sqlite3.SQLITE_OK if str(a2 or "").lower() in LOG_DB_FUNCS else sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_DENY
+
+
+def log_db_connect(path):
+    """A fresh read-only connection (never the engine's own, never its lock): file opened mode=ro, query_only on, the
+    authorizer installed last so nothing but SELECT can be compiled, a time limit and size limits."""
+    import sqlite3
+    from urllib.parse import quote
+    con = sqlite3.connect("file:" + quote(os.path.abspath(path)) + "?mode=ro", uri=True, timeout=2, isolation_level=None)
+    try:
+        con.execute("pragma query_only=ON")
+        con.execute("pragma busy_timeout=2000")
+        if hasattr(con, "setlimit"):                                       # Python 3.11+; sql= is refused without it
+            con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, LOG_DB_VALUE_MAX)    # no string or blob over 64 KB can be built
+            con.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, LOG_DB_SQL_MAX + 400)
+            con.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, LOG_DB_COLUMNS_MAX)  # #528: a row can't be repeated into hundreds of copies
+        con.enable_load_extension(False) if hasattr(con, "enable_load_extension") else None
+        con.set_authorizer(_log_db_auth)
+        dead = time.monotonic() + LOG_DB_SECONDS
+        con.set_progress_handler(lambda: 1 if time.monotonic() > dead else 0, 20000)
+        return con
+    except Exception:
+        con.close()
+        raise
+
+
+def log_db_check_sql(sql):
+    """One SELECT (or WITH ... SELECT), nothing else: no second statement, no comments, no semicolons inside."""
+    if not isinstance(sql, str) or not sql.strip():
+        raise LogDbBad("empty question")
+    if len(sql) > LOG_DB_SQL_MAX:
+        raise LogDbBad("question too long")
+    if any(ord(c) < 32 and c not in "\t\n\r" for c in sql) or "\x00" in sql:
+        raise LogDbBad("control characters")
+    q = sql.strip()
+    if q.endswith(";"):
+        q = q[:-1].rstrip()
+    if ";" in q:
+        raise LogDbBad("one statement only")
+    if "--" in q or "/*" in q:
+        raise LogDbBad("comments are not allowed")
+    if not _RX_DB_START.match(q):
+        raise LogDbBad("only SELECT")
+    return q
+
+
+def _log_db_cell(v, col, secrets_):
+    if v is None or isinstance(v, (int, bool)):
+        return v
+    if isinstance(v, float):
+        return v if _log_finite(v) else None
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return f"[blob {len(bytes(v))} bytes]"
+    if col and _RX_SECRETCOL.search(col):
+        return "[redacted]"
+    s = str(v)
+    cut = len(s) > LOG_DB_CELL
+    if "-----begin" in s.lower():
+        s = _RX_PEM.sub("[private key]", s)
+    out = log_safe(s[:LOG_DB_CELL + 200], secrets_)
+    if out == LOG_WITHHELD:
+        return out
+    return out[:LOG_DB_CELL] + ("..." if cut else "")
+
+
+def log_db_answer(conf, E, q, home=None):
+    """The collected data, read-only: `tables` (names and columns), `table` (+ optional `since`) or `sql` (one SELECT).
+    Returns JSON bytes. Raises LogDbBad (400: the dev Mac asked something not allowed) or anything else (503: nothing
+    sent). Each value is scrubbed like a log line; a column named like a credential is masked whole."""
+    import sqlite3
+    sql, table = q.get("sql"), q.get("table")
+    if sum(x is not None for x in (sql, table)) == 2 or (q.get("since") is not None and table is None):
+        raise LogDbBad("use table (with since) or sql, not both")
+    try:
+        cap = max(1, min(LOG_DB_MAX_ROWS, int(q.get("limit") or LOG_DB_DEF_ROWS)))
+    except (TypeError, ValueError):
+        raise LogDbBad("bad limit")
+    path = os.path.join(home or HOME, LOG_DB_FILE)
+    if not os.path.isfile(path):
+        raise LogDbBad("no history database on this Mac yet")
+    secrets_ = log_secrets(conf, E)
+    if not _LOG_DB_LOCK.acquire(blocking=False):
+        raise LogDbBusy()
+    try:
+        con = log_db_connect(path)
+        try:
+            args = ()
+            if sql is not None:
+                if not hasattr(con, "setlimit"):
+                    raise LogDbBad("free-form questions are not available on this Mac's Python; use table")
+                query = log_db_check_sql(sql)
+            elif table is not None:
+                if not _RX_DB_TABLE.fullmatch(table):
+                    raise LogDbBad("bad table name")
+                hit = con.execute("select name from sqlite_master where type in ('table','view') and name = ? "
+                                  "and name not like 'sqlite_%'", (table,)).fetchone()
+                if not hit:
+                    raise LogDbBad("no such table")
+                name = hit[0]
+                cols = [d[0] for d in con.execute(f'select * from "{name}" limit 0').description]
+                if q.get("since") is not None:
+                    if "ts" not in cols:
+                        raise LogDbBad("that table has no ts column")
+                    query = f'select * from "{name}" where ts >= ? order by ts desc'
+                    args = (float(q["since"]),)
+                else:
+                    query = f'select * from "{name}" order by rowid desc'
+            else:
+                rows = con.execute("select name from sqlite_master where type in ('table','view') "
+                                   "and name not like 'sqlite_%' order by name").fetchall()
+                tabs = [{"name": r[0], "columns": [d[0] for d in con.execute(f'select * from "{r[0]}" limit 0').description]}
+                        for r in rows]
+                return _log_db_body(conf, E, {"tables": tabs}, secrets_)
+            try:
+                cur = con.execute(query, args)
+                cols = [d[0] for d in (cur.description or ())]
+                got, used = [], 0
+                for r in cur:                                             # one row at a time, with a running size budget
+                    got.append(r)
+                    used += sum(len(v) if isinstance(v, (str, bytes, bytearray)) else 8 for v in r)
+                    if len(got) > cap or used > 2 * LOG_DB_MAX_BYTES:
+                        break
+            except sqlite3.Error as err:
+                msg = "stopped: took longer than %ds" % LOG_DB_SECONDS if "interrupt" in str(err).lower() \
+                    else "not allowed or not valid here" if "not authorized" in str(err).lower() else "sqlite: " + log_safe(str(err), secrets_)[:160]
+                raise LogDbBad(msg)
+            more = len(got) > cap or used > 2 * LOG_DB_MAX_BYTES
+            rows = [[_log_db_cell(v, c, secrets_) for v, c in zip(r, cols)] for r in got[:cap]]
+            if table is not None:
+                rows.reverse()                                            # the newest rows, shown oldest first
+        finally:
+            con.close()
+    finally:
+        _LOG_DB_LOCK.release()
+    return _log_db_body(conf, E, {"columns": cols, "rows": rows, "truncated": more, "table": table}, secrets_)
+
+
+class LogDbBusy(Exception):
+    """Another data question is running: 429."""
+
+
+def _log_db_body(conf, E, data, secrets_):
+    paused = conf.get("paused")
+    ans = dict({"ok": True, "source": "db"}, **data)
+    ans["status"] = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
+                     "paused": bool(paused), "role": "backup" if is_backup(conf) else "main", "now": int(time.time())}
+    body = json.dumps(ans)
+    while len(body) > LOG_DB_MAX_BYTES and ans.get("rows"):
+        ans["rows"] = ans["rows"][len(ans["rows"]) // 10 + 1:]          # the oldest rows go first
+        ans["truncated"] = True
+        body = json.dumps(ans)
+    if len(body) > LOG_DB_MAX_BYTES:
+        raise LogLeak("answer too large")
+    log_tripwire(json.dumps([ans.get("rows"), ans.get("columns"), ans.get("tables")]), secrets_)
     return body.encode()
 
 
@@ -5020,9 +5227,32 @@ def log_route(handler, conf, E):
         LOG_GATE.wrong(ip)
         return send(401)
     q = parse_qs(urlparse(handler.path).query, keep_blank_values=True)
+    source = q.get("source", ["console"])[0]
+    if source == "db":                                          # the collected data: read-only, one SELECT at a time
+        if set(q) - {"source", "since", "limit", "table", "sql", "tables"} or any(len(v) != 1 for v in q.values()):
+            return send(400)
+        try:
+            dq = {k: q[k][0] for k in ("since", "limit", "table", "sql") if k in q}
+            if "since" in dq:
+                dq["since"] = float(dq["since"])
+                if not _log_finite(dq["since"]):
+                    return send(400)
+            if "limit" in dq:
+                dq["limit"] = int(dq["limit"])
+            body = log_db_answer(conf, E, dq)
+        except LogDbBad as err:
+            return send(400, json.dumps({"ok": False, "error": str(err)[:200]}).encode())
+        except LogDbBusy:
+            return send(429)
+        except (ValueError, OverflowError):
+            return send(400)
+        except Exception as err:                                 # fail closed: nothing of the data is sent
+            log("dev Mac data read: nothing sent,", type(err).__name__)
+            return send(503)
+        LOG_STATE["read"] = int(time.time())
+        return send(200, body)
     if set(q) - {"source", "since", "limit"} or any(len(v) != 1 for v in q.values()):
         return send(400)
-    source = q.get("source", ["console"])[0]
     try:
         since = float(q["since"][0]) if "since" in q else None
         limit = int(q.get("limit", [LOG_DEF_LINES])[0])
@@ -5059,9 +5289,10 @@ def start_hub(conf, E, odds=None):
             # Floor (#271): only when the cached copy is over HUB_FRESH_FLOOR seconds old, so a stamp that keeps changing
             # can't force a Kalshi read per request. A held-back copy is flagged: the app uses it but doesn't keep it.
             at = E.ACCT_CACHE.get("at") or 0
-            moved = getattr(E, "money_seen", float)() > at
+            fresh = bool(req.get("fresh"))               # (#450) a guard check (max_age=0) must see Kalshi now: no floor
+            moved = fresh or getattr(E, "money_seen", float)() > at
             floor = getattr(E, "HUB_FRESH_FLOOR", 3)
-            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor
+            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor and not fresh
             if held:
                 print(f"hub account: fresh read held back ({time.time() - at:.1f}s-old copy, floor {floor}s)", flush=True)
             out = {"value": list(E.fetch_account(max_age=15 if held or not moved else 0, every_league=True))}
@@ -5259,7 +5490,8 @@ def start_hub(conf, E, odds=None):
                 if form.get("do") in ("bquote", "bbuy"):
                     try:
                         i = int(form.get("i", "0"))
-                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(i)
+                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(
+                            i, [x for x in str(form.get("legs") or "").split(",") if x])
                     except Exception as err:
                         log("web build action failed:", type(err).__name__, err)
                         msg = f"That didn't work: {type(err).__name__}. Nothing was bought."

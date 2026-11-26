@@ -10,7 +10,7 @@ function ssAge(at){const s=Math.max(0,Math.round(Date.now()/1000-at));return s<5
 function ssActs(x){if(x.res||!(x.state==='live'||x.state==='pre'))return '';const p=S.sellq[x.t],busy=S.ssBusy&&S.ssBusy[x.t];
  const line=p?(p.ok?`Kalshi bid <b>${Math.round(p.bid*100)}¢</b> · sell now for <b>${m2(p.got)}</b> after the fee${p.thin?' · <span class="down">thin market</span>':''} · ${ssAge(p.at)}`:`<span class="down">${esc(p.msg||'No price right now.')}</span>`):'Sell any time: the price comes straight from Kalshi.';
  return `<div class="sacts" onclick="event.stopPropagation()"><span class="s">${line}</span>
-  <button class="btn ghost sm" data-ssp="${esc(x.t)}" ${busy?'disabled':''} onclick="event.stopPropagation();ssPrice(this.dataset.ssp,this)">${busy?'<span class="spin"></span> Asking…':'Get new price'}</button>
+  <button class="btn ghost sm" data-ssp="${esc(x.t)}" ${busy?'disabled':''} onclick="event.stopPropagation();ssPrice(this.dataset.ssp,this)">${busy?'<span class="spin" aria-hidden="true"></span> Asking…':'Get new price'}</button>
   <button class="btn yes sm" data-sss="${esc(x.t)}" onclick="event.stopPropagation();ssOpen(this.dataset.sss)">Sell${p&&p.ok?' '+m2(p.got):''}</button></div>`;}
 function ssFind(t){const d=S.live||{};return (d.singles||[]).find(x=>x.t===t)||null;}
 async function ssPrice(t,b){S.ssBusy=S.ssBusy||{};if(S.ssBusy[t])return;S.ssBusy[t]=1;if(b)btnBusy(b,'Asking…');
@@ -22,7 +22,7 @@ function ssOpen(t){if(!t)return;const p=S.sellq[t];S.ss={t,q:null,busy:true,err:
  modal(`<div class="sb" id="ssx">${ssSkel()}</div>`);
  if(p&&p.ok&&!p.used&&Date.now()/1000-p.at<p.secs-8){S.ss.q=p;S.ss.busy=false;ssPaint();clearInterval(S.ssT);S.ssT=setInterval(ssTick,1000);return;}
  ssQuote();}
-function ssSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi what it pays now…</div>`;}
+function ssSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin" aria-hidden="true"></span> Asking Kalshi what it pays now…</div>`;}
 async function ssQuote(){const s=S.ss;if(!s||s.sending)return;s.busy=true;s.err=null;s.fail=null;ssPaint();
  const r=await api('/app/api/act',{a:'sellquote',t:s.t}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
  if(S.ss!==s)return;s.busy=false;r.at=Date.now()/1000;S.sellq[s.t]=r;
@@ -58,7 +58,7 @@ async function ssSell(b){const s=S.ss,q=s&&s.q;if(!q||s.sending||b.disabled)retu
  if(q.x||Date.now()/1000-q.at>=q.secs){ssQuote();return;}
  if(b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to sell for ${m2(q.got)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';ssPaint();}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Selling… confirming with Kalshi';
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Selling… confirming with Kalshi';
  let r;try{r=await api('/app/api/act',{a:'singlesell',t:q.t,q:q.q,anyway:!ssOk(q)});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while selling, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;if(S.sellq[q.t]===q)delete S.sellq[q.t];clearInterval(S.ssT);

@@ -20,9 +20,7 @@ body.pushed main,body.pushed .top{filter:brightness(.5)}
 @media (max-width:900px){body.pushed main,body.pushed .top{transform:translateX(-30%)}.pbody{padding:14px 16px 0}}
 .psk{display:grid;gap:12px}.psk i{display:block;background:var(--panel2);border-radius:12px}
 .fadein{animation:fadein .2s var(--ease)}@keyframes fadein{from{opacity:0}to{opacity:1}}
-.hv .big.scrub{color:var(--ink)}
 .sparkw{touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:crosshair}
-.hv .spark{height:76px}
 .spark.draw{animation:reveal .75s var(--out)}@keyframes reveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
 .sparkw .sdot.draw{animation:fadein .3s .6s both,sdot 1.8s .9s infinite}
 .sdot{z-index:1;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 28%,transparent),0 0 14px 2px color-mix(in srgb,currentColor 55%,transparent)}

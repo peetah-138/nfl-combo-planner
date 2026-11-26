@@ -114,3 +114,15 @@ E.hub_call = lambda op, timeout=0: {"value": [[], 8.0, "n"]}
 E.fetch_account(max_age=15, every_league=True)
 ok("a normal hub copy is cached as before", E.ACCT_CACHE["at"] > time.time() - 60 and E.ACCT_CACHE["value"][1] == 8.0)
 E.hub_up = lambda: False
+
+# #457: failures with neither a ticker nor a combo must not hide each other's stamp
+E.MONEY_FAIL_AT.clear()
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 9.1, "cost": 5.0})
+ok("a failure with no ticker or combo stamps", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 7.7, "cost": 4.0})
+ok("a different no-id failure is not hidden by the first", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 7.7, "cost": 4.0})
+ok("the same no-id failure repeating still does not re-stamp", E.money_seen() <= 1)

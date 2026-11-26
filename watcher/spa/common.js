@@ -87,6 +87,7 @@ function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date
 function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
  if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
  t.classList.toggle('tap',!!(onTap&&!document.querySelector('#modal.on')));t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
+ if(t.classList.contains('tap')){t.setAttribute('role','button');t.tabIndex=0;}else{t.removeAttribute('role');t.removeAttribute('tabindex');}
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
@@ -97,7 +98,7 @@ addEventListener('pointerdown',e=>{const t=$('#toast');if(t&&t.classList.contain
    edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
 function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
  sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
-function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
+function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;{const t=sh.querySelector('h3');sh.setAttribute('aria-label',t&&t.textContent.trim()||'Details');}
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
 /* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
@@ -203,9 +204,13 @@ function segInd(){document.querySelectorAll('.seg,.ant').forEach((sg,k)=>{const 
   Object.assign(ind.style,{left:to.left+'px',top:to.top+'px',width:to.width+'px',height:to.height+'px'});S.segs[key]=to;});
  const tb=document.querySelector('.tabbar');const on=tb&&tb.querySelector('button.on');if(on){let ti=tb.querySelector('.tabind');if(!ti){ti=document.createElement('i');ti.className='tabind';tb.appendChild(ti);}
   ti.style.left=(on.offsetLeft+on.offsetWidth/2-14)+'px';ti.style.width='28px';}}
-function afterPaint(){stagger();segInd();rollNums(document);wireChart();wireScrubs(document);
+function afterPaint(){stagger();segInd();rollNums(document);paintErr();wireScrubs(document);
  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
- document.querySelectorAll('[data-sig]').forEach(el=>{const k=el.dataset.key,sg=el.dataset.sig;const old=S.sigs[k];S.sigs[k]=sg;if(old!=null&&old!==sg&&!reduce){el.classList.add('rowpop');setTimeout(()=>el.classList.remove('rowpop'),1300);}});}
+ /* #140 score burst: a changed score glows its row and pops the digits. The burst is kept in S with an expiry, because Live
+    repaints on every tick and would wipe a DOM-only class half way through. Reduced motion: no animation at all. */
+ S.burst=S.burst||{};document.querySelectorAll('[data-sig]').forEach(el=>{const k=el.dataset.key,sg=el.dataset.sig;const old=S.sigs[k];S.sigs[k]=sg;const now=Date.now();
+  if(old!=null&&old!==sg&&!reduce)S.burst[k]=now+1500;
+  if((S.burst[k]||0)>now){el.classList.add('rowpop','burst');setTimeout(()=>{el.classList.remove('rowpop','burst');if((S.burst[k]||0)<=Date.now())delete S.burst[k];},Math.max(50,S.burst[k]-now));}});}
 /* Numbers roll to their new value frame by frame (~0.65 s, ease-out) with a green/red flash; chance bars slide. */
 function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;S.bars=S.bars||{};
  root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
@@ -259,7 +264,17 @@ async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
 function btnState(b,ok,label,ms){if(!b||!b.isConnected)return;hap(ok?'success':'error');b.disabled=false;b.classList.remove('st-ok','st-bad');void b.offsetWidth;b.classList.add(ok?'st-ok':'st-bad');
  b.innerHTML=(ok?'✓ ':'✕ ')+esc(label||(ok?'Done':'Didn\'t work'));b.dataset.st=ok?'ok':'bad';
  if(ms!==0){const old=b._old;clearTimeout(b._st);b._st=setTimeout(()=>{if(b.isConnected){b.classList.remove('st-ok','st-bad');delete b.dataset.st;if(old!=null)b.innerHTML=old;b._old=null;}},ms||2200);}}
-function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span> '+esc(label||b.textContent.trim());}
+/* #140: a failed button shakes and says why right under itself, in plain words, until the next try or 15 s. It replaces the
+   6-7 s toast. The reason lives in S.berr, not only in the DOM, because Build/Live repaint and would wipe it (host = a selector
+   that finds the same card or button again after a repaint). If the host is gone it falls back to the toast so the reason is never lost. */
+function btnFail(host,msg,b){S.berr={host,msg:String(msg||'That didn\'t go through.'),until:Date.now()+15000};
+ if(b&&b.isConnected){b.classList.remove('st-bad');void b.offsetWidth;b.classList.add('st-bad');setTimeout(()=>{if(b.isConnected)b.classList.remove('st-bad');},600);}
+ if(!paintErr()){toast(S.berr.msg,7000,'bad');S.berr=null;}}
+function paintErr(){document.querySelectorAll('.berr').forEach(e=>e.remove());const e=S.berr;if(!e)return false;if(Date.now()>e.until){S.berr=null;return false;}
+ let h=null;try{h=document.querySelector(e.host);}catch(x){}if(!h)return false;
+ const d=document.createElement('div');d.className='berr';d.setAttribute('role','status');d.innerHTML='<i aria-hidden="true">✕</i><span>'+esc(e.msg)+'</span>';h.insertAdjacentElement('afterend',d);
+ clearTimeout(S.berrT);S.berrT=setTimeout(()=>{if(S.berr&&Date.now()>=S.berr.until){S.berr=null;document.querySelectorAll('.berr').forEach(x=>x.remove());}},Math.max(50,e.until-Date.now()+50));return true;}
+function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}

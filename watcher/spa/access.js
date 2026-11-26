@@ -5,7 +5,7 @@ function fidRow(){const f=S.fid||{};const here=(f.keys||[]).filter(k=>k.rp===loc
   ${here.length?`<button class="btn ghost" onclick="fidRemoveAll()">Turn off</button>`:`<button class="btn acc" onclick="fidOn(this)">Turn on</button>`}</div>`;}
 const fb64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
 const fe64=a=>btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-async function fidOn(btn){hap();try{if(btn)btn.innerHTML='<span class="spin"></span>';
+async function fidOn(btn){hap();try{if(btn)btn.innerHTML='<span class="spin" aria-hidden="true"></span>';
   const o=await api('/auth/reg-begin',{});const name=/iPhone/.test(navigator.userAgent)?'iPhone':/iPad/.test(navigator.userAgent)?'iPad':/Mac/.test(navigator.userAgent)?'Mac':'This device';
   const c=await navigator.credentials.create({publicKey:{challenge:fb64(o.challenge),rp:{id:o.rp,name:'Combo Hub'},user:{id:fb64(o.user),name:'Combo Hub',displayName:'Combo Hub'},
    pubKeyCredParams:[{type:'public-key',alg:-7}],authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',userVerification:'required'},
@@ -25,7 +25,7 @@ function pushRow(){const pk=S.pk||{};const can='serviceWorker' in navigator&&'Pu
 function urlB64(s){const p='='.repeat((4-s.length%4)%4);const b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)));}
 async function pushOn(btn){try{const perm=await Notification.requestPermission();
   if(perm!=='granted'){toast('Notifications are blocked. Allow them in Settings › Notifications › Combo Hub.',6000);return;}
-  if(btn)btn.innerHTML='<span class="spin"></span>';
+  if(btn)btn.innerHTML='<span class="spin" aria-hidden="true"></span>';
   const k=await api('/app/push',{a:'key'});if(!k.ok){toast('The Mac is still updating. Try again in a few minutes.');return;}
   const reg=await navigator.serviceWorker.register('/sw.js');await navigator.serviceWorker.ready;
   const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(k.key)});

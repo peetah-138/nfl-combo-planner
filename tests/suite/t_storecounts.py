@@ -108,6 +108,9 @@ def c():
        and p(None) == (None, None) and p("row") == (None, None))
     ok("C3 a count with no unit cost: derived from the row's cost", p({"n_bought": 4, "cost": 2.0}) == (4.0, 0.5))
     ok("C4 a count and unit cost: as saved", p({"n_bought": 4, "unit_cost": 0.52, "cost": 2.0}) == (4.0, 0.52))
+    ok("C3b the fallback takes the selling fee off, like the saved unit cost does (#496)",
+       p({"n_bought": 4, "cost": 2.2, "sell_fees": 0.2}) == (4.0, 0.5) and p({"n_bought": 4, "cost": 2.2, "sell_fees": None}) == (4.0, 0.55)
+      and p({"n_bought": 4, "cost": 2.2, "sell_fees": "x"}) == (None, None))
     ok("C5 a count with nothing to price it by: unknown", p({"n_bought": 4}) == (None, None))
 section("C", c)
 

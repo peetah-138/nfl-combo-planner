@@ -42,7 +42,8 @@ function planOn(c){return !!(c.self||c.nudge);}
 function verdictShown(c){return planOn(c)?c.verdict:'hold';}
 function whyShown(c){return planOn(c)||c.verdict==='hold'?c.why:'';}
 function verdictOf(c){if(c.group==='won')return['won','WON'];if(c.group==='lost')return['lost','OUT'];if(c.group==='cashed')return['cashed','CASHED'];
- const v=verdictShown(c);if(v==='sell')return['sell','SELL'];if(v==='half')return['sell','SELL ½'];return['hold','HOLD'];}
+ const v=verdictShown(c);if(v==='sell')return['sell','SELL'];if(v==='half')return['sell','SELL ½'];
+ if(c.smart_state==='go'&&!c.self)return['sell','SET TO SELL'];if(c.smart_state==='reached'&&!c.self)return['hold','Ready to sell'];return['hold','HOLD'];}
 function nextLine(c){if(c.group!=='pending')return c.preview||'';const lv=c.legs.find(l=>l.state==='live'&&l.score);if(lv)return '● '+lv.score;
  const nt=c.legs.find(l=>!l.res&&l.state==='live'&&l.note);
  if(nt)return short(nt.name)+(nt.phase==='probably_over'?' · probably finished':' · '+nt.short.toLowerCase());
@@ -52,7 +53,7 @@ function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{c
  return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
 /* while a finger is on the chart the page holds still; the refresh that came in meanwhile paints on release */
 function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();if(S.ideaOpen)ideaSheet();}
-function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i><i style="height:76px"></i></div>
+function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i></div>
  <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
 function _renderLive(){const d=S.live;const m=$('#main');
  if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
@@ -92,7 +93,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
  if(!items.length)return (nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'')+ib;
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
-  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell after next game at<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Sell after next game<b>No offer can beat waiting</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
+  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Let-it-ride line<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Let-it-ride line<b>No offer can beat waiting</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
   if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
@@ -100,7 +101,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
   if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
 /* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
    plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
 function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
@@ -142,77 +143,26 @@ function heroChg(dl,St,roll,est){
  const pv=!St?'':roll?`<span class="cp" data-num="h:dp" data-v="${(dl/St).toFixed(4)}" data-f="chg">${fmtNum(dl/St,'chg')}</span>`:`<span class="cp">${fmtNum(dl/St,'chg')}</span>`;
  return `<span class="dch${est?' est':''}${St?'':' nop'}">${dv}${pv}</span>`;}
 const SKIND={win:'To win',spread:'Spread',total:'Total',other:'Single bet'};
+/* #413: Kalshi's own number. Its app marks a combo at its last trade (combo markets have no order book, and that last
+   trade is your own buy price, so it barely moves) and a single at the live bid, with no selling discount. So: the
+   cost of each open combo + each open single's worth (contracts x best bid). Display only; the sale estimate (cash_now)
+   is unchanged and shown small beside it. */
+function kalshiNow(pend,sOpen){return pend.reduce((a,c)=>a+(+c.cost||0),0)+sOpen.reduce((a,x)=>a+(+x.worth||0),0);}
 function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const live=pend.some(c=>c.live)||sOpen.some(x=>x.state==='live');
  const ch=1-(1-(d.riding?d.chance_one||0:0))*sOpen.reduce((a,x)=>a*(1-(x.chance||0)),1);
  const most=pend.reduce((a,c)=>a+c.pays,0)+sOpen.reduce((a,x)=>a+(x.pays||0),0);const big=Math.max(d.best||0,...sOpen.map(x=>x.pays||0));
- const cls=Math.abs(dl)<.005?'flat':dl>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
+ const K=kalshiNow(pend,sOpen),kd=K-St;   /* #413: the big number is Kalshi's own value; our sale estimate (W) sits small beside it */
+ const cls=Math.abs(kd)<.005?'flat':kd>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
- return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now if sold<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
-   <b class="big" data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(dl,St,true,est)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span>
-   ${heroChart(d)}</div>
+ return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now on Kalshi<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
+   <div class="hrow"><b class="big" data-num="h:kalshi" data-v="${K.toFixed(2)}">${money(K)}</b>
+   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b></span></div>
+   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,true,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
    <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
-/* The hero chart (#221): profit and loss over the Day (16 h) or Week, not the worth of whatever happens to be open.
-   Each point = (worth of open bets − their cost) + (cash back − cost of bets that finished in the window), less the
-   same open-bet sum at the window's start, so the window starts at $0 and a bet leaving moves the line only by what
-   it really gained or lost. Bets already open at the start count from what they were worth then (the legend says so).
-   The Mac builds it (pnl_series). A flat zero line; green above, red below (one gradient split at zero); the glowing
-   end dot; what was staked at each moment as a faint stepped band behind, on its own scale. Press and drag to scrub:
-   a line and dot follow the finger, the readout shows the time, the profit or loss and what was staked then, and
-   every point crossed ticks a haptic. The big number above stays "worth now if sold". */
-try{S.rng=localStorage.getItem('cw_rng')==='week'?'week':'day'}catch(e){S.rng='day'}
-S.chartDraw=true;
-function setRng(k){if(S.rng===k)return;S.rng=k;try{localStorage.setItem('cw_rng',k)}catch(e){}S.chartDraw=true;renderLive();}
-function pulseWeek(){const w=S.pulseWeek;if(S.pwBusy||(w&&Date.now()-w.at<120e3))return;S.pwBusy=true;
- api('/app/api/pulse?h=168').then(r=>{S.pulseWeek={at:Date.now(),v:(r&&r.pnl)||{pts:[]}};}).catch(()=>{S.pulseWeek={at:Date.now(),v:{pts:[]}};})
-  .finally(()=>{S.pwBusy=false;S.chartDraw=true;if(S.view==='live'&&S.rng==='week')renderLive();});}
-function plMoney(v){return (v>=.005?'+':v<=-.005?'−':'')+money(Math.abs(v));}
-function plCol(v){return v>=.005?'var(--yes)':v<=-.005?'var(--no)':'var(--sub)';}
-function heroChart(d){if(S.rng==='week')pulseWeek();const wk=S.rng==='week';const v=wk?(S.pulseWeek||{}).v:(d.pnl||{pts:[]});S.chart=null;
- const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.rng===k?'on':''}" onclick="setRng('${k}')">${l}</button>`).join('')}</div>`;
- if(!v)return `<div class="sparkw"><div class="hsk" style="padding:0"><i style="height:76px"></i></div></div><div class="saxis"><span>Loading the week…</span>${sw}</div>`;
- const pts=Array.isArray(v.pts)?v.pts.filter(p=>Array.isArray(p)&&isFinite(p[0])&&isFinite(p[1])):[];
- if(pts.length<2)return `<div class="sparkw"><svg class="spark" viewBox="0 0 600 76" preserveAspectRatio="none"><line class="szero" x1="0" x2="600" y1="38" y2="38" vector-effect="non-scaling-stroke"/></svg></div>
-  <div class="saxis"><span>${wk?'Not enough history for a week yet.':'Your profit line fills in as the Mac watches your bets.'}</span>${sw}</div>`;
- const W=600,H=76,t0=pts[0][0],t1=pts[pts.length-1][0],vs=pts.map(p=>p[1]),sp=Math.max(0,1-(Math.max(0,...vs)-Math.min(0,...vs)))/2,lo=Math.min(0,...vs)-sp,hi=Math.max(0,...vs)+sp,rg=hi-lo;   // at least $1 tall: cents never look like a cliff
- const X=t=>(t-t0)/Math.max(1,t1-t0)*W,Y=v=>8+(hi-v)/rg*(H-16),zy=Y(0),f=(zy/H).toFixed(4);
- const smax=Math.max(.01,...pts.map(p=>+p[2]||0)),SY=s=>H-Math.max(0,+s||0)/smax*H*.7;
- const path=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
- let band=`M0 ${H} V${SY(pts[0][2]).toFixed(1)}`;pts.slice(1).forEach(p=>{band+=` H${X(p[0]).toFixed(1)} V${SY(p[2]).toFixed(1)}`;});band+=` H${W} V${H}Z`;
- const last=vs[vs.length-1],col=plCol(last),lx=X(t1),ly=Y(last);
- const lab=t=>{const x=new Date(t*1000);return wk?x.toLocaleDateString([], {weekday:'short'})+' '+x.toLocaleTimeString([], {hour:'numeric'}):x.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});};
- const draw=S.chartDraw?'draw':'';S.chartDraw=false;S.chart={pts,W,H,X,Y,lab};
- const end=v.end||t1,nowish=Date.now()/1000-end<600;
- const notes=[(+pts[0][2]||0)>0?'Bets already open at the start count from what they were worth then.':'',
-  v.rough&&v.rough>t0?`Rough before ${esc(lab(v.rough))}: finished bets may show late.`:''].filter(Boolean);
- return `<div class="sparkw" data-chart="1"><span class="sread"></span>
-  <svg class="spark ${draw}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs>
-   <linearGradient id="plg" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="0" y2="${H}"><stop offset="0" stop-color="var(--yes)"/><stop offset="${f}" stop-color="var(--yes)"/><stop offset="${f}" stop-color="var(--no)"/><stop offset="1" stop-color="var(--no)"/></linearGradient>
-   <linearGradient id="plf" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="0" y2="${H}"><stop offset="0" stop-color="var(--yes)" stop-opacity=".32"/><stop offset="${f}" stop-color="var(--yes)" stop-opacity=".03"/><stop offset="${f}" stop-color="var(--no)" stop-opacity=".03"/><stop offset="1" stop-color="var(--no)" stop-opacity=".32"/></linearGradient></defs>
-  <path class="sstake" d="${band}"/>
-  <path class="sfill" d="${path} L${lx.toFixed(1)} ${zy.toFixed(1)} L0 ${zy.toFixed(1)}Z" fill="url(#plf)"/>
-  <line class="szero" x1="0" x2="${W}" y1="${zy.toFixed(1)}" y2="${zy.toFixed(1)}" vector-effect="non-scaling-stroke"/>
-  <path class="spl" d="${path}" fill="none" stroke="url(#plg)" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
-  </svg><i class="szl" style="top:${zy.toFixed(1)}px">$0</i><i class="sdot ${draw}" style="left:calc(${(lx/W*100).toFixed(2)}% - 5px);top:${(ly-5).toFixed(1)}px;background:${col};color:${col}"></i><i class="scrl"></i><i class="scrd" style="background:${col}"></i></div>
-  <div class="saxis"><span>${esc(lab(t0))}</span>${sw}<span>${nowish?'Now':esc(lab(end))}</span></div>
-  <div class="slg"><span><i class="lpl"></i>Profit/loss since ${esc(lab(t0))}</span><span><i class="lst"></i>Staked</span></div>
-  ${notes.length?`<div class="slgn">${notes.join(' ')}</div>`:''}`;}
-function wireChart(){const w=document.querySelector('.sparkw[data-chart]'),c=S.chart;if(!w||!c||w._wired)return;w._wired=1;let idx=-1;
- const at=x=>{const r=w.getBoundingClientRect(),f=Math.max(0,Math.min(1,(x-r.left)/Math.max(1,r.width))),t=c.pts[0][0]+f*(c.pts[c.pts.length-1][0]-c.pts[0][0]);
-  let i=0,b=Infinity;c.pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;};
- const show=i=>{if(i===idx)return;idx=i;const p=c.pts[i],fx=c.X(p[0])/c.W*100,col=plCol(p[1]);
-  w.querySelector('.scrl').style.left=fx+'%';const dot=w.querySelector('.scrd');dot.style.left=fx+'%';dot.style.top=c.Y(p[1])+'px';dot.style.background=col;
-  const rd=w.querySelector('.sread');rd.innerHTML=`<b style="color:${col}">${plMoney(p[1])}</b> · ${money(+p[2]||0)} staked · ${esc(c.lab(p[0]))}`;
-  const ww=w.clientWidth||1,hw=(rd.offsetWidth||0)/2,px=Math.max(hw,Math.min(ww-hw,fx/100*ww));rd.style.left=px+'px';
-  hap('selection');};
- const end=()=>{if(!S.scrub)return;S.scrub=false;w.classList.remove('on');idx=-1;if(S.liveDirty){S.liveDirty=false;renderLive();}};
- w.addEventListener('pointerdown',e=>{if(e.button)return;S.scrub=true;w.classList.add('on');idx=-1;show(at(e.clientX));try{w.setPointerCapture(e.pointerId)}catch(x){}});
- w.addEventListener('pointermove',e=>{if(S.scrub)show(at(e.clientX));});
- ['pointerup','pointercancel','lostpointercapture'].forEach(k=>w.addEventListener(k,end));}
 function singlesLive(d){const all=d.singles||[];
  const ss=all.filter(x=>S.filter==='all'||S.filter==='done'?true:S.filter==='live'?x.state==='live':x.sport===S.filter);
  if(!all.length)return '';
@@ -222,8 +172,8 @@ function singlesLive(d){const all=d.singles||[];
  ${foldE()}`;}
 const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: money() rounds $12.70 up to "$13" (#371) */
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
- const at=x.sell_at!=null?x.sell_at:x.threshold,over=x.sell_at!=null?x.sell_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
- const hint=x.self||off?'':at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
+ const isC=x.smart_txt!==undefined,at=x.sell_at!=null?x.sell_at:isC?x.smart_at:x.threshold,over=x.sell_at!=null?x.sell_over:isC?x.smart_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
+ const hint=x.self||off?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" data-t="${esc(x.t)}" onclick="event.stopPropagation();selfSell(this.dataset.t,${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
@@ -248,10 +198,10 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
    <div class="who"><b>${ICON[l.sport]||''} ${esc(betPlain(l))}</b> <span>${l.matchup?betWhere(l)+' · ':l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
    ${whyShown(c)&&c.group==='pending'?`<div class="why">${esc(whyShown(c))}</div>`:''}
-   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sell at ${cents(c.threshold)}+`:c.thr_over?' · no offer can beat waiting':''}`:'Ask Kalshi what it will pay for this combo right now.'}</span>
+   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · let-it-ride line ${cents(c.threshold)}+`:c.thr_over?' · let-it-ride line: no offer can beat waiting':''}`:'Ask Kalshi what it will pay for this combo right now.'}${c.smart_txt&&!c.self&&S.live.auto_sell!==false?`<br>${esc(c.smart_txt)}`:''}${c.lock_at&&!c.self&&S.live.auto_sell!==false?` Protects a profit once the offer has reached ${cents(c.lock_at)}.`:''}</span>
     <button class="btn ghost" data-t="${esc(c.t)}" onclick="event.stopPropagation();openCombo(this.dataset.t)">Details</button>
     ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
-    <button class="btn" ${S.busy[c.t]?'disabled':''} data-t="${esc(c.t)}" onclick="event.stopPropagation();ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
+    <button class="btn" ${S.busy[c.t]?'disabled':''} data-t="${esc(c.t)}" onclick="event.stopPropagation();ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
     ${c.offer_real?`<button class="btn yes" data-t="${esc(c.t)}" onclick="event.stopPropagation();sell(this.dataset.t)">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
 function tog(t){S.open[t]=!S.open[t];renderLive();}
 function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);if(!ev.length)return '';
@@ -272,8 +222,8 @@ async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await a
 function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
  modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" data-t="${esc(t)}" onclick="doSell(this.dataset.t)">Cash out</button></div>`);}
-async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};$('#sellgo').innerHTML='<span class="spin"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();
- if(r.ok&&/^✅/.test(r.msg||'')){S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;setTimeout(()=>soldSheet({label:c.label,back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}   // the Sold moment
+async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};$('#sellgo').innerHTML='<span class="spin" aria-hidden="true"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();
+ if(r.ok&&/^✅/.test(r.msg||'')){S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;setTimeout(()=>soldSheet({label:momName(c),back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}   // the Sold moment
  else{hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);}load('live',true);}
 async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="var t=this.dataset.t;closeModal();api('/app/api/act',{a:'hedgego',t}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}

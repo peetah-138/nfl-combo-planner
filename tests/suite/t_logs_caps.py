@@ -83,6 +83,16 @@ ok("over-long lines are cut to at most 2000 characters", all(len(x["text"]) <= 2
 c, b, a = ask("?limit=5")
 ok("a small answer is not marked truncated", a["truncated"] is False)
 
+# #380: a line over 20k characters is replaced before scrubbing, and the worst case stays fast
+write_log("watcher.log", "".join(f"{T(i)} " + ("abc " * 120) + "\n" for i in range(2500)) + f"{T(2600)} " + "x" * 400_000 + "\n")
+t0 = time.time()
+c, b, a = ask("?limit=500")
+dt = time.time() - t0
+ok("giant line: replaced by [line too long]", c == 200 and a["lines"][-1]["text"] == "[line too long]")
+ok("giant line: the answer is still dated and the lines above are kept", a["lines"][-1]["t"] is not None and len(a["lines"]) > 100)
+ok("worst-case answer (about 1.5 MB log, one giant line) is under 1 second", dt < 1.0)
+write_log("watcher.log", "".join(f"{T(i)} line number {i}\n" for i in range(5000)))
+
 # since
 write_log("watcher.log", "".join(f"{T(i)} line number {i}\n" for i in range(5000)))
 cut = now - 5000 + 4900

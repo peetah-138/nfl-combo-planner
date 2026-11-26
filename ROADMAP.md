@@ -239,6 +239,10 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 - **Money stamp (#271):** no stamp from incomplete account reads, failed cash-outs stamp at most once a minute, forced fresh reads
   have a 3 s floor (display only).
 - **No-live-fair Buy idea logged (#255):** the reason is now in the log; no guard changed.
+- **Release 2026.11.26.141:** ask Kalshi for a real offer when an estimate reaches the bar (#227); momentum shadow recorder and the
+  real smart-sell bar on combo cards (#513); fee-aware profit and Combo Buy legs re-checks (#432/#498); live hero estimate stale
+  without a timestamp (#112); UI polish batch 2 (#516); read-only combo trail tool; wider log and read-only data access (#524);
+  hub dots-only id guard, no-id fail stamps, Pause read log (#458/#457/#434).
 
 ---
 

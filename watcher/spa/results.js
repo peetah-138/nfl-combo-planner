@@ -158,7 +158,13 @@ function sbScored(sc){if(!sc||!sc.n)return '';const by=sc.by||{},nm={panel:['pan
  const parts=Object.keys(nm).filter(k=>by[k]&&by[k].n).map(k=>`${(+by[k].n).toLocaleString()} ${nm[k][by[k].n===1?0:1]}`);
  return `<div class="sbsc" style="font-size:13px;margin:6px 0 8px;padding-top:8px;border-top:1px solid var(--line);line-height:1.45"><b>Scored on paper: ${(+sc.n).toLocaleString()} bet${sc.n===1?'':'s'}, ${(+sc.settled||0).toLocaleString()} settled</b>${parts.length?`<div class="m" style="font-size:12px">${parts.join(' · ')}. Only bets that would have made today's panel teach Smart Buy. The rest are for the paper book (the "Bigger stakes" test below).</div>`:''}</div>`;}
 function sbTog(){S.sbOpen=!S.sbOpen;renderResults();}
-function cbTog(){S.cbOpen=!S.cbOpen;S.cbJust=true;renderResults();S.cbJust=false;const b=document.querySelector('.cbh');if(b)b.focus({preventScroll:true});}   // (#404) the redraw replaces the button: give a keyboard user their focus back
+function cbTog(){const bd=document.querySelector('.cbbody');
+ if(S.cbOpen&&bd&&bd.animate&&!S.cbClosing&&!matchMedia('(prefers-reduced-motion: reduce)').matches){   // (#438) slide closed instead of snapping, so what is below does not jump up
+  S.cbClosing=true;const h=bd.offsetHeight,hd=document.querySelector('.cbh');if(hd)hd.setAttribute('aria-expanded','false');bd.style.overflow='hidden';
+  const fin=()=>{S.cbClosing=false;S.cbOpen=false;S.cbJust=true;renderResults();S.cbJust=false;const b=document.querySelector('.cbh');if(b)b.focus({preventScroll:true});};
+  const a=bd.animate([{height:h+'px',opacity:1},{height:'0px',opacity:0}],{duration:220,easing:'cubic-bezier(.22,.8,.24,1)',fill:'forwards'});a.onfinish=fin;a.oncancel=fin;return;}
+ if(S.cbClosing)return;
+ S.cbOpen=!S.cbOpen;S.cbJust=true;renderResults();S.cbJust=false;const b=document.querySelector('.cbh');if(b)b.focus({preventScroll:true});}   // (#404) the redraw replaces the button: give a keyboard user their focus back   // (#404) the redraw replaces the button: give a keyboard user their focus back
 function cbCard(c){if(!c||typeof c!=='object')return '';const o=!!S.cbOpen;const L=Array.isArray(c.leagues)?c.leagues:[],ot=c.other;const n=L.reduce((s,x)=>s+(+x.n||0),0);
  const pc=v=>v==null?'–':Math.round(v*100)+'%';const dl=v=>v==null?'–':(v<0?'−':'+')+'$'+Math.abs(v).toFixed(2);
  const head=`<button type="button" class="cbh${S.cbJust?' cbjust':''}" aria-expanded="${o}" onclick="cbTog()"><span class="chev" aria-hidden="true">▾</span><b style="font-size:15px">⏱️ In-play comebacks</b><span class="m" style="margin-left:auto;font-size:12.5px">${n?`${n} scored`:'collecting'}</span></button>`;
@@ -257,7 +263,7 @@ function potConfirm(q){if(!q||!q.ok)return;const c=x=>'$'+(+x).toFixed(2);S.potq
 async function potGo(b){const s=S.potq;if(!s||s.sending||b.disabled)return;const c=x=>'$'+(+x).toFixed(2),q=s.q;
  if(b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to move ${c(q.amount)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';b.classList.remove('arm');b.textContent=`Move ${c(q.amount)}`;}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Moving… confirming with Kalshi';
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Moving… confirming with Kalshi';
  let r;try{r=await api('/app/api/act',{a:'pot_move',from:q.from,to:q.to,amount:q.amount.toFixed(2),cid:s.cid});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac during this move, so it may or may not have gone through. Check Settings › Money › Kalshi balance by pot before trying again.'};}
  s.sending=false;const here=S.potq===s&&!!$('#potc')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');

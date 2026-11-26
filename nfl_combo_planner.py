@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.25.140"
+VERSION = "2026.11.26.141"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -30,6 +30,7 @@ CFG = {
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
     "prop_shadow": True,  # record player-prop prices a pass already read (paper only, write-only); false = off
     "slate_shadow": True, # record slate-concentration aggregates (write-only, nothing reads them); false = off
+    "mom_shadow": True,   # record the momentum-exit shadow (what a drop-based rule WOULD do; write-only, never sells); false = off
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "broad_shadow": True,   # watch-all recorder (bp_* tables): price paths + signals for every market already fetched; write-only; false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
@@ -70,9 +71,11 @@ CFG = {
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
     "smart_buy_gate": True,   # Smart Buy (issue #137 stage 2): skips panel bets and Buy ideas unlikely to be profitable
+    "real_offer_ask": True,   # auto cash-out may ask Kalshi for a REAL offer when its estimate reaches a sell bar (#227); off = it only acts on real offers already in
     "overlap_guard": True,    # pick lists leave out (grey) a game you already have overlap_n open bets on, or overlap_pct%
     "overlap_n": 2,           # of the sizing base at risk on; "Add anyway" on Pete's own tap shows it again (display only)
     "overlap_pct": 8,
+    "mkt_hold": True,         # the books' learned weight must also beat Kalshi's mid on the newest 30% by date (#345/#497); off = the in-sample bar alone
     "learned_guards": True,   # the selling guards (score age, break) learn from the app's own results; needs knobs_live
     "knobs_live": True,       # #228 PR3: smart sell tunes its own exit numbers per league (Pete's standing opt-in)
                               # (skip-only). A new key: the old preview switch's stored 'off' was a default, not a choice
@@ -273,7 +276,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask")
 
 
 def next_league():
@@ -546,8 +549,22 @@ def trading_paused():
         return False
     try:
         return bool(f())
-    except Exception:
+    except Exception as err:
+        _pause_fail_note(err)
         return True
+
+
+_PAUSE_FAIL_AT = [0.0]
+
+
+def _pause_fail_note(err):
+    """Logging only (#434): a Pause read that fails counts as paused, so a stuck read quietly stops every automatic
+    sale and buy. Say so in the console, at most once a minute."""
+    now = time.time()
+    if now - _PAUSE_FAIL_AT[0] >= 60:
+        _PAUSE_FAIL_AT[0] = now
+        print(f"Pause could not be read ({type(err).__name__}); treating it as paused, so nothing sells or buys "
+              "automatically until it reads again.", flush=True)
 
 
 def money(x):
@@ -2278,6 +2295,7 @@ MONEY_FP = {"v": None, "pb": None}     # this copy's last account fingerprints (
                                        # "v" = combos + positions + balance (complete reads only), "pb" = positions + balance
 MONEY_FAIL_AT = {}                     # (ticker, result) -> when a failed (nothing sold) cash-out last stamped (#271)
 MONEY_FAIL_GAP = 60                    # seconds: a failed cash-out repeated every pass stamps at most this often
+ACCT_FRESH = {"v": False}          # (#450) set for one fetch_account(max_age=0): the hub must not hold that read back
 HUB_FRESH_FLOOR = 3                    # seconds: the hub's forced fresh account read needs a cached copy older than this
 ACCT_HUB_STALE = {"v": False}          # the hub just answered with a copy it held back from refreshing (#271)
 
@@ -2390,7 +2408,11 @@ def fetch_account(max_age=60, every_league=False):
         value = ACCT_CACHE["value"]
     else:
         ACCT_HUB_STALE["v"] = False
-        value = _fetch_account()
+        ACCT_FRESH["v"] = max_age <= 0               # (#450) max_age=0 is a guard check: the hub skips its 3s floor
+        try:
+            value = _fetch_account()
+        finally:
+            ACCT_FRESH["v"] = False
         if value[0] is not None:
             # a copy the hub held back from refreshing (#271) is used but never kept: the next call asks again
             ACCT_CACHE.update(at=0 if ACCT_HUB_STALE["v"] else time.time(), value=value)
@@ -2403,7 +2425,7 @@ def fetch_account(max_age=60, every_league=False):
 
 def _fetch_account():
     if hub_up():
-        got = hub_call("account", timeout=30)
+        got = hub_call("account", timeout=30, **({"fresh": True} if ACCT_FRESH["v"] else {}))
         if got and isinstance(got.get("value"), list):
             ACCT_HUB_STALE["v"] = bool(got.get("held_back"))
             return tuple(got["value"])
@@ -4714,7 +4736,8 @@ def _fail_stamp_due(rec):
     force a fresh Kalshi account read each time. Sold, hedged and every unclear ("check") result always stamp."""
     if rec.get("result") not in ("failed", "hedge failed"):
         return True
-    t, now = (str(rec.get("ticker") or rec.get("combo") or ""), rec.get("result")), time.time()
+    who = str(rec.get("ticker") or rec.get("combo") or "") or ("?", rec.get("offer"), rec.get("cost"))   # #457: no id = own key
+    t, now = (who, rec.get("result")), time.time()
     if now - MONEY_FAIL_AT.get(t, 0) < MONEY_FAIL_GAP:
         return False
     if len(MONEY_FAIL_AT) > 2000:
@@ -4751,6 +4774,17 @@ def log_decision(rec):
         return
     rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                by=device_label(), ride=ride_level()[0])
+    try:                                          # the old "Combo N" stays as a secondary id (#520); `combo` is now the picks
+        _h = (MINE.get("hold") or {}).get(rec.get("ticker")) or (MINE.get("snap") or {}).get(rec.get("ticker")) or {}
+        if _h.get("num") and "combo_id" not in rec:
+            rec["combo_id"] = _h["num"]
+    except Exception:
+        pass
+    try:                                          # name the combo by its picks, not just "Combo N" (log reading, display only)
+        if "picks" not in rec and rec.get("ticker") in (MINE.get("snap") or {}):
+            rec["picks"] = [str(nm)[:80] for nm, _ in list(MINE["snap"][rec["ticker"]]["legs"].values())[:12]]
+    except Exception:
+        pass
     try:
         with SELL_LOG_LOCK:
             with open(SELL_LOG, "a", encoding="utf-8") as f:
@@ -5165,7 +5199,7 @@ def break_ok(ticker, side, sc, now=None, what="loss", watch=None):
         mv = knob("brk_move", k)
         if brk_fires(ep["reads"], ep["reads"][0][2], mv, ep["news"]) is None:
             return False
-        bk = book_depth(ticker, max_age=0)
+        bk = book_depth_shared(ticker)
         if not bk or not bk.get("bid") or not bk.get("ask") or bk.get("spread") is None or bk["spread"] > LIVE_SPREAD:
             return False
         mid = (bk["bid"] + bk["ask"]) / 2
@@ -5196,7 +5230,7 @@ def fresh_live_score(ticker, side, now=None, loose=False):
     if sc.get("state") != "in":
         return None, "game not under way"
     if age > SL_FEED_AGE:                             # a learned wider age: a break may hide inside it, so ask the book
-        bk = book_depth(ticker, max_age=0)            # (fresh and two-sided, as break_ok does), else stale (review P3)
+        bk = book_depth_shared(ticker)   # (fresh and two-sided, as break_ok does), else stale (review P3)
         if not bk or not bk.get("bid") or not bk.get("ask") or bk.get("spread") is None or bk["spread"] > LIVE_SPREAD:
             return None, "score feed stale"
     return sc, ""
@@ -5741,7 +5775,111 @@ def take_profit_reason(t, h, cut_ok=False):
         prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"], checkpoint=bool(why_note))
     d = exit_policy({"kind": "combo", "value": est, "real": real, "peak": peak[t], "pays": h["pays"],
                      "cost": h["cost"], "q": h["p"], "live": live}, prm)
+    try:                                              # momentum shadow: write-only, reads nothing back, never raises
+        o_net = combo_sale_net_info({"offer": real, "contracts": h["pays"]})[0] if real else 0.0
+        mom_record("combo", t, live, h["p"], h["pays"], h["cost"], est, o_net, bool(real),
+                   (time.time() - o["at"]) if real and o.get("at") else None, d, o_gross=real, q_min=prm.get("q_min", EXIT_Q_MIN))
+    except Exception:
+        pass
     return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
+
+
+def auto_sell_blockers(t):
+    """Display only (never read by a seller): the reasons automatic selling will not sell combo `t` right now, as
+    [(short, plain sentence)], most basic first; [] = nothing in the way. The same gates auto_sell_now applies: the
+    Auto cash-out switch (off by default), this device being able to trade, Pause, the bet set to "I'll sell it",
+    Kalshi refusing sales, today's automatic-sale limit, and a cash-out with an unknown outcome."""
+    out = []
+    for short, words, test in (
+            ("auto cash-out off", "Auto cash-out is off in Settings", lambda: not CFG.get("auto_sell")),
+            ("can't trade here", "this device can't place orders", lambda: not can_trade()),
+            ("paused", "Pause is on", trading_paused),
+            ("you sell it", "it is set to I'll sell it", lambda: hands_off(t)),
+            ("Kalshi refusing sales", "Kalshi is refusing sales right now", lambda: bool(hold_refusal("sell")[0])),
+            ("daily limit used", "today's automatic-sale limit is used up", auto_cap_reached),
+            ("last sale unclear", "the last Kalshi cash-out for it came back unclear", lambda: rfq_unsure(t, "sell")),
+            ("hedge needs a look", "a hedge on it needs your check", lambda: hedge_unsure(t))):
+        try:
+            if test():
+                out.append((short, words))
+        except Exception:
+            pass
+    return out
+
+
+def smart_trigger(t, h):
+    """Display only (never read by a seller): the line smart sell REALLY sells a combo at, and why it is not selling
+    now, in plain English. Same inputs as take_profit_reason, but it touches no peak and writes nothing.
+    Returns {"smart_at": the offer it waits for (whole combo, or None), "smart_over": True when that is above the
+    most the combo can sell for, "smart_txt": one sentence (empty when nothing sells for you: Auto cash-out off or the
+    bet set to "I'll sell it"), "smart_chip": the short form for the card's chip, "smart_state": "go" (offer is at the
+    bar and nothing is in the way: sells on the next check) / "reached" (at the bar but something stops the sale) / "",
+    "lock_at": the offer a run-up must reach before Lock in arms (or None once armed / off)}. The old Let it ride
+    number on Live is the "let-it-ride line" (wait_threshold), a different thing."""
+    out = {"smart_at": None, "smart_over": False, "smart_txt": "", "smart_chip": "", "smart_state": "", "lock_at": None}
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return out
+    q, P, cost = h["p"], h["pays"], h["cost"]
+    blk = auto_sell_blockers(t)
+    if any(s in ("auto cash-out off", "you sell it") for s, _ in blk):
+        return out                                    # nothing sells it by itself: say nothing about a bar that never fires
+    other = [b for b in blk if b[0] != "can't trade here"] or blk
+    stop = f" It won't sell on its own right now: {other[0][1]}." if other else ""
+    stop_chip = f"won't sell now ({other[0][0]})" if other else ""
+    tks = [tk for (_, tk), _ in h.get("need") or []]
+    knob = knob_exit_prm(tks)
+    rl = ride_lam()
+    tp = float(CFG.get("take_profit") or 0) / 100
+    lock_on = bool(CFG.get("lock_trail", True))
+    if CFG.get("lock_trail", True):
+        arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+        if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005 and not any(s == "paused" for s, _ in blk):
+            out["lock_at"] = round(arm, 2)
+    others = [w for w, on in ((f"your take-profit line (${max(tp * P, TP_MIN_GAIN * cost):.2f})", tp > 0),
+                              ("Lock in after a run-up", lock_on)) if on]
+    only = (" Only " + " and ".join(others) + " can still sell this combo.") if others else " Nothing else sells this combo for you, apart from the plan's Cash out once a pick has won."
+    if not CFG.get("smart_sell", True) or rl is None:
+        out["smart_txt"] = "Smart sell is off." + only + stop
+        out["smart_chip"] = stop_chip or ("off · " + " & ".join(w.split(" (")[0].replace("your ", "") for w in others) + " only" if others else "off")
+        return out
+    pr = smart_params(tks)
+    lam, _ = swing_lambda(h)
+    lam *= pr["lam"] * rl
+    floor2 = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
+    q_min = knob.get("q_min", EXIT_Q_MIN)
+    at, over = sell_line_shown(floor2, sell_top(P))
+    out["smart_at"], out["smart_over"] = at, over
+    real = fresh_offer(t)
+    ro = real["offer"] / max(real.get("frac", 1.0), 0.01) if real and real.get("rfq") != "estimate" else 0.0
+    if over:
+        out["smart_txt"] = "Smart sell's bar is above anything Kalshi can pay for this combo." + \
+            (" Only " + " and ".join(others) + " can sell it." if others else " It won't sell this combo.") + stop
+        out["smart_chip"] = stop_chip or "bar is above any offer"
+    elif q < q_min:
+        out["smart_txt"] = f"Smart sell won't sell while the win chance is {q:.0%}, under {q_min:.0%}." + \
+            (f" It also needs an offer of ${at:.2f}+." if at else "") + stop
+        out["smart_chip"] = stop_chip or f"waiting (needs {q_min:.0%}+ win chance)"
+    elif not ro and not CFG.get("real_offer_ask", True):
+        out["smart_txt"] = "Smart sell won't ask Kalshi for a real offer (switched off in Settings); it only sells on a real offer that is already in." + stop
+        out["smart_chip"] = stop_chip or "won't ask Kalshi (switched off)"
+    elif not ro and not real_ask_gate(t, exempt=bool((MINE.get("sl_ready") or {}).get(t)), readonly=True)[0]:
+        rg = real_ask_gate(t, exempt=bool((MINE.get("sl_ready") or {}).get(t)), readonly=True)
+        out["smart_txt"] = "Smart sell is holding off asking Kalshi for a real offer for now (" + rg[1] + "); it only sells on a real offer." + stop
+        out["smart_chip"] = stop_chip or "holding off asking Kalshi"
+    elif not ro:
+        out["smart_txt"] = (f"Smart sell will ask Kalshi for a real offer once the estimate reaches ${at:.2f}; it only sells on a real offer."
+                            if at else "Smart sell will ask Kalshi for a real offer once the estimate clears its bar; it only sells on a real offer.") + stop
+        out["smart_chip"] = stop_chip or (f"will ask Kalshi once the estimate reaches ${at:.2f}" if at else "will ask Kalshi for a real offer")
+    elif at and ro < at:
+        out["smart_txt"] = f"Smart sell sells once the offer reaches ${at:.2f}; it is ${ro:.2f} now." + stop
+        out["smart_chip"] = stop_chip or f"sells at ${at:.2f}+"
+    else:
+        out["smart_state"] = "reached" if other else "go"
+        out["smart_txt"] = (f"The offer (${ro:.2f}) is at smart sell's bar" + (f" (${at:.2f})" if at else "") + \
+                            (f", but it won't sell on its own right now: {other[0][1]}." if other
+                             else "; it is set up to sell once a real offer meets the bar."))
+        out["smart_chip"] = f"bar reached, won't sell now ({other[0][0]})" if other else "set up to sell at the bar"
+    return out
 
 
 def cash_nudge(t, h, tp=None):
@@ -5764,9 +5902,90 @@ def cash_nudge(t, h, tp=None):
     whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
     if whole < (h.get("cost") or 0) or whole < 0.97 * (floor or 0):
         return None
+    if combo_sale_net(o) < (h.get("cost") or 0) * max(o.get("frac", 1.0), 0.01) - 0.005:   # #432: "at least what was paid" is after the selling fee
+        return None
     if not any(lv for _, lv, _ in h.get("legs_left") or []):
         return None
     return {"why": why, "offer": round(whole, 2)}
+
+
+REAL_ASK_GAP = 60         # #227: auto cash-out asks Kalshi for a real offer on one combo at most once a minute...
+REAL_ASK_HOUR_COMBO = 20  # ...at most this many times an hour for one combo...
+REAL_ASK_HOUR_ALL = 60    # ...and this many an hour for all combos together (a request never goes out on a hunch)
+REAL_ASK_BACKOFF_MAX = 600  # a combo whose last real offers came in under the bar waits 60, 120, 240, 480, then 600 s between asks
+
+
+def real_ask_gate(t, now=None, exempt=False, readonly=False):
+    """#227: may auto cash-out send Kalshi a real-offer request for combo `t` now (its estimate reached a sell bar)?
+    Returns (ok, why). The switch `real_offer_ask` (Settings, default on) turns every such request off; the throttle is
+    one request per combo per REAL_ASK_GAP seconds, and REAL_ASK_HOUR_COMBO / REAL_ASK_HOUR_ALL an hour. Nothing is
+    recorded here: `real_ask_note` records a request that really went out (failed ones count too, so Kalshi is never
+    spammed). Unreadable state refuses (fail closed). A refusal only delays a sale, it never causes one.
+    A combo whose last real offer(s) came in under the bar backs off (the wait doubles each time, up to
+    REAL_ASK_BACKOFF_MAX) so a stuck combo cannot burn the budget. `exempt` (lock-in and a guarded stop-loss) only ever
+    waits the plain REAL_ASK_GAP: no back-off, no per-combo hourly cap, no all-combos cap, so a stop-loss never waits
+    minutes. `readonly` (the card) reads the history and changes nothing."""
+    now = time.time() if now is None else now
+    try:
+        if not CFG.get("real_offer_ask", True):
+            return False, "asking Kalshi for a real offer is switched off in Settings"
+        st = (MINE.get("real_asks") or {"by": {}, "all": [], "low": {}}) if readonly else MINE.setdefault("real_asks", {"by": {}, "all": []})
+        allx = [x for x in st["all"] if now - x < 3600]
+        mine = [x for x in st["by"].get(t, []) if now - x < 3600]
+        low = st.get("low") or {}
+        if not readonly:
+            st["all"] = allx
+            st["by"][t] = mine
+            low = st.setdefault("low", {})
+            if not mine:
+                low.pop(t, None)                      # nothing asked in the last hour: start fresh
+        n_low = int(low.get(t, 0)) if mine else 0
+        wait = REAL_ASK_GAP if exempt else min(REAL_ASK_GAP * 2 ** min(n_low, 10), REAL_ASK_BACKOFF_MAX)
+        if mine and now - max(mine) < wait:
+            if wait > REAL_ASK_GAP:
+                return False, f"Kalshi's last offer was under the bar, so waiting {wait}s between asks (asked {int(now - max(mine))}s ago)"
+            return False, f"asked Kalshi {int(now - max(mine))}s ago (one request per combo per {REAL_ASK_GAP}s)"
+        if exempt:
+            return True, ""
+        if len(mine) >= REAL_ASK_HOUR_COMBO:
+            return False, f"already asked Kalshi {len(mine)} times this hour for this combo"
+        if len(allx) >= REAL_ASK_HOUR_ALL:
+            return False, f"already asked Kalshi {len(allx)} times this hour in all"
+        return True, ""
+    except Exception:
+        return False, "request history unreadable"
+
+
+def real_ask_note(t, now=None):
+    now = time.time() if now is None else now
+    st = MINE.setdefault("real_asks", {"by": {}, "all": []})
+    st["by"].setdefault(t, []).append(now)
+    st["all"].append(now)
+
+
+def real_ask_result(t, cleared, exempt=False):
+    """Record how the request just made came out: an offer that cleared the bar resets the combo's back-off, one that
+    did not (or no offer at all) doubles the wait before the next ask. An exempt ask (lock-in, stop-loss) never
+    lengthens the back-off: it has none."""
+    st = MINE.setdefault("real_asks", {"by": {}, "all": []})
+    low = st.setdefault("low", {})
+    if cleared:
+        low[t] = 0
+    elif not exempt:
+        low[t] = min(int(low.get(t, 0)) + 1, 10)
+
+
+def real_ask_prune(live):
+    """Forget the ask history, back-off and 'told' notes of combos that are no longer held (sold or settled)."""
+    st = MINE.get("real_asks")
+    if st:
+        for k in ("by", "low"):
+            for t in [x for x in (st.get(k) or {}) if x not in live]:
+                st[k].pop(t, None)
+    told = MINE.get("real_ask_told")
+    if told:
+        for t in [x for x in told if x not in live]:
+            told.pop(t, None)
 
 
 def auto_sell_now(plan):
@@ -5792,6 +6011,8 @@ def auto_sell_now(plan):
         for t, h in list(MINE["hold"].items()):
             if mode == "allow" or sl_allowed([tk for (_, tk), _ in h.get("need") or []]):
                 sl_ready[t] = stop_loss_check(t, h)[0]
+        MINE["sl_ready"] = dict(sl_ready)                 # a read-only copy for the card (#227)
+        real_ask_prune(set(MINE["hold"]))                 # #227: drop ask history of combos no longer held
         cut_ready = {}                                    # the learned loss cut: the same guards, counted apart
         if CFG.get("smart_sell", True) and ride_lam() is not None:
             for t, h in list(MINE["hold"].items()):
@@ -5822,6 +6043,8 @@ def auto_sell_now(plan):
             if hedge_unsure(t) or rfq_unsure(t, "sell"):
                 continue                                  # a hedge or cash-out with an unknown outcome: hands off until checked
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
+            if why != "plan" and o is not None and not isinstance(o.get("offer"), (int, float)):
+                o = {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}   # an error dict ("no offers") has no offer: only an estimate, never a sale; a REAL ask may follow (throttled)
             if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
             if why == "plan":
@@ -5850,8 +6073,30 @@ def auto_sell_now(plan):
             if why != "plan" and (o.get("rfq") in (None, "estimate") or time.time() - o.get("at", 0) > offer_life()):
                 o = dict(o, rfq="estimate")
             if f < 1 or o.get("frac", 1.0) < 1 or o.get("rfq") == "estimate":   # the Pi only estimates
+                from_est = o.get("rfq") == "estimate"          # #227: the estimate reached the bar; only a REAL offer may sell
+                if why != "cut loss":                          # a loss cut keeps its own clock and guards (#396)
+                    ask_exempt = why == "lock in" or bool(sl_ready.get(t))
+                    gate_ok, gate_why = real_ask_gate(t, exempt=ask_exempt)
+                    if not gate_ok:
+                        told = MINE.setdefault("real_ask_told", {})
+                        if time.time() - told.get(t, 0) >= 300:        # one note per combo per 5 minutes
+                            told[t] = time.time()
+                            log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "skipped",
+                                          "note": f"REAL OFFER not asked: {gate_why}; the estimate (${o.get('offer') or 0:.2f}) never sells on its own",
+                                          "est": round(o.get("offer") or 0, 2), "bar": round(thr, 2)})
+                        continue
+                    real_ask_note(t)
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
+                if why != "cut loss":
+                    got = o.get("offer") and o["offer"] / max(o.get("frac", 1.0), 0.01)
+                    clears = bool(got) and got >= slip * thr
+                    real_ask_result(t, clears, exempt=ask_exempt)
+                    log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "asked",
+                                  "note": f"REAL OFFER asked ({'estimate reached the bar' if from_est else 'partial'}): got "
+                                          f"{('$%.2f' % got) if got else 'no offer'}, bar ${slip * thr:.2f}, "
+                                          f"{'will try to sell' if clears else 'not sold'}",
+                                  "offer": round(got or 0, 2), "bar": round(slip * thr, 2), "estimate_driven": from_est})
                 if not o.get("offer") or o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
                     if clock:
                         log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
@@ -6469,6 +6714,13 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False, more=None, cap=Non
                      "live": x.get("state") == "live"}, prm)
     if more and d["reason"] != {"A": "smart", "B": "cut loss"}[more]:
         return None, d["floor"]
+    if track and not more and cap is None:            # momentum shadow (the live pass only): write-only, never raises
+        try:
+            mom_record("single", t, x.get("state") == "live", q, n, cost, net, net, True,
+                       (time.time() - SINGLES["at"]) if SINGLES.get("at") else None, d, n=n, sport=x.get("sport") or "",
+                       q_min=prm.get("q_min", EXIT_Q_MIN))
+        except Exception:
+            pass
     return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
 
 
@@ -6552,6 +6804,275 @@ def exit_cap_shadow(x, bid, now=None):
         except Exception:
             pass
         return False
+
+
+# ---- momentum shadow (design: momentum-exit-design.md section 5). Records, for every smart-sell evaluation of a held
+# combo or single, how far the win chance has fallen from its recent high and what two HYPOTHETICAL drop-based rules
+# (protect, cut) would say next to what smart sell says today. Nothing here sells, buys or changes a decision: it
+# is called with values the exit rule already worked out, writes to its own tables (mom_shadow, mom_after, mom_peak),
+# is throttled (a changed verdict, else every MOM["every"] s per bet), capped, pruned, ON for recording by default
+# (settings key "mom_shadow": false = off) and swallows every error. Pause is not consulted because nothing trades;
+# the paused flag is only recorded. No table is ever read back into a decision (the persisted peak is reloaded into
+# this module's own dict only, never into MINE["peak"]).
+MOM = {"on": True, "every": 120, "keep_days": 60, "cap": 100000, "win": 600, "sigma": 0.05, "z": 2.0, "m": 0.05,
+       "h": 0.10, "cut_floor": 0.30, "told_every": 600, "prune": 0.0, "db": None, "stale": 6 * 3600, "pend_cap": 400,
+       "q": {}, "peak": {}, "peak_saved": {}, "seen": {}, "told": {}, "ep": {}, "pend": [], "labeled": set(),
+       "last": {}, "pos": {}, "ops": [], "ops_cap": 5000}
+MOM_AFTER = (30, 60, 300, 900, 3600)          # seconds after a flagged row at which the offer is looked at again
+_MOM_LOCK = threading.Lock()                  # guards MOM's own dicts only (never held across a database call)
+_MOM_DRAIN = threading.Lock()                 # one writer at a time, in order
+_MOM_WORKER = {"t": None, "wake": threading.Event()}
+
+
+def _mom_proc():
+    """Which process is recording: the web app and the watcher both run this engine, so each row says who wrote it."""
+    return "web" if "--webapp" in sys.argv else "main"
+
+
+def _mom_put(op):
+    """Queue one database write for the background writer. Never touches the database, never blocks, never raises:
+    the sell path only appends to a list (oldest dropped past the cap), so a slow or locked history file can't stall it."""
+    with _MOM_LOCK:
+        MOM["ops"].append(op)
+        if len(MOM["ops"]) > MOM["ops_cap"]:
+            del MOM["ops"][:len(MOM["ops"]) - MOM["ops_cap"]]
+        w = _MOM_WORKER["t"]
+        if w is None or not w.is_alive():
+            w = _MOM_WORKER["t"] = threading.Thread(target=_mom_writer, name="mom-shadow-writer", daemon=True)
+            w.start()
+    _MOM_WORKER["wake"].set()
+
+
+def _mom_writer():
+    while True:
+        _MOM_WORKER["wake"].wait(10)
+        _MOM_WORKER["wake"].clear()
+        mom_flush()
+
+
+def _mom_tables():
+    db = STORE.get("db")
+    if MOM["db"] is db:
+        return
+    store_x("create table if not exists mom_shadow(ts real, ticker text, kind text, sport text, live int, q real, "
+            "q_peak_w real, dq real, sigma real, z real, o_real real, o_est real, real_flag int, quote_age real, "
+            "o_net real, cost real, pays real, n real, o_peak real, today_sell int, today_reason text, today_line real, "
+            "why_not text, m_protect int, m_cut int, paused int, proc text, sid text)")
+    store_x("create index if not exists mom_shadow_ts on mom_shadow(ts)")
+    store_x("create table if not exists mom_after(sid text, ts real, ticker text, o_net0 real, o30 real, o60 real, "
+            "o300 real, o900 real, o3600 real, o_min real, outcome text, payout real, proc text)")
+    store_x("create index if not exists mom_after_sid on mom_after(sid)")
+    store_x("create index if not exists mom_after_t on mom_after(ticker)")
+    store_x("create index if not exists mom_after_ts on mom_after(ts)")
+    store_x("create table if not exists mom_peak(ticker text primary key, o_peak real, ts real)")
+    MOM["db"] = db
+
+
+def mom_flush():
+    """Run every queued write now (the background writer calls this; tests call it to see the rows). Never raises."""
+    try:
+        with _MOM_DRAIN:
+            if not STORE.get("db"):
+                return
+            _mom_tables()
+            with _MOM_LOCK:
+                ops, MOM["ops"] = MOM["ops"], []
+            for op in ops:
+                try:
+                    if op[0] == "sql":
+                        store_x(op[1], op[2])
+                    elif op[0] == "peakload":                  # after a restart: this bet's peak back, if it is recent
+                        r = store_rows("select o_peak, ts from mom_peak where ticker=?", (op[1],))
+                        if r and time.time() - float(r[0]["ts"] or 0) <= MOM["stale"]:
+                            with _MOM_LOCK:
+                                MOM["peak"][op[1]] = max(MOM["peak"].get(op[1], 0.0), float(r[0]["o_peak"] or 0.0))
+                    elif op[0] == "prune":
+                        _mom_prune(op[1])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _mom_prune(now):
+    keep = now - MOM["keep_days"] * 86400
+    store_x("delete from mom_shadow where ts < ?", (keep,))
+    store_x("delete from mom_after where ts < ?", (keep,))
+    store_x("delete from mom_peak where ts < ?", (now - 7 * 86400,))
+    for tb in ("mom_shadow", "mom_after"):                    # row cap: the oldest go first (ts is indexed)
+        n_rows = (store_rows(f"select count(*) n from {tb}") or [{"n": 0}])[0]["n"]
+        if n_rows > MOM["cap"]:
+            store_x(f"delete from {tb} where ts <= (select ts from {tb} order by ts limit 1 offset ?)", (n_rows - MOM["cap"],))
+
+
+def mom_why_not(kind, live, q, o_net, real_flag, d, peak, pays, cost, o_gross=None, o_est=0.0, q_min=None):
+    """Why smart sell is not selling right now: (short text for the table, plain sentence for the log). ("", "") when it
+    is. The offer is judged the way exit_policy judges it: a combo on max(estimate / allowance, the real gross offer),
+    a single on its net bid value; the win-chance bar is the tuned q_min when self-tuning has one."""
+    if d.get("sell"):
+        return "", ""
+    floor = d.get("floor") or 0.0
+    qm = EXIT_Q_MIN if q_min is None else q_min
+    arm = max(TRAIL_ARM * pays, TRAIL_ARM_COST * cost)
+    if not live:
+        return "no live data", "no live data"
+    if floor <= 0:
+        return "smart sell off", "smart sell is off"
+    if q < qm:
+        return f"q<{qm:.0%}", f"win chance {q:.0%} is under the {qm:.0%} bar"
+    if kind == "combo":
+        val = max((o_est or 0.0) / EXIT_EST_SMART, (o_gross if o_gross is not None else o_net) or 0.0)
+    else:
+        val = o_net
+    if val < floor:
+        if not real_flag:
+            return "no real quote", f"no real quote and the estimate ${val:.2f} is under the bar ${floor:.2f}"
+        return "below floor", f"offer ${val:.2f} under the bar ${floor:.2f}"
+    if not real_flag:
+        return "no real quote", "no real quote"
+    return "peak<arm", f"lock-in not armed (peak ${peak:.2f} < ${arm:.2f})"
+
+
+def mom_record(kind, t, live, q, pays, cost, o_est, o_net, real_flag, quote_age, d, n=None, sport="", o_gross=None,
+               q_min=None):
+    """Write-only shadow of one exit evaluation (see the block comment above). `o_net` is the real offer after fees
+    (0 when there is none), `o_gross` the same before fees (a combo's real offer as the rule sees it), `o_est` the
+    steady estimate, `d` exit_policy's answer. All it does on the calling (selling) thread is arithmetic on its own
+    dicts and a list append: the database writes happen on a background thread. Returns True when a row was queued.
+    Never raises, never sells, never changes a decision."""
+    try:
+        if not CFG.get("mom_shadow", MOM["on"]) or not STORE.get("db") or not pays or q is None:
+            return False
+        now = time.time()
+        sig, z_need = MOM["sigma"], MOM["z"]
+        proc = _mom_proc()
+        with _MOM_LOCK:
+            pos = round(float(cost or 0), 2)
+            if t in MOM["pos"] and (MOM["pos"][t] != pos or now - MOM["last"].get(t, now) > MOM["stale"]):
+                for k in ("q", "peak", "peak_saved", "seen", "told", "ep"):    # a new position under an old ticker
+                    MOM[k].pop(t, None)
+                MOM["labeled"].discard(t)
+                MOM["ops"].append(("sql", "delete from mom_peak where ticker=?", (t,)))
+            MOM["pos"][t] = pos
+            MOM["last"][t] = now
+            if len(MOM["last"]) > 5000:
+                for k in [k for k, v in MOM["last"].items() if now - v > 3600]:
+                    for tb in ("last", "pos", "peak", "peak_saved", "q", "seen", "told", "ep"):
+                        MOM[tb].pop(k, None)
+            first = t not in MOM["peak"]
+            w = [x for x in MOM["q"].get(t, []) if now - x[0] <= MOM["win"]]
+            w.append((now, q))
+            MOM["q"][t] = w[-300:]
+            q_peak = max(x[1] for x in w)
+            dq = q - q_peak
+            z = max(-dq, 0.0) / sig
+            peak = MOM["peak"][t] = max(MOM["peak"].get(t, 0.0), o_net or 0.0, o_est or 0.0)
+            MOM["pend"] = [p for p in MOM["pend"] if now - p["t0"] <= MOM_AFTER[-1] + 1800]   # expired: never kept forever
+            pend = [p for p in MOM["pend"] if p["t"] == t]
+        if first:
+            _mom_put(("peakload", t))
+        _mom_after_fill(t, o_net, now, pend)
+        disc = kalshi_discount(live) if kind == "combo" else 1.0
+        hold_val = q * pays * disc
+        have = bool(real_flag) and (o_net or 0) > 0
+        protect = int(have and z >= z_need and o_net >= cost - MOM["m"] * cost and hold_val <= o_net * (1 + MOM["h"]))
+        cut = int(have and z >= z_need + 0.5 and hold_val < o_net and o_net >= MOM["cut_floor"] * cost)
+        sold = int(bool(d.get("sell")))
+        short, long_ = mom_why_not(kind, live, q, o_net or 0.0, have, d, peak, pays, cost, o_gross, o_est or 0.0, q_min)
+        key = (sold, protect, cut)
+        with _MOM_LOCK:
+            last = MOM["seen"].get(t)
+            write = not last or last[1] != key or now - last[0] >= MOM["every"]
+            if write:
+                MOM["seen"][t] = (now, key)
+            was_ep = MOM["ep"].get(t, False)
+            MOM["ep"][t] = bool(protect or cut)
+            say_no = (not sold and live and now - MOM["told"].get(t, 0) >= MOM["told_every"])
+            if say_no:
+                MOM["told"][t] = now
+        if (protect or cut) and not was_ep:                    # once per episode, not every pass
+            rule = "protect" if protect else "cut"
+            console_note(f"MOMENTUM would sell {t} rule={rule} z={z:.1f} q {q_peak:.0%}->{q:.0%} offer net ${o_net:.2f} "
+                         f"vs cost ${cost:.2f} (today: {d.get('reason') or 'hold'}{', ' + short if short else ''})")
+        if say_no:                                             # every 10 min per position
+            console_note(f"NO SELL {t}: blocked by {long_}")
+        if not write:
+            return False
+        paused = 0
+        try:
+            paused = int(bool(trading_paused()))
+        except Exception:
+            pass
+        sid = f"{proc}:{int(now * 1000)}:{t}"                  # the dedupe key: one process, one moment, one bet
+        _mom_put(("sql", "insert into mom_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (round(now, 1), t, kind, sport or "", int(bool(live)), round(q, 4), round(q_peak, 4), round(dq, 4),
+                   sig, round(z, 2), round(o_net or 0.0, 4), round(o_est or 0.0, 4), int(have),
+                   None if quote_age is None else round(quote_age, 1), round(o_net or 0.0, 4), round(cost, 4),
+                   round(pays, 4), n, round(peak, 4), sold, d.get("reason") or "hold",
+                   round(d.get("threshold") or 0.0, 4), short, protect, cut, paused, proc, sid)))
+        if sold or protect or cut:
+            _mom_put(("sql", "insert into mom_after(sid,ts,ticker,o_net0,proc) values(?,?,?,?,?)",
+                      (sid, round(now, 1), t, round(o_net or 0.0, 4), proc)))
+            with _MOM_LOCK:
+                MOM["pend"].append({"sid": sid, "t": t, "t0": now, "got": set(), "min": None})
+                if len(MOM["pend"]) > MOM["pend_cap"]:         # full: the oldest make room, new ones are never refused
+                    del MOM["pend"][:len(MOM["pend"]) - MOM["pend_cap"]]
+        with _MOM_LOCK:
+            save = peak > MOM["peak_saved"].get(t, 0.0) * 1.01 + 0.005 or (peak and t not in MOM["peak_saved"])
+            if save:
+                MOM["peak_saved"][t] = peak
+        if save:
+            _mom_put(("sql", "insert or replace into mom_peak values(?,?,?)", (t, round(peak, 4), round(now, 1))))
+        if now - MOM["prune"] > 6 * 3600:
+            MOM["prune"] = now
+            _mom_put(("prune", now))                           # done on the writer thread, never on the sell path
+        return True
+    except Exception as err:
+        try:
+            console_note(f"momentum shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return False
+
+
+def _mom_after_fill(t, o_net, now, pend):
+    """Fill the later offers (+30 s .. +60 min) of this bet's flagged rows from the offer seen now (queued writes)."""
+    for p in pend:
+        age = now - p["t0"]
+        if o_net and o_net > 0:
+            sets, args = [], []
+            for secs, col in zip(MOM_AFTER, ("o30", "o60", "o300", "o900", "o3600")):
+                if secs not in p["got"] and age >= secs:
+                    p["got"].add(secs)
+                    sets.append(f"{col}=?")
+                    args.append(round(o_net, 4))
+            p["min"] = o_net if p["min"] is None else min(p["min"], o_net)
+            if sets:
+                _mom_put(("sql", f"update mom_after set {', '.join(sets)}, o_min=? where sid=?", (*args, round(p["min"], 4), p["sid"])))
+        if len(p["got"]) == len(MOM_AFTER) or age > MOM_AFTER[-1] + 1800:
+            with _MOM_LOCK:
+                if p in MOM["pend"]:
+                    MOM["pend"].remove(p)
+
+
+def mom_settle(t, outcome, payout):
+    """Label a bet's flagged rows with how it ended ('won', 'lost' or 'cashed') once per position, and forget its
+    peak and open follow-ups (the next position under this ticker starts clean). Write-only; never raises."""
+    try:
+        if t in MOM["labeled"] or not CFG.get("mom_shadow", MOM["on"]) or not STORE.get("db"):
+            return
+        with _MOM_LOCK:
+            MOM["labeled"].add(t)
+            MOM["pend"] = [p for p in MOM["pend"] if p["t"] != t]
+            for k in ("q", "peak", "peak_saved", "seen", "told", "ep", "pos", "last"):
+                MOM[k].pop(t, None)
+        _mom_put(("sql", "update mom_after set outcome=?, payout=? where ticker=? and outcome is null", (outcome, round(float(payout or 0), 4), t)))
+        _mom_put(("sql", "delete from mom_peak where ticker=?", (t,)))
+    except Exception as err:
+        try:
+            console_note(f"momentum shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
 
 
 SINGLE_RESTING = {"at": 0, "t": set()}
@@ -7306,8 +7827,8 @@ def live_offer_est(h, v):
                 return None                              # an open leg with no live price: fall back
             tk = lg.get("ticker") or ""
             at = (MARKET_INFO.get(tk) or {}).get("at")
-            if at is not None and now - at > LIVE_EST_AGE:
-                return None                              # the price is older than the build: not "fresh", fall back
+            if at is None or now - at > LIVE_EST_AGE:
+                return None                              # older than the build, or no timestamp at all: not "fresh" (#112)
             parts = tk.split("-")
             if len(parts) >= 3:                          # two open picks in one game move together: not independent
                 if parts[1] in events:
@@ -7337,6 +7858,8 @@ def live_view(mine, views, plan, chance_one, balance):
         t = v["t"]
         h = MINE["hold"].get(t)
         if not h:
+            if v.get("group") in ("won", "lost", "cashed"):     # momentum shadow: label how a flagged bet ended
+                mom_settle(t, v["group"], v.get("pays") if v["group"] == "won" else v.get("back") if v["group"] == "cashed" else 0)
             continue
         o = MINE["cash"].get(t) or {}
         real = fresh_offer(t) if o.get("rfq") != "estimate" else None
@@ -7367,6 +7890,10 @@ def live_view(mine, views, plan, chance_one, balance):
                                                             sell_top(h["pays"]))
         except Exception:
             v["threshold"], v["thr_over"] = None, False
+        try:                                       # the REAL smart-sell line and why it isn't selling (display only)
+            v.update(smart_trigger(t, h))
+        except Exception:
+            v["smart_at"], v["smart_over"], v["smart_txt"], v["smart_chip"], v["smart_state"], v["lock_at"] = None, False, "", "", "", None
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
@@ -9872,6 +10399,8 @@ def autosell_pass():
     screen uses the Live page's full simulation; the others use each pick's current price."""
     if not AUTOSELL or not can_trade() or MINE.get("busy") or not (CFG.get("tp_auto") or CFG.get("tp_follow", True)):
         return []
+    if trading_paused():                   # (#421) Pause stops every automatic sale; an unreadable Pause counts as paused
+        return []
     acct, _, _ = fetch_account(every_league=True)
     resting = resting_sells()
     done = []
@@ -9896,7 +10425,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "learned_guards",
+                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards", "mkt_hold",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
                   "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
@@ -10595,7 +11124,14 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
             return out
         ref = math.prod(c for c in (h.get("ch_of") or {}).values() if c is not None) if h.get("ch_of") else None
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
-        profit = offer >= (h.get("cost") or 0) * frac - 1e-9
+        net_f = offer                                    # no net passed (a manual tap): the offer, as before
+        if net is not None:                              # #432: "a profit" is judged after the selling fee (net), never on the gross offer
+            try:
+                net_f = float(net)
+            except (TypeError, ValueError):
+                net_f = float("nan")
+        net_bad = net is not None and not math.isfinite(net_f)   # a NaN / unreadable net is never "a profit" (fail closed)
+        profit = (not net_bad) and min(offer, net_f) >= (h.get("cost") or 0) * frac - 1e-9
         floor_ok = floor is None or offer >= floor       # only a floor a caller passed on purpose binds here
         cost_fr = (h.get("cost") or 0) * fr
         why0 = "under the floor"
@@ -10700,13 +11236,22 @@ def flex_fb_events(scope, since, lo_share, hi_share):
     """Comparable retries newer than `since` (a retry whose share of the first offer is in [lo, hi)), each with what
     waiting did: (offer, later) where later = what the position then sold for (a refused retry) or what holding paid
     (an accepted retry). Corrupt rows (None, text, NaN, zero) are skipped. All in this share's dollars: a combo
-    cash-out carries no separate fee, so the offer is the net cash."""
+    cash-out carries no separate fee, so the offer is the net cash. ONE entry per sale (#499): a sale's several retries
+    share one outcome, so they are one piece of evidence, not one each (10 retries of 2 sales used to reach the 20-case
+    bar); the entry is the sale's first comparable retry, stamped with the sale's LAST retry time (any retry,
+    in the band or not) so `since` skips all of them next time."""
     rows = store_rows(
-        "select s.ts, s.offer, s.first_offer, s.accept, k.offer sale_offer, k.held, k.outcome, g.league "
+        "select s.ts, s.ticker, k.ts sale_ts, s.offer, s.first_offer, s.accept, k.offer sale_offer, k.held, k.outcome, g.league "
         "from flex_shadow s join sell_log k on k.ticker = s.ticker and k.result = 'sold' and k.ts >= s.ts "
         "and k.ts < s.ts + ? and k.outcome in ('won', 'lost') left join ledger g on g.ticker = s.ticker "
         "where s.try > 0 and s.ts > ? order by s.ts", (FLEX_FB_WINDOW, since))
-    out = []
+    out, by_sale, last_ts = [], {}, {}
+    for r in rows:                                                 # every retry of a sale, in band or not (#499)
+        try:
+            k = (r.get("ticker"), r.get("sale_ts"))
+            last_ts[k] = max(last_ts.get(k, 0.0), float(r["ts"]))
+        except (TypeError, ValueError, KeyError):
+            continue
     for r in rows:
         try:
             off, first = float(r["offer"]), float(r["first_offer"])
@@ -10719,7 +11264,11 @@ def flex_fb_events(scope, since, lo_share, hi_share):
             later = float(r["sale_offer"] if not r["accept"] else r["held"])
             if not math.isfinite(later):
                 continue
-            out.append((float(r["ts"]), off, later))
+            sale = (r.get("ticker"), r.get("sale_ts"))
+            if sale in by_sale:                                    # another retry of a sale already counted
+                continue
+            by_sale[sale] = len(out)
+            out.append((last_ts.get(sale, float(r["ts"])), off, later))
         except (TypeError, ValueError, KeyError):
             continue
     return out
@@ -10774,7 +11323,7 @@ def flex_fb_refresh(now=None):
         flex_shadow_table()
         _ledger_table()
         vals = {"all": flex_fb_step("all", now)}
-        for r in store_rows("select g.league l, count(*) n from flex_shadow s join ledger g on g.ticker = s.ticker "
+        for r in store_rows("select g.league l, count(distinct s.ticker) n from flex_shadow s join ledger g on g.ticker = s.ticker "
                             "where s.try > 0 group by g.league"):
             if r.get("l") and (r.get("n") or 0) >= FLEX_FB_MIN_N:
                 vals[r["l"]] = flex_fb_step(r["l"], now)
@@ -11351,6 +11900,16 @@ def mine_page(live=False):
     cards, hits_any = [], 0
     views = []                                  # the same numbers as data, for Combo Hub's own screens
     infos = [[leg_info(l) for l in a["legs"]] for a in mine]
+    _starts = []
+    for a in mine:
+        _up = [x for x in (leg_start(l, side_of) for l in a["legs"]) if x]
+        _starts.append(min(_up) if _up else None)
+    try:                                           # what Pete reads (#520): the picks, not "Combo N"; the number stays as `num`
+        cnames = combo_names([[(nm, ticker_sport(l["ticker"]) or "") for l, (nm, *_r) in zip(a["legs"], inf)]
+                              for a, inf in zip(mine, infos)], _starts)
+    except Exception as err:
+        print("combo names:", type(err).__name__, err)
+        cnames = [f"Combo {i}" for i in range(1, len(mine) + 1)]
     for a in mine:
         a["_hits"] = 0                          # the account list is cached, so start fresh each time
     from collections import Counter
@@ -11410,7 +11969,7 @@ def mine_page(live=False):
         st = "cashed" if a["status"] == "cashed" else \
             "won" if a["status"] == "won" or all(r == "yes" for *_, r in inf) else \
             "lost" if a["status"] == "lost" or any(r == "no" for *_, r in inf) else "pending"
-        snap[a["ticker"]] = {"label": f"Combo {i}", "pays": a["pays"], "status": st,
+        snap[a["ticker"]] = {"label": cnames[i - 1], "num": f"Combo {i}", "pays": a["pays"], "status": st,
                              "legs": {l["ticker"]: (nm, r) for l, (nm, _, _, r) in zip(a["legs"], inf)}}
         lost = any(r == "no" for *_, r in inf)
         done = all(r == "yes" for *_, r in inf)
@@ -11442,7 +12001,7 @@ def mine_page(live=False):
                     t0 = o0["ticker"] if o0 else None
                 if not r and t0 and pregame.get(t0):
                     pre_of[l["ticker"]] = pregame[t0]
-            MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
+            MINE["hold"][a["ticker"]] = {"label": cnames[i - 1], "num": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
                                          "won_some": any(r == "yes" for *_, r in inf) or progressed,
                                          "progressed": progressed and not any(r == "yes" for *_, r in inf),
@@ -11597,7 +12156,7 @@ def mine_page(live=False):
         games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
                                     for l, (_, _, _, r) in legs_sorted if not r}))
         kind = ("playing" if any_live and not gone_live else "quiet") if group == "pending" else group
-        views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
+        views.append({"t": a["ticker"], "i": i, "label": cnames[i - 1], "num": f"Combo {i}", "group": group, "kind": kind,
                       "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
                       "full": a.get("full_pays") or 0, "when": when, "live": any_live and not gone_live, "sort": sort_t,
                       "preview": preview, "legs": vlegs, "week": a.get("week"),
@@ -11606,7 +12165,7 @@ def mine_page(live=False):
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "
                      f"data-p='{p:.5f}' data-i='{i}'><summary>"
                      f"<span class='ci'>{SPORTS.get(sp, {}).get('icon', '🎯')}</span>"
-                     f"<span class='cg'><b>Combo {i}</b> <span class='dots'>{dots}</span>"
+                     f"<span class='cg'><b>{e(cnames[i - 1])}</b> <span class='dots'>{dots}</span>"
                      f"<span class='cl'>{context}</span></span>"
                      f"<span class='cn'>{n1}{n2}</span><span class='chev'></span></summary>"
                      f"<div class='cexp'><div class='chips'>{chip}"
@@ -12416,7 +12975,10 @@ def order_legacy_body(o):
     """The legacy request for an intent (only used while an account doesn't have V2 yet), or None if it can't be
     said the old way."""
     if o["legacy"] is not None:
-        return dict(o["legacy"], client_order_id=o["coid"])
+        b = dict(o["legacy"], client_order_id=o["coid"])
+        if o["reduce_only"]:                  # (#452) the forced reduce_only (a legacy sell) rides the fallback too
+            b["reduce_only"] = True
+        return b
     cents = o["yes"] * 100
     if cents != cents.to_integral_value() or o["count"] != o["count"].to_integral_value():
         return None
@@ -13593,17 +14155,21 @@ COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No ret
 ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted combo quote
 
 
-def buy_legs_refusal(i, o, shown):
+def buy_legs_refusal(i, o, shown, sent_empty=False):
     """(#203, rule 7) The page's Buy names the legs it shows. The accept goes out only if those are exactly the legs the
     stored offer was priced for AND the combo now on that card. Anything else (a combo that changed without its offer being
     dropped) is a refusal with the reason, never a guess. A page that names no legs (an older page, or an idea Buy that
-    carries none) is still held to offer = card; it is refused only on a real mismatch. Returns None when it matches."""
+    carries none) is still held to offer = card; it is refused only on a real mismatch. A legs list that WAS sent but is
+    empty (`sent_empty`, #498: the page named legs and named none) is refused: it is not the same as "no legs sent".
+    Returns None when it matches."""
     cur = (CTX.get("combos") or [])
     cur = cur[i - 1] if isinstance(i, int) and 1 <= i <= len(cur) else None
     offered = sorted(map(str, o.get("legs") or []))
     now = sorted(str(l.get("ticker")) for l in (cur or {}).get("legs") or [])
     sent = isinstance(shown, (list, tuple)) and bool(shown)   # a page that names no legs is still held to offer = card
-    if not offered or not now:
+    if sent_empty:
+        why = "the page sent an empty legs list"
+    elif not offered or not now:
         why = "no legs on the offer or the card to compare"
     elif sent and sorted(map(str, shown)) != offered:
         why = "the page's legs differ from the offer's legs"
@@ -13615,19 +14181,20 @@ def buy_legs_refusal(i, o, shown):
     return why
 
 
-def accept_offer(i, skip_cap=False, expect_legs=None):
+def accept_offer(i, skip_cap=False, expect_legs=None, legs_sent_empty=False):
     """Step 4: accept. 'no' is correct: it hits the seller's NO bid, which buys you YES. skip_cap: the daily
     panel, whose own budget was checked when you approved it. Only a definite refusal before Kalshi took the accept
     (a 4xx, the key, Pause) is a plain error. Once the accept has gone out, anything unclear (a timeout, a 5xx, a
     429 or unreadable status, no confirmation within ACCEPT_WAIT) returns {"error", "check": True}: the combo is
     marked in the order ledger and never re-bought or re-quoted until the block ends or Pete clears it (rule 8).
     expect_legs (#203): the web app's Buy passes the legs the page shows (a list; [] when it sent none).
-    Not None = the offer must match the current combo, and the page's legs too when it sent them, or nothing is sent. The panel/killer paths pass None."""
+    Not None = the offer must match the current combo, and the page's legs too when it sent them, or nothing is sent. The panel/killer paths pass None.
+    legs_sent_empty (#498): the page sent a legs list and it was empty: refused like a mismatch (nothing sent)."""
     import time
     o = CTX["offers"].get(i)
     if not o:
         return {"error": "That offer expired. Tap New price for a fresh one."}
-    if expect_legs is not None and buy_legs_refusal(i, o, expect_legs):
+    if expect_legs is not None and buy_legs_refusal(i, o, expect_legs, sent_empty=legs_sent_empty):
         return {"error": "That price was for a different combo, or this page is out of date. Reload the page, get a fresh price, then buy.",
                 "legs_mismatch": True}
     held, words = hold_refusal("buy")                # nothing is sent while Kalshi's restriction is being waited out
@@ -19183,6 +19750,49 @@ def team_short(code, name):
     return next((n for n in MULTI_NICK if name.endswith(n)), name.split()[-1])
 
 
+def short_leg(nm, sport=""):
+    """One pick, short, for a combo's name (#520): 'Denver Nuggets' -> 'Nuggets' for pro teams, a spread or line kept
+    ('Chiefs +2'), anything else (a player stat, a college team) as written but never longer than 24 characters."""
+    nm = str(nm or "").strip()
+    m = re.match(r"^(.*?)(\s+[+-]\d+(?:\.\d+)?)?$", nm)
+    base, tail = (m.group(1), m.group(2) or "") if m else (nm, "")
+    try:
+        if sport in PRO_SHORT and base in set(sport_teams(sport).values()):
+            base = team_short(sport, base)
+    except Exception:
+        pass
+    out = (base + tail).strip()
+    return out if len(out) <= 24 else out[:23].rstrip() + "…"
+
+
+def combo_names(legs_per_combo, starts=None):
+    """A name for each combo from its picks: 'Nuggets + Chiefs +2' (#520). `legs_per_combo` is, per combo, a list of
+    (pick name, sport); at most 3 picks are named, a longer combo says '+N more'. Two combos that would read the same get
+    their first kickoff added ('Nov 23'), and if that is still the same a '(2)', so a name is unique among the combos
+    shown. DISPLAY ONLY: the combo's market ticker stays its id, nothing may key off this text."""
+    names = []
+    for legs in legs_per_combo:
+        parts = []
+        for nm, sp in legs:
+            q = short_leg(nm, sp)
+            if q and q not in parts:
+                parts.append(q)
+        name = " + ".join(parts[:3]) + (f" +{len(parts) - 3} more" if len(parts) > 3 else "")
+        names.append(name or "Combo")
+    starts = starts or [None] * len(names)
+    seen = {}
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+    used = {}
+    for i, n in enumerate(names):
+        if seen[n] > 1:
+            d = starts[i]
+            n2 = f"{n} ({d:%b} {d.day})" if d else n
+            used[n2] = used.get(n2, 0) + 1
+            names[i] = n2 if used[n2] == 1 else f"{n2} ({used[n2]})"
+    return names
+
+
 def stamp_games(code, games):
     """Give every side of every game a plain-English matchup ('Flyers vs Bruins', the pick named first), so each
     panel bet and each leg of a combo says which game it is on. Computed from the sides already in hand: no
@@ -19710,6 +20320,15 @@ def _mkt_settled(lg=None):
     return list(best.values())
 
 
+def mkt_hold_on():
+    """Settings switch `mkt_hold` (default ON): the recency check on a learned book weight. Off = the in-sample bar
+    alone, as before #470. Read like the other shared switches; unreadable = on (the stricter rule)."""
+    try:
+        return shared_flag("mkt_hold")
+    except Exception:
+        return True
+
+
 def mkt_learn():
     """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
     markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
@@ -19748,6 +20367,15 @@ def mkt_learn():
         h_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in
                       zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if w else 0.0
         held = h_n >= MKT["hold_min"] and h_gain > 0
+        if not mkt_hold_on():                                            # Settings switch off: the in-sample bar alone (#497)
+            held = True
+        elif earned and not held:
+            lg_, kind_, phase_ = (k.split("|") + ["", "", ""])[:3]
+            _log_once(f"mkt_veto|{k}|{w}|{h_n}|{round(h_gain, 3)}",
+                      f"books weight held back: {league_label(lg_)} {kind_} {phase_}: the in-sample bar said {w}, "
+                      + (f"but the newest 30% is only {h_n} markets (it needs {MKT['hold_min']})" if h_n < MKT["hold_min"] else
+                       f"but on the newest {h_n} of {len(rs)} markets by game date it gained {h_gain:+.4f}, not above 0")
+                      + ", so Kalshi's mid alone is used")
         out[k] = {"w": w if earned and held else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
                   "ll_mid": round(sum(base) / len(base), 4), "hold_n": h_n, "hold_gain": round(h_gain, 4),
                   "vetoed": bool(earned and not held)}
@@ -23040,7 +23668,9 @@ def _unit_cost(total, n):
 
 def ledger_price_paid(row):
     """(contracts bought, all-in cost per contract) from a ledger row, or (None, None) when the row predates the
-    count (NULL), is a settlement-only row, or holds anything unusable. Never raises. Bookkeeping for display
+    count (NULL), is a settlement-only row, or holds anything unusable. Never raises. With no saved unit cost the price
+    is derived like the saved one: the row's `cost` holds every fee, the selling fee included, so `sell_fees` comes
+    off first (#496). Bookkeeping for display
     (the Results 'could have been sold higher' line): nothing here decides a buy, a sell or a size."""
     try:
         n = row.get("n_bought")
@@ -23048,7 +23678,7 @@ def ledger_price_paid(row):
         if not n or n <= 0.005:
             return None, None
         u = row.get("unit_cost")
-        u = float(u) if u is not None else _unit_cost(row.get("cost"), n)
+        u = float(u) if u is not None else _unit_cost(float(row.get("cost") or 0) - float(row.get("sell_fees") or 0), n)
         return (round(n, 2), u) if u and u > 0 else (None, None)
     except (TypeError, ValueError, AttributeError):
         return None, None
@@ -24750,6 +25380,21 @@ def _knob_league(key, d, now=None):
         "sl_drop": (sl["drop"], _knob_from(lg_, key, (d.get(key) or {}).get("sl_n"))),
         "sb_dial": (sb["level"], _knob_from(sb["key"], key, sb.get("own"))),
     }
+
+
+def sl_auto_view():
+    """Settings › Selling at a loss (#313, display only): is self-tuning on, and in which leagues has its own record turned
+    'Sells at a loss by itself' on. {'live': bool, 'on': [league names]}; None if anything is unreadable. Changes nothing."""
+    try:
+        if not knob_switch_on():
+            return {"live": False, "on": []}
+        kv = knob_view() or {}
+        row = next((k for k in kv.get("knobs") or [] if k.get("name") == "sl_auto"), None)
+        vals = (row or {}).get("values") or {}
+        return {"live": True, "on": [l["name"] for l in kv.get("leagues") or []
+                                      if l.get("key") != "all" and (vals.get(l["key"]) or {}).get("v") == 1]}
+    except Exception:
+        return None
 
 
 def knob_view(now=None):
@@ -27133,9 +27778,13 @@ def book_info(payload):
             "thin": spread > 0.04 or no[-1][1] < 100}
 
 
+BOOK_SHARE_SECS = 3.0   # book_depth_shared: how long guards in one pass may share one fetch (#500)
+
+
 def book_depth(ticker, max_age=60):
     """Kalshi's order book for one pick: {'bid', 'ask', 'spread', 'ask_size' (contracts at the best
-    ask), 'thin'}. Thin = wide spread or little size, so the price isn't reliable. None if unknown."""
+    ask), 'thin'}. Thin = wide spread or little size, so the price isn't reliable. None if unknown.
+    `max_age=0` is a truly fresh read: every buy, sale and hedge check keeps it and it never reuses a fetch."""
     now = time.time()
     got = BOOK_DEPTH.get(ticker)
     if got and now - got[0] < max_age:
@@ -27157,6 +27806,16 @@ def book_depth(ticker, max_age=60):
             BOOK_DEPTH.pop(k, None)
             BOOK_LADDER.pop(k, None)
     return info
+
+
+def book_depth_shared(ticker):
+    """For the selling GUARDS only (#500): the book as read at most BOOK_SHARE_SECS (3 s) ago, else a truly fresh read
+    (`book_depth(max_age=0)`). Several guard checks on one ticker in one pass share one fetch. Never for a buy, a
+    sale or a hedge: those call `book_depth(..., max_age=0)` and always fetch."""
+    got = BOOK_DEPTH.get(ticker)
+    if got and time.time() - got[0] < BOOK_SHARE_SECS:
+        return got[1]
+    return book_depth(ticker, max_age=0)
 
 
 def _bid_size(payload):
@@ -30905,14 +31564,20 @@ SIG = {"on": True, "sharp_every": 60, "rel_every": 120, "state_every": 60, "keep
 
 
 def _sig_tables():
-    store_x("create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
-            "live int, line_live int)")
-    store_x("create index if not exists sig_sharp_ts on sig_sharp(ts)")
-    store_x("create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)")
-    store_x("create index if not exists sig_related_ts on sig_related(ts)")
-    store_x("create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
-            "down int, dist int, pts int)")
-    store_x("create index if not exists sig_state_ts on sig_state(ts)")
+    db = STORE.get("db")
+    if db is not None and SIG.get("ddl") is db:
+        return                                           # #433: the six create-if-not-exists statements run once per open database
+    done = [store_x(q) for q in (
+        "create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
+        "live int, line_live int)",
+        "create index if not exists sig_sharp_ts on sig_sharp(ts)",
+        "create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)",
+        "create index if not exists sig_related_ts on sig_related(ts)",
+        "create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
+        "down int, dist int, pts int)",
+        "create index if not exists sig_state_ts on sig_state(ts)")]
+    if db is not None and all(r is not None for r in done):
+        SIG["ddl"] = db                                  # a statement that failed (store_x swallows it) is tried again next pass
 
 
 def _sig_insert(batches):

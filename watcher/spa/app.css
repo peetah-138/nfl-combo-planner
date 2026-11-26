@@ -36,7 +36,9 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .alert b{font-size:15px}.alert p{margin:2px 0 0;color:var(--sub)}
 .btn{border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
 .btn:hover{background:var(--hover)}.btn.yes{background:var(--yes);color:#04150c;border-color:transparent}.btn.acc{background:var(--acc);color:#fff;border-color:transparent}
-.btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
+.btn.ghost{background:none}
+/* #436/#454: the Pass/Buying, sheet, Settings-row and error-card buttons are real thumb targets (44px) */
+.dbtns .btn,.sheet .btn,.srow .btn,.empty .btn,.sbgo .btn{min-height:44px}.btn[disabled]{opacity:.5;pointer-events:none}
 .own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
 .legs .up{color:var(--yes)}.legs .down{color:var(--no)}
 .ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}
@@ -118,7 +120,7 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .hv .big{display:block;font-size:40px;font-weight:800;letter-spacing:-.045em;line-height:1.05;margin:6px 0 4px;font-variant-numeric:tabular-nums}
 .hv .delta{font-weight:700;font-size:14px;display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px}
 .hv .delta.up{color:var(--yes);background:var(--yesbg)}.hv .delta.down{color:var(--no);background:var(--nobg)}.hv .delta.flat{color:var(--sub);background:var(--panel2)}
-.sparkw{position:relative;margin-top:10px}.hv .spark{display:block;width:100%;height:64px}
+.sparkw{position:relative;margin-top:10px}
 .sdot{position:absolute;width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 0 currentColor;animation:sdot 1.8s infinite}
 @keyframes sdot{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}100%{box-shadow:0 0 0 10px transparent}}
 .hs{display:grid;grid-template-columns:1fr 1fr;border-left:1px solid var(--line);position:relative}
@@ -275,3 +277,18 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .cc-nums b{font-size:26px}.cc-pl{display:flex;justify-content:space-between;align-items:baseline;margin:12px 0}.cc-pl b{font-size:19px}
 .ccard .good,.cc-nums .good b{color:var(--yes)}.ccard .bad{color:var(--no)}
 .cc-ft{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;font-family:ui-monospace,Menlo,monospace}.cc-stamp{letter-spacing:.12em;font-weight:700}
+/* #413: Kalshi's value big, our sale estimate small beside it */
+.hv .hrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:6px 0 4px}.hv .hrow .big{margin:0}
+.hv .hest{display:flex;flex-direction:column;align-items:flex-end;text-align:right;padding-bottom:4px}.hv .hest small{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.hv .hest b{font-size:18px;font-weight:800;letter-spacing:-.02em;color:var(--sub);font-variant-numeric:tabular-nums}
+/* #140: score burst on Live rows: glow ring plus a digit pop. Off for reduced motion. */
+.trow.burst{animation:rowburst 1.5s var(--ease)}
+@keyframes rowburst{0%{background:var(--livebg);box-shadow:0 0 0 0 color-mix(in srgb,var(--live) 65%,transparent)}35%{box-shadow:0 0 0 8px transparent}100%{}}
+.trow.burst .name>span{display:inline-block;animation:digitpop .7s var(--spring)}
+@keyframes digitpop{0%{transform:scale(1)}30%{transform:scale(1.12);color:var(--live)}100%{transform:none}}
+@media (prefers-reduced-motion:reduce){.trow.burst,.trow.burst .name>span,.rowpop{animation:none}}
+/* #140: the reason a button failed, right under it (replaces the 6-7 s toast) */
+.berr{display:flex;align-items:flex-start;gap:8px;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:12px;background:var(--nobg);color:var(--no);font-size:14px;font-weight:600;line-height:1.35;animation:fadein .2s var(--ease)}
+.berr i{font-style:normal;font-weight:800}
+.nice{min-height:44px;min-width:160px;font-size:17px;font-weight:700}
+@media (prefers-reduced-motion:reduce){.btn.st-bad{animation:none}.berr{animation:none}}
