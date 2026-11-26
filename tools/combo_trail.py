@@ -363,7 +363,12 @@ def main(argv=None):
     ap.add_argument("--db", default=None, help="history file (default: combo_history.db next to this script or the app, then ~/combowatch)")
     ap.add_argument("--log", default=None, help="decision log (default: combo_autosell_log.jsonl in the same places)")
     ap.add_argument("--out", default="~/combo_trail_summary.txt", help="where to also save the text (default ~/combo_trail_summary.txt)")
+    ap.add_argument("--remote", action="store_true", help="read the production Mac over the dev-Mac log window instead of a local file")
     a = ap.parse_args(argv)
+    if a.remote:
+        sys.path.insert(0, str(HERE))
+        import combo_trail_remote
+        return combo_trail_remote.remote_main(a.team, a.date, a.out)
     spots = (HERE, HERE.parent, Path("~/combowatch").expanduser(), Path("."))
     path = a.db or next((str(d / "combo_history.db") for d in spots if (d / "combo_history.db").is_file()), None)
     if not path:

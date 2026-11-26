@@ -8,8 +8,8 @@ conflicts with what Pete tells you now, Pete wins: update this file in the same 
 building, testing, subagents, merging and releasing, and keeps this file and `ROADMAP.md` current (setup:
 `docs/DEV_MACHINE.md`; how Pete likes to work: `docs/WORKING_WITH_PETE.md`). Pete's MacBook Air is **production
 only**: it trades real money, runs the watcher and the web app, and auto-updates from `main`; nothing is built,
-tested or merged there. The dev Mac never gets Pete's Kalshi key, `~/combowatch`, the history database or any
-`combo_*.json`, never runs the watcher and never places orders.
+tested or merged there. The dev Mac never gets Pete's Kalshi key, `~/combowatch`, a copy of the history database or any
+`combo_*.json` file, never runs the watcher and never places orders.
 
 ## Goals and strategy
 
@@ -136,11 +136,13 @@ Real money is involved. Pete uses it daily.
    50+ settled bets, ahead overall, most days up (≥ 55%), CLV ≥ 0. Pete chose 50.
 7. Never price or buy a combo other than the one on Pete's screen (the quote API checks the leg tickers the page sends).
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
-9. **The dev Mac never gets the Kalshi key, `~/combowatch`, the history database or any `combo_*.json`.** It **may**
-   read the production Mac's logs through the read-only, redacted `/api/logs` endpoint (Pete decision, 2026-11-23,
+9. **The dev Mac never gets the Kalshi key, `~/combowatch`, a copy of the history database file or any `combo_*.json` file.** It **may**
+   read the production Mac's logs, and the answers to read-only SELECT questions about the collected data (`source=db`,
+   rows only, never the file; rule wording changed 2026-11-25 in PR #524; query results are never dumped in bulk to disk), through the read-only,
+   credential-scrubbed `/api/logs` endpoint (Pete decision, 2026-11-23,
    issue #377; `docs/LOG_ACCESS.md`): off by default, turned on only on the production Mac itself (Settings › This
    Mac › "Let the dev Mac read logs"), Tailscale only, its own read-only code (only a hash is stored), two allowlisted
-   log files, redacted server-side and failing closed. It can never buy, sell, pause or change anything; nothing
+   log files plus the SELECT-only data window, credential-scrubbed server-side and failing closed. It can never buy, sell, pause or change anything; nothing
    about it is a money path.
 
 **How these are enforced in code (money-safety hardening, issue #143; tested by `t_safety.py`):**
@@ -224,9 +226,9 @@ Real money is involved. Pete uses it daily.
   deletes stale worktrees and merged branches without asking. Keep this file current so every session knows what
   changed.
 - **Reading production logs from the dev Mac** (Pete decision, 2026-11-23, #377): use
-  `python3 tools/read_prod_logs.py` (address and code from the dev Mac's keychain, never a tracked file). That is the
-  only production data the dev Mac gets: never the Kalshi key, `~/combowatch`, the history DB or `combo_*.json`
-  (hard rule 9).
+  `python3 tools/read_prod_logs.py` (address and code from the dev Mac's keychain, never a tracked file). `--source db --table X --since ...` / `--sql` reads
+  collected data as query results over the same endpoint. That is the only production data the dev Mac gets: never the
+  Kalshi key, `~/combowatch`, a copy of the history DB file or `combo_*.json` files (hard rule 9).
 - **Fewer merge conflicts: a PR does not edit `CLAUDE.md` or `ROADMAP.md`** (they were edited by most PRs, so
   parallel PRs conflicted every time). Instead it adds **one new file `docs/changes/<issue-or-slug>.md`**: what
   shipped or changed in the product, written in the style of the product sections below, plus a `ROADMAP:` line when
