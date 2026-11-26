@@ -42,11 +42,15 @@ function verBusy(){   // anything that must not be pulled out from under the per
   if(document.querySelector('[data-sure="1"],[data-sure="sent"]'))return true;   // an Approve/Add that is armed or on its way
  }catch(e){return true;}   // can't tell = not idle
  return false;}
+const VER_DOT_MS=20000;
 function verPill(on){let el=document.getElementById('verpill');
- if(!on){if(el)el.classList.remove('on');return;}
+ if(!on){if(el)el.classList.remove('on');clearTimeout(S.verDotT);S.verDotT=0;return;}
+ if(S.verHideV===S.srvVer)return;   // the x was tapped for this version: stay quiet (the Settings row still says so)
  if(!el){el=document.createElement('button');el.id='verpill';el.className='verpill';el.type='button';el.setAttribute('aria-label','New version ready. Tap to refresh.');el.onclick=verTap;
-  el.innerHTML='<i></i><span>New version ready: tap to refresh</span>';document.body.appendChild(el);void el.offsetWidth;}
- el.classList.add('on');}
+  el.innerHTML='<i></i><span>New version ready: tap to refresh</span><span class="vx" role="button" aria-label="Dismiss" onclick="verHide(event)">×</span>';document.body.appendChild(el);void el.offsetWidth;}
+ el.classList.add('on');
+ if(!S.verDotT&&!el.classList.contains('dot'))S.verDotT=setTimeout(()=>{el.classList.add('dot');},VER_DOT_MS);}
+function verHide(e){if(e){e.stopPropagation();e.preventDefault();}hap('light');S.verHideV=S.srvVer;verPill(false);}
 function verTap(){hap('light');verReload();}   // the tick comes from the real tap (iOS 27 ignores one fired after an await or a timer)
 /* The "already reloaded for this version" note lives in sessionStorage AND localStorage; read back to be sure it stuck. */
 function verMark(v){const o=JSON.stringify({v,at:Date.now()});let n=0;
@@ -76,4 +80,6 @@ function verWelcome(){try{const o=JSON.parse(localStorage.getItem('cw_upd')||'nu
 function verRow(v){const run=verOk(v)?v:(verOk(S.srvVer)?S.srvVer:'');if(!run)return '';
  const stale=verOk(PAGE_VER)&&PAGE_VER!==run;
  return `<div class="srow" id="verrow"><div class="l"><b>${stale?'A newer version is ready':'Up to date'}</b><small>App version ${esc(run)}${stale?' · this page is on '+esc(PAGE_VER):''}</small></div>${stale?'<button class="btn ghost" onclick="verTap()">Reload</button>':''}</div>`;}
-verWelcome();
+function verFadeIn(){try{const o=JSON.parse(localStorage.getItem('cw_upd')||'null');
+ if(o&&verOk(o.v)&&o.v===PAGE_VER&&Date.now()-o.at<120000&&!matchMedia('(prefers-reduced-motion:reduce)').matches)document.body.classList.add('verin');}catch(e){}}
+verFadeIn();verWelcome();

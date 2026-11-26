@@ -6,7 +6,7 @@
 #  C  the flag turns it off, and the trading inputs (the games and lines it was handed) are byte-for-byte unchanged
 #  D  bounded: pruning drops old rows and caps the table
 #  E  nothing decides from these tables: the engine and watcher never mention them outside the recorder itself
-import os, re, copy, tempfile, importlib.util, traceback
+import os, re, copy, sqlite3, tempfile, importlib.util, traceback
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
@@ -134,5 +134,27 @@ def e_unread():
     ok("E the single hook in the panel is one wrapped call after the market-fair log", src.count("signal_shadow(code, games, lc_all)") == 1)
 
 
-for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flag_and_inputs), ("d", d_bounded), ("e", e_unread)):
+def f_ddl_once():
+    # #433: the six create-if-not-exists statements run once per open database, not on every pass; a failed one is retried
+    calls = []
+    real = E.store_x
+    E.SIG["ddl"] = None
+    E.store_x = lambda q, a=(): (calls.append(q), real(q, a))[1]
+    try:
+        E._sig_tables(); E._sig_tables(); E._sig_tables()
+        ok("F the DDL runs once (6 statements) across three passes", len(calls) == 6, len(calls))
+        first = E.STORE["db"]
+        E.STORE["db"] = sqlite3.connect(":memory:", check_same_thread=False); E.STORE["db"].row_factory = sqlite3.Row; calls.clear()
+        E._sig_tables()
+        ok("F a different (newly opened) database gets its tables made", len(calls) == 6 and E.store_rows("select count(*) n from sig_sharp")[0]["n"] == 0, len(calls))
+        E.STORE["db"] = first
+        E.SIG["ddl"] = None; calls.clear()
+        E.store_x = lambda q, a=(): (calls.append(q), None)[1]      # store_x swallows errors and returns None
+        E._sig_tables(); E._sig_tables()
+        ok("F when a statement fails the next pass tries again", len(calls) == 12 and E.SIG.get("ddl") is None, len(calls))
+    finally:
+        E.store_x = real
+
+
+for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_flag_and_inputs), ("d", d_bounded), ("e", e_unread), ("f", f_ddl_once)):
     section(n, f)

@@ -25,7 +25,7 @@ NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
 WATCHER_VERSION = "2026.11.25.140"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards", "mkt_hold",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -1259,17 +1259,26 @@ COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
 
 def combo_link(E, msg):
     """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
-    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
-    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    combos Live shows right now, else None (the tap opens Live as before). A combo is named by its picks ("Nuggets +
+    Chiefs", #520) or, for text that still says it, its old number ("Combo 24", whole word so "Combo 2" isn't "Combo
+    24"); a name that is part of a longer matching name doesn't count. Names are read from this refresh's own data, so
+    they match the text just built. Only the market ticker goes in the link (URL-safe characters only, COMBO_TICKER)."""
     try:
-        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
-        if len(named) != 1:
-            return None
-        want = "Combo " + named.pop()
+        msg = msg or ""
         mine = dict(E.MINE.get("snap") or {})
         mine.update(E.MINE.get("hold") or {})
-        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
-        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+        spans = {}
+        for t, c in mine.items():
+            if not COMBO_TICKER.match(t or ""):
+                continue
+            for lab in {(c or {}).get("label") or "", (c or {}).get("num") or ""}:
+                if len(lab) >= 3:
+                    spans.setdefault(t, []).extend(m.span() for m in re.finditer(r"(?<!\w)" + re.escape(lab) + r"(?!\w)", msg))
+        # a match that sits wholly inside another combo's longer match is the same words, not a second combo
+        hits = [t for t, sp in spans.items() if sp and not all(
+            any(o[0] <= x[0] and x[1] <= o[1] and (o[1] - o[0]) > (x[1] - x[0]) for u, osp in spans.items() if u != t for o in osp)
+            for x in sp)]
+        return "/#c=" + hits[0] if len(hits) == 1 else None
     except Exception:
         return None
 
@@ -3558,7 +3567,7 @@ def webapp_main():
                 "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode",
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode",
                 "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask")
 
     def send_synced():
@@ -5273,9 +5282,10 @@ def start_hub(conf, E, odds=None):
             # Floor (#271): only when the cached copy is over HUB_FRESH_FLOOR seconds old, so a stamp that keeps changing
             # can't force a Kalshi read per request. A held-back copy is flagged: the app uses it but doesn't keep it.
             at = E.ACCT_CACHE.get("at") or 0
-            moved = getattr(E, "money_seen", float)() > at
+            fresh = bool(req.get("fresh"))               # (#450) a guard check (max_age=0) must see Kalshi now: no floor
+            moved = fresh or getattr(E, "money_seen", float)() > at
             floor = getattr(E, "HUB_FRESH_FLOOR", 3)
-            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor
+            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor and not fresh
             if held:
                 print(f"hub account: fresh read held back ({time.time() - at:.1f}s-old copy, floor {floor}s)", flush=True)
             out = {"value": list(E.fetch_account(max_age=15 if held or not moved else 0, every_league=True))}
