@@ -58,7 +58,7 @@ def tick(dt_, script=(), cash=None, **hold):
     SCRIPT["s"] = list(script)
     E.time.time = lambda: now + dt_
     E.MINE["hold"] = {"C1": dict(h, **hold)}
-    E.MINE["tp_asked"] = {}; E.MINE["cash"] = {"C1": dict(cash, at=now + dt_)} if cash else {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
+    E.MINE["tp_asked"] = {}; E.MINE.pop("real_asks", None); E.MINE["cash"] = {"C1": dict(cash, at=now + dt_)} if cash else {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
     asks.clear(); accepts.clear(); logs.clear()
     try:
         return E.auto_sell_now(plan)
