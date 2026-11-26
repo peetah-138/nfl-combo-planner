@@ -177,3 +177,10 @@ def e_fee():
 
 for n, f in (("a", a_replay), ("b", b_readonly), ("c", c_degrade), ("d", d_combo_fee), ("e", e_fee)):
     section(n, f)
+
+# #441: the one-line install in the doc is pinned to a commit and carries the script's current fingerprint
+_doc = open(os.path.join(REPO, "docs", "EXIT_REPLAY.md"), encoding="utf-8").read()
+_sha = hashlib.sha256(open(os.path.join(REPO, "tools", "exit_replay.py"), "rb").read()).hexdigest()
+_curl = [l for l in _doc.splitlines() if l.startswith("curl ")][0]
+ok("the doc's curl line is pinned to a commit, not the moving main", re.search(r"/[0-9a-f]{40}/tools/exit_replay\.py", _curl) and "/main/" not in _curl)
+ok("the doc's fingerprint matches tools/exit_replay.py (update both when the script changes)", _sha in _curl, _sha)
