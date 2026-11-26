@@ -173,10 +173,13 @@ function singlesLive(d){const all=d.singles||[];
 const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: money() rounds $12.70 up to "$13" (#371) */
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  const isC=x.smart_txt!==undefined,at=x.sell_at!=null?x.sell_at:isC?x.smart_at:x.threshold,over=x.sell_at!=null?x.sell_over:isC?x.smart_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
- const hint=x.self||off?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
+ const hint=x.self||off?'':(isC&&(x.smart_profit||x.loss_chip))?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" data-t="${esc(x.t)}" onclick="event.stopPropagation();selfSell(this.dataset.t,${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
+function ssLines(x){if(x.self||!(x.smart_profit||x.loss_chip))return '';   /* Smart sell: its two jobs, one block (display only) */
+ const ln=t=>{const i=t.indexOf(':');return `<span><b>${esc(t.slice(0,i+1))}</b>${esc(t.slice(i+1))}</span>`;};
+ return `<div class="sslines">${[x.smart_profit,x.loss_chip].filter(Boolean).map(ln).join('')}</div>`;}
 function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
  const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
@@ -189,7 +192,7 @@ function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.of
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const oLive=offNow(c);const oEst=!c.offer_real;
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>${chgHtml('oc:'+c.t,oLive,c.cost,oEst)}`:'<small>—</small>';
- return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" data-t="${esc(c.t)}" onclick="tog(this.dataset.t)"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span>${c.group!=='pending'&&c.done_at&&doneWord(c.done_at)?`<span class="sdt">${esc(doneWord(c.done_at))}</span>`:''}</div>
+ return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" data-t="${esc(c.t)}" onclick="tog(this.dataset.t)"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c)+ssLines(c):''}<span>${esc(nextLine(c))}</span>${c.group!=='pending'&&c.done_at&&doneWord(c.done_at)?`<span class="sdt">${esc(doneWord(c.done_at))}</span>`:''}</div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?`<span data-num="p:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}${c.group==='pending'?`<div class="bar"><i data-bar="pb:${c.t}" style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>

@@ -5807,6 +5807,39 @@ def auto_sell_blockers(t):
     return out
 
 
+def stop_loss_chip(t, h):
+    """Display only (never read by a seller): one calm line on the loss-protection half of Smart sell, from the logic
+    that already exists: the Auto cash-out / "I'll sell it" / Pause gates (auto_sell_blockers), the league's learned
+    loss cut-off (smart_params "loss", None = never), and the loss guard's "not before this much of the game"
+    (stoploss_params "prog", read off each live pick's fresh score). Touches no streak, peak or setting."""
+    pre = "Loss cut: "
+    try:
+        blk = auto_sell_blockers(t)
+        if any(s == "auto cash-out off" for s, _ in blk):
+            return pre + "off (Auto cash-out is off in Settings)"
+        if any(s == "you sell it" for s, _ in blk):
+            return pre + "off (you sell this one)"
+        if not CFG.get("smart_sell", True) or ride_lam() is None:
+            return pre + "off (Smart sell is off)"
+        tks = [tk for (_, tk), _ in h.get("need") or []]
+        loss = smart_params(tks)["loss"]
+        if not loss:
+            return pre + "off (this league hasn't earned it yet)"
+        paused = " (Pause is on, nothing sells)" if any(s == "paused" for s, _ in blk) else ""
+        prog = stoploss_params(tks)["prog"]
+        played = []
+        for (side, tk), _ in h.get("need") or []:
+            sc, _why = fresh_live_score(tk, side, None, loose=True)
+            pl = game_played(sc) if sc else None
+            if pl is not None:
+                played.append(pl)
+        if played and max(played) < prog:
+            return pre + ("waiting for half the game" if abs(prog - 0.5) < 0.005 else f"waiting for {prog:.0%} of the game") + paused
+        return pre + f"armed at {loss:.0%} win chance" + paused
+    except Exception:
+        return ""
+
+
 def smart_trigger(t, h):
     """Display only (never read by a seller): the line smart sell REALLY sells a combo at, and why it is not selling
     now, in plain English. Same inputs as take_profit_reason, but it touches no peak and writes nothing.
@@ -5814,8 +5847,26 @@ def smart_trigger(t, h):
     most the combo can sell for, "smart_txt": one sentence (empty when nothing sells for you: Auto cash-out off or the
     bet set to "I'll sell it"), "smart_chip": the short form for the card's chip, "smart_state": "go" (offer is at the
     bar and nothing is in the way: sells on the next check) / "reached" (at the bar but something stops the sale) / "",
-    "lock_at": the offer a run-up must reach before Lock in arms (or None once armed / off)}. The old Let it ride
+    "lock_at": the offer a run-up must reach before Lock in arms (or None once armed / off), "smart_profit": the card's
+    "Take profit: ..." line (smart_chip with a label; "off (...)" when nothing sells by itself), "loss_chip": the
+    card's "Loss cut: ..." line (stop_loss_chip)}. The old Let it ride
     number on Live is the "let-it-ride line" (wait_threshold), a different thing."""
+    out = _smart_trigger(t, h)
+    out["smart_profit"] = out["loss_chip"] = ""
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return out
+    out["loss_chip"] = stop_loss_chip(t, h)
+    blk = auto_sell_blockers(t)
+    if out["smart_chip"]:
+        out["smart_profit"] = "Take profit: " + out["smart_chip"]
+    elif any(s == "auto cash-out off" for s, _ in blk):
+        out["smart_profit"] = "Take profit: off (Auto cash-out is off in Settings)"
+    elif any(s == "you sell it" for s, _ in blk):
+        out["smart_profit"] = "Take profit: off (you sell this one)"
+    return out
+
+
+def _smart_trigger(t, h):
     out = {"smart_at": None, "smart_over": False, "smart_txt": "", "smart_chip": "", "smart_state": "", "lock_at": None}
     if not h or h.get("left", 1) <= 0 or not h.get("pays"):
         return out
@@ -5858,7 +5909,7 @@ def smart_trigger(t, h):
     elif q < q_min:
         out["smart_txt"] = f"Smart sell won't sell while the win chance is {q:.0%}, under {q_min:.0%}." + \
             (f" It also needs an offer of ${at:.2f}+." if at else "") + stop
-        out["smart_chip"] = stop_chip or f"waiting (needs {q_min:.0%}+ win chance)"
+        out["smart_chip"] = stop_chip or f"waiting, win chance {q:.0%} is below the {q_min:.0%} needed"
     elif not ro and not CFG.get("real_offer_ask", True):
         out["smart_txt"] = "Smart sell won't ask Kalshi for a real offer (switched off in Settings); it only sells on a real offer that is already in." + stop
         out["smart_chip"] = stop_chip or "won't ask Kalshi (switched off)"
@@ -5872,7 +5923,7 @@ def smart_trigger(t, h):
         out["smart_chip"] = stop_chip or (f"will ask Kalshi once the estimate reaches ${at:.2f}" if at else "will ask Kalshi for a real offer")
     elif at and ro < at:
         out["smart_txt"] = f"Smart sell sells once the offer reaches ${at:.2f}; it is ${ro:.2f} now." + stop
-        out["smart_chip"] = stop_chip or f"sells at ${at:.2f}+"
+        out["smart_chip"] = stop_chip or f"waiting, offer ${ro:.2f} is below the ${at:.2f} it sells at"
     else:
         out["smart_state"] = "reached" if other else "go"
         out["smart_txt"] = (f"The offer (${ro:.2f}) is at smart sell's bar" + (f" (${at:.2f})" if at else "") + \
@@ -7894,6 +7945,7 @@ def live_view(mine, views, plan, chance_one, balance):
             v.update(smart_trigger(t, h))
         except Exception:
             v["smart_at"], v["smart_over"], v["smart_txt"], v["smart_chip"], v["smart_state"], v["lock_at"] = None, False, "", "", "", None
+            v["smart_profit"] = v["loss_chip"] = ""
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None
