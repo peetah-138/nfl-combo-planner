@@ -144,6 +144,7 @@ def t_single_alert():
                      book_depth=lambda t, max_age=60: {"thin": False, "ask": 0.26, "ask_size": 500},
                      injury_note=lambda *a: ([], False), game_context=lambda *a: [], edge_stake=lambda *a: 5.0,
                      store_suggestion=lambda c, r, pct: ideas.append(c) or 1,
+                     idea_push_ok=lambda sid: True,        # (#177) the push gate has its own tests (t_money_g); this fake stores no row
                      _alert=lambda alert, msg, *a: alerts.append(msg)).items():
         setattr(E, k, v)
     E.CFG.update(include_live=True, killer_mode="off")
