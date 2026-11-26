@@ -11218,14 +11218,20 @@ def flex_fb_events(scope, since, lo_share, hi_share):
     (an accepted retry). Corrupt rows (None, text, NaN, zero) are skipped. All in this share's dollars: a combo
     cash-out carries no separate fee, so the offer is the net cash. ONE entry per sale (#499): a sale's several retries
     share one outcome, so they are one piece of evidence, not one each (10 retries of 2 sales used to reach the 20-case
-    bar); the entry is the sale's first comparable retry, stamped with the sale's LAST retry time so `since` skips all
-    of them next time."""
+    bar); the entry is the sale's first comparable retry, stamped with the sale's LAST retry time (any retry,
+    in the band or not) so `since` skips all of them next time."""
     rows = store_rows(
         "select s.ts, s.ticker, k.ts sale_ts, s.offer, s.first_offer, s.accept, k.offer sale_offer, k.held, k.outcome, g.league "
         "from flex_shadow s join sell_log k on k.ticker = s.ticker and k.result = 'sold' and k.ts >= s.ts "
         "and k.ts < s.ts + ? and k.outcome in ('won', 'lost') left join ledger g on g.ticker = s.ticker "
         "where s.try > 0 and s.ts > ? order by s.ts", (FLEX_FB_WINDOW, since))
-    out, by_sale = [], {}
+    out, by_sale, last_ts = [], {}, {}
+    for r in rows:                                                 # every retry of a sale, in band or not (#499)
+        try:
+            k = (r.get("ticker"), r.get("sale_ts"))
+            last_ts[k] = max(last_ts.get(k, 0.0), float(r["ts"]))
+        except (TypeError, ValueError, KeyError):
+            continue
     for r in rows:
         try:
             off, first = float(r["offer"]), float(r["first_offer"])
@@ -11240,11 +11246,9 @@ def flex_fb_events(scope, since, lo_share, hi_share):
                 continue
             sale = (r.get("ticker"), r.get("sale_ts"))
             if sale in by_sale:                                    # another retry of a sale already counted
-                e = by_sale[sale]
-                out[e] = (max(out[e][0], float(r["ts"])), out[e][1], out[e][2])
                 continue
             by_sale[sale] = len(out)
-            out.append((float(r["ts"]), off, later))
+            out.append((last_ts.get(sale, float(r["ts"])), off, later))
         except (TypeError, ValueError, KeyError):
             continue
     return out
