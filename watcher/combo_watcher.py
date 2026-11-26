@@ -2417,11 +2417,16 @@ class WebBuild:
         verdict = "" if r.get("ok") else f" That's under your {r.get('bar') or b['cut']}% cut-off."
         return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
 
-    def buy(self, i):
+    def buy(self, i, legs=None):
+        """legs (#498, rule 7): the tickers of the card the form was drawn for. The Buy goes out only if they are exactly the
+        legs the stored offer was priced for and the combo now on that card (accept_offer re-checks both). None or empty
+        (an old page, a hand-made post) is refused: nothing is bought."""
         b = self.cur
         off = (b or {}).get("offers", {}).get(i)
         if not off or time.time() - off["got"] > 20:
             return "That price expired. Tap Get price again."
+        if not legs:
+            return "That page is out of date. Reload it, get a fresh price, then buy. Nothing was bought."
         o = self.odds
         with o.lock:
             H = o.engine()
@@ -2430,7 +2435,7 @@ class WebBuild:
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
             log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
             with H.manual_tap():
-                r = H.accept_offer(i)
+                r = H.accept_offer(i, expect_legs=list(legs))
         b["offers"].pop(i, None)
         if r.get("error"):
             return r["error"]
@@ -2463,6 +2468,7 @@ class WebBuild:
                          f"{H.money(c['fair'])} for {H.money(b['stake'])}</div><div style='margin:6px 0'>{picks}</div>"
                          f"<div class='mute'>{est}</div>{thin}<form method='post' action='/act' style='margin-top:8px'>"
                          f"<input type='hidden' name='tok' value='{e(tok)}'><input type='hidden' name='i' value='{i}'>"
+                         f"<input type='hidden' name='legs' value='{e(','.join(str(l.get('ticker')) for l in c['legs']))}'>"
                          f"{btn}</form></div>")
         return (f"<div class='tabs'>{tabs}</div><div class='mute'>{e(b['name'])} suggestions · built "
                 f"{time.strftime('%-I:%M %p', time.localtime(b['at']))} · your weekly cap still applies</div>"
@@ -4069,11 +4075,12 @@ def webapp_main():
             if a == "buy":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
+                sent_empty = isinstance(shown, list) and not shown   # #498: a list that was sent but is empty is refused (the pages leave the key out when they have none)
                 shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
-                        r = A.accept_offer(i, expect_legs=shown)
+                        r = A.accept_offer(i, expect_legs=shown, legs_sent_empty=sent_empty)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
@@ -5259,7 +5266,8 @@ def start_hub(conf, E, odds=None):
                 if form.get("do") in ("bquote", "bbuy"):
                     try:
                         i = int(form.get("i", "0"))
-                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(i)
+                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(
+                            i, [x for x in str(form.get("legs") or "").split(",") if x])
                     except Exception as err:
                         log("web build action failed:", type(err).__name__, err)
                         msg = f"That didn't work: {type(err).__name__}. Nothing was bought."
