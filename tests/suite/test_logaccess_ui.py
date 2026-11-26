@@ -39,8 +39,8 @@ with sync_playwright() as pw:
         pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme=scheme)
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
-        DLG["ok"] = True
-        pg.on("dialog", lambda d: d.accept() if DLG["ok"] else d.dismiss())
+        dialogs = []
+        pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))      # the page must not use the browser confirm()
         pg.route("**/app", lambda route: (lambda r: route.fulfill(response=r, body=r.text().replace("LOCAL=false", "LOCAL=true")))(route.fetch()))
         pg.route("**/app/mac", mac)
         pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('settings')")
@@ -72,19 +72,28 @@ with sync_playwright() as pw:
         if FAKE in (pg.content() or ""):
             print("PROBLEMS: the code is still on screen after Done")
         pg.screenshot(path=os.path.join(SHOTS, f"logs_on_{scheme}.png"))
-        DLG["ok"] = False                                  # "Stop the dev Mac reading logs?" -> Cancel
+        # #378: "Stop reading" asks in the app's own sheet (no browser confirm); Cancel leaves it on, the other button turns it off
         n = STATE["calls"].count("logaccess")
-        pg.locator("#logrow input").click(); time.sleep(1)
+        pg.locator("#logrow input").click(); time.sleep(.8)
+        if not pg.evaluate("document.querySelector('#modal.on')&&document.querySelector('#sheet').innerText.includes('Stop the dev Mac reading logs?')"):
+            print("PROBLEMS: stopping didn't ask in the app's own sheet")
+        small = pg.evaluate("[...document.querySelectorAll('#sheet .btn')].filter(b=>b.getBoundingClientRect().height<44).length")
+        if small:
+            print("PROBLEMS: a button on the confirm sheet is under 44px")
+        pg.screenshot(path=os.path.join(SHOTS, f"logs_stop_sheet_{scheme}.png"))
+        pg.locator("#sheet button", has_text="Cancel").click(); time.sleep(.8)
         if not pg.locator("#logrow input").is_checked() or STATE["calls"].count("logaccess") != n:
             print("PROBLEMS: cancelling 'stop' still turned it off")
-        DLG["ok"] = True
-        pg.locator("#logrow input").click()
+        pg.locator("#logrow input").click(); time.sleep(.8)
+        pg.locator("#sheet button", has_text="Stop reading").click()
         for _ in range(20):
             time.sleep(.5)
             if not pg.locator("#logrow input").is_checked():
                 break
         if pg.locator("#logrow input").is_checked() or "logaccess" not in STATE["calls"][-3:]:
             print("PROBLEMS: turning it off didn't stick")
+        if dialogs:
+            print("PROBLEMS: the page opened a browser confirm:", dialogs)
         print(scheme, "calls:", STATE["calls"], "errs:", errs)
         if errs:
             print("PROBLEMS: page errors", errs)

@@ -31430,14 +31430,20 @@ SIG = {"on": True, "sharp_every": 60, "rel_every": 120, "state_every": 60, "keep
 
 
 def _sig_tables():
-    store_x("create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
-            "live int, line_live int)")
-    store_x("create index if not exists sig_sharp_ts on sig_sharp(ts)")
-    store_x("create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)")
-    store_x("create index if not exists sig_related_ts on sig_related(ts)")
-    store_x("create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
-            "down int, dist int, pts int)")
-    store_x("create index if not exists sig_state_ts on sig_state(ts)")
+    db = STORE.get("db")
+    if db is not None and SIG.get("ddl") is db:
+        return                                           # #433: the six create-if-not-exists statements run once per open database
+    done = [store_x(q) for q in (
+        "create table if not exists sig_sharp(ts real, ticker text, fair_book real, bid real, ask real, src text, "
+        "live int, line_live int)",
+        "create index if not exists sig_sharp_ts on sig_sharp(ts)",
+        "create table if not exists sig_related(ts real, event text, ticker text, kind text, bid real, ask real)",
+        "create index if not exists sig_related_ts on sig_related(ts)",
+        "create table if not exists sig_state(ts real, ticker text, me int, opp int, frac real, poss int, "
+        "down int, dist int, pts int)",
+        "create index if not exists sig_state_ts on sig_state(ts)")]
+    if db is not None and all(r is not None for r in done):
+        SIG["ddl"] = db                                  # a statement that failed (store_x swallows it) is tried again next pass
 
 
 def _sig_insert(batches):

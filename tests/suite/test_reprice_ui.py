@@ -94,6 +94,12 @@ with sync_playwright() as pw:
     print("after:", got.replace("\n", " | "), calls)
     if "Still wouldn't buy" not in got or "nothing was bought" not in got: probs.append("the verdict / 'nothing was bought' isn't shown")
     if calls != [{"a": "panel_reprice", "id": tap[0]["id"] if tap else None}]: probs.append(f"the tap must ask only panel_reprice for that card ({calls})")
+    # #435: the redraw replaced the tapped button, so focus goes to the card's new button and the result is said in the steady live region
+    foc = pg.evaluate("(()=>{const a=document.activeElement;const c=a&&a.closest&&a.closest('.pitem');return {pid:c?c.dataset.pid:'',cls:a?a.className:''}})()")
+    if not tap or foc["pid"] != tap[0]["id"] or "prbtn" not in foc["cls"]: probs.append(f"focus was not put back on the card's new button ({foc})")
+    live = pg.evaluate("(document.getElementById('srl')||{}).textContent||''")
+    if "Still wouldn't buy" not in live or "nothing was bought" not in live: probs.append(f"the result was not said through the live region ({live[:120]})")
+    if pg.evaluate("document.getElementById('srl').getAttribute('aria-live')") != "polite": probs.append("the live region is not polite")
     stale = pg.evaluate("(()=>{const n=document.querySelector('.pitem.prp .pn');return {c:n.className,t:n.innerText}})()")
     if "stl" not in stale["c"] or "earlier guess: pays" not in stale["t"] or "before fees" not in stale["t"]: probs.append(f"after a fresh price the card's own numbers must be dimmed and labelled earlier ({stale})")
     if "1% under" not in got or "of what it's worth" in got: probs.append("the fresh verdict wording is wrong: " + got[:300])

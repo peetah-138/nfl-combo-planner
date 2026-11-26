@@ -4,6 +4,8 @@
    real button or link inside it keeps its own keys. */
 addEventListener('keydown',e=>{const el=e.target;if(e.defaultPrevented||!el||!el.matches||!el.matches('[role=button][tabindex]:not(button):not(a)'))return;
  if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}});
+/* (#435) say something to a screen reader without moving anything on screen: one steady live region, cleared first so a repeat is read again */
+function srSay(m){const e=document.getElementById('srl');if(!e)return;e.textContent='';setTimeout(()=>{e.textContent=String(m||'');},60);}
 /* (#368) "Add anyway": the greyed card goes back to full strength and moves to its normal place in the list. Instead of a jump, each
    card that moved slides from where it was, and the one that was greyed fades up. Cards are matched by what they show (their pick
    rows, or the idea's id), never by list position, because the list is numbered again when it is fetched. */
