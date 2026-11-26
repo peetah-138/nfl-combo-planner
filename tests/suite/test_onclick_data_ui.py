@@ -38,7 +38,8 @@ GUARDED = {
     "game.js": ["sbOpen("],
     "ideas.js": ["priceIdea(", "buyIdea", "buySingle", "ideaPass(", "hideIdea", "ideaNotNowSheet", "ideaX(", "ideaOpen("],
     "longshots.js": ["lsBuy(", "lsQuote("],
-    "live.js": ["selfSell(", "tog(", "doSell(", "'hedgego'"],
+    "live.js": ["selfSell(", "tog(", "doSell(", "'hedgego'", "act(", "sell(", "hedge(", "ask("],
+    "overlap.js": ["ovAdd("],
     "access.js": ["clipboard.writeText("],
 }
 bad = []
@@ -54,7 +55,7 @@ for f, names in GUARDED.items():
 bad = [b for b in bad if not any(k in b for k in ("openCombo(", "openGame(", "pick(", "act('keep'", "hedge('${c.t}')\"", "hedge('${c.t}')", "${/^[a-z0-9_]+$/.test(sp)")) ]
 check("converted handlers carry no pasted ticker/id: " + ("; ".join(bad) if bad else "ok"), not bad)
 
-STUBS = ["ssPrice", "ssOpen", "selfSell", "sbOpen", "flipLeg", "singleFromBoard", "pStakeSheet", "pToggle", "priceIdea", "buyIdea",
+STUBS = ["ovAdd", "ssPrice", "ssOpen", "selfSell", "sbOpen", "flipLeg", "singleFromBoard", "pStakeSheet", "pToggle", "priceIdea", "buyIdea",
          "buySingle", "ideaPass", "hideIdea", "ideaNotNowSheet", "ideaX", "openIdea", "lsBuy", "lsQuote", "sell", "ask", "hedge", "tog",
          "doSell", "openCombo", "openGame", "closeModal", "act", "feedCombo", "buy", "quote", "swapCombo", "pReprice", "panelClosed"]
 PROBE = """([html, stubs])=>{
@@ -115,6 +116,26 @@ with sync_playwright() as pw:
           [("sbOpen", H)])
     probe("game page: buy a team straight", "S.gameR={};return gameBuy?gameBuy([{t:%s,name:'N',ask:.5,mult:2}],'nfl'):'';" % json.dumps(H), [("sbOpen", H)]) if False else None
     probe("plan list: leave out / amount", "S.pJust=null;return pItem?pItem({id:%s,kind:'combo',legs:[],stake:5,ret:.1,title:'T',games:[]},'build'):'';" % json.dumps("c:" + H), [("pToggle", "c:" + H)]) if False else None
+
+    # (#517) the Live "Do now" cards: Keep, Cash out, Hedge and Get offer, and the overlap "Add anyway" bar
+    def dn(extra):
+        c = {"t": H, "group": "pending", "label": "L", "offer": 9, "cost": 5, "pays": 9, "p": .5, "legs": [], "sports": [], "fair_value": 5}
+        c.update(extra)
+        return c
+    pg.evaluate("S.live=S.live||{};S.busy=S.busy||{};")
+    probe("Do now: sell card (Keep, Cash out)", "S.live.todo=[%s];window.planOn=()=>true;return doNow(S.live,[%s]);" % (json.dumps(H), json.dumps(dn({}))),
+          [("act", "keep"), ("sell", H)])
+    probe("Do now: overpay card (Cash out)", "S.live.todo=[];return doNow(S.live,[%s]);" % json.dumps(dn({"offer_real": True, "overpay": 1.2})), [("sell", H)])
+    probe("Do now: hedge card", "S.live.todo=[];return doNow(S.live,[%s]);" % json.dumps(dn({"hedge": {"done": False, "locked": 99, "cost": 1, "name": "N"}, "legs": [{"res": None}]})), [("hedge", H)])
+    probe("Do now: get offer card", "S.live.todo=[];return doNow(S.live,[%s]);" % json.dumps(dn({"self": True, "verdict": "sell"})), [("ask", H)])
+    r = probe("overlap Add anyway", "return ovBar({game:%s,n:2,risk:5},'build');" % json.dumps(H), [("ovAdd", H)])
+    check("overlap Add anyway: the game rides in data-game, not in the onclick text", r is not None and "data-game" in r["raw"])
+    # the CSP header is report-only: present on the page, never enforcing
+    import urllib.request
+    hd = urllib.request.urlopen(urllib.request.Request(B + "/app")).headers
+    check("page sends Content-Security-Policy-Report-Only", "frame-ancestors 'none'" in (hd.get("Content-Security-Policy-Report-Only") or ""))
+    check("page does NOT send an enforcing Content-Security-Policy yet", hd.get("Content-Security-Policy") is None)
+    pg.evaluate("S.live.combos=[]")
 
     # the sell sheet and the hedge sheet are built by live.js from S.live.combos
     pg.evaluate("S.live=Object.assign(S.live||{},{combos:[{t:%s,label:'L',offer:9,cost:5,p:.5,pays:9,hedge:{cost:1,locked:2,name:'N'},legs:[]}]})" % json.dumps(H))

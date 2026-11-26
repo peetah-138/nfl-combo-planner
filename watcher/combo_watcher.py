@@ -4247,7 +4247,8 @@ def webapp_main():
             local = self.headers.get("X-CW-Local") == "1"
             if path in ("/app", "/app/"):
                 return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false")
-                                  .replace("__CWVER__", str(getattr(A, "VERSION", "") or "")), "text/html; charset=utf-8")
+                                  .replace("__CWVER__", str(getattr(A, "VERSION", "") or "")), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy-Report-Only": CSP_REPORT_ONLY})
             if path.startswith("/app/api/"):
                 from urllib.parse import parse_qs
                 q = {k: v[0] for k, v in parse_qs(query).items()}
@@ -4579,6 +4580,15 @@ def webapp_proxy(handler, tok, method, path, body=b""):
     _proxy_send(handler, code, ctype, data, where)
 
 
+# Content-Security-Policy-Report-Only (issue #517): the browser only LOGS what the policy would block, it blocks nothing,
+# so the page cannot break. It still allows inline script ('unsafe-inline') because the SPA has hundreds of inline
+# onclick handlers; the lines that do not depend on that (no plugins, no <base> tricks, forms only to us, never framed,
+# no outside connections) are the ones to watch in the console before any of them is enforced.
+CSP_REPORT_ONLY = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' "
+                   "https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; "
+                   "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+
+
 PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
 #                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
 ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "singlesell", "pot_move")   # taps that can move money (the rest only read)
@@ -4589,6 +4599,8 @@ def _proxy_send(handler, code, ctype, data, where=""):
     handler.send_header("Content-Type", ctype)
     handler.send_header("Cache-Control", "no-store")
     handler.send_header("X-Frame-Options", "DENY")
+    if ctype.startswith("text/html"):
+        handler.send_header("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
     if where:
         handler.send_header("X-CW-Where", where)
     handler.send_header("Content-Length", str(len(data)))
@@ -5357,6 +5369,7 @@ def start_hub(conf, E, odds=None):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
             self.send_header("Referrer-Policy", "no-referrer")
             if cookie:
                 self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
