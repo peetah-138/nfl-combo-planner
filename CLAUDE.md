@@ -820,6 +820,12 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     (the covering idea in #74) would need its own exception and is a separate design. Tests: `t_exposure.py` (stances and
     both-sides, each cap, a blocked bet not using up room, the first look not judged, the panel's would-add, settlement from
     the ledger, small groups hidden, bounded tables, errors swallowed, no decision path reads it).
+- **Signal-shadow tables created once (#433).** `_sig_tables()` runs its six `create ... if not exists` statements once per open history
+  database (`SIG["ddl"]`), not on every panel pass under the shared history lock; a failed statement is retried next pass. Test: `t_signal_shadow.py` F.
+- **`mkt_hold` switch and veto log (#497).** Settings > Money "Check the books' weight on the newest games", ON by default (in DEFAULTS,
+  `SHARED_KEYS`, `WATCHER_SYNCED`, the watcher's `SYNCED` and `SET_KEYS`, `settings.js`; `t_newkeys.py` checks all six). Off = the in-sample bar
+  alone; it never adds a weight the old rule would not give. `mkt_learn` prints one line (once per group and result) when it holds a weight back
+  (group, in-sample weight, why). Test: `t_mkthold.py` section 7.
 
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
@@ -2054,6 +2060,16 @@ rule 8 are untouched.
   or `--sql`. The database file is never sent.
 - Settings sheet wording: plain English, no Terminal steps.
 - CLAUDE.md hard rule 9 reworded: query results over the endpoint are allowed; the database file, key and `~/combowatch` are not.
+- **Money follow-ups from the independent review (#499, #500, #496; nothing loosens a guard).** `flex_fb_events` returns ONE entry per sale (its
+  first comparable retry, stamped with the sale's last retry time), so the learned fallback share (`FLEX_FB_MIN_N` = 20) needs 20 different sales,
+  not 20 retries; the per-league pre-check counts distinct positions too (`t_flexlearn.py`). `book_depth_shared` (a fetch at most 3 s old, else
+  fresh) serves the two selling-guard reads (`break_ok`, the learned score-age check); `max_age=0` stays a truly fresh read for every buy, sale
+  and hedge check (`t_bookshare.py`). `ledger_price_paid` with no saved `unit_cost` is `(cost - sell_fees) / n_bought` (display only;
+  `t_storecounts.py` C3b). #498 was already done by #515. #501 (learn the loss-cut clock cadence) skipped: bounds not agreed, no evidence.
+- **Money batch D (#421, #452, #450; no new switch).** `autosell_pass` (standing take-profit, dormant while `RESTING_SELLS_OK` is False) returns
+  at once when `trading_paused()` (unreadable = paused); Pete's Cash out taps do not use it. `order_legacy_body` keeps the forced `reduce_only` for
+  a sell intent (#443). `fetch_account(max_age=0)` sends `fresh` (`ACCT_FRESH`) so the hub's `account` op skips its 3 s `HUB_FRESH_FLOOR` and reads
+  Kalshi once; other `max_age` values are unchanged (#271), an older watcher ignores the key. Test: `t_money_d.py`.
 
 ## Product notes (moved here from CLAUDE.md)
 
@@ -2512,6 +2528,33 @@ Pause path reads it. Test: `t_offer_live.py`.
 
 Refs #112. Also filed as follow-ups: #517 (inline onclick + no CSP), #518 (#473 delight nits), #519 (#481 findings).
 Verified already done on develop: #331, #298, #26 (closed with evidence), #247 (closed; #423 shipped the data-* move).
+- **Names by picks (#520).** `combo_names()` / `short_leg()` (engine, next to `team_short`) name a combo `Nuggets + Chiefs +2`: up to 3 picks
+  joined with " + ", then "+N more"; pro teams by nickname, a spread stays on its team, player markets and college teams keep their name, cut at
+  24 characters; duplicates get the first kickoff ("Nuggets (Nov 23)"), then "(2)". Display only (the ticker is the id). `mine_page` builds the
+  names once for `label` (cards, `views[].label`), `MINE["snap"]`, `MINE["hold"]`, so notifications, sheets, toasts and `record_view` use them; the
+  old number stays as `num`. Autosell `log_decision`: `combo` is the picks, `combo_id` the old "Combo N", `picks` unchanged; `sell_log.combo` follows.
+  `combo_link` (watcher) finds a combo by its picks or number, whole text only. Tests: `t_combonames.py`, `t_push_target.py`.
+- **Live hero shows Kalshi's value (#413, #140; display only).** The hero chart is gone (`heroChart`, `wireChart`, `setRng`, `pulseWeek`, `plMoney`,
+  `plCol`, `test_heropnl.py`). The big number is "Worth now on Kalshi" with our "If sold now" small beside it; `kalshiNow()` in `live.js` = each open
+  combo's `cost` (Kalshi marks a combo at its last trade; includes fees, so it can read a little high) plus each open single's `worth`. `cash_now` and
+  valuation unchanged. Result moments (Bought, Sold, Big hit, Approved) have no auto-close: a good result ends on a real `<button class="nice">`
+  Nice (44-64px), losses and "Check Kalshi" on OK or Done; bets named by legs (`momName`). A changed score glows its Live row (`.trow.burst`, `S.burst`
+  with expiry, off under reduced motion). `btnFail(host,msg,btn)` shakes the button and shows the reason under it (`.berr`, `role="status"`, 15 s,
+  `S.berr`/`paintErr()`) for Buy, Buy anyway, Approve, Add; an unknown buy outcome still says "Check Kalshi" and is never retried (rule 8). Tests:
+  `test_fun1_ui.py`; `test_motion.py` lost its hero checks.
+- **Display polish (#196, #213, #214, #246).** "Change vs paid" keeps its 44px tap area but draws the highlight at text height (24px `::before`).
+  The "New version ready" pill sits above sheets (z-index 65, under toasts), has a 44px x (hides it for that version), shrinks to a dot after ~20 s,
+  enters softer; a page reloaded for an update fades in (`body.verin`, skipped for reduced motion). `.btn.sm` is 44px tall; "Price it" in Best bets
+  opens a folded "More combo ideas"; a tappable toast is `role=button`. Pages open before the first auto-reload release need one manual reload.
+  Test: `test_batch_e_ui.py`. Not done: #246 number-roll, settled `#c=` toast, #112 cap message.
+- **Leg flip loading (#206).** A row awaiting a flip keeps its size and shimmers (`.lrow.wait`, `lshim` in `build.css`; flat tint under reduced
+  motion), text slightly dimmed; `lfold` is gone, `lturn` unchanged. No flip-logic change. `test_flipleg.py`.
+- **Small a11y and wording fixes (#455, #437, #435, #438, #313, #304, #283, #307).** "Buying..." rows are `role="status" aria-busy="true"`
+  (`test_comeback_ui.py`); the toast is a polite live region (set in `smallwins.js`). After a reprice, focus returns to the card's button and the
+  result is read via the never-redrawn `#repLive` (`test_smallwins_ui.py`); `cbTog` fades the Comebacks body over 220 ms (skipped for reduced
+  motion). The brake reads "less than holding was worth at the time"; the registry intro is split into What moves / The bar / The brake; a value
+  under Changed is not repeated under "Where it stands now". The Selling-at-a-loss row says where "Let it tune itself" is on (`sl_auto` from
+  display-only `sl_auto_view()`), "Prefer hedging" no longer prints a fixed "up to 5%". Test: `t_batchf_text.py`.
 
 ### Build page
 - Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
@@ -2841,6 +2884,7 @@ Verified already done on develop: #331, #298, #26 (closed with evidence), #247 (
   handling, `ledger_price_paid` edge cases, and that the new names appear only in ledger bookkeeping, never in a
   buy/sell/sizing function); `t_ledgersales.py` unchanged.
 
+
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
   "Updated Ns ago" stamp: nowrap, small grey text). Reusing it made every new screen draw too wide for a moment (GitHub #52);
@@ -3042,6 +3086,10 @@ Verified already done on develop: #331, #298, #26 (closed with evidence), #247 (
   and scroll listeners are all passive, and Settings has no backdrop blur. #281 stays open until Pete says it feels right.
 - **Tests:** new page test `test_polish2_ui.py` (phone size, dark and light: heights, aria, dialog role, wording, slider
   touch-action); `test_bestbets.py` expects the new wording.
+- **Dev Mac log access hardening (#528, #380, #378).** `log_db_connect` sets `SQLITE_LIMIT_COLUMN` to `LOG_DB_COLUMNS_MAX` (100), so a result
+  with more columns is refused ("too many columns", a plain 400) before a huge row is built (`t_logs_db.py`). In `log_answer` a line over
+  `LOG_LINE_HUGE` (20,000 chars) becomes `[line too long]` before scrubbing (`t_logs_caps.py`); lowering `LOG_RATE` to 10 a minute waits on
+  measuring the real Mac. Turning log reading off and "New code" ask in the app's bottom sheet (`modal()`), not `confirm()` (`test_logaccess_ui.py`).
 
 ## Kalshi API watch (GitHub issue #82)
 
