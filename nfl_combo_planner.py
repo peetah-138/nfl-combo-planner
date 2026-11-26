@@ -20333,9 +20333,11 @@ def mkt_learn():
     """Each (league, bet type, phase)'s weight on the books: the grid weight with the lowest log loss on its settled
     markets, kept only when it beats Kalshi's mid alone by MKT['gain'] and MKT['se'] standard errors over
     MKT['min_n']+ markets (the same test line_gate uses) AND the same weight also beats the mid on the newest
-    MKT['hold_share'] of those markets by game date (a recency-stability veto, #345). That slice is NOT held out: the
-    weight is still picked on all the rows, newest included, so this is not an out-of-sample test. It can only make
-    the learner stricter (a weight is either 0 or what the old rule gave; never added or raised). A vetoed weight
+    MKT['hold_share'] of those markets by game date (a recency-stability veto, #345), AND the weight picked on only
+    the OLDEST rows (everything before that newest slice) also beats the mid on the newest slice it never saw (#474,
+    the true out-of-sample test; 'oos_w', 'oos_gain'). The recency check alone is not held out (its weight saw the
+    newest rows); the second test is. Both only ever take a weight away: a weight is either 0 or what the in-sample
+    rule gave; never added or raised, so #474 is stricter-only. A vetoed weight
     moves longshot_leg_fair from the blend to the mid, which can change which legs fall in the 65-80% band (see
     'vetoed' and 'hold_gain'). MKT['hold_min'] (30) is inert at min_n 200 (30% of 200 = 60) and only matters if
     min_n is lowered. Everything else stays at 0: Kalshi's mid."""
@@ -20367,6 +20369,19 @@ def mkt_learn():
         h_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w), y) for r, y, b in
                       zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if w else 0.0
         held = h_n >= MKT["hold_min"] and h_gain > 0
+        # #474: the true out-of-sample test. Pick the weight on the OLDEST rows only (everything but the newest slice),
+        # then test THAT weight on the newest slice, which it never saw. Stricter-only: it is one more condition on top
+        # of the recency check above (a weight is still 0 or the in-sample weight, never a different one).
+        tr = len(rs) - h_n
+        o_w, o_g = 0.0, 0.0
+        for w2 in MKT["grid"][1:]:
+            g2 = sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], w2), y) for r, y, b in zip(rs[:tr], ys[:tr], base[:tr])) / tr if tr else 0.0
+            if g2 > o_g:
+                o_w, o_g = w2, g2
+        o_gain = (sum(b - _ll(mkt_anchor(r["mid"], r["fair_book"], o_w), y) for r, y, b in
+                      zip(rs[-h_n:], ys[-h_n:], base[-h_n:])) / h_n) if o_w else 0.0
+        oos = o_w > 0 and o_gain > 0
+        held = held and oos
         if not mkt_hold_on():                                            # Settings switch off: the in-sample bar alone (#497)
             held = True
         elif earned and not held:
@@ -20374,11 +20389,12 @@ def mkt_learn():
             _log_once(f"mkt_veto|{k}|{w}|{h_n}|{round(h_gain, 3)}",
                       f"books weight held back: {league_label(lg_)} {kind_} {phase_}: the in-sample bar said {w}, "
                       + (f"but the newest 30% is only {h_n} markets (it needs {MKT['hold_min']})" if h_n < MKT["hold_min"] else
-                       f"but on the newest {h_n} of {len(rs)} markets by game date it gained {h_gain:+.4f}, not above 0")
+                         f"but on the newest {h_n} of {len(rs)} markets by game date it gained {h_gain:+.4f}, not above 0" if h_gain <= 0 else
+                         f"but a weight picked on the oldest {tr} ({o_w}) gained {o_gain:+.4f} on the newest {h_n} it never saw, not above 0")
                       + ", so Kalshi's mid alone is used")
         out[k] = {"w": w if earned and held else 0.0, "n": len(rs), "gain": round(g, 4), "se": round(se, 4),
                   "ll_mid": round(sum(base) / len(base), 4), "hold_n": h_n, "hold_gain": round(h_gain, 4),
-                  "vetoed": bool(earned and not held)}
+                  "oos_w": o_w, "oos_gain": round(o_gain, 4), "vetoed": bool(earned and not held)}
     MKT_W.update(at=time.time(), w=out)
     return out
 
@@ -20540,7 +20556,7 @@ def mkt_fair_summary():
         ww = (w.get(f"{lg}|{kind}|{phase}") or {}) if kind != "combo" else {}
         out.append({"lg": lg, "name": league_label(lg), "kind": kind, "phase": phase, "n": n, "few": n < BOARD_FEW,
                     "ll_mid": round(g["ll_mid"] / n, 4), "ll_book": round(g["ll_book"] / n, 4),
-                    "w": ww.get("w", 0.0), "hold_gain": ww.get("hold_gain"), "vetoed": bool(ww.get("vetoed")),
+                    "w": ww.get("w", 0.0), "hold_gain": ww.get("hold_gain"), "oos_w": ww.get("oos_w"), "oos_gain": ww.get("oos_gain"), "vetoed": bool(ww.get("vetoed")),
                     "claimed": g["claimed"], "vanish": g["vanish"],
                     "van_pl": round(g["van_pl"], 2), "kept": g["kept"], "kept_pl": round(g["kept_pl"], 2)})
     _mkt_table()
@@ -27012,6 +27028,17 @@ def lgsh_blend(start, levels, k):
     return v, shares
 
 
+def _lgsh_minus(a, b):
+    """A calibration band (mean fair, win rate, n) of `a` without the games of `b` (a narrower group inside it), so a game
+    is not counted at both levels (#477). None when nothing is left. `b` None = `a` unchanged."""
+    if not a:
+        return None
+    if not b:
+        return a
+    k = a[2] - b[2]
+    return ((a[0] * a[2] - b[0] * b[2]) / k, (a[1] * a[2] - b[1] * b[2]) / k, k) if k > 0 else None
+
+
 def _lgsh_say(shares):
     return ", ".join(f"{n} {x:.0%}" for n, x in sorted(shares.items(), key=lambda kv: -kv[1]) if x >= 0.005)
 
@@ -27040,10 +27067,16 @@ def lgsh_rows(now=None):
                 continue
             legs = [_LGSH_PRE[lg] + "GAME-X"] if lg in _LGSH_PRE else None
             cur = _cut_level(d, sp, n, legs)[0]
-            v, sh = lgsh_blend(CUT_START, [("all", max(float(ea.get("level", CUT_START)), CUT_START) if ea else None,
-                                            ea.get("n", 0)),
-                                           ("sport", es.get("level") if es else None, es.get("n", 0)),
-                                           ("league", el.get("level") if el else None, el.get("n", 0))], LGSH["k_cut"])
+            # #477: the file's n are NESTED counts (everyone's n holds the sport's quotes, the sport's holds the league's)
+            # and a thin group's entry carries its parent's level beside its own n. So a level counts only when it is its
+            # own (`_cut_own`), and only for the quotes the narrower level does not already hold: no result twice.
+            own_a, own_s, own_l = _cut_own(ea), _cut_own(es), _cut_own(el)
+            n_l = int(el.get("n", 0) or 0) if own_l else 0
+            n_s = max(int(es.get("n", 0) or 0) - n_l, 0) if own_s else 0
+            n_a = max(int(ea.get("n", 0) or 0) - (int(es.get("n", 0) or 0) if own_s else 0), 0) if own_a else 0
+            v, sh = lgsh_blend(CUT_START, [("all", max(float(ea.get("level", CUT_START)), CUT_START) if own_a else None, n_a),
+                                           ("sport", es.get("level") if own_s else None, n_s),
+                                           ("league", el.get("level") if own_l else None, n_l)], LGSH["k_cut"])
             v = min(max(v, 85.0), 110.0)
             out.append({"league": lg, "sport": sp, "metric": "cutoff", "key": _cut_key("", n).lstrip(":"), "current": cur,
                         "shadow": round(v, 2), "n_own": int(el.get("n", 0) or 0), "n_sport": int(es.get("n", 0) or 0),
@@ -27051,7 +27084,7 @@ def lgsh_rows(now=None):
     # ---- fair-price calibration of the sub-leagues
     m = calibration()
     for lg in sorted(_LGSH_PRE):
-        sp, tk = "soccer", _LGSH_PRE[lg] + "GAME-X"
+        sp = "soccer"
         for lo, hi in _LGSH_BANDS:
             bl = next((b for b in m.get(lg, []) if b[0] == lo), None)
             bs = next((b for b in m.get(sp, []) if b[0] == lo), None)
@@ -27059,12 +27092,20 @@ def lgsh_rows(now=None):
             if not bl:
                 continue
             f = bl[2]
-            cur, new = calib_fair(sp, f), calib_fair(sp, f, tk)
-            sh = {"league": round(bl[4] / (bl[4] + LGSH["k_calib"]), 4)}
+            cur = calib_fair(sp, f)
+            # #477: calibration() bands are nested too (all holds the sport's games, the sport's holds the league's). Take
+            # each level's games WITHOUT the narrower level's (calib_fair already does this for all minus sport), so
+            # every game moves the nudge once. Live calib_fair(ticker=...) is NOT changed here.
+            t3 = lambda b: (b[2], b[3], b[4]) if b else None      # (mean fair, win rate, n)
+            rest_a = _lgsh_minus(t3(ba), t3(bs))
+            rest_s = _lgsh_minus(t3(bs), t3(bl))
+            new_adj, sh = lgsh_blend(0.0, [("all", (rest_a[1] - rest_a[0]) if rest_a else None, rest_a[2] if rest_a else 0),
+                                           ("sport", (rest_s[1] - rest_s[0]) if rest_s else None, rest_s[2] if rest_s else 0),
+                                           ("league", bl[3] - bl[2], bl[4])], LGSH["k_calib"])
+            new = min(max(f + new_adj, 0.01), 0.99)
             out.append({"league": lg, "sport": sp, "metric": "calib", "key": f"{lo:.2f}-{min(hi, 1.0):.2f}",
                         "current": round(cur, 4), "shadow": round(new, 4), "n_own": bl[4], "n_sport": bs[4] if bs else 0,
-                        "n_all": ba[4] if ba else 0, "shares": sh,
-                        "says": f"its own record {sh['league']:.0%}, the rest from {sp} and all"})
+                        "n_all": ba[4] if ba else 0, "shares": sh, "says": _lgsh_say(sh)})
     # ---- each league's settled-bet return
     by = defaultdict(lambda: [0, 0.0, 0.0])             # key -> [bets, staked, profit]
     for c in _tune_items(LGSH["days"]):
@@ -27078,12 +27119,16 @@ def lgsh_rows(now=None):
             x[0] += 1
             x[1] += float(stake)
             x[2] += float(pl)
-    roi = lambda key: (by[key][2] / by[key][1]) if key in by and by[key][1] > 0 else None
+    def part(key, inner=None):                          # (bets, return per $) of a group WITHOUT the narrower group's bets (#477)
+        x = by.get(key, [0, 0.0, 0.0])
+        i = by.get(inner, [0, 0.0, 0.0]) if inner else [0, 0.0, 0.0]
+        n_, st, pl = x[0] - i[0], x[1] - i[1], x[2] - i[2]
+        return (pl / st if st > 1e-9 and n_ > 0 else None), max(n_, 0)
     for lg in sorted({k[1] for k in by if k[0] == "league"}):
         sp = _lgsh_league_sport(lg)
-        v, sh = lgsh_blend(0.0, [("all", roi(("all", None)), by.get(("all", None), [0])[0]),
-                                 ("sport", roi(("sport", sp)), by.get(("sport", sp), [0])[0]),
-                                 ("league", roi(("league", lg)), by.get(("league", lg), [0])[0])], LGSH["k_roi"])
+        ra, rs = part(("all", None), ("sport", sp)), part(("sport", sp), ("league", lg))
+        rl = part(("league", lg))
+        v, sh = lgsh_blend(0.0, [("all", ra[0], ra[1]), ("sport", rs[0], rs[1]), ("league", rl[0], rl[1])], LGSH["k_roi"])
         out.append({"league": lg, "sport": sp, "metric": "record", "key": f"{LGSH['days']}d", "current": None,
                     "shadow": round(v, 4), "n_own": by[("league", lg)][0], "n_sport": by.get(("sport", sp), [0])[0],
                     "n_all": by.get(("all", None), [0])[0], "shares": sh, "says": _lgsh_say(sh)})
@@ -27128,10 +27173,105 @@ def league_shadow_run(now=None, force=False):
                         pass
                 raise
         store_x("delete from league_shadow where ts < ?", (now - LGSH["keep"],))
+        lgsh_log_quotes(now, rows)                     # #476: the per-quote pass/skip, settled to dollars later (own table, never raises)
         return len(rows)
     except Exception as err:
         print("league shadow:", type(err).__name__, err)
         return 0
+
+
+# ---- #476: what a promotion gate needs to settle the shadow to dollars. One row per combo quote Kalshi gave: would it have
+# passed the combo cut-off under today's setting, and under the blended one? Both are settled with the SAME outcome, so
+# the dollar difference is only the pass/skip choice. Read by the "Ready to promote?" card; nothing here decides anything.
+#   league_shadow_q(qid, ts, league, sport, n, pct, stake, pays, cut_now, cut_blend, pass_now, pass_blend, outcome, pnl)
+#     qid = the quotes row it came from (unique, so a quote is logged once); ts = when quoted; league = the cut-off group
+#     (a soccer league, else the sport; mixed-sport quotes are not logged); n = legs; pct = price as a share of fair, the
+#     number the cut-off is compared with; stake / pays = dollars at that quote; cut_now / cut_blend = the cut-off in
+#     % under today's rule and the blended one, as of the run that logged it; pass_* = 1 when pct*100 >= that cut-off;
+#     outcome = 'won'/'lost' once the quote settles, else NULL; pnl = (pays if won else 0) - stake, set with outcome.
+#   Dollars for a policy = pass * pnl, summed over settled rows (`lgsh_gate`). A skipped quote makes and loses 0.
+#   Limits: the cut-off is the one in force when the daily run logged the quote (up to a day, and cut-offs move weekly);
+#   pnl is the hold-to-settle result, with no early exit or fee.
+def _league_shadow_q_table():
+    store_x("create table if not exists league_shadow_q(qid integer primary key, ts real, league text, sport text, n int, "
+            "pct real, stake real, pays real, cut_now real, cut_blend real, pass_now int, pass_blend int, outcome text, pnl real)")
+    store_x("create index if not exists league_shadow_q_t on league_shadow_q(ts)")
+
+
+def lgsh_log_quotes(now=None, rows=None):
+    """Log the combo quotes since the last logged one with their pass/skip under today's cut-off and the blended one, then
+    settle every logged quote whose quote has settled. `rows` = lgsh_rows() of the same run. Returns (logged, settled).
+    Writes only league_shadow_q. Never raises."""
+    try:
+        now = now or time.time()
+        if not STORE["db"]:
+            return (0, 0)
+        _league_shadow_q_table()
+        rows = lgsh_rows(now) if rows is None else rows
+        blend = {(r["league"], r["key"]): r["shadow"] for r in rows if r["metric"] == "cutoff"}
+        d = load_json(CUTOFF_FILE, {})
+        last = max((store_rows("select max(qid) q from league_shadow_q") or [{}])[0].get("q") or 0, 0)
+        new = store_rows("select rowid qid, ts, sport, n, legs, stake, pays, pct from quotes where rowid > ? and pct is not null "
+                         "and stake > 0 order by rowid limit 5000", (last,))
+        args = []
+        for q in new:
+            sps = (q["sport"] or "").split(",")
+            if len(sps) != 1 or not sps[0]:
+                continue
+            try:
+                legs = json.loads(q["legs"] or "[]")
+            except Exception:
+                continue
+            sp, n = sps[0], q["n"] or 2
+            lg = _combo_league(sp, legs) or sp
+            cur = _cut_level(d, sp, n, legs)[0]
+            cb = blend.get((lg, _cut_key("", n).lstrip(":")), cur)
+            pct = float(q["pct"]) * 100
+            args.append((q["qid"], q["ts"], lg, sp, n, float(q["pct"]), q["stake"], q["pays"], cur, cb,
+                         int(pct >= cur), int(pct >= cb), None, None))
+        if args:
+            with _SLOCK:
+                STORE["db"].executemany("insert or ignore into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args)
+                STORE["db"].commit()
+        done = 0
+        for r in store_rows("select s.qid, s.stake, s.pays, q.outcome from league_shadow_q s join quotes q on q.rowid = s.qid "
+                            "where s.outcome is null and q.outcome in ('won','lost') limit 5000"):
+            store_x("update league_shadow_q set outcome=?, pnl=? where qid=?",
+                    (r["outcome"], round((r["pays"] if r["outcome"] == "won" else 0.0) - r["stake"], 4), r["qid"]))
+            done += 1
+        store_x("delete from league_shadow_q where ts < ?", (now - LGSH["keep"],))
+        return (len(args), done)
+    except Exception as err:
+        print("league shadow quotes:", type(err).__name__, err)
+        return (0, 0)
+
+
+def lgsh_gate(days=None):
+    """The promotion gate's numbers, from settled `league_shadow_q` rows: {"all": {...}, "leagues": [{...}]} each with
+    settled (count), dollars_now, dollars_blend (summed pass * pnl), diff (blend - now), flips (quotes the two rules
+    decide differently), flips_won / flips_lost. {} when there is nothing. Read-only, never raises."""
+    try:
+        if not STORE["db"]:
+            return {}
+        _league_shadow_q_table()
+        rows = store_rows("select league, pass_now, pass_blend, pnl from league_shadow_q where outcome is not null"
+                          + (" and ts > ?" if days else ""), ((time.time() - days * 86400,) if days else ()))
+        if not rows:
+            return {}
+        agg = defaultdict(lambda: {"settled": 0, "dollars_now": 0.0, "dollars_blend": 0.0, "flips": 0})
+        for r in rows:
+            for k in ("all", r["league"]):
+                a = agg[k]
+                a["settled"] += 1
+                a["dollars_now"] += r["pass_now"] * r["pnl"]
+                a["dollars_blend"] += r["pass_blend"] * r["pnl"]
+                a["flips"] += int(r["pass_now"] != r["pass_blend"])
+        fmt = lambda k, a: {"league": k, **{x: (round(y, 2) if isinstance(y, float) else y) for x, y in a.items()},
+                            "diff": round(a["dollars_blend"] - a["dollars_now"], 2)}
+        return {"all": fmt("all", agg["all"]), "leagues": [fmt(k, a) for k, a in sorted(agg.items()) if k != "all"]}
+    except Exception as err:
+        print("league shadow gate:", type(err).__name__, err)
+        return {}
 
 
 def league_shadow_view():

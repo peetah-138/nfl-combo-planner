@@ -11,7 +11,7 @@ now = time.time()
 E._mkt_table()
 
 
-def load(truth, n=2500, ids=None, kicks=None):
+def load(truth, n=2500, ids=None, kicks=None, gap=0.08):
     """truth(i, mid, fb) -> chance of yes. Row i's game is the i-th oldest; `kicks(i, t)` may override its kick (None = no kick, the log time is used)."""
     E.store_x("delete from mkt_fair")
     E.MKT_W.update(at=0, w={})
@@ -19,7 +19,7 @@ def load(truth, n=2500, ids=None, kicks=None):
     rows = []
     for i in range(n):
         fb = rng.uniform(0.3, 0.7)
-        mid = min(max(fb + rng.choice((-0.08, 0.08)), 0.05), 0.95)
+        mid = min(max(fb + rng.choice((-gap, gap)), 0.05), 0.95)
         y = rng.random() < truth(i, mid, fb)
         t = now - 40 * 86400 + i * 1300
         kick = kicks(i, t) if kicks else t
@@ -116,4 +116,33 @@ ok("mkt_hold OFF: a group that never earned the in-sample bar still gets 0 (off 
 E.CFG["mkt_hold"] = True
 E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
 
+# 8. #474: the true out-of-sample test. A weight picked on the OLDEST 70% must also beat the mid on the newest 30% it
+#    never saw. The books are 80% of the way right in the oldest 70% (the 70% pick is the top weight, 1.0) but only 60% of the way
+#    right in the newest 30% (a weight of 1.0 loses there; the all-rows weight, 0.75, still gains). Books and Kalshi's mid
+#    sit 0.2 apart here so the weights are separated clearly rather than by noise. The all-rows weight (what the recency check tests) is lower
+#    and still gains on the newest slice, so the OLD rule kept it; the true holdout takes it away.
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+mixed = lambda i, mid, fb: (mid + 0.8 * (fb - mid)) if i < 1750 else mid + 0.6 * (fb - mid)
+r = load(mixed, gap=0.2)
+ok("oos: clears the in-sample bar", r["gain"] >= E.MKT["gain"] and r["gain"] >= E.MKT["se"] * r["se"], r)
+ok("oos: the recency check alone would have kept it (the all-rows weight gains on the newest 30%)", r["hold_gain"] > 0, r)
+ok("oos: the weight picked on the oldest 70% loses on the newest 30%", r["oos_w"] > 0 and r["oos_gain"] <= 0, r)
+ok("oos: so the weight is 0 and it is called vetoed", r["w"] == 0.0 and r["vetoed"], r)
+r = load(lambda i, mid, fb: fb, gap=0.2)
+ok("oos: books right throughout: the oldest-70% weight also wins on the newest 30%", r["w"] > 0 and r["oos_w"] > 0 and r["oos_gain"] > 0 and not r["vetoed"], r)
+# stricter only: with the switch off the in-sample weight comes back, never a different one
+E.CFG["mkt_hold"] = False
+E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+r_off = load(mixed, gap=0.2)
+ok("oos: switch off = the in-sample bar alone again (the weight the old rule gave)", r_off["w"] > 0 and not r_off["vetoed"], r_off)
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+for seed, frac in enumerate((0.0, 0.3, 0.6, 1.0)):
+    f_ = lambda i, mid, fb, f=frac: fb if i < 1750 else mid + f * (fb - mid)
+    E.CFG["mkt_hold"] = False; E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+    base_w = load(f_, gap=0.2)["w"]                                     # the in-sample weight, no holdout at all
+    E.CFG["mkt_hold"] = True; E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+    r = load(f_, gap=0.2)
+    ok(f"oos: stricter only (case {seed}): weight is 0 or exactly the in-sample weight, never another", r["w"] in (0.0, base_w))
 shutil.rmtree(TMP, ignore_errors=True)
