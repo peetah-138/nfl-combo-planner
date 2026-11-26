@@ -25382,6 +25382,21 @@ def _knob_league(key, d, now=None):
     }
 
 
+def sl_auto_view():
+    """Settings › Selling at a loss (#313, display only): is self-tuning on, and in which leagues has its own record turned
+    'Sells at a loss by itself' on. {'live': bool, 'on': [league names]}; None if anything is unreadable. Changes nothing."""
+    try:
+        if not knob_switch_on():
+            return {"live": False, "on": []}
+        kv = knob_view() or {}
+        row = next((k for k in kv.get("knobs") or [] if k.get("name") == "sl_auto"), None)
+        vals = (row or {}).get("values") or {}
+        return {"live": True, "on": [l["name"] for l in kv.get("leagues") or []
+                                      if l.get("key") != "all" and (vals.get(l["key"]) or {}).get("v") == 1]}
+    except Exception:
+        return None
+
+
 def knob_view(now=None):
     """The registry for Results › What's working › Selling, read-only: every knob with its start, bounds and, per
     league, the value the live code uses right now and whose record set it. Reads the same files smart_params,

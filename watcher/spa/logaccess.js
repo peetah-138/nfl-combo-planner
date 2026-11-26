@@ -5,10 +5,13 @@
 function logRow(mac){const l=mac.logs||{};const ago=t=>{const s=Math.max(0,Math.round(Date.now()/1000-t));return s<90?'just now':s<5400?Math.round(s/60)+' min ago':s<172800?Math.round(s/3600)+' hr ago':Math.round(s/86400)+' days ago';};
  const sub=l.on?`On${l.read?' · last read '+ago(l.read):' · not read yet'}. The dev Mac can read this Mac's activity log and the data it saves, with passwords and keys hidden. It can't buy, sell or change anything.`
   :'Off. When on, the dev Mac can read this Mac\'s activity log and the data it saves, over Tailscale, with passwords and keys hidden. It can\'t buy, sell or change anything.';
- return `<label class="srow" id="logrow"><div class="l"><b>Let the dev Mac read logs</b><small>${sub}</small></div><input type="checkbox" switch class="tg" aria-label="Let the dev Mac read logs" ${l.on?'checked':''} onchange="logAccess(this.checked,this)"></label>${l.on?`<div class="srow"><div class="l"><small>Lost the code, or want to cut off the old one?</small></div><button class="btn" onclick="logAccess(true,this,1)">New code</button></div>`:''}`;}
-async function logAccess(on,el,again){
- if(!on&&!confirm('Stop the dev Mac reading logs? Its code stops working now.')){el.checked=true;return;}
- if(again&&!confirm('Make a new code? The old one stops working now.'))return;
+ return `<label class="srow" id="logrow"><div class="l"><b>Let the dev Mac read logs</b><small>${sub}</small></div><input type="checkbox" switch class="tg" aria-label="Let the dev Mac read logs" ${l.on?'checked':''} onchange="logAccess(this.checked,this)"></label>${l.on?`<div class="srow"><div class="l"><small>Lost the code, or want to cut off the old one?</small></div><button class="btn" id="lanew" onclick="logAccess(true,this,1)">New code</button></div>`:''}`;}
+/* (#378) the two "are you sure" questions are the app's own bottom sheet (modal), not the browser's confirm(). */
+function logAccess(on,el,again){
+ if(!on){el.checked=true;modal(`<h3>Stop the dev Mac reading logs?</h3><p>Its code stops working now. You can turn it back on any time and get a new code.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();logAccessRun(false,0)">Stop it</button></div>`);return;}
+ if(again){modal(`<h3>Make a new code?</h3><p>The old code stops working now. You will see the new one once, so be ready to copy it.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" onclick="closeModal();logAccessRun(true,1)">Make a new code</button></div>`);return;}
+ logAccessRun(true,0);}
+async function logAccessRun(on,again){const el=again?document.querySelector('#lanew'):document.querySelector('#logrow input');if(!el)return;
  let r;el.disabled=true;                     /* no double tap: two quick taps would make two codes */
  try{r=await api('/app/mac',{a:'logaccess',on});}catch(e){toast('Couldn\'t change it. Try again.');load('settings');return;}finally{el.disabled=false;}
  if(!r||!r.ok){toast((r&&r.msg)||'Couldn\'t change it. Try again.');load('settings');return;}
