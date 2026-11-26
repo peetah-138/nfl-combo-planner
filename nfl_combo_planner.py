@@ -4769,6 +4769,11 @@ def log_decision(rec):
         return
     rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                by=device_label(), ride=ride_level()[0])
+    try:                                          # name the combo by its picks, not just "Combo N" (log reading, display only)
+        if "picks" not in rec and rec.get("ticker") in (MINE.get("snap") or {}):
+            rec["picks"] = [str(nm)[:80] for nm, _ in list(MINE["snap"][rec["ticker"]]["legs"].values())[:12]]
+    except Exception:
+        pass
     try:
         with SELL_LOG_LOCK:
             with open(SELL_LOG, "a", encoding="utf-8") as f:
@@ -6027,6 +6032,8 @@ def auto_sell_now(plan):
             if hedge_unsure(t) or rfq_unsure(t, "sell"):
                 continue                                  # a hedge or cash-out with an unknown outcome: hands off until checked
             o = fresh_offer(t) if why == "plan" else (MINE["cash"].get(t) or {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}) if h else None
+            if why != "plan" and o is not None and not isinstance(o.get("offer"), (int, float)):
+                o = {"offer": 0.01, "frac": 1.0, "rfq": "estimate"}   # an error dict ("no offers") has no offer: only an estimate, never a sale; a REAL ask may follow (throttled)
             if not (f and h and o) or t in MINE.get("selling", set()):
                 continue
             if why == "plan":
@@ -6064,8 +6071,8 @@ def auto_sell_now(plan):
                         if time.time() - told.get(t, 0) >= 300:        # one note per combo per 5 minutes
                             told[t] = time.time()
                             log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "skipped",
-                                          "note": f"REAL OFFER not asked: {gate_why}; the estimate (${o['offer']:.2f}) never sells on its own",
-                                          "est": round(o["offer"], 2), "bar": round(thr, 2)})
+                                          "note": f"REAL OFFER not asked: {gate_why}; the estimate (${o.get('offer') or 0:.2f}) never sells on its own",
+                                          "est": round(o.get("offer") or 0, 2), "bar": round(thr, 2)})
                         continue
                     real_ask_note(t)
                 o = get_cash_offer(t, f)
