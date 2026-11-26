@@ -17,7 +17,7 @@ function lsCard(r){r.check=r.check||!!(S.lsChecked&&S.lsChecked[r.id]);   // (#3
   ${legs}
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${pct(o.pct)} of fair · ${o.clears?'worth it after the fee':'now under what it\'s worth'} · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>`:''}
   ${S.lsErr&&S.lsErr[r.id]?`<div class="lsfail${S.lsErr[r.id].fresh?' pin':''}" role="alert"><b>Couldn't get a price.</b> ${esc(S.lsErr[r.id].m)} Nothing was bought.</div>`:''}
-  <div class="brow">${busy?`<button class="btn pri" disabled><span class="spin"></span> ${S.lsBuying?'Buying… confirming with Kalshi':'Asking Kalshi…'}</button>`:
+  <div class="brow">${busy?`<button class="btn pri" disabled><span class="spin" aria-hidden="true"></span> ${S.lsBuying?'Buying… confirming with Kalshi':'Asking Kalshi…'}</button>`:
    fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" data-lsid="${esc(r.id)}" onclick="lsBuy(this.dataset.lsid,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
    `<button class="btn pri" data-lsid="${esc(r.id)}" onclick="lsQuote(this.dataset.lsid,this)">Get price · ${money(r.stake)}</button>`}</div></div>`;}
 function lsSection(d,inBoard){const L=d.longshots||{},rs=L.recs||[];
@@ -28,7 +28,7 @@ function lsSection(d,inBoard){const L=d.longshots||{},rs=L.recs||[];
   `<div class="empty lsempty"><b>No long shot today</b>${esc(L.busy&&!L.at?'Checking today\'s games…':(L.why||'Checking today\'s games…'))}</div>`):''}`;}
 function lsFind(id){return ((S.build&&S.build.longshots||{}).recs||[]).find(r=>r.id===id);}
 async function lsQuote(id,b){if(S.lsBusy||S.buying)return;hap();const r=lsFind(id);if(!r)return;S.lsBusy=id;S.lsBuying=false;if(S.lsErr)delete S.lsErr[id];
- if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';}
+ if(b){b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> Asking Kalshi…';}
  const q=await api('/app/api/act',{a:'longshot',id,legs:r.legs.map(l=>l.ticker)}).catch(e=>({ok:false,error:'Couldn\'t reach your Mac ('+(e&&e.message||e)+').'}));
  S.lsBusy=null;
  if(!q.ok){   // (#353) the reason stays on the card (with a small shake), not only in a toast; a plain refusal, nothing was sent
@@ -36,7 +36,7 @@ async function lsQuote(id,b){if(S.lsBusy||S.buying)return;hap();const r=lsFind(i
  S.quotes=S.quotes||{};S.quotes[lsKey(r)]={i:q.i,pays:q.pays,stake:q.stake,pct:q.pct,clears:q.clears,at:Date.now()/1000,sig:r.legs.map(l=>l.ticker).join('|')};
  renderBuild();clearInterval(S.qT);S.qT=setInterval(qTick,1000);}
 async function lsBuy(id,btn){if(S.buying||S.lsBusy)return;const r=lsFind(id),o=r&&S.quotes&&S.quotes[lsKey(r)];if(!o||Date.now()/1000-o.at>=20){renderBuild();return;}
- S.buying=true;S.lsBusy=id;S.lsBuying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';}
+ S.buying=true;S.lsBusy=id;S.lsBuying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';}
  let res;try{res=await api('/app/api/act',{a:'buy',i:o.i,legs:r.legs.map(l=>l.ticker)});}catch(e){res={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
  S.buying=false;S.lsBusy=null;S.lsBuying=false;delete S.quotes[lsKey(r)];if(res.check){r.check=true;S.lsChecked=S.lsChecked||{};S.lsChecked[r.id]=true;}   // unknown outcome: the card says so, and keeps saying so when Build refreshes (#353)
  if(res.ok){r.bought=true;okSheet('Bought',`${money(res.pays||0)} if it hits`,legSummary(r.legs)+'. It shows on Live within a minute. Smart sell watches it from there.');}

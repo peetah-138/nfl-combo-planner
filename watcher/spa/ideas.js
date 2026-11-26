@@ -43,10 +43,10 @@ function ideaVerdict(x,q){if(!q)return {k:''};
  if(q.clears===false)return {k:'warn',why:`Kalshi's price now is ${pct(q.pct)} of fair, under your bar.`};
  return {k:''};}
 function ideaButtons(x,q,fresh,left,det){const one=x.n===1,busy=!!(S.ibuy&&S.ibuy[x.id]),v=fresh?ideaVerdict(x,q):{k:''};
- const buy=busy?`<button class="btn ${v.k==='warn'?'warn':'yes'}" disabled><span class="spin"></span> Buying…</button>`
+ const buy=busy?`<button class="btn ${v.k==='warn'?'warn':'yes'}" disabled aria-busy="true"><span class="spin" aria-hidden="true"></span> Buying…</button>`
   :v.k==='no'?`<button class="btn acc" data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">Get a new price</button>`
   :`<button class="btn ${v.k==='warn'?'warn':'yes'} qb" data-iid="${esc(x.id)}" onclick="${one?'buySingle':'buyIdea'}(this.dataset.iid)">${qBar(q)}${v.k==='warn'?'Buy anyway':'Buy'} · ${left}s</button>`;
- if(busy&&!fresh)return `<div class="dbtns"><button class="btn ghost" disabled>Pass</button><button class="btn yes" disabled><span class="spin"></span> Buying…</button></div>`;   // #270: a buy still on its way after the countdown ended
+ if(busy&&!fresh)return `<div class="dbtns"><button class="btn ghost" disabled>Pass</button><button class="btn yes" disabled aria-busy="true"><span class="spin" aria-hidden="true"></span> Buying…</button></div>`;   // #270: a buy still on its way after the countdown ended
  return `<div class="dbtns">${fresh?`<button class="btn ghost" ${busy?'disabled ':''}data-iid="${esc(x.id)}" onclick="ideaPass(this.dataset.iid,${det?'true':'false'})">Pass</button>${buy}`:
   `<button class="btn ghost" data-iid="${esc(x.id)}" onclick="${det?'ideaNotNowSheet':'hideIdea'}(this.dataset.iid)">Not now</button><button class="btn acc" ${det?'':`id="ib-${esc(x.id)}" `}data-ib="${esc(x.id)}" onclick="priceIdea(this.dataset.ib)">${one?"Get today's price":'Get my price'}${stkLbl('id:'+x.id)}</button>`}</div>`;}
 function ideaVd(x,q){const v=ideaVerdict(x,q);return (v.why?`<div class="ivd ${v.k}" role="status">${esc(v.why)}</div>`:'')+ideaWarn(q);}
@@ -230,7 +230,7 @@ function ideaSheet(){const id=S.ideaOpen;if(!id||S.ideaReady!==id||!$('#modal').
  if(S.ideaSig===sig)return;S.ideaSig=sig;const top=sh.scrollTop;pushFill(ideaBody(x),'Buy idea');sh.scrollTop=top;}
 
 /* ---- getting a price and buying: the same guarded Mac paths as always */
-async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySelectorAll(`[data-ib="${id}"]`).forEach(b=>{b.disabled=true;b.innerHTML='<span class="spin"></span> Asking Kalshi…';});
+async function priceIdea(id){if(S.ideaAns)delete S.ideaAns[id];document.querySelectorAll(`[data-ib="${id}"]`).forEach(b=>{b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> Asking Kalshi…';});
  const want=stkGet('id:'+id),r=await api('/app/api/act',{a:'idea',id,stake:want}).catch(()=>({ok:false}));
  if(want!==stkGet('id:'+id))return;   // Pete changed the amount while this price was on its way: the newer ask wins
  if(!r.ok){if(r.gone)return ideaGone(id,r.msg);toast(r.msg||'No price came in. Try again in a minute.',5000);renderLive();return;}

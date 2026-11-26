@@ -108,7 +108,7 @@ with sync_playwright() as pw:
             if want.lower() not in t2.lower(): bad(f"{tag}: combo row should show {want!r}: {t2[:300]!r}")
         # issue #415: a cash-out days away reads in hours or days from now, never "4952 min in"
         when = pg.evaluate("[exitWhen(41),exitWhen(150),exitWhen(4952),exitWhen(1500)]")
-        if when != ["about 41 min in", "in about 3 h", "in about 3 days", "in about 25 h"]: bad(f"{tag}: long cash-out waits must read in hours or days: {when}")
+        if when != ["about 41 min from now", "in about 3 h", "in about 3 days", "in about 25 h"]: bad(f"{tag}: long cash-out waits must read in hours or days: {when}")
         if [r["warn"] for r in rs] != [False, False, True]: bad(f"{tag}: only the combo carries the exposure warning: {[r['warn'] for r in rs]}")
         if pg.evaluate("!!document.querySelector('.lrow2')||document.body.innerText.includes('Negative edge')"):
             bad(f"{tag}: the old all-strikes Spreads & totals board is back (a negative-edge line shows)")

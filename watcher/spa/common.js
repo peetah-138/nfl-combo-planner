@@ -97,7 +97,7 @@ addEventListener('pointerdown',e=>{const t=$('#toast');if(t&&t.classList.contain
    edge, or a swipe right closes it. Switching between the two modes never animates (no flash of a half-moved sheet). */
 function sheetMode(push){const m=$('#modal'),sh=$('#sheet');clearTimeout(S.pushT);if(m.classList.contains('push')===push)return;
  sh.style.transition=m.style.transition='none';m.classList.toggle('push',push);sh.classList.toggle('wide',push);sh.style.transform='';void m.offsetWidth;sh.style.transition=m.style.transition='';void m.offsetWidth;}
-function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;
+function modal(h){sheetMode(false);document.body.classList.remove('pushed');S.gameOpen=null;S.gameSig=null;S.comboOpen=null;S.ideaOpen=null;const sh=$('#sheet');sh.classList.remove('wide');sh.innerHTML='<i class="grab"></i>'+h;sh.scrollTop=0;{const t=sh.querySelector('h3');sh.setAttribute('aria-label',t&&t.textContent.trim()||'Details');}
  if(!sh.querySelector('.okcard')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sh.classList.add('stag');[...sh.children].forEach((c,i)=>c.style.setProperty('--i',i));clearTimeout(S.shT);S.shT=setTimeout(()=>sh.classList.remove('stag'),900);}
  $('#modal').classList.add('on');hap('light');}
 /* Smart Buy (issue #137): a calm line under a list it took bets out of (no fanfare: it's a gate). A tap shows the
@@ -259,7 +259,7 @@ async function retry(v,b){btnBusy(b,'Trying…');await load(v,true);
 function btnState(b,ok,label,ms){if(!b||!b.isConnected)return;hap(ok?'success':'error');b.disabled=false;b.classList.remove('st-ok','st-bad');void b.offsetWidth;b.classList.add(ok?'st-ok':'st-bad');
  b.innerHTML=(ok?'✓ ':'✕ ')+esc(label||(ok?'Done':'Didn\'t work'));b.dataset.st=ok?'ok':'bad';
  if(ms!==0){const old=b._old;clearTimeout(b._st);b._st=setTimeout(()=>{if(b.isConnected){b.classList.remove('st-ok','st-bad');delete b.dataset.st;if(old!=null)b.innerHTML=old;b._old=null;}},ms||2200);}}
-function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin"></span> '+esc(label||b.textContent.trim());}
+function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
 function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}

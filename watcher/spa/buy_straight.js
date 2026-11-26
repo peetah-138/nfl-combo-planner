@@ -4,7 +4,7 @@
    so it never pays more than shown. Stakes over the quote's `arm` need a second tap. Nothing here buys by itself. */
 const m2=x=>x==null?'—':'$'+(+x).toFixed(2);
 function sbOpen(t,lg){if(!t)return;S.sb={t,lg:lg||'',stake:null,q:null,busy:true,err:null,back:S.gameOpen||null};modal(`<div class="sb" id="sbx">${sbSkel()}</div>`);sbQuote();}
-function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin"></span> Asking Kalshi for its price now…</div>`;}
+function sbSkel(){return `<div class="psk"><i style="height:12px;width:30%"></i><i style="height:24px;width:70%"></i><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><i style="height:64px"></i><i style="height:64px"></i><i style="height:64px"></i></div><i style="height:34px"></i><i style="height:90px"></i><i style="height:46px"></i></div><div class="m" style="text-align:center;font-size:12.5px"><span class="spin" aria-hidden="true"></span> Asking Kalshi for its price now…</div>`;}
 async function sbQuote(stake){const s=S.sb;if(!s||s.sending)return;if(stake!=null)s.stake=stake;s.busy=true;s.err=null;s.fail=null;sbPaint();
  const r=await api('/app/api/act',{a:'singlequote',t:s.t,lg:s.lg,stake:s.stake}).catch(()=>({ok:false,msg:'Couldn\'t reach your Mac.'}));
  if(S.sb!==s)return;s.busy=false;
@@ -50,7 +50,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
  if(q.x||Date.now()/1000-q.at>=q.secs){sbQuote();return;}
  if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin"></span> Buying… confirming with Kalshi';
+ s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';
  let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked),cost:q.cost});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});

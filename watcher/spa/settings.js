@@ -94,7 +94,7 @@ async function flush(){const vals=Object.assign({},PEND);for(const k in PEND)del
  const r=await api('/app/api/settings',{lg:S.set.lg,values:vals}).catch(()=>({ok:false}));
  if(r.ok){S.build=null;saved('Saved','ok');if(r.synced===true)toast('Saved · the Mac watcher has it now.');else if(r.synced===false)toast('Saved here, but the Mac watcher didn\'t get it. Try again.');}
  else{saved('Not saved');toast(r.msg||'Couldn\'t save. Check the connection.');}}
-function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'')+(c==='ok'?' bump':'');e.innerHTML=(t==='Saving…'?'<span class="spin"></span>':c==='ok'?'✓':'')+' '+t;}}
+function saved(t,c){const e=$('#saved');if(e){e.className='saved '+(c||'')+(c==='ok'?' bump':'');e.innerHTML=(t==='Saving…'?'<span class="spin" aria-hidden="true"></span>':c==='ok'?'✓':'')+' '+t;}}
 function sport(lg){S.slg=lg;S.set=null;renderSettings();load('settings');}
 function settingsSkel(){const row='<div style="display:grid;grid-template-columns:1fr 46px;gap:14px;align-items:center"><div style="display:grid;gap:6px"><i style="height:13px;width:52%"></i><i style="height:10px;width:78%"></i></div><i style="height:26px;border-radius:99px"></i></div>';
  return `<div class="set"><div></div><div><div class="hsk" style="padding:2px 0 18px"><i style="height:24px;width:34%"></i><i style="height:12px;width:60%"></i></div><div class="setsk">${[3,4,2].map(n=>`<div><i style="height:15px;width:40%"></i>${row.repeat(n)}</div>`).join('')}</div></div></div>`;}
@@ -173,7 +173,7 @@ async function macCheck(b){btnBusy(b,'Checking…');const was=S.mac&&S.mac.engin
  const r=await api('/app/mac-check',{}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',6000);if(!r.ok){btnState(b,false,'Couldn\'t reach the Mac');return;}
  for(const w of [20,25,25,30]){await new Promise(z=>setTimeout(z,w*1000));const m=await api('/app/mac-info',{}).catch(()=>null);
   if(m&&m.ok){S.mac=m;if(S.view==='settings')renderSettings();if(m.engine!==was&&was){toast('The Mac is now on '+m.engine+'.',5000);return;}if(m.latest===m.engine&&m.checked*1000>Date.now()-60e3){toast('Already on the newest version.',4000);return;}}}}
-async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> Checking Tailscale…';}
+async function httpsCheck(b){hap();if(b){b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> Checking Tailscale…';}
  const was=JSON.stringify((S.mac||{}).https||{});const r=await api('/app/mac',{a:'https'}).catch(()=>({ok:false}));
  if(!r.ok){toast(r.msg||'Couldn\'t reach the Mac.',5000,'bad');load('settings');return;}
  for(let k=0;k<20;k++){await new Promise(z=>setTimeout(z,3000));const m=await api('/app/mac',{a:'status'}).catch(()=>null);
