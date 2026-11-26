@@ -2106,13 +2106,19 @@ def account_get(key, key_id, path, params=None):
     return r.json()
 
 
-def all_positions(key, key_id):
-    """Positions including ones you've closed (sold back to zero) but that haven't settled."""
+def all_positions(key, key_id, strict=False):
+    """Positions including ones you've closed (sold back to zero) but that haven't settled. A failed read answers []
+    unless strict=True, which raises instead (#451): a caller that treats "no positions" as "holds nothing" or caches
+    the answer must be strict, so an unread account is never taken for an empty one."""
+    last = None
     for params in ({"count_filter": "position,total_traded"}, None):
         try:
             return account_pages(key, key_id, "/portfolio/positions", "market_positions", params)
-        except requests.RequestException:
+        except requests.RequestException as err:
+            last = err
             continue
+    if strict and last is not None:
+        raise last
     return []
 
 
@@ -2438,7 +2444,7 @@ def _fetch_account():
         fills = account_pages(key, key_id, "/portfolio/fills", "fills",
                               {"min_ts": int((dt.datetime.now() - dt.timedelta(days=200)).timestamp())})
         settles = account_pages(key, key_id, "/portfolio/settlements", "settlements")
-        positions = all_positions(key, key_id)
+        positions = all_positions(key, key_id, strict=True)     # a failed read is not cached as "no positions" (#451)
         ACCT_POS.update(at=time.time(), items=positions)
         bal = account_get(key, key_id, "/portfolio/balance")
         note_pots(bal)
@@ -7673,7 +7679,7 @@ def open_singles(max_age=30):
             return []
         with open(KEYFILE, encoding="utf-8") as f:
             key = load_private_key(f.read())
-        pos = all_positions(key, key_id)
+        pos = all_positions(key, key_id, strict=True)   # raises on a failed read: nothing cached, live_view fails closed (#451)
         ACCT_POS.update(at=time.time(), items=pos)
     held = []
     for p in pos:

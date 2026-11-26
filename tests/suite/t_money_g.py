@@ -169,5 +169,45 @@ def t_unsure():
     E.save_json(E.IDEA_DISMISS, {})
 
 
-for n, fn in (("push gate", t_push_gate), ("single pass push", t_single_pass_push), ("unsure", t_unsure)):
+def t_failed_read():
+    """(#451) a timed-out or 5xx positions read is 'unknown', never 'holds nothing': not cached, singles_ok False, idea hidden."""
+    import requests
+    E.save_json(E.IDEA_DISMISS, {})
+    E.MINE.pop("view", None); E.MINE.pop("view_at", None)
+    kf = os.path.join(E.HERE, "k.pem"); open(kf, "w").write("x")
+    keep = (E.KEYFILE, E.load_private_key, E.account_get, dict(E.CFG), dict(E.ACCT_POS), dict(E.SINGLES))
+    E.KEYFILE = kf; E.load_private_key = lambda txt: object(); E.CFG["kalshi_key_id"] = "kid"
+    E.ACCT_POS.update(at=0, items=[]); E.SINGLES.update(at=0, items=[])
+    try:
+        for name, exc in (("timeout", requests.Timeout("slow")), ("5xx", requests.HTTPError("503"))):
+            def down(*a, _e=exc, **k): raise _e
+            E.account_get = down
+            E.ACCT_POS.update(at=0, items=[]); E.SINGLES.update(at=0, items=[])
+            try:
+                E.open_singles(); raised = False
+            except requests.RequestException:
+                raised = True
+            ok("failed read (" + name + "): open_singles raises instead of answering []", raised)
+            ok("failed read (" + name + "): the empty result is not cached", E.ACCT_POS["at"] == 0)
+            v = None
+            for _ in range(2):                                 # the second call must not see a cached []
+                v = E.live_view([], [], None, 0.0, 0.0)
+            ok("failed read (" + name + "): live_view singles_ok is False", bool(v) and v.get("singles_ok") is False)
+        tA, _ = single("XXXAAA")
+        old = time.time() - E.IDEA_UNSURE_SECS - 60
+        E.idea_mark_bought([tA], now=old, unsure=True)
+        E.MINE["view"] = v; E.MINE["view_at"] = time.time()
+        ok("failed read: a filled single stays hidden after the window", "XXXAAA" not in [r["picks"] for r in E.live_ideas()])
+        E.account_get = lambda *a, **k: {"market_positions": []}
+        E.ACCT_POS.update(at=0, items=[]); E.SINGLES.update(at=0, items=[])
+        ok("good empty read still works", E.open_singles() == [])
+    finally:
+        E.KEYFILE, E.load_private_key, E.account_get = keep[:3]
+        E.CFG.clear(); E.CFG.update(keep[3]); E.ACCT_POS.clear(); E.ACCT_POS.update(keep[4])
+        E.SINGLES.clear(); E.SINGLES.update(keep[5])
+        E.save_json(E.IDEA_DISMISS, {})
+
+
+for n, fn in (("push gate", t_push_gate), ("single pass push", t_single_pass_push), ("unsure", t_unsure),
+              ("failed read", t_failed_read)):
     safe(n, fn)
