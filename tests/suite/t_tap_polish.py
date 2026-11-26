@@ -22,7 +22,7 @@ ok("the card shows 'avg N¢' only when it differs", "avgc" in src("build.js") an
 
 # #178: Smart Buy's Bigger stakes line is short, the rest behind a tap
 r = src("results.js")
-ok("Bigger stakes: the short line sits in a <summary>, the other figures behind it", "<details class=\"sbmore\"><summary>${head}</summary>${more}</details>" in r and "settled`," in r)
+ok("Bigger stakes (#290): one short progress line, a held-back line only when something holds it back", "<div class=\"sbprog\">${prog}</div>" in r and "Held back: ${why.join(" in r and "settled${" in r)
 
 # #272: a tappable toast can't take a tap meant for a sheet button
 ok("toast: no tap while a sheet is open (JS drops it, CSS stops stragglers)", "#modal.on')))" in src("common.js") and "body:has(#modal.on) .toast.tap.on{pointer-events:none}" in src("app.css"))
