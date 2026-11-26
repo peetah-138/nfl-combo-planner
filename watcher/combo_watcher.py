@@ -4664,7 +4664,7 @@ _RX_USERINFO = re.compile(r"(?i)^((?:https?|wss?)://)[^/?#@\s]*@")
 _RX_QSECRET = re.compile(r"(?i)([?&;](?:[A-Za-z0-9_.-]*(?:key|token|secret|sig|auth|pass|session|cookie|credential)[A-Za-z0-9_.-]*)=)[^&#\s]*")
 _RX_UUIDSHAPE = re.compile(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
-_RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f​-‏⁠﻿]")
+_RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
 _RX_SECRETCOL = re.compile(r"(?i)secret|token|key_?id|passw|passcode|api_?key|odds_?key|private|signature|cookie|credential|pairing|passkey|p256dh|auth_?key")
 
 
