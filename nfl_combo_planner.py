@@ -4774,6 +4774,12 @@ def log_decision(rec):
         return
     rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                by=device_label(), ride=ride_level()[0])
+    try:                                          # the old "Combo N" stays as a secondary id (#520); `combo` is now the picks
+        _h = (MINE.get("hold") or {}).get(rec.get("ticker")) or (MINE.get("snap") or {}).get(rec.get("ticker")) or {}
+        if _h.get("num") and "combo_id" not in rec:
+            rec["combo_id"] = _h["num"]
+    except Exception:
+        pass
     try:                                          # name the combo by its picks, not just "Combo N" (log reading, display only)
         if "picks" not in rec and rec.get("ticker") in (MINE.get("snap") or {}):
             rec["picks"] = [str(nm)[:80] for nm, _ in list(MINE["snap"][rec["ticker"]]["legs"].values())[:12]]
@@ -11894,6 +11900,16 @@ def mine_page(live=False):
     cards, hits_any = [], 0
     views = []                                  # the same numbers as data, for Combo Hub's own screens
     infos = [[leg_info(l) for l in a["legs"]] for a in mine]
+    _starts = []
+    for a in mine:
+        _up = [x for x in (leg_start(l, side_of) for l in a["legs"]) if x]
+        _starts.append(min(_up) if _up else None)
+    try:                                           # what Pete reads (#520): the picks, not "Combo N"; the number stays as `num`
+        cnames = combo_names([[(nm, ticker_sport(l["ticker"]) or "") for l, (nm, *_r) in zip(a["legs"], inf)]
+                              for a, inf in zip(mine, infos)], _starts)
+    except Exception as err:
+        print("combo names:", type(err).__name__, err)
+        cnames = [f"Combo {i}" for i in range(1, len(mine) + 1)]
     for a in mine:
         a["_hits"] = 0                          # the account list is cached, so start fresh each time
     from collections import Counter
@@ -11953,7 +11969,7 @@ def mine_page(live=False):
         st = "cashed" if a["status"] == "cashed" else \
             "won" if a["status"] == "won" or all(r == "yes" for *_, r in inf) else \
             "lost" if a["status"] == "lost" or any(r == "no" for *_, r in inf) else "pending"
-        snap[a["ticker"]] = {"label": f"Combo {i}", "pays": a["pays"], "status": st,
+        snap[a["ticker"]] = {"label": cnames[i - 1], "num": f"Combo {i}", "pays": a["pays"], "status": st,
                              "legs": {l["ticker"]: (nm, r) for l, (nm, _, _, r) in zip(a["legs"], inf)}}
         lost = any(r == "no" for *_, r in inf)
         done = all(r == "yes" for *_, r in inf)
@@ -11985,7 +12001,7 @@ def mine_page(live=False):
                     t0 = o0["ticker"] if o0 else None
                 if not r and t0 and pregame.get(t0):
                     pre_of[l["ticker"]] = pregame[t0]
-            MINE["hold"][a["ticker"]] = {"label": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
+            MINE["hold"][a["ticker"]] = {"label": cnames[i - 1], "num": f"Combo {i}", "p": p, "pays": a["pays"], "cost": a["cost"],
                                          "hold": p * a["pays"], "left": left, "rough": a["ticker"] in rough,
                                          "won_some": any(r == "yes" for *_, r in inf) or progressed,
                                          "progressed": progressed and not any(r == "yes" for *_, r in inf),
@@ -12140,7 +12156,7 @@ def mine_page(live=False):
         games_of = " ".join(sorted({(l.get("event") or (l["ticker"] or "").rsplit("-", 1)[0])
                                     for l, (_, _, _, r) in legs_sorted if not r}))
         kind = ("playing" if any_live and not gone_live else "quiet") if group == "pending" else group
-        views.append({"t": a["ticker"], "i": i, "label": f"Combo {i}", "group": group, "kind": kind,
+        views.append({"t": a["ticker"], "i": i, "label": cnames[i - 1], "num": f"Combo {i}", "group": group, "kind": kind,
                       "sports": sports, "p": p, "pays": a["pays"], "cost": a["cost"], "back": a.get("back", 0),
                       "full": a.get("full_pays") or 0, "when": when, "live": any_live and not gone_live, "sort": sort_t,
                       "preview": preview, "legs": vlegs, "week": a.get("week"),
@@ -12149,7 +12165,7 @@ def mine_page(live=False):
                      f"data-games='{e(games_of)}' data-kind='{kind}' data-t='{sort_t:.0f}' data-pay='{a['pays']:.2f}' "
                      f"data-p='{p:.5f}' data-i='{i}'><summary>"
                      f"<span class='ci'>{SPORTS.get(sp, {}).get('icon', '🎯')}</span>"
-                     f"<span class='cg'><b>Combo {i}</b> <span class='dots'>{dots}</span>"
+                     f"<span class='cg'><b>{e(cnames[i - 1])}</b> <span class='dots'>{dots}</span>"
                      f"<span class='cl'>{context}</span></span>"
                      f"<span class='cn'>{n1}{n2}</span><span class='chev'></span></summary>"
                      f"<div class='cexp'><div class='chips'>{chip}"
@@ -19732,6 +19748,49 @@ def team_short(code, name):
     if code not in PRO_SHORT or not name:
         return name
     return next((n for n in MULTI_NICK if name.endswith(n)), name.split()[-1])
+
+
+def short_leg(nm, sport=""):
+    """One pick, short, for a combo's name (#520): 'Denver Nuggets' -> 'Nuggets' for pro teams, a spread or line kept
+    ('Chiefs +2'), anything else (a player stat, a college team) as written but never longer than 24 characters."""
+    nm = str(nm or "").strip()
+    m = re.match(r"^(.*?)(\s+[+-]\d+(?:\.\d+)?)?$", nm)
+    base, tail = (m.group(1), m.group(2) or "") if m else (nm, "")
+    try:
+        if sport in PRO_SHORT and base in set(sport_teams(sport).values()):
+            base = team_short(sport, base)
+    except Exception:
+        pass
+    out = (base + tail).strip()
+    return out if len(out) <= 24 else out[:23].rstrip() + "…"
+
+
+def combo_names(legs_per_combo, starts=None):
+    """A name for each combo from its picks: 'Nuggets + Chiefs +2' (#520). `legs_per_combo` is, per combo, a list of
+    (pick name, sport); at most 3 picks are named, a longer combo says '+N more'. Two combos that would read the same get
+    their first kickoff added ('Nov 23'), and if that is still the same a '(2)', so a name is unique among the combos
+    shown. DISPLAY ONLY: the combo's market ticker stays its id, nothing may key off this text."""
+    names = []
+    for legs in legs_per_combo:
+        parts = []
+        for nm, sp in legs:
+            q = short_leg(nm, sp)
+            if q and q not in parts:
+                parts.append(q)
+        name = " + ".join(parts[:3]) + (f" +{len(parts) - 3} more" if len(parts) > 3 else "")
+        names.append(name or "Combo")
+    starts = starts or [None] * len(names)
+    seen = {}
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+    used = {}
+    for i, n in enumerate(names):
+        if seen[n] > 1:
+            d = starts[i]
+            n2 = f"{n} ({d:%b} {d.day})" if d else n
+            used[n2] = used.get(n2, 0) + 1
+            names[i] = n2 if used[n2] == 1 else f"{n2} ({used[n2]})"
+    return names
 
 
 def stamp_games(code, games):
