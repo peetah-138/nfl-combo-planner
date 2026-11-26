@@ -2294,6 +2294,7 @@ MONEY_FP = {"v": None, "pb": None}     # this copy's last account fingerprints (
                                        # "v" = combos + positions + balance (complete reads only), "pb" = positions + balance
 MONEY_FAIL_AT = {}                     # (ticker, result) -> when a failed (nothing sold) cash-out last stamped (#271)
 MONEY_FAIL_GAP = 60                    # seconds: a failed cash-out repeated every pass stamps at most this often
+ACCT_FRESH = {"v": False}          # (#450) set for one fetch_account(max_age=0): the hub must not hold that read back
 HUB_FRESH_FLOOR = 3                    # seconds: the hub's forced fresh account read needs a cached copy older than this
 ACCT_HUB_STALE = {"v": False}          # the hub just answered with a copy it held back from refreshing (#271)
 
@@ -2406,7 +2407,11 @@ def fetch_account(max_age=60, every_league=False):
         value = ACCT_CACHE["value"]
     else:
         ACCT_HUB_STALE["v"] = False
-        value = _fetch_account()
+        ACCT_FRESH["v"] = max_age <= 0               # (#450) max_age=0 is a guard check: the hub skips its 3s floor
+        try:
+            value = _fetch_account()
+        finally:
+            ACCT_FRESH["v"] = False
         if value[0] is not None:
             # a copy the hub held back from refreshing (#271) is used but never kept: the next call asks again
             ACCT_CACHE.update(at=0 if ACCT_HUB_STALE["v"] else time.time(), value=value)
@@ -2419,7 +2424,7 @@ def fetch_account(max_age=60, every_league=False):
 
 def _fetch_account():
     if hub_up():
-        got = hub_call("account", timeout=30)
+        got = hub_call("account", timeout=30, **({"fresh": True} if ACCT_FRESH["v"] else {}))
         if got and isinstance(got.get("value"), list):
             ACCT_HUB_STALE["v"] = bool(got.get("held_back"))
             return tuple(got["value"])
@@ -10385,6 +10390,8 @@ def autosell_pass():
     screen uses the Live page's full simulation; the others use each pick's current price."""
     if not AUTOSELL or not can_trade() or MINE.get("busy") or not (CFG.get("tp_auto") or CFG.get("tp_follow", True)):
         return []
+    if trading_paused():                   # (#421) Pause stops every automatic sale; an unreadable Pause counts as paused
+        return []
     acct, _, _ = fetch_account(every_league=True)
     resting = resting_sells()
     done = []
@@ -12936,7 +12943,10 @@ def order_legacy_body(o):
     """The legacy request for an intent (only used while an account doesn't have V2 yet), or None if it can't be
     said the old way."""
     if o["legacy"] is not None:
-        return dict(o["legacy"], client_order_id=o["coid"])
+        b = dict(o["legacy"], client_order_id=o["coid"])
+        if o["reduce_only"]:                  # (#452) the forced reduce_only (a legacy sell) rides the fallback too
+            b["reduce_only"] = True
+        return b
     cents = o["yes"] * 100
     if cents != cents.to_integral_value() or o["count"] != o["count"].to_integral_value():
         return None
