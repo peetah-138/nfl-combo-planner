@@ -196,6 +196,8 @@ users = [m.start() for m in re.finditer(r"exposure_paper_|_expo_|expo_pos|expo_p
 defs_end = src.index("SPORT_SCORE_WORD = {")
 defs_start = src.index("# ---- (#335) no-both-sides")
 outside = [src[max(0, i - 60):i + 40].replace("\n", " ") for i in users if not defs_start <= i < defs_end]
+# money-h: the no-both-sides single-buy guard deliberately reuses the stance/opposed helpers (Pete's instruction); nothing else may
+outside = [o for o in outside if "_expo_stance" not in o and "_expo_opposed" not in o]
 ok("only record_view calls it from outside its own block", len(outside) == 1 and "exposure_paper_pass(view, now)" in outside[0])
 rv = inspect.getsource(E.record_view)
 ok("record_view calls it after its own writes, not before the return value is built", "exposure_paper_pass(view, now)" in rv)
