@@ -98,12 +98,7 @@ async function pReprice(id){S.prepP=S.prepP||{};S.prep=S.prep||{};if(S.prepP[id]
  delete S.prepP[id];
  // (#402) no haptic after the await (silent on iOS 27): the tap ticked, and the card now shows the result with a small motion
  S.prep[id]=r.ok?r:pRepFail(r);S.prep[id].fresh=true;
- renderBuild();if(S.prep[id])S.prep[id].fresh=false;pRepAfter(id);}
-/* (#435) the redraw replaces the button that was tapped: put keyboard / VoiceOver focus back on the card's new button (or its result line)
-   and say the result through the page's one steady live region, because the card's own line is a new element and is often not announced */
-function pRepAfter(id){if(S.view!=='build')return;const el=[...document.querySelectorAll('.pitem[data-pid]')].find(e=>e.dataset.pid===id),r=S.prep&&S.prep[id];if(!el)return;
- const t=el.querySelector('.prbtn')||el.querySelector('.prq');if(t){if(t.tagName!=='BUTTON')t.tabIndex=-1;t.focus({preventScroll:true});}
- if(r)srSay([r.verdict,r.why,r.fail?'Nothing was bought.':'A look only, nothing was bought.'].filter(Boolean).join('. '));}
+ renderBuild();if(S.prep[id])S.prep[id].fresh=false;}
 /* Which game each bet is on, in plain English ("Over 7.5" alone told Pete nothing): one line per game. Spreads and totals
    say "Flyers at Bruins"; a single or one leg of a combo says "Flyers vs Bruins" (the team picked first). Older saved
    drafts have no game text, so fall back to what they do carry. */

@@ -158,14 +158,7 @@ function sbScored(sc){if(!sc||!sc.n)return '';const by=sc.by||{},nm={panel:['pan
  const parts=Object.keys(nm).filter(k=>by[k]&&by[k].n).map(k=>`${(+by[k].n).toLocaleString()} ${nm[k][by[k].n===1?0:1]}`);
  return `<div class="sbsc" style="font-size:13px;margin:6px 0 8px;padding-top:8px;border-top:1px solid var(--line);line-height:1.45"><b>Scored on paper: ${(+sc.n).toLocaleString()} bet${sc.n===1?'':'s'}, ${(+sc.settled||0).toLocaleString()} settled</b>${parts.length?`<div class="m" style="font-size:12px">${parts.join(' · ')}. Only bets that would have made today's panel teach Smart Buy. The rest are for the paper book (the "Bigger stakes" test below).</div>`:''}</div>`;}
 function sbTog(){S.sbOpen=!S.sbOpen;renderResults();}
-function cbFlip(){S.cbOpen=!S.cbOpen;S.cbJust=true;renderResults();S.cbJust=false;const b=document.querySelector('.cbh');if(b)b.focus({preventScroll:true});}
-/* (#438) closing slides the body shut (height and fade) before it is removed, so what is below glides up instead of jumping; with reduced motion, or no body to animate, it is the old instant close */
-function cbTog(){const b=S.cbOpen&&!S.cbClosing?document.querySelector('.cbbody'):null;
- if(S.cbClosing)return;
- if(!b||!b.animate||matchMedia('(prefers-reduced-motion: reduce)').matches){cbFlip();return;}
- S.cbClosing=true;b.style.overflow='hidden';
- const done=()=>{S.cbClosing=false;cbFlip();};
- b.animate([{height:b.offsetHeight+'px',opacity:1},{height:'0px',opacity:0}],{duration:220,easing:'cubic-bezier(.22,.8,.24,1)'}).finished.then(done,done);}   // (#404) the redraw replaces the button: give a keyboard user their focus back
+function cbTog(){S.cbOpen=!S.cbOpen;S.cbJust=true;renderResults();S.cbJust=false;const b=document.querySelector('.cbh');if(b)b.focus({preventScroll:true});}   // (#404) the redraw replaces the button: give a keyboard user their focus back
 function cbCard(c){if(!c||typeof c!=='object')return '';const o=!!S.cbOpen;const L=Array.isArray(c.leagues)?c.leagues:[],ot=c.other;const n=L.reduce((s,x)=>s+(+x.n||0),0);
  const pc=v=>v==null?'–':Math.round(v*100)+'%';const dl=v=>v==null?'–':(v<0?'−':'+')+'$'+Math.abs(v).toFixed(2);
  const head=`<button type="button" class="cbh${S.cbJust?' cbjust':''}" aria-expanded="${o}" onclick="cbTog()"><span class="chev" aria-hidden="true">▾</span><b style="font-size:15px">⏱️ In-play comebacks</b><span class="m" style="margin-left:auto;font-size:12.5px">${n?`${n} scored`:'collecting'}</span></button>`;

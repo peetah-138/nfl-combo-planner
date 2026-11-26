@@ -59,30 +59,14 @@ with sync_playwright() as pw:
         print("PROBLEMS: sideways scroll on a phone (empty)")
     pg.locator(".cbp").scroll_into_view_if_needed(); time.sleep(.4)
     pg.screenshot(path=os.path.join(SHOTS, "comeback_empty.png"))
-    # #438: closing slides the body shut instead of snapping (still there partway, gone after), and is instant with reduced motion
-    pg.evaluate(js, DATA); pg.evaluate("S.cbOpen=true;renderResults()")
-    pg.locator(".cbh").click(); time.sleep(.08)
-    mid = pg.evaluate("(()=>{const b=document.querySelector('.cbbody');return b?b.getBoundingClientRect().height:-1})()")
-    time.sleep(.5)
-    if mid <= 0:
-        print("PROBLEMS: the body vanished at once instead of sliding shut (height partway:", mid, ")")
-    if pg.locator(".cbbody").count() or pg.evaluate("S.cbOpen") or pg.evaluate("S.cbClosing"):
-        print("PROBLEMS: the card did not finish closing")
-    if pg.locator(".cbh").get_attribute("aria-expanded") != "false":
-        print("PROBLEMS: the header does not say it is closed")
-    pg.locator(".cbh").click(); time.sleep(.5)
-    if not pg.locator(".cbbody").count():
-        print("PROBLEMS: it did not open again after a slide-close")
-    pg.emulate_media(reduced_motion="reduce")
-    pg.locator(".cbh").click(); time.sleep(.1)
-    if pg.locator(".cbbody").count():
-        print("PROBLEMS: with reduced motion the close should be immediate")
-    pg.emulate_media(reduced_motion="no-preference")
     # #455: the Buying row is announced as a status and busy; its spinner is hidden from assistive tech
     row = pg.evaluate("""(()=>{S.ibuy={x1:1};const d=document.createElement('div');d.innerHTML=ideaButtons({id:'x1',n:1},{},false,0,false);const r=d.firstElementChild;
       return {role:r.getAttribute('role'),busy:r.getAttribute('aria-busy'),spin:[...r.querySelectorAll('.spin')].every(e=>e.getAttribute('aria-hidden')==='true')}})()""")
     if row != {"role": "status", "busy": "true", "spin": True}:
         print("PROBLEMS: the Buying row is not role=status / aria-busy with a hidden spinner:", row)
+    t = pg.evaluate("(()=>{const e=document.getElementById('toast');return [e.getAttribute('role'),e.getAttribute('aria-live')]})()")
+    if t != ["status", "polite"]:
+        print("PROBLEMS: #437 the toast is not a polite status region:", t)
     print("errs:", errs)
     if errs:
         print("PROBLEMS: page errors", errs)
