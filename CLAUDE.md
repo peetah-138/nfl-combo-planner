@@ -1940,6 +1940,12 @@ REAL combo offer (`get_cash_offer`). It sells **only** if that real offer meets 
 - **Untouched:** Pause (read first; unreadable = nothing), rule 8 (`rfq_unsure`), no live data = no sale, the daily cap,
   accept path, hedges.
 - Test: `t_realoffer_227.py` (includes the drain case: 3 stuck combos, a 4th still gets its ask).
+- **Error-dict stored offer (#514):** when Kalshi answered a real-offer ask with "no offers", the stored offer was an error
+  dict with no `offer` key, and the next `auto_sell_now` pass raised `KeyError: 'offer'` (the "REAL OFFER not asked" note
+  and the estimate-vs-bar checks) and aborted the whole pass, stop-loss included. A stored offer without a numeric `offer`
+  is now treated as the plain estimate (the same as no offer stored): it can never sell, the throttle and Pause / Rule 8
+  checks still apply, and the pass carries on to the next combo. No new automatic sale paths. Test:
+  `t_offer_keyerror.py` (an error-dict combo first, then a cut-loss combo and a normal estimate combo).
 
 #### Momentum shadow recorder and the real smart-sell trigger on combo cards
 
