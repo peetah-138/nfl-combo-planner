@@ -115,8 +115,9 @@ with sync_playwright() as pw:
                 mine = [x for x in h if x["k"] == k]
                 if len(mine) != 1 or mine[0]["t"] != "hsw" or not mine[0]["tr"]: bad(f"{tag} {view}: a tap on control {k} reached its handler {len(mine)} times (target {mine[:1]})")
             print(tag, view, "tapped once each:", len(keys))
-            # Games: its cards are big scroll surfaces (no switch, #151); the COVER check above asserts that
-            if len(keys) < (0 if view == "games" else 1 if view == "results" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
+            # Games: its cards are big scroll surfaces (no switch, #151); the COVER check above asserts that.
+            # Live: the 44px card buttons (#454) leave two fully in view at 390x844.
+            if len(keys) < (0 if view == "games" else 1 if view == "results" else 2 if view == "live" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
             pg.evaluate(f"go('{view}')"); frames(pg)   # (held: a redraw from what the page has, no load)
 
         # the pushed game page (a sheet) is covered too

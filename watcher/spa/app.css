@@ -36,7 +36,9 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .alert b{font-size:15px}.alert p{margin:2px 0 0;color:var(--sub)}
 .btn{border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
 .btn:hover{background:var(--hover)}.btn.yes{background:var(--yes);color:#04150c;border-color:transparent}.btn.acc{background:var(--acc);color:#fff;border-color:transparent}
-.btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
+.btn.ghost{background:none}
+/* #436/#454: the Pass/Buying, sheet, Settings-row and error-card buttons are real thumb targets (44px) */
+.dbtns .btn,.sheet .btn,.srow .btn,.empty .btn,.sbgo .btn{min-height:44px}.btn[disabled]{opacity:.5;pointer-events:none}
 .own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
 .legs .up{color:var(--yes)}.legs .down{color:var(--no)}
 .ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}

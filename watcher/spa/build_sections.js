@@ -47,5 +47,5 @@ function secHead(k,title,n,sub,extra){const o=secOpen(k);return `<h2 class="sech
 /* Spreads & totals (issue #117) are recommendations only and now live in Best bets (#63): a strike shows when it clears the
    league's learned bar after the fee, fills inside the edge and has a likely route to profit; build.js draws them. */
 /* Minutes from now to the likely cash-out, in words that fit a game days away (#415): minutes, then hours, then days. */
-function exitWhen(m){m=Math.round(m);return m<90?`about ${m} min in`:m<2880?`in about ${Math.round(m/60)} h`:`in about ${Math.round(m/1440)} days`;}
+function exitWhen(m){m=Math.round(m);return m<90?`about ${m} min from now`:m<2880?`in about ${Math.round(m/60)} h`:`in about ${Math.round(m/1440)} days`;}
 function lineRoute(x){return x.route==='sell'?`Likely to cash out early for a profit: <b>${pct(x.p_exit)}</b>`:`Profit if it holds: <b>${pct(x.win)}</b> to win, +${(x.edge*100).toFixed(1)}¢ edge`;}
