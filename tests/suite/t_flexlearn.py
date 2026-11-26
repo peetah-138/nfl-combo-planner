@@ -134,3 +134,51 @@ ok("learned 90%: the bar is 90% of the first offer or the backstop of the last-k
 h_low = {"pays": 20, "ch_of": {"A": 0.05}, "cost": 3}
 ok("...with nothing known to compare: 90% of the first offer", E.flex_fallback_bar("X", {"pays": 20, "cost": 3}, 10.0, 1.0) == 9.0)
 ok("...a learned share at or above 97% is simply that share", (E._FLEX_FB.update(vals={"all": 0.98}) or True) and abs(E.flex_fallback_bar("X", h, 10.0, 1.0) - 9.8) < 1e-9)
+
+# evidence is counted per SALE, not per retry (#499): one sale can have up to 10 retries, all with the same outcome
+E.store_x("delete from flex_learn"); E._FLEX_FB["vals"] = {}
+E.store_x("delete from flex_shadow"); E.store_x("delete from sell_log"); E.store_x("delete from ledger")
+
+
+def sale_with_retries(k, retries, share=0.95, first=10.0):
+    """One sale of one position with `retries` refused retries; the position later sold for 60% of the offer (waiting lost)."""
+    T["n"] += 1
+    tk = f"KXMVE-R{T['n']}"
+    for j in range(retries):
+        T["ts"] += 5
+        E.store_x("insert into flex_shadow(ts, ticker, try, auto, cutting, offer, first_offer, accept, old_accept) values(?,?,?,?,?,?,?,?,?)",
+                  (T["ts"], tk, j + 1, 0, 0, round(first * share, 4), first, 0, 0))
+    E.store_x("insert into sell_log(ts, ticker, result, offer, held, outcome) values(?,?,?,?,?,?)",
+              (T["ts"] + 30, tk, "sold", first * share * 0.6, None, "won"))
+    E.store_x("insert or replace into ledger(ticker, league, cost) values(?,?,?)", (tk, "nfl", 5))
+
+
+for k in range(2):
+    sale_with_retries(k, 10)
+n_rows = E.store_rows("select count(*) n from flex_shadow")[0]["n"]
+ev = E.flex_fb_events("all", 0, 0.5, 0.97)
+ok("2 sales x 10 retries = 20 rows, but 2 pieces of evidence", n_rows == 20 and len(ev) == 2, (n_rows, len(ev)))
+ok("...and 20 retries of just 2 sales no longer reach the 20-case bar: no move", go() == 0.97, E.flex_fallback())
+for k in range(17):
+    sale_with_retries(k, 10)
+ok("19 sales (190 retries): still under the bar, no move", len(E.flex_fb_events("all", 0, 0.5, 0.97)) == 19 and go() == 0.97)
+sale_with_retries(0, 3)
+ok("the 20th sale (a different count of retries): the bar is met, one step down", go() == 0.965, E.flex_fallback())
+ok("the sale's own LAST retry is what counts as seen: no sale is counted twice on the next look",
+   len(E.flex_fb_events("all", E.store_rows("select seen from flex_learn where scope='all'")[0]["seen"], 0.5, 0.965)) == 0)
+
+# a later retry OUTSIDE the price band must not let an already-counted sale be counted again (#499 review)
+E.store_x("delete from flex_shadow"); E.store_x("delete from sell_log"); E.store_x("delete from ledger")
+T["n"] += 1
+tk = f"KXMVE-R{T['n']}"
+for j, sh in enumerate((0.95, 0.99)):                        # retry 1 in the band, retry 2 above it (out of band)
+    T["ts"] += 5
+    E.store_x("insert into flex_shadow(ts, ticker, try, auto, cutting, offer, first_offer, accept, old_accept) values(?,?,?,?,?,?,?,?,?)",
+              (T["ts"], tk, j + 1, 0, 0, round(10.0 * sh, 4), 10.0, 0, 0))
+last_retry = T["ts"]
+E.store_x("insert into sell_log(ts, ticker, result, offer, held, outcome) values(?,?,?,?,?,?)", (T["ts"] + 30, tk, "sold", 5.7, None, "won"))
+E.store_x("insert or replace into ledger(ticker, league, cost) values(?,?,?)", (tk, "nfl", 5))
+ev1 = E.flex_fb_events("all", 0, 0.5, 0.97)
+ok("one sale, one in-band retry plus a later out-of-band one: one piece of evidence stamped with the LAST retry",
+   len(ev1) == 1 and ev1[0][0] == last_retry, ev1)
+ok("...so looking again from that stamp does not count the sale a second time", len(E.flex_fb_events("all", ev1[0][0], 0.5, 0.97)) == 0)
