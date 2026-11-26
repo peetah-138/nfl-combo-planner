@@ -5862,6 +5862,8 @@ def cash_nudge(t, h, tp=None):
     whole = o["offer"] / max(o.get("frac", 1.0), 0.01)
     if whole < (h.get("cost") or 0) or whole < 0.97 * (floor or 0):
         return None
+    if combo_sale_net(o) < (h.get("cost") or 0) * max(o.get("frac", 1.0), 0.01) - 0.005:   # #432: "at least what was paid" is after the selling fee
+        return None
     if not any(lv for _, lv, _ in h.get("legs_left") or []):
         return None
     return {"why": why, "offer": round(whole, 2)}
@@ -10975,7 +10977,14 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
             return out
         ref = math.prod(c for c in (h.get("ch_of") or {}).values() if c is not None) if h.get("ch_of") else None
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
-        profit = offer >= (h.get("cost") or 0) * frac - 1e-9
+        net_f = offer                                    # no net passed (a manual tap): the offer, as before
+        if net is not None:                              # #432: "a profit" is judged after the selling fee (net), never on the gross offer
+            try:
+                net_f = float(net)
+            except (TypeError, ValueError):
+                net_f = float("nan")
+        net_bad = net is not None and not math.isfinite(net_f)   # a NaN / unreadable net is never "a profit" (fail closed)
+        profit = (not net_bad) and min(offer, net_f) >= (h.get("cost") or 0) * frac - 1e-9
         floor_ok = floor is None or offer >= floor       # only a floor a caller passed on purpose binds here
         cost_fr = (h.get("cost") or 0) * fr
         why0 = "under the floor"
@@ -13973,17 +13982,21 @@ COMBO_UNSURE_MSG = ("Kalshi may have taken it: check your Kalshi account. No ret
 ACCEPT_WAIT = 15          # seconds to wait for Kalshi to confirm an accepted combo quote
 
 
-def buy_legs_refusal(i, o, shown):
+def buy_legs_refusal(i, o, shown, sent_empty=False):
     """(#203, rule 7) The page's Buy names the legs it shows. The accept goes out only if those are exactly the legs the
     stored offer was priced for AND the combo now on that card. Anything else (a combo that changed without its offer being
     dropped) is a refusal with the reason, never a guess. A page that names no legs (an older page, or an idea Buy that
-    carries none) is still held to offer = card; it is refused only on a real mismatch. Returns None when it matches."""
+    carries none) is still held to offer = card; it is refused only on a real mismatch. A legs list that WAS sent but is
+    empty (`sent_empty`, #498: the page named legs and named none) is refused: it is not the same as "no legs sent".
+    Returns None when it matches."""
     cur = (CTX.get("combos") or [])
     cur = cur[i - 1] if isinstance(i, int) and 1 <= i <= len(cur) else None
     offered = sorted(map(str, o.get("legs") or []))
     now = sorted(str(l.get("ticker")) for l in (cur or {}).get("legs") or [])
     sent = isinstance(shown, (list, tuple)) and bool(shown)   # a page that names no legs is still held to offer = card
-    if not offered or not now:
+    if sent_empty:
+        why = "the page sent an empty legs list"
+    elif not offered or not now:
         why = "no legs on the offer or the card to compare"
     elif sent and sorted(map(str, shown)) != offered:
         why = "the page's legs differ from the offer's legs"
@@ -13995,19 +14008,20 @@ def buy_legs_refusal(i, o, shown):
     return why
 
 
-def accept_offer(i, skip_cap=False, expect_legs=None):
+def accept_offer(i, skip_cap=False, expect_legs=None, legs_sent_empty=False):
     """Step 4: accept. 'no' is correct: it hits the seller's NO bid, which buys you YES. skip_cap: the daily
     panel, whose own budget was checked when you approved it. Only a definite refusal before Kalshi took the accept
     (a 4xx, the key, Pause) is a plain error. Once the accept has gone out, anything unclear (a timeout, a 5xx, a
     429 or unreadable status, no confirmation within ACCEPT_WAIT) returns {"error", "check": True}: the combo is
     marked in the order ledger and never re-bought or re-quoted until the block ends or Pete clears it (rule 8).
     expect_legs (#203): the web app's Buy passes the legs the page shows (a list; [] when it sent none).
-    Not None = the offer must match the current combo, and the page's legs too when it sent them, or nothing is sent. The panel/killer paths pass None."""
+    Not None = the offer must match the current combo, and the page's legs too when it sent them, or nothing is sent. The panel/killer paths pass None.
+    legs_sent_empty (#498): the page sent a legs list and it was empty: refused like a mismatch (nothing sent)."""
     import time
     o = CTX["offers"].get(i)
     if not o:
         return {"error": "That offer expired. Tap New price for a fresh one."}
-    if expect_legs is not None and buy_legs_refusal(i, o, expect_legs):
+    if expect_legs is not None and buy_legs_refusal(i, o, expect_legs, sent_empty=legs_sent_empty):
         return {"error": "That price was for a different combo, or this page is out of date. Reload the page, get a fresh price, then buy.",
                 "legs_mismatch": True}
     held, words = hold_refusal("buy")                # nothing is sent while Kalshi's restriction is being waited out
