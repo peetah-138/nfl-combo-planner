@@ -93,8 +93,12 @@ out = run(EST, 13.0, clear_state=True)
 ok("rule 8: an unclear last cash-out is never asked or retried", not ASKS and not ACC)
 E.rfq_unsure = lambda t, side=None, **k: False
 
+BAR["v"] = ("smart", 5.0)                              # a low bar: the real offer ($7.50) clears it but is under what was paid ($8)
 out = run(EST, 7.5, clear_state=True)
-ok("a real offer under cost is not taken for a profit reason", not ACC)
+ok("a real offer over the bar but under cost is not taken for a profit reason", ASKS == ["C1"] and not ACC, ASKS, ACC)
+out = run(EST, 8.6, clear_state=True)
+ok("control: the same low bar with an offer over cost does sell", ACC == ["C1"], ASKS, ACC)
+BAR["v"] = ("smart", 12.0)
 
 log = open(E.SELL_LOG, encoding="utf-8").read()
 ok("the decision log has REAL OFFER asked lines with the offer and the bar", "REAL OFFER asked" in log and '"bar"' in log)
@@ -105,7 +109,7 @@ ok("the switch is on by default and synced",
    E.DEFAULTS.get("real_offer_ask") is True and "real_offer_ask" in E.SHARED_KEYS and "real_offer_ask" in E.WATCHER_SYNCED)
 W = open("wtest/combo_watcher.py", encoding="utf-8").read()
 ok("the watcher syncs and the web app saves the switch", W.count('"real_offer_ask"') >= 2)
-ok("auto cash-out has one gate call and one note site", SRC.count("= real_ask_gate(t,") == 1 and SRC.count("real_ask_note(t)") == 1)
+ok("auto cash-out has one gate call and one note site", SRC.count("gate_why = real_ask_gate(t,") == 1 and SRC.count("real_ask_note(t)") == 1)
 
 # the card words
 E.CFG.update(real_offer_ask=True)
@@ -139,7 +143,46 @@ E.MINE["real_asks"] = {"by": {}, "all": [base + 10 * i for i in range(E.REAL_ASK
 ok("budget used up: a plain profit reason is refused, lock-in and a guarded stop-loss (exempt) are not",
    E.real_ask_gate("X", base + 700)[0] is False and E.real_ask_gate("X", base + 700, exempt=True)[0] is True)
 E.real_ask_note("X", base + 700); E.real_ask_result("X", False)
-ok("exempt still obeys the combo's own gap and back-off", E.real_ask_gate("X", base + 710, exempt=True)[0] is False)
+ok("exempt still obeys the plain 60 s gap", E.real_ask_gate("X", base + 710, exempt=True)[0] is False)
+ok("exempt has no back-off: a plain reason waits 120 s, exempt only 60 s", E.real_ask_gate("X", base + 761, exempt=True)[0] is True
+   and E.real_ask_gate("X", base + 761)[0] is False)
+E.MINE["real_asks"] = {"by": {"X": [base + 100 * i for i in range(E.REAL_ASK_HOUR_COMBO)]}, "all": []}
+ok("exempt skips the per-combo hourly cap too", E.real_ask_gate("X", base + 2900, exempt=True)[0] is True
+   and E.real_ask_gate("X", base + 2900)[0] is False)
+snap = repr(E.MINE["real_asks"])
+E.real_ask_gate("X", base + 2900, readonly=True); E.real_ask_gate("NEW", base + 2900, readonly=True)
+ok("a read-only gate call (the card) changes nothing", repr(E.MINE["real_asks"]) == snap)
+E.MINE["real_asks"] = {"by": {"GONE": [base], "C1": [base]}, "all": [base], "low": {"GONE": 3, "C1": 2}}
+E.MINE["real_ask_told"] = {"GONE": base, "C1": base}
+E.real_ask_prune({"C1"})
+ok("history of combos no longer held is dropped", "GONE" not in E.MINE["real_asks"]["by"] and "GONE" not in E.MINE["real_asks"]["low"]
+   and "GONE" not in E.MINE["real_ask_told"] and "C1" in E.MINE["real_asks"]["by"] and "C1" in E.MINE["real_ask_told"])
 E.MINE["real_asks"] = {"by": {}, "all": []}
 E.real_ask_note("Y", base); E.real_ask_result("Y", True)
 ok("a clearing offer resets the back-off to the plain 60 s", E.real_ask_gate("Y", base + 61)[0] is True)
+
+# through auto_sell_now itself: a combo that is backing off (plain reasons wait 8 minutes) is still asked for lock-in / a guarded stop-loss
+def backed_off():
+    E.MINE["real_asks"] = {"by": {"C1": [time.time() - 70]}, "all": [], "low": {"C1": 4}}
+BAR["v"] = ("smart", 12.0)
+backed_off(); E.MINE["real_asks"]["low"]["C1"] = 4
+ACC.clear(); ASKS.clear(); REAL["offer"] = 13.0
+E.MINE["hold"] = {"C1": dict(HOLD)}; E.MINE["cash"] = {"C1": EST}; E.MINE["selling"] = set(); E.MINE["busy"] = False
+E.COMBO_WAIT.clear(); E.MINE["tp_asked"] = {}
+E.auto_sell_now({"acts": {}})
+ok("control: a plain smart sale on a backed-off combo is not asked", not ASKS and not ACC, ASKS)
+for reason in ("lock in",):
+    BAR["v"] = (reason, 12.0); backed_off(); E.MINE["real_asks"]["low"]["C1"] = 4
+    ACC.clear(); ASKS.clear(); REAL["offer"] = 13.0
+    E.MINE["hold"] = {"C1": dict(HOLD)}; E.MINE["cash"] = {"C1": EST}; E.MINE["selling"] = set(); E.MINE["busy"] = False
+    E.COMBO_WAIT.clear(); E.MINE["tp_asked"] = {}
+    E.auto_sell_now({"acts": {}})
+    ok("lock-in on a backed-off combo is still asked (plain 60 s gap only) and sells", ASKS == ["C1"] and ACC == ["C1"], ASKS, ACC)
+BAR["v"] = ("smart", 12.0)
+E.sl_mode = lambda: "allow"; E.stop_loss_check = lambda t, h, **k: (True, "")
+backed_off(); E.MINE["real_asks"]["low"]["C1"] = 4
+ACC.clear(); ASKS.clear(); REAL["offer"] = 13.0
+E.MINE["hold"] = {"C1": dict(HOLD)}; E.MINE["cash"] = {"C1": EST}; E.MINE["selling"] = set(); E.MINE["busy"] = False
+E.COMBO_WAIT.clear(); E.MINE["tp_asked"] = {}
+E.auto_sell_now({"acts": {}})
+ok("a guarded stop-loss on a backed-off combo is still asked, not made to wait minutes", ASKS == ["C1"], ASKS, ACC)

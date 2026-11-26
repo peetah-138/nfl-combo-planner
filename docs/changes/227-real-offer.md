@@ -12,12 +12,18 @@ REAL combo offer (`get_cash_offer`). It sells **only** if that real offer meets 
   combo and `REAL_ASK_HOUR_ALL` (60) in all per hour (all per process, in memory). **Back-off:** a combo whose last real
   offer came in under the bar (or none came) waits 60, 120, 240, 480 then `REAL_ASK_BACKOFF_MAX` (600) s between asks
   (about 9 asks an hour); an offer that clears the bar resets it. Three stuck combos therefore cannot use up the overall
-  budget. **Exempt from the overall cap only:** lock-in and a guarded stop-loss (`sl_ready`); they still obey the combo's
-  own gap, back-off and hourly cap. Unreadable state fails closed (no request). Learned loss cuts ("cut loss") bypass the
+  budget. **Exempt:** lock-in and a guarded stop-loss (`sl_ready`) only ever wait the plain 60 s gap: no back-off, no
+  per-combo hourly cap, no all-combos cap (a stop-loss never waits minutes); an exempt ask never lengthens the back-off.
+  Unreadable state fails closed (no request). Ask history, back-off and told-notes of combos no longer held are pruned
+  each pass (`real_ask_prune`). Learned loss cuts ("cut loss") bypass the
   gate on purpose, so the #396 clock-retry behaviour is unchanged.
 - **Log:** every request and outcome is a `log_decision` line: "REAL OFFER asked (...): got $X, bar $Y, ..." and, when the
   gate refuses, "REAL OFFER not asked: ...; the estimate (...) never sells on its own" (one per combo per 300 s).
-- **Card wording (#513):** `smart_trigger` keeps "will ask Kalshi for a real offer once the estimate reaches $X"; with the
+- **Switch off (`real_offer_ask` false) is stricter than before the switch:** automatic selling never asks Kalshi for
+  an offer; it sells only on a real offer already in hand that clears the bar (so a plan part-sale waits too). Kept on purpose
+  (the safe direction); a learned loss cut still asks. The Settings text says so in plain English.
+- **Card wording (#513):** the card reads the throttle read-only (`real_ask_gate(..., readonly=True)`, no state change, same
+  exemption via the `MINE["sl_ready"]` copy that `auto_sell_now` keeps); while throttled it says "holding off asking Kalshi". `smart_trigger` keeps "will ask Kalshi for a real offer once the estimate reaches $X"; with the
   switch off it says "won't ask Kalshi (switched off)".
 - **Untouched:** Pause (read first; unreadable = nothing), rule 8 (`rfq_unsure`), no live data = no sale, the daily cap,
   accept path, hedges.
