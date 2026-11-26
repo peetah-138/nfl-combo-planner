@@ -148,7 +148,7 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    matching TAP shrinks a touch while pressed (rows and settings lines highlight instead) and ticks when tapped.
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
-const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
+const TAP='button,a[href],[onclick],#toast.tap,.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
 function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentElement;const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
@@ -190,7 +190,7 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
 const rndm=x=>Math.sign(x)*Math.round(Math.abs(x));   // rounds on magnitude, so -0.5 and +0.5 match
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='chg'?(r=>(r>0?'+':r<0?'−':'')+Math.abs(r)+'%')(rndm(v*100)):f==='chgd'?(r=>(r>0?'+':r<0?'−':'')+'$'+(Math.abs(r)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))(rndm(v*100)):f==='absm'?money(Math.abs(v)):f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='chg'?(r=>(r>0?'+':r<0?'−':'')+Math.abs(r)+'%')(rndm(v*100)):f==='chgd'?(r=>(r>0?'+':r<0?'−':'')+'$'+(Math.abs(r)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))(rndm(v*100)):f==='absm'?money(Math.abs(v)):f==='sm'?smoney(v):f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
@@ -216,7 +216,7 @@ function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce
  root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
   if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
  root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
-  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'||f==='chg'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
+  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'||f==='chg'?.0005:.005)||reduce||el.dataset.still)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
   const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
 function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
 function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}

@@ -3,6 +3,7 @@
 #  #421  autosell_pass (standing take-profit sells) now stops on Pause, and an unreadable Pause counts as paused
 #  #452  the retired legacy order fallback carries the forced reduce_only, as the V2 body does
 #  #450  a guard check (fetch_account(max_age=0)) asks the hub to skip its 3 second floor; every other read does not
+#  #536  that flag is per call (an argument), not a module global a concurrent read can clear
 # Kalshi and the network are faked; nothing is sent.
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
@@ -73,13 +74,40 @@ SEEN.clear()
 E.ACCT_CACHE.update(at=0, value=None)
 E.fetch_account(max_age=15, every_league=True)
 ok("#450 an ordinary read does not set the flag", SEEN == [{}], SEEN)
-ok("#450 the flag never stays set after a read", E.ACCT_FRESH["v"] is False)
+# #536: the flag travels with the call (no module global). A read that another thread runs between a guard's start and
+# its hub call (here: inside hub_up, which the guard's own _fetch_account reaches first) used to clear the flag.
+ok("#536 there is no module-global fresh flag any more", not hasattr(E, "ACCT_FRESH"))
+SEEN.clear()
+E.ACCT_CACHE.update(at=0, value=None)
+INNER = {"on": False}
+def hub_up_racing():
+    if not INNER["on"]:
+        INNER["on"] = True
+        E.ACCT_CACHE.update(at=0, value=None)
+        E.fetch_account(max_age=15, every_league=True)       # an ordinary read starts and finishes meanwhile
+    return True
+E.hub_up = hub_up_racing
+E.hub_call = hub_call
+E.ACCT_CACHE.update(at=0, value=None)
+E.fetch_account(max_age=0, every_league=True)
+ok("#536 a concurrent ordinary read cannot clear a guard's must-be-fresh flag", SEEN == [{}, {"fresh": True}], SEEN)
+SEEN.clear(); INNER["on"] = False
+E.ACCT_CACHE.update(at=0, value=None)
+E.fetch_account(max_age=0, every_league=True)
+E.ACCT_CACHE.update(at=0, value=None)
+E.fetch_account(max_age=15, every_league=True)
+ok("#536 a guard read before an ordinary one: the ordinary read is not fresh-flagged", SEEN[-1] == {}, SEEN)
 E.hub_call = lambda op, timeout=0, **kw: (_ for _ in ()).throw(RuntimeError("down"))
+E.hub_up = lambda: True
 try:
     E.fetch_account(max_age=0, every_league=True)
 except RuntimeError:
     pass
-ok("#450 ... even when the read raises", E.ACCT_FRESH["v"] is False)
+SEEN.clear()
+E.hub_call = hub_call
+E.ACCT_CACHE.update(at=0, value=None)
+E.fetch_account(max_age=15, every_league=True)
+ok("#450 ... after a guard read that raised, the next ordinary read is still not flagged", SEEN == [{}], SEEN)
 E.hub_up = lambda: False
 
 hub = watcher_text().split('if op == "account":')[1].split('if op == "pots":')[0]

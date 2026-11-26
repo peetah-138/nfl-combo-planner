@@ -12,7 +12,7 @@ function ovLast(a,b){return (!!a.over)-(!!b.over);}
 function ovText(o){return o&&o.text?o.text:'You already have bets on this game.';}
 /* the note and the button under a greyed pick; v is the screen to fetch again ('build' or 'live') */
 function ovBar(o,v){if(!o)return '';
- return `<div class="ovbar" role="note"><span>${esc(ovText(o))}</span><button type="button" class="btn ovadd" aria-label="Add anyway: show this game's picks again" onclick="event.stopPropagation();ovAdd(this,'${esc(o.game||'')}','${v==='live'?'live':'build'}',${Number.isFinite(+o.n)&&Number.isFinite(+o.risk)?+o.n+','+(+o.risk):'null,null'})">Add anyway</button></div>`;}
+ return `<div class="ovbar" role="note"><span>${esc(ovText(o))}</span><button type="button" class="btn ovadd" aria-label="Add anyway: show this game's picks again" data-game="${esc(o.game||'')}" onclick="event.stopPropagation();ovAdd(this,this.dataset.game,'${v==='live'?'live':'build'}',${Number.isFinite(+o.n)&&Number.isFinite(+o.risk)?+o.n+','+(+o.risk):'null,null'})">Add anyway</button></div>`;}
 async function ovAdd(b,g,v,n,risk){hap();if(!g||(b&&b.disabled))return;S.ovAllow.set(g,n==null?null:{n,risk});
  const snap=flipSnap();   // (#368) where every card is now, so the ones that move can slide instead of jump (smallwins.js)
  if(b){b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> Showing…';}
