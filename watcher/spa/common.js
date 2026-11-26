@@ -1,6 +1,9 @@
-const TOK="__CWTOK__",LOCAL=__CWLOCAL__;
+const TOK="__CWTOK__",LOCAL=__CWLOCAL__,PAGE_VER="__CWVER__";
 const $=s=>document.querySelector(s);
-const api=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
+const apiRaw=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
+/* Every POST in flight is counted (update.js never reloads under one), and a money result holds a reload for 15 s so its message can be read. */
+const VER_HOLD_ACTS=['buy','go','hedgego','singlebuy','pot_move','panel_approve','panel_add','panel_cancel','panel_restart'];
+const api=(p,b)=>{if(b===undefined)return apiRaw(p);S.inflight=(S.inflight||0)+1;return apiRaw(p,b).finally(()=>{S.inflight=Math.max(0,(S.inflight||1)-1);if(b&&VER_HOLD_ACTS.includes(b.a))S.verHold=Date.now()+15000;});};
 /* Kalshi's refusals, shown honestly (issue #134). When Kalshi turns an order down for the account or the region, the page says
    so in Kalshi's own words, in full (a sheet you can read and copy), and a calm banner stays up while the Mac waits before trying
    again. It is Kalshi's rule, not a bug in the app: the page only reports it and never offers a way around it. `S.rs` is the
@@ -83,7 +86,7 @@ function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date
 /* onTap (optional): the toast becomes a button for that (e.g. open the combo it's about, #210); without it, taps go through. */
 function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
  if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
- t.classList.toggle('tap',!!onTap);t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
+ t.classList.toggle('tap',!!(onTap&&!document.querySelector('#modal.on')));t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
@@ -185,7 +188,8 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
  load(v);}
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+const rndm=x=>Math.sign(x)*Math.round(Math.abs(x));   // rounds on magnitude, so -0.5 and +0.5 match
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='chg'?(r=>(r>0?'+':r<0?'−':'')+Math.abs(r)+'%')(rndm(v*100)):f==='chgd'?(r=>(r>0?'+':r<0?'−':'')+'$'+(Math.abs(r)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))(rndm(v*100)):f==='absm'?money(Math.abs(v)):f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
@@ -207,7 +211,7 @@ function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce
  root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
   if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
  root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
-  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
+  if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'||f==='chg'?.0005:.005)||reduce)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
   const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
 function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
 function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
@@ -223,7 +227,7 @@ function warm(v){/* show the last copy straight away while the fresh one loads *
 //   • the scores: how old the live games' scores are (only while a game is on). Shown alongside so a stale snapshot
 //     and stale scores are never conflated into one misleading "Updated N ago".
 S.fr={};
-function frSet(k,f){if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
+function frSet(k,f){if(f&&f.ver&&typeof verSeen==='function')verSeen(f.ver);if(f&&f.built)S.fr[k]={f:f,recv:Date.now()};}
 function frEl(k){const o=S.fr[k];return o?Math.max(0,(Date.now()-o.recv)/1000):0;}        // seconds since this page got it
 function frBuilt(k){const o=S.fr[k];if(!o)return null;return Math.max(0,o.f.now-o.f.built+frEl(k));}   // snapshot/prices age
 function frScores(k){const o=S.fr[k];if(!o||o.f.scores==null)return null;return Math.max(0,o.f.scores+frEl(k));} // scores age

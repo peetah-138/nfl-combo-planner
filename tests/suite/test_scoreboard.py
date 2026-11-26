@@ -34,6 +34,9 @@ def seed(A):
         if sold and i % 10 == 0:
             A.store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, by, combo, outcome, held) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (closed, t, "sold", "smart", kind, "yes", back, cost, 10, 1.0, "mac", t, "won" if i % 2 else "lost", 10.0 if i % 2 else 0.0))
+    for i in range(0, 34, 4):                                  # #461: combos' recorded payout, and one lost hold that traded above cost
+        A.store_x("insert or ignore into bets(combo, first_seen, cost, pays, legs, status) values(?,?,?,?,?,?)", ("KXMVE-%d" % (i + 1), now - 9e5, 3.1, 12.4, "[]", "pending"))
+    A.store_x("insert into offers values(?,?,?,?,?,?,?,?)", (now - 8e4, "KXMVE-13", .3, 12.4, 1, 4.0, 1, "x"))
     A.store_x("insert into pulse values(?,?,?)", (now - 60, 23.4, 18.0))
 
 
@@ -97,7 +100,16 @@ with sync_playwright() as pw:
                     if "too few to trust" not in bt: bad(tag, "small groups aren't marked too few to trust")
                     if "Too few settled bets" not in bt and "luck" not in bt: bad(tag, "no plain sentence under the breakdown")
                     if SHOTS: time.sleep(.6); pg.locator(".pb .pbb").screenshot(path=os.path.join(SHOTS, f"scoreboard-types-{tag}.png"))
-                if tab == "How it ended" and "vs holding" not in pg.locator(".pb .pbb").inner_text(): bad(tag, "How it ended has no vs holding column")
+                if tab == "How it ended":
+                    et = pg.locator(".pb .pbb").inner_text()
+                    if "vs holding" not in et: bad(tag, "How it ended has no vs holding column")
+                    for want in ("Won ", "to break even", "Could have been sold higher", "had a cash-out offer above what you paid before closing", "small sample", "no price history"):
+                        if want.lower() not in et.lower(): bad(tag, "held-to-end lines miss", repr(want))
+                    if SHOTS:
+                        pg.evaluate("window.scrollTo(0, document.querySelector('.pb .seg.pbt').getBoundingClientRect().top + scrollY - 70)"); time.sleep(.6)
+                        pg.screenshot(path=os.path.join(SHOTS, f"held-losers-top-{tag}.png"))
+                        pg.evaluate("document.querySelector('.pbhi').scrollIntoView({block:'center'})"); time.sleep(.4)
+                        pg.screenshot(path=os.path.join(SHOTS, f"held-losers-lost-{tag}.png"))
             pg.locator(".pb .seg.pbr button", has_text="Week").click()
             wait(pg, "document.querySelector('.pb .seg.pbr button.on').innerText.includes('Week')", 5)
             if "this week" not in pg.locator(".pb .pbsub").inner_text(): bad(tag, "Week range doesn't say this week")

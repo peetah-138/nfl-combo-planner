@@ -132,7 +132,8 @@ switch(False)
 ok("...but only while self-tuning is on", E.sl_allowed([NBA]) is False)
 switch(True)
 E.CFG["stop_loss_mode"] = "never"
-ok("Never sell at a loss: off whatever is recorded", E.sl_allowed([NBA]) is False)
+ok("a saved 'never' (retired) acts as 'tune': this league's own record decides, and it is never Allow",
+   E.sl_mode() == "tune" and E.sl_allowed([NBA]) is True and E.sl_allowed(["KXNHLGAME-26NOV19BOSNYR-BOS"]) is False)
 E.CFG["stop_loss_mode"] = "allow"
 ok("Allow (guarded): on (every guard still has to hold)", E.sl_allowed([NBA]) is True)
 E.CFG.update(stop_loss_mode=None, stop_loss=False)
@@ -179,6 +180,7 @@ T1 = "KXNBAGAME-26NOV21BOSNYK-BOS"
 put_knobs({"groups": {"nba": {"lv": {"brk_on": 1, "brk_move": 0.04}, "v": {"brk_on": 1, "brk_move": 0.04}, "lat": {}}}})
 brk_sc = {"state": "in", "detail": "Half", "frac": 0.5}
 E.PRICE_SEEN[T1] = (time.time(), 0.30, 0.34, 10)
+_g = E.guards_on; E.guards_on = lambda: False                 # the learned guards off = develop (t_learnedguards.py has them on)
 ok("break_ok never acts live (BRK_LIVE off, brk_on not a live knob), whatever is recorded",
    E.BRK_LIVE is False and "brk_on" not in E.KNOB_LIVE and "brk_move" not in E.KNOB_LIVE
    and E.break_ok(T1, "yes", brk_sc, time.time()) is False)
@@ -203,10 +205,12 @@ ok("a break episode is recorded with its reads, the price after, and when it wou
    row.get("ticker") == T1 and len(json.loads(row["reads"])) == 4 and row["after_bid"] == 0.15
    and row["would"] is not None and row["league"] == "nba")
 ok("a thin or old book is never read as a move", E._brk_book(T1, "yes", t0 + 200 + E.BRK_FRESH + 1) is None)
+E.GUARD_SWITCH.update(at=time.monotonic(), on=False)         # the learned guards off: develop's gross result
 ok("break judge: acting at the break vs just after it, per contract",
    abs(E._knob_res_brk({"reads": [(0, 0.3, 0.32), (30, 0.2, 0.22), (95, 0.2, 0.22)], "after": 0.15, "news": False},
                        {"brk_on": 1, "brk_move": 0.08}) - 0.05) < 1e-9
    and E._knob_res_brk({"reads": [(0, 0.3, 0.32)], "after": 0.15}, {"brk_on": 0, "brk_move": 0.08}) == 0.0)
+E.GUARD_SWITCH.update(at=0.0, on=None)                       # back to reading the real switch
 
 # ---- the stop-loss switch's judge and Smart Buy's watch-only bar
 c = {"stake": 10.0, "pl": -10.0, "pays": 20.0, "legs": [{"ticker": T1, "p": 0.6}]}
@@ -227,7 +231,7 @@ ok("the loss guards may step live; the break rule, the hedge lock-in numbers and
    and all(E.KNOB_JUDGED.get(n) for n in ("sl_auto", "brk_on", "brk_move", "hedge_lock_share", "sb_ev_min")))
 ok("invariants stay untouched (never judged, never live)",
    all(K[n]["cls"] == "invariant" and n not in E.KNOB_JUDGED and n not in E.KNOB_LIVE
-       for n in ("pause", "can_trade", "rule8", "cap_read_age", "sl_feed_age", "in_play", "fresh_quote", "secrets")))
+       for n in ("pause", "can_trade", "rule8", "cap_read_age", "in_play", "fresh_quote", "secrets")))
 ok("the confirmation counts can't be loosened below 3 checks over 3 minutes",
    all(K[n]["min"] == K[n]["start"] for n in ("sl_checks", "sl_span", "hedge_checks", "hedge_span")))
 ok("turning the stop-loss on by itself needs 3 standard errors (a stricter bar)",
@@ -236,23 +240,25 @@ ok("turning the stop-loss on by itself needs 3 standard errors (a stricter bar)"
 # ---- settings sync: a stale old switch never loosens 'Selling at a loss' (code review of #228 PR5)
 def sync(cur, inc):
     c = dict(cur); E.sl_sync(c, inc); return c
-ok("a valid choice wins and keeps the old switch in step",
-   sync({"stop_loss": True, "stop_loss_mode": "allow"}, {"stop_loss_mode": "never", "stop_loss": True})
-   == {"stop_loss": False, "stop_loss_mode": "never"})
-ok("a phone with no control (None) and a stale 'on' can't undo Never or Let it tune itself",
-   sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss_mode": None, "stop_loss": True})["stop_loss_mode"] == "never"
+ok("a valid choice wins and keeps the old switch in step; the retired 'never' is saved as 'tune'",
+   sync({"stop_loss": False, "stop_loss_mode": "tune"}, {"stop_loss_mode": "allow", "stop_loss": False})
+   == {"stop_loss": True, "stop_loss_mode": "allow"}
+   and sync({"stop_loss": True, "stop_loss_mode": "allow"}, {"stop_loss_mode": "never", "stop_loss": True})
+   == {"stop_loss": False, "stop_loss_mode": "tune"})
+ok("a phone with no control (None) and a stale 'on' can't undo Let it tune itself, even from a stored 'never'",
+   sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss_mode": None, "stop_loss": True})["stop_loss_mode"] != "allow"
    and sync({"stop_loss": False, "stop_loss_mode": "tune"}, {"stop_loss": True})["stop_loss_mode"] == "tune")
 ok("an old page's 'off' turns Allow into Let it tune itself, never looser",
    sync({"stop_loss": True, "stop_loss_mode": "allow"}, {"stop_loss": False}) == {"stop_loss": False, "stop_loss_mode": "tune"}
    and sync({"stop_loss": True, "stop_loss_mode": None}, {"stop_loss": False})["stop_loss_mode"] == "tune"
-   and sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss": False})["stop_loss_mode"] == "never")
+   and sync({"stop_loss": False, "stop_loss_mode": "never"}, {"stop_loss": False})["stop_loss_mode"] == "tune")
 W_ = open("wtest/combo_watcher.py").read()
 ok("the watcher applies phone settings through sl_sync (never the raw value)", "E.sl_sync(E.CFG" in W_
    and 'k not in ("stop_loss", "stop_loss_mode")' in W_ and "A.sl_sync(A.CFG" in W_)
 ok("the hedge lock-in numbers and the cap raise stay watch-only until judged on real results",
    not {"hedge_lock_share", "hedge_lock_cost"} & set(E.KNOB_LIVE) and E.HEDGE_RAISE_LIVE is False)
 
-# ---- Never sell at a loss: a single never sells below what it cost, the learned cut included
+# ---- a saved 'never' (retired) reads as 'tune': a single's learned loss cut works as under 'tune' (its own guards)
 E.CFG.update(stop_loss_mode="never", smart_sell=True, auto_sell=True)
 E.SINGLES.update(at=time.time(), items=[{"t": T1, "side": "yes", "state": "live", "n": 10, "cost": 6.0, "label": "BOS",
                                           "kind": "win", "chance": 0.2, "sport": "nba"}],
@@ -263,8 +269,8 @@ E.sell_single_now = lambda *a: (SOLD.append(a), (10, None))[1]
 E.resting_single_sells = lambda: set(); E.order_unsure = lambda t: False; E.hands_off = lambda t: False
 E.sell_held = lambda out: False; E.auto_cap_reached = lambda: False; E.log_decision = lambda r: None
 E.smart_sell_singles()
-ok("Never sell at a loss: a single's loss cut never sells it below cost", SOLD == [])
+ok("a saved 'never' no longer blocks a single's learned loss cut (the cut's own guards decide)", len(SOLD) == 1)
 E.CFG["stop_loss_mode"] = "allow"
 E.smart_sell_singles()
-ok("...with Allow the same cut goes through (the guards are the cut's own)", len(SOLD) == 1)
+ok("...and with Allow the same cut goes through", len(SOLD) == 2)
 E.CFG["stop_loss_mode"] = None

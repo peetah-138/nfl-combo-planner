@@ -94,12 +94,17 @@ with sync_playwright() as pw:
         if not pg.evaluate("window.__haps.length>0"): bad(f"{tag}: choosing a date should tick (haptic)")
         # other dates = another board: the picks are dropped (a combo is only priced from what is on screen)
         if pg.evaluate("S.slip.length") != 0: bad(f"{tag}: changing the dates should clear the picks")
+        if "Picks cleared for the new dates" not in pg.evaluate("(document.querySelector('#toast')||{}).innerText||''"): bad(f"{tag}: changing the dates with picks should say they were cleared (#274)")
+        # #274: every date button is a 44pt target; the date card stays on screen while the new board loads
+        hs = pg.evaluate("[...document.querySelectorAll('#dayrange button')].map(e=>Math.round(e.getBoundingClientRect().height))")
+        if not hs or min(hs) < 44: bad(f"{tag}: date buttons should be 44pt tall: {hs}")
+        if not pg.evaluate("(()=>{S.dayHold={lg:S.lg,name:'NBA',days:S.build.days};const keep=S.build;S.build=null;renderBuild();const ok=!!document.querySelector('#dayrange');S.build=keep;renderBuild();return ok})()"): bad(f"{tag}: the date card should stay on screen while the board reloads (#274)")
         # a refused save puts the old choice back
         SAVE_OK.clear(); SAVE_OK.update({"ok": False}); wait(pg, "!!S.build&&!!S.build.days", 20)
         pg.evaluate("S.build.days.next_day=false;renderBuild()"); time.sleep(.3)
         pg.locator("#dayrange .daybar button", has_text="Tomorrow").click(); time.sleep(.7)
         if pg.evaluate("S.build.days.next_day"): bad(f"{tag}: a refused save should put Today back")
-        if "Nothing was changed" not in pg.evaluate("document.body.innerText"): bad(f"{tag}: a refused save should say nothing was changed")
+        if "Nothing was changed" not in pg.evaluate("(document.querySelector('#dayrange')||{}).innerText||''"): bad(f"{tag}: a refused save should say nothing was changed, inside the date card (#274)")
         SAVE_OK.clear(); SAVE_OK.update({"ok": True})
         if tag == "light":
             r = pg.evaluate("""[...document.querySelectorAll('#dayrange button')].map(e=>({n:e.querySelectorAll(':scope>.hsw').length,deep:e.querySelectorAll('.hsw').length}))""")
@@ -150,6 +155,7 @@ with sync_playwright() as pw:
                 t = pg.evaluate("document.querySelector('#dayrange').innerText")
                 for w in want:
                     if w not in t: bad(f"{tag}: {lg} dates should offer {w!r}: {t!r}")
+                if lg == "nfl" and (t.count("Sunday") != 1 or not (t.index("Thursday") < t.index("Saturday") < t.index("Monday"))): bad(f"{tag}: week dates read Thursday, Saturday, Monday with one Sunday note: {t!r}")
                 if click:
                     SAVES.clear(); pg.locator("#dayrange button", has_text=click).click(); time.sleep(.5)
                     if not SAVES or SAVES[-1].get("lg") != lg or key not in SAVES[-1].get("values", {}): bad(f"{tag}: {lg} {click} should save {key}: {SAVES}")

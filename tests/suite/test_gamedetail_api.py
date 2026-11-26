@@ -34,12 +34,13 @@ SIT = {"down": 1, "distance": 10, "yardLine": 31, "isRedZone": False, "possessio
        "homeTimeouts": 3, "awayTimeouts": 2, "myTimeouts": 2, "downDistanceText": "1st & 10",
        "possessionText": "IND 31", "lastPlayText": "C.Stroud pass INTERCEPTED by A.Smith.", "lastPlayType": "Interception"}
 
-STATE = {"single": dict(LIVE_SINGLE), "gd_raises": False}
+STATE = {"single": dict(LIVE_SINGLE), "gd_raises": False, "A": None}
 real_load = W.load_engine
 
 
 def load():
     A = real_load()
+    STATE["A"] = A
     A.fetch_account = lambda max_age=60, every_league=False: ([], 211.03, "test")
     A.fetch_results = lambda t: {}
     A.resting_sells = lambda: {}
@@ -121,3 +122,17 @@ g = game(NFL_TK, want_state="live")
 ok("game_detail raising: detail is null", g.get("detail") is None, g.get("detail"))
 ok("game_detail raising: leg stays intact", (g.get("leg") or {}).get("state") == "live", g.get("leg"))
 ok("game_detail raising: combos and story are still there", "combos" in g and "story" in g, list(g))
+
+# ---- (e) the game's start (issue #486): the chart begins at kickoff, so the answer carries it (sportsbook time), and never an estimate
+import datetime as _dt
+STATE["single"] = dict(LIVE_SINGLE); STATE["gd_raises"] = False
+EV = NFL_TK.rsplit("-", 1)[0]
+STATE["A"].KICKOFF[EV] = "2026-11-20T18:00:00Z"
+g = game(NFL_TK, want_state="live")
+want = _dt.datetime(2026, 11, 20, 18, 0, tzinfo=_dt.timezone.utc).timestamp()
+ok("start: the answer carries the sportsbook kickoff as epoch seconds", g.get("start") == want, g.get("start"))
+STATE["A"].KICKOFF.pop(EV, None)
+STATE["A"].GAME_EXP[EV] = "2026-11-20T23:00:00Z"            # only a settle-time estimate is known now
+g = game(NFL_TK, want_state="live")
+ok("start: a settle-time estimate is never offered as the start (the page falls back to the first in-play sample)", g.get("start") is None, g.get("start"))
+ok("start: the rest of the answer is intact", (g.get("leg") or {}).get("state") == "live" and "story" in g, list(g))
