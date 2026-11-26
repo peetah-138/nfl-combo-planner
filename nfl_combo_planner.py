@@ -30,6 +30,7 @@ CFG = {
     "include_live": True, # mid-day: allow games already in progress (with safety screens)
     "prop_shadow": True,  # record player-prop prices a pass already read (paper only, write-only); false = off
     "slate_shadow": True, # record slate-concentration aggregates (write-only, nothing reads them); false = off
+    "mom_shadow": True,   # record the momentum-exit shadow (what a drop-based rule WOULD do; write-only, never sells); false = off
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "broad_shadow": True,   # watch-all recorder (bp_* tables): price paths + signals for every market already fetched; write-only; false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
@@ -5741,7 +5742,59 @@ def take_profit_reason(t, h, cut_ok=False):
         prm.update(smart=True, lam=lam, floor=pr["floor"], loss=pr["loss"], checkpoint=bool(why_note))
     d = exit_policy({"kind": "combo", "value": est, "real": real, "peak": peak[t], "pays": h["pays"],
                      "cost": h["cost"], "q": h["p"], "live": live}, prm)
+    try:                                              # momentum shadow: write-only, reads nothing back, never raises
+        o_net = combo_sale_net_info({"offer": real, "contracts": h["pays"]})[0] if real else 0.0
+        mom_record("combo", t, live, h["p"], h["pays"], h["cost"], est, o_net, bool(real),
+                   (time.time() - o["at"]) if real and o.get("at") else None, d)
+    except Exception:
+        pass
     return (d["reason"], d["threshold"]) if d["sell"] else (None, 0.0)
+
+
+def smart_trigger(t, h):
+    """Display only (never read by a seller): the line smart sell REALLY sells a combo at, and why it is not selling
+    now, in plain English. Same inputs as take_profit_reason, but it touches no peak and writes nothing.
+    Returns {"smart_at": the offer it waits for (whole combo, or None), "smart_over": True when that is above the
+    most the combo can sell for, "smart_txt": one sentence, "lock_at": the offer a run-up must reach before Lock in arms
+    (or None once armed / off)}. The old Let it ride number on Live is the "wait line" (wait_threshold), a different
+    thing."""
+    out = {"smart_at": None, "smart_over": False, "smart_txt": "", "lock_at": None}
+    if not h or h.get("left", 1) <= 0 or not h.get("pays"):
+        return out
+    rl = ride_lam()
+    if not CFG.get("smart_sell", True) or rl is None:
+        out["smart_txt"] = "Smart sell is off, so nothing sells this combo for you."
+        return out
+    tks = [tk for (_, tk), _ in h.get("need") or []]
+    pr, knob = smart_params(tks), knob_exit_prm(tks)
+    lam, _ = swing_lambda(h)
+    lam *= pr["lam"] * rl
+    q, P, cost = h["p"], h["pays"], h["cost"]
+    floor2 = max(q * P - lam * P * math.sqrt(max(q * (1 - q), 0)), pr["floor"] * cost)
+    q_min = knob.get("q_min", EXIT_Q_MIN)
+    at, over = sell_line_shown(floor2, sell_top(P))
+    out["smart_at"], out["smart_over"] = at, over
+    real = fresh_offer(t)
+    ro = real["offer"] / max(real.get("frac", 1.0), 0.01) if real and real.get("rfq") != "estimate" else 0.0
+    parts = []
+    if over:
+        parts.append("Smart sell can't sell this now: its bar is higher than any offer can be")
+    elif at:
+        parts.append(f"Smart sell waits until the offer reaches ${at:.2f}")
+    if q < q_min:
+        parts.append(f"it won't sell while the win chance is {q:.0%}, under {q_min:.0%}")
+    elif not ro:
+        parts.append("it needs a real Kalshi offer")
+    elif at and ro < at:
+        parts.append(f"the offer is ${ro:.2f}")
+    elif at:
+        parts.append("the offer is there, so it sells on the next check")
+    out["smart_txt"] = "; ".join(parts) + "." if parts else ""
+    if CFG.get("lock_trail", True):
+        arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+        if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005:
+            out["lock_at"] = round(arm, 2)
+    return out
 
 
 def cash_nudge(t, h, tp=None):
@@ -6469,6 +6522,12 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False, more=None, cap=Non
                      "live": x.get("state") == "live"}, prm)
     if more and d["reason"] != {"A": "smart", "B": "cut loss"}[more]:
         return None, d["floor"]
+    if track and not more and cap is None:            # momentum shadow (the live pass only): write-only, never raises
+        try:
+            mom_record("single", t, x.get("state") == "live", q, n, cost, net, net, True,
+                       (time.time() - SINGLES["at"]) if SINGLES.get("at") else None, d, n=n, sport=x.get("sport") or "")
+        except Exception:
+            pass
     return (d["reason"], d["threshold"]) if d["sell"] else (None, d["floor"])
 
 
@@ -6552,6 +6611,185 @@ def exit_cap_shadow(x, bid, now=None):
         except Exception:
             pass
         return False
+
+
+# ---- momentum shadow (design: momentum-exit-design.md section 5). Records, for every smart-sell evaluation of a held
+# combo or single, how far the win chance has fallen from its recent high and what two HYPOTHETICAL drop-based rules
+# (protect, cut) would say next to what smart sell says today. Nothing here sells, buys or changes a decision: it
+# is called with values the exit rule already worked out, writes to its own tables (mom_shadow, mom_after, mom_peak),
+# is throttled (a changed verdict, else every MOM["every"] s per bet), capped, pruned, ON for recording by default
+# (settings key "mom_shadow": false = off) and swallows every error. Pause is not consulted because nothing trades;
+# the paused flag is only recorded. No table is ever read back into a decision (the persisted peak is reloaded into
+# this module's own dict only, never into MINE["peak"]).
+MOM = {"on": True, "every": 120, "keep_days": 60, "cap": 100000, "win": 600, "sigma": 0.05, "z": 2.0, "m": 0.05,
+       "h": 0.10, "cut_floor": 0.30, "told_every": 600, "prune": 0.0, "peak_every": 120, "db": None,
+       "q": {}, "peak": {}, "peak_saved": {}, "seen": {}, "told": {}, "ep": {}, "pend": [], "labeled": set()}
+MOM_AFTER = (30, 60, 300, 900, 3600)          # seconds after a flagged row at which the offer is looked at again
+_MOM_LOCK = threading.Lock()
+
+
+def _mom_tables():
+    db = STORE.get("db")
+    if MOM["db"] is db:
+        return
+    store_x("create table if not exists mom_shadow(ts real, ticker text, kind text, sport text, live int, q real, "
+            "q_peak_w real, dq real, sigma real, z real, o_real real, o_est real, real_flag int, quote_age real, "
+            "o_net real, cost real, pays real, n real, o_peak real, today_sell int, today_reason text, today_line real, "
+            "why_not text, m_protect int, m_cut int, paused int)")
+    store_x("create index if not exists mom_shadow_ts on mom_shadow(ts)")
+    store_x("create table if not exists mom_after(sid int, ts real, ticker text, o_net0 real, o30 real, o60 real, "
+            "o300 real, o900 real, o3600 real, o_min real, outcome text, payout real)")
+    store_x("create index if not exists mom_after_sid on mom_after(sid)")
+    store_x("create index if not exists mom_after_t on mom_after(ticker)")
+    store_x("create table if not exists mom_peak(ticker text primary key, o_peak real, ts real)")
+    MOM["db"] = db
+
+
+def mom_why_not(kind, live, q, o_net, real_flag, d, peak, pays, cost):
+    """Why smart sell is not selling right now: (short text for the table, plain sentence for the log). ("", "") when it is."""
+    if d.get("sell"):
+        return "", ""
+    floor = d.get("floor") or 0.0
+    arm = max(TRAIL_ARM * pays, TRAIL_ARM_COST * cost)
+    if not live:
+        return "no live data", "no live data"
+    if floor <= 0:
+        return "smart sell off", "smart sell is off"
+    if q < EXIT_Q_MIN:
+        return "q<50%", "q below 50%"
+    if not real_flag:
+        return "no real quote", "no real quote"
+    if o_net < floor:
+        return "below floor", f"offer under floor ${floor:.2f}"
+    return "peak<arm", f"lock-in not armed (peak ${peak:.2f} < ${arm:.2f})"
+
+
+def mom_record(kind, t, live, q, pays, cost, o_est, o_net, real_flag, quote_age, d, n=None, sport=""):
+    """Write-only shadow of one exit evaluation (see the block comment above). `o_net` is the real offer after fees
+    (0 when there is none), `o_est` the steady estimate, `d` exit_policy's answer. Returns True when a row was written.
+    Never raises, never sells, never changes a decision."""
+    try:
+        if not CFG.get("mom_shadow", MOM["on"]) or not STORE.get("db") or not pays or q is None:
+            return False
+        now = time.time()
+        _mom_tables()
+        sig, z_need = MOM["sigma"], MOM["z"]
+        with _MOM_LOCK:
+            w = [x for x in MOM["q"].get(t, []) if now - x[0] <= MOM["win"]]
+            w.append((now, q))
+            MOM["q"][t] = w[-300:]
+            q_peak = max(x[1] for x in w)
+            dq = q - q_peak
+            z = max(-dq, 0.0) / sig
+            first = t not in MOM["peak"]
+        if first:                                              # after a restart: pick this bet's peak back up (shadow only)
+            r = store_rows("select o_peak from mom_peak where ticker=?", (t,))
+            with _MOM_LOCK:
+                MOM["peak"][t] = float(r[0]["o_peak"]) if r else 0.0
+        with _MOM_LOCK:
+            peak = MOM["peak"][t] = max(MOM["peak"].get(t, 0.0), o_net or 0.0, o_est or 0.0)
+            pend = [p for p in MOM["pend"] if p["t"] == t]
+        _mom_after_fill(t, o_net, now, pend)
+        disc = kalshi_discount(live) if kind == "combo" else 1.0
+        hold_val = q * pays * disc
+        have = bool(real_flag) and (o_net or 0) > 0
+        protect = int(have and z >= z_need and o_net >= cost - MOM["m"] * cost and hold_val <= o_net * (1 + MOM["h"]))
+        cut = int(have and z >= z_need + 0.5 and hold_val < o_net and o_net >= MOM["cut_floor"] * cost)
+        sold = int(bool(d.get("sell")))
+        short, long_ = mom_why_not(kind, live, q, o_net or 0.0, have, d, peak, pays, cost)
+        key = (sold, protect, cut)
+        with _MOM_LOCK:
+            last = MOM["seen"].get(t)
+            write = not last or last[1] != key or now - last[0] >= MOM["every"]
+            if write:
+                MOM["seen"][t] = (now, key)
+                if len(MOM["seen"]) > 5000:
+                    for k in [k for k, v in MOM["seen"].items() if now - v[0] > 3600]:
+                        MOM["seen"].pop(k, None)
+            was_ep = MOM["ep"].get(t, False)
+            MOM["ep"][t] = bool(protect or cut)
+            say_no = (not sold and live and now - MOM["told"].get(t, 0) >= MOM["told_every"])
+            if say_no:
+                MOM["told"][t] = now
+        if (protect or cut) and not was_ep:                    # once per episode, not every pass
+            rule = "protect" if protect else "cut"
+            console_note(f"MOMENTUM would sell {t} rule={rule} z={z:.1f} q {q_peak:.0%}->{q:.0%} offer net ${o_net:.2f} "
+                         f"vs cost ${cost:.2f} (today: {d.get('reason') or 'hold'}{', ' + short if short else ''})")
+        if say_no:                                             # every 10 min per position
+            console_note(f"NO SELL {t}: blocked by {long_}")
+        if not write:
+            return False
+        paused = 0
+        try:
+            paused = int(bool(trading_paused()))
+        except Exception:
+            pass
+        cur = store_x("insert into mom_shadow values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (round(now, 1), t, kind, sport or "", int(bool(live)), round(q, 4), round(q_peak, 4), round(dq, 4),
+                       sig, round(z, 2), round(o_net or 0.0, 4), round(o_est or 0.0, 4), int(have),
+                       None if quote_age is None else round(quote_age, 1), round(o_net or 0.0, 4), round(cost, 4),
+                       round(pays, 4), n, round(peak, 4), sold, d.get("reason") or "hold",
+                       round(d.get("threshold") or 0.0, 4), short, protect, cut, paused))
+        if cur is not None and (sold or protect or cut) and len(MOM["pend"]) < 400:
+            sid = cur.lastrowid
+            store_x("insert into mom_after(sid,ts,ticker,o_net0) values(?,?,?,?)", (sid, round(now, 1), t, round(o_net or 0.0, 4)))
+            with _MOM_LOCK:
+                MOM["pend"].append({"sid": sid, "t": t, "t0": now, "got": set(), "min": None})
+        if peak > MOM["peak_saved"].get(t, 0.0) * 1.01 + 0.005 or peak and t not in MOM["peak_saved"]:
+            MOM["peak_saved"][t] = peak
+            store_x("insert or replace into mom_peak values(?,?,?)", (t, round(peak, 4), round(now, 1)))
+        if now - MOM["prune"] > 6 * 3600:
+            MOM["prune"] = now
+            store_x("delete from mom_shadow where ts < ?", (now - MOM["keep_days"] * 86400,))
+            store_x("delete from mom_after where ts < ?", (now - MOM["keep_days"] * 86400,))
+            store_x("delete from mom_peak where ts < ?", (now - 7 * 86400,))
+            n_rows = (store_rows("select count(*) n from mom_shadow") or [{"n": 0}])[0]["n"]
+            if n_rows > MOM["cap"]:
+                store_x("delete from mom_shadow where rowid in (select rowid from mom_shadow order by ts limit ?)",
+                        (n_rows - MOM["cap"],))
+        return True
+    except Exception as err:
+        try:
+            console_note(f"momentum shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return False
+
+
+def _mom_after_fill(t, o_net, now, pend):
+    """Fill the later offers (+30 s .. +60 min) of this bet's flagged rows from the offer seen now. Write-only."""
+    if not pend or not o_net or o_net <= 0:
+        return
+    for p in pend:
+        age = now - p["t0"]
+        sets, args = [], []
+        for secs, col in zip(MOM_AFTER, ("o30", "o60", "o300", "o900", "o3600")):
+            if secs not in p["got"] and age >= secs:
+                p["got"].add(secs)
+                sets.append(f"{col}=?")
+                args.append(round(o_net, 4))
+        p["min"] = o_net if p["min"] is None else min(p["min"], o_net)
+        if sets:
+            store_x(f"update mom_after set {', '.join(sets)}, o_min=? where sid=?", (*args, round(p["min"], 4), p["sid"]))
+        if len(p["got"]) == len(MOM_AFTER) or age > MOM_AFTER[-1] + 1800:
+            with _MOM_LOCK:
+                if p in MOM["pend"]:
+                    MOM["pend"].remove(p)
+
+
+def mom_settle(t, outcome, payout):
+    """Label a bet's flagged rows with how it ended ('won', 'lost' or 'cashed') once per process. Write-only; never raises."""
+    try:
+        if t in MOM["labeled"] or not CFG.get("mom_shadow", MOM["on"]) or not STORE.get("db"):
+            return
+        MOM["labeled"].add(t)
+        _mom_tables()
+        store_x("update mom_after set outcome=?, payout=? where ticker=? and outcome is null", (outcome, round(float(payout or 0), 4), t))
+    except Exception as err:
+        try:
+            console_note(f"momentum shadow: {type(err).__name__}: {err}")
+        except Exception:
+            pass
 
 
 SINGLE_RESTING = {"at": 0, "t": set()}
@@ -7337,6 +7575,8 @@ def live_view(mine, views, plan, chance_one, balance):
         t = v["t"]
         h = MINE["hold"].get(t)
         if not h:
+            if v.get("group") in ("won", "lost", "cashed"):     # momentum shadow: label how a flagged bet ended
+                mom_settle(t, v["group"], v.get("pays") if v["group"] == "won" else v.get("back") if v["group"] == "cashed" else 0)
             continue
         o = MINE["cash"].get(t) or {}
         real = fresh_offer(t) if o.get("rfq") != "estimate" else None
@@ -7367,6 +7607,10 @@ def live_view(mine, views, plan, chance_one, balance):
                                                             sell_top(h["pays"]))
         except Exception:
             v["threshold"], v["thr_over"] = None, False
+        try:                                       # the REAL smart-sell line and why it isn't selling (display only)
+            v.update(smart_trigger(t, h))
+        except Exception:
+            v["smart_at"], v["smart_over"], v["smart_txt"], v["lock_at"] = None, False, "", None
         try:                                       # the cash-out moment: Pete's profit rules say now
             why, floor = take_profit_reason(t, h)
             v["moment"] = {"why": why, "at": round(floor, 2)} if why and (v.get("offer") or 0) >= 0.97 * floor else None

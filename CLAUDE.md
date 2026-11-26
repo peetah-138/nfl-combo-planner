@@ -1139,6 +1139,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     swallowed, flag `sig_shadow` (a real `CFG` key, ON by default for recording, so a saved false is kept), 21-day / 300k row
     bound. Combo RFQ sampling: nothing new (held combos are already in `offers`, candidate quotes in `quotes`; more would need
     extra quote calls). Tests: `t_exit_replay.py`, `t_signal_shadow.py`.
+  - **Momentum shadow (record only).** `mom_record` writes `mom_shadow` / `mom_after` / `mom_peak` from the exit evaluation (hooked at the end of `take_profit_reason` and the live `single_sell_reason`, each in its own try/except); setting `mom_shadow` (default ON, false = off). It sells and buys nothing, reads nothing back into a decision, and Pause, rule 8 and no-live-data are untouched. Combo cards show smart sell's real bar (`smart_trigger`); the old let-it-ride number is the "wait line". Details: `docs/changes/momentum-shadow.md`; test `t_mom_shadow.py`.
   - Settings › Money › **Smart Buy (preview)** (`smart_buy`, shared, off; `smart_buy_on()` reads the shared file):
     on = Results › What's working shows a folded "🧠 Smart Buy (preview)" card (`sbCard`, `analytics()["smart_buy"]` =
     `smart_buy_summary()`, built only while the switch is on; the route re-reads the switch and builds it when it was
