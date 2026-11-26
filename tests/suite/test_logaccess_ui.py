@@ -12,7 +12,7 @@ B = "http://127.0.0.1:" + os.environ.get("CW_WEBAPP_PORT", "8766")
 SHOTS = os.environ.get("LOG_SHOTS") or "."
 from playwright.sync_api import sync_playwright
 STATE = {"on": False, "calls": []}
-DLG = {"ok": True}
+DLG = {"seen": []}
 FAKE = "fake-code-for-the-screenshot-0123456789ab"
 
 
@@ -39,8 +39,8 @@ with sync_playwright() as pw:
         pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme=scheme)
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
-        DLG["ok"] = True
-        pg.on("dialog", lambda d: d.accept() if DLG["ok"] else d.dismiss())
+        DLG["seen"] = []
+        pg.on("dialog", lambda d: (DLG["seen"].append(d.message), d.dismiss()))
         pg.route("**/app", lambda route: (lambda r: route.fulfill(response=r, body=r.text().replace("LOCAL=false", "LOCAL=true")))(route.fetch()))
         pg.route("**/app/mac", mac)
         pg.goto(B + "/app"); time.sleep(3); pg.evaluate("go('settings')")
@@ -72,19 +72,34 @@ with sync_playwright() as pw:
         if FAKE in (pg.content() or ""):
             print("PROBLEMS: the code is still on screen after Done")
         pg.screenshot(path=os.path.join(SHOTS, f"logs_on_{scheme}.png"))
-        DLG["ok"] = False                                  # "Stop the dev Mac reading logs?" -> Cancel
         n = STATE["calls"].count("logaccess")
-        pg.locator("#logrow input").click(); time.sleep(1)
+        pg.locator("#logrow input").click(); time.sleep(.8)          # "Stop the dev Mac reading logs?" is the app's sheet (#378)
+        sheet = pg.locator("#sheet")
+        if "Stop the dev Mac reading logs" not in (sheet.text_content() or ""):
+            print("PROBLEMS: turning it off didn't open the app's own confirm sheet")
+        if DLG["seen"]:
+            print("PROBLEMS: a native browser confirm still popped up", DLG["seen"])
+        for bt in sheet.locator("button").all():
+            if bt.bounding_box() and bt.bounding_box()["height"] < 43.5:
+                print("PROBLEMS: a confirm button is shorter than 44px")
+        pg.screenshot(path=os.path.join(SHOTS, f"logs_stop_{scheme}.png"))
+        sheet.locator("button", has_text="Cancel").click(); time.sleep(.8)
         if not pg.locator("#logrow input").is_checked() or STATE["calls"].count("logaccess") != n:
             print("PROBLEMS: cancelling 'stop' still turned it off")
-        DLG["ok"] = True
-        pg.locator("#logrow input").click()
+        pg.locator("#lanew").click(); time.sleep(.8)
+        if "Make a new code" not in (sheet.text_content() or "") or STATE["calls"].count("logaccess") != n:
+            print("PROBLEMS: New code didn't ask first in the app's sheet")
+        sheet.locator("button", has_text="Cancel").click(); time.sleep(.8)
+        pg.locator("#logrow input").click(); time.sleep(.8)
+        sheet.locator("button", has_text="Stop it").click()
         for _ in range(20):
             time.sleep(.5)
             if not pg.locator("#logrow input").is_checked():
                 break
         if pg.locator("#logrow input").is_checked() or "logaccess" not in STATE["calls"][-3:]:
             print("PROBLEMS: turning it off didn't stick")
+        if DLG["seen"]:
+            print("PROBLEMS: a native browser confirm popped up", DLG["seen"])
         print(scheme, "calls:", STATE["calls"], "errs:", errs)
         if errs:
             print("PROBLEMS: page errors", errs)

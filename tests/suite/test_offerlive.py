@@ -71,19 +71,19 @@ with sync_playwright() as pw:
     pg.evaluate("go('live')")
 
     # The hero's big number is driven by cash_now (=offer_live here). It rolls to data-v; wait for the roll.
-    ok = until(pg, "!!document.querySelector('b.big[data-num=\"h:worth\"]')", 20)
+    ok = until(pg, "!!document.querySelector('[data-num=\"h:worth\"]')", 20)
     print("hero number present:", ok)
     if not ok:
         fails.append("no hero number")
     else:
-        ok = until(pg, "Math.abs(parseFloat(document.querySelector('b.big[data-num=\"h:worth\"]').dataset.v)-9.34)<0.01", 8)
-        hv = pg.evaluate("document.querySelector('b.big[data-num=\"h:worth\"]').dataset.v")
+        ok = until(pg, "Math.abs(parseFloat(document.querySelector('[data-num=\"h:worth\"]').dataset.v)-9.34)<0.01", 8)
+        hv = pg.evaluate("document.querySelector('[data-num=\"h:worth\"]').dataset.v")
         print("hero follows the live-priced estimate (9.34):", ok, "| data-v:", hv)
         if not ok:
             fails.append(f"hero number is {hv}, not the live-priced 9.34")
         # the tilde stays (it is still an estimate, not a real quote)
-        pre = pg.evaluate("document.querySelector('b.big[data-num=\"h:worth\"]').dataset.pre")
-        txt = pg.evaluate("document.querySelector('b.big[data-num=\"h:worth\"]').textContent")
+        pre = pg.evaluate("document.querySelector('[data-num=\"h:worth\"]').dataset.pre")
+        txt = pg.evaluate("document.querySelector('[data-num=\"h:worth\"]').textContent")
         print("tilde kept:", pre, repr(txt))
         if "≈" not in (pre or "") and "≈" not in (txt or ""):
             fails.append("the hero lost its tilde")

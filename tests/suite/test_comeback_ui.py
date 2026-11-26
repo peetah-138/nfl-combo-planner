@@ -59,6 +59,14 @@ with sync_playwright() as pw:
         print("PROBLEMS: sideways scroll on a phone (empty)")
     pg.locator(".cbp").scroll_into_view_if_needed(); time.sleep(.4)
     pg.screenshot(path=os.path.join(SHOTS, "comeback_empty.png"))
+    # #455: the Buying row is announced as a status and busy; its spinner is hidden from assistive tech
+    row = pg.evaluate("""(()=>{S.ibuy={x1:1};const d=document.createElement('div');d.innerHTML=ideaButtons({id:'x1',n:1},{},false,0,false);const r=d.firstElementChild;
+      return {role:r.getAttribute('role'),busy:r.getAttribute('aria-busy'),spin:[...r.querySelectorAll('.spin')].every(e=>e.getAttribute('aria-hidden')==='true')}})()""")
+    if row != {"role": "status", "busy": "true", "spin": True}:
+        print("PROBLEMS: the Buying row is not role=status / aria-busy with a hidden spinner:", row)
+    t = pg.evaluate("(()=>{const e=document.getElementById('toast');return [e.getAttribute('role'),e.getAttribute('aria-live')]})()")
+    if t != ["status", "polite"]:
+        print("PROBLEMS: #437 the toast is not a polite status region:", t)
     print("errs:", errs)
     if errs:
         print("PROBLEMS: page errors", errs)

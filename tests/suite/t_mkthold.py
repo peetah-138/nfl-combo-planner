@@ -6,7 +6,7 @@ os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 TMP = tempfile.mkdtemp()
 E.store_open(os.path.join(TMP, "h.db"))
-ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+ok = lambda n, c, *why: print(("PASS " if c else "FAIL ") + n + ("" if c or not why else f" {why}"))
 now = time.time()
 E._mkt_table()
 
@@ -87,5 +87,33 @@ for seed, frac in enumerate((0.0, 0.2, 0.5, 1.0)):
 # 6. under min_n nothing is earned and nothing is called vetoed
 r = load(lambda i, mid, fb: fb, n=150)
 ok("holdout: under 200 markets the mid stays the fair, not 'vetoed'", r["w"] == 0.0 and not r["vetoed"])
+
+
+# 7. the off switch (#497): `mkt_hold` is ON by default; off = the in-sample bar alone (the weight the old rule gave);
+#    the veto is logged once, naming the group and why
+import io, contextlib
+ok("mkt_hold: a shared setting, ON by default", E.DEFAULTS["mkt_hold"] is True and "mkt_hold" in E.SHARED_KEYS)
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+buf = io.StringIO()
+E._ORDER_SHARED.told.clear()
+with contextlib.redirect_stdout(buf):
+    r = load(lambda i, mid, fb: fb if i < 1750 else mid)
+ok("mkt_hold ON: the late-failing weight is vetoed (as before)", r["w"] == 0.0 and r["vetoed"])
+line = [l for l in buf.getvalue().splitlines() if "held back" in l]
+ok("mkt_hold ON: the veto is logged with its group and numbers", len(line) == 1 and "nba" in line[0].lower() and "win" in line[0]
+   and "pre" in line[0] and "newest 750 of 2500" in line[0], line)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    E.mkt_learn()
+ok("mkt_hold ON: the same veto is logged once, not on every pass", "held back" not in buf.getvalue(), buf.getvalue())
+E.CFG["mkt_hold"] = False
+E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+r = load(lambda i, mid, fb: fb if i < 1750 else mid)
+ok("mkt_hold OFF: the in-sample bar alone keeps its weight, nothing vetoed", r["w"] > 0 and not r["vetoed"], r)
+r = load(lambda i, mid, fb: mid)
+ok("mkt_hold OFF: a group that never earned the in-sample bar still gets 0 (off never adds a weight)", r["w"] == 0.0)
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
 
 shutil.rmtree(TMP, ignore_errors=True)

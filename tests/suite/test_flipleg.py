@@ -1,6 +1,6 @@
 # CHECK: group=page secs=40
 """Flipping a leg on a Build combo idea (GitHub #104, display only). Tapping a leg row: (1) at once the card is in the
-'flip' phase (a loading state: the tapped row folds, the dependent numbers shimmer, Get price is disabled and marked stale)
+'flip' phase (a loading state: the tapped row keeps its size and shimmers, the dependent numbers shimmer, Get price is disabled and marked stale)
 and any Kalshi quote fetched before is gone, so Buy can't be tapped on an old price; (2) when the answer is held, the card
 stays in that state across refreshes and a second tap does nothing; (3) when it arrives the new leg shows, the numbers roll to
 the new values, the 'Good flip' note slides in, Get price is back (never a Buy); (4) tapping again undoes it; (5) a failed
@@ -65,7 +65,11 @@ with sync_playwright() as pw:
         if not (st["q"] and st["q"]["dis"] and st["q"]["stale"] == "1"): bad(f"{tag}: Get price isn't disabled/marked stale while loading: {st}")
         if not st["wait"] or st["dep"] < 3 or not st["sec"]: bad(f"{tag}: no loading look on the row/numbers or 'Not this one' still on: {st}")
         if reduce == "no-preference" and st["shim"] == "none": bad(f"{tag}: the numbers don't shimmer while loading")
-        if reduce == "reduce" and pg.evaluate(f"getComputedStyle(document.querySelector('{card} .lrow.wait')).animationName")!="none": bad(f"{tag}: reduced motion still animates the folding row")
+        if reduce == "reduce" and pg.evaluate(f"getComputedStyle(document.querySelector('{card} .lrow.wait')).animationName")!="none": bad(f"{tag}: reduced motion still animates the loading row")
+        # #206: the loading row keeps its size (no fold) and shimmers softly; reduced motion holds it still
+        rw = pg.evaluate(f"(()=>{{const r=document.querySelector('{card} .lrow.wait');const cs=getComputedStyle(r);return {{an:cs.animationName,tf:cs.transform,h:r.getBoundingClientRect().height,w:r.getBoundingClientRect().width}}}})()")
+        if rw["tf"] not in ("none", "matrix(1, 0, 0, 1, 0, 0)") or rw["h"] < 40: bad(f"{tag}: the loading row folded or shrank: {rw}")
+        if reduce == "no-preference" and rw["an"] != "lshim": bad(f"{tag}: the loading row doesn't shimmer: {rw}")
         shot("2_loading")
         # held answer: refreshes keep the same card node & state, a second tap sends nothing, a quote can't be asked
         pg.evaluate(f"window.__n0=document.querySelector('{card}')")

@@ -43,15 +43,16 @@
 @keyframes lshake{20%{transform:translateX(-6px)}45%{transform:translateX(5px)}70%{transform:translateX(-3px)}}
 .lrow.flip{min-height:44px;transform-origin:50% 50%}
 .lrow.flip:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.lrow.wait{animation:lfold .17s ease-in forwards;pointer-events:none}
+.lrow.wait{pointer-events:none;background:linear-gradient(90deg,var(--panel2) 25%,var(--hover) 50%,var(--panel2) 75%);background-size:200% 100%;animation:lshim 1.2s linear infinite}
+.lrow.wait>*{opacity:.55}
 .lrow.turn{animation:lturn .28s cubic-bezier(.2,.8,.2,1) both}
-@keyframes lfold{to{transform:perspective(600px) rotateX(80deg);opacity:.35}}
+@keyframes lshim{from{background-position:200% 0}to{background-position:-200% 0}}
 @keyframes lturn{from{transform:perspective(600px) rotateX(-80deg);opacity:.35}to{transform:perspective(600px) rotateX(0);opacity:1}}
 .ccard[data-ph=flip] .dep,.ccard[data-ph=flip] .dep *{color:transparent!important;-webkit-user-select:none;user-select:none}
 .ccard[data-ph=flip] .dep{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:8px}
 .flipnote.in{animation:fnin .32s cubic-bezier(.2,.8,.2,1) both}
 @keyframes fnin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;opacity:.4}.lrow.shake{animation:none!important}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
+@media (prefers-reduced-motion:reduce){.lrow.wait{animation:none!important;background:var(--hover)}.lrow.shake{animation:none!important}.lrow.turn{animation:lfade .2s linear both!important}.flipnote.in{animation:lfade .2s linear both!important}
  .ccard[data-ph=flip] .dep{animation:none!important}}
 @keyframes lfade{from{opacity:0}to{opacity:1}}
 /* Build layout (#248, #249): the date range above the games board, and the slip right under the board on one-column screens */

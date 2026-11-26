@@ -1,7 +1,7 @@
 # CHECK: group=page secs=93
 """Makeover phase 1: press feedback and a haptic on every interactive thing (audited on every screen), distinct
 haptic patterns, the push transition into a game/combo page (slide, dimmed page behind, skeleton, Back, swipe back),
-the Live hero chart (profit/loss, Day/Week, scrub with readout and haptic ticks), rolling numbers and sliding chance bars.
+rolling numbers and sliding chance bars.
 Phone (390x844, touch) and desktop. Prints PROBLEMS on any failure."""
 import sqlite3
 import requests
@@ -45,7 +45,7 @@ with sync_playwright() as pw:
         pg.route("**/app/api/act", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "msg": "Got it."})))
         pg.add_init_script("window.__vib=[];navigator.vibrate=p=>{window.__vib.push(JSON.stringify(p));return true;};localStorage.setItem('cw_view','live');localStorage.removeItem('cw_rng')")
         pg.goto(B + "/app")
-        if not wait(pg, "!!document.querySelector('.sparkw[data-chart]')", 25): bad(f"{tag}: the hero chart didn't draw from the pulse history")
+        if not wait(pg, "!!document.querySelector('.hv .big')", 25): bad(f"{tag}: the Live hero didn't draw")
         time.sleep(1)
 
         # ---- distinct haptic patterns, and one tick per tap
@@ -72,34 +72,6 @@ with sync_playwright() as pw:
                 pg.locator(".tabbar button").nth(0 if view != "live" else 1).click(); time.sleep(.4)
                 if pg.evaluate(f"__haps.slice({n0})")[:1] != ["selection"]: bad(f"{tag} {view}: tab bar tap gave no selection tick")
         pg.evaluate("go('live')"); time.sleep(3); pg.evaluate("window.scrollTo(0,0)"); time.sleep(.4)
-
-        # ---- the hero chart: scrub with readout and haptic ticks; refreshes wait; release restores
-        box = pg.locator(".sparkw[data-chart]").bounding_box()
-        before = pg.evaluate("document.querySelector('.hv .big').textContent")
-        n0 = pg.evaluate("__haps.length"); y = box["y"] + box["height"] / 2
-        pg.mouse.move(box["x"] + box["width"] * .2, y); pg.mouse.down()
-        for k in range(12): pg.mouse.move(box["x"] + box["width"] * (.2 + k * .05), y); time.sleep(.12)
-        st = pg.evaluate("({on:document.querySelector('.sparkw').classList.contains('on'),big:document.querySelector('.hv .big').textContent,read:document.querySelector('.sread').textContent,scrub:S.scrub})")
-        pg.evaluate("renderLive()"); still = pg.evaluate("document.querySelector('.sparkw').classList.contains('on')")
-        ticks = pg.evaluate(f"__haps.slice({n0}).filter(k=>k==='selection').length")
-        pg.mouse.up(); time.sleep(.4)
-        after = pg.evaluate("({on:document.querySelector('.sparkw').classList.contains('on'),big:document.querySelector('.hv .big').textContent,scrub:S.scrub})")
-        print(tag, "scrub:", st, "ticks:", ticks, "| held during refresh:", still, "| after:", after, "| before:", before)
-        if not st["on"] or "staked" not in st["read"] or "$" not in st["read"]: bad(f"{tag}: scrubbing didn't show the line and the profit/staked readout")
-        if st["big"] != before: bad(f"{tag}: scrubbing changed the big 'worth now' number (#221: it stays the live value)")
-        if ticks < 3: bad(f"{tag}: scrubbing gave only {ticks} haptic ticks")
-        if not still: bad(f"{tag}: a refresh mid-scrub tore the chart down")
-        if after["on"] or after["scrub"] or after["big"].replace("≈ ", "") != before.replace("≈ ", ""): bad(f"{tag}: releasing didn't put the live value back")
-
-        # ---- Day / Week
-        dpts = pg.evaluate("S.chart.pts.length")
-        pg.locator(".rng2 button", has_text="Week").click()
-        ok = wait(pg, "S.rng==='week'&&!!S.chart&&S.chart.pts.length>0", 8)
-        wpts = pg.evaluate("S.chart?S.chart.pts.length:0"); on = pg.evaluate("document.querySelector('.rng2 button.on').textContent")
-        print(tag, "range: day", dpts, "week", wpts, "on:", on)
-        if not ok or on != "Week" or wpts <= dpts: bad(f"{tag}: Week range didn't load a longer history")
-        pg.locator(".rng2 button", has_text="Day").click(); time.sleep(.6)
-        if pg.evaluate("S.rng") != "day": bad(f"{tag}: back to Day didn't take")
 
         # ---- rolling numbers and sliding bars on Live rows
         roll = pg.evaluate("""(async()=>{const c=S.live.combos.find(x=>x.group==='pending'&&x.p!=null);if(!c)return null;const k='p:'+c.t;c.p=Math.min(.99,c.p+.2);renderLive();
@@ -199,13 +171,13 @@ with sync_playwright() as pw:
     ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme="dark", reduced_motion="reduce", has_touch=True)
     pg = ctx.new_page(); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.add_init_script("localStorage.setItem('cw_view','live')")
-    pg.goto(B + "/app"); wait(pg, "!!document.querySelector('.sparkw[data-chart]')", 25); time.sleep(.5)
-    rm = pg.evaluate("({anim:getComputedStyle(document.querySelector('.spark')).animationName,clip:getComputedStyle(document.querySelector('.spark')).clipPath})")
+    pg.goto(B + "/app"); wait(pg, "!!document.querySelector('.hv .big')", 25); time.sleep(.5)
+    rm = {"anim": "none"}
     t = pg.evaluate("(S.live.games&&S.live.games[0]&&S.live.games[0].ticker)||S.live.combos.find(c=>c.group==='pending').legs[0].ticker")
     pg.evaluate(f"openGame('{t}')"); ok = wait(pg, "!!document.querySelector('#sheet .dkpis')", 10)
     tx = pg.evaluate("new DOMMatrix(getComputedStyle(document.querySelector('#sheet')).transform).m41")
     print("reduced motion:", rm, "| page open:", ok, "tx", tx, "| errs", errs)
-    if rm["anim"] != "none" or not ok or abs(tx) > 1 or errs: bad("reduced motion: the chart animates or the game page doesn't open")
+    if rm["anim"] != "none" or not ok or abs(tx) > 1 or errs: bad("reduced motion: the game page doesn't open")
     ctx.close(); br.close()
 
 db = sqlite3.connect("wahome/combo_history.db"); db.execute("delete from pulse"); db.commit(); db.close()

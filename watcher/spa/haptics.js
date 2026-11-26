@@ -70,7 +70,7 @@ function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid"
   return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
  return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
   `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" switch class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
-  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Nothing here changes how the app buys or sells.</small></div></div>`);}
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Known to stay quiet: Settings' folded section headers (they are left out so the page still scrolls smoothly on iOS), links, text fields and chart scrub areas. Nothing here changes how the app buys or sells.</small></div></div>`);}
 /* Method N, the default (#60): every tappable control gets a see-through <input type=checkbox switch> as its FIRST child,
    covering it (position:absolute, inset 0; the control becomes position:relative through a zero-specificity rule, so
    its own styles always win). The finger's tap lands on the switch: iOS flips it (the tick) and the same real click

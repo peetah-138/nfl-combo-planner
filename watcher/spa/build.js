@@ -98,7 +98,11 @@ async function pReprice(id){S.prepP=S.prepP||{};S.prep=S.prep||{};if(S.prepP[id]
  delete S.prepP[id];
  // (#402) no haptic after the await (silent on iOS 27): the tap ticked, and the card now shows the result with a small motion
  S.prep[id]=r.ok?r:pRepFail(r);S.prep[id].fresh=true;
- renderBuild();if(S.prep[id])S.prep[id].fresh=false;}
+ renderBuild();if(S.prep[id])S.prep[id].fresh=false;
+ // (#435) the redraw replaced the button the keyboard / VoiceOver was on: say the result in a live region that is never redrawn,
+ // and put focus back on the card's button (or on the result when there is no button left)
+ const lv=document.getElementById('repLive'),q=S.prep[id];if(lv&&q)lv.textContent=[q.verdict,q.why].filter(Boolean).join('. ');
+ const card=[...document.querySelectorAll('.pitem')].find(e=>e.dataset.pid===id);if(card){const f=card.querySelector('.prbtn')||card.querySelector('.prq');if(f){if(!f.matches('button'))f.tabIndex=-1;f.focus({preventScroll:true});}}}
 /* Which game each bet is on, in plain English ("Over 7.5" alone told Pete nothing): one line per game. Spreads and totals
    say "Flyers at Bruins"; a single or one leg of a combo says "Flyers vs Bruins" (the team picked first). Older saved
    drafts have no game text, so fall back to what they do carry. */
@@ -178,7 +182,9 @@ async function panelApprove(b){if(S.pSend||b.disabled)return;const its=(S.panel.
  if(!b.dataset.sure){pArm(b,'Tap again to approve');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Sending…';let r;
  try{r=await pPost({a:'panel_approve',ids,view:S.pview||'all',at:S.panel.panel.at,stakes});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');if(r.ok)pStakeClear(its);S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();}
+ if(r.ok){const tot=its.reduce((a,c)=>a+(+stakes[c.id]||+c.stake||0),0);okSheet('Approved',`${its.length} bet${its.length===1?'':'s'}${tot>0?' · '+money(tot)+' at work':''}`,r.msg||'The Mac buys them within seconds.');pStakeClear(its);}   // #140: a big Approved moment, after the answer is in
+ else{hap('error');}
+ S.pOff=new Set();await load('build');if(r.ok)pBuyWatch();else btnFail('button[onclick^="panelApprove"]',r.msg,b);}
 /* Right after Approve / Add the Mac buys within seconds: look again a few times so "Buying now" turns into "Bought". */
 function pBuyWatch(){clearTimeout(S.pbT);let i=0;const tick=()=>{if(S.view!=='build')return;
  if(document.hidden||S.buying||$('#modal').classList.contains('on')){S.pbT=setTimeout(tick,3000);return;}
@@ -192,14 +198,14 @@ async function panelAdd(b,view){if(S.pSend||b.disabled)return;const src=view==='
  if(!b.dataset.sure){pArm(b,'Tap again to add');return;}
  S.pSend=true;b.disabled=true;b.dataset.sure='sent';b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Adding…';let r;
  try{r=await pPost({a:'panel_add',ids,view:view||S.pview,stakes,allow:ovList()});}finally{S.pSend=false;}
- hap(r.ok?'success':'error');toast(r.msg,6000,r.ok?'good':'bad');if(r.ok)pStakeClear(its);
+ hap(r.ok?'success':'error');if(r.ok)toast(r.msg,6000,'good');if(r.ok)pStakeClear(its);
  if(r.ok){if(view==='extra'){S.pSent=S.pSent||{};const now=Date.now();ids.forEach(id=>S.pSent[id]=now);}
   if(b.isConnected){b.innerHTML='✓ Added';b.classList.add('done');}await new Promise(res=>setTimeout(res,700));}
  S.pOff=new Set();await load('build');
  /* keep hidden only what today's panel now really has; anything the Mac left out (budget, same game) shows again */
  if(r.ok&&view==='extra'&&S.panel&&S.panel.panel){const has=new Set((S.panel.panel.items||[]).filter(c=>['scheduled','buying','bought','check','failed'].includes(c.state)).map(c=>c.id));
   let back=false;ids.forEach(id=>{if(!has.has(id)){delete S.pSent[id];back=true;}});if(back)renderBuild();}
- if(r.ok)pBuyWatch();}
+ if(r.ok)pBuyWatch();else btnFail('button[onclick^="panelAdd"]',r.msg,b);}
 /* Approve/Add requests give up waiting after 30 s so a hung link can't leave every button dead; the Mac's side is
    safe to repeat (panel_tx), so the next tap can't buy anything twice. */
 function pPost(body){return Promise.race([api('/app/api/act',body).catch(()=>({ok:false,msg:'Couldn\'t reach the Mac.'})),
@@ -246,7 +252,7 @@ function bestFeed(d){const f=d.best;if(!f)return '';const all=f.items||[];const 
  return secHead('best','⭐ Best bets today',xs.length,sub)+(!secOpen('best')?'':`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Only bets with an edge at a fair price <b>and</b> a likely way to profit, ranked by expected dollars. Nothing is bought until you tap.</div>
   ${types.length>2?`<div class="chips" style="margin-bottom:10px">${types.map(([k,l])=>`<button class="chip ${t===k?'on':''}" onclick="setBfType('${k}')">${l}</button>`).join('')}</div>`:''}
   ${xs.length?`<div class="cgrid">${xs.map(bfRow).join('')}</div>`:`<div class="empty" role="status"><b>${t==='all'?'Nothing clears your bar right now':'No '+esc((types.find(a=>a[0]===t)||[0,t])[1].toLowerCase())+' clear your bar right now'}</b>${esc((f.why||'').replace(/^Nothing clears your bar right now\.\s*/,'')||'Check back after the next price update.')}</div>`}${ovLeft(f)}`);}
-function feedCombo(i){hap();S.adv=true;try{localStorage.setItem('cw_adv','1')}catch(e){}renderBuild();
+function feedCombo(i){hap();S.bsec.combos=true;S.adv=true;try{localStorage.setItem('cw_adv','1')}catch(e){}renderBuild();
  setTimeout(()=>{const el=document.querySelector(`#main .ccard[data-i="${i}"]`);if(el)el.scrollIntoView({behavior:'smooth',block:'center'});},60);quote(i);}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
@@ -342,7 +348,7 @@ function ccard(c){if(c.over&&!c.bought&&!(S.quotes&&S.quotes[c.i]&&Date.now()/10
   ${ph==='flip'&&fp&&fp.hq?`<div class="qgap" aria-hidden="true" style="height:${fp.hq}px"></div>`:ft&&ft.hq?`<div class="qgap out" aria-hidden="true" style="--h:${ft.hq}px"></div>`:''}
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${qWhy(o)} · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>${ovQuote(o.ov)}`:''}
   ${ccStake(c,o,fresh,busy)}
-  <div class="brow">${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi</button>`:
+  <div class="brow"${ph==='buy'?' role="status" aria-busy="true"':''}>${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi</button>`:
    ph==='ask'?`<button class="btn pri" id="q${c.i}" disabled><span class="spin" aria-hidden="true"></span> Asking Kalshi…</button>`:
    ph==='flip'?`<button class="btn pri" id="q${c.i}" disabled data-stale="1"><span class="spin" aria-hidden="true"></span> Updating…</button>`:
    fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
@@ -387,9 +393,10 @@ async function buy(i,custom,btn){if(S.buying)return;
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';}
  const lgs=custom?S.slip.slice():(((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs||[]).map(l=>l.ticker);   // rule 7: the Mac checks the offer is for these picks
  let r;try{r=await api('/app/api/act',{a:'buy',i,legs:lgs.length?lgs:undefined});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
- S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{toast(r.msg||'Didn\'t go through.',7000,'bad');}
+ S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{S.failMsg=r.msg||'Didn\'t go through.';}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
- if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();}
+ if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();
+ if(!r.ok){const m=S.failMsg;S.failMsg=null;if(r.check)toast(m,9000,'bad');else btnFail(custom?'#main .qb, #main .ccard':'.ccard[data-i="'+i+'"]',m);}}
 
 // A bet the auto-buy skipped or couldn't place: what it was and why, read-only, from the panel data already on the page.
 function panelClosed(id){const its=(S.panel&&S.panel.panel&&S.panel.panel.items)||[];const c=its.find(x=>x.id===id);if(!c)return;
