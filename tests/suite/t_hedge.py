@@ -57,7 +57,7 @@ def tick(dt_, sc, **hx):
     E.time.time = lambda: now + dt_
     E.SCORES_BY["nba"]["at"] = now + dt_
     E.MINE["hold"] = {"C1": dict(h, **hx)}
-    E.MINE["tp_asked"] = {}; E.MINE["cash"] = {}
+    E.MINE["tp_asked"] = {}; E.MINE.pop("real_asks", None); E.MINE["cash"] = {}
     return E.auto_sell_now(plan)
 
 
@@ -78,7 +78,7 @@ tick(100, None)
 ok("no score feed: no hedge (it cashes out as if auto-hedge were off)", not sent and sold == ["C1"] and held("no score feed"))
 reset()
 SC["sc"] = live; E.time.time = lambda: now + 500; E.SCORES_BY["nba"]["at"] = now + 300
-E.MINE["hold"] = {"C1": dict(h)}; E.MINE["tp_asked"] = {}
+E.MINE["hold"] = {"C1": dict(h)}; E.MINE["tp_asked"] = {}; E.MINE.pop("real_asks", None)
 E.auto_sell_now(plan)
 ok("a stale score: no hedge", not sent and held("score feed stale"))
 ok("...and the count starts again", "hedge:C1" not in E.MINE["sl_streak"])

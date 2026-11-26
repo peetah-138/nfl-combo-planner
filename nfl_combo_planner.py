@@ -71,6 +71,7 @@ CFG = {
     "panel_rank_dollars": True,   # the daily panel picks on expected dollars, the chance the day ends ahead as a floor
     "idea_bar_strict": True,      # green Buy and buy-idea alerts need the league's combo cut-off (alerts: and 100% of calibrated fair)
     "smart_buy_gate": True,   # Smart Buy (issue #137 stage 2): skips panel bets and Buy ideas unlikely to be profitable
+    "real_offer_ask": True,   # auto cash-out may ask Kalshi for a REAL offer when its estimate reaches a sell bar (#227); off = it only acts on real offers already in
     "overlap_guard": True,    # pick lists leave out (grey) a game you already have overlap_n open bets on, or overlap_pct%
     "overlap_n": 2,           # of the sizing base at risk on; "Add anyway" on Pete's own tap shows it again (display only)
     "overlap_pct": 8,
@@ -274,7 +275,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask")
 
 
 def next_league():
@@ -5826,6 +5827,9 @@ def smart_trigger(t, h):
         out["smart_txt"] = f"Smart sell won't sell while the win chance is {q:.0%}, under {q_min:.0%}." + \
             (f" It also needs an offer of ${at:.2f}+." if at else "") + stop
         out["smart_chip"] = stop_chip or f"waiting (needs {q_min:.0%}+ win chance)"
+    elif not ro and not CFG.get("real_offer_ask", True):
+        out["smart_txt"] = "Smart sell won't ask Kalshi for a real offer (switched off in Settings); it only sells on a real offer that is already in." + stop
+        out["smart_chip"] = stop_chip or "won't ask Kalshi (switched off)"
     elif not ro:
         out["smart_txt"] = (f"Smart sell will ask Kalshi for a real offer once the estimate reaches ${at:.2f}; it only sells on a real offer."
                             if at else "Smart sell will ask Kalshi for a real offer once the estimate clears its bar; it only sells on a real offer.") + stop
@@ -5865,6 +5869,43 @@ def cash_nudge(t, h, tp=None):
     if not any(lv for _, lv, _ in h.get("legs_left") or []):
         return None
     return {"why": why, "offer": round(whole, 2)}
+
+
+REAL_ASK_GAP = 60         # #227: auto cash-out asks Kalshi for a real offer on one combo at most once a minute...
+REAL_ASK_HOUR_COMBO = 20  # ...at most this many times an hour for one combo...
+REAL_ASK_HOUR_ALL = 60    # ...and this many an hour for all combos together (a request never goes out on a hunch)
+
+
+def real_ask_gate(t, now=None):
+    """#227: may auto cash-out send Kalshi a real-offer request for combo `t` now (its estimate reached a sell bar)?
+    Returns (ok, why). The switch `real_offer_ask` (Settings, default on) turns every such request off; the throttle is
+    one request per combo per REAL_ASK_GAP seconds, and REAL_ASK_HOUR_COMBO / REAL_ASK_HOUR_ALL an hour. Nothing is
+    recorded here: `real_ask_note` records a request that really went out (failed ones count too, so Kalshi is never
+    spammed). Unreadable state refuses (fail closed). A refusal only delays a sale, it never causes one."""
+    now = time.time() if now is None else now
+    try:
+        if not CFG.get("real_offer_ask", True):
+            return False, "asking Kalshi for a real offer is switched off in Settings"
+        st = MINE.setdefault("real_asks", {"by": {}, "all": []})
+        st["all"] = [x for x in st["all"] if now - x < 3600]
+        mine = [x for x in st["by"].get(t, []) if now - x < 3600]
+        st["by"][t] = mine
+        if mine and now - max(mine) < REAL_ASK_GAP:
+            return False, f"asked Kalshi {int(now - max(mine))}s ago (one request per combo per {REAL_ASK_GAP}s)"
+        if len(mine) >= REAL_ASK_HOUR_COMBO:
+            return False, f"already asked Kalshi {len(mine)} times this hour for this combo"
+        if len(st["all"]) >= REAL_ASK_HOUR_ALL:
+            return False, f"already asked Kalshi {len(st['all'])} times this hour in all"
+        return True, ""
+    except Exception:
+        return False, "request history unreadable"
+
+
+def real_ask_note(t, now=None):
+    now = time.time() if now is None else now
+    st = MINE.setdefault("real_asks", {"by": {}, "all": []})
+    st["by"].setdefault(t, []).append(now)
+    st["all"].append(now)
 
 
 def auto_sell_now(plan):
@@ -5948,8 +5989,28 @@ def auto_sell_now(plan):
             if why != "plan" and (o.get("rfq") in (None, "estimate") or time.time() - o.get("at", 0) > offer_life()):
                 o = dict(o, rfq="estimate")
             if f < 1 or o.get("frac", 1.0) < 1 or o.get("rfq") == "estimate":   # the Pi only estimates
+                from_est = o.get("rfq") == "estimate"          # #227: the estimate reached the bar; only a REAL offer may sell
+                if why != "cut loss":                          # a loss cut keeps its own clock and guards (#396)
+                    gate_ok, gate_why = real_ask_gate(t)
+                    if not gate_ok:
+                        told = MINE.setdefault("real_ask_told", {})
+                        if time.time() - told.get(t, 0) >= 300:        # one note per combo per 5 minutes
+                            told[t] = time.time()
+                            log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "skipped",
+                                          "note": f"REAL OFFER not asked: {gate_why}; the estimate (${o['offer']:.2f}) never sells on its own",
+                                          "est": round(o["offer"], 2), "bar": round(thr, 2)})
+                        continue
+                    real_ask_note(t)
                 o = get_cash_offer(t, f)
                 MINE["cash"][t] = o
+                if why != "cut loss":
+                    got = o.get("offer") and o["offer"] / max(o.get("frac", 1.0), 0.01)
+                    clears = bool(got) and got >= slip * thr
+                    log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "asked",
+                                  "note": f"REAL OFFER asked ({'estimate reached the bar' if from_est else 'partial'}): got "
+                                          f"{('$%.2f' % got) if got else 'no offer'}, bar ${slip * thr:.2f}, "
+                                          f"{'will try to sell' if clears else 'not sold'}",
+                                  "offer": round(got or 0, 2), "bar": round(slip * thr, 2), "estimate_driven": from_est})
                 if not o.get("offer") or o["offer"] / max(o.get("frac", 1.0), 0.01) < slip * thr:
                     if clock:
                         log_decision({"combo": h.get("label", t), "ticker": t, "kind": "combo", "result": "skipped",
@@ -10276,7 +10337,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "learned_guards",
+                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
                   "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
