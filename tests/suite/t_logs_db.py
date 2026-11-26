@@ -128,6 +128,13 @@ c, b = q(port, tok, sql="select ticker, score from ticks where ticker='BLOBROW'"
 ok("NULL stays null", c == 200 and json.loads(b)["rows"] == [["BLOBROW", None]])
 c, b = q(port, tok, sql="select x'414243' as b")
 ok("a blob value is never sent raw", c == 200 and "[blob 3 bytes]" in b.decode())
+# #528: the result column count is capped (the byte budget is only checked after a whole row is read)
+c, b = q(port, tok, sql="select " + ",".join(["1"] * W.LOG_DB_COLUMNS_MAX))
+ok("columns: exactly the cap is fine", c == 200 and len(json.loads(b)["columns"]) == W.LOG_DB_COLUMNS_MAX)
+c, b = q(port, tok, sql="select " + ",".join(["1"] * (W.LOG_DB_COLUMNS_MAX + 1)))
+ok("columns: one over the cap is refused (400)", c == 400)
+c, b = q(port, tok, sql="select " + ",".join(["ticker"] * 900) + " from ticks")
+ok("columns: 900 copies of a column is refused (400)", c == 400)
 
 # ---- everything that is not one plain SELECT is refused, and nothing on disk changes
 BAD = [

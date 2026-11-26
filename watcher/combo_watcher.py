@@ -3654,6 +3654,7 @@ def webapp_main():
                              "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
                              "guards": A.guards_view(A.LEAGUE["code"]),
+                             "sl_auto": A.sl_auto_view(),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -4630,6 +4631,8 @@ LOG_SOURCES = {"console": "watcher.log", "autosell": "combo_autosell_log.jsonl"}
 LOG_DEF_LINES, LOG_MAX_LINES, LOG_MAX_BYTES = 200, 500, 200_000                   # per answer, after redaction
 LOG_READ_BYTES = 1_500_000      # the most read from the end of a file per answer (never the whole file)
 LOG_LINE_MAX = 2000             # characters kept of one line
+LOG_LINE_HUGE = 20_000          # a line longer than this is replaced by LOG_LINE_LONG before any scrubbing (#380)
+LOG_LINE_LONG = "[line too long]"
 LOG_RATE = (30, 60)             # answers per client per minute
 LOG_BAD = (5, 600)              # wrong codes per client per 10 minutes before that client is turned away
 LOG_BAD_ALL = (30, 600)         # wrong codes from everyone per 10 minutes before everyone is turned away
@@ -4899,6 +4902,8 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
     for line in text.splitlines():
         if not line.strip():
             continue
+        if len(line) > LOG_LINE_HUGE:
+            line = LOG_LINE_LONG                                # never run the scrubbers over a giant line
         if source == "autosell":
             try:
                 rec = json.loads(line)
@@ -4962,6 +4967,7 @@ LOG_DB_MAX_BYTES = 1_500_000                # per answer, after scrubbing (the n
 LOG_DB_SQL_MAX = 4000                       # characters of a --sql question
 LOG_DB_SECONDS = 5.0                        # a question that runs longer is stopped
 LOG_DB_VALUE_MAX = 65_536
+LOG_DB_COLUMNS_MAX = 100                    # columns in one answer row (#528): the budget is checked per row, so this bounds one row
 LOG_DB_CELL = 2000                          # characters kept of one value
 LOG_DB_FUNCS = frozenset((
     "abs", "avg", "count", "sum", "total", "min", "max", "round", "length", "substr", "substring", "lower", "upper",
@@ -5008,6 +5014,7 @@ def log_db_connect(path):
         if hasattr(con, "setlimit"):                                       # Python 3.11+; sql= is refused without it
             con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, LOG_DB_VALUE_MAX)    # no string or blob over 64 KB can be built
             con.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, LOG_DB_SQL_MAX + 400)
+            con.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, LOG_DB_COLUMNS_MAX)  # #528: a row can't be repeated into hundreds of copies
         con.enable_load_extension(False) if hasattr(con, "enable_load_extension") else None
         con.set_authorizer(_log_db_auth)
         dead = time.monotonic() + LOG_DB_SECONDS
