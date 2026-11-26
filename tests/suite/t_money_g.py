@@ -122,17 +122,32 @@ def t_unsure():
     tA, _ = single("RRRAAA")
     E.idea_mark_bought([tA], now=old, unsure=True)
     ok("unsure: no view of your positions, so it stays hidden (fail closed)", not shown("RRRAAA"))
-    E.MINE["view"] = {"singles": [], "combos": []}; E.MINE["view_at"] = old - 5
+    E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = old - 5
     ok("unsure: a read of your positions built before the unclear order can't clear it (could be stale)", not shown("RRRAAA"))
     E.MINE["view_at"] = time.time() - E.IDEA_VIEW_FRESH_SECS - 30
     ok("unsure: ...nor can an old read", not shown("RRRAAA"))
     E.MINE["view_at"] = time.time()
     ok("unsure: past the window and a fresh read shows nothing held, the idea is back", shown("RRRAAA"))
-    E.MINE["view"] = {"singles": [{"t": tA}], "combos": []}
+    E.MINE["view"] = {"singles": [{"t": tA}], "singles_ok": True, "combos": []}
     ok("unsure: ...but not if you hold it now (it did fill)", not shown("RRRAAA"))
     E.MINE["view"] = {"error": "boom"}
     ok("unsure: ...nor when the account read failed", not shown("RRRAAA"))
+    E.MINE["view"] = {"singles": [], "singles_ok": False, "combos": []}; E.MINE["view_at"] = time.time()
+    ok("unsure: ...nor when the singles read failed (empty list is not 'holds nothing')", not shown("RRRAAA"))
     E.MINE["view"] = {"singles": [], "combos": []}; E.MINE["view_at"] = time.time()
+    ok("unsure: ...nor when the view has no singles_ok flag (fail closed)", not shown("RRRAAA"))
+    _os = E.open_singles
+    def _boom(*a, **k): raise RuntimeError("singles read down")
+    E.open_singles = _boom
+    try:
+        v = E.live_view([], [], None, 0.0, 0.0)
+    except Exception as err:
+        v = None; print("live_view raised", err)
+    finally:
+        E.open_singles = _os
+    ok("unsure: live_view flags a raising singles read", bool(v) and v.get("singles_ok") is False)
+    E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()
+    E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()
     tB, _ = single("SSSAAA")
     E.idea_mark_bought([tB], unsure=True)
     ok("unsure: still inside the window it stays hidden", not shown("SSSAAA"))

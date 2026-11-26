@@ -7922,11 +7922,12 @@ def live_view(mine, views, plan, chance_one, balance):
             x["combos"] += 1
             x["pays"] += v["pays"]
     games = sorted(need.values(), key=lambda x: (x["state"] != "live", -x["combos"]))
+    singles_ok = True
     try:
         singles = open_singles()
     except Exception as err:
         print("singles on Live:", type(err).__name__, err)
-        singles = []
+        singles, singles_ok = [], False                # an empty list from a failed read is NOT "holds nothing" (#451)
     label_bets(singles, views)                       # display only: what each bet is, and which game
     try:
         seed_origins([v["t"] for v in views if v["group"] == "pending"] + [x["t"] for x in singles])
@@ -7946,7 +7947,7 @@ def live_view(mine, views, plan, chance_one, balance):
     week_pl = sum((a["back"] if a["status"] == "cashed" else a["pays"] if a["status"] == "won" else 0) - a["cost"]
                   for a in settled)
     today = day_money(MINE.get("acct") or mine)
-    return {"at": time.time(), "balance": balance, "combos": views, "today": today, "singles": singles,
+    return {"at": time.time(), "balance": balance, "combos": views, "today": today, "singles": singles, "singles_ok": singles_ok,
             "auto_sell": bool(CFG.get("auto_sell")),
             "riding": sum(1 for v in views if v["group"] == "pending"),
             "staked": round(sum(v["cost"] for v in views if v["group"] == "pending"), 2),
@@ -18917,7 +18918,8 @@ def _idea_unsure_over(key, st, now):
         v, at = MINE.get("view") or {}, float(MINE.get("view_at") or 0)
         if not (t < at <= now + 5 and now - at <= IDEA_VIEW_FRESH_SECS):   # a read built before the unclear order, or old: can't tell
             return False
-        return not v.get("error") and isinstance(v.get("singles"), list) and isinstance(v.get("combos"), list)
+        return (not v.get("error") and v.get("singles_ok") is True      # a failed singles read (or none recorded) fails closed
+                and isinstance(v.get("singles"), list) and isinstance(v.get("combos"), list))
     except Exception:
         return False
 
