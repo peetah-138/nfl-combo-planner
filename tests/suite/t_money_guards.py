@@ -81,9 +81,43 @@ ok("#498: matching legs unchanged", not r.get("legs_mismatch") and any("/accept"
 i = W.index('if a == "buy":'); act = W[i:i + 1800]
 ok("#498: the web app's Buy flags a sent-but-empty list", "sent_empty" in act and "legs_sent_empty=sent_empty" in act)
 
-# ---- #498: the hub build-form Buy re-checks the legs (the Build class in the watcher)
-i = W.index("    def buy(self, i, legs=None):"); hub = W[i:i + 2200]
-ok("#498: hub buy refuses when the form sent no legs, and re-checks them in accept_offer",
-   "if not legs:" in hub and "expect_legs=list(legs)" in hub and "Nothing was bought" in hub)
+# ---- #498: the hub build-form Buy, really called (WebBuild.buy on the watcher's class, faked Kalshi, nothing sent)
+import sys, threading
+sys.argv = ["combo_watcher.py"]
+wspec = importlib.util.spec_from_file_location("W", "wtest/combo_watcher.py"); WM = importlib.util.module_from_spec(wspec); wspec.loader.exec_module(WM)
+E.set_league = lambda lg: None
+E.money = lambda x: f"${x:.2f}"
+
+
+class FakeOdds:
+    lock = threading.RLock()
+    engine = staticmethod(lambda: E)
+
+
+def hub_buy(legs):
+    SENT.clear()
+    wb = WM.WebBuild(FakeOdds())
+    off = {"rfq": "r", "quote": "q", "stake": 5.0, "pays": 20.0, "market": "M", "price": 0.25, "legs": list(LEGS), "got": time.time()}
+    wb.cur = {"lg": "nfl", "combos": [{"legs": [{"ticker": t} for t in LEGS]}], "stake": 5.0, "offers": {1: off}}
+    with contextlib.redirect_stdout(io.StringIO()):
+        msg = wb.buy(1, legs)
+    return msg, bool(any("/accept" in str(a) for a in SENT))
+
+
+msg, sent = hub_buy(list(LEGS))
+ok("#498: hub buy with matching legs is accepted (the accept went out; the fake Kalshi gives no confirmation)", sent and "different combo" not in msg and "out of date" not in msg, msg)
+msg, sent = hub_buy(None)
+ok("#498: hub buy with no legs is refused, nothing sent", not sent and "Nothing was bought" in msg, msg)
+msg, sent = hub_buy([])
+ok("#498: hub buy with an empty legs list is refused, nothing sent", not sent and "Nothing was bought" in msg, msg)
+msg, sent = hub_buy(["KXA-1", "KXZ-9"])
+ok("#498: hub buy with mismatched legs is refused, nothing sent", not sent and "Bought" not in msg and "different combo" in msg, msg)
 ok("#498: the hub form carries the card's legs and the route passes them",
    "name='legs'" in W and 'builder.buy(' in W and 'form.get("legs")' in W)
+
+# ---- #432 follow-up: a NaN or unreadable net fails closed (no "a profit" yes), a missing net is still the manual-tap fallback
+for bad in (float("nan"), "junk"):
+    fx = E.flex_decide("C1", h, 7.6, 1.0, 9.0, net=bad)
+    ok(f"#432: net={bad!r} refuses the profit-retry yes", fx["ok"] is False, fx)
+fx = E.flex_decide("C1", h, 7.6, 1.0, 9.0, net=7.5)
+ok("#432: a readable net over cost is still taken", fx["ok"] is True, fx)

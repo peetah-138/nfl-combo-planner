@@ -8,13 +8,13 @@ rule 8 are untouched.
 - **#432, "a profit" is after the selling fee.** The auto cash-out cost floor was already net of the fee on the first
   offer (`auto_sell_now`, `combo_sale_net`) and on a retry (`FLEX_COST_SHARE`, 95% of cost net). Two places still said
   "at or above cost" on the gross offer. `flex_decide` now judges its `profit` flag on `min(offer, net)` (net passed by
-  `_accept_with_retries`; with no net passed, a manual tap, it is the offer as before), so a retry that nets under cost
+  `_accept_with_retries`; with no net passed, a manual tap, it is the offer as before; a NaN or unreadable net is never "a profit": that yes is refused), so a retry that nets under cost
   can no longer be taken as "a profit, and the chance has dropped". `cash_nudge` (alert only, never sells) stays quiet
   when the offer nets under cost. `combo_sell_fee` still switches the fee model off (then net = gross). Singles already net
   the fee (`single_sell_reason`).
 - **#498 (1), sent-but-empty legs list.** `accept_offer(..., legs_sent_empty=True)` / `buy_legs_refusal(sent_empty=True)`
   refuse with "the page sent an empty legs list" (nothing sent, offer kept). The web app's Buy sets it when the page's `legs`
-  key is a list with nothing in it. A page that sends no `legs` key at all (the pages leave it out when they have none) is
+  key is a list with nothing in it. A page that sends no `legs` key at all (an older page or a hand-made post; longshots.js always sends real tickers) is
   unchanged: still held to offer = card.
 - **#498 (2), hub build-form Buy.** The hub's `/simple` Build form now carries the card's leg tickers in a hidden `legs`
   field; `builder.buy(i, legs)` refuses a Buy with no legs ("That page is out of date ... Nothing was bought") and passes

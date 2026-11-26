@@ -10977,11 +10977,14 @@ def flex_decide(t, h, offer, frac, bar_old, floor=None, cutting=False, now=None,
             return out
         ref = math.prod(c for c in (h.get("ch_of") or {}).values() if c is not None) if h.get("ch_of") else None
         dropped = bool(ref) and hn["p"] <= ref * (1 - FLEX_DROP)
-        try:                                             # #432: "a profit" is judged after the selling fee (net), never on the gross offer
-            net_f = float(net) if net is not None and math.isfinite(float(net)) else offer
-        except (TypeError, ValueError):
-            net_f = offer
-        profit = min(offer, net_f) >= (h.get("cost") or 0) * frac - 1e-9
+        net_f = offer                                    # no net passed (a manual tap): the offer, as before
+        if net is not None:                              # #432: "a profit" is judged after the selling fee (net), never on the gross offer
+            try:
+                net_f = float(net)
+            except (TypeError, ValueError):
+                net_f = float("nan")
+        net_bad = net is not None and not math.isfinite(net_f)   # a NaN / unreadable net is never "a profit" (fail closed)
+        profit = (not net_bad) and min(offer, net_f) >= (h.get("cost") or 0) * frac - 1e-9
         floor_ok = floor is None or offer >= floor       # only a floor a caller passed on purpose binds here
         cost_fr = (h.get("cost") or 0) * fr
         why0 = "under the floor"

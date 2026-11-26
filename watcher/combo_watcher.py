@@ -4075,7 +4075,7 @@ def webapp_main():
             if a == "buy":
                 i = int(d.get("i", 0))
                 shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
-                sent_empty = isinstance(shown, list) and not shown   # #498: a list that was sent but is empty is refused (the pages leave the key out when they have none)
+                sent_empty = isinstance(shown, list) and not shown   # #498: a list that was sent but is empty is refused (an older page or hand-made post may leave the key out)
                 shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
