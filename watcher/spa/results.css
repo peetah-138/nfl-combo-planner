@@ -17,3 +17,9 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 /* Smart Buy "Bigger stakes" line (#178): the short form on one line, the four figures behind a tap */
 .sbmore summary{cursor:pointer;list-style:none;min-height:44px;box-sizing:border-box;display:block;padding:12px 0}.sbmore summary::-webkit-details-marker{display:none}.sbmore summary::after{content:' ▾';opacity:.6}.sbmore[open] summary::after{content:' ▴'}
 .sbmore[open]{padding-bottom:2px}
+/* Ready to promote? (#541) */
+.promo .prsub{font-size:12.5px;padding:4px 0 8px}.prow{border-top:1px solid var(--line);padding:12px 0;display:grid;gap:4px}
+.prtop{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}.prtop b{font-size:14.5px;min-width:0;flex:1 1 180px}
+.pchip{font-size:11.5px;font-weight:800;padding:4px 10px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap;border:1px solid var(--line)}
+.prow.pass .pchip{background:var(--yesbg);color:var(--yes);border-color:transparent}.prow.fail .pchip{background:var(--nobg);color:var(--no);border-color:transparent}
+.prow.na .prtop b,.prow.na .prwhy{color:var(--sub)}.prwhat{font-size:12.5px}.prwhy{font-size:13.5px}.pnum{font-size:13.5px}.prange{font-size:12.5px}.prbar{font-size:12px;border-top:1px solid var(--line);padding-top:10px;margin-top:2px}

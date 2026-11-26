@@ -173,6 +173,7 @@ def f_unread():
     ok("F inside it the tables are only created, inserted into, pruned and counted, never selected from for a decision",
        not re.search(r"select\s+(?!count\(\*\) n)[^\n\"']*from\s+(prop|slate)_shadow", inside, re.I))
     other = open(os.path.join(REPO, "watcher", "combo_watcher.py")).read()
+    other = re.sub(r"# ===== READY TO PROMOTE \(report only\): begin =====.*?# ===== READY TO PROMOTE \(report only\): end =====", "", other, flags=re.S)   # #541: the report-only scoreboard reads them; t_promote.py checks that block
     ok("F the watcher never mentions them", not re.search(r"prop_shadow|slate_shadow", other))
     ok("F one wrapped hook each: fetch_series and the panel pass", src.count("prop_shadow(out, series)") == 1 and src.count("slate_shadow(code, cands)") == 1)
 
