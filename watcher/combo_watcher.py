@@ -906,7 +906,7 @@ HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate
 # Non-GET requests the phone may forward are only the ones the app itself sends (GitHub #102): order create/cancel,
 # quote requests (RFQs) and accepting a quote, and making a combo market. Anything else (batch or amend orders, other
 # writes under /portfolio) is refused with a logged reason. Money moves between pots stay on pot_move only.
-_ID = r"[A-Za-z0-9_.:-]{1,120}"
+_ID = r"(?!\.+(?:/|$))[A-Za-z0-9_.:-]{1,120}"   # never a bare "." or ".." as the id (#458)
 HUB_WRITES = {
     "POST": re.compile(r"/portfolio/orders|/portfolio/events/orders|/communications/rfqs|"
                        r"/multivariate_event_collections/" + _ID),

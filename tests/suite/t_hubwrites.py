@@ -30,3 +30,11 @@ ok("reads are unchanged: portfolio, markets, events, series, rfqs",
 ok("a read outside HUB_PATHS is still refused", not allowed("GET", "/exchange/status") and not allowed("GET", "/admin"))
 ok("the hub logs why it refused a write (reason in the log, a plain line to the phone)",
    'log("phone request refused:", why' in open("wtest/combo_watcher.py").read())
+
+# #458: a bare "." or ".." as an id is refused; real ids (with dots inside) still work
+for m, p in (("DELETE", "/portfolio/orders/."), ("DELETE", "/portfolio/events/orders/.."), ("DELETE", "/communications/rfqs/..."),
+             ("PUT", "/communications/rfqs/./quotes/q1/accept"), ("PUT", "/communications/rfqs/r1/quotes/./accept"),
+             ("POST", "/multivariate_event_collections/.")):
+    ok(f"a dots-only id is refused: {m} {p}", not allowed(m, p))
+for m, p in (("DELETE", "/portfolio/orders/a.b"), ("DELETE", "/portfolio/orders/.a"), ("PUT", "/communications/rfqs/r.1/quotes/q.1/accept")):
+    ok(f"an id with a dot inside still works: {m} {p}", allowed(m, p))

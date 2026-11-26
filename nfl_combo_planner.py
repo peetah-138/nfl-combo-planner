@@ -547,8 +547,22 @@ def trading_paused():
         return False
     try:
         return bool(f())
-    except Exception:
+    except Exception as err:
+        _pause_fail_note(err)
         return True
+
+
+_PAUSE_FAIL_AT = [0.0]
+
+
+def _pause_fail_note(err):
+    """Logging only (#434): a Pause read that fails counts as paused, so a stuck read quietly stops every automatic
+    sale and buy. Say so in the console, at most once a minute."""
+    now = time.time()
+    if now - _PAUSE_FAIL_AT[0] >= 60:
+        _PAUSE_FAIL_AT[0] = now
+        print(f"Pause could not be read ({type(err).__name__}); treating it as paused, so nothing sells or buys "
+              "automatically until it reads again.", flush=True)
 
 
 def money(x):
@@ -4715,7 +4729,8 @@ def _fail_stamp_due(rec):
     force a fresh Kalshi account read each time. Sold, hedged and every unclear ("check") result always stamp."""
     if rec.get("result") not in ("failed", "hedge failed"):
         return True
-    t, now = (str(rec.get("ticker") or rec.get("combo") or ""), rec.get("result")), time.time()
+    who = str(rec.get("ticker") or rec.get("combo") or "") or ("?", rec.get("offer"), rec.get("cost"))   # #457: no id = own key
+    t, now = (who, rec.get("result")), time.time()
     if now - MONEY_FAIL_AT.get(t, 0) < MONEY_FAIL_GAP:
         return False
     if len(MONEY_FAIL_AT) > 2000:

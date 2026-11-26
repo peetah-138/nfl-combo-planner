@@ -59,3 +59,19 @@ W = open("wtest/combo_watcher.py", encoding="utf-8").read()
 i = W.index('if do == "sell":'); j = W.index("accept_cash(t)", i)
 ok("the web cash-out calls accept_cash with no auto context; only auto_sell_now sets _CASH_CTX.auto",
    "_CASH_CTX" not in W[i - 1500:j] and SRC.count("_CASH_CTX.auto = True") == 1)
+
+# #434: an unreadable Pause still counts as paused, now with a rate-limited console line (logging only)
+import io, contextlib
+E._PAUSE_FAIL_AT[0] = 0.0
+buf = io.StringIO()
+E.TRADING_PAUSED = lambda: 1 / 0
+with contextlib.redirect_stdout(buf):
+    r1 = E.trading_paused(); r2 = E.trading_paused()
+ok("an unreadable Pause still counts as paused", r1 is True and r2 is True)
+ok("it says so once, not on every read", buf.getvalue().count("Pause could not be read") == 1, buf.getvalue())
+E._PAUSE_FAIL_AT[0] = time.time() - 61
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    E.trading_paused()
+ok("and again after a minute", buf.getvalue().count("Pause could not be read") == 1)
+E.TRADING_PAUSED = lambda: True
