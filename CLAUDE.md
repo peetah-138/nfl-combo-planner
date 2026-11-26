@@ -216,7 +216,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.25.140`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.26.141`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -1141,7 +1141,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     swallowed, flag `sig_shadow` (a real `CFG` key, ON by default for recording, so a saved false is kept), 21-day / 300k row
     bound. Combo RFQ sampling: nothing new (held combos are already in `offers`, candidate quotes in `quotes`; more would need
     extra quote calls). Tests: `t_exit_replay.py`, `t_signal_shadow.py`.
-  - **Momentum shadow (record only).** `mom_record` writes `mom_shadow` / `mom_after` / `mom_peak` from the exit evaluation (hooked at the end of `take_profit_reason` and the live `single_sell_reason`, each in its own try/except); setting `mom_shadow` (default ON, false = off). It sells and buys nothing, reads nothing back into a decision, and Pause, rule 8 and no-live-data are untouched. DB writes go through a background queue (`mom_flush()` in tests), never on the sell path. Combo cards show smart sell's real bar and whether it can really sell right now (`smart_trigger`, `auto_sell_blockers`); the old let-it-ride number is the "Let-it-ride line". Details: `docs/changes/momentum-shadow.md`; test `t_mom_shadow.py`.
+  - **Momentum shadow (record only).** `mom_record` writes `mom_shadow` / `mom_after` / `mom_peak` from the exit evaluation (hooked at the end of `take_profit_reason` and the live `single_sell_reason`, each in its own try/except); setting `mom_shadow` (default ON, false = off). It sells and buys nothing, reads nothing back into a decision, and Pause, rule 8 and no-live-data are untouched. DB writes go through a background queue (`mom_flush()` in tests), never on the sell path. Combo cards show smart sell's real bar and whether it can really sell right now (`smart_trigger`, `auto_sell_blockers`); the old let-it-ride number is the "Let-it-ride line". Details: the 'Momentum shadow recorder' notes under Selling; test `t_mom_shadow.py`.
   - Settings › Money › **Smart Buy (preview)** (`smart_buy`, shared, off; `smart_buy_on()` reads the shared file):
     on = Results › What's working shows a folded "🧠 Smart Buy (preview)" card (`sbCard`, `analytics()["smart_buy"]` =
     `smart_buy_summary()`, built only while the switch is on; the route re-reads the switch and builds it when it was
@@ -1912,6 +1912,167 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     blocking, whole contracts, a real sale tagged `more` and counted by the daily dollar limit, limit grow/shrink/minimum
     sample/brake, shadow table unread), plus `t_knobs.py`'s allow-list.
 
+#### Ask Kalshi for a real offer when an estimate reaches the bar (issue #227)
+
+When an estimate-driven plan SELL or smart-sell trigger fires in `auto_sell_now`, auto cash-out may ask Kalshi for a
+REAL combo offer (`get_cash_offer`). It sells **only** if that real offer meets the same bar as any real offer: the
+`exit_policy` bar, 97% of the line (`AUTO_CASH_SLIP`) on a fresh quote, and the below-cost skip (stricter than the
+`FLEX_COST_SHARE` 95% floor) unless it is a real loss cut. **Never on the estimate alone.** The manual Sell tap is untouched.
+
+- **Throttle** (`real_ask_gate(t, exempt=)`, state `MINE["real_asks"]`, noted by `real_ask_note(t)` and
+  `real_ask_result(t, cleared)`): at most one request per combo per `REAL_ASK_GAP` (60 s), `REAL_ASK_HOUR_COMBO` (20) a
+  combo and `REAL_ASK_HOUR_ALL` (60) in all per hour (all per process, in memory). **Back-off:** a combo whose last real
+  offer came in under the bar (or none came) waits 60, 120, 240, 480 then `REAL_ASK_BACKOFF_MAX` (600) s between asks
+  (about 9 asks an hour); an offer that clears the bar resets it. Three stuck combos therefore cannot use up the overall
+  budget. **Exempt:** lock-in and a guarded stop-loss (`sl_ready`) only ever wait the plain 60 s gap: no back-off, no
+  per-combo hourly cap, no all-combos cap (a stop-loss never waits minutes); an exempt ask never lengthens the back-off.
+  Unreadable state fails closed (no request). Ask history, back-off and told-notes of combos no longer held are pruned
+  each pass (`real_ask_prune`). Learned loss cuts ("cut loss") bypass the
+  gate on purpose, so the #396 clock-retry behaviour is unchanged.
+- **Log:** every request and outcome is a `log_decision` line: "REAL OFFER asked (...): got $X, bar $Y, ..." and, when the
+  gate refuses, "REAL OFFER not asked: ...; the estimate (...) never sells on its own" (one per combo per 300 s).
+- **Switch off (`real_offer_ask` false) is stricter than before the switch:** automatic selling never asks Kalshi for
+  an offer; it sells only on a real offer already in hand that clears the bar (so a plan part-sale waits too). Kept on purpose
+  (the safe direction); a learned loss cut still asks. The Settings text says so in plain English.
+- **Card wording (#513):** the card reads the throttle read-only (`real_ask_gate(..., readonly=True)`, no state change, same
+  exemption via the `MINE["sl_ready"]` copy that `auto_sell_now` keeps); while throttled it says "holding off asking Kalshi". `smart_trigger` keeps "will ask Kalshi for a real offer once the estimate reaches $X"; with the
+  switch off it says "won't ask Kalshi (switched off)".
+- **Untouched:** Pause (read first; unreadable = nothing), rule 8 (`rfq_unsure`), no live data = no sale, the daily cap,
+  accept path, hedges.
+- Test: `t_realoffer_227.py` (includes the drain case: 3 stuck combos, a 4th still gets its ask).
+
+#### Momentum shadow recorder and the real smart-sell trigger on combo cards
+
+First deliverable of `momentum-exit-design.md` section 5. **Nothing here sells or buys.** It records and explains.
+
+- **Recorder (`mom_record`, tables `mom_shadow`, `mom_after`, `mom_peak`).** Called once at the end of `take_profit_reason`
+  (combos) and `single_sell_reason` (singles, live pass only: `track=True`, no `more`, no `cap`), each time inside its own
+  try/except, with numbers the exit rule had already worked out. It never changes a return value. One `mom_shadow` row per
+  evaluation when any verdict changes, else every 120 s per bet: win chance q, its high over the last 10 min, the drop
+  `dq`, a placeholder `sigma` (0.05, nothing learned yet) and `z = -dq / sigma`, the real offer net of fees, the steady
+  estimate, quote age, cost, payout, the peak, today's decision / reason / line, a plain `why_not` (`q<50%`,
+  `no real quote`, `below floor`, `peak<arm`, `no live data`, `smart sell off`), two HYPOTHETICAL verdicts and the Pause
+  flag (recorded only). Hypothetical `m_protect`: real offer, `z >= 2.0`, offer >= cost - 5% of cost, holding worth
+  <= offer x 1.10. `m_cut`: stricter (`z >= 2.5`), holding worth less than the offer, offer >= 30% of cost.
+  `mom_after` is opened for rows where something fired and fills the offer at +30 s, +1, +5, +15, +60 min (from the first
+  evaluation after each time) and the lowest seen; `mom_settle` (from `live_view`, once per bet per run) adds the
+  outcome (`won`, `lost`, `cashed`) and payout. `mom_peak` keeps each bet's peak so a restart does not lose it; it is
+  reloaded only into the recorder's own dict, never into `MINE["peak"]`.
+- **Bounds.** Setting `mom_shadow` (default ON for recording; false = off; a plain DEFAULTS key like `sig_shadow`, not in
+  `SHARED_KEYS` or the watcher list). Throttled, 100k-row cap, 60-day prune (every 6 h), every error swallowed through
+  `console_note`. Pause, rule 8 and the no-live-data guards are untouched: nothing in the recorder places an order.
+- **Log lines (console).** `MOMENTUM would sell <ticker> rule=protect z=2.4 q 61%->44% offer net $4.91 vs cost $4.99
+  (today: hold, q<50%)` once per episode; `NO SELL <ticker>: blocked by <q below 50% | offer under floor $X | lock-in not
+  armed (peak $Y < $Z) | no real quote | no live data>` every 10 min per live position.
+- **Off the sell path.** `mom_record` does only in-memory work and appends the DB writes to a bounded queue; a daemon
+  thread (`mom-shadow-writer`) writes them, and the prune runs there too. Errors are swallowed. Each row carries a process
+  tag (`main` / `web`) and a `sid` dedupe key (`proc:ms:ticker`), so the web app and the watcher never double-write.
+  `MOM["pend"]` entries expire (about 90 min), are capped (400), `mom_after` has a `ts` index and a row cap, and a bet's
+  peak is reset when its cost changes or it has not been seen for 6 h (a re-bought single does not inherit the old peak);
+  `mom_settle` removes its `mom_peak` row. `why_not` judges a combo on the better of estimate and gross offer, a single on
+  the net offer, and uses the tuned `q_min`.
+- **Combo cards.** `smart_trigger(t, h)` (display only) adds `smart_at`, `smart_over`, `smart_txt`, `smart_chip`,
+  `smart_state`, `lock_at`. It says "should sell on the next check" only when Auto cash-out is on and nothing blocks it
+  (`auto_sell_blockers`: Pause, daily limit, "I'll sell it", Kalshi refusing sales, unclear last sale, cannot trade here);
+  otherwise it says why it won't sell right now, and shows nothing when Auto cash-out is off or the bet is "I'll sell it".
+  The old let-it-ride number is relabelled **Let-it-ride line**. Lock in reads "Protects a profit once the offer has
+  reached $X."
+- **Tests.** `t_mom_shadow.py` (synthetic DB: rows written, a failing recorder changes nothing for selling, log lines,
+  kill switch, throttle, pruning, nothing reads the tables back, card text).
+
+#### Money-guard batch: fee-aware "profit" (#432) and Combo Buy legs re-check gaps (#498)
+
+Three small safety tightenings. Each makes the app do less; nothing new buys or sells, and Pause, caps, quarter Kelly and
+rule 8 are untouched.
+
+- **#432, "a profit" is after the selling fee.** The auto cash-out cost floor was already net of the fee on the first
+  offer (`auto_sell_now`, `combo_sale_net`) and on a retry (`FLEX_COST_SHARE`, 95% of cost net). Two places still said
+  "at or above cost" on the gross offer. `flex_decide` now judges its `profit` flag on `min(offer, net)` (net passed by
+  `_accept_with_retries`; with no net passed, a manual tap, it is the offer as before; a NaN or unreadable net is never "a profit": that yes is refused), so a retry that nets under cost
+  can no longer be taken as "a profit, and the chance has dropped". `cash_nudge` (alert only, never sells) stays quiet
+  when the offer nets under cost. `combo_sell_fee` still switches the fee model off (then net = gross). Singles already net
+  the fee (`single_sell_reason`).
+- **#498 (1), sent-but-empty legs list.** `accept_offer(..., legs_sent_empty=True)` / `buy_legs_refusal(sent_empty=True)`
+  refuse with "the page sent an empty legs list" (nothing sent, offer kept). The web app's Buy sets it when the page's `legs`
+  key is a list with nothing in it. A page that sends no `legs` key at all (an older page or a hand-made post; longshots.js always sends real tickers) is
+  unchanged: still held to offer = card.
+- **#498 (2), hub build-form Buy.** The hub's `/simple` Build form now carries the card's leg tickers in a hidden `legs`
+  field; `builder.buy(i, legs)` refuses a Buy with no legs ("That page is out of date ... Nothing was bought") and passes
+  them to `accept_offer(expect_legs=...)`, which checks them against the stored offer and the combo now on that card
+  (hard rule 7). An old page open across the upgrade just has to be reloaded.
+- **Skipped on purpose (commented on the issues):** #365 (a per-game overlap skip on killer, standing orders and the
+  panel changes which automatic buys happen and needs Pete's thresholds), #328 (no real combo fee data: no ledger on this
+  machine to read, and guessing a fee would change sizing).
+- Test: `t_money_guards.py` (synthetic engine, faked Kalshi). Existing `t_buy_legs_203`, `t_flexcostfloor`, `t_combofee`,
+  `t_cashnudge` still hold.
+
+#### Do-now batch A: small safety and docs tidy-ups (no display change, no money logic)
+
+- **#458 (hub write ids).** The phone-to-Mac hub no longer accepts an id made only of dots (for example
+  `DELETE /portfolio/orders/.`). Real ids that contain dots still work. Refs #458.
+- **#457 (money stamp).** Failed cash-outs with no bet id no longer share one key, so two different failures cannot hide
+  each other's "money moved" stamp for a minute. The `money_note` double-stamp half is not changed. Refs #457.
+- **#434 (Pause read).** If the Pause read fails, the app still treats it as paused (nothing sells or buys by itself), and
+  now prints one plain console line, at most once a minute. Refs #434.
+- **#441 (exit replay one-liner).** `docs/EXIT_REPLAY.md` now downloads a fixed commit of the script and checks its
+  fingerprint before running it; a test keeps the doc in step with the script. Refs #441.
+
+#### Combo trail: a read-only tool that traces what happened to a team's combos
+
+`tools/combo_trail.py` answers "why did that combo ride to settlement?" without touching anything. Run from the app folder:
+
+    python3 tools/combo_trail.py --team nuggets --date 2026-11-23
+
+- Finds every combo or single whose legs name the team (case-insensitive; names are decoded from the leg tickers using the
+  engine's own team tables) within 2 days of the date.
+- Prints legs by name, cost, payout, when bought; a timeline of at most ~60 lines (combo chance, Kalshi offer real vs
+  estimate, the smart-sell line when logged, every auto-sell decision with its reason and the Let-it-ride setting, the
+  result); then peak offer vs cost vs sell line. Also saved to `~/combo_trail_summary.txt` (`--out` to change).
+- Reads `combo_history.db` (sqlite `mode=ro`) and `combo_autosell_log.jsonl` (where skips and their reasons live; only
+  sales are in the database). No network, no Kalshi keys, never starts the watcher, never writes. Only a fixed list of
+  fields is printed: no tokens, keys, order ids or balances. Missing tables or files print a "skipped:" line.
+- The decision log names combos only as "Combo N"; the tool prints that name next to the legs so the two can be matched.
+- Test: `tests/suite/t_combo_trail.py`. No trading logic is touched.
+- Importable: `build_report(db, log, team, day)` takes any open sqlite connection plus the decision-log records, so a remote read-only front end can reuse it; the local command stays as a fallback.
+
+#### Wider log and data access for the dev Mac (follow-up to #377)
+
+- **Console log 503 fixed.** The scrubber rebuilt URLs with a parser that raises on a malformed URL (and, on newer Pythons, on its
+  own `https://[host]` placeholder), which failed the whole answer. URL handling is now regex-only, scrubbing is idempotent, and one
+  bad line is withheld on its own.
+- **Only credentials are scrubbed now.** API keys, tokens, private keys, auth headers and passwords are masked and the answer still
+  fails closed on them. Team names, tickers, prices, balances, outcomes, emails and hostnames are kept.
+- **Auto cash-out records name the legs** (`picks`) instead of only "Combo N".
+- **Read-only data window** (`source=db`): SELECT-only questions about the collected data over the same endpoint, same code, same
+  Tailscale-only reach, same "Let the dev Mac read logs" switch. Client: `tools/read_prod_logs.py --source db --table X --since ...`
+  or `--sql`. The database file is never sent.
+- Settings sheet wording: plain English, no Terminal steps.
+- CLAUDE.md hard rule 9 reworded: query results over the endpoint are allowed; the database file, key and `~/combowatch` are not.
+
+## Product notes (moved here from CLAUDE.md)
+
+Log access for the dev Mac (#377; hard rule 9). The watcher hub answers `GET /api/logs?source=console|autosell&since=&limit=`
+with a redacted tail of `watcher.log` or `combo_autosell_log.jsonl` plus a status line (versions, uptime, Pause, role, auto
+cash-out on/off). Off by default; Settings › This Mac › "Let the dev Mac read logs" (only on the Mac itself, `mac_settings` action
+`logaccess` → `log_access_set`) makes a `secrets.token_urlsafe(32)` code shown once and stores only its SHA-256 in `watcher.json`
+(`log_access`). Gates in order: on + tailnet only (`log_client_ok`: 100.64/10, fd7a:115c:a1e0::/48, the Mac itself, Tailscale serve
+with a user; LAN and Funnel refused) → 404; `LogGate` 30/min per client, 5 wrong codes per client / 30 overall per 10 min → 429;
+Bearer only, `hmac.compare_digest` on the hash → 401; bad params → 400; any read or redaction error, or a live secret surviving
+(`LogLeak` tripwire) → 503 with an empty body. POST → 405 with `Allow: GET` while on, 404 while off. Caps: 200 lines default, 500
+max, 200 KB, last 1.5 MB of a file, 2000 chars a line. Scrubbing is for credentials only (`log_redact`, `log_fields`; control and zero-width characters
+stripped first, patterns bounded against huge lines): live secret values (and their URL/JSON forms), PEM blocks (any case), auth
+headers, JWTs, the `cw` cookie, credential-named `key=value`/JSON pairs, `user:pass@` and secret query values, long random strings.
+Ordinary content (team names, tickers, prices, balances, emails, IPs, hostnames) is kept. It is idempotent and regex-only, and one line that
+cannot be scrubbed is withheld on its own (`log_safe`) instead of failing the answer (the old 503 came from `urlsplit` raising on a
+malformed URL); `log_tripwire` is the last check. Autosell records keep every field except credential-named ones and carry `picks` (leg names).
+`source=db` (`log_db_answer`): `tables=1`, `table=X[&since=]` or `sql=<one SELECT>`; fresh `mode=ro` connection, `query_only`, authorizer
+(SELECT/READ only, function allowlist, no `pragma_*`), 5 s deadline, 1000 rows, 1.5 MB, one query at a time (429); credential-named columns
+masked, blobs not sent; a bad question is a 400 with a short JSON reason. It never takes a lock and never touches a money path; Pause, the Pi and rule 8 are unaffected. Tests: `t_logs_redact.py`,
+`t_logs_failclosed.py`, `t_logs_auth.py`, `t_logs_readonly.py`, `t_logs_caps.py`, `t_logs_allowlist.py`, `t_logs_default_off.py`.
+
+
+Data window hardening: credential-named columns read as NULL (authorizer), rows read one at a time with a byte budget, 64 KB value limit, sql= refused when SQLite limits are unavailable, no printf/format/replace/char/hex/quote; web-push endpoint URLs, topic and endpoint values are masked. The column mask is best-effort (shape-based).
+
 ### Live page
 - **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
   `icon`, `legs_info` (per leg: matchup "Away at Home" / "A vs B" when home and away aren't known, plain pick "wins by 8 or
@@ -2336,6 +2497,15 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   out on purpose). Tests: `test_chartstart_ui.py` (synthetic series with 4 hours of pre-game samples; axis, point count,
   scrub range, marker x, both fallbacks, not-started notes, 390x844 dark and light), `test_gamedetail_api.py` (`start` from a
   book kickoff; an estimate is never offered).
+
+#### Live hero estimate: a leg price with no timestamp is stale (issue #112)
+
+`live_offer_est` (display only, the Live hero's "worth now if sold") used to treat a leg price with no timestamp in
+`MARKET_INFO` as fresh. It now counts as stale and returns None, so the frozen estimate stays. No buy, sell, size or
+Pause path reads it. Test: `t_offer_live.py`.
+
+Refs #112. Also filed as follow-ups: #517 (inline onclick + no CSP), #518 (#473 delight nits), #519 (#481 findings).
+Verified already done on develop: #331, #298, #26 (closed with evidence), #247 (closed; #423 shipped the data-* move).
 
 ### Build page
 - Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,
@@ -2851,6 +3021,21 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   renders each of these with a ticker holding a quote, angle brackets and an ampersand, taps every button and checks the
   handler got the exact string, nothing ran as code and the onclick text never contains the ticker; plus a source check that
   converted handlers stay converted.
+
+#### UI polish batch 2 (issues #436, #454, #455, #437, #440, #281)
+
+- **44px tap targets (#436, #454):** one rule in `app.css` gives `.dbtns .btn` (Pass / Buying / Cash out / Hedge), `.sheet .btn`
+  (Done, Copy code, Copy address, closed-bet Try again), `.srow .btn` (Settings rows such as Secure address › Try again),
+  `.empty .btn` (the "Couldn't load this screen" Try again) and `.sbgo .btn` a `min-height:44px`.
+- **Screen readers (#455, #437):** every `<span class="spin">` is `aria-hidden`; the disabled "Buying…" buttons carry `aria-busy`.
+  The shared sheet (`#sheet`) is now `role="dialog" aria-modal="true"` and `modal()` names it from its first `<h3>`.
+  The one-time log-access code sheet keeps its short wording; its button row just gets a little breathing room.
+- **Best bets wording (#440):** `exitWhen` reads "about 41 min from now" (minutes from now, not minutes into the game).
+- **Settings scroll (#281, partial, not confirmed on a device):** range sliders get `touch-action:pan-y` so a vertical swipe that
+  starts on a slider scrolls the page. The other suspects were checked and are already fine: the swipe-between-tabs, pull-to-refresh
+  and scroll listeners are all passive, and Settings has no backdrop blur. #281 stays open until Pete says it feels right.
+- **Tests:** new page test `test_polish2_ui.py` (phone size, dark and light: heights, aria, dialog role, wording, slider
+  touch-action); `test_bestbets.py` expects the new wording.
 
 ## Kalshi API watch (GitHub issue #82)
 
