@@ -1259,17 +1259,26 @@ COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
 
 def combo_link(E, msg):
     """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
-    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
-    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    combos Live shows right now, else None (the tap opens Live as before). A combo is named by its picks ("Nuggets +
+    Chiefs", #520) or, for text that still says it, its old number ("Combo 24", whole word so "Combo 2" isn't "Combo
+    24"); a name that is part of a longer matching name doesn't count. Names are read from this refresh's own data, so
+    they match the text just built. Only the market ticker goes in the link (URL-safe characters only, COMBO_TICKER)."""
     try:
-        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
-        if len(named) != 1:
-            return None
-        want = "Combo " + named.pop()
+        msg = msg or ""
         mine = dict(E.MINE.get("snap") or {})
         mine.update(E.MINE.get("hold") or {})
-        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
-        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+        spans = {}
+        for t, c in mine.items():
+            if not COMBO_TICKER.match(t or ""):
+                continue
+            for lab in {(c or {}).get("label") or "", (c or {}).get("num") or ""}:
+                if len(lab) >= 3:
+                    spans.setdefault(t, []).extend(m.span() for m in re.finditer(r"(?<!\w)" + re.escape(lab) + r"(?!\w)", msg))
+        # a match that sits wholly inside another combo's longer match is the same words, not a second combo
+        hits = [t for t, sp in spans.items() if sp and not all(
+            any(o[0] <= x[0] and x[1] <= o[1] and (o[1] - o[0]) > (x[1] - x[0]) for u, osp in spans.items() if u != t for o in osp)
+            for x in sp)]
+        return "/#c=" + hits[0] if len(hits) == 1 else None
     except Exception:
         return None
 
