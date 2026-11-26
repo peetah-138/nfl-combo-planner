@@ -26569,7 +26569,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                               + dt.datetime.fromtimestamp(float(st["brake"][g]["until"]), PACIFIC).strftime("%b %-d")}]
                 groups[g] = e
                 continue
-            cur = {}
+            cur, loss_dflt = {}, False
             for k in tun:                             # where each knob stands for this group now: what live uses from
                 n_ = k["name"]                        # its OWN record, re-read every run (#267)
                 if live and n_ in knob_live_names():          # what live really uses, a borrowed (stricter) value included,
@@ -26580,6 +26580,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     cur[n_] = _knob_seed(n_, g, smart, dial)
             if cur.get("smart_loss") is None and CFG.get("loss_cut_default", True) and not _loss_cut_chosen_off(g):
                 cur["smart_loss"] = LOSS_CUT_DEFAULT      # judged from what live really uses (the cautious default), not "off"
+                loss_dflt = True                          # ...in memory only: never written into the test values `v` below
             last, best, best_live = [], None, None
             try:                                      # what the live code uses for this group today, logged beside each row
                 live_now = {n_: x for n_, (x, _) in _knob_league(g, smart, now).items()}
@@ -26602,7 +26603,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     last.append({"knob": n_, "status": "thin", "n": len(rs),
                                  "say": f"{k['label']}: needs {globals()[KNOB_MIN_N[jd]]} results of its own (has {len(rs)})"})
                     continue
-                v[n_] = cur[n_]                       # the group's own record from here on
+                if not (n_ == "smart_loss" and loss_dflt):
+                    v[n_] = cur[n_]                   # the group's own record from here on (the default is no record)
                 staked = (5.0 * len(rs)) if jd in ("sb", "sbev") else float(len(rs)) if jd in ("brk", "feed") else \
                     (sum(r["cost"] for r in rs) or 1.0) if jd == "hedge" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
                 top = SB_DIAL_MAX if len(rs) >= SB_DIAL_SOFT_N else SB_DIAL_SOFT
@@ -26943,12 +26945,8 @@ def knob_brake_pass(now=None, force=False):
                 if live and off:                              # its own self-tuned numbers back to the start, newer than
                     lv = dict(e.get("lv") or {}) if isinstance(e.get("lv"), dict) else {}     # anything smart_tune set
                     lat = dict(e.get("lat") or {}) if isinstance(e.get("lat"), dict) else {}
-                    for n in off:
-                        if n in knob_live_names():
-                            if n == "smart_loss":
-                                lv.pop(n, None)               # back at the start = no own value, so the default applies again
-                                lat.pop(n, None)
-                                continue
+                    for n in off:                         # `off` holds only leagues' OWN values, so smart_loss goes to its
+                        if n in knob_live_names():        # start None = an explicit "no cut" (also blocks the smart.json
                             lv[n], lat[n] = KNOB_BY[n]["start"], now
                     e.update(lv=lv, lat=lat, lstep_at=now,
                              hist=(list(e.get("hist") or []) + [{"at": int(now), "knob": "*", "brake": True, "live": True,

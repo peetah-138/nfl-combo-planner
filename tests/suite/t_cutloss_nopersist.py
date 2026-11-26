@@ -51,14 +51,41 @@ E.knob_brake_pass(now, force=True)
 S = E.knob_state()
 ok("the brake fired for nba", "nba" in S["brake"])
 lv = (S["groups"].get("nba") or {}).get("lv") or {}
-ok("brake reset deletes the own loss value instead of saving the default", "smart_loss" not in lv)
+ok("brake puts the league's own loss value to an explicit 'no cut' (None), not the default", "smart_loss" in lv and lv["smart_loss"] is None)
 E.KNOB_STATE_CACHE["d"] = None
 p = E.smart_params([T])
-ok("...so the default applies again at read time", p["loss"] == 0.125 and p.get("loss_src") == "default")
+ok("...so it stays no-cut after the brake, like develop (no default for a league that had its own)", p["loss"] is None)
 ok("...never to singles", E.smart_params([T], single=True)["loss"] is None)
 E.CFG["loss_cut_default"] = False
 ok("switch off after a brake: the old 'never' is back", E.smart_params([T])["loss"] is None)
 E.CFG["loss_cut_default"] = True
+
+# own value in BOTH smart.json (30+ results) and live values: the brake must not let the smart.json value come back
+E.save_json(E.SMART_FILE, {"nba": {"n": 40, "floor": 1.5, "lam": 0.5, "loss": 0.25, "at": now - 100}}); E.SMART_CACHE["at"] = 0
+json.dump({"groups": {"nba": {"lv": {"smart_loss": 0.3}, "lat": {"smart_loss": now - 9}, "lstep_at": now - 9}},
+           "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+ok("before the brake: the live 30% applies", E.smart_params([T])["loss"] == 0.3)
+E.knob_brake_pass(now, force=True)
+E.KNOB_STATE_CACHE["d"] = None
+ok("during the brake: no cut", E.smart_params([T])["loss"] is None)
+later = now + 86400 * 40
+E.KNOB_STATE_CACHE["d"] = None
+_t = E.time.time; E.time.time = lambda: later
+try:
+    E.SMART_CACHE["at"] = 0
+    ok("after the brake ends: still no cut for combos (smart.json's 25% does not come back)", E.smart_params([T])["loss"] is None)
+    ok("...and singles are never cut", E.smart_params([T], single=True)["loss"] is None)
+finally:
+    E.time.time = _t
+
+# a league with NO own value: combos get the 12.5% default at read time, singles never, nothing persisted
+E.save_json(E.SMART_FILE, {}); E.SMART_CACHE["at"] = 0
+json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+E.knob_brake_pass(now + 5000, force=True)
+S = E.knob_state(); E.KNOB_STATE_CACHE["d"] = None
+ok("no own value, brake fires: nothing persisted for the loss cut", "smart_loss" not in ((S["groups"].get("nba") or {}).get("lv") or {}))
+ok("...combos still get the default at read time", E.smart_params([T])["loss"] == 0.125)
+ok("...singles never", E.smart_params([T], single=True)["loss"] is None)
 
 json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
 E.knob_tune(now, force=True)
