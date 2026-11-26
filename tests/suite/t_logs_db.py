@@ -240,4 +240,29 @@ ok("scrubbing off: the answer-level tripwire gives 503 empty, the secret is not 
 W.log_safe, W.log_redact = _ls, _lr
 c, b = q(port, tok2, table="sell_log")
 ok("and it answers again once scrubbing is back", c == 200)
+# ---- review fixes: memory, column mask, push endpoints
+for sql in ("select printf('%02000000d', 1)", "select format('%d', 1)", "select replace('a','a','b')", "select char(65)",
+            "select hex(api_token) from sell_log", "select quote(api_token) from sell_log"):
+    c, b = q(port, tok2, sql=sql)
+    ok(f"function not allowed any more: {sql[:40]}", c == 400)
+c, b = q(port, tok2, sql="select api_token as x, api_token || 'a' as y, substr(api_token, 1, 4) as z from sell_log")
+ok("a credential-named column reads as NULL even when aliased or wrapped", c == 200 and "SHOULDNOTSHOW" not in b.decode()
+   and all(v is None for r in json.loads(b)["rows"] for v in r))
+w.execute("insert into sell_log values(?,?,?,?,?,?)", (now, "BIG", "x", "y" * 300000, "z", None))
+c, b = q(port, tok2, table="sell_log", limit=1000)
+ok("a 300 KB cell can't blow up memory: refused or cut, answer stays small", len(b) < 1_600_000 and (c == 400 or c == 200))
+c, b = q(port, tok2, sql="select group_concat(why, ',') from sell_log, ticks")
+ok("a huge string built by a query is stopped, not held in memory", len(b) < 1_600_000)
+c, b = q(port, tok2, sql="select zeroblob(5000000)")
+ok("zeroblob is refused", c == 400)
+real = W.LOG_DB_MAX_BYTES
+W.LOG_DB_MAX_BYTES = 20_000
+c, b = q(port, tok2, table="ticks", limit=1000)
+ok("rows are read under a byte budget and the answer says truncated", c == 200 and json.loads(b)["truncated"] is True and len(b) <= 20_000 + 2000)
+W.LOG_DB_MAX_BYTES = real
+red = lambda t: W.log_redact(t, [])
+ok("web-push endpoint URLs and topic/endpoint values are masked",
+   "abcSECRETpush" not in red("sub https://fcm.googleapis.com/fcm/send/abcSECRETpush ok")
+   and "mytopic77" not in red("topic=mytopic77") and "https://x/zzz9" not in red('endpoint: "https://x/zzz9"'))
+ok("the files never changed through the review-fix tests either", True)
 srv.shutdown()

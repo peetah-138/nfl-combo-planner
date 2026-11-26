@@ -4656,16 +4656,17 @@ _RX_CWCOOKIE = re.compile(r"(?i)(?<![A-Za-z0-9_-])(cw)(\s*[:=]\s*)[^\s,;&\"']+")
 # Names that say "this value is a credential". Ordinary data (emails, ids, balances, hosts, team names) is NOT here.
 _RX_KV = re.compile(r"(?i)(\\?[\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,40}?(?:secret|token|passw(?:or)?d|passcode|web_pass|api[ _-]?key|apikey|"
                     r"key[ _-]?id|odds_key|private[ _-]?key|signature|session[ _-]?(?:id|key|token)|cookie|p256dh|auth_?key|"
-                    r"watcher_code|pairing|passkey|credential)"
+                    r"watcher_code|pairing|passkey|credential|topic|endpoint)"
                     r"[A-Za-z0-9_-]{0,40})\1(\s*[:=]\s*)(\\\"[^\"\\]*\\\"|\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[a-z: -]+\]|[^\s,;&}\])]+)")
 _RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_PUSHURL = re.compile(r"(?i)\bhttps?://(?:[a-z0-9-]+\.)*(?:push\.services\.mozilla\.com|fcm\.googleapis\.com|web\.push\.apple\.com|notify\.windows\.com)/[^\s\"'<>\\]*")
 _RX_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>\\]+")
 _RX_USERINFO = re.compile(r"(?i)^((?:https?|wss?)://)[^/?#@\s]*@")
 _RX_QSECRET = re.compile(r"(?i)([?&;](?:[A-Za-z0-9_.-]*(?:key|token|secret|sig|auth|pass|session|cookie|credential)[A-Za-z0-9_.-]*)=)[^&#\s]*")
 _RX_UUIDSHAPE = re.compile(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
 _RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
-_RX_SECRETCOL = re.compile(r"(?i)secret|token|key_?id|passw|passcode|api_?key|odds_?key|private|signature|cookie|credential|pairing|passkey|p256dh|auth_?key")
+_RX_SECRETCOL = re.compile(r"(?i)secret|token|key_?id|passw|passcode|api_?key|odds_?key|private|signature|cookie|credential|pairing|passkey|p256dh|auth_?key|topic|endpoint")
 
 
 def log_enabled(conf):
@@ -4806,6 +4807,7 @@ def log_redact(text, secrets_):
     text = _RX_BEARER.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
     text = _RX_JWT.sub("[token]", text)
     text = _RX_CWCOOKIE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_PUSHURL.sub("[push endpoint]", text)            # a browser's web-push address is a credential
     text = _RX_URL.sub(_log_url, text)
     text = _RX_KV.sub(_log_kv, text)
     text = _RX_KVSP.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
@@ -4959,13 +4961,14 @@ LOG_DB_DEF_ROWS, LOG_DB_MAX_ROWS = 200, 1000
 LOG_DB_MAX_BYTES = 1_500_000                # per answer, after scrubbing (the newest rows are kept)
 LOG_DB_SQL_MAX = 4000                       # characters of a --sql question
 LOG_DB_SECONDS = 5.0                        # a question that runs longer is stopped
+LOG_DB_VALUE_MAX = 65_536
 LOG_DB_CELL = 2000                          # characters kept of one value
 LOG_DB_FUNCS = frozenset((
     "abs", "avg", "count", "sum", "total", "min", "max", "round", "length", "substr", "substring", "lower", "upper",
-    "coalesce", "ifnull", "nullif", "iif", "typeof", "trim", "ltrim", "rtrim", "replace", "instr", "like", "glob",
-    "printf", "format", "strftime", "date", "time", "datetime", "julianday", "unixepoch", "group_concat", "json_extract",
+    "coalesce", "ifnull", "nullif", "iif", "typeof", "trim", "ltrim", "rtrim", "instr", "like", "glob",
+    "strftime", "date", "time", "datetime", "julianday", "unixepoch", "group_concat", "json_extract",
     "json_array_length", "json_valid", "json_type", "sign", "sqrt", "ln", "exp", "pow", "ceil", "floor", "log", "log10",
-    "mod", "hex", "quote", "unicode", "char", "likely", "unlikely", "coalesce", "max", "min"))
+    "mod", "unicode", "likely", "unlikely", "coalesce", "max", "min"))
 _LOG_DB_LOCK = threading.Lock()             # one question at a time: a second one is told to wait (429)
 _RX_DB_TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 _RX_DB_START = re.compile(r"(?is)^\s*(select|with)\b")
@@ -4985,6 +4988,8 @@ def _log_db_auth(action, a1, a2, dbname, src):
         t = str(a1 or "").lower()
         if t.startswith("pragma_") or (t.startswith("sqlite_") and t not in ("sqlite_master", "sqlite_schema", "sqlite_temp_master")):
             return sqlite3.SQLITE_DENY
+        if _RX_SECRETCOL.search(str(a2 or "")):
+            return sqlite3.SQLITE_IGNORE                       # a credential-named column reads as NULL, however it is selected
         return sqlite3.SQLITE_OK
     if action == sqlite3.SQLITE_FUNCTION:
         return sqlite3.SQLITE_OK if str(a2 or "").lower() in LOG_DB_FUNCS else sqlite3.SQLITE_DENY
@@ -5000,11 +5005,9 @@ def log_db_connect(path):
     try:
         con.execute("pragma query_only=ON")
         con.execute("pragma busy_timeout=2000")
-        try:
-            con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 2_000_000)           # Python 3.11+; older ones skip it
+        if hasattr(con, "setlimit"):                                       # Python 3.11+; sql= is refused without it
+            con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, LOG_DB_VALUE_MAX)    # no string or blob over 64 KB can be built
             con.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, LOG_DB_SQL_MAX + 400)
-        except (AttributeError, ValueError):
-            pass
         con.enable_load_extension(False) if hasattr(con, "enable_load_extension") else None
         con.set_authorizer(_log_db_auth)
         dead = time.monotonic() + LOG_DB_SECONDS
@@ -5077,6 +5080,8 @@ def log_db_answer(conf, E, q, home=None):
         try:
             args = ()
             if sql is not None:
+                if not hasattr(con, "setlimit"):
+                    raise LogDbBad("free-form questions are not available on this Mac's Python; use table")
                 query = log_db_check_sql(sql)
             elif table is not None:
                 if not _RX_DB_TABLE.fullmatch(table):
@@ -5103,12 +5108,17 @@ def log_db_answer(conf, E, q, home=None):
             try:
                 cur = con.execute(query, args)
                 cols = [d[0] for d in (cur.description or ())]
-                got = cur.fetchmany(cap + 1)
+                got, used = [], 0
+                for r in cur:                                             # one row at a time, with a running size budget
+                    got.append(r)
+                    used += sum(len(v) if isinstance(v, (str, bytes, bytearray)) else 8 for v in r)
+                    if len(got) > cap or used > 2 * LOG_DB_MAX_BYTES:
+                        break
             except sqlite3.Error as err:
                 msg = "stopped: took longer than %ds" % LOG_DB_SECONDS if "interrupt" in str(err).lower() \
                     else "not allowed or not valid here" if "not authorized" in str(err).lower() else "sqlite: " + log_safe(str(err), secrets_)[:160]
                 raise LogDbBad(msg)
-            more = len(got) > cap
+            more = len(got) > cap or used > 2 * LOG_DB_MAX_BYTES
             rows = [[_log_db_cell(v, c, secrets_) for v, c in zip(r, cols)] for r in got[:cap]]
             if table is not None:
                 rows.reverse()                                            # the newest rows, shown oldest first

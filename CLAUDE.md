@@ -138,7 +138,7 @@ Real money is involved. Pete uses it daily.
 8. A buy whose outcome is unknown is marked "check" and **never retried** (no double buys).
 9. **The dev Mac never gets the Kalshi key, `~/combowatch`, a copy of the history database file or any `combo_*.json` file.** It **may**
    read the production Mac's logs, and the answers to read-only SELECT questions about the collected data (`source=db`,
-   rows only, never the file; rule change by Pete's wide-access decision, PR log-access-wide), through the read-only,
+   rows only, never the file; rule wording changed 2026-11-25 in PR #524; query results are never dumped in bulk to disk), through the read-only,
    credential-scrubbed `/api/logs` endpoint (Pete decision, 2026-11-23,
    issue #377; `docs/LOG_ACCESS.md`): off by default, turned on only on the production Mac itself (Settings › This
    Mac › "Let the dev Mac read logs"), Tailscale only, its own read-only code (only a hash is stored), two allowlisted
@@ -2891,13 +2891,9 @@ cash-out on/off). Off by default; Settings › This Mac › "Let the dev Mac rea
 with a user; LAN and Funnel refused) → 404; `LogGate` 30/min per client, 5 wrong codes per client / 30 overall per 10 min → 429;
 Bearer only, `hmac.compare_digest` on the hash → 401; bad params → 400; any read or redaction error, or a live secret surviving
 (`LogLeak` tripwire) → 503 with an empty body. POST → 405 with `Allow: GET` while on, 404 while off. Caps: 200 lines default, 500
-max, 200 KB, last 1.5 MB of a file, 2000 chars a line. Scrubbing is for credentials only (`log_redact`, `log_fields`; control and zero-width characters
+max, 200 KB, last 1.5 MB of a file, 2000 chars a line. Redaction (`log_redact`, `log_fields`; control and zero-width characters
 stripped first, patterns bounded against huge lines): live secret values (and their URL/JSON forms), PEM blocks (any case), auth
-headers, JWTs, the `cw` cookie, credential-named `key=value`/JSON pairs, `user:pass@` and secret query values, long random strings.
-Ordinary content (team names, tickers, prices, balances, emails, IPs, hostnames) is kept. It is idempotent and regex-only, and one line that
-cannot be scrubbed is withheld on its own (`log_safe`) instead of failing the answer (the old 503 came from `urlsplit` raising on a
-malformed URL); `log_tripwire` is the last check. Autosell records keep every field except credential-named ones and carry `picks` (leg names).
-`source=db` (`log_db_answer`): `tables=1`, `table=X[&since=]` or `sql=<one SELECT>`; fresh `mode=ro` connection, `query_only`, authorizer
-(SELECT/READ only, function allowlist, no `pragma_*`), 5 s deadline, 1000 rows, 1.5 MB, one query at a time (429); credential-named columns
-masked, blobs not sent; a bad question is a 400 with a short JSON reason. It never takes a lock and never touches a money path; Pause, the Pi and rule 8 are unaffected. Tests: `t_logs_redact.py`,
+headers, JWTs, the `cw` cookie, sensitive `key=value`/JSON pairs, non-allowlisted URL hosts, emails, `*.ts.net`, IPs, UUIDs, home
+paths, long random strings, balance/pot amounts; autosell records are field-allowlisted (`LOG_FIELDS`). Tickers and per-trade amounts
+are kept. It never takes a lock and never touches a money path; Pause, the Pi and rule 8 are unaffected. Tests: `t_logs_redact.py`,
 `t_logs_failclosed.py`, `t_logs_auth.py`, `t_logs_readonly.py`, `t_logs_caps.py`, `t_logs_allowlist.py`, `t_logs_default_off.py`.
