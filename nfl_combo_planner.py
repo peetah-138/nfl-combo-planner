@@ -4768,6 +4768,11 @@ def log_decision(rec):
         return
     rec = dict(rec, at=int(time.time()), when=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
                by=device_label(), ride=ride_level()[0])
+    try:                                          # name the combo by its picks, not just "Combo N" (log reading, display only)
+        if "picks" not in rec and rec.get("ticker") in (MINE.get("snap") or {}):
+            rec["picks"] = [str(nm)[:80] for nm, _ in list(MINE["snap"][rec["ticker"]]["legs"].values())[:12]]
+    except Exception:
+        pass
     try:
         with SELL_LOG_LOCK:
             with open(SELL_LOG, "a", encoding="utf-8") as f:
