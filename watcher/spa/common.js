@@ -148,7 +148,7 @@ $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();}
    matching TAP shrinks a touch while pressed (rows and settings lines highlight instead) and ticks when tapped.
    Tabs, chips, segments and switches tick as "selection"; the rest "light". A control's own hap() right after is
    folded into the same tick; success/warning/error always play their own pattern. */
-const TAP='button,a[href],[onclick],.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
+const TAP='button,a[href],[onclick],#toast.tap,.chip,.trow,label,select,summary,input[type=checkbox],input[type=range]';
 function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentElement;const el=t&&t.closest&&t.closest(TAP);return el&&!el.closest('.hapx')&&!el.disabled?el:null;}
 (()=>{let held=null;const up=()=>{const el=held;held=null;if(el)setTimeout(()=>el.classList.remove('prs'),70);};
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
@@ -190,7 +190,7 @@ function go(v,dir){hap('selection');const same=S.view===v;if(!same)S.entered=tru
 function render(){({live:renderLive,games:renderGames,build:renderBuild,results:renderResults,settings:renderSettings}[S.view]||renderLive)();afterPaint();}
 S.nums=S.nums||{};S.sigs=S.sigs||{};S.entered=true;   // the first real paint of the page staggers in too
 const rndm=x=>Math.sign(x)*Math.round(Math.abs(x));   // rounds on magnitude, so -0.5 and +0.5 match
-function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='chg'?(r=>(r>0?'+':r<0?'−':'')+Math.abs(r)+'%')(rndm(v*100)):f==='chgd'?(r=>(r>0?'+':r<0?'−':'')+'$'+(Math.abs(r)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))(rndm(v*100)):f==='absm'?money(Math.abs(v)):f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
+function fmtNum(v,f){return f==='pct'?pct(v):f==='int'?String(Math.round(v)):f==='cint'?Math.round(v).toLocaleString('en-US'):f==='cent'?Math.round(v*100)+'¢':f==='chg'?(r=>(r>0?'+':r<0?'−':'')+Math.abs(r)+'%')(rndm(v*100)):f==='chgd'?(r=>(r>0?'+':r<0?'−':'')+'$'+(Math.abs(r)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}))(rndm(v*100)):f==='absm'?money(Math.abs(v)):f==='sm'?smoney(v):f==='spct'?(v>=0?'+':'−')+Math.abs(Math.round(v*100))+'%':money(v);}
 function stagger(){if(!S.entered||document.querySelector('#main .skel,#main .hsk'))return;S.entered=false;if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
  const mn=$('#main');if(mn){mn.classList.add('arrived');clearTimeout(S.arrT);S.arrT=setTimeout(()=>mn.classList.remove('arrived'),1600);}
  document.querySelectorAll('.cgrid,.games,.tbl,.board,.panel-items,.antbl,.hist,.set>div:last-child,.doit,.hs,.plist').forEach(box=>{box.classList.add('stag');[...box.children].slice(0,24).forEach((c,i)=>c.style.setProperty('--i',i));setTimeout(()=>box.classList.remove('stag'),1600);});
