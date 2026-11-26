@@ -24820,8 +24820,11 @@ def smart_tune(force=False):
     owned = knob_switch_on()          # #228 PR3: with 'Let smart sell tune its own numbers' on, self-tuning moves the
     for key, rows in groups.items():  # floor, risk weight and loss cut (one mover per value, #267); this only counts
         cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
+        stored_loss = (d.get(key) or {}).get("loss")      # what the file really holds: the default is never written to it
+        from_default = False
         if cur["loss"] is None and CFG.get("loss_cut_default", True) and not (d.get(key) or {}).get("loss_off"):
-            cur["loss"] = LOSS_CUT_DEFAULT                # the live start is the default: tune from it, not from "never"
+            cur["loss"] = LOSS_CUT_DEFAULT                # judged from the default in memory only; saved only if it moves
+            from_default = True
         n = len(rows)
         staked = sum(c["stake"] for c, _ in rows) or 1
 
@@ -24864,10 +24867,12 @@ def smart_tune(force=False):
             why = (f"{', '.join(parts)}: in {n} recent bets that would have returned {best_v:+.0%} on what was staked, "
                    f"vs {base:+.0%} with the old settings (and it also did better on the half of the games held "
                    f"back to check it)")
-            e.update(floor=best[0], lam=best[1], loss=best[2], why=why, at=int(time.time()), loss_off=best[2] is None)
+            keep_default = from_default and best[2] == LOSS_CUT_DEFAULT      # the loss did not move: keep the file's own
+            e.update(floor=best[0], lam=best[1], loss=stored_loss if keep_default else best[2], why=why,
+                     at=int(time.time()), loss_off=False if keep_default else best[2] is None)
             moved.append(f"{league_label(key)}: {why}")
         else:
-            e.update({x: cur[x] for x in SMART_DEFAULT})
+            e.update({x: cur[x] for x in SMART_DEFAULT if x != "loss"}, loss=stored_loss)
         d[key] = e
     for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
         e = dict(d.get(key) or {})
@@ -26940,9 +26945,11 @@ def knob_brake_pass(now=None, force=False):
                     lat = dict(e.get("lat") or {}) if isinstance(e.get("lat"), dict) else {}
                     for n in off:
                         if n in knob_live_names():
+                            if n == "smart_loss":
+                                lv.pop(n, None)               # back at the start = no own value, so the default applies again
+                                lat.pop(n, None)
+                                continue
                             lv[n], lat[n] = KNOB_BY[n]["start"], now
-                            if n == "smart_loss" and lv[n] is None and CFG.get("loss_cut_default", True):
-                                lv[n] = LOSS_CUT_DEFAULT      # back at the start = the cautious default, not "chosen off"
                     e.update(lv=lv, lat=lat, lstep_at=now,
                              hist=(list(e.get("hist") or []) + [{"at": int(now), "knob": "*", "brake": True, "live": True,
                                                                  "why": why[:600], "reset": off}])[-12:])
@@ -29052,10 +29059,10 @@ def _probit(p):
     return statistics.NormalDist().inv_cdf(min(max(p, 1e-4), 1 - 1e-4))
 
 
-def exit_settings(tickers):
+def exit_settings(tickers, single=False):
     """Smart sell's settings for a bet, as exit_policy takes them (the same reads take_profit_reason makes), plus
     the parts the simulator needs to rebuild the risk weight step by step."""
-    pr = smart_params(list(tickers))
+    pr = smart_params(list(tickers), single=bool(single))
     rl = ride_lam()
     smart = bool(CFG.get("smart_sell", True) and rl is not None)
     sl = stoploss_params(list(tickers))
@@ -29136,7 +29143,7 @@ def simulate_exit(spec, n_paths=SB_PATHS, stake=SB_STAKE, seed=None, prm=None, f
     t0 = time.perf_counter()
     legs = spec["legs"]
     combo = spec["kind"] == "combo"
-    prm = prm or exit_settings(spec["tickers"])
+    prm = prm or exit_settings(spec["tickers"], single=not combo)
     fr = FEE_RATE if fee_rate is None else fee_rate
     fee = lambda p: fr * p * (1 - p)                    # noqa: E731
     seed = int(hashlib.md5(spec.get("id", "").encode()).hexdigest()[:8], 16) if seed is None else seed
@@ -32785,7 +32792,7 @@ def exit_replay(row, path, prm=None, gain=SB_GAIN):
     if not price or not 0 < price < 1 or len(path) < 3:
         return None
     tks = json.loads(row.get("tickers") or "[]") if isinstance(row.get("tickers"), str) else row.get("tickers") or []
-    prm = prm or exit_settings(tks)
+    prm = prm or exit_settings(tks, single=True)
     P = SB_STAKE / (price + single_fee(price))
     cost, peak = SB_STAKE, 0.0
     code = ticker_sport(tks[0]) if tks else ""
