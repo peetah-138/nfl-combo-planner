@@ -1,6 +1,6 @@
 # CHECK: group=engine
 # Ready to promote? (issue #541): the report-only judge for the paper tests. Checks: one decision per position (not per
-# recorded row), the 95%/99% range rule, the 70/30 split picks the setting without peeking, every status and its
+# recorded row), the 99% range rule (99.5% with several settings), the 70/30 split picks the setting without peeking, every status and its
 # plain-English reason, the four recorders settled to dollars on a throwaway sqlite file (and the ones that cannot be),
 # the one-time push through the notifier, the cache never computing inside a request, and that nothing in the engine or
 # the buying and selling code reads or imports any of it. Fakes only: no network, no real history.
@@ -9,7 +9,9 @@ os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 REPO = os.environ.get("REPO") or os.path.abspath("../..")
 sys.argv = ["combo_watcher.py"]
 spec = importlib.util.spec_from_file_location("W", "wtest/combo_watcher.py"); W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
-W.PROMOTE_FILE = os.path.join(tempfile.mkdtemp(), "promote_pushed.json")
+_d = tempfile.mkdtemp()
+W.PROMOTE_FILE = os.path.join(_d, "promote_pushed.json")
+W.PROMOTE_STREAK_FILE = os.path.join(_d, "promote_streak.json")
 
 
 def ok(name, cond):
@@ -26,7 +28,8 @@ def ob(i, v, var="a", pos=None, game=None, lag=None, ts=None):
 
 
 def judge(vals, **kw):
-    return W.promote_judge([ob(i, v, lag=(kw.get("lag") or [None] * len(vals))[i]) for i, v in enumerate(vals)], kw.get("nv", 1))
+    lag = kw.get("lag") or [0.1] * len(vals)       # a late-order check is required to pass, so the default has a mild positive one
+    return W.promote_judge([ob(i, v, lag=lag[i]) for i, v in enumerate(vals)], kw.get("nv", 1))
 
 
 # ---- one decision per position: many recorded rows for one bet count once, and it is the first
@@ -62,22 +65,46 @@ ok("B still pays late: Passing and says so", r["state"] == "pass" and "late" in 
 r = judge([1.0] * 40, lag=[-5.0, None] * 20)
 ok("B a lag replay with under 5 bets is ignored", r["state"] == "fail" or r["lag_net"] is not None)
 r = judge([1.0] * 40, lag=[-5.0] * 3 + [None] * 37)
-ok("B a lag replay with under 5 bets is ignored (3 of 40)", r["state"] == "pass" and r["lag_net"] is None)
+ok("B a lag replay with under 5 bets is ignored, and without a late check it cannot pass (3 of 40)", r["state"] == "wait" and r["lag_net"] is None and "cannot pass" in r["reason"] and "late" in r["reason"])
+r = W.promote_judge([ob(i, 1.0) for i in range(40)], 1)
+ok("B no late-order replay at all (sell line, bet pile-up): Not enough data, never Passing", r["state"] == "wait" and r["lag_n"] == 0 and "cannot pass" in r["reason"])
 r = judge([10.0, -9.0] * 20)
 ok("B up a little but noisy: Not enough data, 'too close to call'", r["net"] > 0 and r["state"] == "wait" and "too close to call" in r["reason"])
 ok("B nothing recorded", W.promote_judge([], 1)["reason"] == "Nothing recorded yet.")
 ok("B odd input (None values, missing lag) never raises", W.promote_judge([{"var": "a", "pos": "p", "game": "g", "ts": 1, "v": None}], 1)["state"] == "wait")
 ok("B no jargon on screen", not re.search(r"bootstrap|out-of-sample|confidence", json.dumps([judge([1.0] * 40), judge([-1.0] * 40), judge([10.0, -9.0] * 20)]), re.I))
 
-# ---- 95% range, 99% with more than 6 settings
+# ---- 99% range
 vals = [3.0, -2.0, 1.0, 4.0, -1.0] * 8
 obs = [ob(i, v) for i, v in enumerate(vals)]
 a, b, c = W.promote_judge(obs, 6), W.promote_judge(obs, 7), W.promote_judge(obs, 1)
-ok("C 6 settings tried: 95% range", a["level"] == 95 and c["level"] == 95)
-ok("C 7 settings tried: 99% range, wider", b["level"] == 99 and b["low"] <= a["low"] and b["high"] >= a["high"] and b["high"] - b["low"] > a["high"] - a["low"])
+ok("C one setting: 99% range; more than one setting tried: stricter still (99.5%)", c["level"] == 99 and a["level"] == 99.5 and W.promote_judge(obs, 2)["level"] == 99.5)
+ok("C 7 settings tried: 99% range, wider than one setting", b["level"] == 99.5 and b["low"] <= c["low"] and b["high"] >= c["high"] and b["high"] - b["low"] > c["high"] - c["low"])
 many = [ob(i, 1.0, var=f"v{k}") for i in range(30) for k in range(7)]
-ok("C the count of settings is taken from the data too (7 seen = 99%)", W.promote_judge(many, None)["level"] == 99)
+ok("C the count of settings is taken from the data too (7 seen = more than one)", W.promote_judge(many, None)["level"] == 99.5)
 ok("C the range is deterministic", W.promote_judge(obs, 1)["low"] == c["low"])
+# the range is built on the latest 30% of games only: early games that made a lot cannot lift the range
+early = [ob(i, 50.0 if i < 28 else (1.0 if i % 2 else -1.0)) for i in range(40)]
+re_ = W.promote_judge(early, 1)
+ok("C the range uses only the latest games (big early wins do not widen it up)", re_["high"] <= 12 and re_["net"] > 1000)
+
+# ---- zero-edge random data must almost never read as Passing (the lucky moment that used to become a permanent go)
+import random
+def fake(seed, nv, games=40):
+    rg = random.Random(seed)
+    o = []
+    for g in range(games):
+        for k in range(nv):
+            v = rg.gauss(0, 5)
+            o.append({"var": f"v{k}", "pos": f"p{g}_{k}", "game": f"g{g}", "ts": 1000 + g * 100, "v": v, "lag": v + rg.gauss(0, 1)})
+    return o
+for nv_ in (1, 3, 5):
+    passes = sum(W.promote_judge(fake(s_, nv_), nv_)["state"] == "pass" for s_ in range(1000))
+    ok(f"C2 zero-edge random data, {nv_} setting(s) tried, 1000 seeds: false Passing {passes / 10:.1f}% (<= 1.5%)", passes <= 15)
+many_g = sum(W.promote_judge(fake(s_, 3, games=80), 3)["state"] == "pass" for s_ in range(500))
+ok(f"C2 zero-edge, 80 games: false Passing {many_g / 5:.1f}% (<= 1.5%)", many_g <= 8)
+real = [ob(i, 2.0, lag=1.0) for i in range(40)]
+ok("C2 a real steady edge still passes under the stricter rule", W.promote_judge(real, 3)["state"] == "pass")
 
 # ---- 70/30: the setting is picked on the first 70% of games only
 obs = [ob(i, 5.0 if i < 28 else -5.0, var="a") for i in range(40)] + [ob(i, -1.0 if i < 28 else 20.0, var="b") for i in range(40)]
@@ -146,9 +173,9 @@ ok("F momentum: late replay uses the 30/60 s offers (2.0 < 3.0 still positive)",
 fee = lambda p: 0.07 * p * (1 - p)
 n_ = int(10 // (0.5 + fee(0.5)))
 ok("F signal: one paper buy per market (25), live and 95c rows left out", s["n"] == 25 and abs(s["net"] - 25 * n_ * (1 - 0.5 - fee(0.5))) < 0.05)
-ok("F signal: fee and the 30-90 s later ask are in it (lag buys at 53c, so it pays less)", s["lag_n"] == 25 and s["lag_net"] < s["net"])
+ok("F signal: fee and the 30-90 s later ask are in it (lag buys at 53c, 45 s later, so it pays less)", s["lag_n"] == 25 and s["lag_net"] < s["net"])
 ok("F signal: three edge settings counted, the best one named", s["variants"] == 3 and s["variant"])
-ok("F exposure: blocked bets that lost count as money saved; seed and same-pass rows ignored", e["n"] == 25 and e["net"] == 125.0 and e["state"] == "pass")
+ok("F exposure: blocked bets that lost count as money saved; seed and same-pass rows ignored; no late replay, so it cannot pass", e["n"] == 25 and e["net"] == 125.0 and e["state"] == "wait" and "cannot pass" in e["reason"])
 ok("F exposure: no lag replay", e["lag_net"] is None)
 ok("F exit cap with no rows but a recorder that is on: plain Not enough data", by["cap"]["state"] == "wait" and "switched off" not in by["cap"]["reason"])
 for i in range(25):
@@ -158,7 +185,7 @@ for i in range(25):
     db.execute("insert into bp_mkt(ticker,result,rs) values(?,?,?)", (t, 0, 1))            # the favorite lost: selling at $8 beat holding
 db.execute("insert into exit_cap_shadow(ts,ticker,side,n,net,live_decision,alt_decision) values(1,'KXNBAGAME-26JAN30ZZZ-ZZ','yes',10,8,'hold','hold')")
 c = {s["key"]: s for s in W.promote_report(q, {"exit_cap_shadow": True}, None, now=1.0)["signals"]}["cap"]
-ok("F exit cap: first row per market where only the cap would sell; value = proceeds minus what holding paid", c["n"] == 25 and c["net"] == 200.0 and c["state"] == "pass")
+ok("F exit cap: first row per market where only the cap would sell; value = proceeds minus what holding paid", c["n"] == 25 and c["net"] == 200.0 and c["state"] == "wait" and "cannot pass" in c["reason"])
 db.execute("update bp_mkt set rs=9"); db.execute("update bp_mkt set result=1")
 c2 = {s["key"]: s for s in W.promote_report(q, {"exit_cap_shadow": True}, None, now=1.0)["signals"]}["cap"]
 ok("F implied labels (rs=9) are not real results and are not settled on", c2["n"] == 0)
@@ -169,14 +196,28 @@ told = []
 W.PROMOTE["pushed"].clear()
 if os.path.exists(W.PROMOTE_FILE):
     os.remove(W.PROMOTE_FILE)
-sent = W.promote_push_check(rep, {}, lambda msg, kind=None, url=None: told.append((msg, kind)))
+if os.path.exists(W.PROMOTE_STREAK_FILE):
+    os.remove(W.PROMOTE_STREAK_FILE)
+note = lambda msg, kind=None, url=None: told.append((msg, kind))
+sent = W.promote_push_check(rep, {}, note)
+ok("G first Passing refresh: no push yet (needs 2 in a row)", sent == [] and not told)
+W.PROMOTE["pushed"].clear()                                   # a restart between the two refreshes: the streak is saved
+sent = W.promote_push_check(rep, {}, note)
 names = {s["name"] for s in rep["signals"] if s["state"] == "pass"}
-ok("G one push per Passing signal, in Pete's words", {m for m, k in told} == {f"{n} passed the bar, say go" for n in names} and len(told) == 3 and all(k == "promote" for m, k in told))
+ok("G second Passing refresh in a row: one push per Passing signal, in Pete's words", names and {m for m, k in told} == {f"{n} passed the bar, say go" for n in names} and len(told) == len(names) == 2 and all(k == "promote" for m, k in told))
+os.remove(W.PROMOTE_FILE); W.PROMOTE["pushed"].clear(); os.remove(W.PROMOTE_STREAK_FILE); told.clear()
+bad = {"signals": [dict(s, state="wait") for s in rep["signals"]]}
+for r_ in (rep, bad, rep):                                    # pass, then a miss resets the streak, then pass again: still no push
+    W.promote_push_check(r_, {}, note)
+ok("G a refresh that is not Passing resets the streak (pass, miss, pass sends nothing)", not told)
+W.promote_push_check(rep, {}, note)
+ok("G ...and two in a row after the miss does send", len(told) == 2)
+told.clear()
 told.clear()
 ok("G not again for the same signal", W.promote_push_check(rep, {}, lambda *a, **k: told.append(a)) == [] and not told)
 W.PROMOTE["pushed"].clear()                                   # a restart: only the saved file remains
 ok("G not again after a restart (the saved list)", W.promote_push_check(rep, {}, lambda *a, **k: told.append(a)) == [] and not told)
-os.remove(W.PROMOTE_FILE); W.PROMOTE["pushed"].clear()
+os.remove(W.PROMOTE_FILE); W.PROMOTE["pushed"].clear(); os.remove(W.PROMOTE_STREAK_FILE)
 ok("G the switch (promote_push false) silences it", W.promote_push_check(rep, {"promote_push": False}, lambda *a, **k: told.append(a)) == [] and not told)
 fail_rep = {"signals": [dict(s, state="fail") for s in rep["signals"]]}
 ok("G nothing for Failing or Not enough data", W.promote_push_check(fail_rep, {}, lambda *a, **k: told.append(a)) == [])
