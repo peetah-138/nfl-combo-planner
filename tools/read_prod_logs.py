@@ -127,7 +127,7 @@ def fetch(url, tok, source, since, limit, extra=None):
 def fetch_db(url, tok, table=None, sql=None, since=None, limit=200, tables=False):
     """Rows of the collected data (read-only on the Mac). Returns the answer: {columns, rows, truncated} or {tables}.
     Other tools (e.g. a --remote mode) call this instead of opening the database file."""
-    extra = {"sql": sql} if sql else {"table": table} if table else {}
+    extra = {"sql": sql} if sql else {"table": table} if table else {"tables": "1"} if tables else {}
     return fetch(url, tok, "db", since if table else None, limit, extra)
 
 
@@ -191,7 +191,7 @@ def main():
         if a.follow:
             sys.exit("--follow is only for the logs.")
         try:
-            ans = fetch_db(url, tok, a.table, a.sql, since, a.limit)
+            ans = fetch_db(url, tok, a.table, a.sql, since, a.limit, tables=a.tables)
         except Failed as err:
             sys.exit(str(err))
         show_db(ans, a.json)

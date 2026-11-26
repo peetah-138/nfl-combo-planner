@@ -4,7 +4,7 @@
 # the REAL vs estimate offers, every auto-sell decision with its reason and the ride setting, the peak/cost/line summary,
 # at most ~60 timeline lines, saves the same text to --out, never writes to the history file (byte-identical), shows no
 # order id / key, and missing tables degrade with a message.
-import os, io, re, json, hashlib, sqlite3, tempfile, importlib.util, contextlib, traceback
+import sys, os, io, re, json, hashlib, sqlite3, tempfile, importlib.util, contextlib, traceback
 REPO = os.environ.get("REPO") or os.path.abspath("../..")
 spec = importlib.util.spec_from_file_location("X", os.path.join(REPO, "tools", "combo_trail.py"))
 X = importlib.util.module_from_spec(spec); spec.loader.exec_module(X)
@@ -95,3 +95,37 @@ try:
     main()
 except Exception:
     print("FAIL combo_trail raised: " + traceback.format_exc().strip().splitlines()[-1])
+
+
+# --remote: the same report built through the read-only data window (faked here by reading the synthetic file)
+def remote_test():
+    import combo_trail_remote as RX
+    p, out = os.path.join(TMP, "r.db"), os.path.join(TMP, "rsum.txt")
+    build(p)
+    db = X.open_ro(p)
+    calls = []
+
+    def get_db(**kw):
+        calls.append(kw)
+        sql = kw.get("sql") or f"select * from {kw['table']}"
+        cur = db.execute(sql)
+        return {"ok": True, "columns": [d[0] for d in cur.description], "rows": [list(r) for r in cur.fetchall()], "truncated": False}
+    log = [{"combo": "Combo 3", "ticker": COMBO, "result": "skipped", "why": "ride setting holds it", "offer": 4.9, "line": 7.5, "ride": "Ride it out", "at": T0 + 200}]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = RX.run_remote("nuggets", DAY, out, get_db, lambda: log)
+    txt = buf.getvalue()
+    ok("T remote: same report (legs by name, real offers, skip reason from the autosell log)",
+       code == 0 and "Denver Nuggets to win" in txt and "REAL Kalshi offer" in txt and "ride setting holds it" in txt, txt[:300])
+    ok("U remote: only table reads and SELECTs, detail queries only for the matched combo", all("table" in c or c["sql"].lower().startswith("select") for c in calls)
+       and not any(OTHER in c.get("sql", "") or FAR in c.get("sql", "") for c in calls))
+    ok("V remote: saved text, and a bad date is a message", open(out).read().strip() == txt.split("\nsaved to")[0].strip()
+       and RX.run_remote("nuggets", "nope", None, get_db, lambda: []) == 2)
+    ok("W remote: an odd combo id is never put into SQL", not RX.SAFE_ID.match("x'; drop table bets;--"))
+
+
+try:
+    sys.path.insert(0, os.path.join(REPO, "tools"))
+    remote_test()
+except Exception:
+    print("FAIL combo_trail remote raised: " + traceback.format_exc().strip().splitlines()[-1])
