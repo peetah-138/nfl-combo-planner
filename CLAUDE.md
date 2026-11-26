@@ -2068,7 +2068,7 @@ rule 8 are untouched.
   `t_storecounts.py` C3b). #498 was already done by #515. #501 (learn the loss-cut clock cadence) skipped: bounds not agreed, no evidence.
 - **Money batch D (#421, #452, #450; no new switch).** `autosell_pass` (standing take-profit, dormant while `RESTING_SELLS_OK` is False) returns
   at once when `trading_paused()` (unreadable = paused); Pete's Cash out taps do not use it. `order_legacy_body` keeps the forced `reduce_only` for
-  a sell intent (#443). `fetch_account(max_age=0)` sends `fresh` (`ACCT_FRESH`) so the hub's `account` op skips its 3 s `HUB_FRESH_FLOOR` and reads
+  a sell intent (#443). `fetch_account(max_age=0)` sends `fresh` so the hub's `account` op skips its 3 s `HUB_FRESH_FLOOR` and reads
   Kalshi once; other `max_age` values are unchanged (#271), an older watcher ignores the key. Test: `t_money_d.py`.
 
 ## Product notes (moved here from CLAUDE.md)
