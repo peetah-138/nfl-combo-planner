@@ -23,10 +23,19 @@ First deliverable of `momentum-exit-design.md` section 5. **Nothing here sells o
 - **Log lines (console).** `MOMENTUM would sell <ticker> rule=protect z=2.4 q 61%->44% offer net $4.91 vs cost $4.99
   (today: hold, q<50%)` once per episode; `NO SELL <ticker>: blocked by <q below 50% | offer under floor $X | lock-in not
   armed (peak $Y < $Z) | no real quote | no live data>` every 10 min per live position.
-- **Combo cards.** `smart_trigger(t, h)` (display only, touches no peak) adds `smart_at`, `smart_over`, `smart_txt`,
-  `lock_at` to each combo in `live_view`. The card now says, e.g. "Smart sell waits until the offer reaches $7.20; it needs
-  a real Kalshi offer." and "Lock in arms once the offer has reached $9.00." The old let-it-ride number (`wait_threshold`)
-  is relabelled **wait line**, and the Smart sell chip on a combo shows smart sell's real bar instead of that number.
+- **Off the sell path.** `mom_record` does only in-memory work and appends the DB writes to a bounded queue; a daemon
+  thread (`mom-shadow-writer`) writes them, and the prune runs there too. Errors are swallowed. Each row carries a process
+  tag (`main` / `web`) and a `sid` dedupe key (`proc:ms:ticker`), so the web app and the watcher never double-write.
+  `MOM["pend"]` entries expire (about 90 min), are capped (400), `mom_after` has a `ts` index and a row cap, and a bet's
+  peak is reset when its cost changes or it has not been seen for 6 h (a re-bought single does not inherit the old peak);
+  `mom_settle` removes its `mom_peak` row. `why_not` judges a combo on the better of estimate and gross offer, a single on
+  the net offer, and uses the tuned `q_min`.
+- **Combo cards.** `smart_trigger(t, h)` (display only) adds `smart_at`, `smart_over`, `smart_txt`, `smart_chip`,
+  `smart_state`, `lock_at`. It says "should sell on the next check" only when Auto cash-out is on and nothing blocks it
+  (`auto_sell_blockers`: Pause, daily limit, "I'll sell it", Kalshi refusing sales, unclear last sale, cannot trade here);
+  otherwise it says why it won't sell right now, and shows nothing when Auto cash-out is off or the bet is "I'll sell it".
+  The old let-it-ride number is relabelled **Let-it-ride line**. Lock in reads "Protects a profit once the offer has
+  reached $X."
 - **Tests.** `t_mom_shadow.py` (synthetic DB: rows written, a failing recorder changes nothing for selling, log lines,
   kill switch, throttle, pruning, nothing reads the tables back, card text).
 
