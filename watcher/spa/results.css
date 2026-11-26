@@ -17,3 +17,6 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 /* Smart Buy "Bigger stakes" line (#178): the short form on one line, the four figures behind a tap */
 .sbmore summary{cursor:pointer;list-style:none;min-height:44px;box-sizing:border-box;display:block;padding:12px 0}.sbmore summary::-webkit-details-marker{display:none}.sbmore summary::after{content:' ▾';opacity:.6}.sbmore[open] summary::after{content:' ▴'}
 .sbmore[open]{padding-bottom:2px}
+
+/* #290: Smart Buy league lines: calmer second line, and more readable grey than the default muted text */
+.sbl .m,.sbl .sbbar{color:var(--sub)}.sbbar .sbheld{margin-top:2px}

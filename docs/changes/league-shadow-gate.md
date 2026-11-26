@@ -30,7 +30,7 @@ same outcomes, so the gap is only the pass/skip choice.
 `{league, settled, dollars_now, dollars_blend, diff, flips}` (`diff` = blend minus now; `flips` = quotes the two rules decide
 differently); `{}` when nothing has settled. This is the function the "Ready to promote?" card should read.
 Limits (honest ones): the cut-off recorded is the one in force when the daily run logged the quote (up to a day later; cut-offs
-move weekly); `pnl` is hold-to-settle, with no early exit or fee; mixed-sport quotes and quotes with no price are not logged;
+move weekly); `pnl` is hold-to-settle, with no early exit, and after Kalshi's fee; mixed-sport quotes and quotes with no price are not logged;
 rows keep 180 days.
 Tests: `t_leagueshadow.py` (the `quotes:` and `gate:` lines).
 

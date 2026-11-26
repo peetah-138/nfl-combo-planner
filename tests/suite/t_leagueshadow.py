@@ -187,6 +187,19 @@ for i in range(5200):                                    # more than one 5000 ba
                           (now, "build", "nba", 2, json.dumps([["KXNBAGAME-B%d" % i, 0.5, 0.5], ["KXNBAGAME-C%d" % i, 0.5, 0.5]]), 10.0, 25.0, 30.0, 25.0, 0.99, 5.0))
 E.STORE["db"].commit()
 ok("quotes: a busy day is drained in full, not capped at 5000", E.lgsh_log_quotes(now + 7500)[0] == 5200)
+# the accept-% floor: the green Buy always starts from your accept-% (green_bar), with "Stricter green Buy" on or off, so a
+# quote under it never passes in the shadow log either. 96% clears the 95% start cut-off but not a 98% accept-%.
+_acc, _flag = E.CFG.get("accept_pct"), E.CFG.get("idea_bar_strict")
+for strict in (True, False):
+    E.CFG["idea_bar_strict"] = strict
+    for acc, want in ((98, 0), (90, 1)):
+        E.CFG["accept_pct"] = acc
+        qid = 900000 + acc + (1000 if strict else 0)
+        E._lgsh_log_batch([{"qid": qid, "ts": now, "sport": "nba", "legs": "[]", "n": 2, "pct": 0.96, "stake": 10.0, "pays": 25.0}], {}, {})
+        rr = E.store_rows("select pass_now, pass_blend from league_shadow_q where qid=?", (qid,))[0]
+        ok(f"floor: a 96% quote with accept-% {acc} and Stricter green Buy {'on' if strict else 'off'} passes={want}",
+           (rr["pass_now"], rr["pass_blend"]) == (want, want))
+E.CFG["accept_pct"], E.CFG["idea_bar_strict"] = _acc, _flag
 E.store_x("delete from quotes where rowid > ?", (mx,))                # put the history back as it was
 E.store_x("delete from league_shadow_q where qid > ?", (mx,))
 E.store_x("update league_shadow set ts = ts - ?", (200 * 86400,))
