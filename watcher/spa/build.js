@@ -346,7 +346,7 @@ function ccard(c){if(c.over&&!c.bought&&!(S.quotes&&S.quotes[c.i]&&Date.now()/10
   ${ph==='flip'&&fp&&fp.hq?`<div class="qgap" aria-hidden="true" style="height:${fp.hq}px"></div>`:ft&&ft.hq?`<div class="qgap out" aria-hidden="true" style="--h:${ft.hq}px"></div>`:''}
   ${fresh?`<div class="qline ${o.clears?'good':'bad'} ${qNew(o)}">${qBar(o)}<b>Kalshi pays ${money(o.pays)} for ${money(o.stake)}</b><span>${qWhy(o)} · <span class="qs" data-at="${o.at}">${Math.max(0,Math.round(20-(Date.now()/1000-o.at)))}</span>s left</span></div>${ovQuote(o.ov)}`:''}
   ${ccStake(c,o,fresh,busy)}
-  <div class="brow">${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi</button>`:
+  <div class="brow"${ph==='buy'?' role="status" aria-busy="true"':''}>${ph==='buy'?`<button class="btn pri ${o&&o.clears?'yes':'warn'}" id="b${c.i}" disabled><span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi</button>`:
    ph==='ask'?`<button class="btn pri" id="q${c.i}" disabled><span class="spin" aria-hidden="true"></span> Asking Kalshi…</button>`:
    ph==='flip'?`<button class="btn pri" id="q${c.i}" disabled data-stale="1"><span class="spin" aria-hidden="true"></span> Updating…</button>`:
    fresh?`<button class="btn pri ${o.clears?'yes':'warn'}" id="b${c.i}" onclick="buy(${c.i},false,this)">${o.clears?'Buy':'Buy anyway'} ${money(o.stake)} → ${money(o.pays)}</button>`:
