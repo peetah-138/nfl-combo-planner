@@ -246,7 +246,7 @@ function bestFeed(d){const f=d.best;if(!f)return '';const all=f.items||[];const 
  return secHead('best','⭐ Best bets today',xs.length,sub)+(!secOpen('best')?'':`<div class="m" style="font-size:12px;margin:-4px 2px 10px">Only bets with an edge at a fair price <b>and</b> a likely way to profit, ranked by expected dollars. Nothing is bought until you tap.</div>
   ${types.length>2?`<div class="chips" style="margin-bottom:10px">${types.map(([k,l])=>`<button class="chip ${t===k?'on':''}" onclick="setBfType('${k}')">${l}</button>`).join('')}</div>`:''}
   ${xs.length?`<div class="cgrid">${xs.map(bfRow).join('')}</div>`:`<div class="empty" role="status"><b>${t==='all'?'Nothing clears your bar right now':'No '+esc((types.find(a=>a[0]===t)||[0,t])[1].toLowerCase())+' clear your bar right now'}</b>${esc((f.why||'').replace(/^Nothing clears your bar right now\.\s*/,'')||'Check back after the next price update.')}</div>`}${ovLeft(f)}`);}
-function feedCombo(i){hap();S.adv=true;try{localStorage.setItem('cw_adv','1')}catch(e){}renderBuild();
+function feedCombo(i){hap();S.bsec.combos=true;S.adv=true;try{localStorage.setItem('cw_adv','1')}catch(e){}renderBuild();
  setTimeout(()=>{const el=document.querySelector(`#main .ccard[data-i="${i}"]`);if(el)el.scrollIntoView({behavior:'smooth',block:'center'});},60);quote(i);}
 function comboRet(c){const r=c.pred&&c.pred.n>=20?c.pred.pct:c.est_pct;return r==null?null:r;}
 function budgetCard(d){return d.spent!=null?`<div class="card"><h3>This week <span>${esc(d.name)}</span></h3><div class="mini">Spent<b>${money(d.spent)}</b></div><div class="mini">Your cap<b>${money(d.budget)}</b></div><div class="mini">Combo cut-off<b>${d.cut}% of fair</b></div></div>`:'';}
