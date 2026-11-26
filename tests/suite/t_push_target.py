@@ -33,6 +33,10 @@ ok("combo_link: 'Combo 2' is a whole word (not Combo 24)", W.combo_link(_E, "�
 ok("combo_link: a settled combo still in this refresh's list links too", W.combo_link(_E, "❌ Combo 9 is out.") == "/#c=KXMVE-9")
 ok("combo_link: two combos named = no link (Live)", W.combo_link(_E, "Cash out Combo 2 ($5), Combo 24 ($9)?") is None)
 ok("combo_link: no combo named, or one not on Live = no link", W.combo_link(_E, "⏸ Paused") is None and W.combo_link(_E, "Combo 77 sold") is None)
+class _E2:
+    MINE = {"hold": {"KXMVE-24": {"label": "Nuggets + Chiefs +2", "num": "Combo 24"}, "KXMVE-2": {"label": "Nuggets", "num": "Combo 2"}}, "snap": {}}
+ok("combo_link (#520): an alert naming a combo by its picks opens it", W.combo_link(_E2, "🤖 Took the profit: Nuggets + Chiefs +2 sold for $9.00") == "/#c=KXMVE-24")
+ok("combo_link (#520): a short name inside a longer one does not steal the tap", W.combo_link(_E2, "Cash out Nuggets + Chiefs +2 ($5)?") == "/#c=KXMVE-24")
 ok("combo_link: a ticker with unsafe characters is never put in a link", W.combo_link(_E, "Combo 7 sold") is None)
 ok("combo_link: never raises", W.combo_link(None, "Combo 24") is None)
 _sent = []

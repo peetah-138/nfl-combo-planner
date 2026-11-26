@@ -56,7 +56,7 @@ E = types.SimpleNamespace(CFG={"kalshi_key_id": UUID, "odds_key": ODDS, "watcher
 S = W.log_secrets(conf, E)
 red = lambda t: W.log_redact(t, S)
 ALL = ["zq7-fake-topic-91", "fakeSharedSecret4471", 'fake pass/word&"x', "fakepasskeyuser88", "https://hc.example/ping/fakehc-5531",
-       "mymacbook.tail4242.ts.net", UUID, ODDS, "wc-fake-code-5521"]
+       UUID, ODDS, "wc-fake-code-5521"]
 
 # ---- every live secret, in every spelling
 ok("log_secrets lists the plain, URL-encoded and JSON-escaped forms",
@@ -69,7 +69,7 @@ out = red(f'"kalshi_key_id": "{UUID}", "odds_key": "{ODDS}", "watcher_code": "wc
 ok("inside JSON: kalshi_key_id / odds_key / watcher_code values gone", UUID not in out and ODDS not in out and "wc-fake" not in out)
 ok("inside JSON: the key names stay, the value is [redacted] or [secret]", '"kalshi_key_id"' in out and "[" in out)
 out = red("push to https://ntfy.example/zq7-fake-topic-91 ok")
-ok("ntfy-style URL: topic gone", "zq7-fake-topic-91" not in out and "ntfy.example" not in out)
+ok("ntfy-style URL: the topic is gone, the host stays (a host is ordinary)", "zq7-fake-topic-91" not in out and "ntfy.example" in out)
 out = red("fetch https://api.example.org/v1?api_key=abcDEF123456xyz&x=1")
 ok("URL ?api_key= masked", "abcDEF123456xyz" not in out)
 out = red("fetch https://api.example.org/v1?token=abcDEF123456xyz")
@@ -77,7 +77,8 @@ ok("URL ?token= masked", "abcDEF123456xyz" not in out)
 out = red("fetch https://api.the-odds-api.com/v4/odds?apiKey=ZZtopSecretValue99&regions=us")
 ok("public host URL: apiKey value masked, host and path kept", "ZZtopSecretValue99" not in out and "the-odds-api.com/v4/odds" in out)
 out = red("fetch https://api.example.org/v1?token=abcDEF123456xyz")
-ok("an unknown host becomes [host]", "[host]" in out)
+ok("an unknown host is kept (not a credential); its token value is masked", "api.example.org/v1" in out and "abcDEF123456xyz" not in out)
+ok("user:pass@ in a URL is masked", "hunter2" not in red("GET https://bob:hunter2@api.example.org/v1 ok") and "api.example.org" in red("GET https://bob:hunter2@api.example.org/v1 ok"))
 
 # ---- headers
 for line, bad in (("Authorization: Bearer zzTok-9981xyzAB", "zzTok-9981xyzAB"),
@@ -91,24 +92,37 @@ for line, bad in (("Authorization: Bearer zzTok-9981xyzAB", "zzTok-9981xyzAB"),
                   ('{"Authorization": "Bearer zzTok-9981xyzAB"}', "zzTok-9981xyzAB")):
     ok(f"header masked: {line[:34]}", bad not in red(line))
 
-# ---- shapes
+# ---- shapes: only credential-looking things are masked
 for label, line, bad in (
+        ("long random blob", "key aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYg9876543210ZZ end", "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYg9876543210ZZ"),
+        ("session_id", "session_id=abc999zzz ok", "abc999zzz"),
+        ("api key with a space", "api key: XYZSECRET1", "XYZSECRET1"),
+        ("password=", "login password=hunter22 failed", "hunter22")):
+    ok(f"masked: {label}", bad not in red(line))
+# ---- ordinary content is NOT masked any more (it is Pete's own data going to his own dev Mac)
+for label, line, keep in (
         ("email", "mail sent to jane.doe@example.com now", "jane.doe@example.com"),
         ("Tailscale 100.x IP", "peer 100.101.102.103 connected", "100.101.102.103"),
-        ("LAN IP 192.168", "from 192.168.1.20 port 80", "192.168.1.20"),
-        ("LAN IP 10.x", "from 10.0.0.7 port 80", "10.0.0.7"),
-        ("fd7a IPv6", "peer fd7a:115c:a1e0::5 up", "fd7a:115c:a1e0::5"),
+        ("LAN IP", "from 192.168.1.20 port 80", "192.168.1.20"),
         ("ts.net host", "dialing box.tail1234.ts.net now", "box.tail1234.ts.net"),
         ("/Users path", "reading /Users/janedoe/combowatch/x.json", "janedoe"),
         ("member_id", "member_id=12345678 ok", "12345678"),
-        ("user_id JSON", '{"user_id": 998877}', "998877"),
         ("account_id", "account_id: acct-77-zz", "acct-77-zz"),
-        ("long random blob", "key aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYg9876543210ZZ end", "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYg9876543210ZZ"),
+        ("order id (UUID)", "order 9a8b7c6d-1111-4222-8333-444455556666 filled", "9a8b7c6d-1111-4222-8333-444455556666"),
         ("balance line $", "Balance: $1,234.56 available", "1,234.56"),
         ("balance json", '{"balance": 98765}', "98765"),
-        ("pot line $", "cash by pot: main $210.40, side $55.00", "210.40")):
-    ok(f"masked: {label}", bad not in red(line))
-ok("a Tailscale-looking /Users path keeps its shape, name replaced", "/Users/[user]" in red("/Users/janedoe/x"))
+        ("pot line $", "cash by pot: main $210.40, side $55.00", "210.40"),
+        ("team names", "Denver Nuggets vs Boston Celtics: Nuggets win", "Denver Nuggets vs Boston Celtics")):
+    ok(f"kept: {label}", keep in red(line))
+ok("'user id 12345' with a space is kept", "12345" in red("user id 12345"))
+ok("redaction is idempotent (a second pass changes nothing, raises nothing)",
+   all(red(red(x)) == red(x) for x in ("https://x.com]", "push https://ntfy.sh/zz]", "see http://[::1", "a https://q.org/p?token=abcdefgh1234 b",
+                                        "Authorization: Bearer abcdefghijklmnop", "https://[host]/x", "plain KXA-1 sold")))
+for u in ("[https://x.com]", "http://127.0.0.1:abc/x", "http://[::1", "https://x.com:99999/p", "push to https://ntfy.sh]"):
+    try:
+        red(u); ok(f"malformed URL does not raise: {u}", True)
+    except Exception as e:
+        ok(f"malformed URL does not raise: {u} ({type(e).__name__})", False)
 
 # ---- kept
 for label, line, keep in (
@@ -135,7 +149,7 @@ body = json.loads(W.log_answer(conf, E, "console", home=W.HOME))
 txt = "\n".join(r["text"] for r in body["lines"])
 ok("PEM block in watcher.log: no key body, no header", "MIIEvQIBADANBg" not in txt and "Zm9vYmFy" not in txt and "BEGIN" not in txt)
 ok("PEM block replaced by [private key]; the lines around it stay", "[private key]" in txt and "startup ok" in txt and "after the block" in txt)
-ok("console auto cash-out: kalshi_key_id / balance / secret_note dropped", UUID not in txt and "4411" not in txt and "secret_note" not in txt and "hello" not in txt)
+ok("console auto cash-out: kalshi_key_id / secret_note dropped, balance kept", UUID not in txt and "4411" in txt and "secret_note" not in txt and "hello" not in txt)
 ok("console auto cash-out: ticker and result kept", '"ticker": "KXNFLGAME-26NOV23KCBUF-KC"' in txt and '"result": "sold"' in txt)
 ok("console auto cash-out: unparseable ones become [record not shown]", txt.count("[record not shown]") == 3 and "not json" not in txt and "cut off" not in txt)
 
@@ -145,24 +159,25 @@ recs = [{"at": now - 5, "ticker": "KXNFLGAME-26NOV23KCBUF-KC", "result": "sold",
 write_log("combo_autosell_log.jsonl", "\n".join(json.dumps(r) for r in recs) + "\nthis line is not json\n")
 body = json.loads(W.log_answer(conf, E, "autosell", home=W.HOME))
 r0, r1 = body["lines"][0]["rec"], body["lines"][1]["rec"]
-ok("autosell: allowlisted fields kept (ticker, result, why, cost, offer)",
-   r0 == {"at": r0["at"], "ticker": "KXNFLGAME-26NOV23KCBUF-KC", "result": "sold", "why": "profit target", "cost": 12.5, "offer": 0.61})
-ok("autosell: unknown fields dropped (kalshi_key_id, balance, secret_note, odds_key)",
-   not {"kalshi_key_id", "balance", "secret_note", "odds_key"} & set(r0))
-ok("autosell: strings inside kept fields are redacted too", "jane@example.com" not in json.dumps(r1) and "[email]" in json.dumps(r1))
+ok("autosell: ordinary fields kept (ticker, result, why, cost, offer, balance)",
+   r0 == {"at": r0["at"], "ticker": "KXNFLGAME-26NOV23KCBUF-KC", "result": "sold", "why": "profit target", "cost": 12.5, "offer": 0.61, "balance": 4411})
+ok("autosell: credential-named fields dropped (kalshi_key_id, secret_note, odds_key)",
+   not {"kalshi_key_id", "secret_note", "odds_key"} & set(r0))
+ok("autosell: unlisted ordinary fields now flow (stop, round, picks)",
+   W.log_fields({"stop": "x", "round": 2, "picks": ["Nuggets win"]}, S) == {"stop": "x", "round": 2, "picks": ["Nuggets win"]})
+ok("autosell: strings inside fields are still scrubbed", "ZZZ-TOK-1" not in json.dumps(W.log_fields({"why": "token=ZZZ-TOK-1"}, S)))
 ok("autosell: a line that is not JSON is skipped, answer has 2 lines", len(body["lines"]) == 2)
 ok("autosell: the answer never contains any live secret", not any(v in json.dumps(body) for v in ALL))
 ok("answer carries the status block with the engine version", body["status"]["engine"] == "9.9.9")
 ok("Kalshi's insufficient_balance refusal keeps the order cost",
    "$7.25" in W.log_redact("buy refused insufficient_balance cost $7.25 KXNFLGAME-26NOV23KCBUF-KC", S))
-ok("a line with the account balance still masks it", "$88.10" not in W.log_redact("insufficient_balance: balance $88.10", S))
+ok("a balance line is kept", "$88.10" in W.log_redact("insufficient_balance: balance $88.10", S))
 f = W.log_fields({"ticker": "KXA", "hedge": True, "stop_loss": "auto", "sl_mode": "tune"}, S)
 ok("hedge / stop-loss markers are kept on auto cash-out records", f == {"ticker": "KXA", "hedge": True, "stop_loss": "auto", "sl_mode": "tune"})
 
 # from the security review
 ok("JSON inside a string: the escaped api_key value is masked", "SECRETVALUE123" not in red('{"msg": "{\\"api_key\\": \\"SECRETVALUE123\\"}"}'))
 ok("'api key: X' with a space is masked", "XYZSECRET1" not in red("api key: XYZSECRET1"))
-ok("'user id 12345' with a space is masked", "12345" not in red("user id 12345"))
 ok("a bare cw= session cookie is masked", "abc123" not in red("cookie cw=abc123 ok"))
 ok("a JWT is masked", "eyJhbGciOiJIUzI1NiJ9" not in red("tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sigsig ok"))
 ok("a short Bearer token is masked", "abc12" not in red("Authorization-ish Bearer abc12"))

@@ -87,6 +87,7 @@ function toastCheck(){const t=$('#toast');if(t&&t.classList.contains('on')&&Date
 function toast(m,ms,tone,onTap){if(S.rsAt&&Date.now()-S.rsAt<1800&&tone!=='good')return;   // Kalshi's own words are on screen in full: no clipped copy of them
  if(tone==='good')hap('success');else if(tone==='bad')hap('error');const t=$('#toast');t.hidden=false;t.textContent=(tone==='good'?'✅ ':tone==='bad'?'⚠️ ':'')+m;t.classList.remove('good','bad');if(tone)t.classList.add(tone);
  t.classList.toggle('tap',!!(onTap&&!document.querySelector('#modal.on')));t.onclick=onTap?(()=>{toastHide();hap('light');onTap();}):null;
+ if(t.classList.contains('tap')){t.setAttribute('role','button');t.tabIndex=0;}else{t.removeAttribute('role');t.removeAttribute('tabindex');}
  clearTimeout(t._x);void t.offsetWidth;t.classList.add('on');t._at=Date.now();t._until=Date.now()+(ms||3200);clearTimeout(t._h);t._h=setTimeout(toastHide,ms||3200);}
 setInterval(toastCheck,1000);
 ['touchend','scroll','visibilitychange','focus','pageshow'].forEach(ev=>addEventListener(ev,toastCheck,{passive:true,capture:true}));
