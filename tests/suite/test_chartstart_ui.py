@@ -3,8 +3,8 @@
 touched. A synthetic series has four hours of flat PRE-GAME samples before the start, then the game itself. Checks: the x-axis
 starts at the game's start time (left label, first point on the axis edge); no pre-game sample is drawn or scrubbable (path size,
 scrub spec, and nothing at x < the axis edge); score-change markers sit at the right x; the start falls back to the first in-play
-sample and then to the first score change when the Mac sent none; a game that has not started shows 'Kicks off at ...' and no
-line; no sideways scroll or JS errors on a phone (390x844, dark and light). Phone screenshots go to CS_SHOTS_DIR when set."""
+sample and then to the first score change when the Mac sent none; a game that has not started shows only a fill-in note (the start time is
+the banner's job, said once) and no line; no sideways scroll or JS errors on a phone (390x844, dark and light). Phone screenshots go to CS_SHOTS_DIR when set."""
 import sys, os, time, threading, json
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
 sys.argv = ["combo_watcher.py", "--webapp"]
@@ -142,13 +142,13 @@ def run(pg, label):
     pg.evaluate("S.gameSig=null;drawGame()"); time.sleep(.8)
     r = pg.evaluate("({svg:!!document.querySelector('#sheet .chartbox svg'),t:document.querySelector('#sheet .chartbox').textContent})")
     want_t = pg.evaluate("t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})", fut)
-    if r["svg"] or "Starts at " + want_t not in r["t"]:
-        probs.append(f"{label}: a game that has not started should say 'Starts at {want_t}' with no line: {r}")
+    if r["svg"] or "fills in once play begins" not in r["t"] or "Starts" in r["t"] or want_t in r["t"]:
+        probs.append(f"{label}: a game that has not started should only say the line fills in once play begins (no start time, the banner has it), no line: {r}")
     STATE["g"] = game(pre, plays=[], start=None, state="pre", starts="Today 7:30 PM")
     pg.evaluate("S.gameSig=null;drawGame()"); time.sleep(.8)
     r = pg.evaluate("({svg:!!document.querySelector('#sheet .chartbox svg'),t:document.querySelector('#sheet .chartbox').textContent})")
-    if r["svg"] or "Starts Today 7:30 PM" not in r["t"]:
-        probs.append(f"{label}: an unstarted game of unknown start should show its 'starts' label with no line: {r}")
+    if r["svg"] or "fills in once play begins" not in r["t"] or "Today 7:30 PM" in r["t"]:
+        probs.append(f"{label}: an unstarted game of unknown start should only say the line fills in once play begins, no line: {r}")
     if SHOTS:
         pg.screenshot(path=os.path.join(SHOTS, f"chart-start-{label}-notstarted.png"))
     pg.unroute("**/app/api/game*")
