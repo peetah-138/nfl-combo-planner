@@ -1919,11 +1919,19 @@ def rebuild_loop(odds, notifier=None, every=2):
 # tools/exit_replay.py group_result (game-clustered range, 70/30 split), copied, not imported: that file is pinned.
 import math as _pmath, random as _prandom
 
-PROMOTE = {"report": None, "at": 0.0, "busy": False, "ttl": 900, "min_n": 20, "min_test_games": 5, "min_lag": 5,
+PROMOTE = {"report": None, "at": 0.0, "busy": False, "ttl": 900, "min_n": 20, "min_games": 40, "min_test_games": 15, "min_lag": 5,
+           "push_level": {1: 0.999, 2: 0.9995}, "judged": {},
            "boot": 1000, "cap": 50000, "fit": 0.7, "stake": 10.0, "pushed": {}}
 PROMOTE_FILE = os.path.join(HOME, "promote_pushed.json")
 PROMOTE_STREAK_FILE = os.path.join(HOME, "promote_streak.json")
-PROMOTE_STREAK = 2          # refreshes in a row a signal must be Passing before the one-time push
+PROMOTE_STREAK = 3          # successive batches of NEWLY settled games a signal must hold a stricter pass on before the one-time push
+# Why these numbers (zero-edge simulation in tests/suite/t_promote.py, same code): the judge re-checks all season and
+# the push fires once forever, so the risk that matters is "ever false-passes", not one check's. One check at 99% is
+# ~1% wrong, but the latest-30% slice is small early (2-3% at 20-25 games), and ~25 looks over an 80-game season
+# compound: 1-(1-p)^k is 7-24% for p ~ 0.3-1%. Three defences: (1) no test before 40 games / 15 in the latest slice;
+# (2) the judge is recomputed only when games settled, so a refresh cannot re-roll the same data; (3) the push needs
+# the stricter 99.9% band (99.95% when several settings were tried) and PROMOTE_STREAK=3 passes, each on new games.
+# Simulated ever-false-push over an 80-game zero-edge season: see t_promote.py (bound 3%).
 _PROMOTE_LOCK = threading.Lock()
 
 
@@ -1966,14 +1974,18 @@ def promote_first(obs):
     return list(best.values())
 
 
-def promote_range(game_nets, level, rng, boot):
-    """Range for the total: resample whole games with replacement, add them up, take the middle `level`."""
+def promote_ranges(game_nets, levels, rng, boot):
+    """Ranges for the total: resample whole games with replacement, add them up, take the middle `level` of the sums
+    (one list of (low, high) per level, all from the same resamples)."""
     g = len(game_nets)
     if not g:
-        return None, None
-    sums = sorted(sum(game_nets[rng.randrange(g)] for _ in range(g)) for _ in range(boot))
-    a = (1 - level) / 2
-    return _pquant(sums, a), _pquant(sums, 1 - a)
+        return [(None, None) for _ in levels]
+    sums = sorted(sum(rng.choices(game_nets, k=g)) for _ in range(boot))
+    return [(_pquant(sums, (1 - lv) / 2), _pquant(sums, 1 - (1 - lv) / 2)) for lv in levels]
+
+
+def promote_range(game_nets, level, rng, boot):
+    return promote_ranges(game_nets, [level], rng, boot)[0]
 
 
 def promote_judge(obs, n_variants=None, label=None):
@@ -1986,7 +1998,7 @@ def promote_judge(obs, n_variants=None, label=None):
     nv = max(int(n_variants or 0), len(variants))
     level = 0.995 if nv > 1 else 0.99     # 99% even for one setting; a touch wider when several were tried (the best of them was picked)
     out = {"n": 0, "games": 0, "net": 0.0, "low": None, "high": None, "level": level * 100 if level * 100 % 1 else int(level * 100), "variants": nv,
-           "variant": None, "holdout_net": None, "holdout_games": 0, "half_a": None, "half_b": None,
+           "variant": None, "push_ok": False, "holdout_net": None, "holdout_games": 0, "half_a": None, "half_b": None,
            "lag_net": None, "lag_n": 0, "state": "wait", "status": "Not enough data", "reason": "Nothing recorded yet."}
     if not obs:
         return out
@@ -2017,10 +2029,13 @@ def promote_judge(obs, n_variants=None, label=None):
     lag = sum(o["lag"] for o in lo) if len(lo) >= cfg["min_lag"] else None
     # the range is built on the latest 30% of games ONLY: the setting was picked on the first 70%, so those games
     # cannot also be used to vouch for it
-    low, high = promote_range([by_game[g] for g in hold_games], level, _prandom.Random(541), cfg["boot"])
+    hold_nets = [by_game[g] for g in hold_games]
+    low = high = plow = None
+    if len(co) >= cfg["min_n"] and len(games) >= cfg["min_games"] and len(hold_games) >= cfg["min_test_games"]:   # no test below the minimum sample
+        (low, high), (plow, _) = promote_ranges(hold_nets, [level, cfg["push_level"][2 if nv > 1 else 1]], _prandom.Random(541), cfg["boot"])   # plow: the stricter band only the push uses
     if low is None:
-        low = high = 0.0
-    out.update(n=len(co), games=len(cg), net=round(net, 2), low=round(low, 2), high=round(high, 2),
+        low = high = plow = 0.0
+    out.update(n=len(co), games=len(cg), all_games=len(games), push_ok=plow > 0, net=round(net, 2), low=round(low, 2), high=round(high, 2),
                variant=(label or {}).get(best, best), holdout_net=round(hold, 2) if hold_games else None,
                holdout_games=len(hold_games), half_a=None if ha is None else round(ha, 2),
                half_b=None if hb is None else round(hb, 2), lag_net=None if lag is None else round(lag, 2), lag_n=len(lo))
@@ -2030,6 +2045,8 @@ def promote_judge(obs, n_variants=None, label=None):
         return out
     if out["n"] < cfg["min_n"]:
         return end("wait", "Not enough data", f"Only {out['n']} settled so far; it needs {cfg['min_n']} before it can be judged.")
+    if len(games) < cfg["min_games"]:
+        return end("wait", "Not enough data", f"Only {len(games)} games so far; it needs {cfg['min_games']} before it can be judged.")
     if len(hold_games) < cfg["min_test_games"]:
         return end("wait", "Not enough data", f"Only {len(hold_games)} games in the latest stretch to check it on; it needs {cfg['min_test_games']}.")
     if net <= 0:
@@ -2047,6 +2064,19 @@ def promote_judge(obs, n_variants=None, label=None):
                                               f"30 to 60 seconds late (needs {cfg['min_lag']} late-order replays; it has {len(lo)}).")
     return end("pass", "Passing", f"Made {_pdollars(net)} after fees over {out['n']} bets in {out['games']} games, and it "
                                   f"held up in the latest games and in both halves, even 30 to 60 seconds late.")
+
+
+def promote_judge_cached(key, obs, nv=None, label=None):
+    """The judge, recomputed only when the settled count changed (decisions, games, settings tried), so refreshing
+    again on the same data cannot re-roll the range. Returns a copy."""
+    first = promote_first([o for o in (obs or []) if o.get("v") is not None])
+    sig = (len(first), len({o["game"] for o in first}), int(nv or 0), round(sum(o["v"] for o in first), 4))
+    have = PROMOTE["judged"].get(key)
+    if have and have[0] == sig:
+        return dict(have[1])
+    res = promote_judge(obs, nv, label)
+    PROMOTE["judged"][key] = (sig, res)
+    return dict(res)
 
 
 def _prows(q, sql, args=()):
@@ -2214,7 +2244,7 @@ def promote_report(q, cfg=None, fee=None, now=None):
         row = {"key": key, "name": name, "what": what, "note": ""}
         try:
             obs, nv, label, note = fn(q, fee=fee)
-            row.update(promote_judge(obs, nv, label))
+            row.update(promote_judge_cached(key, obs, nv, label))
             row["note"] = note
             if key == "cap" and not row["n"] and cfg.get("exit_cap_shadow") is not True:
                 row["reason"] = "This recorder is switched off, so nothing has been recorded."
@@ -2228,7 +2258,7 @@ def promote_report(q, cfg=None, fee=None, now=None):
     return {"at": int(now or time.time()), "signals": rows,
             "bar": "A signal passes after at least 20 settled bets that made money after fees, held up in the latest "
                    "games and in both halves of the time, and stay ahead even when the order lands 30 to 60 seconds late (a signal that cannot be checked that way cannot pass). "
-                   "It must stay Passing on two refreshes in a row before you are told. Nothing here turns anything on."}
+                   "It needs at least 40 games (15 in the latest stretch). You are told only after it clears a stricter bar on three successive batches of newly settled games. Nothing here turns anything on."}
 
 
 def promote_refresh(q, cfg=None, fee=None):
@@ -2260,6 +2290,17 @@ def promote_report_cached(q, cfg=None, fee=None):
     return have or {"computing": True, "signals": []}
 
 
+def promote_streak_step(old, s):
+    """One look at a signal's judged row -> its saved streak {"n": successive passes, "g": games seen at the last look}.
+    A pass counts only when the games settled have grown since the last look (a refresh on unchanged data adds nothing)
+    and it clears the stricter push band; anything else resets n to 0."""
+    old = old if isinstance(old, dict) else {"n": 0, "g": 0}
+    g = int(s.get("all_games", 0) or 0)
+    if s.get("state") == "pass" and s.get("push_ok"):
+        return {"n": int(old.get("n", 0)) + (1 if g > int(old.get("g", 0)) else 0), "g": max(g, int(old.get("g", 0)))}
+    return {"n": 0, "g": g}
+
+
 def promote_push_check(report, conf, notify, now=None):
     """One push per signal, once it has been Passing on PROMOTE_STREAK refreshes in a row (the streak is saved, so a restart
     keeps it; any refresh that is not Passing resets it): "<name> passed the bar, say go". Goes through the notifier
@@ -2283,7 +2324,7 @@ def promote_push_check(report, conf, notify, now=None):
             streak = {}
         streak = streak if isinstance(streak, dict) else {}
         for s in report.get("signals", []):
-            streak[s["key"]] = int(streak.get(s["key"], 0) or 0) + 1 if s.get("state") == "pass" else 0
+            streak[s["key"]] = promote_streak_step(streak.get(s["key"]), s)
         try:
             with open(PROMOTE_STREAK_FILE + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(streak, f)
@@ -2291,7 +2332,7 @@ def promote_push_check(report, conf, notify, now=None):
         except OSError as err:
             log("promote streak not saved:", err)
         for s in report.get("signals", []):
-            if s.get("state") != "pass" or s["key"] in told or streak.get(s["key"], 0) < PROMOTE_STREAK:
+            if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or streak[s["key"]]["n"] < PROMOTE_STREAK:
                 continue
             msg = f"{s['name']} passed the bar, say go"
             notify(msg, kind="promote")
