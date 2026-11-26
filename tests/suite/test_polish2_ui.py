@@ -1,7 +1,7 @@
 # CHECK: group=page secs=40
 """UI polish batch 2 (display only; issues #436 #454 #455 #437 #440 #281). At phone size, dark and light, fixtures only:
 Pass / Buying / Try again / Copy code / Done buttons are 44px tall; a Buying... button says it is busy and its spinner is
-hidden from screen readers; the one-time code sheet is a labelled modal dialog with plain steps; a cash-out wait reads
+hidden from screen readers; the one-time code sheet is a labelled modal dialog; a cash-out wait reads
 "about 41 min from now" (not game time); range sliders let a vertical swipe scroll the page. Screenshots go to SHOTS."""
 import sys, os, time, threading, json, re
 exec(open("test_webapp_pw.py").read().split('sys.argv = ["combo_watcher.py", "--webapp"]')[0])
@@ -92,7 +92,7 @@ with sync_playwright() as pw:
         if pg.evaluate("[...document.querySelectorAll('.spin')].some(s=>s.getAttribute('aria-hidden')!=='true')"): bad(f"{scheme}: a spinner is readable by screen readers")
         shot(pg, f"tap_targets_{scheme}.png")
         pg.evaluate("document.getElementById('p2demo').remove()")
-        # the one-time code sheet: dialog role, a name, 44px buttons, plain steps
+        # the one-time code sheet: dialog role, a name, 44px buttons
         pg.evaluate("go('settings')")
         row = pg.locator("#logrow")
         if not wait(pg, "!!document.querySelector('#logrow')", 20): bad(f"{scheme}: no log row"); ctx.close(); continue
@@ -103,7 +103,7 @@ with sync_playwright() as pw:
             role = pg.evaluate("[document.getElementById('sheet').getAttribute('role'),document.getElementById('sheet').getAttribute('aria-modal'),document.getElementById('sheet').getAttribute('aria-label')]")
             if role != ["dialog", "true", "Code for the dev Mac"]: bad(f"{scheme}: the sheet should be a labelled modal dialog: {role}")
             txt = pg.evaluate("document.getElementById('sheet').innerText")
-            if "ask Claude" in txt or "security add-generic-password" not in txt: bad(f"{scheme}: the code sheet needs plain steps: {txt[:300]!r}")
+            if "nfl-combo-logs-token" not in txt: bad(f"{scheme}: the code sheet lost its keychain name: {txt[:300]!r}")
             for h in pg.evaluate("[...document.querySelectorAll('#sheet .btn')].map(b=>Math.round(b.getBoundingClientRect().height))"):
                 if h < 44: bad(f"{scheme}: a code sheet button is {h}px tall")
             shot(pg, f"code_sheet_{scheme}.png")

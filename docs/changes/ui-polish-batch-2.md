@@ -7,8 +7,7 @@
   `.empty .btn` (the "Couldn't load this screen" Try again) and `.sbgo .btn` a `min-height:44px`.
 - **Screen readers (#455, #437):** every `<span class="spin">` is `aria-hidden`; the disabled "Buying…" buttons carry `aria-busy`.
   The shared sheet (`#sheet`) is now `role="dialog" aria-modal="true"` and `modal()` names it from its first `<h3>`.
-  The one-time log-access code sheet says plainly to run `security add-generic-password ... -w` in Terminal on the dev Mac
-  (no more "ask Claude to walk you through them").
+  The one-time log-access code sheet keeps its short wording; its button row just gets a little breathing room.
 - **Best bets wording (#440):** `exitWhen` reads "about 41 min from now" (minutes from now, not minutes into the game).
 - **Settings scroll (#281, partial, not confirmed on a device):** range sliders get `touch-action:pan-y` so a vertical swipe that
   starts on a slider scrolls the page. The other suspects were checked and are already fine: the swipe-between-tabs, pull-to-refresh

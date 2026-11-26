@@ -13,7 +13,7 @@ async function logAccess(on,el,again){
  try{r=await api('/app/mac',{a:'logaccess',on});}catch(e){toast('Couldn\'t change it. Try again.');load('settings');return;}finally{el.disabled=false;}
  if(!r||!r.ok){toast((r&&r.msg)||'Couldn\'t change it. Try again.');load('settings');return;}
  if(!on){toast(r.msg);load('settings');return;}
- modal(`<h3>Code for the dev Mac</h3><p>Copy this now: it is shown only once. On the dev Mac, open Terminal, run <b>security add-generic-password -a "$USER" -s nfl-combo-logs-token -w</b>, and paste this code when it asks. It only lets the dev Mac read logs.</p>
+ modal(`<h3>Code for the dev Mac</h3><p>Copy this now: it is shown only once. On the dev Mac, store it in the keychain as <b>nfl-combo-logs-token</b>. The steps are in docs/LOG_ACCESS.md in the repo, or ask Claude to walk you through them. It only lets the dev Mac read logs.</p>
  <div class="code" id="lc">${esc(r.token||'')}</div>${r.url?`<p class="m" style="font-size:12.5px">Address (store it as <b>nfl-combo-logs-url</b>):</p><div class="code" id="lu">${esc(r.url)}</div>`:'<p class="m" style="font-size:12.5px">Tailscale isn\'t signed in on this Mac, so the dev Mac can\'t reach it yet.</p>'}
  <div class="row" style="margin-top:12px"><button class="btn" onclick="logDone()">Done</button>${r.url?`<button class="btn" onclick="logCopy('#lu','Address')">Copy address</button>`:''}<button class="btn acc" onclick="logCopy('#lc','Code')">Copy code</button></div>`);}
 function logCopy(sel,what){navigator.clipboard.writeText($(sel).textContent).then(()=>toast(what+' copied'),()=>toast('Couldn\'t copy: tap the '+what.toLowerCase()+' and copy it by hand'));}
