@@ -50,7 +50,7 @@ out = run(EST, 10.0, clear_state=True)
 ok("real offer under the bar: asked, nothing sold (the estimate alone never sells)", ASKS == ["C1"] and not ACC, ASKS, ACC)
 out = run(EST, 10.0)
 ok("throttle: no second request inside 60 s", not ASKS and not ACC, ASKS)
-E.MINE["real_asks"]["by"]["C1"] = [time.time() - 61]
+E.MINE["real_asks"]["by"]["C1"] = [time.time() - 121]   # one under-the-bar answer = a 120 s wait
 out = run(EST, 13.0)
 ok("a minute later it may ask again (and sells on a clearing offer)", ASKS == ["C1"] and ACC == ["C1"], ASKS, ACC)
 
@@ -105,14 +105,41 @@ ok("the switch is on by default and synced",
    E.DEFAULTS.get("real_offer_ask") is True and "real_offer_ask" in E.SHARED_KEYS and "real_offer_ask" in E.WATCHER_SYNCED)
 W = open("wtest/combo_watcher.py", encoding="utf-8").read()
 ok("the watcher syncs and the web app saves the switch", W.count('"real_offer_ask"') >= 2)
-ok("auto cash-out has one gate call and one note site", SRC.count("real_ask_gate(t)") == 1 and SRC.count("real_ask_note(t)") == 1)
+ok("auto cash-out has one gate call and one note site", SRC.count("= real_ask_gate(t,") == 1 and SRC.count("real_ask_note(t)") == 1)
 
 # the card words
 E.CFG.update(real_offer_ask=True)
 h = dict(HOLD, need=[], pays=20)
 E.MINE["cash"] = {}
 tr = E.smart_trigger("C1", h)
-ok("card (on): will ask Kalshi for a real offer", "ask Kalshi for a real offer" in tr["smart_txt"] or "over" in tr["smart_txt"] or not tr["smart_txt"], tr)
+E.MINE.pop("real_asks", None)
+tr = E.smart_trigger("C1", h)
+ok("card (on): will ask Kalshi for a real offer", "will ask Kalshi for a real offer" in tr["smart_txt"], tr)
+E.MINE["real_asks"] = {"by": {"C1": [time.time() - 5]}, "all": []}
+tr3 = E.smart_trigger("C1", h)
+ok("card (throttled): softened, never promises an ask now", "will ask Kalshi" not in tr3["smart_txt"] + tr3["smart_chip"] and "holding off" in tr3["smart_txt"], tr3)
+E.MINE.pop("real_asks", None)
 E.CFG["real_offer_ask"] = False
 tr2 = E.smart_trigger("C1", h)
 ok("card (off): never promises an ask", "will ask Kalshi" not in tr2["smart_txt"] + tr2["smart_chip"], tr2)
+
+E.CFG["real_offer_ask"] = True
+# the drain: three combos stuck (estimate over the bar, real offer under it) cannot starve a fourth, or an exempt reason
+E.MINE["real_asks"] = {"by": {}, "all": []}
+sim = 0.0; base = time.time(); sent = {"S1": 0, "S2": 0, "S3": 0}
+while sim < 3600:
+    for t in sent:
+        if E.real_ask_gate(t, base + sim)[0]:
+            E.real_ask_note(t, base + sim); E.real_ask_result(t, False); sent[t] += 1
+    sim += 10                                          # a pass every 10 s, the estimate always over the bar
+ok("stuck combos back off: far under the old 40 an hour each", all(n <= 12 for n in sent.values()), sent)
+ok("three stuck combos stay far under the all-combos cap", sum(sent.values()) < E.REAL_ASK_HOUR_ALL - 15, sent)
+ok("a fourth, legitimate combo still gets its ask", E.real_ask_gate("LEGIT", base + 3600)[0] is True)
+E.MINE["real_asks"] = {"by": {}, "all": [base + 10 * i for i in range(E.REAL_ASK_HOUR_ALL)]}
+ok("budget used up: a plain profit reason is refused, lock-in and a guarded stop-loss (exempt) are not",
+   E.real_ask_gate("X", base + 700)[0] is False and E.real_ask_gate("X", base + 700, exempt=True)[0] is True)
+E.real_ask_note("X", base + 700); E.real_ask_result("X", False)
+ok("exempt still obeys the combo's own gap and back-off", E.real_ask_gate("X", base + 710, exempt=True)[0] is False)
+E.MINE["real_asks"] = {"by": {}, "all": []}
+E.real_ask_note("Y", base); E.real_ask_result("Y", True)
+ok("a clearing offer resets the back-off to the plain 60 s", E.real_ask_gate("Y", base + 61)[0] is True)

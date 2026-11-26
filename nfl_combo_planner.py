@@ -5830,6 +5830,9 @@ def smart_trigger(t, h):
     elif not ro and not CFG.get("real_offer_ask", True):
         out["smart_txt"] = "Smart sell won't ask Kalshi for a real offer (switched off in Settings); it only sells on a real offer that is already in." + stop
         out["smart_chip"] = stop_chip or "won't ask Kalshi (switched off)"
+    elif not ro and not real_ask_gate(t)[0]:
+        out["smart_txt"] = "Smart sell is holding off asking Kalshi for a real offer for now (" + real_ask_gate(t)[1] + "); it only sells on a real offer." + stop
+        out["smart_chip"] = stop_chip or "holding off asking Kalshi"
     elif not ro:
         out["smart_txt"] = (f"Smart sell will ask Kalshi for a real offer once the estimate reaches ${at:.2f}; it only sells on a real offer."
                             if at else "Smart sell will ask Kalshi for a real offer once the estimate clears its bar; it only sells on a real offer.") + stop
@@ -5874,14 +5877,18 @@ def cash_nudge(t, h, tp=None):
 REAL_ASK_GAP = 60         # #227: auto cash-out asks Kalshi for a real offer on one combo at most once a minute...
 REAL_ASK_HOUR_COMBO = 20  # ...at most this many times an hour for one combo...
 REAL_ASK_HOUR_ALL = 60    # ...and this many an hour for all combos together (a request never goes out on a hunch)
+REAL_ASK_BACKOFF_MAX = 600  # a combo whose last real offers came in under the bar waits 60, 120, 240, 480, then 600 s between asks
 
 
-def real_ask_gate(t, now=None):
+def real_ask_gate(t, now=None, exempt=False):
     """#227: may auto cash-out send Kalshi a real-offer request for combo `t` now (its estimate reached a sell bar)?
     Returns (ok, why). The switch `real_offer_ask` (Settings, default on) turns every such request off; the throttle is
     one request per combo per REAL_ASK_GAP seconds, and REAL_ASK_HOUR_COMBO / REAL_ASK_HOUR_ALL an hour. Nothing is
     recorded here: `real_ask_note` records a request that really went out (failed ones count too, so Kalshi is never
-    spammed). Unreadable state refuses (fail closed). A refusal only delays a sale, it never causes one."""
+    spammed). Unreadable state refuses (fail closed). A refusal only delays a sale, it never causes one.
+    A combo whose last real offer(s) came in under the bar backs off (the wait doubles each time, up to
+    REAL_ASK_BACKOFF_MAX) so a stuck combo cannot burn the budget. `exempt` (lock-in and a guarded stop-loss) skips
+    the all-combos cap only, so other combos' asks can never starve them; the per-combo gap, backoff and hourly cap hold."""
     now = time.time() if now is None else now
     try:
         if not CFG.get("real_offer_ask", True):
@@ -5890,11 +5897,17 @@ def real_ask_gate(t, now=None):
         st["all"] = [x for x in st["all"] if now - x < 3600]
         mine = [x for x in st["by"].get(t, []) if now - x < 3600]
         st["by"][t] = mine
-        if mine and now - max(mine) < REAL_ASK_GAP:
+        low = st.setdefault("low", {})
+        if not mine:
+            low.pop(t, None)                          # nothing asked in the last hour: start fresh
+        wait = min(REAL_ASK_GAP * 2 ** min(int(low.get(t, 0)), 10), REAL_ASK_BACKOFF_MAX)
+        if mine and now - max(mine) < wait:
+            if wait > REAL_ASK_GAP:
+                return False, f"Kalshi's last offer was under the bar, so waiting {wait}s between asks (asked {int(now - max(mine))}s ago)"
             return False, f"asked Kalshi {int(now - max(mine))}s ago (one request per combo per {REAL_ASK_GAP}s)"
         if len(mine) >= REAL_ASK_HOUR_COMBO:
             return False, f"already asked Kalshi {len(mine)} times this hour for this combo"
-        if len(st["all"]) >= REAL_ASK_HOUR_ALL:
+        if not exempt and len(st["all"]) >= REAL_ASK_HOUR_ALL:
             return False, f"already asked Kalshi {len(st['all'])} times this hour in all"
         return True, ""
     except Exception:
@@ -5906,6 +5919,14 @@ def real_ask_note(t, now=None):
     st = MINE.setdefault("real_asks", {"by": {}, "all": []})
     st["by"].setdefault(t, []).append(now)
     st["all"].append(now)
+
+
+def real_ask_result(t, cleared):
+    """Record how the request just made came out: an offer that cleared the bar resets the combo's back-off, one that
+    did not (or no offer at all) doubles the wait before the next ask."""
+    st = MINE.setdefault("real_asks", {"by": {}, "all": []})
+    low = st.setdefault("low", {})
+    low[t] = 0 if cleared else min(int(low.get(t, 0)) + 1, 10)
 
 
 def auto_sell_now(plan):
@@ -5991,7 +6012,7 @@ def auto_sell_now(plan):
             if f < 1 or o.get("frac", 1.0) < 1 or o.get("rfq") == "estimate":   # the Pi only estimates
                 from_est = o.get("rfq") == "estimate"          # #227: the estimate reached the bar; only a REAL offer may sell
                 if why != "cut loss":                          # a loss cut keeps its own clock and guards (#396)
-                    gate_ok, gate_why = real_ask_gate(t)
+                    gate_ok, gate_why = real_ask_gate(t, exempt=(why == "lock in" or bool(sl_ready.get(t))))
                     if not gate_ok:
                         told = MINE.setdefault("real_ask_told", {})
                         if time.time() - told.get(t, 0) >= 300:        # one note per combo per 5 minutes
@@ -6006,6 +6027,7 @@ def auto_sell_now(plan):
                 if why != "cut loss":
                     got = o.get("offer") and o["offer"] / max(o.get("frac", 1.0), 0.01)
                     clears = bool(got) and got >= slip * thr
+                    real_ask_result(t, clears)
                     log_decision({"combo": h.get("label", t), "ticker": t, "why": why, "kind": "combo", "result": "asked",
                                   "note": f"REAL OFFER asked ({'estimate reached the bar' if from_est else 'partial'}): got "
                                           f"{('$%.2f' % got) if got else 'no offer'}, bar ${slip * thr:.2f}, "
