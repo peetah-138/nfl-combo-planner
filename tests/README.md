@@ -133,8 +133,7 @@ pattern in a local `.git/hooks/pre-commit`.
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion
   layer: every visible clickable element on every screen has press feedback and a haptic, the haptic patterns are
-  distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
-  ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
+  distinct, the push transition (slide, dim, skeleton, Back, swipe back), rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
   `test_makeover2.py` covers phase 2: live Games cards with singles/spreads (API and page), the score pulse and its
   haptic, scrubbing the game chart, the Sold moment (tap, failed sale, smart sell's calm card from a fake sell log),
   small win vs big hit, Results profit bars (scrub ticks, tap for bets, Day/Week) and the loading skeletons.

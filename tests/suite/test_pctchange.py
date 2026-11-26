@@ -85,7 +85,7 @@ with sync_playwright() as pw:
         check(c["t"] == ["≈ −7%", "≈ −$0.22"] and c["col"] == "down", "combo loss text/colour", c)
         check(s["t"] == ["−20%", "−$1.00"] and s["col"] == "down", "single loss text/colour (a real worth: no approx sign)", s)
         check("%" in g["hero"], "hero shows no percent", g["hero"])
-        check(g["heroPre"] == '"≈ "', "hero pill should carry the approx sign on an estimate", g["heroPre"])
+        check(g["heroPre"] in ('none', '""', 'normal'), "hero pill is Kalshi's value now (#413): no approx sign", g["heroPre"])
         check(g["over"] <= 1, "sideways scroll", g["over"])
         check("tabular" in pg.evaluate("getComputedStyle(document.querySelector('.chg')).fontVariantNumeric"), "not tabular")
         # sign flip: the row's height must not change; text and colour do
