@@ -289,6 +289,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 @media (prefers-reduced-motion:reduce){.trow.burst,.trow.burst .name>span,.rowpop{animation:none}}
 /* #140: the reason a button failed, right under it (replaces the 6-7 s toast) */
 .berr{display:flex;align-items:flex-start;gap:8px;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:12px;background:var(--nobg);color:var(--no);font-size:14px;font-weight:600;line-height:1.35;animation:fadein .2s var(--ease)}
+.berr.still{animation:none}
 .berr i{font-style:normal;font-weight:800}
 .nice{min-height:44px;min-width:160px;font-size:17px;font-weight:700}
 @media (prefers-reduced-motion:reduce){.btn.st-bad{animation:none}.berr{animation:none}}

@@ -1949,7 +1949,7 @@ REAL combo offer (`get_cash_offer`). It sells **only** if that real offer meets 
 - **Log:** every request and outcome is a `log_decision` line: "REAL OFFER asked (...): got $X, bar $Y, ..." and, when the
   gate refuses, "REAL OFFER not asked: ...; the estimate (...) never sells on its own" (one per combo per 300 s).
 - **Switch off (`real_offer_ask` false) is stricter than before the switch:** automatic selling never asks Kalshi for
-  an offer; it sells only on a real offer already in hand that clears the bar (so a plan part-sale waits too). Kept on purpose
+  an offer, lock-in and the guarded stop-loss included (the Settings text names them, #542); it sells only on a real offer already in hand that clears the bar (so a plan part-sale waits too). Kept on purpose
   (the safe direction); a learned loss cut still asks. The Settings text says so in plain English.
 - **Card wording (#513):** the card reads the throttle read-only (`real_ask_gate(..., readonly=True)`, no state change, same
   exemption via the `MINE["sl_ready"]` copy that `auto_sell_now` keeps); while throttled it says "holding off asking Kalshi". `smart_trigger` keeps "will ask Kalshi for a real offer once the estimate reaches $X"; with the
