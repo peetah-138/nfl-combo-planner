@@ -350,6 +350,27 @@ ok("two wins step up one level (25% -> 50%)", ev(2, "WW")["level"] == 1)
 ok("four wins from the floor return to normal, then stop (never above normal)", ev(2, "WWWW")["level"] == 0 and ev(0, "WWWW", base=0, since=0)["level"] == 0 and ev(0, "WWWW", base=0, since=0)["factor"] == 1.0)
 ok("a loss between wins resets the count", ev(1, "WLW")["level"] == 1 and ev(1, "WLW")["wins"] == 1)
 ok("a no-loss exit that made money counts as a win; the level never exceeds normal", all(ev(l, "W" * 9)["level"] >= 0 for l in (0, 1, 2)))
+# batches: bets that settle between two passes give the same answer as one at a time
+def one_by_one(level, seq, **kw):
+    cs = {"level": level, "base_at": kw.get("base", 999), "since": 1000}
+    for i, r in enumerate(seq):
+        e_ = E._fa_caution_eval({"streak": 3, "caution": cs}, [bet(i, r)] if True else [], 0, 1500)
+        cs = e_["saved"]
+    return cs["level"]
+ok("batch: 4 losses then 2 wins settled together is cautious then back to normal, same as one at a time",
+   ev(0, "LLLLWW", base=0, since=0)["level"] == one_by_one(0, "LLLLWW", base=0) == 0)
+ok("batch: 3 losses then a win still ends cautious, not normal", ev(0, "LLLW", base=0, since=0)["level"] == 1)
+ok("batch: cautious with 2 losses then 2 wins goes down to 25% then up to 50%", ev(1, "LLWW")["level"] == 1)
+ok("batch: cautious with 2 losses then 1 win ends at 25%", ev(1, "LLW")["level"] == 2)
+ok("batch result is the same fed one bet at a time", all(ev(l, q, base=0)["level"] == one_by_one(l, q, base=0) for l in (0, 1, 2) for q in ("LLLLWW", "LLWW", "WWLLL", "LLLWWLL")))
+# pushes are neutral: no win, no loss
+def push(i):
+    return (day, {"bought_at": 1000 + i, "result": "push", "pl": 0.0})
+def evp(level, seq):
+    after_ = [push(i) if r == "P" else bet(i, r) for i, r in enumerate(seq)]
+    return E._fa_caution_eval({"streak": 3, "caution": {"level": level, "base_at": 999, "since": 1000}}, after_, 0, 1500)
+ok("a push does not count as a win (no recovery)", evp(1, "WPP")["level"] == 1 and evp(1, "WPP")["wins"] == 1 and evp(1, "WPW")["level"] == 0)
+ok("a push does not break a losing run or count as one", evp(0, "LLPL")["level"] == 1 and evp(0, "LLP")["level"] == 0)
 # calm days: 3 days with no loss step up one level (saved each pass, so the next step needs 3 more)
 c2 = {"level": 2, "base_at": 0, "since": 5000, "why": "t"}
 e0 = E._fa_caution_eval({"streak": 3, "caution": c2}, [], 0, 5000 + 86400)
@@ -377,7 +398,8 @@ reset_state()
 p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 3, "day_loss": 100})
 E._fa_update(lambda s: s.update(brake={"kind": "streak", "why": "old"}))
 vv = E.fa_check(now=time.time())
-ok("a legacy streak pause is read as cautious, with no blocker", vv["brake"] is None and vv["caution"]["level"] == 1 and not any("Paused itself" in b for b in vv["blockers"]))
+ok("a legacy streak pause is read as cautious, with no blocker", vv["brake"] is None and vv["caution"]["level"] == len(E.FA_LADDER) - 1 and not any("Paused itself" in b for b in vv["blockers"]))
+ok("a legacy pause starts at the lowest level (25%) with a plain note on the card", vv["caution"]["pct"] == 25 and "before this update" in vv["caution"]["why"] and "Back to normal now" in vv["caution"]["why"])
 # only a real master switch turns it off
 ok("cautious never turns the switch off", E.fa_state()["on"] is True)
 okO, _, _ = E.fa_set(False)

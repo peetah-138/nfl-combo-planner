@@ -18,7 +18,8 @@ and spreads/totals are not touched by the bar, only by size and cap); an error i
 - Up: 2 winning (non-loss) full-auto bets in a row step up one level (only the 2 needed are used up), or 3 days with no loss since
   the last change step up one level. Each step is logged in the history in plain words with its reason.
 - Manual reset ("Back to normal now") returns to normal immediately and resets the loss count.
-- An older saved streak pause is read as Cautious 50%, not as a stop.
+- An older saved streak pause is migrated to the lowest level (25%), with a plain card note ("Brake from before this update: tap Back to normal now, or it eases back by itself"). It never buys silently at 50%.
+- Settled bets are replayed oldest first, one at a time, so a batch settling between passes gives the same level as one at a time. A push (exactly $0) is neutral: not a win, not a loss, no recovery progress.
 
 **Unchanged:** the $20 daily loss limit still pauses until the next panel day, with its "Paused itself" card line. Pause, the Pi,
 rule 8, the paper gate and every cap are untouched.

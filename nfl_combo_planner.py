@@ -24236,72 +24236,69 @@ def _fa_stamp(c):
 
 
 def _fa_caution_eval(st, after, run, now, legacy=False):
-    """Read-only: the caution state as it stands now, from the saved one and the full-auto bets settled since the last
-    reset (`after`, oldest first). Returns level (0 normal, 1 50%, 2 25%), factor, pct, why, recovery numbers, `saved` (the
-    dict to persist) and `events` (plain-English lines for the history, newest last). Pure: the pass saves it."""
+    """Read-only: the confidence level as it stands now. The saved state is replayed over the full-auto bets settled since
+    it was last updated (`after`, oldest first, bets already counted are skipped by stamp), one bet at a time, so several
+    bets settling between two passes give the same result as one at a time. A loss (real P/L under 0) counts toward a step
+    down, a win (over 0) toward a step up, a push (exactly 0) is neutral. Returns level (0 normal ... top = the floor),
+    factor, pct, why, recovery numbers, `saved` (what to persist) and `events` (history lines). Pure: the pass saves it."""
     F = FA_CAUTION
     top = len(F["factors"]) - 1
     c0 = st.get("caution") if isinstance(st.get("caution"), dict) else {}
-    try:
-        level = min(top, max(0, int(c0.get("level") or 0)))
-    except (TypeError, ValueError):
-        level = 0
-    base = float(c0.get("base_at") or 0) if isinstance(c0.get("base_at"), (int, float)) else 0.0
-    since = float(c0.get("since") or 0) if isinstance(c0.get("since"), (int, float)) else 0.0
+
+    def num(k, d=0.0):
+        v = c0.get(k)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    level = min(top, max(0, int(num("level"))))
+    base, since, loss_at = num("base_at"), num("since"), num("loss_at")
+    wl, ww = int(num("wl")), int(num("ww"))
     why = c0.get("why") if isinstance(c0.get("why"), str) else ""
     events = []
-    if legacy and level == 0:
-        level, base, since = 1, (_fa_stamp(after[-1][1]) if after else now), now
-        why = f"{run} losing bets in a row (the limit is {st['streak']})."
-        events.append(f"Cautious (50%): an older pause became caution. {why}")
-    for _ in range(8):
-        post = [c for d, c in after if _fa_stamp(c) > base]
-        tail_l = tail_w = 0
-        for c in reversed(post):
-            if (panel_pl(c) or 0) < 0 and not tail_w:
-                tail_l += 1
-            elif (panel_pl(c) or 0) >= 0 and not tail_l:
-                tail_w += 1
-            else:
-                break
-        last_loss = max([_fa_stamp(c) for c in post if (panel_pl(c) or 0) < 0] or [0])
-        if level == 0:
-            if tail_l >= st["streak"]:
-                level, base, since = 1, _fa_stamp(post[-1]), now
-                why = f"{tail_l} losing bets in a row (the limit is {st['streak']})."
+    if legacy and level == 0:                         # an older version's saved streak pause: not a stop, not silent either
+        level, wl, ww, since = top, 0, 0, now
+        base = max([base] + [_fa_stamp(c) for d, c in after])
+        why = f"Brake from before this update: tap Back to normal now, or it eases back by itself (after {F['wins']} winning bets or {F['calm_days']} calm days)."
+        events.append(f"Cautious ({round(F['factors'][top] * 100)}%): {why}")
+    for d, c in after:
+        stamp = _fa_stamp(c)
+        if stamp <= base:
+            continue
+        base = stamp
+        pl = panel_pl(c) or 0
+        if pl == 0:
+            continue                                  # a push: neither a win nor a loss
+        if pl < 0:
+            wl, ww, loss_at = wl + 1, 0, stamp
+            if level == 0 and wl >= st["streak"]:
+                level, wl, since = 1, 0, stamp
+                why = f"{st['streak']} losing bets in a row (the limit is {st['streak']})."
                 events.append(f"Cautious ({round(F['factors'][1] * 100)}%): {why}")
-                continue
-            break
-        if tail_l >= F["drop_losses"] and level < top:
-            level, base, since = level + 1, _fa_stamp(post[-1]), now
-            why = f"{tail_l} more losing bets in a row while cautious."
-            events.append(f"Cautious, tighter ({round(F['factors'][level] * 100)}%): {why}")
-            continue
-        if tail_w >= F["wins"] or (now - max(since, last_loss) >= F["calm_days"] * 86400 and since):
-            how = f"{tail_w} winning bets in a row" if tail_w >= F["wins"] else f"{F['calm_days']} calm days with no loss"
-            level, base = level - 1, (_fa_stamp(post[-tail_w + F["wins"] - 1]) if tail_w >= F["wins"] else now)   # uses up only the wins it needed
-            since = now
-            events.append((f"Back to normal after {how}." if level == 0 else
-                           f"Easing up to {round(F['factors'][level] * 100)}% after {how}."))
-            if level == 0:
-                why = ""
-            continue
-        break
+            elif level and wl >= F["drop_losses"] and level < top:
+                level, wl, since = level + 1, 0, stamp
+                why = f"{F['drop_losses']} more losing bets in a row while cautious."
+                events.append(f"Cautious, tighter ({round(F['factors'][level] * 100)}%): {why}")
+        else:
+            wl = 0
+            if level:
+                ww += 1
+                if ww >= F["wins"]:
+                    level, ww, since = level - 1, 0, stamp
+                    events.append("Back to normal after %d winning bets." % F["wins"] if level == 0 else
+                                  f"Easing up to {round(F['factors'][level] * 100)}% after {F['wins']} winning bets.")
+                    if level == 0:
+                        why = ""
+    if level and now - max(since, loss_at) >= F["calm_days"] * 86400:
+        level, ww, wl, since = level - 1, 0, 0, now
+        events.append("Back to normal after %d calm days with no loss." % F["calm_days"] if level == 0 else
+                      f"Easing up to {round(F['factors'][level] * 100)}% after {F['calm_days']} calm days with no loss.")
+        if level == 0:
+            why = ""
     factor = F["factors"][level]
-    post = [c for d, c in after if _fa_stamp(c) > base]
-    wins = 0
-    for c in reversed(post):
-        if (panel_pl(c) or 0) < 0:
-            break
-        wins += 1
-    saved = {"level": level, "base_at": base, "since": since, "why": why}
-    calm_left = None
-    if level:
-        last_loss = max([_fa_stamp(c) for c in post if (panel_pl(c) or 0) < 0] or [0])
-        calm_left = max(0.0, round((max(since, last_loss) + F["calm_days"] * 86400 - now) / 86400, 1))
-    return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": min(wins, F["wins"]),
+    saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at}
+    calm_left = max(0.0, round((max(since, loss_at) + F["calm_days"] * 86400 - now) / 86400, 1)) if level else None
+    prev = {k: c0.get(k, 0 if k != "why" else "") for k in saved}
+    return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": ww if level else 0,
             "wins_need": F["wins"], "calm_days_left": calm_left, "bar_extra": _fa_knob(level, "bar"), "knobs": dict(FA_LADDER[level]),
-            "saved": saved, "events": events, "changed": saved != {k: c0.get(k) for k in saved} and (bool(events) or bool(c0))}
+            "saved": saved, "events": events, "changed": saved != prev}
 
 
 def _fa_scaled(stake, factor):
