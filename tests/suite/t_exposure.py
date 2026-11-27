@@ -190,13 +190,16 @@ ok("old expo_pos rows are pruned", E.store_rows("select count(*) n from expo_pos
 ok("the pass is throttled", (setattr(E, "EXPO", dict(E.EXPO, every=500)) or True)
    and E.exposure_paper_pass(vp, t + 9e6 + 1, force=False) is None)
 
-# ---- decisions never read it
+# ---- decisions never read it (but _fal_load, the full-auto lessons reader of #144, which only ever tightens a full-auto-only limit)
 src = open("wahome/engine.py", encoding="utf-8").read()
 users = [m.start() for m in re.finditer(r"exposure_paper_|_expo_|expo_pos|expo_pass|EXPO\b", src)]
 defs_end = src.index("SPORT_SCORE_WORD = {")
 defs_start = src.index("# ---- (#335) no-both-sides")
 outside = [src[max(0, i - 60):i + 40].replace("\n", " ") for i in users if not defs_start <= i < defs_end]
 # money-h: the no-both-sides single-buy guard deliberately reuses the stance/opposed helpers (Pete's instruction); nothing else may
+fal = [(src.index(f"def {n}("), src.index("\ndef ", src.index(f"def {n}(") + 1)) for n in ("_fal_load", "_fal_min_n")]
+users = [i for i in users if not any(a <= i < b for a, b in fal)]     # (#144) the full-auto lessons reader: its one allowed read
+outside = [src[max(0, i - 60):i + 40].replace("\n", " ") for i in users if not defs_start <= i < defs_end]
 outside = [o for o in outside if "_expo_stance" not in o and "_expo_opposed" not in o]
 ok("only record_view calls it from outside its own block", len(outside) == 1 and "exposure_paper_pass(view, now)" in outside[0])
 rv = inspect.getsource(E.record_view)
