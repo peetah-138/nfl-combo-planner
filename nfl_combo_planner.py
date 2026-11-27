@@ -24166,6 +24166,12 @@ _FA_LOCK = threading.Lock()
 
 def full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     """Serialised: two passes at once can't both read the same room and overspend the cap."""
+    try:                                                  # (#144) the weekly look reads tables: done BEFORE the lock, never holds it
+        st0 = fa_state()
+        if fal_on(st0):
+            fal_tick(st0, now or time.time(), log)
+    except Exception as err:
+        log("full auto lessons:", type(err).__name__, err)
     with _FA_LOCK:
         return _full_auto_pass(paused, may_trade, now, log)
 
@@ -24178,12 +24184,6 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     if not st["on"]:
         return None
     now = now or time.time()
-    if fal_on(st):                                        # (#144) lessons from the paper records: never holds up a pass
-        try:
-            if fal_tick(st, now, log):
-                st = fa_state()
-        except Exception as err:
-            log("full auto lessons:", type(err).__name__, err)
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
     if v["brake"] and not (st.get("brake") or {}).get("kind"):
         _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
@@ -24396,7 +24396,8 @@ def _fal_judge(rec, key, rs, passes, a, b, last_at):
     ds = _fal_ds(rs, passes, a, b)
     ev = knob_evidence(ds, 0, last_at)
     lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
-    return bool(len(rs) >= _fal_min_n(rec) and ev["ok"] and lb > 0), ev, lb
+    clean = all(math.isfinite(d) for _, d, _ in ds)               # a NaN anywhere: no step
+    return bool(clean and len(rs) >= _fal_min_n(rec) and ev["ok"] and lb > 0), ev, lb
 
 
 def _fal_val_text(rec, v):
@@ -24437,10 +24438,21 @@ def _fal_plan(st, now):
                     continue
                 ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
                 post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
-                net = round(sum(post), 2)
-                if len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS and abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9:
-                    actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
-                elif len(post) >= KNOB_HOLD_MIN or age >= FAL["judge_max"]:
+                net = sum(post)
+                held = abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9
+                if not math.isfinite(net) or any(not math.isfinite(d) for _, d, _ in ds):
+                    bad, net = "unreadable", 0.0               # a NaN result is never "kept": back to the prior setting
+                elif len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS:
+                    bad, net = "lost", round(net, 2)
+                elif len(post) < KNOB_HOLD_MIN and age >= FAL["judge_max"]:
+                    bad, net = "thin", round(net, 2)           # never silently keep a step nobody could check
+                else:
+                    bad, net = None, round(net, 2)
+                if bad and held:
+                    actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
+                elif bad:
+                    pass
+                elif len(post) >= KNOB_HOLD_MIN:
                     actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
                 else:
                     s["note"] = "watching its last step (too few bets yet)"
@@ -24503,8 +24515,11 @@ def _fal_apply(s, plan, now):
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
         elif lr and not lr.get("judged") and lr.get("key") == key:
             if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9:
-                say("revert", key, f"Learned: {_fal_name(key)} back {_fal_val_text(rec, lr['to'])} -> {_fal_val_text(rec, lr['from'])} "
-                    f"because the {a['n']} bets that step changed lost ${-a['net']:.2f} after fees in the week since.")
+                why = ("because the " + str(a["n"]) + " bets that step changed lost $" + format(-a["net"], ".2f") + " after fees in the week since."
+                       if a.get("why", "lost") == "lost" else
+                       "because its results could not be read." if a.get("why") == "unreadable" else
+                       "because too few bets came in over two weeks to show it helped.")
+                say("revert", key, f"Learned: {_fal_name(key)} back {_fal_val_text(rec, lr['to'])} -> {_fal_val_text(rec, lr['from'])} " + why)
                 _fal_set(L, rec, key, lr["from"])
                 L["steps"][rec], L["since"][key] = round(now), round(now)
                 lr.update(judged=True, reverted=True)

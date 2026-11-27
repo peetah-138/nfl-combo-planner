@@ -272,3 +272,68 @@ ok("the Lessons switch is its own tap and defaults on", okS and E.fa_state()["fa
 E.fa_lessons_set(True)
 ok("...and turns back on", E.full_auto_view()["lessons"]["switch"] is True and E.full_auto_view()["lessons"]["active"] is False)
 ok("the card lists what is not wired yet, with a reason", all(x["why"] for x in E.full_auto_view()["lessons"]["not_wired"]) and len(E.full_auto_view()["lessons"]["not_wired"]) >= 8)
+
+# ---- review tightening: NaN, thin sample, fa_set, a real off pass, the lock
+def stepped():
+    reset(); seed_bar(); tick(NOW); return lessons()["last"]["bar"]["at"]
+
+
+at = stepped()
+E.store_x("insert into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (7000, at + 3600, "nba", "nba", 2, 0.951, 5.0, 5.5, 95.0, 95.0, 1, 1, "won", 1.0))
+_real_load = E._fal_load
+def nan_load(rec, now):
+    by, passes = _real_load(rec, now)
+    for rows in by.values():
+        for r in rows:
+            if r["k"] > at:
+                r["d"] = float("nan")
+    return by, passes
+E._fal_load = nan_load
+tick(NOW + 8 * DAY)
+E._fal_load = _real_load
+ok("a NaN result is a revert, never kept", vals() == {} and lessons()["last"]["bar"].get("reverted") is True
+   and "could not be read" in lessons()["log"][-1]["text"])
+E.store_x("insert into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (7001, NOW, "nba", "nba", 2, 0.951, 5.0, 5.5, 95.0, 95.0, 1, 1, "won", float("nan")))
+ok("a NaN stored in the database takes no step (reads as empty)", E.store_rows("select count(*) n from league_shadow_q where pnl is null")[0]["n"] >= 1)
+
+at = stepped()
+tick(NOW + 15 * DAY)
+ok("too few bets after two weeks: the step is reverted, not silently kept",
+   vals() == {} and lessons()["last"]["bar"].get("reverted") is True and "too few bets" in lessons()["log"][-1]["text"])
+
+reset()
+E._fa_update(lambda s: s.update(lessons={"vals": {"bar:nba": 1.0}, "log": [{"text": "x"}]}))
+E.fa_set(True, limits={"cap": 12})
+E.fa_set(False)
+ok("fa_set keeps the learned values and log", E.fa_state()["lessons"]["vals"] == {"bar:nba": 1.0} and E.fa_state()["lessons"]["log"] == [{"text": "x"}])
+
+reset(on=False)
+p = fresh()
+E._fa_update(lambda s: s.update(lessons={"vals": {"sbev:nba": 4}}))
+E._sb_sim = lambda c, now: {"ev": -9.0}
+real_tick, real_filter = E.fal_tick, E.fal_filter
+calls = []
+E.fal_filter = lambda *a, **k: calls.append(1) or ([], [])
+E.fal_tick = lambda *a, **k: calls.append(2) or True
+okp = E.full_auto_pass(now=NOW)
+ok("full auto off: the real pass returns None, touches neither the tick nor the filter, approves nothing",
+   okp is None and not calls and E.panel_get("real")["status"] == "draft" and not BOUGHT)
+E.fal_tick, E.fal_filter = real_tick, real_filter
+
+reset()
+seed_bar()
+held = []
+real_load = E._fal_load
+def slow_load(rec, now):
+    got = E._FA_LOCK.acquire(blocking=False)
+    held.append(got)
+    if got:
+        E._FA_LOCK.release()
+    return real_load(rec, now)
+E._fal_load = slow_load
+E.fa_set(True, limits={"cap": 100, "max_open": 30})
+E.full_auto_pass(now=NOW)
+E._fal_load = real_load
+ok("the weekly look reads tables without holding the full-auto lock", held and all(held))
