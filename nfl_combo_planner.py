@@ -25578,16 +25578,19 @@ def _sl_held(c, path, prog, drop, also=None, cf=None):
             yield ts, cur
 
 
-def _sl_replay(c, path, prog, drop, cf=None, hair=False):
+def _sl_replay(c, path, prog, drop, cf=None, hair=False, when=None):
     """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
     far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
     it would have sold, None when it would have held. hair: the sale price cut to KNOB_HAIRCUT['combo'] of the
-    estimate (#285: a step that has it sell more is judged on a pessimistic price)."""
+    estimate (#285: a step that has it sell more is judged on a pessimistic price). `when`, if a dict, gets "ts" = the
+    moment the guards held (#265: the loss-guard judge needs to know which of two drivers would have sold first)."""
     P, stake = c.get("pays") or 0, c["stake"]
     tks = [l["ticker"] for l in c["legs"]]
     if not P or len(path) < (cf or (SL_CHECKS,))[0]:
         return None
     for ts, cur in _sl_held(c, path, prog, drop, cf=cf):
+        if when is not None:
+            when["ts"] = ts
         est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P * (KNOB_HAIRCUT["combo"] if hair else 1.0)
         return round(est - stake, 2) if est < stake else None
     return None
@@ -25888,12 +25891,12 @@ KNOBS = (
      "what": "Selling at a loss waits until this share of the game is played.",
      "owner": "stop_loss_leg (via stoploss_params)", "src": "SL_DEFAULT.prog", "start": 0.5, "min": 0.35,
      "max": 0.9, "step": 0.05, "unit": "share", "stricter": "up", "borrow": "chain-stricter", "learned": "smart_tune",
-     "metric": "return on stake of combos, selling at a loss vs holding", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_drop", "group": "loss", "cls": "tunable", "label": "Fall from the pregame chance",
      "what": "Selling at a loss needs the pick this many points under its chance before the game.",
      "owner": "stop_loss_leg (via stoploss_params)", "src": "SL_DEFAULT.drop", "start": 0.2, "min": 0.1,
      "max": 0.45, "step": 0.05, "unit": "pts", "stricter": "up", "borrow": "chain-stricter", "learned": "smart_tune",
-     "metric": "return on stake of combos, selling at a loss vs holding", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_under", "group": "loss", "cls": "tunable", "label": "Pick must be under",
      "what": "Selling at a loss needs the pick under this chance right now.",
      "owner": "stop_loss_leg, _sl_held", "src": "SL_UNDER", "start": 0.5, "min": 0.3, "max": 0.55, "step": 0.05,
@@ -25903,17 +25906,17 @@ KNOBS = (
      "what": "A loss sale waits until its reason held on this many checks in a row (a hedge has its own count).",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_CHECKS", "start": 3, "min": 3, "max": 6, "step": 1,
      "unit": "count", "stricter": "up", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_span", "group": "loss", "cls": "tunable", "label": "Held for at least",
      "what": "...over at least this long.",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_SPAN", "start": 180, "min": 180, "max": 600, "step": 30,
      "unit": "secs", "stricter": "up", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_gap", "group": "loss", "cls": "tunable", "label": "Checks no further apart than",
      "what": "...with no two checks further apart than this (a longer gap starts the count again).",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
      "unit": "secs", "stricter": "down", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_auto", "group": "loss", "cls": "tunable", "label": "Sells at a loss by itself",
      "what": "With \"Selling at a loss\" on \"Let it tune itself\": off until this league's own record shows that selling "
              "a combo that turned against you late in a game (every guard holding) beats holding it.",
@@ -26939,7 +26942,7 @@ def _knob_replay_cfg():
     return tp, bool(CFG.get("lock_trail", True))
 
 
-def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp=0, ex=None, mk=None):
+def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp=0, ex=None, mk=None, when=None):
     """_replay against the bet's REAL market record, for self-tuning's judge (#228 PR4, #285). Same decision
     (exit_policy, the same inputs), but a sale is priced the way live smart sell really sells:
       - a combo: exit_policy sees the real Kalshi offer recorded within an offer's life before that moment (`real`, as
@@ -26949,7 +26952,8 @@ def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp
       - a single: valued and sold at its recorded bid on the pick's side (read within SINGLES_SELL_AGE), never into a
         gap wider than LIVE_SPREAD; with no recorded bid, at the chance after the fee less 1 cent, as _replay.
     mk = {"offers": [(ts, whole-combo offer)], "book": [(ts, bid, ask)], "hair": True for a loosening step}: with
-    `hair`, a price that is not a real recorded one is cut (KNOB_HAIRCUT). Returns (profit, why) or None (rides on)."""
+    `hair`, a price that is not a real recorded one is cut (KNOB_HAIRCUT). Returns (profit, why) or None (rides on).
+    `when`, if a dict, gets "ts" = the moment of the sale (#265: which of two loss drivers would have sold first)."""
     mk = mk or {}
     ex = ex or {}
     stake = c["stake"]
@@ -27009,17 +27013,21 @@ def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp
                 got = est * (KNOB_HAIRCUT["combo"] if hair else 1.0)
             if got < slip * thr - 1e-9 or (got < stake - 1e-9 and d["reason"] != "cut loss"):
                 continue                              # under the line, or under cost (live skips both)
+            if when is not None:
+                when["ts"] = ts
             return round(got - stake, 2), d["reason"]
         if wide or value < thr - 1e-9:
             continue
+        if when is not None:
+            when["ts"] = ts
         return round(value - stake, 2), d["reason"]
     return None
 
 
-def _knob_res_replay(c, path, slp, vals, cache, hair=False):
-    """One bet's result under the values `vals`: smart sell's replay against the bet's real market record
-    (_replay_real: real offers, recorded bids, the slip), with the loosening haircut when `hair`; riding to the end =
-    the bet's settled result (for a bet the app sold, what holding paid, from sale_outcomes)."""
+def _knob_replay_at(c, path, slp, vals, cache, hair=False):
+    """(result, moment of the sale or None) of one bet under the values `vals`: smart sell's replay against the bet's real
+    market record (_replay_real: real offers, recorded bids, the slip), with the loosening haircut when `hair`; riding to
+    the end = the bet's settled result (for a bet the app sold, what holding paid, from sale_outcomes)."""
     ex = {pk: vals[n] for n, pk in KNOB_EXIT_PRM.items() if n in vals and vals[n] is not None}
     if vals.get("auto_slip") is not None:
         ex["cash_slip"] = vals["auto_slip"]
@@ -27031,10 +27039,16 @@ def _knob_res_replay(c, path, slp, vals, cache, hair=False):
         loss = vals["smart_loss"]
         cut_at = _cut_guard_ts(c, slp, loss, vals["sl_prog"], vals["sl_drop"], cf) if loss else None
         mk = dict(c.get("_mk") or {}, hair=bool(hair))
+        w = {}
         r = _replay_real(c, path, vals["smart_floor"], vals["smart_lam"], loss, trail=trail, cut_at=cut_at, tp=tp,
-                         ex=ex, mk=mk)
-        cache[key] = r[0] if r else c["pl"]
+                         ex=ex, mk=mk, when=w)
+        cache[key] = (r[0], w.get("ts")) if r else (c["pl"], None)
     return cache[key]
+
+
+def _knob_res_replay(c, path, slp, vals, cache, hair=False):
+    """One bet's result under the values `vals` (see _knob_replay_at)."""
+    return _knob_replay_at(c, path, slp, vals, cache, hair)[0]
 
 
 def knob_loosens(name, frm, to):
@@ -27045,16 +27059,74 @@ def knob_loosens(name, frm, to):
     return knob_stricter_of(name, frm, to) == frm
 
 
-def _knob_res_sl(c, slp, vals, cache, hair=False):
-    """One combo's result under the loss guards' values: what the stop-loss would have got with them (as if it were
-    on; knob_judge holds a combo at its settled result for sl_auto off), with the haircut on a loosening step's sale
-    price (#285)."""
+def _knob_sl_at(c, slp, vals, cache, hair=False):
+    """(result, moment of the sale or None) of one combo under the loss guards' values: what the stop-loss would have
+    got with them (as if it were on; knob_judge holds a combo at its settled result for sl_auto off), with the haircut
+    on a loosening step's sale price (#285)."""
     cf = (vals.get("sl_checks", SL_CHECKS), vals.get("sl_span", SL_SPAN), vals.get("sl_gap", SL_GAP))
     key = (id(c), "sl", vals["sl_prog"], vals["sl_drop"], cf, bool(hair))
     if key not in cache:
-        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"], cf, hair)
-        cache[key] = r if r is not None else c["pl"]
+        w = {}
+        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"], cf, hair, when=w)
+        cache[key] = (r, w.get("ts")) if r is not None else (c["pl"], None)
     return cache[key]
+
+
+def _knob_res_sl(c, slp, vals, cache, hair=False):
+    """One combo's result under the loss guards' values (see _knob_sl_at)."""
+    return _knob_sl_at(c, slp, vals, cache, hair)[0]
+
+
+class KnobJudgeUnreadable(Exception):
+    """The evidence a judge needs for one bet could not be read: that step is not judged at all (fail closed, #265)."""
+
+
+KNOB_LOSS_GUARDS = ("sl_prog", "sl_drop", "sl_checks", "sl_span", "sl_gap")   # the guards BOTH loss decisions share
+
+
+def knob_loss_drivers(vals):
+    """(cut_on, stop_loss_on): which loss decisions really run for a group whose numbers are `vals` (#265). The learned
+    loss cut runs when smart sell is on and a cut-off is set (the cautious default included); the stop-loss switch runs
+    under Settings > Selling at a loss = Allow, or under Let it tune itself when this group's own `sl_auto` is on. A
+    guard step is judged on these, not on a feature that is off."""
+    cut_on = bool(CFG.get("smart_sell", True)) and bool(vals.get("smart_loss")) and \
+        "smart_floor" in vals and "smart_lam" in vals
+    sl_on = sl_mode() == "allow" or bool(vals.get("sl_auto"))
+    return cut_on, sl_on
+
+
+def _knob_res_loss(c, path, slp, vals, cache, hair=False):
+    """(#265) One combo's result under the loss guards' values `vals`, on the decisions that really run (see
+    knob_loss_drivers). Only the cut: the cut's replay (smart sell's whole decision against the bet's real market
+    record, the guards gating its loss cut). Only the stop-loss: the stop-loss's replay. Both: whichever would have sold
+    FIRST (on a tie, the lower result), because both would sell the same bet once. Neither: the bet's settled result
+    (the step changes nothing live). The replays are net dollars from the real or estimated sale price against what the
+    bet cost (fees are in the cost and in the offers; a single's bid is taken after its fee). Report/judge side only."""
+    cut_on, sl_on = knob_loss_drivers(vals)
+    if not (cut_on or sl_on):
+        return c["pl"]
+    try:
+        if cut_on and not path:
+            raise KnobJudgeUnreadable("no price record")
+        a = _knob_replay_at(c, path, slp, vals, cache, hair) if cut_on else None
+        b = _knob_sl_at(c, slp, vals, cache, hair) if sl_on else None
+    except KnobOutOfTime:
+        raise
+    except Exception as err:
+        raise KnobJudgeUnreadable(f"{type(err).__name__}: {err}") from err
+    if a is None:
+        return b[0]
+    if b is None:
+        return a[0]
+    if a[1] is None and b[1] is None:
+        return c["pl"]
+    if a[1] is None:
+        return b[0]
+    if b[1] is None:
+        return a[0]
+    if abs(a[1] - b[1]) <= 1e-9:
+        return min(a[0], b[0])
+    return a[0] if a[1] < b[1] else b[0]
 
 
 def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
@@ -27099,6 +27171,8 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
         if judge == "sl" and name == "sl_auto":      # the stop-loss's own switch: on = what it would have got, off = held
             d = (_knob_res_sl(c, slp, new, cache, hair) if new[name] else c["pl"]) - \
                 (_knob_res_sl(c, slp, cur, cache, hair) if cur[name] else c["pl"])
+        elif judge == "sl" and name in KNOB_LOSS_GUARDS:   # #265: on the decisions that really run, not the switch alone
+            d = _knob_res_loss(c, path, slp, new, cache, hair) - _knob_res_loss(c, path, slp, cur, cache, hair)
         elif judge == "sl":
             d = _knob_res_sl(c, slp, new, cache, hair) - _knob_res_sl(c, slp, cur, cache, hair)
         else:
@@ -27518,17 +27592,22 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     except KnobOutOfTime:
                         done = False
                         break
+                    except KnobJudgeUnreadable as err:    # #265: evidence it needs can't be read: no step for this knob
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "unread",
+                                     "say": f"{k['label']}: not judged, its record could not be read ({err})"})
+                        break
                     is_live = live and n_ in knob_live_names()
                     if is_live and g in ("all", "soccer") and (k.get("borrow") == "own" or knob_stricter(n_, to) != to):
                         is_live = False               # leagues borrow only stricter, never the loss cut: a step here
                     #                                   that no league would take stays a test
                     guard = n_ in GUARD_KNOBS and guards_on()
                     loose_ = knob_loosens(n_, cur[n_], to)
+                    boot_ = guard or n_ in KNOB_LOSS_GUARDS   # #265: a loosened loss guard needs the bootstrap range above 0 too
                     last_at_ = e.get("lstep_at") if is_live else e.get("step_at")
                     ev = knob_evidence(ds, staked, last_at_,
                                        KNOB_EVIDENCE_STRICT if n_ in KNOB_STRICT_BAR and to != k["start"] else
                                        (GUARD_TIGHT if guard and not loose_ else None))
-                    if guard and loose_:               # loosening a guard: the bootstrap range must be above 0 too
+                    if boot_ and loose_:               # loosening a guard: the bootstrap range must be above 0 too
                         lo_ = _guard_bootstrap(ds, last_at_, f"{n_}|{g}")
                         ev["checks"]["bootstrap"] = lo_ > 0
                         ev["boot"] = round(lo_, 4) if math.isfinite(lo_) else None
