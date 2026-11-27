@@ -12,6 +12,7 @@
 #   watcher.json               your ntfy topic and pairing secret (made by the installer)
 #   combo_settings.json        Kalshi Key ID and the settings the phone sends over
 #   kalshi_private_key.pem     this watcher's own Kalshi private key (readable only by this user)
+from contextlib import nullcontext
 import base64, hashlib, hmac, importlib.util, json, os, re, shutil, sys, threading, time, traceback
 
 import requests
@@ -21,10 +22,10 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.24.139"
+WATCHER_VERSION = "2026.11.26.144"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
-SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
+SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default", "learned_guards", "mkt_hold",
           "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
           "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min", "panel_live",
           "line_model", "panel_rank_dollars", "idea_bar_strict", "stop_loss_mode")
@@ -905,7 +906,7 @@ HUB_PATHS = re.compile(r"^/(portfolio|communications|markets|events|multivariate
 # Non-GET requests the phone may forward are only the ones the app itself sends (GitHub #102): order create/cancel,
 # quote requests (RFQs) and accepting a quote, and making a combo market. Anything else (batch or amend orders, other
 # writes under /portfolio) is refused with a logged reason. Money moves between pots stay on pot_move only.
-_ID = r"[A-Za-z0-9_.:-]{1,120}"
+_ID = r"(?!\.+(?:/|$))[A-Za-z0-9_.:-]{1,120}"   # never a bare "." or ".." as the id (#458)
 HUB_WRITES = {
     "POST": re.compile(r"/portfolio/orders|/portfolio/events/orders|/communications/rfqs|"
                        r"/multivariate_event_collections/" + _ID),
@@ -1258,17 +1259,26 @@ COMBO_TICKER = re.compile(r"^[A-Za-z0-9._-]{3,120}$")
 
 def combo_link(E, msg):
     """Where tapping an alert about one combo goes (#210): '/#c=<ticker>' when the text names exactly one of the
-    combos Live shows right now ("Combo 24", matched as a whole word so "Combo 2" isn't "Combo 24"), else None (the
-    tap opens Live as before). Labels are read from this refresh's own data, so they match the text just built."""
+    combos Live shows right now, else None (the tap opens Live as before). A combo is named by its picks ("Nuggets +
+    Chiefs", #520) or, for text that still says it, its old number ("Combo 24", whole word so "Combo 2" isn't "Combo
+    24"); a name that is part of a longer matching name doesn't count. Names are read from this refresh's own data, so
+    they match the text just built. Only the market ticker goes in the link (URL-safe characters only, COMBO_TICKER)."""
     try:
-        named = set(re.findall(r"\bCombo (\d+)\b", msg or ""))
-        if len(named) != 1:
-            return None
-        want = "Combo " + named.pop()
+        msg = msg or ""
         mine = dict(E.MINE.get("snap") or {})
         mine.update(E.MINE.get("hold") or {})
-        hits = {t for t, c in mine.items() if (c or {}).get("label") == want and COMBO_TICKER.match(t or "")}
-        return "/#c=" + hits.pop() if len(hits) == 1 else None     # URL-safe characters only (COMBO_TICKER)
+        spans = {}
+        for t, c in mine.items():
+            if not COMBO_TICKER.match(t or ""):
+                continue
+            for lab in {(c or {}).get("label") or "", (c or {}).get("num") or ""}:
+                if len(lab) >= 3:
+                    spans.setdefault(t, []).extend(m.span() for m in re.finditer(r"(?<!\w)" + re.escape(lab) + r"(?!\w)", msg))
+        # a match that sits wholly inside another combo's longer match is the same words, not a second combo
+        hits = [t for t, sp in spans.items() if sp and not all(
+            any(o[0] <= x[0] and x[1] <= o[1] and (o[1] - o[0]) > (x[1] - x[0]) for u, osp in spans.items() if u != t for o in osp)
+            for x in sp)]
+        return "/#c=" + hits[0] if len(hits) == 1 else None
     except Exception:
         return None
 
@@ -1773,6 +1783,8 @@ PUSH = Push(HOME)
 ICON_PNG = "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"
 
 SW_JS = """// Combo Hub service worker (v2: taps open '/', legacy '/app' targets are mapped): shows the Mac's notifications and opens the right screen when tapped.
+// It has no fetch handler and caches nothing, so it can never serve an old page (#150). The next line carries the app version, so every release changes this file's bytes and the browser installs the new worker.
+// app-version: @@VER@@
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', e => {
@@ -1852,6 +1864,10 @@ def panel_loop(odds, conf, every=60):
             with odds.lock:
                 H = odds.engine()
                 H.buy_asked()                             # this pass covers anything asked for so far
+                try:                                      # full auto (OFF unless Pete turned it on): approves/adds like his taps do
+                    H.full_auto_pass(paused=bool(conf.get("paused")), may_trade=H.can_trade(), log=log)
+                except Exception as err:                  # never lets it hold back bets he already approved
+                    log("full auto:", type(err).__name__, err)
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
                 if time.time() - settled >= 5 * 60:       # results, exits and game-time prices: every 5 minutes
                     settled = time.time()
@@ -1896,6 +1912,542 @@ def rebuild_loop(odds, notifier=None, every=2):
                     notifier.add(m, "idea")
         except Exception as err:
             log("panel rebuild skipped:", type(err).__name__, err)
+
+
+# ===== READY TO PROMOTE (report only): begin =====
+# Issue #541. A scoreboard for the paper tests: for each recorder that can be settled in dollars it says whether the
+# idea has earned a "go" yet. REPORT ONLY: nothing here turns anything on, and nothing in the engine or the buying and
+# selling code reads or imports it (tests/suite/t_promote.py checks that). It lives in this file, not in tools/ or the
+# engine, because this file is what the Air's updater ships. The judge is pure (it takes a `q(sql, args)` that returns
+# rows as dicts, a config dict and the time) so the tests run it on a throwaway sqlite file. Same method as
+# tools/exit_replay.py group_result (game-clustered range, 70/30 split), copied, not imported: that file is pinned.
+import math as _pmath, random as _prandom
+
+PROMOTE = {"report": None, "at": 0.0, "busy": False, "ttl": 900, "min_n": 20, "min_games": 40, "min_test_games": 15, "min_lag": 5,
+           "push_level": {1: 0.999, 2: 0.9995}, "judged": {},
+           "boot": 1000, "cap": 50000, "fit": 0.7, "stake": 10.0, "pushed": {}}
+PROMOTE_FILE = os.path.join(HOME, "promote_pushed.json")
+PROMOTE_STREAK_FILE = os.path.join(HOME, "promote_streak.json")
+PROMOTE_STREAK = 3          # successive batches of NEWLY settled games a signal must hold a stricter pass on before the one-time push
+# Why these numbers (zero-edge simulation in tests/suite/t_promote.py, same code): the judge re-checks all season and
+# the push fires once forever, so the risk that matters is "ever false-passes", not one check's. One check at 99% is
+# ~1% wrong, but the latest-30% slice is small early (2-3% at 20-25 games), and ~25 looks over an 80-game season
+# compound: 1-(1-p)^k is 7-24% for p ~ 0.3-1%. Three defences: (1) no test before 40 games / 15 in the latest slice;
+# (2) the judge is recomputed only when games settled, so a refresh cannot re-roll the same data; (3) the push needs
+# the stricter 99.9% band (99.95% when several settings were tried) and PROMOTE_STREAK=3 passes, each on new games.
+# Simulated ever-false-push over an 80-game zero-edge season: see t_promote.py (bound 3%).
+_PROMOTE_LOCK = threading.Lock()
+
+
+def _pquant(xs, p):
+    """Linear-interpolated quantile of an already sorted list."""
+    if not xs:
+        return None
+    k = (len(xs) - 1) * p
+    lo = int(_pmath.floor(k))
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (k - lo)
+
+
+def _pdollars(x):
+    return ("-$" if x < 0 else "$") + f"{abs(x):,.2f}"
+
+
+def _pcents(x):
+    """A price as dollars: the recorders store either 0.43 or 43."""
+    x = float(x)
+    return x / 100.0 if x > 1 else x
+
+
+def promote_game(ticker):
+    """The REAL game a single bet is on (bets on one game move together, so the range is built on games, not rows):
+    the ticker's second '-' part. A combo (KXMVE...) does not name its game; see promote_games()."""
+    t = str(ticker or "")
+    parts = t.split("-")
+    return t if t.startswith("KXMVE") or len(parts) < 3 else parts[1]
+
+
+def promote_games(ticker, legs=None):
+    """The real games a bet touches, as a sorted tuple. A single: its one game. A combo: the games of all its legs
+    (`legs` maps combo ticker -> list of leg tickers, from the bets table). A combo whose legs are unknown falls back
+    to its own ticker (nothing better is known)."""
+    t = str(ticker or "")
+    if t.startswith("KXMVE"):
+        ls = (legs or {}).get(t) or []
+        gs = {promote_game(x) for x in ls if x and not str(x).startswith("KXMVE")}
+        return tuple(sorted(gs)) or (t,)
+    return (promote_game(t),)
+
+
+def promote_unknown(ticker, legs=None):
+    """True for a combo whose games cannot be found (no entry in the bets table, or no usable leg tickers). Such a combo
+    would count as its own "game", which can make correlated bets look like new games, so the push refuses to fire
+    while any are in the evidence (fail closed)."""
+    t = str(ticker or "")
+    return t.startswith("KXMVE") and promote_games(t, legs) == (t,)
+
+
+def promote_legs(q):
+    """combo ticker -> its leg tickers, from the bets table the app fills (empty if it does not exist yet)."""
+    if not _phave(q, "bets"):
+        return {}
+    out = {}
+    for r in _prows(q, "select combo, legs from bets where legs is not null order by combo limit ?", (PROMOTE["cap"],)):
+        try:
+            ls = json.loads(r["legs"]) if isinstance(r["legs"], str) else r["legs"]
+            out[r["combo"]] = [x if isinstance(x, str) else (x or {}).get("ticker") for x in ls or []]
+        except Exception:
+            continue
+    return out
+
+
+def promote_cluster(obs):
+    """Put every decision in the cluster of REAL games it belongs to. A decision names one game (`game`) or several
+    (`games`, a combo's legs). Decisions that share any game are merged into one cluster (a combo and the singles or
+    other combos on the same game win and lose together), so correlated outcomes count once. The cluster is keyed by its
+    smallest game key; returns copies with `game` set to it."""
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    sets = []
+    for o in obs:
+        gs = [str(g) for g in (o.get("games") or (o.get("game"),))] or [str(o.get("game"))]
+        sets.append(gs)
+        for g in gs[1:]:
+            a, b = find(gs[0]), find(g)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    return [dict(o, game=find(gs[0])) for o, gs in zip(obs, sets)]
+
+
+def promote_first(obs):
+    """ONE decision per position and variant: the first time the rule would have fired. The recorders write a row
+    every one to five minutes while a rule keeps firing, so counting rows would make n look many times bigger."""
+    best = {}
+    for o in obs:
+        k = (o["var"], o["pos"])
+        if k not in best or o["ts"] < best[k]["ts"]:
+            best[k] = o
+    return promote_cluster(list(best.values()))
+
+
+def promote_ranges(game_nets, levels, rng, boot):
+    """Ranges for the total: resample whole games with replacement, add them up, take the middle `level` of the sums
+    (one list of (low, high) per level, all from the same resamples)."""
+    g = len(game_nets)
+    if not g:
+        return [(None, None) for _ in levels]
+    sums = sorted(sum(rng.choices(game_nets, k=g)) for _ in range(boot))
+    return [(_pquant(sums, (1 - lv) / 2), _pquant(sums, 1 - (1 - lv) / 2)) for lv in levels]
+
+
+def promote_range(game_nets, level, rng, boot):
+    return promote_ranges(game_nets, [level], rng, boot)[0]
+
+
+def promote_judge(obs, n_variants=None, label=None):
+    """Judge one signal. `obs` are dicts {var, pos, game, ts, v (dollars after fees and spread), lag (dollars if the
+    order lands 30-60 s late, or None)}. Returns the numbers and a status: 'wait' (not enough data), 'fail', 'pass',
+    each with a plain-English reason (the first check that failed). Pure; never raises on odd input."""
+    cfg = PROMOTE
+    obs = promote_first([o for o in (obs or []) if o.get("v") is not None])
+    variants = sorted({o["var"] for o in obs})
+    nv = max(int(n_variants or 0), len(variants))
+    level = 0.995 if nv > 1 else 0.99     # 99% even for one setting; a touch wider when several were tried (the best of them was picked)
+    out = {"n": 0, "games": 0, "net": 0.0, "low": None, "high": None, "level": level * 100 if level * 100 % 1 else int(level * 100), "variants": nv,
+           "variant": None, "push_ok": False, "missing": 0, "holdout_net": None, "holdout_games": 0, "half_a": None, "half_b": None,
+           "lag_net": None, "lag_n": 0, "state": "wait", "status": "Not enough data", "reason": "Nothing recorded yet."}
+    if not obs:
+        return out
+    missing = len({o["pos"] for o in obs if o.get("unk")})     # combos whose games are unknown: each counted as its own "game"
+    first_ts = {}
+    for o in obs:
+        first_ts[o["game"]] = min(first_ts.get(o["game"], o["ts"]), o["ts"])
+    games = sorted(first_ts, key=lambda g: (first_ts[g], g))
+    cut = max(1, int(len(games) * cfg["fit"])) if len(games) > 1 else len(games)
+    train = set(games[:cut])
+    test = set(games[cut:])
+
+    def tot(v, gs=None):
+        return sum(o["v"] for o in obs if o["var"] == v and (gs is None or o["game"] in gs))
+    trainable = [v for v in variants if any(o["var"] == v and o["game"] in train for o in obs)] or variants
+    best = max(trainable, key=lambda v: (tot(v, train), tot(v)))     # picked on the first 70% of games only
+    co = [o for o in obs if o["var"] == best]
+    cg = [g for g in games if any(o["game"] == g for o in co)]
+    net = sum(o["v"] for o in co)
+    by_game = {}
+    for o in co:
+        by_game[o["game"]] = by_game.get(o["game"], 0.0) + o["v"]
+    hold_games = [g for g in cg if g in test]
+    hold = sum(by_game[g] for g in hold_games)
+    mid = len(cg) // 2
+    ha = sum(by_game[g] for g in cg[:mid]) if mid else None
+    hb = sum(by_game[g] for g in cg[mid:]) if mid else None
+    lo = [o for o in co if o.get("lag") is not None]
+    lag = sum(o["lag"] for o in lo) if len(lo) >= cfg["min_lag"] else None
+    # the range is built on the latest 30% of games ONLY: the setting was picked on the first 70%, so those games
+    # cannot also be used to vouch for it
+    hold_nets = [by_game[g] for g in hold_games]
+    low = high = plow = None
+    if len(co) >= cfg["min_n"] and len(games) >= cfg["min_games"] and len(hold_games) >= cfg["min_test_games"]:   # no test below the minimum sample
+        (low, high), (plow, _) = promote_ranges(hold_nets, [level, cfg["push_level"][2 if nv > 1 else 1]], _prandom.Random(541), cfg["boot"])   # plow: the stricter band only the push uses
+    if low is None:
+        low = high = plow = 0.0
+    out.update(n=len(co), games=len(cg), all_games=len(games), push_ok=plow > 0 and not missing, missing=missing, net=round(net, 2), low=round(low, 2), high=round(high, 2),
+               variant=(label or {}).get(best, best), holdout_net=round(hold, 2) if hold_games else None,
+               holdout_games=len(hold_games), half_a=None if ha is None else round(ha, 2),
+               half_b=None if hb is None else round(hb, 2), lag_net=None if lag is None else round(lag, 2), lag_n=len(lo))
+
+    def end(state, status, why):
+        out.update(state=state, status=status, reason=why)
+        return out
+    if out["n"] < cfg["min_n"]:
+        return end("wait", "Not enough data", f"Only {out['n']} settled so far; it needs {cfg['min_n']} before it can be judged.")
+    if len(games) < cfg["min_games"]:
+        return end("wait", "Not enough data", f"Only {len(games)} games so far; it needs {cfg['min_games']} before it can be judged.")
+    if len(hold_games) < cfg["min_test_games"]:
+        return end("wait", "Not enough data", f"Only {len(hold_games)} games in the latest stretch to check it on; it needs {cfg['min_test_games']}.")
+    if net <= 0:
+        return end("fail", "Failing", f"Lost {_pdollars(-net)} after fees." if net < 0 else "Made nothing after fees.")
+    if hold <= 0:
+        return end("fail", "Failing", "Made money early on, but not in the latest 30% of games.")
+    if ha is None or ha <= 0 or hb <= 0:
+        return end("fail", "Failing", "Only paid in one half of the time, so it is not steady.")
+    if lag is not None and lag <= 0:
+        return end("fail", "Failing", "Stops paying if the order lands 30 to 60 seconds late.")
+    if low <= 0:
+        return end("wait", "Not enough data", f"Up {_pdollars(net)} so far, but the latest games are still too close to call: it could be luck.")
+    if lag is None:
+        return end("wait", "Not enough data", f"Looks good so far, but it cannot pass until it has been checked with the order landing "
+                                              f"30 to 60 seconds late (needs {cfg['min_lag']} late-order replays; it has {len(lo)}).")
+    return end("pass", "Passing", f"Made {_pdollars(net)} after fees over {out['n']} bets in {out['games']} games, and it "
+                                  f"held up in the latest games and in both halves, even 30 to 60 seconds late.")
+
+
+def promote_judge_cached(key, obs, nv=None, label=None):
+    """The judge, recomputed only when the settled count changed (decisions, games, settings tried), so refreshing
+    again on the same data cannot re-roll the range. Returns a copy."""
+    first = promote_first([o for o in (obs or []) if o.get("v") is not None])
+    sig = (len(first), len({o["game"] for o in first}), int(nv or 0), round(sum(o["v"] for o in first), 4), sum(1 for o in first if o.get("unk")))
+    have = PROMOTE["judged"].get(key)
+    if have and have[0] == sig:
+        return dict(have[1])
+    res = promote_judge(obs, nv, label)
+    PROMOTE["judged"][key] = (sig, res)
+    return dict(res)
+
+
+def _prows(q, sql, args=()):
+    try:
+        return list(q(sql, args) or [])
+    except Exception:
+        return []
+
+
+def _phave(q, *names):
+    """Whether every named table exists. The engine logs each failed query as a history error, so a recorder that has
+    never run (its table not made yet) is skipped quietly instead of being queried."""
+    got = _prows(q, "select name from sqlite_master where type='table' and name in (%s)" % ",".join("?" * len(names)), names)
+    return len(got) == len(names)
+
+
+def promote_results(q):
+    """ticker -> 1 (yes won) / 0 (no won). The close table first, else the broad recorder's settled result (its
+    implied labels, rs=9, are not real results and are left out)."""
+    res = {}
+    cap = PROMOTE["cap"]
+    if _phave(q, "bp_mkt"):
+        for r in _prows(q, "select ticker, result from bp_mkt where result is not null and coalesce(rs,0)!=9 limit ?", (cap,)):
+            res[r["ticker"]] = 1 if int(r["result"]) else 0
+    if _phave(q, "closes"):
+        for r in _prows(q, "select ticker, outcome from closes where outcome in ('yes','no') limit ?", (cap,)):
+            res[r["ticker"]] = 1 if r["outcome"] == "yes" else 0
+    return res
+
+
+def promote_obs_mom(q, **_):
+    """Momentum shadow: the first time 'protect' (or 'cut') would have sold, what selling then (after fees) made
+    against holding to the end. Bets really sold ('cashed') have no known hold result, so they are left out."""
+    if not _phave(q, "mom_shadow", "mom_after"):
+        return [], 2, {}, ""
+    legs = promote_legs(q)
+    rows = _prows(q, "select s.ts, s.ticker, s.cost, s.m_protect, s.m_cut, a.o_net0, a.o30, a.o60, a.outcome, a.payout "
+                     "from mom_shadow s join mom_after a on a.sid = s.sid where (s.m_protect=1 or s.m_cut=1) and "
+                     "a.outcome in ('won','lost','cashed') order by s.ts desc limit ?", (PROMOTE["cap"],))
+    obs, cashed = [], set()
+    for r in rows:
+        pos = f"{r['ticker']}|{r['cost']}"
+        for var, on in (("protect", r["m_protect"]), ("cut", r["m_cut"])):
+            if not on:
+                continue
+            if r["outcome"] == "cashed":
+                cashed.add((var, pos))
+                continue
+            if r["o_net0"] is None or r["payout"] is None:
+                continue
+            late = [x for x in (r["o30"], r["o60"]) if x is not None]
+            obs.append({"var": var, "pos": pos, "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "unk": promote_unknown(r["ticker"], legs), "ts": r["ts"],
+                        "v": float(r["o_net0"]) - float(r["payout"]),
+                        "lag": (min(late) - float(r["payout"])) if late else None})
+    note = f"{len(cashed)} bets that were really sold are left out, since what holding would have paid is unknown." if cashed else ""
+    return obs, 2, {"protect": "Protect a profit", "cut": "Cut a slide"}, note
+
+
+def promote_obs_sig(q, fee=None, **_):
+    """Signal shadow: buy a single before the game when the sharp books' fair price beats Kalshi's ask by at least X
+    after fees, once per market (the first time), with a paper $10. Settled by the close table or the broad recorder.
+    The lag replay buys at the ask 30-60 s after the first row instead."""
+    fee = fee or (lambda p: 0.07 * p * (1 - p))
+    if not _phave(q, "sig_sharp"):
+        return [], 3, {}, ""
+    res = promote_results(q)
+    rows = _prows(q, "select ts, ticker, fair_book, ask from sig_sharp where live=0 and fair_book is not null and "
+                     "ask is not null order by ts desc limit ?", (PROMOTE["cap"],))
+    by = {}
+    for r in rows:
+        if r["ticker"] in res:
+            by.setdefault(r["ticker"], []).append(r)
+    stake = PROMOTE["stake"]
+    obs = []
+    for t, rs in by.items():
+        rs.sort(key=lambda r: r["ts"])
+        win = res[t]
+        for x in (0.02, 0.04, 0.06):
+            for i, r in enumerate(rs):
+                ask, fair = _pcents(r["ask"]), _pcents(r["fair_book"])
+                if not 0.10 <= ask <= 0.90:
+                    continue
+                f = fee(ask)
+                if fair - ask - f < x:
+                    continue
+                n = _pmath.floor(stake / (ask + f))
+                if n < 1:
+                    continue
+                late = next((s for s in rs[i + 1:] if 30 <= s["ts"] - r["ts"] <= 60), None)
+                lag = None
+                if late is not None:
+                    a2 = _pcents(late["ask"])
+                    if 0 < a2 < 1:
+                        f2 = fee(a2)
+                        n2 = _pmath.floor(stake / (a2 + f2))
+                        lag = n2 * (win - a2 - f2) if n2 >= 1 else None
+                obs.append({"var": f"{int(round(x * 100))}c", "pos": t, "game": promote_game(t), "ts": r["ts"],
+                            "v": n * (win - ask - f), "lag": lag})
+                break
+    return obs, 3, {"2c": "Edge of 2c or more", "4c": "Edge of 4c or more", "6c": "Edge of 6c or more"}, ""
+
+
+def promote_obs_expo(q, **_):
+    """Exposure paper log: money a rule WOULD have saved by blocking a bet (minus what the bet made), counted once
+    per bet. Only bets that appeared one at a time (batch <= 1) and have settled."""
+    if not _phave(q, "expo_pos"):
+        return [], 5, {}, ""
+    rows = _prows(q, "select pos, ts, games, blocked, net from expo_pos where seed=0 and coalesce(batch,1)<=1 and "
+                     "blocked is not null and blocked!='' and net is not null and settled is not null "
+                     "order by ts desc limit ?", (PROMOTE["cap"],))
+    obs = []
+    for r in rows:
+        try:
+            g = json.loads(r["games"]) if isinstance(r["games"], str) else r["games"]
+            games = tuple(sorted(str(x) for x in g)) if g else (str(r["pos"]),)
+        except Exception:
+            games = (str(r["pos"]),)
+        game = games[0]
+        rules = [x.strip() for x in str(r["blocked"]).split(",") if x.strip()]
+        for var in rules + ["any"]:
+            obs.append({"var": var, "pos": r["pos"], "game": game, "games": games, "ts": r["ts"], "v": -float(r["net"]), "lag": None})
+    return obs, 5, {"both_sides": "No both sides of a game", "game_cap": "Limit on one game",
+                    "league_cap": "Limit on one league", "day_cap": "Limit on one day", "any": "Any of these rules"}, \
+        "It has no late-order replay yet, so it cannot pass."
+
+
+def promote_obs_cap(q, **_):
+    """Exit-cap shadow: the first time the capped sell line would have sold a favorite that today's rule held, what
+    selling then made against holding. Off by default: no rows until it is switched on, and this never switches it on."""
+    if not _phave(q, "exit_cap_shadow"):
+        return [], 1, {}, ""
+    legs = promote_legs(q)
+    res = promote_results(q)
+    rows = _prows(q, "select ts, ticker, side, n, net from exit_cap_shadow where live_decision='hold' and "
+                     "alt_decision is not null and alt_decision!='hold' and net is not null order by ts desc limit ?",
+                  (PROMOTE["cap"],))
+    obs = []
+    for r in rows:
+        if r["ticker"] not in res:
+            continue
+        won = (res[r["ticker"]] == 1) == (r["side"] == "yes")
+        obs.append({"var": "cap", "pos": f"{r['ticker']}|{r['side']}", "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "unk": promote_unknown(r["ticker"], legs), "ts": r["ts"],
+                    "v": float(r["net"]) - (float(r["n"] or 0) if won else 0.0), "lag": None})
+    return obs, 1, {"cap": "Capped sell line"}, "It has no late-order replay yet, so it cannot pass."
+
+
+# key, plain name, one line on what it tests, adapter
+PROMOTE_SIGNALS = (
+    ("mom", "Sell when a bet's price slips fast", "Sell a winning bet early when its chance drops quickly, instead of holding to the end.", promote_obs_mom),
+    ("sig", "Buy early when the sharp books disagree", "Buy a single before the game when the big sportsbooks price it clearly better than Kalshi does.", promote_obs_sig),
+    ("expo", "Skip bets that pile onto one game", "Skip a bet that would back both sides of a game, or put too much on one game, league or day.", promote_obs_expo),
+    ("cap", "Lower sell line on favorites", "Sell a favorite at a lower profit line it can really reach, instead of waiting for the top line.", promote_obs_cap),
+)
+PROMOTE_UNMEASURED = (
+    ("league", "Settings test by league", "It compares settings league by league, not bets, so there are no dollars to count."),
+    ("prop", "Player prop prices", "Prices are recorded but no fair price exists for them, so there is nothing to bet or settle."),
+    ("slate", "Spreading bets across the day", "It only records how bunched up the day's bets are. There is no rule to replay."),
+    ("news", "Reacting to news", "News moves are recorded but not turned into bets and settled yet."),
+)
+
+
+def promote_report(q, cfg=None, fee=None, now=None):
+    """The whole scoreboard: one row per signal, judged. `q(sql, args)` returns rows as dicts. Heavy (a few thousand
+    rows and a resampling each), so it is only ever run from the timer or a background thread, never in a request."""
+    cfg = cfg or {}
+    rows = []
+    told, streak = dict(PROMOTE["pushed"]), {}
+    for path, into in ((PROMOTE_FILE, told), (PROMOTE_STREAK_FILE, streak)):
+        try:
+            with open(path, encoding="utf-8") as f:
+                got = json.load(f)
+            into.update(got if isinstance(got, dict) else {})
+        except (OSError, ValueError):
+            pass
+    for key, name, what, fn in PROMOTE_SIGNALS:
+        row = {"key": key, "name": name, "what": what, "note": ""}
+        try:
+            obs, nv, label, note = fn(q, fee=fee)
+            row.update(promote_judge_cached(key, obs, nv, label))
+            row["note"] = note
+            if key == "cap" and not row["n"] and cfg.get("exit_cap_shadow") is not True:
+                row["reason"] = "This recorder is switched off, so nothing has been recorded."
+            if row.get("state") == "pass":
+                n_ = int((streak.get(key) or {}).get("n", 0)) if row.get("push_ok") else 0
+                row["streak"], row["streak_need"] = min(n_, PROMOTE_STREAK), PROMOTE_STREAK
+                if row.get("missing") and key not in told:     # some combos' games are unknown: fail closed, no push until the bets table has them
+                    row.update(ready=False, status="Looking good, not proven yet", streak=0,
+                               reason="Some combos are missing their games; waiting")
+                elif key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
+                    row.update(ready=True, status="Ready to turn on",
+                               reason=f"It passed {PROMOTE_STREAK} checks in a row, each on games it had not seen before. To turn it on, tell Claude \"go\". Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
+                else:
+                    row.update(ready=False, status="Looking good, not proven yet",
+                               reason=f"Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games, and it holds up so far. "
+                                      f"It has passed {row['streak']} of {PROMOTE_STREAK} checks on new games so far. It needs to keep passing before it is ready to turn on.")
+        except Exception as err:
+            log("promote:", key, type(err).__name__, err)
+            row.update(state="wait", status="Not enough data", reason="Could not be read just now.", n=0)
+        rows.append(row)
+    for key, name, why in PROMOTE_UNMEASURED:
+        rows.append({"key": key, "name": name, "what": "", "state": "na", "status": "Cannot be measured in dollars yet",
+                     "reason": why, "note": "", "n": 0})
+    return {"at": int(now or time.time()), "signals": rows,
+            "bar": "A signal passes after at least 20 settled bets that made money after fees, held up in the latest "
+                   "games and in both halves of the time, and stay ahead even when the order lands 30 to 60 seconds late (a signal that cannot be checked that way cannot pass). "
+                   "It needs at least 40 games (15 in the latest stretch). You are told only after it passes a stricter check on three batches of newly settled games in a row. Nothing here turns anything on by itself; to switch one on, tell Claude \"go\"."}
+
+
+def promote_refresh(q, cfg=None, fee=None):
+    """Compute and cache the report (the loop and the background thread both come through here)."""
+    PROMOTE["at"] = time.time()
+    rep = promote_report(q, cfg, fee)
+    with _PROMOTE_LOCK:
+        PROMOTE["report"] = rep
+    return rep
+
+
+def promote_report_cached(q, cfg=None, fee=None):
+    """What a request gets: the cached report at once. When it is older than 15 minutes a background thread rebuilds
+    it; the very first call returns a 'computing' stub (the card asks again a few seconds later)."""
+    with _PROMOTE_LOCK:
+        have = PROMOTE["report"]
+        if (have is not None and time.time() - PROMOTE["at"] < PROMOTE["ttl"]) or PROMOTE["busy"]:
+            return have or {"computing": True, "signals": []}
+        PROMOTE["busy"] = True
+
+    def run():
+        try:
+            promote_refresh(q, cfg, fee)
+        except Exception as err:
+            log("promote report:", type(err).__name__, err)
+        finally:
+            PROMOTE["busy"] = False
+    threading.Thread(target=run, daemon=True, name="promote-report").start()
+    return have or {"computing": True, "signals": []}
+
+
+def promote_streak_step(old, s):
+    """One look at a signal's judged row -> its saved streak {"n": successive passes, "g": games seen at the last look}.
+    A pass counts only when the games settled have grown since the last look (a refresh on unchanged data adds nothing)
+    and it clears the stricter push band; anything else resets n to 0."""
+    old = old if isinstance(old, dict) else {"n": 0, "g": 0}
+    g = int(s.get("all_games", 0) or 0)
+    if s.get("state") == "pass" and s.get("push_ok"):
+        return {"n": int(old.get("n", 0)) + (1 if g > int(old.get("g", 0)) else 0), "g": max(g, int(old.get("g", 0)))}
+    return {"n": 0, "g": g}
+
+
+def promote_push_check(report, conf, notify, now=None):
+    """One push per signal, once it has been Passing on PROMOTE_STREAK refreshes in a row (the streak is saved, so a restart
+    keeps it; any refresh that is not Passing resets it): "<name> passed its paper test ... Tell Claude go to turn it on". Goes through the notifier
+    as a normal (non-urgent) update, so quiet hours and the digest apply. The 'already told' list is saved after the
+    message is queued, so a restart does not repeat it. Never turns anything on. Returns the messages queued."""
+    if not (conf or {}).get("promote_push", True) or not report:
+        return []
+    sent = []
+    with _PROMOTE_LOCK:
+        try:
+            with open(PROMOTE_FILE, encoding="utf-8") as f:
+                told = json.load(f)
+        except (OSError, ValueError):
+            told = {}
+        told = told if isinstance(told, dict) else {}
+        told.update(PROMOTE["pushed"])
+        try:
+            with open(PROMOTE_STREAK_FILE, encoding="utf-8") as f:
+                streak = json.load(f)
+        except (OSError, ValueError):
+            streak = {}
+        streak = streak if isinstance(streak, dict) else {}
+        for s in report.get("signals", []):
+            streak[s["key"]] = promote_streak_step(streak.get(s["key"]), s)
+        try:
+            with open(PROMOTE_STREAK_FILE + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(streak, f)
+            os.replace(PROMOTE_STREAK_FILE + ".tmp", PROMOTE_STREAK_FILE)
+        except OSError as err:
+            log("promote streak not saved:", err)
+        for s in report.get("signals", []):
+            if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or s.get("missing") or streak[s["key"]]["n"] < PROMOTE_STREAK:
+                continue
+            msg = f"{s['name']} passed its paper test {PROMOTE_STREAK} times in a row. Tell Claude \"go\" to turn it on."
+            notify(msg, kind="promote")
+            told[s["key"]] = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
+            PROMOTE["pushed"][s["key"]] = told[s["key"]]
+            sent.append(msg)
+        if sent:
+            try:
+                with open(PROMOTE_FILE + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(told, f)
+                os.replace(PROMOTE_FILE + ".tmp", PROMOTE_FILE)
+            except OSError as err:
+                log("promote note not saved:", err)
+    return sent
+
+
+def promote_loop(E, conf, notifier, every=900):
+    """Every 15 minutes: refresh the report and send the one-time push for anything newly Passing. Main process only."""
+    time.sleep(120)
+    while True:
+        try:
+            if conf.get("promote_report", True) and E.STORE.get("db"):
+                rep = promote_refresh(E.store_rows, E.CFG, E.single_fee)
+                promote_push_check(rep, conf, notifier.add)
+        except Exception as err:
+            log("promote loop:", type(err).__name__, err)
+        time.sleep(every)
+# ===== READY TO PROMOTE (report only): end =====
 
 
 def history_loop(E, every=900):
@@ -2414,11 +2966,16 @@ class WebBuild:
         verdict = "" if r.get("ok") else f" That's under your {r.get('bar') or b['cut']}% cut-off."
         return f"Kalshi offers {H.money(r['pays'])} for {H.money(r['stake'])}{pct}.{verdict} Buy within 20 seconds."
 
-    def buy(self, i):
+    def buy(self, i, legs=None):
+        """legs (#498, rule 7): the tickers of the card the form was drawn for. The Buy goes out only if they are exactly the
+        legs the stored offer was priced for and the combo now on that card (accept_offer re-checks both). None or empty
+        (an old page, a hand-made post) is refused: nothing is bought."""
         b = self.cur
         off = (b or {}).get("offers", {}).get(i)
         if not off or time.time() - off["got"] > 20:
             return "That price expired. Tap Get price again."
+        if not legs:
+            return "That page is out of date. Reload it, get a fresh price, then buy. Nothing was bought."
         o = self.odds
         with o.lock:
             H = o.engine()
@@ -2427,7 +2984,7 @@ class WebBuild:
             H.CTX.update(combos=b["combos"], stake=b["stake"], offers={i: off}, build_id=None)
             log("web buy:", b["lg"], "combo", i, f"${off['stake']}")
             with H.manual_tap():
-                r = H.accept_offer(i)
+                r = H.accept_offer(i, expect_legs=list(legs))
         b["offers"].pop(i, None)
         if r.get("error"):
             return r["error"]
@@ -2460,6 +3017,7 @@ class WebBuild:
                          f"{H.money(c['fair'])} for {H.money(b['stake'])}</div><div style='margin:6px 0'>{picks}</div>"
                          f"<div class='mute'>{est}</div>{thin}<form method='post' action='/act' style='margin-top:8px'>"
                          f"<input type='hidden' name='tok' value='{e(tok)}'><input type='hidden' name='i' value='{i}'>"
+                         f"<input type='hidden' name='legs' value='{e(','.join(str(l.get('ticker')) for l in c['legs']))}'>"
                          f"{btn}</form></div>")
         return (f"<div class='tabs'>{tabs}</div><div class='mute'>{e(b['name'])} suggestions · built "
                 f"{time.strftime('%-I:%M %p', time.localtime(b['at']))} · your weekly cap still applies</div>"
@@ -2756,7 +3314,8 @@ def webapp_main():
         scores = max(on) if on else (min(ages) if ages else None)
         # "live" is the real signal that a game is under way; "scores" alone is just the newest cache age when nothing is on
         return {"now": now, "built": LIVE.get("built") or LIVE["at"] or None, "scores": scores,
-                "live": bool(on), "fast": bool(LIVE.get("fast"))}
+                "live": bool(on), "fast": bool(LIVE.get("fast")),
+                "ver": str(getattr(A, "VERSION", "") or "")}       # the running version: the page compares it to the one it loaded with (#150)
 
     def live_extras(out):
         try:
@@ -3106,7 +3665,8 @@ def webapp_main():
                     [x for x in lines_now if x.get("ticker") not in held
                      and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
-                     for v, c in pairs if not v.get("bought") and not v.get("over")])
+                     for v, c in pairs if not v.get("bought") and not v.get("over")],
+                    fair_at=BUILD.get("at"))
             except Exception as err:
                 print("best bets:", err, flush=True)
                 best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
@@ -3186,12 +3746,36 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
                              "mkt": paper_part("mkt_fair_summary"), "carry": paper_part("carry_summary"),
-                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board(),
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
 
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
 
+    CLOSED_CACHE = {}      # (#407) ticker -> (when, answer): one closed-bet page costs one account read and one log scan
+    CLOSED_TTL, CLOSED_TTL_MISS, CLOSED_CACHE_MAX = 20, 4, 64   # seconds kept (a miss only briefly: a bet just closed shows up soon)
+
     def api_closed(t):
+        """The closed-bet detail (api_closed_work), kept for CLOSED_TTL seconds per ticker so repeated requests (a page
+        refreshing, a scan of ids) don't each hold the account lock for an account read and rescan the whole sell log
+        (#407). A closed bet doesn't change, so the answer is the same; a bet that wasn't found is remembered for only a
+        few seconds. Anything that isn't a valid ticker is answered before the cache, as before."""
+        if not COMBO_TICKER.match(t or ""):
+            return {"found": False}
+        now = time.time()
+        hit = CLOSED_CACHE.get(t)
+        if hit and now - hit[0] < (CLOSED_TTL if hit[1].get("found") else CLOSED_TTL_MISS):
+            return hit[1]
+        out = api_closed_work(t)
+        if isinstance(out, dict):
+            for k in [k for k, v in CLOSED_CACHE.items() if now - v[0] > CLOSED_TTL]:
+                CLOSED_CACHE.pop(k, None)
+            while len(CLOSED_CACHE) >= CLOSED_CACHE_MAX:
+                CLOSED_CACHE.pop(next(iter(CLOSED_CACHE)), None)
+            CLOSED_CACHE[t] = (now, out)
+        return out
+
+    def api_closed_work(t):
         """Read-only detail of a bet that has already closed (sold, settled or expired), from what the app already stores:
         the account's bets, the history file, the automatic cash-out log. Only this bet's own ticker is looked up; nothing
         about the account itself goes out. found:False when it is nowhere (the page then says so)."""
@@ -3401,6 +3985,13 @@ def webapp_main():
                 A.klive_log_once("ideagame", t, err)
         leg = A.label_game_page(dict(leg)) if leg else leg    # display only: what the bet is, and which game
         story = A.game_story(t) if A.STORE.get("db") else {"ticks": [], "plays": []}
+        start = None                                        # kickoff / tip-off (epoch s): where the chance chart begins (display only)
+        try:
+            gs, gsrc = A.game_start(t.rsplit("-", 1)[0], t) if "-" in t else (None, None)
+            if gs and gsrc in ("book", "feed"):             # never the settle-time estimate: it can be hours off
+                start = gs.timestamp()
+        except Exception as err:
+            A.klive_log_once("gamestart", t, err)
         wi = None
         if leg and leg.get("state") == "live" and leg.get("kind") in (None, "win"):
             ch = leg.get("live") if leg.get("live") is not None else leg.get("chance")
@@ -3443,7 +4034,7 @@ def webapp_main():
         except Exception as err:                         # display only: no buttons, never a broken page
             A.klive_log_once("gamebuy", t, err)
             buy = []
-        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi,
+        return jsonable({"leg": leg, "combos": combos, "story": story, "whatif": wi, "start": start,
                          "detail": detail, "buy": buy, "fresh": freshness()})
 
     def api_game_warm(t):
@@ -3505,21 +4096,33 @@ def webapp_main():
                         "league": x.get("league")})
         for g in out:                                    # the chance line: what the Mac recorded for this pick lately
             tk = g.get("ticker")
+            g["start_ts"] = None                         # when the game starts (epoch seconds), for the display order only
+            try:
+                st = A.start_dt(A.game_event(str(tk or "").rsplit("-", 1)[0]), tk) if tk else None
+                g["start_ts"] = round(st.timestamp()) if st else None
+            except Exception:
+                pass
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
-        out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
+        def shown_order(g):                              # live first, upcoming soonest first (no start = last), finished newest first
+            ts = g.get("start_ts")
+            done = g.get("phase") == "over" or g.get("state") == "over" or g.get("phase") == "probably_over"
+            live = g.get("state") == "live" and not done and g.get("phase") != "waiting"
+            b = 0 if live else 2 if done else 1
+            return (b, ts is None, (-ts if b == 2 else ts) if ts is not None else 0, str(g.get("ticker") or g.get("name") or ""))
+        out.sort(key=shown_order)
         return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
                 "safer_count", "safer_min", "safer_max", "middle_count", "middle_min", "middle_max",
                 "moonshot_count", "moonshot_min", "moonshot_max", "thursday", "saturday", "monday", "next_day",
                 "mix_window", "max_share", "hedge_close", "include_live", "live_min", "dogs_late", "skip_news",
-                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "auto_hedge",
+                "bankroll", "auto_cash", "refresh_secs", "cash_every", "ride", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge",
                 "prefer_hedge", "hedge_cap", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode",
                 "maker_mode", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
-                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "stop_loss_mode",
-                "overlap_guard", "overlap_n", "overlap_pct")
+                "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode",
+                "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default")
 
     def send_synced():
         """Settings the Mac's watcher uses go to it signed, exactly like a save on the phone."""
@@ -3566,7 +4169,7 @@ def webapp_main():
                         if v in ("off", "watch", "on"):
                             A.CFG[k] = v
                         continue
-                    if k == "stop_loss_mode":           # #228 PR5: the 3-way choice; the old switch kept in step
+                    if k == "stop_loss_mode":           # #228 PR5: the 2-way choice (a saved 'never' becomes 'tune'); the old switch kept in step
                         A.sl_sync(A.CFG, {k: v})
                         continue
                     if k == "stop_loss":                # an older page's on/off may only make it stricter
@@ -3605,13 +4208,17 @@ def webapp_main():
             return jsonable({"ok": True, "lg": A.LEAGUE["code"], "name": A.LG()["name"], "mode": mode,
                              "full": bool(A.LG().get("full")), "synced": synced,
                              "values": {k: A.CFG.get(k) for k in SET_KEYS if k in A.CFG},
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade()),
                              "keys": {"kalshi": bool(A.CFG.get("kalshi_key_id")) or bool(A.hub_conf()),
                                       "odds": bool(A.CFG.get("odds_key"))},
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "maker": A.maker_summary() if A.STORE.get("db") else None,
-                             "blocks": A.order_blocks(),
+                             "blocks": A.order_blocks(), "flexfb": A.flex_fb_view(),
+                             "more": A.more_view(),
                              "pots": pots, "potnames": potnames, "potmoves": potmoves,
+                             "guards": A.guards_view(A.LEAGUE["code"]),
+                             "sl_auto": A.sl_auto_view(),
                              "leagues": [[k, v.get("short") or v.get("name") or k.upper(), v.get("icon", "")]
                                          for k, v in A.LEAGUES.items()]})
 
@@ -3627,7 +4234,8 @@ def webapp_main():
 
     def combo_ev_cal(c, r):
         """(#361) The quote's expected profit on the chance corrected by your own record (calib_fair, as notify_bar does),
-        for the sheet to show beside the books' one. Display only: nothing reads it to size or buy. A pick under way
+        for the sheet to show beside the books' one. The sheet decides its "recommended" tag from the profit it shows (this
+        one when there is one), but nothing here sizes or buys: size and `small` still come from `ev`. A pick under way
         (priced on its live chance) or a chance that can't be corrected: None. Never raises."""
         try:
             if r.get("live") or not r.get("pct") or not r.get("stake"):
@@ -3682,7 +4290,7 @@ def webapp_main():
         fair = r.get("fair", c.get("fair"))
         if fair:                                       # the books' chance of the combo (a pick under way: its live one)
             r["ev"] = round(r["pays"] * A.CTX.get("stake", A.CFG["stake"]) / fair - r["stake"], 2)
-            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) display only: `ev` above still drives rec / small
+            r["ev_cal"] = combo_ev_cal(c, r)           # (#361) the sheet's tag follows what it shows; `ev` above still drives rec / small
         if not r.get("ok") or r.get("ev") is None or r["ev"] <= 0:
             r["rec"], r["small"] = round(max(A.OWN_MIN, 2.0), 2), True   # (#358) no edge: never "recommended", the smallest bet
         try:
@@ -3742,7 +4350,7 @@ def webapp_main():
         try:
             if a == "idea_dismiss":
                 seen = d.get("seen") if isinstance(d.get("seen"), dict) else {}
-                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=d.get("why") == "bought",
+                r = A.idea_dismiss(ids, everything=d.get("all") is True, bought=("unsure" if d.get("why") == "unsure" else d.get("why") == "bought"),
                                    seen={k: v for k, v in list(seen.items())[:40] if k in ids})
                 return {"ok": True, "n": r["n"], "ids": r["ids"]}
             if a == "idea_undo":
@@ -3797,6 +4405,16 @@ def webapp_main():
                     "Smart sell is watching this one now."}
         if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
             return idea_act(a, d, t)
+        if a == "hedge_dismiss":                    # hide one hedge card for today (display only: no order, no lock, no Pause check)
+            if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                return {"ok": False, "msg": "That bet isn't recognized."}
+            try:
+                ok = A.hedge_dismiss(t)
+            except Exception as err:
+                log("hedge dismiss failed:", type(err).__name__, err)
+                ok = False
+            LIVE["at"] = 0
+            return {"ok": ok, "msg": "Hedge hidden. It comes back if the numbers change a lot, or tomorrow." if ok else "Couldn't hide that just now."}
         if a == "panel_whatif":                     # reads only, no app lock: the card's numbers at Pete's own amounts
             ids = d.get("ids")
             try:
@@ -3810,7 +4428,7 @@ def webapp_main():
             if a in ("ask", "askhalf", "go", "keep", "hedgego"):
                 if t not in (A.MINE.get("hold") or {}):
                     return {"ok": False, "msg": "That combo isn't live any more."}
-                with tap_mark(a in ("go", "hedgego")):
+                with tap_mark(a in ("go", "hedgego")), (A.manual_sell_mark(t) if a == "go" else nullcontext()):   # (#400) the auto seller skips it
                     A.cash_action("drop" if a == "keep" else a, t)
                 LIVE["at"] = 0
                 o = A.MINE["cash"].get(t) or {}
@@ -3888,6 +4506,9 @@ def webapp_main():
                     if BUILD.get("lg") != row["lg"]:
                         api_build(row["lg"], rebuild=True)
                     side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
+                    ps = single_side(tk, row["lg"])      # (#286) the same board side Buy straight prices from, with its age
+                    if ps.get("fair_at") is not None:
+                        side = ps
                     dpt = A.book_depth(tk, max_age=0)
                     if not dpt or dpt.get("ask") is None:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
@@ -3901,7 +4522,7 @@ def webapp_main():
                     if fair is None and fi["live"]:      # (#255) say why: this card shows Kalshi's price only, a manual tap
                         log(f"idea {str(d.get('id', ''))[:12]} {tk}: no live fair price ({fi['nofair'] or 'none'}); "
                             "card shows Kalshi's price only, no edge claimed")
-                    if fair is None and not fi["live"]:
+                    if fair is None and not fi["live"] and not fi["nofair"]:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
                     if bad:
@@ -3912,6 +4533,11 @@ def webapp_main():
                     pct = (fair / (ask + fee) if ask else 0) if fair is not None else None
                     rec = (A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair) if fair is not None else
                            max(A.OWN_MIN, 2.0))                # no fair price: Buy straight's smallest bet, no edge claimed
+                    if fair is not None and not fi["live"] and A.CFG.get("idea_pre_strict", True):
+                        sk = fi["how"] == "sportsbooks + your record"   # (#286) never above Buy straight's own sizing
+                        sf = fair if sk else ask + fee + (fair - ask - fee) * 0.7
+                        rec = min(rec, round(min(max(A._size({"kind": "single", "chance": sf, "price": ask},
+                                                              A._manual_base()), 1.0), A.SINGLE_MAX), 2))
                     stake = own if own is not None else rec
                     n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
                     note = None
@@ -3965,7 +4591,7 @@ def webapp_main():
                     return {"ok": False, "msg": str(err).replace(" Try Swap.", "")}
                 if r.get("error"):
                     return {"ok": False, "msg": r["error"]}
-                out = {"ok": True, "i": k, "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
+                out = {"ok": True, "i": k, "legs": [l["ticker"] for l in c.get("legs") or []], "pays": r["pays"], "stake": r["stake"], "pct": r.get("pct"),
                        "clears": r.get("ok"), **{x: r.get(x) for x in ("rec", "ev", "room", "max", "min", "own", "small", "overlap", "warn")}}
                 if gap:                                 # (#358) priced on the live chance when every live guard passes
                     out.update(live=True, fair_src="live" if r.get("fair") else "none",
@@ -4001,7 +4627,7 @@ def webapp_main():
                     return {"ok": False, "msg": "That price isn't recognized. Get a fresh one."}
                 if backup_now():                        # the Pi never trades; Pause doesn't block Pete's own sale (#245)
                     return {"ok": False, "msg": A.NO_SELL_MSG}
-                with tap_mark():                        # an update never restarts the web app mid-order
+                with tap_mark(), A.manual_sell_mark(t):   # an update never restarts the web app mid-order; auto sells skip it (#400)
                     r = A.single_sell(str(d["q"]), t, anyway=d.get("anyway") is True, paused=paused_now, log=log)
                 LIVE["at"] = 0
                 return jsonable(r)
@@ -4031,15 +4657,13 @@ def webapp_main():
                 return jsonable(r)
             if a == "buy":
                 i = int(d.get("i", 0))
-                shown = d.get("legs")                   # rule 7: the offer must be for the very picks on screen
-                if shown is not None:
-                    o = (A.CTX.get("offers") or {}).get(i) or {}
-                    if not isinstance(shown, list) or sorted(map(str, shown)) != sorted(o.get("legs") or []):
-                        return {"ok": False, "msg": "That price was for a different combo. Get a fresh price, then buy."}
+                shown = d.get("legs")                   # rule 7 (#203): the Mac re-checks them against the offer and the combo
+                sent_empty = isinstance(shown, list) and not shown   # #498: a list that was sent but is empty is refused (an older page or hand-made post may leave the key out)
+                shown = [str(x) for x in shown] if isinstance(shown, list) else []   # none sent = still checked offer vs card
                 print(f"buy combo {i}: accepting Kalshi's quote", flush=True)
                 try:
                     with tap_mark():
-                        r = A.accept_offer(i)
+                        r = A.accept_offer(i, expect_legs=shown, legs_sent_empty=sent_empty)
                 except Exception as err:
                     import traceback
                     traceback.print_exc()
@@ -4053,7 +4677,8 @@ def webapp_main():
                 if (not r.get("error") or r.get("check")) and 1 <= i <= len(A.CTX.get("combos") or []):
                     BUILD.setdefault("bought", set()).add(legset(A.CTX["combos"][i - 1]))   # never offered again here
                     try:                                # a Buy idea for these picks stays off the list too (#270)
-                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")])
+                        A.idea_mark_bought([l["ticker"] for l in A.CTX["combos"][i - 1].get("legs") or [] if l.get("ticker")],
+                                           unsure=bool(r.get("check")))
                     except Exception:
                         pass
                 return jsonable({"ok": not r.get("error"), "msg": r.get("error") or "Bought.", "pays": r.get("pays"),
@@ -4093,6 +4718,24 @@ def webapp_main():
                     return {"ok": False, "msg": "That move isn't open any more."}
                 log("pot move cleared from Settings")
                 return {"ok": True, "msg": "Cleared. Moves between pots can go again; the unclear one is never resent."}
+            if a == "full_auto_set":                # the real full-auto switch (own file; never a setting): on needs the paper gate or an explicit override
+                on = d.get("on") is True
+                ok, msg, extra = A.fa_set(on, override=d.get("override") is True, reset_brake=d.get("reset_brake") is True,
+                                          explicit_on=d.get("turn_on") is True,     # only the Turn on button; Save limits / Reset never switch it on
+                                          limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
+                log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
+                return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))
+            if a == "full_auto_lessons":            # (#144) the Lessons switch: its own tap, never through full_auto_set
+                ok, msg = A.fa_lessons_set(d.get("on") is True)
+                log("full auto lessons", "ON" if d.get("on") is True and ok else "OFF" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
+            if a in ("autopilot_undo", "autopilot_freeze"):   # (#144) Undo last change / freeze one setting: own taps, never through full_auto_set
+                if a == "autopilot_undo":
+                    ok, msg = A.ap_undo()
+                else:
+                    ok, msg = A.ap_freeze(str(d.get("key") or ""), d.get("on") is True)
+                log("full auto autopilot", a.split("_")[1], "ok" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
@@ -4195,7 +4838,9 @@ def webapp_main():
             path, _, query = self.path.partition("?")
             local = self.headers.get("X-CW-Local") == "1"
             if path in ("/app", "/app/"):
-                return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false"), "text/html; charset=utf-8")
+                return self._send(200, SPA.replace("__CWLOCAL__", "true" if local else "false")
+                                  .replace("__CWVER__", str(getattr(A, "VERSION", "") or "")), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy-Report-Only": CSP_REPORT_ONLY})
             if path.startswith("/app/api/"):
                 from urllib.parse import parse_qs
                 q = {k: v[0] for k, v in parse_qs(query).items()}
@@ -4208,6 +4853,9 @@ def webapp_main():
                                         allow=A.overlap_allow(q.get("allow")))
                     elif path == "/app/api/results":
                         out = api_results()
+                    elif path == "/app/api/promote":                     # report-only scoreboard (#541), cached, never computed here
+                        out = ({"off": True, "signals": []} if not load_conf().get("promote_report", True)
+                               else promote_report_cached(A.store_rows, A.CFG, A.single_fee) if A.STORE.get("db") else {"signals": []})
                     elif path == "/app/api/analytics":
                         out = jsonable(A.analytics()) if A.STORE.get("db") else {}
                         if isinstance(out, dict) and isinstance(out.get("smart_buy"), dict):
@@ -4235,6 +4883,8 @@ def webapp_main():
                         out = api_game_warm(q.get("t") or "")
                     elif path == "/app/api/games":
                         out = api_games()
+                    elif path == "/app/api/ver":            # read-only: the running version (a parked page checks it, #150)
+                        out = {"ok": True, "ver": str(getattr(A, "VERSION", "") or "")}
                     elif path == "/app/api/pulse":          # read-only: the hero chart's Week range (pulse keeps 30 days)
                         try:
                             h = max(1, min(720, int(q.get("h") or 16)))
@@ -4525,6 +5175,15 @@ def webapp_proxy(handler, tok, method, path, body=b""):
     _proxy_send(handler, code, ctype, data, where)
 
 
+# Content-Security-Policy-Report-Only (issue #517): the browser only LOGS what the policy would block, it blocks nothing,
+# so the page cannot break. It still allows inline script ('unsafe-inline') because the SPA has hundreds of inline
+# onclick handlers; the lines that do not depend on that (no plugins, no <base> tricks, forms only to us, never framed,
+# no outside connections) are the ones to watch in the console before any of them is enforced.
+CSP_REPORT_ONLY = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' "
+                   "https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; "
+                   "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+
+
 PROXY_ACT_TIMEOUT = 300       # a tap: 20 s for the lock, then a combo buy (40 s accept + 15 s confirm) or a cash-out
 #                               with up to 4 offers (each a quote, a 40 s accept and a 15 s confirm)
 ORDER_ACTS = ("buy", "go", "hedgego", "singlebuy", "singlesell", "pot_move")   # taps that can move money (the rest only read)
@@ -4535,6 +5194,8 @@ def _proxy_send(handler, code, ctype, data, where=""):
     handler.send_header("Content-Type", ctype)
     handler.send_header("Cache-Control", "no-store")
     handler.send_header("X-Frame-Options", "DENY")
+    if ctype.startswith("text/html"):
+        handler.send_header("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
     if where:
         handler.send_header("X-CW-Where", where)
     handler.send_header("Content-Length", str(len(data)))
@@ -4578,27 +5239,21 @@ def accuracy_loop(odds, every=300):
 # ---------------------------------------------------------------- dev Mac log reading (issue #377, docs/LOG_ACCESS.md)
 # A read-only, redacted tail of this Mac's logs for the dev Mac, over Tailscale only. Off until Pete turns on
 # Settings › This Mac › "Let the dev Mac read logs" on this Mac itself, which makes a read-only code (only its SHA-256
-# is kept, in watcher.json). It never takes a lock, never changes anything and never reads anything but the two files
-# below. Every answer is redacted here, before it leaves, and any error in that means nothing is sent (fail closed).
+# is kept, in watcher.json). It never changes anything and only reads the two log files below and (source=db) the
+# history database through its own mode=ro, SELECT-only connection. Credentials are scrubbed here, before anything
+# leaves; a credential that can't be scrubbed means nothing is sent (fail closed).
 LOG_PATH = "/api/logs"
 LOG_SOURCES = {"console": "watcher.log", "autosell": "combo_autosell_log.jsonl"}   # the only files it ever reads
 LOG_DEF_LINES, LOG_MAX_LINES, LOG_MAX_BYTES = 200, 500, 200_000                   # per answer, after redaction
 LOG_READ_BYTES = 1_500_000      # the most read from the end of a file per answer (never the whole file)
 LOG_LINE_MAX = 2000             # characters kept of one line
+LOG_LINE_HUGE = 20_000          # a line longer than this is replaced by LOG_LINE_LONG before any scrubbing (#380)
+LOG_LINE_LONG = "[line too long]"
 LOG_RATE = (30, 60)             # answers per client per minute
 LOG_BAD = (5, 600)              # wrong codes per client per 10 minutes before that client is turned away
 LOG_BAD_ALL = (30, 600)         # wrong codes from everyone per 10 minutes before everyone is turned away
 LOG_SECRET_MIN = 6              # live secret values this long or longer are masked wherever they appear
-LOG_FIELDS = frozenset((        # the auto cash-out log's fields that are sent (anything else is dropped)
-    "at", "when", "by", "ride", "result", "why", "note", "guard", "combo", "ticker", "kind", "side", "cost", "offer",
-    "pays", "chance", "p", "frac", "live", "ask", "bid", "cut_off", "contracts", "count", "sold", "price", "league",
-    "sport", "game", "score", "plan", "route", "ev", "hold", "expect", "err", "error", "msg", "reason", "legs", "leg",
-    "wait", "stage", "mode", "slip", "thr", "value", "profit", "pnl", "fee", "fees", "version", "n", "rfq", "mins",
-    "clock", "period", "lead", "need", "won", "left", "est", "disc", "learned", "knob", "band", "hedge", "stop_loss", "sl_mode"))
-LOG_PUBLIC_HOSTS = ("kalshi.com", "espn.com", "github.com", "githubusercontent.com", "the-odds-api.com",
-                    "polymarket.com", "hockeytech.com", "theahl.com")
 LOG_STATE = {"read": 0}         # when the dev Mac last read the logs (shown in Settings)
-_LOG_SALT = os.urandom(16)      # per process: an id is shown as a short tag, the same within one run
 
 
 def _log_finite(x):
@@ -4617,24 +5272,20 @@ _RX_HDR = re.compile(r"(?i)\b(proxy-authorization|authorization|x-cw|set-cookie|
 _RX_BEARER = re.compile(r"(?i)\b(bearer(?=\s+\S)|basic(?=\s+\S{6}))(\s+)[A-Za-z0-9._~+/=-]+")
 _RX_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{2,}")
 _RX_CWCOOKIE = re.compile(r"(?i)(?<![A-Za-z0-9_-])(cw)(\s*[:=]\s*)[^\s,;&\"']+")
+# Names that say "this value is a credential". Ordinary data (emails, ids, balances, hosts, team names) is NOT here.
 _RX_KV = re.compile(r"(?i)(\\?[\"']?)(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,40}?(?:secret|token|passw(?:or)?d|passcode|web_pass|api[ _-]?key|apikey|"
-                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session|cookie|topic|endpoint|p256dh|auth_?key|"
-                    r"member[ _-]?id|user[ _-]?id|account[ _-]?id|subaccount|e-?mail|watcher_code|pairing|passkey|credential)"
+                    r"key[ _-]?id|odds_key|private[ _-]?key|signature|session[ _-]?(?:id|key|token)|cookie|p256dh|auth_?key|"
+                    r"watcher_code|pairing|passkey|credential|topic|endpoint)"
                     r"[A-Za-z0-9_-]{0,40})\1(\s*[:=]\s*)(\\\"[^\"\\]*\\\"|\"(?:[^\"\\]|\\.)*\"|'[^']*'|\[[a-z: -]+\]|[^\s,;&}\])]+)")
-_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id|(?:user|member|account)[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_KVSP = re.compile(r"(?i)\b(api[ _-]?key|key[ _-]?id)(\s+)(?!\[)([A-Za-z0-9_-]{3,})")
+_RX_PUSHURL = re.compile(r"(?i)\bhttps?://(?:[a-z0-9-]+\.)*(?:push\.services\.mozilla\.com|fcm\.googleapis\.com|web\.push\.apple\.com|notify\.windows\.com)/[^\s\"'<>\\]*")
 _RX_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>\\]+")
-_RX_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}")
-_RX_TSNET = re.compile(r"(?i)(?<![a-z0-9.-])[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,6}\.(?:ts|tailscale)\.net\b")
-_RX_IP4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d)(?!\.\d)")
-_RX_IP6 = re.compile(r"(?i)(?<![0-9a-z:])(?:(?:[0-9a-f]{1,4}:){5,7}[0-9a-f]{1,4}|"
-                     r"(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![0-9a-z:])")
-_RX_UUID = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-_RX_HOMEDIR = re.compile(r"/(Users|home)/[^/\s\"':]+")
+_RX_USERINFO = re.compile(r"(?i)^((?:https?|wss?)://)[^/?#@\s]*@")
+_RX_QSECRET = re.compile(r"(?i)([?&;](?:[A-Za-z0-9_.-]*(?:key|token|secret|sig|auth|pass|session|cookie|credential)[A-Za-z0-9_.-]*)=)[^&#\s]*")
+_RX_UUIDSHAPE = re.compile(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RX_BLOB = re.compile(r"(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{32,}")
-_RX_MONEYLINE = re.compile(r"(?i)(?<!insufficient_)(?<!insufficient )balance|by pot|\bpots?\b|bankroll|portfolio_value")
-_RX_DOLLARS = re.compile(r"\$\s?-?[\d,]+(?:\.\d+)?")
-_RX_BALNUM = re.compile(r"(?i)(balance[a-z_]*[\"']?\s*[:=]\s*)-?[\d.,]+")
 _RX_CTRL = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2060\ufeff]")
+_RX_SECRETCOL = re.compile(r"(?i)secret|token|key_?id|passw|passcode|api_?key|odds_?key|private|signature|cookie|credential|pairing|passkey|p256dh|auth_?key|topic|endpoint")
 
 
 def log_enabled(conf):
@@ -4718,12 +5369,11 @@ LOG_GATE = LogGate()
 
 
 def log_secrets(conf, E=None):
-    """The live secret values on this Mac, to mask wherever they appear (raises if they can't be read)."""
-    from urllib.parse import quote, urlsplit
+    """The live credential values on this Mac, to mask wherever they appear (raises if they can't be read). The machine
+    and tailnet names are not credentials and are no longer included (they only caused false alarms)."""
+    from urllib.parse import quote
     vals = [conf.get(k) for k in ("topic", "secret", "web_pass", "passkey_user", "healthcheck_url")]
     vals += [p.get("id") for p in conf.get("passkeys") or [] if isinstance(p, dict)]
-    host = urlsplit(str((conf.get("https") or {}).get("url") or "")).hostname or ""
-    vals += [host] + host.split(".")[:2]                       # the machine and tailnet names on their own too
     cfg = getattr(E, "CFG", None) or {}
     vals += [cfg.get(k) for k in getattr(E, "KEY_FIELDS", ("kalshi_key_id", "odds_key", "watcher_code"))]
     out = set()
@@ -4735,16 +5385,10 @@ def log_secrets(conf, E=None):
 
 
 def _log_url(m):
-    from urllib.parse import urlsplit, parse_qsl, urlencode
-    u = urlsplit(m.group(0))
-    host = (u.hostname or "").lower()
-    if any(host == h or host.endswith("." + h) for h in LOG_PUBLIC_HOSTS):
-        q = [(k, "[redacted]" if re.search(r"(?i)key|token|secret|sig|auth|pass|session|topic|mail|user|member|account", k)
-              else v) for k, v in parse_qsl(u.query, keep_blank_values=True)]
-        return f"{u.scheme}://{host}{u.path}" + ("?" + urlencode(q, safe="[]") if q else "")
-    if host in ("127.0.0.1", "localhost"):
-        return f"{u.scheme}://{host}" + (f":{u.port}" if u.port else "") + u.path
-    return f"{u.scheme}://[host]"
+    """Keep the address (hosts and paths are ordinary); drop `user:pass@` and mask credential-looking query values.
+    Pure regex: no URL parser, so a malformed address (`https://x.com]`, `http://[::1`) can never raise (#log-access-wide)."""
+    u = _RX_USERINFO.sub(lambda k: k.group(1) + "[redacted]@", m.group(0))
+    return _RX_QSECRET.sub(lambda k: k.group(1) + "[redacted]", u)
 
 
 def _log_kv(m):
@@ -4752,17 +5396,10 @@ def _log_kv(m):
     return f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}" + ('"[redacted]"' if v.startswith('"') else "[redacted]")
 
 
-def _log_ip4(m):
-    o = [int(x) for x in m.groups()]
-    if max(o) > 255 or o[0] == 127 or o == [0, 0, 0, 0]:
-        return m.group(0)
-    return "[ip]"
-
-
 def _log_secretish(s):
-    """A run of characters that looks like a key or code rather than a word, ticker or path."""
-    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s):    # Kalshi tickers; plain words
-        return False
+    """A run of characters that looks like a key or code rather than a word, ticker, id or path."""
+    if re.fullmatch(r"[A-Z0-9_.-]+", s) or re.fullmatch(r"[A-Za-z_.-]+", s) or _RX_UUIDSHAPE.fullmatch(s):
+        return False                                             # Kalshi tickers; plain words; order ids (UUIDs)
     if len(s) >= 32:
         return True
     return len(s) >= 16 and bool(re.search(r"\d", s) and re.search(r"[a-z]", s) and re.search(r"[A-Z]", s))
@@ -4776,7 +5413,9 @@ def _log_blob(m):
 
 
 def log_redact(text, secrets_):
-    """Mask secrets in one piece of log text. Order matters: whole secrets first, then shapes."""
+    """Mask CREDENTIALS in one piece of log text (live secret values, key blocks, auth headers, tokens, passwords, key
+    ids). Ordinary content (teams, tickers, prices, outcomes, balances, hosts, ids) is kept. Order matters: whole
+    secrets first, then shapes. Safe to run twice (the second pass changes nothing)."""
     text = _RX_CTRL.sub("", text)                                # colour codes / zero-width marks can't split a secret
     if secrets_:
         text = re.sub("|".join(re.escape(s) for s in secrets_), "[secret]", text, flags=re.I)
@@ -4787,36 +5426,44 @@ def log_redact(text, secrets_):
     text = _RX_BEARER.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
     text = _RX_JWT.sub("[token]", text)
     text = _RX_CWCOOKIE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
+    text = _RX_PUSHURL.sub("[push endpoint]", text)            # a browser's web-push address is a credential
     text = _RX_URL.sub(_log_url, text)
     text = _RX_KV.sub(_log_kv, text)
     text = _RX_KVSP.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
-    if "@" in text:
-        text = _RX_EMAIL.sub("[email]", text)
-    if ".net" in text.lower():
-        text = _RX_TSNET.sub("[tailnet-host]", text)
-    text = _RX_IP4.sub(_log_ip4, text)
-    text = _RX_IP6.sub("[ip]", text)
-    text = _RX_UUID.sub(lambda m: "[id:" + hmac.new(_LOG_SALT, m.group(0).lower().encode(), "sha256").hexdigest()[:6] + "]",
-                        text)
-    text = _RX_HOMEDIR.sub(lambda m: f"/{m.group(1)}/[user]", text)
     text = _RX_BLOB.sub(_log_blob, text)
-    if _RX_MONEYLINE.search(text):                             # account-level money (balances, pots): masked
-        text = _RX_DOLLARS.sub("$[amount]", _RX_BALNUM.sub(lambda m: m.group(1) + "[amount]", text))
     return text
 
 
+LOG_WITHHELD = "[line withheld: could not be scrubbed safely]"
+
+
+def log_safe(text, secrets_):
+    """log_redact for one line or cell that can never take the whole answer down: if scrubbing raises, or a live secret is
+    still in the result, that one line is withheld (never sent raw) and the rest of the answer goes out."""
+    try:
+        out = log_redact(text, secrets_)[:LOG_LINE_MAX]
+        low = out.lower()
+        if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", out):
+            return LOG_WITHHELD
+        return out
+    except Exception:
+        return LOG_WITHHELD
+
+
 def log_fields(rec, secrets_):
-    """One auto cash-out record: allowlisted fields only (simple values, or short lists/maps of them), redacted."""
+    """One auto cash-out record: every field is kept (simple values, or short lists/maps of them) except credential-named
+    ones, and every string is scrubbed."""
     simple = (str, int, float, bool, type(None))
 
     def clean(v):
         if isinstance(v, float) and not _log_finite(v):
             return None                                          # not valid JSON
-        return log_redact(v, secrets_)[:LOG_LINE_MAX] if isinstance(v, str) else v
+        return log_safe(v, secrets_) if isinstance(v, str) else v
 
     out = {}
     for k, v in (rec.items() if isinstance(rec, dict) else ()):
-        if k not in LOG_FIELDS:
+        k = str(k)[:60]
+        if _RX_SECRETCOL.search(k):
             continue
         if isinstance(v, simple):
             out[k] = clean(v)
@@ -4825,7 +5472,7 @@ def log_fields(rec, secrets_):
         elif isinstance(v, list) and len(v) <= 50 and all(isinstance(x, list) and all(isinstance(y, simple) for y in x) for x in v):
             out[k] = [[clean(y) for y in x] for x in v]
         elif isinstance(v, dict) and len(v) <= 50 and all(isinstance(x, simple) for x in v.values()):
-            out[k] = {clean(str(a)): clean(x) for a, x in v.items() if str(a) in LOG_FIELDS}
+            out[k] = {log_safe(str(a), secrets_)[:60]: clean(x) for a, x in v.items() if not _RX_SECRETCOL.search(str(a))}
     return out
 
 
@@ -4871,6 +5518,8 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
     for line in text.splitlines():
         if not line.strip():
             continue
+        if len(line) > LOG_LINE_HUGE:
+            line = LOG_LINE_LONG                                # never run the scrubbers over a giant line
         if source == "autosell":
             try:
                 rec = json.loads(line)
@@ -4902,7 +5551,7 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
                 x = m.group(1) + json.dumps(log_fields(json.loads(m.group(2)), secrets_))
             except ValueError:
                 x = m.group(1) + "[record not shown]"
-        out.append({"t": t, "text": log_redact(x, secrets_)[:LOG_LINE_MAX]})
+        out.append({"t": t, "text": log_safe(x, secrets_)})     # one bad line is withheld; the rest still go out
     paused = conf.get("paused")
     status = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
               "paused": bool(paused), "paused_at": paused if isinstance(paused, (int, float)) and not isinstance(paused, bool) else None,
@@ -4915,9 +5564,211 @@ def log_answer(conf, E, source, since=None, limit=LOG_DEF_LINES, home=None):
         ans["lines"] = ans["lines"][drop:]
         ans["truncated"] = True
         body = json.dumps(ans)
+    log_tripwire(json.dumps(ans["lines"]), secrets_)
+    return body.encode()
+
+
+def log_tripwire(body, secrets_):
+    """Last line of defence on the data part of an answer: a live credential (or a key block) still in it means nothing is
+    sent (503). Only the data is checked, never the answer's own field names, so a short secret can't false-alarm on them."""
     low = body.lower()
     if any(s.lower() in low for s in secrets_) or re.search(r"(?i)begin[^\n]{0,20}private key", body):
         raise LogLeak("a secret survived redaction")
+
+
+# ---- the collected data (history database), read-only, same code and same gates as the logs ("source=db")
+LOG_DB_FILE = "combo_history.db"            # the only database it ever opens, from HOME, by this fixed name
+LOG_DB_DEF_ROWS, LOG_DB_MAX_ROWS = 200, 1000
+LOG_DB_MAX_BYTES = 1_500_000                # per answer, after scrubbing (the newest rows are kept)
+LOG_DB_SQL_MAX = 4000                       # characters of a --sql question
+LOG_DB_SECONDS = 5.0                        # a question that runs longer is stopped
+LOG_DB_VALUE_MAX = 65_536
+LOG_DB_COLUMNS_MAX = 100                    # columns in one answer row (#528): the budget is checked per row, so this bounds one row
+LOG_DB_CELL = 2000                          # characters kept of one value
+LOG_DB_FUNCS = frozenset((
+    "abs", "avg", "count", "sum", "total", "min", "max", "round", "length", "substr", "substring", "lower", "upper",
+    "coalesce", "ifnull", "nullif", "iif", "typeof", "trim", "ltrim", "rtrim", "instr", "like", "glob",
+    "strftime", "date", "time", "datetime", "julianday", "unixepoch", "group_concat", "json_extract",
+    "json_array_length", "json_valid", "json_type", "sign", "sqrt", "ln", "exp", "pow", "ceil", "floor", "log", "log10",
+    "mod", "unicode", "likely", "unlikely", "coalesce", "max", "min"))
+_LOG_DB_LOCK = threading.Lock()             # one question at a time: a second one is told to wait (429)
+_RX_DB_TABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_RX_DB_START = re.compile(r"(?is)^\s*(select|with)\b")
+
+
+class LogDbBad(Exception):
+    """A question the data endpoint refuses (400): the message is short, fixed wording, safe to send back."""
+
+
+def _log_db_auth(action, a1, a2, dbname, src):
+    """sqlite's own gate, on every statement it compiles: reading is allowed, everything else is not (so INSERT, UPDATE,
+    DELETE, DROP, CREATE, ATTACH, PRAGMA, transactions, extensions all fail even if a check above was fooled)."""
+    import sqlite3
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_READ:
+        t = str(a1 or "").lower()
+        if t.startswith("pragma_") or (t.startswith("sqlite_") and t not in ("sqlite_master", "sqlite_schema", "sqlite_temp_master")):
+            return sqlite3.SQLITE_DENY
+        if _RX_SECRETCOL.search(str(a2 or "")):
+            return sqlite3.SQLITE_IGNORE                       # a credential-named column reads as NULL, however it is selected
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_FUNCTION:
+        return sqlite3.SQLITE_OK if str(a2 or "").lower() in LOG_DB_FUNCS else sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_DENY
+
+
+def log_db_connect(path):
+    """A fresh read-only connection (never the engine's own, never its lock): file opened mode=ro, query_only on, the
+    authorizer installed last so nothing but SELECT can be compiled, a time limit and size limits."""
+    import sqlite3
+    from urllib.parse import quote
+    con = sqlite3.connect("file:" + quote(os.path.abspath(path)) + "?mode=ro", uri=True, timeout=2, isolation_level=None)
+    try:
+        con.execute("pragma query_only=ON")
+        con.execute("pragma busy_timeout=2000")
+        if hasattr(con, "setlimit"):                                       # Python 3.11+; sql= is refused without it
+            con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, LOG_DB_VALUE_MAX)    # no string or blob over 64 KB can be built
+            con.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, LOG_DB_SQL_MAX + 400)
+            con.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, LOG_DB_COLUMNS_MAX)  # #528: a row can't be repeated into hundreds of copies
+        con.enable_load_extension(False) if hasattr(con, "enable_load_extension") else None
+        con.set_authorizer(_log_db_auth)
+        dead = time.monotonic() + LOG_DB_SECONDS
+        con.set_progress_handler(lambda: 1 if time.monotonic() > dead else 0, 20000)
+        return con
+    except Exception:
+        con.close()
+        raise
+
+
+def log_db_check_sql(sql):
+    """One SELECT (or WITH ... SELECT), nothing else: no second statement, no comments, no semicolons inside."""
+    if not isinstance(sql, str) or not sql.strip():
+        raise LogDbBad("empty question")
+    if len(sql) > LOG_DB_SQL_MAX:
+        raise LogDbBad("question too long")
+    if any(ord(c) < 32 and c not in "\t\n\r" for c in sql) or "\x00" in sql:
+        raise LogDbBad("control characters")
+    q = sql.strip()
+    if q.endswith(";"):
+        q = q[:-1].rstrip()
+    if ";" in q:
+        raise LogDbBad("one statement only")
+    if "--" in q or "/*" in q:
+        raise LogDbBad("comments are not allowed")
+    if not _RX_DB_START.match(q):
+        raise LogDbBad("only SELECT")
+    return q
+
+
+def _log_db_cell(v, col, secrets_):
+    if v is None or isinstance(v, (int, bool)):
+        return v
+    if isinstance(v, float):
+        return v if _log_finite(v) else None
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return f"[blob {len(bytes(v))} bytes]"
+    if col and _RX_SECRETCOL.search(col):
+        return "[redacted]"
+    s = str(v)
+    cut = len(s) > LOG_DB_CELL
+    if "-----begin" in s.lower():
+        s = _RX_PEM.sub("[private key]", s)
+    out = log_safe(s[:LOG_DB_CELL + 200], secrets_)
+    if out == LOG_WITHHELD:
+        return out
+    return out[:LOG_DB_CELL] + ("..." if cut else "")
+
+
+def log_db_answer(conf, E, q, home=None):
+    """The collected data, read-only: `tables` (names and columns), `table` (+ optional `since`) or `sql` (one SELECT).
+    Returns JSON bytes. Raises LogDbBad (400: the dev Mac asked something not allowed) or anything else (503: nothing
+    sent). Each value is scrubbed like a log line; a column named like a credential is masked whole."""
+    import sqlite3
+    sql, table = q.get("sql"), q.get("table")
+    if sum(x is not None for x in (sql, table)) == 2 or (q.get("since") is not None and table is None):
+        raise LogDbBad("use table (with since) or sql, not both")
+    try:
+        cap = max(1, min(LOG_DB_MAX_ROWS, int(q.get("limit") or LOG_DB_DEF_ROWS)))
+    except (TypeError, ValueError):
+        raise LogDbBad("bad limit")
+    path = os.path.join(home or HOME, LOG_DB_FILE)
+    if not os.path.isfile(path):
+        raise LogDbBad("no history database on this Mac yet")
+    secrets_ = log_secrets(conf, E)
+    if not _LOG_DB_LOCK.acquire(blocking=False):
+        raise LogDbBusy()
+    try:
+        con = log_db_connect(path)
+        try:
+            args = ()
+            if sql is not None:
+                if not hasattr(con, "setlimit"):
+                    raise LogDbBad("free-form questions are not available on this Mac's Python; use table")
+                query = log_db_check_sql(sql)
+            elif table is not None:
+                if not _RX_DB_TABLE.fullmatch(table):
+                    raise LogDbBad("bad table name")
+                hit = con.execute("select name from sqlite_master where type in ('table','view') and name = ? "
+                                  "and name not like 'sqlite_%'", (table,)).fetchone()
+                if not hit:
+                    raise LogDbBad("no such table")
+                name = hit[0]
+                cols = [d[0] for d in con.execute(f'select * from "{name}" limit 0').description]
+                if q.get("since") is not None:
+                    if "ts" not in cols:
+                        raise LogDbBad("that table has no ts column")
+                    query = f'select * from "{name}" where ts >= ? order by ts desc'
+                    args = (float(q["since"]),)
+                else:
+                    query = f'select * from "{name}" order by rowid desc'
+            else:
+                rows = con.execute("select name from sqlite_master where type in ('table','view') "
+                                   "and name not like 'sqlite_%' order by name").fetchall()
+                tabs = [{"name": r[0], "columns": [d[0] for d in con.execute(f'select * from "{r[0]}" limit 0').description]}
+                        for r in rows]
+                return _log_db_body(conf, E, {"tables": tabs}, secrets_)
+            try:
+                cur = con.execute(query, args)
+                cols = [d[0] for d in (cur.description or ())]
+                got, used = [], 0
+                for r in cur:                                             # one row at a time, with a running size budget
+                    got.append(r)
+                    used += sum(len(v) if isinstance(v, (str, bytes, bytearray)) else 8 for v in r)
+                    if len(got) > cap or used > 2 * LOG_DB_MAX_BYTES:
+                        break
+            except sqlite3.Error as err:
+                msg = "stopped: took longer than %ds" % LOG_DB_SECONDS if "interrupt" in str(err).lower() \
+                    else "not allowed or not valid here" if "not authorized" in str(err).lower() else "sqlite: " + log_safe(str(err), secrets_)[:160]
+                raise LogDbBad(msg)
+            more = len(got) > cap or used > 2 * LOG_DB_MAX_BYTES
+            rows = [[_log_db_cell(v, c, secrets_) for v, c in zip(r, cols)] for r in got[:cap]]
+            if table is not None:
+                rows.reverse()                                            # the newest rows, shown oldest first
+        finally:
+            con.close()
+    finally:
+        _LOG_DB_LOCK.release()
+    return _log_db_body(conf, E, {"columns": cols, "rows": rows, "truncated": more, "table": table}, secrets_)
+
+
+class LogDbBusy(Exception):
+    """Another data question is running: 429."""
+
+
+def _log_db_body(conf, E, data, secrets_):
+    paused = conf.get("paused")
+    ans = dict({"ok": True, "source": "db"}, **data)
+    ans["status"] = {"watcher": WATCHER_VERSION, "engine": str(getattr(E, "VERSION", "") or ""), "up": int(time.time() - STARTED),
+                     "paused": bool(paused), "role": "backup" if is_backup(conf) else "main", "now": int(time.time())}
+    body = json.dumps(ans)
+    while len(body) > LOG_DB_MAX_BYTES and ans.get("rows"):
+        ans["rows"] = ans["rows"][len(ans["rows"]) // 10 + 1:]          # the oldest rows go first
+        ans["truncated"] = True
+        body = json.dumps(ans)
+    if len(body) > LOG_DB_MAX_BYTES:
+        raise LogLeak("answer too large")
+    log_tripwire(json.dumps([ans.get("rows"), ans.get("columns"), ans.get("tables")]), secrets_)
     return body.encode()
 
 
@@ -4983,9 +5834,32 @@ def log_route(handler, conf, E):
         LOG_GATE.wrong(ip)
         return send(401)
     q = parse_qs(urlparse(handler.path).query, keep_blank_values=True)
+    source = q.get("source", ["console"])[0]
+    if source == "db":                                          # the collected data: read-only, one SELECT at a time
+        if set(q) - {"source", "since", "limit", "table", "sql", "tables"} or any(len(v) != 1 for v in q.values()):
+            return send(400)
+        try:
+            dq = {k: q[k][0] for k in ("since", "limit", "table", "sql") if k in q}
+            if "since" in dq:
+                dq["since"] = float(dq["since"])
+                if not _log_finite(dq["since"]):
+                    return send(400)
+            if "limit" in dq:
+                dq["limit"] = int(dq["limit"])
+            body = log_db_answer(conf, E, dq)
+        except LogDbBad as err:
+            return send(400, json.dumps({"ok": False, "error": str(err)[:200]}).encode())
+        except LogDbBusy:
+            return send(429)
+        except (ValueError, OverflowError):
+            return send(400)
+        except Exception as err:                                 # fail closed: nothing of the data is sent
+            log("dev Mac data read: nothing sent,", type(err).__name__)
+            return send(503)
+        LOG_STATE["read"] = int(time.time())
+        return send(200, body)
     if set(q) - {"source", "since", "limit"} or any(len(v) != 1 for v in q.values()):
         return send(400)
-    source = q.get("source", ["console"])[0]
     try:
         since = float(q["since"][0]) if "since" in q else None
         limit = int(q.get("limit", [LOG_DEF_LINES])[0])
@@ -5022,9 +5896,10 @@ def start_hub(conf, E, odds=None):
             # Floor (#271): only when the cached copy is over HUB_FRESH_FLOOR seconds old, so a stamp that keeps changing
             # can't force a Kalshi read per request. A held-back copy is flagged: the app uses it but doesn't keep it.
             at = E.ACCT_CACHE.get("at") or 0
-            moved = getattr(E, "money_seen", float)() > at
+            fresh = bool(req.get("fresh"))               # (#450) a guard check (max_age=0) must see Kalshi now: no floor
+            moved = fresh or getattr(E, "money_seen", float)() > at
             floor = getattr(E, "HUB_FRESH_FLOOR", 3)
-            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor
+            held = moved and bool(E.ACCT_CACHE.get("value")) and time.time() - at < floor and not fresh
             if held:
                 print(f"hub account: fresh read held back ({time.time() - at:.1f}s-old copy, floor {floor}s)", flush=True)
             out = {"value": list(E.fetch_account(max_age=15 if held or not moved else 0, every_league=True))}
@@ -5089,6 +5964,7 @@ def start_hub(conf, E, odds=None):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
             self.send_header("Referrer-Policy", "no-referrer")
             if cookie:
                 self.send_header("Set-Cookie", f"cw={cookie}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
@@ -5222,7 +6098,8 @@ def start_hub(conf, E, odds=None):
                 if form.get("do") in ("bquote", "bbuy"):
                     try:
                         i = int(form.get("i", "0"))
-                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(i)
+                        msg = builder.quote(i) if form["do"] == "bquote" else builder.buy(
+                            i, [x for x in str(form.get("legs") or "").split(",") if x])
                     except Exception as err:
                         log("web build action failed:", type(err).__name__, err)
                         msg = f"That didn't work: {type(err).__name__}. Nothing was bought."
@@ -5256,7 +6133,7 @@ def start_hub(conf, E, odds=None):
                 return log_route(self, conf, E)
             if web and u.path in ("/sw.js", "/manifest.webmanifest", "/icon.png", "/apple-touch-icon.png"):
                 import base64
-                body, ctype = ((SW_JS.encode(), "text/javascript") if u.path == "/sw.js" else
+                body, ctype = ((SW_JS.replace("@@VER@@", WATCHER_VERSION).encode(), "text/javascript") if u.path == "/sw.js" else
                                (MANIFEST.encode(), "application/manifest+json") if u.path.endswith("webmanifest") else
                                (base64.b64decode(ICON_PNG), "image/png"))
                 self.send_response(200)
@@ -5432,6 +6309,8 @@ def main():
         threading.Thread(target=accuracy_loop, args=(odds,), daemon=True, name="accuracy").start()
         if conf.get("webapp", True):
             start_webapp()
+    if not backup:                                     # the Ready-to-promote scoreboard and its one-time push (#541)
+        threading.Thread(target=promote_loop, args=(E, conf, notifier), daemon=True, name="promote").start()
     threading.Thread(target=update_loop, args=(E, conf), daemon=True, name="updates").start()
     log("watcher", WATCHER_VERSION, "engine", E.VERSION, "started")
     push(conf, f"Watcher started (planner {E.VERSION}). It's keeping an eye on your combos.", priority="low", web=False)

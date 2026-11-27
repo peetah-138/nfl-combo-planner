@@ -24,3 +24,5 @@
 .pbk b span{display:inline;font-size:inherit;color:inherit;letter-spacing:normal}.pbk b span.m{color:var(--mute)}
 .pb .seg.pbt button{white-space:nowrap;flex:none}
 .pb .seg.pbt{-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
+.pbheld{margin:0 0 10px;font-size:13px;line-height:1.45;color:var(--ink)}
+.pbheld.pbhi{margin:10px 0 0;padding:10px 12px;border-radius:10px;background:var(--panel2)}

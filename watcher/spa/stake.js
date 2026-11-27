@@ -9,8 +9,9 @@ function stkMoney(v){return '$'+(+v).toFixed(2).replace(/\.00$/,'');}
 function stkLast(){try{const v=parseFloat(localStorage.getItem('cw_stk_last'));return isFinite(v)&&v>0?v:null;}catch(e){return null;}}
 function stkKeep(v){try{localStorage.setItem('cw_stk_last',String(v));}catch(e){}}
 function stkGet(key){const v=(S.stk||{})[key];return v>0?v:null;}
-/* o: {key, rec (recommended), cur (on screen now), min, max, ev (expected profit in $; it decides "recommended"), evShow (the profit to show instead, #361), room (left under the cap)} */
-function stakeCtl(o){const norec=!!o.small||(o.ev!=null&&o.ev<=0);   // (#358) never "recommended" without a positive expected profit
+/* o: {key, rec (recommended), cur (on screen now), min, max, ev (expected profit in $), evShow (the profit to show instead, #361), room (left under the cap). "Recommended" is decided from the profit SHOWN (evShow when there is one, else ev). */
+function stakeCtl(o){const shown=o.evShow!=null?o.evShow:o.ev;   // the profit on screen is the one that decides the tag (review of release 507: no green "recommended" beside a red loss)
+ const norec=!!o.small||(shown!=null&&shown<=0);   // (#358) never "recommended" without a positive expected profit
  const k=esc(o.key),rec=+o.rec||0,cur=+(o.cur!=null?o.cur:rec)||0,mn=+o.min||1,mx=Math.max(mn,+o.max||100);
  const own=stkGet(o.key)!=null&&Math.abs(cur-rec)>=.005,last=stkLast();
  const ps=STK_PRESETS.filter(v=>v>=mn&&v<=mx&&Math.abs(v-rec)>=.005);

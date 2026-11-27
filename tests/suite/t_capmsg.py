@@ -48,7 +48,7 @@ mm = E.manual_cap_msg("nfl", 49.0, 5.0, 50.0)
 ok("a manual buy's message (Buy straight, Live-idea singles) says the Weekly cap and the window too",
    "Weekly cap" in mm and "that week (Tue to Mon)" in mm and "weekend" not in mm.lower() and "$1 left" in mm)
 ok("room left is never negative", "$0 left" in E.cap_msg(60.0, 5.0))
-ok("message says how far to raise the cap", "raise it to at least $54" in m)
+ok("message says how far to raise the cap, in the slider's $10 steps (#112)", "raise it to at least $60" in m and "at least $54" not in m)
 E.set_league("nba"); E.CFG["budget"] = 50
 m = E.cap_msg(48.0, 7.29)
 ok("a daily league's message says today and the Daily cap",

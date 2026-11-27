@@ -10,25 +10,25 @@ function soldSheet(o){const back=+o.back||0,cost=+o.cost||0,pl=back-cost,up=pl>=
   <div class="plp">${pl>=0?'+':'−'}${money(Math.abs(pl))} ${pl>=0?'profit':'loss'}${cost?` · ${pl>=0?'+':'−'}${Math.abs(Math.round(pl/cost*100))}%`:''}</div>
   <div class="tkt"><div>You paid<b>${money(cost)}</b></div><div>Got back<b>${money(back)}</b></div></div>
   <p>${up?(o.auto?'Smart sell took the offer because it beat holding.':'Locked in. The money is back in your balance.'):(o.auto?'Smart sell cut this one before it slid further.':'Some of it came back. On to the next one.')}</p>
-  <div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
- rollNums($('#sheet'));clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard.sold'))closeModal();},7000);}
+  ${niceBtn(up?'Nice':'Done')}</div>`);
+ rollNums($('#sheet'));clearTimeout(S.okT);}   // #140: no auto-close, so a real tap on the big button lands the tick
 function bigWin(c){const pays=+c.pays||0,cost=+c.cost||0,reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  document.querySelectorAll('.bigwin').forEach(e=>e.remove());const box=document.createElement('div');box.className='bigwin';
- box.innerHTML=`<i class="ring2"></i><i class="ring2 b"></i><div class="bw"><div class="ey">Big hit</div><div class="amt">${money(reduce?pays:0)}</div><div class="lb">${esc(c.label||'')}</div>
-  <div class="mx">+${money(pays-cost)}${cost?` · ${(pays/cost).toFixed(1)}× your money`:''}</div><br><button class="btn acc">Nice</button></div>`;
- const close=()=>{box.classList.add('out');setTimeout(()=>box.remove(),380);};box.addEventListener('click',close);document.body.appendChild(box);
+ box.innerHTML=`<i class="ring2"></i><i class="ring2 b"></i><div class="bw"><div class="ey">Big hit</div><div class="amt">${money(reduce?pays:0)}</div><div class="lb">${esc(momName(c))}</div>
+  <div class="mx">+${money(pays-cost)}${cost?` · ${(pays/cost).toFixed(1)}× your money`:''}</div><br><button class="btn acc nice" type="button" aria-label="Nice, close">Nice</button></div>`;
+ const close=()=>{box.classList.add('out');setTimeout(()=>box.remove(),380);};box.addEventListener('click',e=>{if(e.target.closest&&e.target.closest('.nice'))hap('success');close();});document.body.appendChild(box);
  hap('success');setTimeout(()=>hap('success'),650);if(!reduce){celebrate();setTimeout(celebrate,700);
   const a=box.querySelector('.amt'),t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/1400),e=1-Math.pow(1-k,4);a.textContent=money(pays*e);if(k<1)requestAnimationFrame(step);};requestAnimationFrame(step);}
- setTimeout(()=>{if(box.isConnected)close();},9000);}
+ }   // #140: stays until tapped (it used to close itself after 9 s, so the tap tick never landed)
 function isBig(c){const p=(+c.pays||0)-(+c.cost||0);return p>=50||(p>=15&&c.cost>0&&c.pays/c.cost>=5);}
 function winMoment(c){S.momSeen=S.momSeen||{};if(S.momSeen['w:'+c.t])return;S.momSeen['w:'+c.t]=1;
- if(isBig(c))bigWin(c);else{celebrate();toast(`${c.label} won · +${money((c.pays||0)-(c.cost||0))}`,5000,'good');}}
+ if(isBig(c))bigWin(c);else{celebrate();toast(`${momName(c)} won · +${money((c.pays||0)-(c.cost||0))}`,5000,'good');}}
 /* What changed between two loads of Live while the page was open: a combo that won, one that was cashed out, and
    any sale smart sell made by itself (singles included, from its log). */
 function liveMoments(prev,d){if(!d||d.error)return;S.momSeen=S.momSeen||{};const was={};((prev&&prev.combos)||[]).forEach(c=>was[c.t]=c.group);
  if(prev&&!prev.error)(d.combos||[]).forEach(c=>{if(was[c.t]!=='pending')return;
   if(c.group==='won')winMoment(c);
-  else if(c.group==='cashed'&&!S.momSeen['s:'+c.t]){S.momSeen['s:'+c.t]=1;const auto=(d.sales||[]).some(x=>x.ticker===c.t);soldShow({label:c.label,back:c.back,cost:c.cost,auto});}});
+  else if(c.group==='cashed'&&!S.momSeen['s:'+c.t]){S.momSeen['s:'+c.t]=1;const auto=(d.sales||[]).some(x=>x.ticker===c.t);soldShow({label:momName(c),back:c.back,cost:c.cost,auto});}});
  (d.sales||[]).forEach(x=>{if((x.at||0)<S.t0||S.momSeen['s:'+x.ticker])return;S.momSeen['s:'+x.ticker]=1;soldShow({label:x.combo,back:x.offer,cost:x.cost,auto:true});soldReload();});}
 /* Issue #242: a sale the Mac made shows its Sold moment at once; the list behind it is read again a few seconds
    later (even under the Sold sheet), so the sold bet leaves Live without waiting for the next refresh. */
@@ -57,8 +57,11 @@ function streakNote(r){const s=+r.streak||0;if(s<1)return '';
  if(s===1)return `<div class="streak"><span class="fl">🔥</span><span><b>1 day up.</b> Another good day today starts a streak.</span></div>`;
  return `<div class="streak hot"><span class="fl">🔥</span><span><b>${s} days up</b> in a row${s>=7?'. A whole week.':s>=3?'. Keep it going.':''}</span><span class="dots">${Array.from({length:Math.min(s,7)},(_,i)=>`<i style="--i:${i}"></i>`).join('')}</span></div>`;}
 function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
- <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p><div class="row" style="justify-content:center"><button class="btn acc" onclick="closeModal()">Done</button></div></div>`);
- clearTimeout(S.okT);S.okT=setTimeout(()=>{if($('#sheet .okcard'))closeModal();},5200);}
+ <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p>${niceBtn(bad?'OK':'Nice')}</div>`);
+ clearTimeout(S.okT);}   // #140: no auto-close: a good result ends on a big Nice button, so a real tap lands the buzz
+/* #453: a buy whose reply was lost (or came back unclear) leaves a note that stays until tapped, not a 6 second toast.
+   Shown as a sheet when none is open, else as a long toast. Display only; it sends nothing. */
+function checkLive(msg,title){if(!$('#modal').classList.contains('on'))okSheet(title||'Check Live',null,msg,true);else{hap('error');toast((title||'Check Live')+': '+msg,9000,'bad');}}
 function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
  for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
  document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
@@ -66,7 +69,7 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
  es.onopen=()=>{S.live_ok=true;S.esEver=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
-  if(ev.kind==='tick'){moneyTick(ev.money);if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
+  if(ev.kind==='tick'){moneyTick(ev.money);if(typeof verPoll==='function')verPoll();if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
   if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
   if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:ev.kind==='advice'?7000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null,ev.kind==='advice'&&comboOk(ev.combo)?()=>openCombo(ev.combo):null);}}
@@ -74,3 +77,10 @@ function connect(){if(!window.EventSource)return;try{const es=new EventSource('/
   if(S.view==='live'||S.view==='games'){S.lastLoad=Date.now();load(S.view,ev.kind==='advice'||ev.kind==='settled'||ev.kind==='idea');}};
  }catch(x){}}
 function stat(){netBanner();const el=$('#st');if(!el)return;el.innerHTML=`<span class="dot ${S.live_ok===false?'off':''}"></span>${S.live_ok===false?'Reconnecting…':'Mac · live'}`;}
+
+/* #140: result moments end on a big button. Under 64px tall and a plain <button>, so the see-through switch (haptics.js,
+   hswBig) still covers it and your own finger lands on a real switch: the tick iOS 27 only gives for a real tap. */
+function niceBtn(label){return `<div class="row" style="justify-content:center"><button class="btn acc nice" type="button" onclick="niceTap()">${esc(label)}</button></div>`;}
+function niceTap(){hap('success');closeModal();}
+/* A bet's name for a moment: its legs, never "Combo 24" (the wording rule). */
+function momName(c){const l=String((c&&c.label)||'').trim();if(!/^combo\s*\d+$/i.test(l)||!c.legs||!c.legs.length)return l;return c.legs.map(betPlain).filter(Boolean).join(' + ')||l;}

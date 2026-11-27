@@ -83,7 +83,7 @@ with sync_playwright() as pw:
     hh = pg.locator(".an .hedge-held").inner_text()
     if "Auto-hedges the guards held back" not in hh or "3" not in hh or "2 score feed stale" not in hh or "fresh live score" not in hh: print("PROBLEMS: auto-hedges held back by the guards missing:", hh)
     sel = pg.locator(".an").inner_text()
-    if "late, confirmed" not in sel or "Selling at a loss (a learned cut" not in sel or "after 50% of the game" not in sel:
+    if "Cut losses" not in sel or "only happens late in the game" not in sel or "a 12.5% win chance or lower" not in sel or sel.count("a fresh score") != 1:
         print("PROBLEMS: the loss cut's guards aren't shown in Results > Selling")
     pg.locator(".ant button", has_text="Combo price levels").click(); time.sleep(.3)
     pg.locator(".an").scroll_into_view_if_needed(); pg.locator(".an").screenshot(path="an_phone.png")
@@ -156,7 +156,7 @@ with sync_playwright() as pw:
         hd.click(); wait(pg, "!!document.querySelector('.an .sbp .antbl')", 5)
         sb = pg.locator(".an .sbp").inner_text()
         if "Predicted vs what happened" not in sb or "52%" not in sb or "too few to trust" not in sb or "Learning (12 of 30)" not in sb \
-                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes, on paper: not yet · 34 of 50 settled · +$8.20" not in sb or "Bigger stakes: not yet · 12 of 50" not in sb \
+                or "Active · strictness 2 · skipped 7 · shadow saved $12.50" not in sb or "Bigger stakes, on paper: 34 of 50 settled · +$8.20 · 60% of days up" not in sb or "Bigger stakes: 12 of 50 settled · −$3.00 · 40% of days up" not in sb \
                 or "It only ever skips" not in sb or "preview" in sb.lower() \
                 or pg.locator(".an .sbp .sbh").get_attribute("aria-expanded") != "true":
             print("PROBLEMS: the opened Smart Buy preview doesn't show leagues, cash-out chance, sample sizes and predicted vs actual:", sb[:400])
@@ -170,6 +170,13 @@ with sync_playwright() as pw:
         h = pg.evaluate("()=>sbLine({name:'Premier League',state:'learning',own:3,need:30,level:1,early:true,key:'all',from:'Everything',optin:{}})")
         if "already a bit stricter, from all leagues' first results" not in h or "Everything" in h:
             print("PROBLEMS: an early level borrowed from everyone should read 'from all leagues' first results':", h[:300])
+        # #290: the CLV / skips-helping figures show only when they are what holds the league back; never "beats plain"
+        L = lambda o: pg.evaluate("o=>sbLine({name:'NBA',state:'active',level:1,skipped:2,saved:1,optin:o})", o)
+        base = {"n": 20, "n_need": 50, "ahead": 4.0, "days_up": 0.7, "days": 5, "clv": 0.01, "beats": True, "met": False, "paper": True}
+        if "Held back" in L(base) or "CLV" in L(base) or "beats plain" in L(base): print("PROBLEMS: nothing holds it back, so no held-back line, CLV or 'beats plain':", L(base)[-300:])
+        if "Held back: losing to the closing price" not in L(dict(base, clv=-0.02)): print("PROBLEMS: a negative CLV should say it is held back by the closing price")
+        if "Held back: its skips are not helping yet" not in L(dict(base, beats=False)): print("PROBLEMS: skips not helping should say so")
+        if "Held back" in L(dict(base, clv=-0.02, met=True)): print("PROBLEMS: a met bar has nothing held back")
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): print("PROBLEMS: the Smart Buy preview scrolls sideways on a phone")
     __import__("upwait").go_and_hold(pg, "live")   # waits for every load in flight, then holds still
     pg.evaluate("(s=>{S.live={at:Date.now()/1000,combos:[{t:'C',group:'pending',cost:3,pays:19,offer:2.94,offer_real:false,legs:[],sports:['tennis'],label:'Combo 3',p:.17,live:true,sort:0,verdict:'hold'}],riding:1,staked:3,chance_one:.17,best:19,cash_now:2.94,today:{},auto_sell:true,singles:s};renderLive()})("+json.dumps(SING)+")"); wait(pg, "(document.querySelector('.kpis')||{innerText:''}).innerText.includes('2 bets')", 5); time.sleep(.8)   # numbers roll ~0.65 s

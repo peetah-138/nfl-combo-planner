@@ -10,7 +10,7 @@ async function comboFromHash(open){if(!location.hash.startsWith('#c='))return;le
  if(!comboOk(t)){if(open)load('live',true);return;}
  if(open)await load('live',true);
  for(let i=0;i<40&&!(S.live&&S.liveNet);i++)await new Promise(r=>setTimeout(r,250));   // first start: wait for Live's own load
- if(S.view!=='live')return;if(((S.live&&S.live.combos)||[]).some(c=>c.t===t))openCombo(t);else openClosed(t);}   // not live: a sold or settled one has its own page, else 'we can't find that bet'
+ if(S.view!=='live')return;if(((S.live&&S.live.combos)||[]).some(c=>c.t===t))openCombo(t);else{if(await openClosed(t))toast('That bet is no longer live. Here is where it stands.',4200);}}   // not live: a sold or settled one has its own page, else 'we can't find that bet'
 /* A notification about one single bet, spread or total opens that bet (its game page, the same view as tapping its
    row): the link is '/#b=<ticker>'. Like #c=, it opens Live, waits for the data and opens the bet only when it is
    one of yours; a bet that sold, settled or never existed (or a malformed ticker) just leaves you on Live. */

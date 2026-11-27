@@ -1,8 +1,9 @@
 # Reading the production Mac's logs from the dev Mac (issue #377)
 
-The production Mac (the one that trades) can let the dev Mac read a **redacted, read-only** copy of its logs over
+The production Mac (the one that trades) can let the dev Mac read a **credential-scrubbed, read-only** view of its logs over
 Tailscale, so problems can be looked at without SSH and without the dev Mac ever holding the Kalshi key,
-`~/combowatch`, the history database or any `combo_*.json` (CLAUDE.md hard rule 9, Pete decision 2026-11-23).
+`~/combowatch`, a copy of the history database or any `combo_*.json` file (CLAUDE.md hard rule 9, Pete decision
+2026-11-23, widened by Pete's wide-access decision: query results over the endpoint, never the file).
 
 It is **off by default**. It can't buy, sell, pause, change settings or move money. Pause is unaffected and the Pi
 still never trades.
@@ -39,38 +40,48 @@ The code is 32 random bytes made on the production Mac when the switch is turned
 is stored (in `watcher.json`, which is never committed); the check is constant-time. Turning the switch off, or
 tapping "New code", stops the old code at once. The code is never logged and never in `/app/mac-info`.
 
+## The data window: `source=db`
+
+`GET /api/logs?source=db&tables=1`, `...&table=<name>[&since=<unix>][&limit=N]` or `...&sql=<one SELECT>`. Same token, same
+Tailscale-only reach, same on/off switch (off = nothing served, 404). It reads `combo_history.db` and nothing else; the
+file itself is never sent, only query results.
+
+- one fresh read-only connection (`mode=ro`, `query_only`), never the engine's own connection or lock
+- an SQLite authorizer allows only SELECT/READ (plus a short list of harmless functions); every write, ATTACH, PRAGMA,
+  `load_extension`, `pragma_*` table function and anything else is refused. One statement, no comments, at most 4000 characters
+- 5 second limit, 1000 rows (200 default), 1.5 MB, one question at a time (a second one gets 429)
+- cells are scrubbed like logs; a column named like a credential is masked whole; blobs are shown as `[blob N bytes]`
+- a bad question is a 400 with a short JSON reason (`{"ok":false,"error":...}`); other refusals keep an empty body
+- client: `tools/read_prod_logs.py --source db --tables | --table X --since ... | --sql "select ..."`
+
 ## Redaction (server-side, before anything is sent)
+
+Only **credentials** are scrubbed. Ordinary content (team names, tickers, prices, balances, order outcomes, emails, IPs,
+hostnames, paths) is kept so the logs are useful.
 
 Masked:
 
 - this Mac's live secret values wherever they appear (also URL-encoded or JSON-escaped): the ntfy topic, the pairing
-  secret, the Combo Hub passcode, passkey ids, the health-check URL, the https machine/tailnet name, and the Kalshi key
-  ID, odds key and watcher code
+  secret, the Combo Hub passcode, passkey ids, the health-check URL, and the Kalshi key ID, odds key and watcher code
 - private key blocks (`-----BEGIN ... PRIVATE KEY-----`, any case), `Authorization`/`Bearer`/`Basic`/`Cookie`/`X-CW`/
   `KALSHI-ACCESS-*`/API-key headers, JWTs, the Combo Hub `cw=` cookie
 - colour codes and invisible characters are stripped first, so they can't split a secret and slip it past the masks
-- any `name=value` or `"name": value` whose name says secret, token, password, passcode, key id, api key, signature,
-  session, cookie, topic, endpoint, member/user/account id, subaccount, email, watcher code, pairing, passkey (also
-  inside escaped JSON, `\"api_key\": \"...\"`), and `api key ...`, `key id ...`, `user id ...` written with a space
-- URLs: only Kalshi, ESPN, GitHub, Polymarket, The Odds API and the hockey feeds keep their host and path (with
-  sensitive query values masked); every other URL (ntfy, push services, `*.ts.net`) becomes `https://[host]`
-- emails, `*.ts.net` names, IP addresses (except 127.0.0.1), Tailscale IPv6, UUIDs (shown as a short tag that is the
-  same within one run), `/Users/<name>` paths, long random-looking strings
-- dollar amounts on lines about balances, pots or the bankroll (account-level money; Kalshi's
-  `insufficient_balance` refusals keep their order cost)
-- auto cash-out records: only the fields listed in `LOG_FIELDS` are sent; the console's copy of a record gets the
-  same treatment (unreadable = "[record not shown]")
+- any `name=value` or `"name": value` whose name says secret, token, password, passcode, key id, api key, odds key,
+  signature, session, cookie, watcher code, pairing, passkey, credential
+- `user:pass@` in URLs and secret query values; long random-looking strings
+- auto cash-out records keep every field except credential-named ones, and now carry `picks` (the legs, by name)
 
-Kept: tickers, per-trade dollar amounts, prices, chances, results and reasons, times, versions, tracebacks (after the
-same masking).
+**Why the old answer was 503:** redaction rebuilt every URL with a strict parser that raises on a malformed URL (a link
+followed by `]`, a bad port) and, on newer Pythons, on its own `https://[host]` placeholder when a console auto cash-out line was
+scrubbed a second time. One such line failed the whole answer. Now URL handling is regex-only and never raises, redaction is
+idempotent, and a line that still cannot be scrubbed is withheld on its own (`[line withheld: ...]`).
 
-**Fails closed:** any error while reading or redacting, or any live secret (or "PRIVATE KEY") still present in the
-final answer, means **nothing** is sent (503, empty body); only the error's type is logged. The masks are bounded so
-a huge hostile line can't stall the watcher (each line is cut to about 2,000 characters after the secret pass).
+**Fails closed on credentials:** a live secret (or "PRIVATE KEY") surviving in the final answer data means nothing is sent
+(503, empty body); only the error's type is logged. The masks are bounded so a huge hostile line can't stall the watcher.
 
-**Known limits** (accepted, low risk): a secret that was base64-encoded, or split across two log lines, isn't
-recognised; account money written without a `$` ("portfolio value 1234.56") isn't masked; anything a third-party
-library prints in a shape not listed above is only caught if it looks like a long random string.
+**Known limits:** a secret that was base64-encoded, or split across two lines or cells, isn't recognised; anything a
+third-party library prints in a shape not listed above is only caught if it looks like a long random string; a table may
+hold sensitive values under an innocent column name (scrubbing is by shape and name); error text in a 400 comes from SQLite.
 
 ## Setup (Pete)
 
@@ -89,6 +100,9 @@ On the **dev Mac**:
    it and press Return, and press Return again if it asks you to type it a second time. If macOS asks about the
    keychain, click Allow.
    `security add-generic-password -a "$USER" -s nfl-combo-logs-token -w`
+   **Faster (#379):** in the code sheet tap **Copy setup command**, then paste it once in Terminal on the dev Mac. It
+   stores the address and the code (steps 2 and 3) in one go. It goes only to the clipboard; don't paste it into chat.
+   Its leading space keeps it out of shell history where that is switched on.
 3. Store the address the same way:
    `security add-generic-password -a "$USER" -s nfl-combo-logs-url -w`
 4. Try it: run `cd ~/dev/nfl-combo-planner`, then `python3 tools/read_prod_logs.py --since 30m`. If log lines
@@ -105,8 +119,10 @@ production Mac.
 
 ```
 python3 tools/read_prod_logs.py [--source console|autosell|both] [--since 30m|2h|1d|<unix>|<ISO>]
-                                [--limit N] [--grep REGEX] [--follow] [--json]
+                                [--limit N] [--grep REGEX | --problems] [--follow] [--json]
 ```
+
+`--problems` is the grep `refused|check|failed|held|Traceback` (case-insensitive) in one word.
 
 It reads `CW_LOGS_URL` / `CW_LOGS_TOKEN` from the environment, else the keychain services above. It never prints the
 code. Errors say what to do (401: make a new code; 404: switch off, wrong address or Tailscale down; 429: wait;

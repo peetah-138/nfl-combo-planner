@@ -46,7 +46,12 @@ const HAPM=[   // [id, event, name, what it does]
  ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
 function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
 function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}hswSync();}
+/* #545: on iPhone an error buzz that comes after an await is outside the user's tap and is ignored. So hap('error') there
+   leaves a short-lived note (8 s); the user's next real tap plays it, right inside that tap (hapOwed, called by the global
+   tap listener). The new berr box and toast already show the reason; the note only makes the buzz arrive too. */
+function hapOwed(){const o=S.hapOwe;S.hapOwe=null;if(o&&Date.now()<o.until)hap(o.k);}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
+ if(k==='error'&&APPLE&&!S.inapp&&performance.now()-(S.tapAt||-1e9)>600)S.hapOwe={k,until:Date.now()+8000};   // outside a tap: iOS will ignore it, owe it to the next tap
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
  if(hapOff())return;
@@ -70,7 +75,7 @@ function hapCard(){const row=([id,ev,name,what])=>{const lab=`<span class="hxid"
   return `<div class="srow hxrow" data-m="${id}"><div class="l">${btn}<small>${esc(what)}</small></div><span class="hxs" aria-live="polite"></span></div>`;};
  return scard('haptics','📳','Test haptics','Tap each button. Tell Claude which one you feel.',
   `<label class="srow" data-hapt="1"><div class="l"><b>Haptics</b><small>Taps buzz on this phone. Turn off to keep it quiet. Saved on this phone only.</small></div><input type="checkbox" switch class="tg" id="hapon" ${hapOff()?'':'checked'} onchange="hapSet(this.checked)"></label>`
-  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Nothing here changes how the app buys or sells.</small></div></div>`);}
+  +HAPM.map(row).join('')+`<div class="srow"><div class="l"><b>Does it tick on every tap now? Tell Claude.</b><small>N is on for every button, tab, chip and row. Say which ones stay quiet. Known to stay quiet: Settings' folded section headers (they are left out so the page still scrolls smoothly on iOS), links, text fields and chart scrub areas. Nothing here changes how the app buys or sells.</small></div></div>`);}
 /* Method N, the default (#60): every tappable control gets a see-through <input type=checkbox switch> as its FIRST child,
    covering it (position:absolute, inset 0; the control becomes position:relative through a zero-specificity rule, so
    its own styles always win). The finger's tap lands on the switch: iOS flips it (the tick) and the same real click

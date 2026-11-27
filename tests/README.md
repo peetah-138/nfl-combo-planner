@@ -32,8 +32,8 @@ GitHub #68). Order of choice:
 1. `$CHECK_PYTHON`, if you set it (a name or path of an interpreter that has `requests pyflakes playwright`; it warns if it is older than 3.10).
 2. `~/combowatch/.venv/bin/python`, only if it is 3.10+ and already has all of those (nothing is ever installed there).
 3. `.venv-tests/` in the repo (git-ignored). **First run builds it by itself** from `python3.13/3.12/3.11/3.10` found on
-   PATH, Homebrew, pyenv or uv (`pip install requests cryptography pyflakes ruff playwright`, then
-   `playwright install chromium`). To do it by hand: `python3.12 -m venv .venv-tests && .venv-tests/bin/pip install requests cryptography pyflakes ruff playwright && .venv-tests/bin/python -m playwright install chromium`.
+   PATH, Homebrew, pyenv or uv (`pip install requests cryptography pyflakes ruff playwright numpy pandas`, then
+   `playwright install chromium`). To do it by hand: `python3.12 -m venv .venv-tests && .venv-tests/bin/pip install requests cryptography pyflakes ruff playwright numpy pandas && .venv-tests/bin/python -m playwright install chromium`.
    Set `CHECK_VENV_NO_CREATE=1` to stop it building, `CHECK_VENV=/some/path` to put it elsewhere (e.g. shared by worktrees).
 4. `python3` on PATH if it is already 3.10+ with those modules (that is how CI runs; tried before step 3 builds the venv), else plain `python3` with a printed warning (expect SQLite crash dialogs on macOS 26.4).
 
@@ -133,8 +133,7 @@ pattern in a local `.git/hooks/pre-commit`.
   sideways scrolling on a phone, and the behaviour each test names. `test_login_faceid` needs no web app: it renders the login page on a fake https address and checks the
   Face ID button works as the fallback when the automatic prompt is refused (iOS wants a tap). `test_haptics.py` covers Settings › Test haptics (each method runs inside its own tap, the iPhone switch is on screen, the on/off switch). `test_hsw.py` covers method N (#60), the see-through switch over every control on an iPhone: one per control, covering its box and under the finger on every tab and the game page, nothing moves, a tap reaches the handler once, links open once, disabled stays dead, a scroll clicks nothing, Haptics off and reduced motion remove them, and 600 new controls are wrapped quickly. It also runs a WebKit pass when Playwright's WebKit is installed (`python -m playwright install webkit`; CI installs it), and skips that pass otherwise. `test_motion.py` covers the makeover's motion
   layer: every visible clickable element on every screen has press feedback and a haptic, the haptic patterns are
-  distinct, the push transition (slide, dim, skeleton, Back, swipe back), the hero chart (Day/Week, scrub readout and
-  ticks) and rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
+  distinct, the push transition (slide, dim, skeleton, Back, swipe back), rolling numbers, plus a reduced-motion run. It seeds its own pulse history in the lane's throwaway database.
   `test_makeover2.py` covers phase 2: live Games cards with singles/spreads (API and page), the score pulse and its
   haptic, scrubbing the game chart, the Sold moment (tap, failed sale, smart sell's calm card from a fake sell log),
   small win vs big hit, Results profit bars (scrub ticks, tap for bets, Day/Week) and the loading skeletons.
@@ -149,7 +148,7 @@ pattern in a local `.git/hooks/pre-commit`.
   `test_loadwidth.py`: a frame-by-frame sampler on a phone for 2.4 s after every tab switch and a game page push (dark and light): no
   element past the screen's right edge, no line past its card, `<main>` keeps normal wrapping and text size (the `arrived` class on
   `<main>` once reused the name `fresh`, the "Updated Ns ago" stamp, and every new screen drew too wide for 1.6 s).
-  `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
+  `test_newversion.py` (and `t_newversion.py`) cover a newer Mac version reaching an open page (pill or quiet reload, never under a sheet or tap in flight, the Settings version row); `test_livefresh.py` covers the "Updated Ns ago" stamps and the self-redrawing game sheet (scripted game answers,
   ticking clock). `test_klive.py` runs the web app with Kalshi's live data faked from the fixtures: tennis sets/games,
   EuroLeague quarter and clock, a finished fight, a late match on Live, Games and the game sheet.
   `test_realdate.py` (issue #91): a combo cashed out early (game Sunday Nov 22, cashed Wed Nov 18) buckets by its

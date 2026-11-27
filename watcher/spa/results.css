@@ -14,3 +14,15 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 .card.err{border-color:color-mix(in srgb,var(--no) 35%,var(--line))}.card.err:before{background:linear-gradient(145deg,var(--nobg),transparent)}
 .setsk{display:grid;gap:14px}.setsk>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;display:grid;gap:12px}.setsk i{display:block;background:var(--panel2);border-radius:9px}
 @media (prefers-reduced-motion:reduce){.streak .fl,.netbar i{animation:none}#ptr{transition:none}}
+/* Smart Buy "Bigger stakes" line (#178): the short form on one line, the four figures behind a tap */
+.sbmore summary{cursor:pointer;list-style:none;min-height:44px;box-sizing:border-box;display:block;padding:12px 0}.sbmore summary::-webkit-details-marker{display:none}.sbmore summary::after{content:' ▾';opacity:.6}.sbmore[open] summary::after{content:' ▴'}
+.sbmore[open]{padding-bottom:2px}
+/* Ready to promote? (#541) */
+.promo .prsub{font-size:12.5px;padding:4px 0 8px}.prow{border-top:1px solid var(--line);padding:12px 0;display:grid;gap:4px}
+.prtop{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.prtop b{font-size:14.5px;min-width:0}   /* #573: the status chip always sits under its title, left-aligned, on every row (it used to jump below only when it was too wide) */
+.pchip{font-size:11.5px;font-weight:800;padding:4px 10px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap;border:1px solid var(--line)}
+.prow.ready .pchip{background:var(--yesbg);color:var(--yes);border-color:transparent}.prow.look .pchip{background:rgba(217,160,40,.16);color:#e0b04a;border-color:rgba(217,160,40,.45)}@media (prefers-color-scheme:light){.prow.look .pchip{color:#8a5d06}}.prow.fail .pchip{background:var(--nobg);color:var(--no);border-color:transparent}
+.prow.na .prtop b,.prow.na .prwhy{color:var(--sub)}.prwhat{font-size:12.5px}.prwhy{font-size:13.5px}.pnum{font-size:13.5px}.prange{font-size:12.5px}.prbar{font-size:12px;border-top:1px solid var(--line);padding-top:10px;margin-top:2px}
+
+/* #290: Smart Buy league lines: calmer second line, and more readable grey than the default muted text */
+.sbl .m,.sbl .sbbar{color:var(--sub)}.sbbar .sbheld{margin-top:2px}

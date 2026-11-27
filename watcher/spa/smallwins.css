@@ -23,4 +23,13 @@
 .ians.bad.shk{animation:ians .32s var(--spring,ease-out),prshake .34s .08s ease-in-out}
 /* (#406) "Add anyway" keeps its width while it says "Showing…" */
 .btn.ovadd{min-width:118px;justify-content:center}
-@media (prefers-reduced-motion:reduce){.cbh.cbjust .chev,.cbbody.cbin,.pitem .prq.pin,.pitem .prq.fail.pin,.lsfail.pin,.ians.bad.shk{animation:none!important}}
+/* (#261) One shared fold header for the registry cards and their groups: a real button with a visible focus ring
+   (the inline "all:unset" had stripped it), and the chevron turns when the fold is opened or shut. */
+.fh{appearance:none;-webkit-appearance:none;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;text-align:left;position:relative;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.fh:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
+.fh.fhjust .chev{animation:fhchev .28s var(--spring)}@keyframes fhchev{from{transform:rotate(-90deg)}}
+.fh[aria-expanded=true].fhjust .chev{animation-name:fhchev}.fh[aria-expanded=false].fhjust .chev{animation:fhchev2 .28s var(--spring)}@keyframes fhchev2{from{transform:rotate(0)}}
+.kgb{animation:cbin .26s var(--spring)}
+@media (prefers-reduced-motion:reduce){.fh.fhjust .chev,.kgb,.cbh.cbjust .chev,.cbbody.cbin,.pitem .prq.pin,.pitem .prq.fail.pin,.lsfail.pin,.ians.bad.shk{animation:none!important}}
+/* (#456) the idea Buy button keeps its width when "Buy · 12s" turns into "Buying…" (the countdown bar is drawn inside the button, so it takes no room) */
+.dbtns .btn.qb,.dbtns .btn[aria-busy=true]{min-width:8.5em;justify-content:center}

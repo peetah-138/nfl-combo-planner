@@ -16,6 +16,7 @@ E.ORDER_LEDGER = os.path.join(E.HERE, "orders.json")
 E.CFG["kalshi_key_id"] = "fake-key-id"
 E.hub_conf = lambda: None
 E.haptic = lambda *a: None
+E.opposite_side_refusal = lambda *a, **k: None   # the no-both-sides guard reads positions (fakenet has none); it has its own test, t_money_h
 import requests
 import fakenet
 fakenet.install(port=1)
@@ -317,7 +318,7 @@ ok("killer deal with an unknown outcome: 'check', Pete is told, and it counts to
 # ---- (5) the 6-cent gap rule for single sales (exactly 6c sells, 7c is too thin), resting sells read both ways
 E.hands_off = lambda t: False
 E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
-E.smart_params = lambda ts: {"loss": None}
+E.smart_params = lambda ts, **kw: {"loss": None}
 E.resting_single_sells = lambda: set()
 E.sold_today = lambda: 0
 E.log_decision = lambda rec: None

@@ -195,8 +195,21 @@ function ldHtml(r){const t=S.gameOpen,c=tcols(r);
   :`<div class="ldp ${s}"><b class="ldv">–</b><div class="m ldl">Not available</div></div>`;
  const rows=gd(r).leaders.map(x=>`<div class="ldr"><div class="ldc">${esc(x.l)}</div><div class="ldg">${side(x.away,'a',x.k)}${side(x.home,'h',x.k)}</div>${sbar('ld:'+t+':'+x.k,x.away?+x.away.v:null,x.home?+x.home.v:null,c)}</div>`).join('');
  return `<div class="gtabx">${tmHead(r)}${rows}<p class="pnote">Season totals from ESPN.</p></div>`;}
-function winChart(pts,plays){if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
- const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=pts[0][0],t1=pts[pts.length-1][0];
+/* The win-chance chart starts at kickoff (issue #486): the Mac records the price for hours before a game, and drawing that
+   flat stretch squeezed the real game into the last sliver. t0 = the game's start from the Mac (r.start: sportsbook or
+   score-feed time, never an estimate), else the first in-play sample, else the first score change. Samples before t0 (and
+   any still marked pre-game) are not drawn. A game that has not started (start in the future, or no start and no in-play
+   data) gets pre:true and a "kicks off at" note instead of a line. Looking back covers the played game only. */
+function winRange(r,st){const l=(r&&r.leg)||{},ticks=((st&&st.ticks)||[]).filter(x=>x.chance!=null),plays=(st&&st.plays)||[];
+ let t0=+(r&&r.start)>0?+r.start:null;
+ if(t0==null){const k=ticks.find(x=>x.state==='live');t0=k?k.ts:plays.length?plays[0].ts:null;}
+ const pre=t0!=null?Date.now()/1000<t0:l.state==='pre';
+ const pts=pre?[]:ticks.filter(x=>(t0==null||x.ts>=t0)&&x.state!=='pre').map(x=>[x.ts,x.chance]);   // nothing to anchor on: every in-game sample, as before
+ return {t0,pre,pts,starts:l.starts||''};}
+function winChart(pts,plays,o){o=o||{};const tl0=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+ if(o.pre)return `<div class="m" style="padding:18px 4px">The win-chance line fills in once play begins.</div>`;
+ if(!pts||pts.length<2)return '<div class="m" style="padding:18px 4px">The win-chance line fills in as the Mac watches this game.</div>';
+ const W=Math.round(Math.max(340,Math.min(820,window.innerWidth-70))),H=170,pl=36,iw=W-pl-8,ih=H-30;const t0=o.t0!=null?Math.min(o.t0,pts[0][0]):pts[0][0],t1=pts[pts.length-1][0];
  const X=t=>pl+(t-t0)/Math.max(1,t1-t0)*iw,Y=v=>8+ih-v*ih;const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');
  const last=pts[pts.length-1][1];const col=last>=.5?'var(--yes)':'var(--no)';const tl=t=>new Date(t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
  S.scr=S.scr||{};S.scr.win={n:pts.length,at:f=>{const t=t0+(f*W-pl)/iw*(t1-t0);let i=0,b=Infinity;pts.forEach((p,j)=>{const dd=Math.abs(p[0]-t);if(dd<b){b=dd;i=j;}});return i;},

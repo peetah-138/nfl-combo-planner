@@ -9,6 +9,7 @@
 import os, time, tempfile, importlib.util, json, fnmatch
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E._held_all = lambda: []                  # no singles held: the combo-vs-held-single guard reads the account (money-h)
 E.injury_note = lambda code, *teams, hours=48: ([], False)   # no injury news: never ESPN's real report (netguard)
 E.game_context = lambda code, *teams: []   # no back-to-back/weather notes from ESPN's real scoreboard (netguard)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()

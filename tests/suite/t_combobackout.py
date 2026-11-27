@@ -48,6 +48,7 @@ def fake_accept(o, t=None):
 
 
 E.accept_once = fake_accept
+E.combo_live_fair = lambda legs, now=None: (None, "no live chance in this test")   # Flexible sell price (default on) reads live chances: none here, so it fails closed to the old rule
 real_log = E.log_decision
 E.log_decision = lambda rec: (logs.append(rec), real_log(rec))
 plan = {"acts": {}}
@@ -57,7 +58,7 @@ def tick(dt_, script=(), cash=None, **hold):
     SCRIPT["s"] = list(script)
     E.time.time = lambda: now + dt_
     E.MINE["hold"] = {"C1": dict(h, **hold)}
-    E.MINE["tp_asked"] = {}; E.MINE["cash"] = {"C1": dict(cash, at=now + dt_)} if cash else {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
+    E.MINE["tp_asked"] = {}; E.MINE.pop("real_asks", None); E.MINE["cash"] = {"C1": dict(cash, at=now + dt_)} if cash else {}; E.MINE["busy"] = False; E.MINE.setdefault("selling", set())
     asks.clear(); accepts.clear(); logs.clear()
     try:
         return E.auto_sell_now(plan)
@@ -124,9 +125,9 @@ SC["sc"] = None
 out = tick(1870 + 3 * 3600 + 10, p=0.76)
 ok("a score that drops out of the feed is not a change (no retry on a flicker)", asks == [] and accepts == [])
 SC["sc"] = {"state": "post", "me": 24, "opp": 17, "brk": False}
-out = tick(1870 + 3 * 3600 + 20, p=0.76, cash={"offer": 13.1, "frac": 1.0, "rfq": "r"})
+out = tick(1870 + 3 * 3600 + 20, p=0.76, cash={"offer": 13.1, "frac": 1.0, "rfq": "r", "contracts": 20})
 ok("a newer real offer that barely moved (13.0 -> 13.1): still waiting", asks == [] and accepts == [])
-out = tick(1870 + 3 * 3600 + 30, p=0.76, cash={"offer": 14.0, "frac": 1.0, "rfq": "r"}, script=["cancelled"] * 10)
+out = tick(1870 + 3 * 3600 + 30, p=0.76, cash={"offer": 14.0, "frac": 1.0, "rfq": "r", "contracts": 20}, script=["cancelled"] * 10)
 ok("a newer real offer 5%+ away: tries again", len(accepts) == 10
    and [r["retry_on"] for r in logs if r.get("result") == "failed"] == ["the offer moved"], logs)
 out = tick(1870 + 3 * 3600 + 40, p=0.775)
