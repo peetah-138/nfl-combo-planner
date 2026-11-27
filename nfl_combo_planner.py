@@ -7996,6 +7996,7 @@ def live_view(mine, views, plan, chance_one, balance):
         try:
             hg = hedge_for(t)
             v["hedge"] = {k: hg.get(k) for k in ("name", "cost", "locked", "price", "done")} if hg else None
+            v["hedge_dismissed"] = bool(hg and hg.get("n") and hedge_dismissed(t, hg))   # display only: hides the Do-now card
         except Exception:
             v["hedge"] = None
     alive = [v for v in views if v["group"] in ("pending", "won")]
@@ -8272,6 +8273,50 @@ def hedge_for(ticker, price=None):
     cost = n * q + fee
     return {"ticker": buy["ticker"], "name": buy["pick"], "price": q, "n": n, "fee": fee,
             "cost": cost, "locked": n - cost, "done": done}
+
+
+HEDGE_DISMISS = os.path.join(HERE, "combo_hedge_dismiss.json")   # today's dismissed hedge suggestions (gitignored: combo_*.json)
+HEDGE_RE_MOVE = 0.20       # a dismissed hedge card comes back when what it locks in (or costs) moves by this share...
+HEDGE_RE_MIN = 0.50        # ...and by at least this many dollars (so a 2-cent wobble on a small hedge never counts)
+
+
+def _hedge_state(now=None):
+    """Today's dismissed hedge suggestions: {'day', 'items': {combo ticker: {'locked', 'cost'}}}. A new day starts over."""
+    st = load_json(HEDGE_DISMISS, {})
+    day = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
+    if not isinstance(st, dict) or st.get("day") != day or not isinstance(st.get("items"), dict):
+        st = {"day": day, "items": {}}
+    return st
+
+
+def hedge_dismiss(ticker, now=None):
+    """DISPLAY ONLY: hide this combo's hedge card for today (Pete tapped Dismiss). Remembers what the hedge would lock in and
+    cost right now; `hedge_dismissed` says when it has moved enough to show again. Places, cancels and blocks nothing:
+    the Hedge button, the combo's own hedge button and auto-hedge are untouched. Returns True when it was saved."""
+    hg = hedge_for(ticker)
+    if not hg or not hg.get("n"):
+        return False
+    with file_lock(HEDGE_DISMISS):
+        st = _hedge_state(now)
+        st["items"][ticker] = {"locked": round(hg["locked"], 2), "cost": round(hg["cost"], 2)}
+        save_json(HEDGE_DISMISS, st)
+    return True
+
+
+def hedge_dismissed(ticker, hg, now=None):
+    """True while this combo's hedge card should stay hidden: dismissed today and what the hedge locks in or costs hasn't
+    moved by HEDGE_RE_MOVE (20%) and HEDGE_RE_MIN ($0.50) since. Any doubt shows the card (the safe side)."""
+    try:
+        base = _hedge_state(now)["items"].get(ticker)
+        if not base or not hg:
+            return False
+        for k in ("locked", "cost"):
+            d = abs(float(hg[k]) - float(base[k]))
+            if d >= HEDGE_RE_MIN and d >= HEDGE_RE_MOVE * abs(float(base[k])):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def hedge_unknown(err):
