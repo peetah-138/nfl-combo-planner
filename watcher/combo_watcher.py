@@ -3665,7 +3665,8 @@ def webapp_main():
                     [x for x in lines_now if x.get("ticker") not in held
                      and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
-                     for v, c in pairs if not v.get("bought") and not v.get("over")])
+                     for v, c in pairs if not v.get("bought") and not v.get("over")],
+                    fair_at=BUILD.get("at"))
             except Exception as err:
                 print("best bets:", err, flush=True)
                 best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}
@@ -4724,6 +4725,10 @@ def webapp_main():
                                           limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
                 log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
                 return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))
+            if a == "full_auto_lessons":            # (#144) the Lessons switch: its own tap, never through full_auto_set
+                ok, msg = A.fa_lessons_set(d.get("on") is True)
+                log("full auto lessons", "ON" if d.get("on") is True and ok else "OFF" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
