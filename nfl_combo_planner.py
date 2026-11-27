@@ -24033,7 +24033,12 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
             return False, ("The paper gate hasn't passed yet, so full auto stays off. To turn it on anyway, confirm "
                            "'override the paper gate'."), {"needs_override": True}
 
+    refused = []
+
     def fn(st):
+        if on and explicit_on is not True and st.get("on") is not True:
+            refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
+            return
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
         if on:
             was = st.get("on") is True
@@ -24052,6 +24057,8 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
     _fa_update(fn)
+    if refused:
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on:
         return True, ("Full auto is ON" + (" (paper gate overridden)." if gate == "overridden" else ".")), {}
     return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}

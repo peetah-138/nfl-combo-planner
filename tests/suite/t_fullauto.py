@@ -229,8 +229,7 @@ ch = {a_["id"]: {"state": "swapped"}}
 for i in range(1, 7):
     ch[f"deep{i}"] = dict(a_, id=f"deep{i}", swap_of=(a_["id"] if i == 1 else f"deep{i-1}"), state="swapped" if i < 6 else "bought",
                           result=None if i < 6 else "lost", pl=None if i < 6 else -a_["stake"], bought_at=time.time(), _new=True)
-ch["cyc1"] = dict(a_, id="cyc1", swap_of="cyc2", state="swapped", _new=True)
-ch["cyc2"] = dict(a_, id="cyc2", swap_of="cyc1", state="swapped", _new=True)
+ch[a_["id"]]["swap_of"] = "deep6"                  # a real cycle through one of full auto's own bets: a_ -> deep1 .. deep6 -> a_
 E._set_items(day, "real", ch)
 v = E.fa_check(now=time.time())
 ok("a swap chain 6 deep still counts the final loss as ours", v["streak"] == 1 and v["pl"] <= -a_["stake"] + 0.01)
@@ -252,6 +251,18 @@ ok("the explicit turn-on still works", okS and E.fa_state()["on"] is True)
 okS, _, _ = E.fa_set(True, limits={"cap": 7}, explicit_on=False)
 ok("once it is on, a limits-save from a tab still saves", okS and E.fa_state()["on"] is True and E.fa_state()["cap"] == 7)
 E.fa_set(False)
+okS, _, _ = E.fa_set(False, limits={"cap": 9})
+ok("a stale off tab's Save limits (on=false) leaves full auto off", okS and E.fa_state()["on"] is False and E.fa_state()["cap"] == 9)
+# the turn-on decision is re-checked inside the file lock: if it was switched off between the early check and the write
+_fs = E.fa_state
+_n = [0]
+def _flip():
+    _n[0] += 1
+    return dict(_fs(), on=True) if _n[0] == 1 else _fs()
+E.fa_state = _flip
+okS, _, _ = E.fa_set(True, limits={"cap": 11}, override=True, explicit_on=False)
+E.fa_state = _fs
+ok("a racing limits-save can't set on=true inside the write step", not okS and E.fa_state()["on"] is False and E.fa_state()["cap"] != 11)
 okS, _, _ = E.fa_set(True, explicit_on="yes")
 ok("only a real True counts as the explicit turn-on", not okS and E.fa_state()["on"] is False)
 reset_state()
