@@ -23716,7 +23716,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             if f is None:
                 alt = _replacement(c, p)
                 if alt:
-                    alt = dict(alt, stake=_swap_stake(alt, c, p), state="scheduled", swapped_for=picks)
+                    alt = dict(alt, stake=_swap_stake(alt, c, p), state="scheduled", swapped_for=picks, swap_of=c["id"])
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
                     ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
@@ -24076,9 +24076,11 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
-    for d, c in rows:
-        if f"{d}|{c.get('id')}" in st["bets"]:
-            mine[f"{d}|{c.get('id')}"] = (d, c)
+    for _ in range(3):                                    # a bet swapped in for one of ours (new id) is ours too, chains included
+        for d, c in rows:
+            k = f"{d}|{c.get('id')}"
+            if k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine):
+                mine[k] = (d, c)
     settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
                      key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
     pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)
@@ -24156,7 +24158,16 @@ def _fa_overlap_ok(c):
         return False
 
 
+_FA_LOCK = threading.Lock()
+
+
 def full_auto_pass(paused=False, may_trade=True, now=None, log=print):
+    """Serialised: two passes at once can't both read the same room and overspend the cap."""
+    with _FA_LOCK:
+        return _full_auto_pass(paused, may_trade, now, log)
+
+
+def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     """One look, every minute from the watcher, just before panel_exec: when full auto is ON and nothing blocks it,
     approve the fresh draft (what fits the cap, the open-bet limit and the bankroll) or add extras to the approved
     panel, through the same panel_approve / panel_add Pete's taps use. Returns what it did, or None. Never buys itself."""

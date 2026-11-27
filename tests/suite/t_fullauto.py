@@ -4,7 +4,7 @@
 # open-bet limit, Pause and can_trade; the losing-streak and daily-loss brakes trip, say why and stay tripped until reset;
 # an unreadable positions read blocks buying. Everything goes through panel_approve / panel_add / panel_exec: Kalshi is
 # fake and every call is recorded, so nothing is ever sent.
-import os, time, tempfile, json, importlib.util
+import os, threading, time, tempfile, json, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 E.injury_note = lambda code, *teams, hours=48: ([], False)
@@ -204,6 +204,32 @@ for i, c in enumerate(day_items()[:2]):
     E._set_items(day, "real", {c["id"]: {"state": "bought", "result": "won", "pl": 1.0, "pl_real": -c["stake"] / 2, "bought_at": time.time() + i}})
 E.full_auto_pass(now=time.time())
 ok("loss-cut exits (real P/L under zero) count toward the brake", E.fa_state()["brake"] and E.fa_state()["brake"]["kind"] == "streak")
+
+# a bet panel_exec swapped in (new id, swap_of = ours) is ours too: its loss counts, and a swap chain too
+reset_state()
+p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 2, "day_loss": 100})
+E.full_auto_pass(now=time.time()); E.panel_exec()
+a_, b_ = day_items()[:2]
+E._set_items(day, "real", {a_["id"]: {"state": "swapped"},
+    "swp1": dict(a_, id="swp1", swap_of=a_["id"], state="swapped", _new=True),
+    "swp2": dict(a_, id="swp2", swap_of="swp1", state="bought", result="lost", pl=-a_["stake"], bought_at=time.time(), _new=True),
+    b_["id"]: {"state": "bought", "result": "lost", "pl": -b_["stake"], "bought_at": time.time() + 1}})
+v = E.fa_check(now=time.time())
+ok("swapped-in bet (and a swap of a swap) counts toward the streak and P/L", v["streak"] == 2 and v["pl"] <= -(a_["stake"] + b_["stake"]) + 0.01)
+E.full_auto_pass(now=time.time())
+ok("so the streak brake trips on swapped bets", E.fa_state()["brake"] and E.fa_state()["brake"]["kind"] == "streak")
+ok("a bet that was never full auto's is not counted", E.fa_check(st=dict(E.fa_state(), bets={}), now=time.time())["streak"] == 0)
+
+# two passes at once can't overspend the cap
+reset_state(); fresh(6); E.fa_set(True, limits={"cap": 30, "max_open": 30})
+ts = [threading.Thread(target=E.full_auto_pass, kwargs={"now": time.time()}) for _ in range(4)]
+[t.start() for t in ts]; [t.join() for t in ts]
+v = E.fa_check(now=time.time())
+ok("four passes at once stay inside the daily cap", 0 < v["spent"] <= 30.01)
+
+# the spend cap is per panel day: tomorrow starts at zero
+v2 = E.fa_check(now=time.time() + 86400)
+ok("today's spend is not carried into the next day", v["spent"] > 0 and v2["spent"] == 0 and v2["room"] == 30)
 
 # the real buy path: approved by full auto, then the positions can't be read at buy time: the shared guards refuse, nothing is sent
 reset_state(); E._panel_table(); E.store_x("delete from panel", ())
