@@ -27,7 +27,7 @@ E.CFG["loss_cut_default"] = True
 E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": 0.2, "n": 40}}); E.SMART_CACHE["at"] = 0
 p = E.smart_params([T])
 ok("a league's own tuned value overrides the default", p["loss"] == 0.2 and "loss_src" not in p)
-E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "n": 40}}); E.SMART_CACHE["at"] = 0
+E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "n": 12}}); E.SMART_CACHE["at"] = 0
 ok("a stored None nothing chose (an untouched league's entry) still gets the default", E.smart_params([T])["loss"] == 0.125)
 E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "loss_off": True, "n": 40}}); E.SMART_CACHE["at"] = 0
 ok("...but a league whose own tuning chose 'stop cutting' stays off", E.smart_params([T])["loss"] is None)
@@ -107,7 +107,7 @@ ok("a league's own 20% fires where the 12.5% default would not (16%)", run(0.16,
 fire = [r for r in logs if r.get("result") == "sold" and r.get("why") == "cut loss"]
 ok("...and the record says it was the league's own value", bool(fire) and fire[0]["loss_cut"]["src"] == "league" and fire[0]["loss_cut"]["cutoff"] == 0.2)
 TK = ["KXNBAGAME-26NOV19LALBOS-LAL"]
-E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "n": 40}}); E.SMART_CACHE["at"] = 0
-ok("a tuned league that merely stored 'no cut' (no explicit off marker) keeps the default", E.smart_params(TK).get("loss") == E.LOSS_CUT_DEFAULT)
+E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "n": 12}}); E.SMART_CACHE["at"] = 0
+ok("an untuned league (under 30 results) that merely stored 'no cut' keeps the default", E.smart_params(TK).get("loss") == E.LOSS_CUT_DEFAULT)
 E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "loss_off": True, "n": 40}}); E.SMART_CACHE["at"] = 0
 ok("...but a league the tuner explicitly turned the cut off for stays off", E.smart_params(TK).get("loss") is None)

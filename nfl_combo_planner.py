@@ -25041,8 +25041,8 @@ def smart_table():
 def smart_params(tickers, single=False):
     """smart_params_walk plus the cautious default loss cut: a COMBO whose league has no record of its own gets
     `loss` = LOSS_CUT_DEFAULT (12.5%) and `loss_src` "default" while the `loss_cut_default` switch is on. A league's own
-    record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None that nothing chose,
-    like the one an untouched league's file entry carries, is not that); singles never get it (the evidence was
+    record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None under 30 results that nothing chose,
+    like the one an untouched league's file entry carries, is not that; 30+ results with None is a pre-marker "never cut"); singles never get it (the evidence was
     combos only). While self-tuning's brake holds the league there is no default either (no cut is the strictest)."""
     out = _smart_params_walk(tickers)
     if out.get("loss") is None and not single and CFG.get("loss_cut_default", True) \
@@ -25051,17 +25051,29 @@ def smart_params(tickers, single=False):
     return out
 
 
+def _entry_loss_off(e):
+    """True when a smart-table entry records a "never cut" choice: the explicit `loss_off` marker, or (entries written
+    before the marker existed, no `loss_off` key at all) a league with 30+ results whose loss is None, which only the
+    tuner could have left there. An entry with fewer results, or with `loss_off` False, is not a choice. Read-only, so
+    repeating it changes nothing."""
+    e = e or {}
+    if "loss_off" in e:
+        return bool(e["loss_off"])
+    return e.get("loss") is None and (e.get("n") or 0) >= SMART_MIN_N
+
+
 def _loss_cut_chosen_off(key):
-    """True only when this league's own tuning explicitly chose no loss cut (smart_tune marked `loss_off`, or
-    self-tuning recorded smart_loss as off for it). A missing or merely-None value is not a choice."""
+    """True only when this league's own tuning explicitly chose no loss cut (smart_tune marked `loss_off` or, for a
+    pre-marker league, 30+ results with no loss cut; or self-tuning recorded smart_loss as off for it). Fails closed:
+    if the settings cannot be read, assume the league is off so the default cut is not applied on a guess."""
     try:
-        if (smart_table().get(key) or {}).get("loss_off"):
+        if _entry_loss_off(smart_table().get(key)):
             return True
         if knob_switch_on():
             lv = (((knob_state_cached() or {}).get("groups") or {}).get(key) or {}).get("lv") or {}
             return "smart_loss" in lv and lv["smart_loss"] is None
     except Exception:
-        pass
+        return True
     return False
 
 
@@ -25396,7 +25408,7 @@ def smart_tune(force=False):
         cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
         stored_loss = (d.get(key) or {}).get("loss")      # what the file really holds: the default is never written to it
         from_default = False
-        if cur["loss"] is None and CFG.get("loss_cut_default", True) and not (d.get(key) or {}).get("loss_off"):
+        if cur["loss"] is None and CFG.get("loss_cut_default", True) and not _entry_loss_off(d.get(key)):
             cur["loss"] = LOSS_CUT_DEFAULT                # judged from the default in memory only; saved only if it moves
             from_default = True
         n = len(rows)
@@ -25447,6 +25459,8 @@ def smart_tune(force=False):
             moved.append(f"{league_label(key)}: {why}")
         else:
             e.update({x: cur[x] for x in SMART_DEFAULT if x != "loss"}, loss=stored_loss)
+            if from_default:
+                e["loss_off"] = False                    # judged from the default and kept it: an explicit "not off", so 30+ results with no stored loss are not read as a pre-marker "never cut"
         d[key] = e
     for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
         e = dict(d.get(key) or {})
@@ -25470,7 +25484,7 @@ def smart_summary():
         out.append({"key": k, "name": league_label(k), "floor": e.get("floor", 1.5), "lam": e.get("lam", 1.0),
                     "loss": e.get("loss"), "n": e.get("n", 0), "ret": e.get("ret"), "why": e.get("why", ""),
                     "loss_default": (LOSS_CUT_DEFAULT if e.get("loss") is None and CFG.get("loss_cut_default", True)
-                                     and not e.get("loss_off") else None),   # display only: the cut a combo here starts on
+                                     and not _entry_loss_off(e) else None),   # display only: the cut a combo here starts on
                     "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N,
                     "sl_prog": e.get("sl_prog", SL_DEFAULT["prog"]), "sl_drop": e.get("sl_drop", SL_DEFAULT["drop"]),
                     "sl_n": e.get("sl_n", 0), "sl_own": e.get("sl_n", 0) >= SL_MIN_N, "sl_why": e.get("sl_why", "")})
