@@ -147,8 +147,8 @@ ok("a profit reason at $10.20 (net under cost, no stop-loss ready) does not sell
 # ---- (4) the source: the other two noted gaps were not touched
 src = open("wahome/engine.py", encoding="utf-8").read()
 ok("the stop-loss classification of a below-cost first offer is as before",
-   'if below and why != "cut loss" and not sl_ready.get(t):' in src   # ('Never sell at a loss' is retired: #479)
-   and 'if below and why != "cut loss":                   # a guarded stop-loss sale' in src
+   'below_skip = below and why != "cut loss" and not sl_ready.get(t)' in src   # ('Never sell at a loss' is retired: #479)
+   and 'if below and why != "cut loss" and not below_skip:   # a guarded stop-loss sale' in src
    and "below = net < h[" in src)
 ok("a manual Cash out tap has no floor (its 97% rule is unchanged)", "accept_cash(ticker)\n" in src
    and "floor is not None and net_ < floor" in src)
