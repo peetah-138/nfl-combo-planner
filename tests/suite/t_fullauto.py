@@ -331,7 +331,7 @@ got = [c for c in day_items() if c.get("state") in ("scheduled", "bought", "buyi
 ok("cautious pass approves bets at no more than half their normal size (min $2)", got and all(c["stake"] <= max(2.0, normal[c["id"]] * 0.5) + 0.01 and c["stake"] <= normal[c["id"]] for c in got))
 # recovery, steps and floor, on the pure function with made-up settled bets (the engine's real panel is too small for 12 bets)
 def bet(i, r):
-    return (day, {"bought_at": 1000 + i, "result": "lost" if r == "L" else "won", "pl": -5.0 if r == "L" else 1.0})
+    return (day, {"id": f"b{i}", "bought_at": 1000 + i, "result": "lost" if r == "L" else "won", "pl": -5.0 if r == "L" else 1.0})
 def ev(level, seq, now_=1500, base=999, since=1000):
     st_ = {"streak": 3, "caution": {"level": level, "base_at": base, "since": since, "why": "t"}}
     after_ = [bet(i, r) for i, r in enumerate(seq)]
@@ -365,12 +365,36 @@ ok("batch: cautious with 2 losses then 1 win ends at 25%", ev(1, "LLW")["level"]
 ok("batch result is the same fed one bet at a time", all(ev(l, q, base=0)["level"] == one_by_one(l, q, base=0) for l in (0, 1, 2) for q in ("LLLLWW", "LLWW", "WWLLL", "LLLWWLL")))
 # pushes are neutral: no win, no loss
 def push(i):
-    return (day, {"bought_at": 1000 + i, "result": "push", "pl": 0.0})
+    return (day, {"id": f"b{i}", "bought_at": 1000 + i, "result": "push", "pl": 0.0})
 def evp(level, seq):
     after_ = [push(i) if r == "P" else bet(i, r) for i, r in enumerate(seq)]
     return E._fa_caution_eval({"streak": 3, "caution": {"level": level, "base_at": 999, "since": 1000}}, after_, 0, 1500)
 ok("a push does not count as a win (no recovery)", evp(1, "WPP")["level"] == 1 and evp(1, "WPP")["wins"] == 1 and evp(1, "WPW")["level"] == 0)
 ok("a push does not break a losing run or count as one", evp(0, "LLPL")["level"] == 1 and evp(0, "LLP")["level"] == 0)
+# out-of-order settling: the first-bought bet settles last; every bet counts once, ordered by settle time
+def oo(level, seq, settle_order, saved=None, now_=1500):
+    after_ = []
+    for i, r in enumerate(seq):
+        d_, c_ = bet(i, r)
+        c_["settled_at"] = 2000 + settle_order[i]
+        after_.append((d_, c_))
+    cs = saved or {"level": level, "base_at": 999, "since": 1000}
+    return E._fa_caution_eval({"streak": 4 if level == 0 else 3, "caution": cs}, after_, 0, now_)
+r_ = oo(0, "LLLL", [3, 0, 1, 2])
+ok("out of order: 4 losses where the first-bought settles last still trip to Cautious", r_["level"] == 1)
+# the first three settle (the first-bought one is still open), then it settles in a later pass
+a1 = E._fa_caution_eval({"streak": 4, "caution": {"level": 0, "base_at": 999, "since": 1000}}, [bet(1, "L"), bet(2, "L"), bet(3, "L")], 0, 1500)
+a2 = E._fa_caution_eval({"streak": 4, "caution": a1["saved"]}, [bet(0, "L"), bet(1, "L"), bet(2, "L"), bet(3, "L")], 0, 1500)
+ok("out of order: a bet bought earlier but settled in a later pass is counted (not skipped)", a1["level"] == 0 and a2["level"] == 1)
+a3 = E._fa_caution_eval({"streak": 4, "caution": a2["saved"]}, [bet(0, "L"), bet(1, "L"), bet(2, "L"), bet(3, "L")], 0, 1500)
+ok("re-running the same pass does not double count", a3["level"] == 1 and a3["events"] == [] and a3["saved"]["wl"] == a2["saved"]["wl"])
+b1 = E._fa_caution_eval({"streak": 3, "caution": {"level": 0, "base_at": 999, "since": 1000}}, [bet(1, "W"), bet(2, "L")], 0, 1500)
+b2 = E._fa_caution_eval({"streak": 3, "caution": b1["saved"]}, [bet(0, "L"), bet(1, "W"), bet(2, "L")], 0, 1500)
+ok("out of order: a late-settling loss adds to the run once", b2["saved"]["wl"] == 2 and b1["saved"]["wl"] == 1)
+big = [bet(i, "W") for i in range(260)]
+g = E._fa_caution_eval({"streak": 3, "caution": {"level": 0, "base_at": 0, "since": 0}}, big, 0, 1500)
+g2 = E._fa_caution_eval({"streak": 3, "caution": g["saved"]}, big, 0, 1500)
+ok("the counted list stays bounded and pruned bets are not recounted", len(g["saved"]["seen"]) <= E.FA_SEEN_MAX and g2["events"] == [] and not g2["changed"])
 # calm days: 3 days with no loss step up one level (saved each pass, so the next step needs 3 more)
 c2 = {"level": 2, "base_at": 0, "since": 5000, "why": "t"}
 e0 = E._fa_caution_eval({"streak": 3, "caution": c2}, [], 0, 5000 + 86400)

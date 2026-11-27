@@ -24235,6 +24235,14 @@ def _fa_stamp(c):
     return c.get("bought_at") or c.get("at") or 0
 
 
+def _fa_settle_key(c):
+    """When a bet's money moved (cash-out, else Kalshi's settle time), falling back to when it was bought."""
+    return c.get("cashed_at") or c.get("settled_at") or _fa_stamp(c)
+
+
+FA_SEEN_MAX = 200
+
+
 def _fa_caution_eval(st, after, run, now, legacy=False):
     """Read-only: the confidence level as it stands now. The saved state is replayed over the full-auto bets settled since
     it was last updated (`after`, oldest first, bets already counted are skipped by stamp), one bet at a time, so several
@@ -24250,19 +24258,26 @@ def _fa_caution_eval(st, after, run, now, legacy=False):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
     level = min(top, max(0, int(num("level"))))
     base, since, loss_at = num("base_at"), num("since"), num("loss_at")
+    floor = num("floor_at")
+    seen = [x for x in (c0.get("seen") or []) if isinstance(x, str)] if isinstance(c0.get("seen"), list) else None
+    seen_set = set(seen or [])
     wl, ww = int(num("wl")), int(num("ww"))
     why = c0.get("why") if isinstance(c0.get("why"), str) else ""
     events = []
     if legacy and level == 0:                         # an older version's saved streak pause: not a stop, not silent either
         level, wl, ww, since = top, 0, 0, now
         base = max([base] + [_fa_stamp(c) for d, c in after])
+        seen = [f"{d}|{c.get('id')}" for d, c in after]; seen_set = set(seen)
         why = f"Brake from before this update: tap Back to normal now, or it eases back by itself (after {F['wins']} winning bets or {F['calm_days']} calm days)."
         events.append(f"Cautious ({round(F['factors'][top] * 100)}%): {why}")
-    for d, c in after:
-        stamp = _fa_stamp(c)
-        if stamp <= base:
-            continue
-        base = stamp
+    if seen is None:                                  # state from before bets were tracked by id: the old stamp line stands in for it
+        seen = [f"{d}|{c.get('id')}" for d, c in after if _fa_stamp(c) <= base]
+        seen_set, floor = set(seen), max(floor, base)
+    fresh = [(d, c) for d, c in after if f"{d}|{c.get('id')}" not in seen_set and _fa_stamp(c) > floor]
+    for d, c in sorted(fresh, key=lambda x: (_fa_settle_key(x[1]), _fa_stamp(x[1]))):   # in the order the money moved, each bet once
+        stamp = _fa_settle_key(c)
+        seen.append(f"{d}|{c.get('id')}")
+        base = max(base, _fa_stamp(c))
         pl = panel_pl(c) or 0
         if pl == 0:
             continue                                  # a push: neither a win nor a loss
@@ -24292,10 +24307,16 @@ def _fa_caution_eval(st, after, run, now, legacy=False):
                       f"Easing up to {round(F['factors'][level] * 100)}% after {F['calm_days']} calm days with no loss.")
         if level == 0:
             why = ""
+    if len(seen) > FA_SEEN_MAX:                       # bounded: what falls off is covered by floor_at (its buy time)
+        gone = seen[:len(seen) - FA_SEEN_MAX]
+        gs = set(gone)
+        floor = max([floor] + [_fa_stamp(c) for d, c in after if f"{d}|{c.get('id')}" in gs])
+        seen = seen[-FA_SEEN_MAX:]
     factor = F["factors"][level]
-    saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at}
+    saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at,
+             "floor_at": floor, "seen": seen}
     calm_left = max(0.0, round((max(since, loss_at) + F["calm_days"] * 86400 - now) / 86400, 1)) if level else None
-    prev = {k: c0.get(k, 0 if k != "why" else "") for k in saved}
+    prev = {k: c0.get(k, 0 if k not in ("why", "seen") else "" if k == "why" else None) for k in saved}
     return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": ww if level else 0,
             "wins_need": F["wins"], "calm_days_left": calm_left, "bar_extra": _fa_knob(level, "bar"), "knobs": dict(FA_LADDER[level]),
             "saved": saved, "events": events, "changed": saved != prev}
