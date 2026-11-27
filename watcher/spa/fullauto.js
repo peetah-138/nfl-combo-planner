@@ -11,7 +11,7 @@ function faCard(v,full){if(!v)return '';const on=!!v.on,m=x=>'$'+(+x||0).toFixed
   <div class="m" style="font-size:12.5px;margin-bottom:8px">${esc(say)}</div>
   ${on&&b.length?`<ul class="fab">${b.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
   <div class="mini">Spent today<b>${m(v.spent)} <span class="m" style="font-weight:500">of ${m(v.cap)}</span></b></div>
-  <div class="mini">Bets open<b>${v.open} <span class="m" style="font-weight:500">of ${v.max_open} allowed</span></b></div>
+  <div class="mini">Bets open<b>${v.open} <span class="m" style="font-weight:500">of ${v.max_open} allowed${v.max_open_set!=null&&v.max_open_set!==v.max_open?` (you set ${v.max_open_set}; Autopilot moved it)`:''}</span></b></div>
   <div class="mini">Confidence<b class="${ca.level?'down':''}">${ca.level?'Cautious ('+ca.pct+'%)':'Normal'} <span class="m" style="font-weight:500">${ca.level?'':'('+v.streak+' lost, goes cautious after '+v.streak_limit+' in a row)'}</span></b></div>
   ${ca.level?`<div class="m" style="font-size:12.5px;margin:2px 0 6px">Cautious: ${esc(ca.why||'')} Bets and the daily cap are cut to ${ca.pct}% of normal${ca.bar_extra?' and combos must clear the bar by '+ca.bar_extra+' more point'+(ca.bar_extra===1?'':'s'):''}. Back up a step after ${ca.wins_need} winning bets in a row (${ca.wins} so far)${ca.calm_days_left!=null?' or in about '+ca.calm_days_left+' calm days':''}. It never turns itself off.</div>`:''}
   ${br?`<div class="sbw sbx"><i>⚠️</i><span style="flex:1">Paused itself: ${esc(br.why)}</span></div>`:''}

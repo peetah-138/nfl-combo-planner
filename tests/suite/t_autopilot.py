@@ -93,7 +93,7 @@ def step_bar():
 
 
 # ---- the registry and the shared gate
-ok("registry lists the three lessons settings", list(E.AP_REG) == ["bar", "sbev", "game"])
+ok("registry lists the four lessons settings", list(E.AP_REG) == ["bar", "sbev", "game", "open"])
 ok("registry bounds and steps are #602's", E.AP_REG["bar"]["bounds"] == {"lo": 0.0, "hi": 5.0, "step": 0.5}
    and E.AP_REG["game"]["bounds"]["step"] == 0.025 and E.AP_REG["sbev"]["bounds"]["hi"] == 4)
 reset(); seed_bar()
