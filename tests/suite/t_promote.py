@@ -266,6 +266,50 @@ c2 = {s["key"]: s for s in W.promote_report(q, {"exit_cap_shadow": True}, None, 
 ok("F implied labels (rs=9) are not real results and are not settled on", c2["n"] == 0)
 ok("F the report is plain data (json) with the bar sentence", json.loads(json.dumps(rep))["bar"].startswith("A signal passes") and not rep.get("computing"))
 
+# ---- combos with no entry in the bets table count as their own "game", which can fake new games: fail closed (no push)
+db2 = sqlite3.connect(":memory:")
+
+
+def q2(sql, args=()):
+    cur = db2.execute(sql, args)
+    return [dict(zip([c[0] for c in cur.description], x)) for x in cur.fetchall()]
+
+
+db2.executescript("""
+create table mom_shadow(ts real, ticker text, cost real, m_protect int, m_cut int, sid text);
+create table mom_after(sid text, ts real, ticker text, o_net0 real, o30 real, o60 real, outcome text, payout real);
+create table bets(combo text, legs text);
+""")
+for i in range(60):
+    t = f"KXMVE-C{i:02d}"
+    db2.execute("insert into mom_shadow(ts,ticker,cost,m_protect,m_cut,sid) values(?,?,?,?,?,?)", (1000 + i * 100, t, 4.0, 1, 0, f"m{i}"))
+    db2.execute("insert into mom_after(sid,ts,ticker,o_net0,o30,o60,outcome,payout) values(?,?,?,?,?,?,?,?)", (f"m{i}", 1, t, 3.0, 2.5, 2.0, "lost", 0.0))
+    db2.execute("insert into bets(combo,legs) values(?,?)", (t, json.dumps([f"KXNBAGAME-26NOV{i + 1:02d}AAABBB-AAA", f"KXNBASPREAD-26NOV{i + 1:02d}AAABBB-AAA5"])))
+m_ok = {s["key"]: s for s in W.promote_report(q2, {}, None, now=1.0)["signals"]}["mom"]
+ok("H1 every combo has its games: nothing missing, passes and may push, as before", m_ok.get("missing") == 0 and m_ok["state"] == "pass" and m_ok["push_ok"] and "missing" not in m_ok["reason"] and m_ok["status"] == "Looking good, not proven yet")
+ok("H1 the bets query is ordered, so the same data always reads the same way", "order by" in __import__("inspect").getsource(W.promote_legs).lower())
+db2.execute("delete from bets where combo in ('KXMVE-C03','KXMVE-C20')")
+rep_h = W.promote_report(q2, {}, None, now=1.0)
+m_bad = {s["key"]: s for s in rep_h["signals"]}["mom"]
+ok("H2 two combos with no bets entry: counted, and the push is refused", m_bad.get("missing") == 2 and not m_bad["push_ok"])
+ok("H2 the card still shows a looking-good state, with a plain reason", m_bad["state"] == "pass" and m_bad["status"] == "Looking good, not proven yet" and m_bad["reason"] == "Some combos are missing their games; waiting" and m_bad["streak"] == 0)
+for f_ in (W.PROMOTE_FILE, W.PROMOTE_STREAK_FILE):
+    if os.path.exists(f_):
+        os.remove(f_)
+W.PROMOTE["pushed"].clear(); told_h = []
+for i in range(6):
+    W.promote_push_check(dict(rep_h, signals=[dict(s_, all_games=61 + i) for s_ in rep_h["signals"]]), {}, lambda *a, **k: told_h.append(a))
+ok("H2 six looks on new games with combos missing their games: never pushed", not told_h)
+ok("H2 even a report that claims push_ok is held back while any combo is missing its games", W.promote_push_check({"signals": [dict(s_, push_ok=True, missing=1, all_games=200 + 3 * 0) for s_ in rep_h["signals"]]}, {}, lambda *a, **k: told_h.append(a)) == [] and not told_h)
+for f_ in (W.PROMOTE_FILE, W.PROMOTE_STREAK_FILE):
+    if os.path.exists(f_):
+        os.remove(f_)
+W.PROMOTE["pushed"].clear()
+mj = W.promote_judge([dict(ob(i, 1.0, lag=0.5), unk=(i == 5)) for i in range(60)], 1)
+ok("H3 the judge counts positions flagged unknown and refuses the push band", mj["missing"] == 1 and not mj["push_ok"] and mj["state"] == "pass")
+ok("H3 no flagged positions: the push band is as before", W.promote_judge([ob(i, 1.0, lag=0.5) for i in range(60)], 1)["push_ok"])
+ok("H3 promote_unknown: only a combo with no known legs", W.promote_unknown("KXMVE-9", {}) and not W.promote_unknown("KXMVE-1", legs_) and not W.promote_unknown("KXNBAGAME-26NOV23LALBOS-LAL"))
+
 # ---- the push
 told = []
 W.PROMOTE["pushed"].clear()

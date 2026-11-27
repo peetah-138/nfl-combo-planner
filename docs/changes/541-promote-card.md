@@ -48,6 +48,8 @@ Now every decision is clustered by the REAL game: a single by its game, a combo 
 two bets that share any game are merged into one cluster. Zero-edge seasons with 3 correlated combos per real game: **1.2% ever pushed (1,000 seasons)**; the old per-combo code fails the same test (14% over 250 seasons in `t_promote.py`). The minimum sample (40+ clusters, 15+ in the latest 30%), the
 "newly settled" streak, the range and the 70/30 split all count clusters, not combos.
 
+**Fail closed on missing games:** a combo with no entry in the `bets` table cannot be tied to its real games, so it still counts as its own unit, but that is the case where the simulated false-push rate rises (2.1% / 6.2% / 10.4% when 10% / 30% / 50% of combos are missing). The judge now counts those combos (`missing`, `promote_unknown`); while there are any in the evidence, the push band is refused (`push_ok` false, the streak stays at 0, and `promote_push_check` also skips any signal with `missing`). The card still shows "Looking good, not proven yet" with the reason "Some combos are missing their games; waiting", and the push can fire only once every combo's games are known. The `bets` read (`promote_legs`) now has an `ORDER BY` so the 50000-row limit always keeps the same rows.
+
 **What the chip says (no false "go"):** the judge can read "passes" in about 5-7% of zero-edge seasons at some point, so
 that is no longer shown as a green "Passing". It reads **"Looking good, not proven yet"** in calm amber, with the streak
 ("Streak 1 of 3: it has to keep holding on new games before you are told it is ready"). Only a signal that already cleared

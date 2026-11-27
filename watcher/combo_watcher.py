@@ -1975,12 +1975,20 @@ def promote_games(ticker, legs=None):
     return (promote_game(t),)
 
 
+def promote_unknown(ticker, legs=None):
+    """True for a combo whose games cannot be found (no entry in the bets table, or no usable leg tickers). Such a combo
+    would count as its own "game", which can make correlated bets look like new games, so the push refuses to fire
+    while any are in the evidence (fail closed)."""
+    t = str(ticker or "")
+    return t.startswith("KXMVE") and promote_games(t, legs) == (t,)
+
+
 def promote_legs(q):
     """combo ticker -> its leg tickers, from the bets table the app fills (empty if it does not exist yet)."""
     if not _phave(q, "bets"):
         return {}
     out = {}
-    for r in _prows(q, "select combo, legs from bets where legs is not null limit ?", (PROMOTE["cap"],)):
+    for r in _prows(q, "select combo, legs from bets where legs is not null order by combo limit ?", (PROMOTE["cap"],)):
         try:
             ls = json.loads(r["legs"]) if isinstance(r["legs"], str) else r["legs"]
             out[r["combo"]] = [x if isinstance(x, str) else (x or {}).get("ticker") for x in ls or []]
@@ -2048,10 +2056,11 @@ def promote_judge(obs, n_variants=None, label=None):
     nv = max(int(n_variants or 0), len(variants))
     level = 0.995 if nv > 1 else 0.99     # 99% even for one setting; a touch wider when several were tried (the best of them was picked)
     out = {"n": 0, "games": 0, "net": 0.0, "low": None, "high": None, "level": level * 100 if level * 100 % 1 else int(level * 100), "variants": nv,
-           "variant": None, "push_ok": False, "holdout_net": None, "holdout_games": 0, "half_a": None, "half_b": None,
+           "variant": None, "push_ok": False, "missing": 0, "holdout_net": None, "holdout_games": 0, "half_a": None, "half_b": None,
            "lag_net": None, "lag_n": 0, "state": "wait", "status": "Not enough data", "reason": "Nothing recorded yet."}
     if not obs:
         return out
+    missing = len({o["pos"] for o in obs if o.get("unk")})     # combos whose games are unknown: each counted as its own "game"
     first_ts = {}
     for o in obs:
         first_ts[o["game"]] = min(first_ts.get(o["game"], o["ts"]), o["ts"])
@@ -2085,7 +2094,7 @@ def promote_judge(obs, n_variants=None, label=None):
         (low, high), (plow, _) = promote_ranges(hold_nets, [level, cfg["push_level"][2 if nv > 1 else 1]], _prandom.Random(541), cfg["boot"])   # plow: the stricter band only the push uses
     if low is None:
         low = high = plow = 0.0
-    out.update(n=len(co), games=len(cg), all_games=len(games), push_ok=plow > 0, net=round(net, 2), low=round(low, 2), high=round(high, 2),
+    out.update(n=len(co), games=len(cg), all_games=len(games), push_ok=plow > 0 and not missing, missing=missing, net=round(net, 2), low=round(low, 2), high=round(high, 2),
                variant=(label or {}).get(best, best), holdout_net=round(hold, 2) if hold_games else None,
                holdout_games=len(hold_games), half_a=None if ha is None else round(ha, 2),
                half_b=None if hb is None else round(hb, 2), lag_net=None if lag is None else round(lag, 2), lag_n=len(lo))
@@ -2120,7 +2129,7 @@ def promote_judge_cached(key, obs, nv=None, label=None):
     """The judge, recomputed only when the settled count changed (decisions, games, settings tried), so refreshing
     again on the same data cannot re-roll the range. Returns a copy."""
     first = promote_first([o for o in (obs or []) if o.get("v") is not None])
-    sig = (len(first), len({o["game"] for o in first}), int(nv or 0), round(sum(o["v"] for o in first), 4))
+    sig = (len(first), len({o["game"] for o in first}), int(nv or 0), round(sum(o["v"] for o in first), 4), sum(1 for o in first if o.get("unk")))
     have = PROMOTE["judged"].get(key)
     if have and have[0] == sig:
         return dict(have[1])
@@ -2178,7 +2187,7 @@ def promote_obs_mom(q, **_):
             if r["o_net0"] is None or r["payout"] is None:
                 continue
             late = [x for x in (r["o30"], r["o60"]) if x is not None]
-            obs.append({"var": var, "pos": pos, "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "ts": r["ts"],
+            obs.append({"var": var, "pos": pos, "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "unk": promote_unknown(r["ticker"], legs), "ts": r["ts"],
                         "v": float(r["o_net0"]) - float(r["payout"]),
                         "lag": (min(late) - float(r["payout"])) if late else None})
     note = f"{len(cashed)} bets that were really sold are left out, since what holding would have paid is unknown." if cashed else ""
@@ -2268,7 +2277,7 @@ def promote_obs_cap(q, **_):
         if r["ticker"] not in res:
             continue
         won = (res[r["ticker"]] == 1) == (r["side"] == "yes")
-        obs.append({"var": "cap", "pos": f"{r['ticker']}|{r['side']}", "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "ts": r["ts"],
+        obs.append({"var": "cap", "pos": f"{r['ticker']}|{r['side']}", "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "unk": promote_unknown(r["ticker"], legs), "ts": r["ts"],
                     "v": float(r["net"]) - (float(r["n"] or 0) if won else 0.0), "lag": None})
     return obs, 1, {"cap": "Capped sell line"}, "It has no late-order replay yet, so it cannot pass."
 
@@ -2312,7 +2321,10 @@ def promote_report(q, cfg=None, fee=None, now=None):
             if row.get("state") == "pass":
                 n_ = int((streak.get(key) or {}).get("n", 0)) if row.get("push_ok") else 0
                 row["streak"], row["streak_need"] = min(n_, PROMOTE_STREAK), PROMOTE_STREAK
-                if key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
+                if row.get("missing") and key not in told:     # some combos' games are unknown: fail closed, no push until the bets table has them
+                    row.update(ready=False, status="Looking good, not proven yet", streak=0,
+                               reason="Some combos are missing their games; waiting")
+                elif key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
                     row.update(ready=True, status="Ready: say go",
                                reason=f"It cleared the strict bar on {PROMOTE_STREAK} batches of new games, and you were told. Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
                 else:
@@ -2403,7 +2415,7 @@ def promote_push_check(report, conf, notify, now=None):
         except OSError as err:
             log("promote streak not saved:", err)
         for s in report.get("signals", []):
-            if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or streak[s["key"]]["n"] < PROMOTE_STREAK:
+            if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or s.get("missing") or streak[s["key"]]["n"] < PROMOTE_STREAK:
                 continue
             msg = f"{s['name']} passed the bar, say go"
             notify(msg, kind="promote")
