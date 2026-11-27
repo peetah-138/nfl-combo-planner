@@ -10,8 +10,8 @@ function fmtv(k,v){if(k==='take_profit'&&+v===0)return 'Off';if(k==='auto_cap'&&
 /* #574: a long explanation under a setting shows two lines with a "More" button (the rest is still in the page, so search finds it).
    The button is not part of the switch's label text, and a tap on it never flips the setting. Open ones are remembered while the page redraws. */
 function subx(k,t){if(!t)return '';const long=String(t).replace(/<[^>]*>/g,'').length>130;if(!long)return `<small>${t}</small>`;S.sx=S.sx||{};const o=!!S.sx[k];
- return `<small class="sx${o?'':' clip'}" id="sx-${k}">${t}</small><button type="button" class="smore" aria-expanded="${o}" aria-controls="sx-${k}" onclick="event.preventDefault();event.stopPropagation();sMore('${k}',this)">${o?'Less':'More'}</button>`;}
-function sMore(k,b){S.sx=S.sx||{};const o=!S.sx[k];S.sx[k]=o;const e=document.getElementById('sx-'+k);if(e)e.classList.toggle('clip',!o);b.setAttribute('aria-expanded',String(o));b.textContent=o?'Less':'More';}
+ return `<small class="sx${o?'':' clip'}" id="sx-${k}">${t}</small><button type="button" class="smore" data-hsw="0" aria-expanded="${o}" aria-controls="sx-${k}" onclick="event.preventDefault();event.stopPropagation();sMore('${k}',this)">${o?'Less':'More'}</button>`;}
+function sMore(k,b){hap('light');S.sx=S.sx||{};const o=!S.sx[k];S.sx[k]=o;const e=document.getElementById('sx-'+k);if(e)e.classList.toggle('clip',!o);b.setAttribute('aria-expanded',String(o));b.textContent=o?'Less':'More';}
 function rng(k,label,sub,dis){const v=rngPos(k,S.set.values[k]),[lo,hi,st]=RANGES[k];const p=Math.round((Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*100);
  return `<div class="srow ${dis?'dim':''}"><div class="l"><b>${label}</b>${subx(k,sub)}</div><div class="rng"><input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}" style="--p:${p}%"
   oninput="this.style.setProperty('--p',Math.round((this.value-${lo})/${hi-lo}*100)+'%');const o=this.nextElementSibling;o.textContent=fmtv('${k}',this.value);o.classList.remove('bump');void o.offsetWidth;o.classList.add('bump')" onchange="setv('${k}',rngVal('${k}',this.value))"><output>${fmtv(k,v)}</output></div></div>`;}

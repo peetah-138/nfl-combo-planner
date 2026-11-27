@@ -30,7 +30,7 @@
 .srow{display:flex;align-items:center;gap:18px;padding:13px 22px;border-top:1px solid var(--line);min-height:58px}
 .srow .l{flex:1;min-width:0}.srow .l b{font-weight:600;display:block}.srow .l small{color:var(--mute);font-size:12.5px;display:block;margin-top:1px}
 .srow .l small.clip{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.smore{border:0;background:none;color:var(--acc);font-weight:600;font-size:12.5px;padding:0;margin:0;min-height:0;cursor:pointer;position:relative}.smore::after{content:'';position:absolute;inset:-16px -12px}
+.smore{border:0;background:none;color:var(--acc);font-weight:600;font-size:12.5px;padding:10px 12px;margin:-10px -12px -10px 0;min-height:0;cursor:pointer;position:relative}
 .srow.dim{opacity:.45;pointer-events:none}
 .hxbtn{display:flex;align-items:center;gap:10px;width:100%;white-space:normal;text-align:left;font-weight:600;position:relative;min-height:44px}.hxid{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:8px;background:var(--acc);color:#fff;font-weight:800;font-size:13px}
 .hxbtn input[switch]:not(.tg){margin-left:auto;flex:none}.hxbtn input.hxnat{position:absolute;right:12px;top:50%;width:2px;height:2px;opacity:.01;margin:0}.hxbtn input.tg{margin-left:auto}
