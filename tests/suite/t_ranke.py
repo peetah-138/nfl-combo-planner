@@ -47,7 +47,7 @@ gA, gB = game("AAABBB", "Aces", "Bees", 0.60, 0.72), game("CCCDDD", "Cats", "Dog
 games = {**gA, **gB}
 TA, TB = gA[next(iter(gA))][0]["ticker"], gB[next(iter(gB))][0]["ticker"]
 calib({})
-E.BEST_LOOK = 1
+E.BEST_LOOK = 1; E.BEST_LOOK_USD = 0     # this test is about the % ordering of the cut alone
 E.SB_GATE.pop("sims", None); SIMS.clear()
 E.best_bets_feed(games, [], [], now)
 ok("A: with no record the books' chance ranks (the Aces' bigger raw edge is looked at first)",

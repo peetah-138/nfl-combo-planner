@@ -3665,7 +3665,8 @@ def webapp_main():
                     [x for x in lines_now if x.get("ticker") not in held
                      and not A.overlap_of(over, [x.get("event") or ""], [x.get("ticker") or ""])],
                     [(v["i"], c, (v["pred"]["pct"] if v.get("pred") and (v["pred"].get("n") or 0) >= 20 else v.get("est_pct")))
-                     for v, c in pairs if not v.get("bought") and not v.get("over")])
+                     for v, c in pairs if not v.get("bought") and not v.get("over")],
+                    fair_at=BUILD.get("at"))
             except Exception as err:
                 print("best bets:", err, flush=True)
                 best = {"items": [], "why": "Couldn't work out today's best bets right now.", "looked": {}}

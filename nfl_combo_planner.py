@@ -61,6 +61,7 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
+    "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
@@ -18711,6 +18712,13 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
         clears = False                                  # (#341) under way: green only with a likely route to profit
         warn.append({"k": "exit", "t": "The game is under way and a profitable sale or win from here doesn't look "
                                        "likely, so this isn't a recommended buy."})
+    lbar = None
+    if live and kind == "win" and how == "live model" and fair is not None:   # (#287) paper: what a learned bar would say
+        lbar = live_single_bar(t, now)
+        lbar["would_clear"] = bool(clears and edge >= lbar["v"])
+        if clears and not lbar["would_clear"]:
+            console_note(f"live bar (paper) {t}: edge {edge:.3f} clears the flat {lbar['flat']:.3f} but not the learned "
+                         f"{lbar['v']:.3f} ({lbar['src']}, {lbar['n']} games)")
     ov = overlap_note([{"ticker": t, "event": x.get("event") or ""}])   # display only: never changes clears
     if ov:
         warn.append({"k": "overlap", "t": ov})
@@ -18727,7 +18735,8 @@ def single_buy_quote(x, stake=None, paused=False, now=None):
             "stake": want, "own": own is not None, "n": n, "cost": cost, "pays": float(n), "profit": round(n - cost, 2),
             "ev": round(n * fair - cost, 2) if fair is not None else None, "min": OWN_MIN,
             "spent": spent, "budget": budget, "room": room, "blocked": blocked, "warn": warn, "clears": bool(clears),
-            "secs": SINGLE_QUOTE_SECS, "arm": SINGLE_ARM, "max": SINGLE_MAX, "presets": list(SINGLE_PRESETS)}
+            "secs": SINGLE_QUOTE_SECS, "arm": SINGLE_ARM, "max": SINGLE_MAX, "presets": list(SINGLE_PRESETS),
+            "live_bar": lbar}
 
 
 def single_buy(qid, ticker, anyway=False, paused=False, now=None, log=print):
@@ -19130,6 +19139,49 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
                                                                if gap is not None else "nobody is bidding")
                             + ", so this price may not be a real one."})
     return out
+
+
+LIVE_BAR = {"games": 30, "max": 0.06, "every": 3600}   # (#287) settled games a level needs; the most a learned bar may ask
+LIVE_BAR_CACHE = {"at": 0.0, "m": {}}
+
+
+def live_single_bar(ticker, now=None):
+    """(#287, PAPER ONLY: nothing reads this to decide a buy) The green bar an in-play single priced by the live MODEL
+    would need if it were learned from your own record, per league like the spread/total bar. The flat bar today is
+    SINGLE_MIN_EDGE * 0.6 (1.5 cents). From `live_fairs` (the live model's own chances and what happened, one reading
+    per game): where this league (else its sport, else everyone) has at least LIVE_BAR['games'] settled games and the
+    live model's chances ran HIGHER than what happened, the bar is the flat bar plus that overstatement, never under
+    the flat bar and never over LIVE_BAR['max']. {'v', 'flat', 'src', 'n', 'over'}; with the switch `live_bar_learn`
+    off, no record or any error it is just the flat bar. Never raises, never fetches."""
+    flat = SINGLE_MIN_EDGE * 0.6
+    base = {"v": flat, "flat": flat, "src": "start", "n": 0, "over": 0.0}
+    try:
+        if not CFG.get("live_bar_learn", True) or not STORE["db"]:
+            return base
+        now = now or time.time()
+        c = LIVE_BAR_CACHE
+        if now - c["at"] > LIVE_BAR["every"]:
+            _live_fair_table()
+            by = defaultdict(lambda: defaultdict(list))
+            for r in store_rows("select ticker, sport, fair, outcome from live_fairs where outcome in ('yes','no')"):
+                by[r["ticker"]]["f"].append(r["fair"])
+                by[r["ticker"]]["w"] = 1.0 if r["outcome"] == "yes" else 0.0
+                by[r["ticker"]]["sport"] = r["sport"]
+            acc = defaultdict(list)
+            for tk, d in by.items():
+                x = sum(d["f"]) / len(d["f"]) - d["w"]
+                for key in {league_key(tk), d["sport"], "all"}:
+                    acc[key].append(x)
+            c.update(at=now, m={k: (sum(v) / len(v), len(v)) for k, v in acc.items()})
+        sport = ticker_sport(ticker) or ""
+        for key, src in ((league_key(ticker), "own"), (sport, "sport"), ("all", "all")):
+            over, n = c["m"].get(key, (0.0, 0))
+            if n >= LIVE_BAR["games"]:
+                v = min(max(flat + max(0.0, over), flat), LIVE_BAR["max"])
+                return {"v": round(v, 4), "flat": flat, "src": src, "n": n, "over": round(over, 4)}
+    except Exception as err:
+        console_note(f"live bar: {type(err).__name__}: {err}")
+    return base
 
 
 def live_exit_ok(ticker, event, fair, ask, now=None):
@@ -32389,6 +32441,7 @@ def comeback_summary(days=14, now=None):
 # an unreadable balance (no stake), a bet the simulator can't model or any error = not listed, never a guess.
 BEST_MAX = 6                 # rows shown
 BEST_LOOK = 30               # candidates simulated at most (about 5-12 ms each, memoised 5 minutes)
+BEST_LOOK_USD = 10           # (#243) plus the best few of the rest by return x suggested stake (expected dollars), so the % cut can't drop them
 
 
 def _best_exposure(legs):
@@ -32442,17 +32495,20 @@ def _best_calibrate(c):
         return c
 
 
-def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
+def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX, fair_at=None):
     """{'items': [...], 'why': text or None, 'looked': {...}} for Build. games = the board's {event: [sides]}, lines =
     line_recommend's vetted rows (BUILD["lines"]), combos = [(index, combo dict, predicted share of fair or None)]. Never
-    raises; anything unreadable leaves the bet out."""
+    raises; anything unreadable leaves the bet out. `fair_at` (#243): when the board's prices were read; a single whose
+    board is older than SINGLE_FAIR_AGE (the Buy straight sheet's own 12 minutes) is left out, as that sheet would refuse
+    to price it. None = not checked (a caller that doesn't know)."""
     now = now or time.time()
     looked = {"single": 0, "line": 0, "combo": 0}
+    board_old = fair_at is not None and now - float(fair_at or 0) > SINGLE_FAIR_AGE
     try:
         base = sizing_base(save=False)[0]          # display only: never writes the panel's sizing state
         no_base = base is None                      # singles and combos need it to be sized; spreads/totals bring their own fill
         cands = []
-        for e, sides in ({} if no_base else (games or {})).items():
+        for e, sides in ({} if no_base or board_old else (games or {})).items():
             for x in single_candidates({e: sides}):
                 if line_stale(x.get("line_at"), _kick_ts(x), now):
                     continue
@@ -32517,7 +32573,14 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                             "avg": x.get("avg"), "exposure": _best_exposure(lg_)})
             except Exception as err:
                 console_note(f"best bets line: {type(err).__name__}: {err}")
-        for c in cands[:BEST_LOOK]:
+        pool = cands[:BEST_LOOK]
+        if not no_base and len(cands) > BEST_LOOK:      # (#243) a high-dollar bet with a lower % must not be cut before it's simulated
+            try:
+                rest = sorted(cands[BEST_LOOK:], key=lambda c: -((c.get("ret") or 0) * _size(c, base)))
+                pool += rest[:BEST_LOOK_USD]
+            except Exception as err:
+                console_note(f"best bets pre-cut: {type(err).__name__}: {err}")
+        for c in pool:
             try:
                 sim = _sb_sim(c, now)
                 stake = _size(c, base)
