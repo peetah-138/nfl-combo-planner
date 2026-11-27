@@ -24897,6 +24897,8 @@ def _fal_plan(st, now):
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
                     if dirn == "looser" and (cautious or held):
                         continue                             # brake priority, or held after Pete's Undo: nothing loosens
+                    if borrow and dirn == "looser" and (L.get("src") or {}).get(key) != "borrow":
+                        continue                             # only a bar this logic borrowed is eased back; an earned one is its own
                     if borrow and dirn == "tighter" and new > FAL["borrow_max"] + 1e-9:
                         continue                             # a borrowed bar never adds more than +1.5 in all
                     ok, ev, lb = ap_gate(rec, key, ers, passes, _fal_cur(vals, key), new, since.get(key) or 0)
@@ -24934,7 +24936,7 @@ def _fal_apply(s, plan, now):
     if err:
         return
     L = s.setdefault("lessons", {})
-    for k in ("vals", "steps", "since", "last", "status", "frozen", "holds", "nochg"):
+    for k in ("vals", "steps", "since", "last", "status", "frozen", "holds", "nochg", "src"):
         if not isinstance(L.get(k), dict):
             L[k] = {}
     if not isinstance(L.get("log"), list):
@@ -24969,7 +24971,7 @@ def _fal_apply(s, plan, now):
                     ev={"stale": True, "borrow": True, "from": a["from"], "to": a["to"]})
                 _fal_set(L, rec, key, a["to"])
                 L["steps"][rec], L["since"][key] = round(now), round(now)
-                L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False, "borrow": True}
+                L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": True}   # judged: the ease-back sticks
                 L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
                 continue
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
@@ -24980,6 +24982,10 @@ def _fal_apply(s, plan, now):
                                                           "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"],
                                                           "borrow": bool(a.get("borrow"))})
             _fal_set(L, rec, key, a["to"])
+            if not a.get("borrow") or (L["src"].get(key) or "borrow") != "borrow":
+                L["src"][key] = "own"                        # earned from its own data (or tightened past a borrowed one)
+            else:
+                L["src"][key] = "borrow"
             L["steps"][rec], L["since"][key] = round(now), round(now)
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False,
                             **({"borrow": True} if a.get("borrow") else {})}
