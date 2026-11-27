@@ -33,6 +33,7 @@ import urllib.parse
 import urllib.request
 
 URL_SVC, TOKEN_SVC = "nfl-combo-logs-url", "nfl-combo-logs-token"
+PROBLEMS = r"refused|check|failed|held|Traceback"          # --problems: the words that usually mean something went wrong
 
 
 def keychain(service):
@@ -179,10 +180,15 @@ def main():
     ap.add_argument("--since", help="30m, 2h, 1d, unix time, or ISO date/time")
     ap.add_argument("--limit", type=int, default=200, help="lines per source (the Mac caps it at 500; rows for --source db: 1000)")
     ap.add_argument("--grep", help="only lines matching this regular expression (case-insensitive)")
+    ap.add_argument("--problems", action="store_true", help="shortcut for --grep 'refused|check|failed|held|Traceback'")
     ap.add_argument("--follow", action="store_true", help="keep checking every 15 seconds")
     ap.add_argument("--json", action="store_true", help="one JSON object per line")
     a = ap.parse_args()
-    rx = re.compile(a.grep, re.I) if a.grep else None
+    if a.problems and a.grep:
+        ap.error("use --problems or --grep, not both")
+    if a.problems and a.source == "db":
+        ap.error("--problems filters log lines, not --source db")
+    rx = re.compile(PROBLEMS if a.problems else a.grep, re.I) if (a.problems or a.grep) else None
     url, tok = settings()
     since = parse_since(a.since)
     if a.source == "db":

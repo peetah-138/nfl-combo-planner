@@ -100,6 +100,9 @@ On the **dev Mac**:
    it and press Return, and press Return again if it asks you to type it a second time. If macOS asks about the
    keychain, click Allow.
    `security add-generic-password -a "$USER" -s nfl-combo-logs-token -w`
+   **Faster (#379):** in the code sheet tap **Copy setup command**, then paste it once in Terminal on the dev Mac. It
+   stores the address and the code (steps 2 and 3) in one go. It goes only to the clipboard; don't paste it into chat.
+   Its leading space keeps it out of shell history where that is switched on.
 3. Store the address the same way:
    `security add-generic-password -a "$USER" -s nfl-combo-logs-url -w`
 4. Try it: run `cd ~/dev/nfl-combo-planner`, then `python3 tools/read_prod_logs.py --since 30m`. If log lines
@@ -116,8 +119,10 @@ production Mac.
 
 ```
 python3 tools/read_prod_logs.py [--source console|autosell|both] [--since 30m|2h|1d|<unix>|<ISO>]
-                                [--limit N] [--grep REGEX] [--follow] [--json]
+                                [--limit N] [--grep REGEX | --problems] [--follow] [--json]
 ```
+
+`--problems` is the grep `refused|check|failed|held|Traceback` (case-insensitive) in one word.
 
 It reads `CW_LOGS_URL` / `CW_LOGS_TOKEN` from the environment, else the keychain services above. It never prints the
 code. Errors say what to do (401: make a new code; 404: switch off, wrong address or Tailscale down; 429: wait;

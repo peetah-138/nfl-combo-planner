@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.26.141"
+VERSION = "2026.11.26.142"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -1743,6 +1743,10 @@ def attach_fair(games, book):
             g = bg[i] if src and BOOK_GAMES and all(bg) else None   # a line read after the start is a live line
             s["line_at"], s["line_live"] = (g.get("at"), bool(g.get("inplay"))) if g else (None, False)
             s["sharp_line"] = bool(g and g.get("sharp"))   # priced on the odds service's line, not free lines only
+        for t in ties:                            # a draw is priced off the same game line as its two teams (#182)
+            t["sharp_line"] = bool(src and any(s.get("sharp_line") for s in sides))
+            t["line_at"], t["line_live"] = next(((s["line_at"], s["line_live"]) for s in sides if s.get("line_at")),
+                                                (None, False))
         news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
@@ -17396,6 +17400,16 @@ def books_now(tickers, budget=None):
             out[t] = got[1]
         else:
             need.append(t)
+    if len(need) > 1:
+        try:
+            filled = books_batch(need, timeout=max(2.0, min(10.0, budget)))   # one call for many books (#225); whatever it misses is read singly
+        except Exception:
+            filled = set()
+        BOOK_BATCH_STATS["fallbacks"] += len(need) - len(filled)
+        need = [t for t in need if t not in filled]
+        for t in filled:
+            got = BOOK_LADDER.get(t)
+            out[t] = got[1] if got else None
     ths = [threading.Thread(target=book_asks, args=(t,), daemon=True) for t in need]
     for th in ths:
         th.start()
@@ -21027,6 +21041,25 @@ def mkt_resolve(limit=200):
     return n
 
 
+def mkt_holdout_report(w=None):
+    """#474, measurement only: what a true out-of-sample holdout says over the groups mkt_learn last scored. For each
+    group the weight picked on the OLDEST 70% (`oos_w`) was tested on the newest 30% it never saw (`oos_gain`, log loss
+    below Kalshi's mid, so higher is better; this is a probability score, not dollars: a dollar figure would need an
+    invented stake rule). Counts the groups whose oldest-70% weight gained out of sample, how many earned groups the
+    holdout refuses, and how many newest-30% slices are under hold_min (inert at min_n 200).
+    Reads the cached mkt_learn result (never re-runs it); changes no weight. {} when nothing has been scored."""
+    w = MKT_W["w"] if w is None else w
+    gs = [g for g in (w or {}).values() if g.get("n", 0) >= MKT["min_n"]]
+    if not gs:
+        return {}
+    earned = [g for g in gs if g.get("w", 0) > 0 or g.get("vetoed")]      # cleared the in-sample bar (kept, or vetoed after)
+    passed = lambda g: g.get("oos_w", 0) > 0 and g.get("oos_gain", 0) > 0
+    return {"groups": len(gs), "earned": len(earned), "oos_pass": sum(1 for g in gs if passed(g)),
+            "oos_refuses": sum(1 for g in earned if not passed(g)),
+            "mean_oos_gain": round(sum(g.get("oos_gain", 0) for g in gs) / len(gs), 4),
+            "under_hold_min": sum(1 for g in gs if g.get("hold_n", 0) < MKT["hold_min"]), "hold_min": MKT["hold_min"]}
+
+
 def mkt_fair_summary():
     """Results › What's working (paper): per league, bet type and phase, how well Kalshi's mid, today's fair and the
     blend predicted settled markets (log loss, lower is better), the books' earned weight, and the claimed edges that
@@ -21066,7 +21099,7 @@ def mkt_fair_summary():
                         (time.time() - 86400,))
     lg = logged[0] if logged else {}
     return {"groups": out[:24], "today": {"n": lg.get("n") or 0, "claimed": lg.get("c") or 0, "vanish": lg.get("v") or 0},
-            "min_n": MKT["min_n"]}
+            "min_n": MKT["min_n"], "holdout": mkt_holdout_report(w)}
 
 
 # ---- (#341 C) the cost-carry paper test. Public data says a 2-3 leg combo's RFQ payout is about 0 to +2% over the
@@ -28625,11 +28658,16 @@ def book_depth(ticker, max_age=60):
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
         if not r.ok:
             return None                           # 429/5xx: unknown, not an empty book (and not cached)
-        js = r.json()
-        info = book_info(js)
-        info["bid_size"] = _bid_size(js)          # contracts at the best YES bid (a manual sale's depth, #238)
+        return _book_keep(ticker, r.json(), now)
     except (requests.RequestException, ValueError):
         return None
+
+
+def _book_keep(ticker, js, now):
+    """Read one order book answer and keep it (the depth cache, the ask ladder, the price recorder); the same for a
+    single read and for one book out of a batch read, so both give identical numbers. May raise on an odd answer."""
+    info = book_info(js)
+    info["bid_size"] = _bid_size(js)              # contracts at the best YES bid (a manual sale's depth, #238)
     BOOK_DEPTH[ticker] = (now, info)
     BOOK_LADDER[ticker] = (now, _ask_ladder(js))      # every ask level, for the spreads/totals fill (issue #117 B)
     price_seen_book(ticker, info)                     # Smart Buy's price recorder (no new call)
@@ -28638,6 +28676,45 @@ def book_depth(ticker, max_age=60):
             BOOK_DEPTH.pop(k, None)
             BOOK_LADDER.pop(k, None)
     return info
+
+
+BOOK_BATCH_MAX = 100    # Kalshi's GET /markets/orderbooks takes up to 100 tickers (#225)
+BOOK_BATCH_STATS = {"batch_calls": 0, "batch_books": 0, "fallbacks": 0}
+
+
+def books_batch(tickers, timeout=10):
+    """Read several order books with Kalshi's batch endpoint (GET /markets/orderbooks, up to 100 tickers a call) and
+    keep each one exactly as `book_depth` would. Returns the set of tickers it filled. Reads only, and it fails closed:
+    a failed call, an odd answer, or a ticker the answer doesn't carry is simply left out of the set (nothing kept, nothing
+    guessed), so the caller reads that one the old single way. One bad book never keeps the others out (#225)."""
+    done = set()
+    tks = list(dict.fromkeys(t for t in tickers if t))
+    for i in range(0, len(tks), BOOK_BATCH_MAX):
+        chunk = tks[i:i + BOOK_BATCH_MAX]
+        if len(chunk) < 2:
+            continue                              # one book: the single read is the same one call
+        try:
+            r = requests.get(f"{KALSHI}/markets/orderbooks", params={"tickers": chunk}, timeout=timeout)
+            if not r.ok:
+                continue
+            rows = r.json().get("orderbooks")
+            if not isinstance(rows, list):
+                continue
+        except (requests.RequestException, ValueError, AttributeError):
+            continue
+        BOOK_BATCH_STATS["batch_calls"] += 1
+        now = time.time()
+        for row in rows:
+            try:
+                t = row["ticker"]
+                if t not in chunk or t in done or not isinstance(row.get("orderbook_fp", row.get("orderbook")), dict):
+                    continue
+                _book_keep(t, row, now)
+                done.add(t)
+                BOOK_BATCH_STATS["batch_books"] += 1
+            except Exception:
+                continue
+    return done
 
 
 def book_depth_shared(ticker):
@@ -33411,6 +33488,14 @@ def _sb_paper_role(r):
 SB_PAPER_PER_GAME = 2      # as the panel: at most two bets on one game a day (stakes and extras each)
 
 
+def _sb_paper_straight_family(r):
+    """(game, family) of a paper straight bet (single/spread/total), as choose_panel's `_fams_of`: a winner and a spread
+    are one family, a total its own. None for a combo."""
+    if r.get("kind") not in ("single", "line") or not r.get("tickers"):
+        return None
+    return (r["game"], bet_family(r["tickers"][0]))
+
+
 def sb_paper_build(now=None, force=False):
     """Rebuild the paper book from every scored bet (one row per bet, its last check before the game): its role, the
     stake graduated sizing would give it and what that stake made if held. Sizing: _size (quarter Kelly on a
@@ -33420,7 +33505,10 @@ def sb_paper_build(now=None, force=False):
     check's price (when a graduated buy would have bought), not the last one. The base is the panel's saved one
     (combo_sizing.json; never a Kalshi read), else the bankroll setting. Its own table: never `panel`, `ledger`, the
     $300 gate or analytics()'s gate numbers. Every 6 hours; never raises. Simpler than the real panel on purpose (no
-    ahead floor, no 30% share for spreads/totals, no fill cap: see the docs), so it is a progress line, not a gate."""
+    ahead floor, no fill cap, buys at the last check, not at approval time: see the docs), so it is a progress line, not a gate.
+    #291: it does follow choose_panel's overlap and share rules: one straight bet per game and family (a winner and a
+    spread are one family, a total its own), spreads/totals at most max(2, 30% of the panel size) a day, at most the panel
+    size (10) bets a day per budget, best expected dollars first. Paper only: nothing here buys or sizes a real bet."""
     now = now or time.time()
     if not STORE.get("db") or (not force and now - SB_PAPER["at"] < 6 * 3600):
         return 0
@@ -33435,13 +33523,19 @@ def sb_paper_build(now=None, force=False):
             cl.update(close_prices(tks[i:i + 400], mid=True))
         left = defaultdict(lambda: budget)
         per_game = defaultdict(int)
+        solo, lines, count = set(), defaultdict(int), defaultdict(int)   # #291: choose_panel's own overlap/share/size rules
+        line_cap = max(2, int(PANEL["size"] * PANEL["line_share"]))
         out = []
         for r in sorted(rs, key=lambda r: (r["day"], -(r["ev"] or 0), r["ts"])):
             role, stake = _sb_paper_role(r), 0.0
             pays = r.get("pays")
             pot = (role, r["source"] == "backfill")        # history has its own budget: it never crowds out live bets
+            fam = _sb_paper_straight_family(r)
             if role in ("stake", "extra") and base > 0 and pays and r.get("fair") and 0 < r["fair"] < 1 \
-                    and per_game[(pot, r["day"], r["game"])] < SB_PAPER_PER_GAME:
+                    and per_game[(pot, r["day"], r["game"])] < SB_PAPER_PER_GAME \
+                    and not (fam and (pot, r["day"], fam) in solo) \
+                    and not (r["kind"] == "line" and lines[(pot, r["day"])] >= line_cap) \
+                    and count[(pot, r["day"])] < PANEL["size"]:
                 b = pays / SB_STAKE - 1
                 kelly = r["fair"] * b - (1 - r["fair"]) if b > 0 else -1
                 s = _size({"kind": "combo", "chance": r["fair"], "pct": pays / SB_STAKE, "fair_mult": 1.0}, base) \
@@ -33451,6 +33545,11 @@ def sb_paper_build(now=None, force=False):
                 if stake:
                     left[(pot, r["day"])] -= stake
                     per_game[(pot, r["day"], r["game"])] += 1
+                    count[(pot, r["day"])] += 1
+                    if fam:
+                        solo.add((pot, r["day"], fam))      # one straight bet per game and family
+                    if r["kind"] == "line":
+                        lines[(pot, r["day"])] += 1         # spreads and totals: about a third of the day's bets
             o = r.get("out")
             got = round(o * stake / SB_STAKE, 4) if o is not None and stake else (0.0 if o is not None else None)
             fp = r.get("first_price")
