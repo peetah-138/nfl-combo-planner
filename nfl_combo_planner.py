@@ -25061,7 +25061,9 @@ def ap_undo(now=None):
         if kx:
             st0 = fa_state()
             ch0 = (st0.get("lessons") or {}).get("change") if isinstance(st0.get("lessons"), dict) else None
-            if not (isinstance(ch0, dict) and not ch0.get("undone") and float(ch0.get("at") or 0) > kx["at"]):
+            ch0 = ch0 if isinstance(ch0, dict) and not ch0.get("undone") else None
+            # the newer of the two is "the last change"; a knob step that has moved on since never hides an older setting change
+            if (kx.get("ok") or not ch0) and not (ch0 and float(ch0.get("at") or 0) > kx["at"]):
                 return _ap_undo_knob(kx, now)
     except Exception as err:
         return False, "Couldn't undo that (" + type(err).__name__ + ")."
@@ -25220,10 +25222,10 @@ def fal_view(st):
         undo = None
         if ch and vals and ch.get("rec") in AP_REG and abs(_fal_cur(vals, ch["key"]) - ch["to"]) < 1e-9:
             undo = f"{_fal_name(ch['key'])}: {_fal_val_text(ch['rec'], ch['to'])} back to {_fal_val_text(ch['rec'], ch['from'])}"
-        if kx and (not ch or kx["at"] >= float(ch.get("at") or 0)):      # the newer of the two is "the last change" (as ap_undo)
+        if kx and kx.get("ok") and (not ch or kx["at"] >= float(ch.get("at") or 0)):   # the newer of the two is "the last change" (as ap_undo)
             hh, kb = kx["h"], KNOB_BY[kx["h"]["knob"]]
             undo = (f"{league_label(kx['g'])} {kb['label']}: {knob_say(kb['unit'], hh['to'])} "
-                    f"back to {knob_say(kb['unit'], hh['from'])}") if kx["ok"] else None
+                    f"back to {knob_say(kb['unit'], hh['from'])}")
         fz = L.get("frozen") if isinstance(L.get("frozen"), dict) else {}
         kfz = bool(fz.get("knobs")) or any(k.startswith("knob:") and v for k, v in fz.items())
         recs.append({"rec": "knobs", "name": "Smart sell's numbers (exit knobs)", "n": None, "min": None,
@@ -28717,6 +28719,27 @@ def ap_knob_last(kst):
     return best
 
 
+def _knob_cautious():
+    """True while the full-auto brake is cautious (ap_brake_cautious), or when the file can't be read: fail closed. Reads the
+    raw file as well, because fa_state() turns a damaged `caution` record into level 0."""
+    try:
+        p = _fa_path()
+        raw = load_json(p, None) if os.path.exists(p) else {}
+        if not isinstance(raw, dict) or (raw.get("caution") is not None and not isinstance(raw.get("caution"), dict)):
+            return True
+        return bool(ap_brake_cautious(fa_state()))
+    except Exception:
+        return True
+
+
+def _knob_grp_sig(e):
+    """What an Undo changes in one group's record (its own values, their times, the step history's undone marks); two
+    reads that differ mean Pete undid something in between."""
+    e = e if isinstance(e, dict) else {}
+    h = [(x.get("at"), x.get("knob"), bool(x.get("undone"))) for x in (e.get("hist") or []) if isinstance(x, dict)]
+    return json.dumps([e.get("lv"), e.get("lat"), e.get("lstep_at"), h], sort_keys=True, default=str)
+
+
 def ap_knob_name(key):
     """Plain name of a knob freeze/hold key ('knobs', 'knob:smart_floor', 'knob:nba:smart_floor'), else None."""
     if key == "knobs":
@@ -28747,6 +28770,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         if not force and now < KNOB_RUN["tune_next"]:
             return []
         ctl = ap_knob_ctl(now)                        # #145: Pete's Autopilot controls (switch, freeze, hold); unreadable = paused
+        cautious = _knob_cautious()                   # the full-auto brake: cautious (soft level above 0) = nothing loosens
         st = knob_state()
         if not force and now < float(st.get("_next") or 0):
             return []
@@ -28777,11 +28801,13 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         prev = st.get("run") if isinstance(st.get("run"), dict) else {}
         cycle = float(prev.get("cycle") or 0) if prev.get("done") is False and prev.get("cycle") else now
         groups, said, logrows, done, cache = {}, [], [], True, {}   # the cache is shared: groups hold the same bets
+        sigs, skipped = {}, []                        # each group as the run first read it; groups an Undo touched meanwhile
         for g in order:
             if time.monotonic() - t0 > budget:
                 done = False
                 break
             e = dict(st["groups"].get(g) or {}) if isinstance(st["groups"].get(g), dict) else {}
+            sigs[g] = _knob_grp_sig(st["groups"].get(g))
             if cycle < now and float(e.get("at") or 0) >= cycle:
                 continue                              # already judged in this weekly cycle (a run cut short resumes)
             v = dict(e.get("v") or {}) if isinstance(e.get("v"), dict) else {}
@@ -28840,6 +28866,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         continue                      # Smart Buy's soft top until 100 results (as smart_buy_learn)
                     if live and n_ in knob_live_names() and ap_knob_held(ctl, g, n_, now) and knob_loosens(n_, cur[n_], to):
                         last.append({"knob": n_, "from": cur[n_], "to": to, "status": "held"})   # #145: held after Pete's Undo
+                        continue
+                    if live and n_ in knob_live_names() and cautious and knob_loosens(n_, cur[n_], to):
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "cautious"})   # brake priority: tightening only
                         continue
                     blk = _knob_blocked(n_, to, cur)
                     if blk:
@@ -28930,7 +28959,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                     r.get("staked"), json.dumps(live_now.get(r["knob"])), ver))
 
         cap_raise = None                              # #228 PR6: your hedge cap, raised by the system only on evidence
-        if done and not _knob_braked_any(st, now):
+        if done and not _knob_braked_any(st, now) and not (cautious and live and HEDGE_RAISE_LIVE):   # a raise loosens: waits for the brake
             try:
                 cap_raise = knob_cap_step(rows["hedge"].get("all") or [], st, live and HEDGE_RAISE_LIVE, now)
             except Exception as err:
@@ -28943,12 +28972,18 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                 r.get("hold_n"), r["say"][:600], r.get("n"), r.get("staked"), json.dumps(r["from"]), ver))
 
         def put(d):
-            d["groups"].update(groups)
+            for g_, e_ in groups.items():             # an Undo while this run was judging changed the group: never write over it
+                if _knob_grp_sig(d["groups"].get(g_)) != sigs.get(g_):
+                    skipped.append(g_)
+                else:
+                    d["groups"][g_] = e_
+            ok_ = done and not skipped
             d["_at"] = now
-            d["_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
-            d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": done, "groups": len(groups),
+            d["_next"] = now + (KNOB_TUNE_EVERY if ok_ else KNOB_RETRY)
+            d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": ok_, "groups": len(groups) - len(skipped),
                         "mode": "live" if live else KNOB_MODE, "cycle": cycle,
-                        "why": None if done else "ran out of time; the rest waits a day"}
+                        "why": None if ok_ else "you changed a setting while it ran; that league is judged again tomorrow"
+                        if done else "ran out of time; the rest waits a day"}
             for name in ("auto_cap", "hedge_cap"):     # #260: Pete's own value, kept apart from any system raise
                 s = d["settings"].get(name) if isinstance(d["settings"].get(name), dict) else {}
                 d["settings"][name] = dict(s, pete=_knob_pete(name), system=s.get("system"))
@@ -28957,6 +28992,16 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             elif cap_raise:
                 d["settings"]["hedge_cap"].update(would=cap_raise["to"], would_at=now)
         _knob_save(put)
+        if skipped:                                   # not saved, so not reported or logged as changes either
+            gone = tuple(f"{pre}{league_label(g_)}:" for g_ in skipped for pre in ("changed ", "(not active yet) "))
+            said = [x for x in said if not x.startswith(gone)]
+            logrows = [r for r in logrows if r[1] not in skipped]
+            said.append("you changed a setting while the weekly run was going, so it left " +
+                        ", ".join(league_label(g_) for g_ in skipped) + " as you set it and judges again tomorrow")
+            done = False
+            skip_only = True
+        else:
+            skip_only = False
         KNOB_RUN["tune_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
         _knob_shadow_table()
         for r in logrows:
@@ -28972,7 +29017,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             store_x("delete from break_ep where rowid not in (select rowid from break_ep order by ts desc limit ?)",
                     (BRK_KEEP_ROWS,))
         ANALYTICS["at"] = 0
-        return said + ([] if done else ["ran out of time; the rest waits a day"])
+        return said + ([] if done or skip_only else ["ran out of time; the rest waits a day"])
     except Exception as err:
         print("knob stepper:", type(err).__name__, err)
         msg = f"the last try hit an error ({type(err).__name__}); tries again in a day"
