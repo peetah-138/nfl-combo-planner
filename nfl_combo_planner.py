@@ -2337,6 +2337,7 @@ def money_note(bets, positions, balance, incomplete=0):
         if incomplete:
             if MONEY_FP["pb"] is not None and pb != MONEY_FP["pb"]:
                 money_mark()
+                MONEY_FP["pbs"] = pb                  # #457: this money change is already stamped; the full read must not stamp it again
             elif MONEY_FP["v"] is not None and MONEY_FP.get("inc") != incomplete:
                 MONEY_FP["inc"] = incomplete          # said once per change, not every pass
                 console_note(f"money stamp skipped: {incomplete} combo(s) couldn't be read this pass")
@@ -2348,8 +2349,13 @@ def money_note(bets, positions, balance, incomplete=0):
                                  str(p.get("position_fp") if p.get("position_fp") is not None else p.get("position")))
                                 for p in positions or [] if isinstance(p, dict))),
                    str(balance)))
+        cb = hash(tuple(sorted((str(a.get("ticker")), str(a.get("status")), a.get("back"), a.get("cost"), a.get("pays"))
+                               for a in bets or [])))
         if MONEY_FP["v"] is not None and fp != MONEY_FP["v"]:
-            money_mark()
+            if not (MONEY_FP.get("pbs") == pb and MONEY_FP.get("cb") == cb):   # #457: only the part already stamped changed
+                money_mark()
+        MONEY_FP["pbs"] = None
+        MONEY_FP["cb"] = cb
         MONEY_FP["v"] = fp
         MONEY_FP["pb"] = pb
         MONEY_FP["inc"] = 0
