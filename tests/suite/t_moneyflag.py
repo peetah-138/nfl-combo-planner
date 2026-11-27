@@ -73,6 +73,9 @@ ok("an incomplete read still stamps when a position really changed", E.money_see
 os.utime(E.MONEY_FLAG, (1, 1))
 E.money_note([], [], 120.0, 1)
 ok("an incomplete read still stamps when the balance really changed", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.money_note([dict(b) for b in bets], [], 120.0)       # #457: the full read right after shows that same change, combos unchanged
+ok("the full read after an incomplete one does not stamp the same money change twice", E.money_seen() < 100)
 E.MONEY_FP.update(v=None, pb=None, inc=0)
 E.money_note(bets, pos, 100.0); os.utime(E.MONEY_FLAG, (1, 1))
 E.money_note([dict(bets[0], status="cashed", back=9.1)], pos, 100.0)
