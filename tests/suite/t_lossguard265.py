@@ -148,36 +148,64 @@ ok("every one of the five is judged by the real-driver judge, and still shares n
 
 # ---- 6b. Pete's call: the first weekly run is TIGHTEN-ONLY. A loosening step is logged "would have loosened", never applied,
 # until the marker lg265_loosen_ok is True in combo_knobs.json (Pete's okay after reading the log). Fail closed.
-def run_once(marker, loosen_to, tighten_to=None):
-    E.save_json(E.KNOBS_FILE, {} if marker is None else {"lg265_loosen_ok": marker}); E.KNOB_STATE_CACHE["d"] = None
+LOOSE = {"sl_prog": 0.45, "sl_drop": 0.15}     # one step LOOSER than the live start (earlier sale) for the two that can loosen
+def run_once(marker, loosen_to, tighten_to=None, groups=("nba",), knob="sl_prog", raw=None):
+    """One weekly run with the real flag read: the marker goes into combo_knobs.json as a real file (raw = its exact text)."""
+    if raw is not None:
+        open(E.KNOBS_FILE, "w").write(raw)
+    else:
+        E.save_json(E.KNOBS_FILE, {} if marker is None else {"lg265_loosen_ok": marker})
+    E.KNOB_STATE_CACHE["d"] = None
     E.CFG["knobs_live"] = True; E.KNOB_SWITCH["on"] = None
+    E._knob_rows = lambda now, deadline=None: {"replay": {g_: bets for g_ in groups}, "sl": {g_: bets for g_ in groups}, "sb": {}}
     def jd(jdn, rows, cur_, name, to, cache=None, **kw):
         base = [(cc.get("kick"), 0.0, 5.0) for cc, _, _ in rows]
-        if name == "sl_prog" and to == loosen_to or (tighten_to is not None and name == "sl_prog" and to == tighten_to):
+        if name == knob and (to == loosen_to or (tighten_to is not None and to == tighten_to)):
             return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
         return base
     E.knob_judge = jd
     E.knob_tune(now, force=True)
     E.knob_judge = real_judge
-    g = E.knob_state()["groups"].get("nba") or {}
-    return g, {r["to"]: r["status"] for r in g.get("last", []) if r["knob"] == "sl_prog"}
-for marker, label in ((None, "no marker"), (False, "marker false"), ("yes", "marker not exactly True")):
-    g, st_ = run_once(marker, 0.45)
-    ok("loosening a loss guard (" + label + "): not applied, logged as would have loosened",
-       st_.get(0.45) == "would have loosened" and "sl_prog" not in (g.get("lv") or {}))
-g, st_ = run_once(None, 0.45)
-ok("...and the move log has the row", any(r["status"] == "would have loosened" for r in E.store_rows(
+    gs = E.knob_state()["groups"]
+    g = gs.get(groups[0]) or {}
+    return g, {r["to"]: r["status"] for r in g.get("last", []) if r["knob"] == knob}
+# the flag read is the real one: missing / corrupt / non-boolean "true" / false / real true, straight from the file
+for label, kw, want in (("missing marker", dict(marker=None), False), ("marker false", dict(marker=False), False),
+                        ("corrupt file", dict(marker=None, raw="{not json ::"), False),
+                        ("empty file", dict(marker=None, raw=""), False),
+                        ("a list, not an object", dict(marker=None, raw="[true]"), False),
+                        ('the string "true"', dict(marker="true"), False), ("the number 1", dict(marker=1), False),
+                        ("marker \"yes\"", dict(marker="yes"), False), ("the real true", dict(marker=True), True)):
+    if "raw" in kw:
+        open(E.KNOBS_FILE, "w").write(kw["raw"])
+    else:
+        E.save_json(E.KNOBS_FILE, {} if kw["marker"] is None else {"lg265_loosen_ok": kw["marker"]})
+    E.KNOB_STATE_CACHE["d"] = None
+    ok("the flag read from the file (" + label + ") says " + ("loosening allowed" if want else "tighten-only"),
+       E._lg265_loosen_ok(E.knob_state()) is want)
+    g, st_ = run_once(**kw, loosen_to=0.45)
+    ok("...and a loosening sl_prog step then " + ("is applied" if want else "is not applied, logged as would have loosened"),
+       (st_.get(0.45) == "stepped" and (g.get("lv") or {}).get("sl_prog") == 0.45) if want else
+       (st_.get(0.45) == "would have loosened" and "sl_prog" not in (g.get("lv") or {})))
+ok("...the move log has the would-have-loosened row", any(r["status"] == "would have loosened" for r in E.store_rows(
     "select status from knob_shadow where knob='sl_prog'")))
 g, st_ = run_once(None, 0.45, tighten_to=0.55)
 ok("tighten-only: a stricter step of the same gain still goes live on that first run",
    st_.get(0.55) == "stepped" and (g.get("lv") or {}).get("sl_prog") == 0.55)
-g, st_ = run_once(True, 0.45)
-ok("once Pete okays it (marker True) the loosening step is allowed again",
-   st_.get(0.45) == "stepped" and (g.get("lv") or {}).get("sl_prog") == 0.45)
-real_load = E.load_json
-E.load_json = lambda path, dflt=None: (_ for _ in ()).throw(OSError("unreadable")) if path == E.KNOBS_FILE else real_load(path, dflt)
-ok("an unreadable marker file reads as tighten-only", E._lg265_loosen_ok({}) is False and E._lg265_loosen_ok(None) is False)
-E.load_json = real_load
+# beyond sl_prog / nba: sl_drop, another league, a sport-wide group
+for grp in ("nba", "nfl", "basketball"):
+    for kn in ("sl_prog", "sl_drop"):
+        g, st_ = run_once(None, LOOSE[kn], groups=(grp,), knob=kn)
+        ok(f"{kn} in {grp}: loosening held (would have loosened), nothing live",
+           st_.get(LOOSE[kn]) == "would have loosened" and kn not in (g.get("lv") or {}))
+        g, st_ = run_once(True, LOOSE[kn], groups=(grp,), knob=kn)
+        ok(f"{kn} in {grp}: with Pete's okay it steps", st_.get(LOOSE[kn]) == "stepped" and (g.get("lv") or {}).get(kn) == LOOSE[kn])
+g, st_ = run_once(None, 0.45, groups=("basketball", "nba"), knob="sl_prog")
+ok("a sport-wide loosening held back does not reach a league that borrows from it (nba stays at its start)",
+   E.knob_live_value("sl_prog", "nba", None, E.knob_state(), {}, now)[0] == E.KNOB_BY["sl_prog"]["start"])
+g, st_ = run_once(True, 0.45, groups=("basketball",), knob="sl_prog")
+ok("...and even with the okay, a league only ever borrows the stricter value (never the sport's looser one)",
+   E.knob_live_value("sl_prog", "nba", None, E.knob_state(), {}, now)[0] >= E.KNOB_BY["sl_prog"]["start"])
 
 # ---- 6c. the reviewer's gap: the bootstrap check blocks a weak loosening gain even with the marker on and every other check met
 ds_weak = [(now - 86400 * i, v, 5.0) for i, v in enumerate([3, -2, -2, -2, 3, -2, 3, -2, 3, -2, 3, -2])]

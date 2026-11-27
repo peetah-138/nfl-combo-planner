@@ -39,6 +39,12 @@ marker keeps it tighten-only. No automatic path sets the marker. Tests: `t_lossg
 non-`true` value; the log row; a stricter step still goes live; marker `true` allows it; the bootstrap range at or below
 0 blocks a loosening even with the marker on and every other check met, above 0 lets it through).
 
+## Known gap, not fixed here
+
+With the self-tuning switch OFF, smart_tune's older mover `_sl_tune` (writing `sl_prog`/`sl_drop` into smart.json, read
+by `_knob_sl` near `nfl_combo_planner.py:26647`) can still loosen those two guards on its own stop-loss-only score. This
+change and its tighten-only rule do not touch that path ("off = the old numbers exactly"). Filed as a separate issue.
+
 ## Which live numbers can move, and by how much
 
 Only these, only one step per league per weekly run, and only when the bar is cleared; bounds are the registry's:
