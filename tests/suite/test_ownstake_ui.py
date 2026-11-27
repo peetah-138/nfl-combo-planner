@@ -28,6 +28,11 @@ def load():
     A.book_depth = lambda t, max_age=60: {"bid": .31, "ask": .32, "spread": .01, "ask_size": 240, "thin": False}
     A.single_cap_block = lambda t, cost, now=None: (None, 10.0, 100.0)
     A.week_spend = lambda: 10.0
+    # (#286) a pregame idea now needs a fresh sportsbook-backed price from the board; this page test is about the amount row,
+    # so the board price is stubbed (the rules themselves are tested in t_idea_inplay / t_rank_e144)
+    A.idea_single_fair = lambda tk, side=None, pfair=None, book=None, **k: {
+        "fair": .45, "src": "sportsbooks + your record", "how": "sportsbooks + your record", "live": False,
+        "nofair": None, "warn": [], "over": False}
 
     def offer(i, amount=None, check_cap=True):        # Kalshi's combo price, faked: records the amount asked for
         OFFERS.append(amount)
