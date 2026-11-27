@@ -454,7 +454,20 @@ E._fa_update(lambda s: s.update(brake={"kind": "streak", "why": "old"}))
 ok("a streak brake still counts as cautious", E.ap_brake_cautious(E.fa_state()) is True)
 E._fa_update(lambda s: s.update(brake=None, caution={"level": 1, "base_at": 0, "since": 0, "why": "x"}))
 ok("caution level above 0 still counts as cautious", E.ap_brake_cautious(E.fa_state()) is True)
-ok("the daily-loss limit still blocks buying the same day", (lambda v: v["brake"] is None or v["brake"]["kind"] == "day")(E.fa_check(now=time.time())))
+# seed a real $20 loss today against a $20 limit: the daily-loss limit must still block buying the same day
+reset_state()
+p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 10, "day_loss": 20})
+E.full_auto_pass(now=time.time()); E.panel_exec()
+day = E._panel_day(); c = day_items()[0]
+E._set_items(day, "real", {c["id"]: {"state": "bought", "result": "lost", "pl": -20.0, "bought_at": time.time()}})
+E._fa_update(lambda s: s.update(brake=None, caution={"level": 0, "base_at": 0, "since": 0, "why": ""}))
+vv = E.fa_check(now=time.time())
+ok("the daily-loss limit still blocks buying the same day ($20 lost, $20 limit)",
+   vv["loss_today"] <= -20 and vv["brake"] and vv["brake"]["kind"] == "day" and any("Paused itself" in b for b in vv["blockers"]))
+E._fa_update(lambda s: s.update(brake={"kind": "day", "day": "2000-01-01", "why": "old"}))
+ok("a yesterday-dated day brake does not block loosening", E.ap_brake_cautious(E.fa_state()) is False)
+E._fa_update(lambda s: s.update(brake={"kind": "day", "day": E._panel_day(time.time()), "why": "now"}))
+ok("... while a same-day one does", E.ap_brake_cautious(E.fa_state()) is True)
 
 # a 'Back to normal now' tap during the pass is not overwritten by the pass's older read
 reset_state()
