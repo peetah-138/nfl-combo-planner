@@ -264,3 +264,66 @@ ok("unreadable panel rows = None, never a guess", E._ap_fa_tickers(now) is None)
 E._fa_rows = real_rows
 ok("the knob names in freeze/hold keys read in plain words", E.ap_knob_name("knobs") == "smart sell's numbers"
    and E.ap_knob_name("knob:nba:smart_floor") == "NBA Profit floor" and E.ap_knob_name("bar:nba") is None)
+
+# ---- 5. follow-ups (#145): a stale knob step never hides an older setting change's Undo
+fresh()
+fa_set(lessons={"vals": {"bar:nba": 0.5}, "change": {"rec": "bar", "key": "bar:nba", "from": 0.0, "to": 0.5, "at": now - 1000, "kind": "step"}})
+tune()
+lv = E.knob_state()
+lv["groups"]["nba"]["lv"]["smart_floor"] = 1.9           # the newer knob step has since moved on (stale)
+E.save_json(E.KNOBS_FILE, lv); E.KNOB_STATE_CACHE["d"] = None
+ok("a stale knob step doesn't hide the older setting change on the card", "bar" in (E.fal_view(E.fa_state())["undo"] or "").lower()
+   or "NBA" in (E.fal_view(E.fa_state())["undo"] or ""))
+okc, msg = E.ap_undo(now + 1)
+ok("...and Undo takes that older change back (the stale knob is left alone)",
+   okc and lessons()["change"].get("undone") is True and nba()["lv"]["smart_floor"] == 1.9)
+
+# ---- 6. loosening exit knobs waits while the soft brake is cautious; tightening doesn't
+JUDGE["mode"] = "down"
+fresh(dict(caution={"level": 1}))
+tune()
+ok("cautious (soft level 1): a loosening step waits", last("smart_floor") == "cautious" and not (nba().get("lv") or {}))
+fresh(dict(caution={"level": 0}))
+tune()
+ok("normal (level 0): the same loosening step goes through", nba()["lv"] == {"smart_floor": 1.6})
+fresh(dict(caution="garbage"))
+tune()
+ok("fail closed: an unreadable caution record counts as cautious", last("smart_floor") == "cautious" and not (nba().get("lv") or {}))
+real_fa_state = E.fa_state
+E.fa_state = lambda: (_ for _ in ()).throw(OSError("x"))
+fresh()
+E.fa_state = lambda: (_ for _ in ()).throw(OSError("x"))
+tune()
+E.fa_state = real_fa_state
+ok("fail closed: an unreadable full-auto file counts as cautious", last("smart_floor") in ("cautious", "paused") and not (nba().get("lv") or {}))
+JUDGE["mode"] = "up"
+fresh(dict(caution={"level": 2}))
+tune()
+ok("cautious: a tightening step still goes through", nba()["lv"] == {"smart_floor": 1.8})
+
+# ---- 7. an Undo during the weekly run is never written over
+fresh()
+E.save_json(E.KNOBS_FILE, {"groups": {"nba": {"lv": {"smart_floor": 1.8}, "lat": {"smart_floor": now - DAY}, "v": {}, "hist": [
+    {"at": int(now - DAY), "knob": "smart_floor", "from": 1.7, "to": 1.8, "live": True, "prev_own": False, "why": "x"}]}},
+    "brake": {}, "settings": {}})
+E.KNOB_STATE_CACHE["d"] = None
+UNDO = {"res": None}
+
+
+def judge_undo(jd, rows, cur_, name, to, cache=None, **kw):
+    if UNDO["res"] is None:
+        UNDO["res"] = E.ap_undo(now + 5)              # Pete taps Undo while the run is judging
+    return judge(jd, rows, cur_, name, to, cache, **kw)
+
+
+E.knob_judge = judge_undo
+said = tune()
+E.knob_judge = judge
+ok("the Undo worked", UNDO["res"] and UNDO["res"][0])
+ok("the weekly run did not write the old value back over it", "smart_floor" not in (nba().get("lv") or {})
+   and nba()["hist"][-1].get("undone") is True and E.smart_params([NBA])["floor"] == 1.7)
+ok("the run says what it did and tries that league again tomorrow", any("while the weekly run was going" in x for x in said)
+   and E.knob_state()["run"]["done"] is False and E.knob_state()["_next"] < now + 2 * DAY)
+tune(now + DAY)
+ok("the next run judges it again, and the hold from the Undo still stands", last("smart_floor") != "stepped"
+   or "smart_floor" not in (nba().get("lv") or {}))
