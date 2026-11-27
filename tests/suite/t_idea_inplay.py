@@ -30,14 +30,37 @@ live_side = {"ticker": LT, "pick": "Boston Celtics", "event": LIVE_EV, "exp": mk
              "fair": 0.80, "src": "pinnacle"}
 ok("the fake's first game is under way, the Denver game isn't", E.started(live_side) and not E.started(pre_side))
 
-# ---- before the game: unchanged (the board's own fair, to the digit)
+# ---- before the game (#286): Buy straight's pricing rules (fresh sportsbook price, calibrated, no circular or stored chance)
+pre_side["fair_at"] = now - 60
 f = E.idea_single_fair(T, pre_side, 0.71, BOOK)
-ok(f"pregame: the board's fair exactly (0.80), labelled sportsbooks, not live ({f})",
-   f["fair"] == 0.80 and f["src"] == "sportsbooks" and not f["live"] and not f["warn"] and not f["over"])
+ok(f"pregame: a fresh sportsbook fair (calibrated; no record here = 0.80), not live ({f})",
+   f["fair"] == 0.80 and f["src"] == "sportsbooks + your record" and not f["live"] and not f["warn"] and not f["over"])
+_cf = E.calib_fair
+E.calib_fair = lambda code, fair, ticker=None, table="closes": fair - 0.03      # a record that pulls the band down
+f = E.idea_single_fair(T, pre_side, 0.71, BOOK)
+ok(f"pregame: the same calibration as Buy straight ({f['fair']})", f["fair"] == 0.77)
+E.calib_fair = _cf
+f = E.idea_single_fair(T, dict(pre_side, fair_at=now - E.SINGLE_FAIR_AGE - 60), 0.71, BOOK)
+ok(f"pregame: a board price older than SINGLE_FAIR_AGE is never used ({f['nofair']})",
+   f["fair"] is None and "minutes old" in f["nofair"] and not f["live"])
+f = E.idea_single_fair(T, dict(pre_side, fair_at=None), 0.71, BOOK)
+ok(f"pregame: a board price of unknown age is never used ({f['nofair']})", f["fair"] is None and "unknown age" in f["nofair"])
 f = E.idea_single_fair(T, None, 0.71, BOOK)
-ok(f"pregame with no board side: the idea's own chance as before (0.71, {f['src']})", f["fair"] == 0.71 and not f["live"])
+ok(f"pregame with no board side: the idea's own stored chance is NOT used ({f['nofair']})", f["fair"] is None and f["nofair"])
 f = E.idea_single_fair(T, dict(pre_side, src=None, fair=0.6), None, BOOK)
-ok("pregame with Kalshi's own chance on the board: said so", f["fair"] == 0.6 and f["src"] == "Kalshi's price")
+ok(f"pregame with Kalshi's own chance on the board (no source): never a fair price ({f['nofair']})", f["fair"] is None)
+spx = fakenet.event_ticker("KXNBASPREAD", "DEN", "LAL") + "-DEN5"
+f = E.idea_single_fair(spx, {"ticker": spx, "kind": "spread", "fair": 0.6, "src": "pinnacle", "fair_at": now - 30,
+                             "event": EV}, 0.9, BOOK)
+ok(f"pregame spread: a fresh board fair 0.60 as the book line + score model, not the stored 0.90 ({f['fair']}, {f['src']})",
+   f["fair"] == 0.6 and f["src"] == "book line + score model")
+f = E.idea_single_fair(spx, {"ticker": spx, "kind": "spread", "event": EV}, 0.9, BOOK)
+ok("pregame spread with no board side: the stored 0.90 is not used", f["fair"] is None)
+E.CFG["idea_pre_strict"] = False
+f = E.idea_single_fair(T, None, 0.71, BOOK)
+ok("switch off: the old behaviour (the idea's own chance 0.71)", f["fair"] == 0.71 and f["src"] == "from when it was found")
+del E.CFG["idea_pre_strict"]
+ok("the switch defaults ON", E.CFG.get("idea_pre_strict", True) is True)
 
 # ---- under way with a fresh live sportsbook line: that line, said so
 fresh = dict(live_side, fair=0.66, line_live=True, line_at=now - 30)
@@ -135,7 +158,9 @@ ok("the combo idea with no fair price is priced at the smallest usual stake, nev
 ok("a live fair of exactly 0 is a fair price, not a crash (is not None, never truthiness)",
    "if fair else" not in blk.split('if row["n"] == 1')[1].split("if row[\"kick\"]")[0])
 f = E.idea_single_fair(T, None, 0.71, BOOK)
-ok(f"pregame with no board side: labelled honestly ({f['src']})", f["src"] == "from when it was found")
+ok(f"pregame with no board side: says why there is no fair price ({f['src']})", f["src"] == "none" and f["nofair"])
+ok("the idea quote asks for the board side with its age and sizes no bigger than Buy straight (#286)",
+   "single_side(tk, row[\"lg\"])" in blk and "A._size(" in blk and 'not fi["nofair"]' in blk)
 
 # ---- Build's live side (screen_live) holds Kalshi's mid with the odds' line_live/line_at still on it: never a "live line"
 mid_side = dict(live_side, fair=0.71, line_live=True, line_at=time.time() - 20, live=True, pre=0.62)
